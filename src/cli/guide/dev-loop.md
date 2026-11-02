@@ -6,7 +6,9 @@ except for the one confirmation a person gives.
 ## 1. Scaffold
 
 `ccc plugin new <dir> [--id <id>] [--panel] [--cli <name>] [--skill]` writes a working plugin
-into a new or empty folder (it refuses anything else). Works with the app closed.
+into a new folder, or one that already holds files (a nested plugin inside another plugin's
+folder, or a parent around a nested one): it refuses only when a file it would write already
+exists, and names those files. Works with the app closed.
 
 - default id is `local.<folder name>`; pass `--id acme.todo` for a real one
 - `--panel` adds a panel page (`panels/main.html`, `panels/main.js`) wired to the host
@@ -38,6 +40,11 @@ A linked folder is watched: after you change a file the plugin host reloads that
 (no restart of the others). A manifest problem then shows as the plugin's state in `ccc plugin list`. A plugin
 command run right after an edit waits for the reloaded copy (within its 30 s limit, else exit
 124) and runs there; one already running in the old copy when the reload starts ends with exit 1.
+
+Nested plugins are fine: a folder inside a linked plugin that has its own `plugin.json` is another
+plugin, and the parent's watcher ignores it (as it does `node_modules` and `.git`). Edit it and
+only that plugin, if linked, reloads; edit the parent and only the parent reloads. A plugin
+folder's own files, including a `test/` folder without a `plugin.json`, still reload the parent.
 
 ## 3. Configure
 

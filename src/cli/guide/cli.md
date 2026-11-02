@@ -37,7 +37,7 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   is not active by then). Its stdin is read only when the plugin declares it and it is not a terminal (at most 256 KiB);
   stdin not closed within 40 s is exit 124, so pipe the input or redirect `</dev/null`.
 - `ccc plugin new <dir> [--id <id>] [--panel] [--cli <name>] [--skill]` scaffolds a plain-JS plugin
-  into an empty folder (no app needed). `ccc plugin link [--project <path>] <dir>` links it and
+  into a new folder, or one where no file it writes exists yet (no app needed). `ccc plugin link [--project <path>] <dir>` links it and
   enables it in this project after a person confirms in the app window (waits for the answer;
   Deny exits 1 "declined"). `ccc plugin unlink <id>` removes a linked plugin. `ccc plugin list
   [--json]` shows the installed plugins and whether each is enabled here. `ccc plugin logs <id>

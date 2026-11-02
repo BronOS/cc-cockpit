@@ -236,11 +236,11 @@ External review: auto
 - Modify: `src/cli/plugin-template/*`, `src/cli/plugin-new.ts`, `src/main/plugins/dev-watch.ts`
 - Modify: `test/unit/plugin-new.test.ts`, `test/unit/dev-watch.test.ts`
 
-- [ ] consistent indentation in the generated files
-- [ ] `ccc plugin new` can create a nested plugin inside an existing plugin folder and a parent around an existing nested one (refuse only when files would be overwritten)
-- [ ] the watcher of a linked plugin ignores nested folders with their own `plugin.json` (beside the fixed `IGNORED_DIRS`, and also in the polling signature Linux uses), or, if that is wrong for a reason found in the code, the guide states the behaviour (add ➕ note)
-- [ ] write tests for each
-- [ ] run tests - must pass before next task
+- [x] consistent indentation in the generated files
+- [x] `ccc plugin new` can create a nested plugin inside an existing plugin folder and a parent around an existing nested one (refuse only when files would be overwritten)
+- [x] the watcher of a linked plugin ignores nested folders with their own `plugin.json` (beside the fixed `IGNORED_DIRS`, and also in the polling signature Linux uses), or, if that is wrong for a reason found in the code, the guide states the behaviour (add ➕ note)
+- [x] write tests for each
+- [x] run tests - must pass before next task
 
 ### Task 11: ➕ Offer to install `ccc` at start-up [model: sonnet]
 
