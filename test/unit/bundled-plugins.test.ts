@@ -210,6 +210,15 @@ describe('reserved cockpit.* ids load only from the bundled root', () => {
     expect(logs.join('\n')).toMatch(/installed from https:\/\/x\.invalid\/b\.git dropped/)
   })
 
+  it('a git record of a bundled id survives while the bundled folder is missing', async () => {
+    const folder = join(dataDir, 'plugins', `${BID}@0.9.0`)
+    cpSync(bundledFolder(BID, [], '0.9.0'), folder, { recursive: true })
+    writeIndex([{ id: BID, version: '0.9.0', source: { kind: 'git', url: 'https://x.invalid/b.git', tag: 'v0.9.0' }, state: { ok: true } }])
+    const { index } = await restart([spec(join(dataDir, 'nowhere'))])
+    expect(index.get(BID)?.source.kind).toBe('git')
+    expect(readFileSync(join(folder, 'plugin.json'), 'utf8')).toContain(BID)
+  })
+
   it('a hand-edited linked record under a reserved id the app does not ship is refused at load, with the reason', async () => {
     const other = linkedFolder('cockpit.other', [])
     writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'linked', path: other }, state: { ok: true } }])

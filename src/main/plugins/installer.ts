@@ -800,17 +800,19 @@ export class PluginInstaller {
       }
       for (const spec of specs) {
         let existing = this.options.index.get(spec.id)
+        // Checked before a non-bundled record is dropped: with the bundled folder missing (a broken
+        // package) nothing would replace the user's working copy.
+        if (!(await exists(spec.dir))) {
+          this.log(`bundled plugin ${spec.id} skipped: ${spec.dir} is missing`)
+          if (existing?.source.kind === 'bundled') this.options.index.remove(spec.id)
+          continue
+        }
         if (existing && existing.source.kind !== 'bundled') {
           const from = existing.source.kind === 'linked' ? `linked from ${existing.source.path}` : `installed from ${existing.source.url}`
           this.options.index.remove(spec.id)
           this.log(`plugin ${spec.id} ${from} dropped: the app ships it; the built-in copy is used`)
           if (existing.source.kind === 'git') await this.removeInstallDir(spec.id, existing.version)
           existing = undefined
-        }
-        if (!(await exists(spec.dir))) {
-          this.log(`bundled plugin ${spec.id} skipped: ${spec.dir} is missing`)
-          if (existing) this.options.index.remove(spec.id)
-          continue
         }
         const result = await loadManifest(spec.dir)
         const entry: PluginEntry = {
@@ -910,19 +912,14 @@ export class PluginInstaller {
 
   /**
    * Why `entry` may not load under its id, or null. A reserved id loads only as a bundled entry the
-   * allowlist knows, from the allowlisted folder, compared by real path: a linked folder, a symlink
-   * into the bundled root, or a hand-edited plugins.json record is refused here, at load, which is
-   * the authority (the install-time refusals only give a better message earlier). dirOf already takes
-   * a bundled folder from the allowlist; the realpath compare keeps this rule true on its own.
+   * allowlist knows: a linked folder or a hand-edited plugins.json record is refused here, at load,
+   * which is the authority (the install-time refusals only give a better message earlier). dirOf
+   * takes a bundled entry's folder from the allowlist, never from the record.
    */
-  private async reservedProblem(entry: PluginEntry, dir: string): Promise<string | null> {
+  private reservedProblem(entry: PluginEntry): string | null {
     if (!isReservedPluginId(entry.id)) return null
-    const spec = entry.source.kind === 'bundled' ? this.options.bundled?.find((b) => b.id === entry.id) : undefined
-    if (spec !== undefined) {
-      const real = await realpathOrNull(dir)
-      if (real !== null && real === (await realpathOrNull(spec.dir))) return null
-    }
-    return `${RESERVED_PLUGIN_ID_MESSAGE}; this copy (${entry.source.kind}) does not load`
+    if (entry.source.kind === 'bundled' && this.options.bundled?.some((b) => b.id === entry.id)) return null
+    return `${RESERVED_PLUGIN_ID_MESSAGE}; this copy (${entry.source.kind}) does not load; uninstall it`
   }
 
   /**
@@ -939,7 +936,7 @@ export class PluginInstaller {
   private async refreshEntry(entry: PluginEntry): Promise<PluginState> {
     const dir = this.dirOf(entry)
     const result = await loadManifest(dir)
-    const reserved = await this.reservedProblem(entry, dir)
+    const reserved = this.reservedProblem(entry)
     let state: PluginState
     if (reserved !== null) {
       state = { ok: false, reason: reserved }
@@ -1112,14 +1109,6 @@ function revokedState(revoked: PluginRevocation): Extract<PluginState, { ok: fal
 
 function cliNamesOf(manifest: PluginManifest): string[] {
   return (manifest.contributes?.cli ?? []).map((c) => c.name)
-}
-
-async function realpathOrNull(path: string): Promise<string | null> {
-  try {
-    return await fs.realpath(path)
-  } catch {
-    return null
-  }
 }
 
 async function exists(path: string): Promise<boolean> {
