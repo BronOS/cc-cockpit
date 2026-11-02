@@ -75,6 +75,12 @@ behind it are in [design.md](design.md).
   or a CLI login in a terminal overlay (`ctx.overlay.open`, `ctx.exec`). Secret values never reach
   a renderer. An `accounts.json` left in the data dir by an earlier build is unused and can be
   deleted by hand.
+- Plugin services: a plugin declares `services.provides` / `uses` (a name and a whole-number major version) in
+  `plugin.json` and calls other plugins of the same project with `ctx.services` (`provide`, `use`, `emit`; handle
+  methods are async, `handle.on(event, fn)` listens). Calls and events carry plain data only (copied with
+  `structuredClone`). With two providers of one service, Settings > Plugins > "Plugin used for <service>" picks
+  one for the project (it restarts the project's plugin host). A missing provider does not block enabling a
+  plugin: the consumer runs, its calls throw, and the Plugins page warns (also for a version mismatch).
 - Themes, commands, a command palette and editable keybindings, a Settings screen.
 - The `ccc` command line tool, the `hello` reference plugin and an example plugin to copy.
 - Operable by Claude: inside a tab, `ccc guide [topic]` prints bundled docs (CLI, plugin API,
@@ -203,5 +209,4 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   that `transparent` needs a frameless window, which project windows are not there; untested.
 - On Linux and Windows the File / Edit / Window menu bar is hidden; its shortcuts still work (the "+"
   in the top bar opens the project picker).
-- Windows is not supported. Also not built: a plugin registry server, binary downloads, panel drag-and-drop and a
-  cross-plugin API.
+- Windows is not supported. Also not built: a plugin registry server, binary downloads and panel drag-and-drop.

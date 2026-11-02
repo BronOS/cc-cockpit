@@ -256,16 +256,16 @@ External review: auto
 - [x] run drift tests and the full unit suite - must pass before next task
 
 ### Task 9: Verify acceptance criteria [model: sonnet]
-- [ ] verify all requirements from Overview and the four agreed decisions are implemented
-- [ ] verify edge cases: concurrent activation, provider reload, provider error, stale pick, version mismatch, non-cloneable data
-- [ ] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`
-- [ ] run e2e tests: `npm run test:e2e` (only the known host failures listed in Testing Strategy may fail)
+- [x] verify all requirements from Overview and the four agreed decisions are implemented
+- [x] verify edge cases: concurrent activation, provider reload, provider error, stale pick, version mismatch, non-cloneable data
+- [x] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`
+- [x] run e2e tests: `npm run test:e2e` (only the known host failures listed in Testing Strategy may fail)
 
 ### Task 10: [Final] Update documentation [model: sonnet]
-- [ ] `docs/design.md`: §1 decisions log row for plugin services, §5 manifest and ctx tables, replace the "reserved for cross-plugin" text; keep the "silos" data-model row accurate
-- [ ] `docs/features.md`: add plugin services to features, remove "a cross-plugin API" from the not-built list
-- [ ] `CLAUDE.md`: one implementation-pattern line (services are host-local, resolved per call, plain data only; main decides specs and choices)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `docs/design.md`: §1 decisions log row for plugin services, §5 manifest and ctx tables, replace the "reserved for cross-plugin" text; keep the "silos" data-model row accurate
+- [x] `docs/features.md`: add plugin services to features, remove "a cross-plugin API" from the not-built list
+- [x] `CLAUDE.md`: one implementation-pattern line (services are host-local, resolved per call, plain data only; main decides specs and choices)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

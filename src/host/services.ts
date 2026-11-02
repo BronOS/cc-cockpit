@@ -16,9 +16,8 @@
 // release and re-provide (dev reload, restart of its activate) and a swap to another provider; the
 // provider is resolved on every emit, as it is on every call.
 //
-// Not yet here (Task 4 of the plan): the wiring into the loader and ctx, which calls
-// `setSpec`/`removeSpec`/`release` and backs the injected `activationOf`/`isActivating` with the
-// loader's own activation promises.
+// The loader owns the registry: it calls `setSpec`/`removeSpec`/`release` and backs the injected
+// `activationOf`/`isActivating` with its own activation promises; ctx.services binds the plugin id.
 import { errorText } from '../shared/error-text'
 import { selectProvider, serviceProblemMessage, type ServiceChoices, type ServicePlugin } from '../shared/services'
 

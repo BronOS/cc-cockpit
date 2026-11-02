@@ -26,8 +26,8 @@ plugin.** A feature is core only if at least one holds:
 2. only main can do it safely (PTYs, checking which window or host asks, the OS keychain, typing
    into a Claude session);
 3. it connects parties that cannot reach each other directly (plugins ↔ Claude sessions,
-   plugins ↔ their panels, the outside world ↔ the app through `ccc` and hooks, later
-   plugin ↔ plugin).
+   plugins ↔ their panels, the outside world ↔ the app through `ccc` and hooks, plugin ↔
+   plugin through `ctx.services`).
 
 Everything else is a plugin, even if every user installs it. Named accounts fail all three, so
 they left core (removed in 2026-10); what stays is what only main can do: `ctx.secrets`, the
@@ -42,7 +42,7 @@ and keybindings, CLI, the `hello` reference plugin.
 Until an editor exists, clicking a changed file opens `git diff` in a terminal overlay.
 
 Out (later, each real plugin in its own design session): every real data plugin, editor and
-file tree, drag-and-drop of panels, the cross-plugin export API, a plugin registry server (the marketplace is a static index, see §5), binary
+file tree, drag-and-drop of panels, a plugin registry server (the marketplace is a static index, see §5), binary
 downloads, Windows builds, sessions that outlive the app.
 
 ### Decisions log
@@ -58,12 +58,13 @@ downloads, Windows builds, sessions that outlive the app.
 | Overlay | Stack over the whole window; Esc pops the top one (not a terminal one: Esc is its program's) |
 | Plugin install | Git URL pinned to a tag, a linked local folder (dev), or the Marketplace: a static index file in a git repo, no registry server (§5, Marketplace) |
 | Phase-1 plugin API | UI + background, settings + secrets, session access, commands/keys/themes |
-| Data model | **Silos**: each plugin owns its data and triage. No core item store. A future cross-plugin plugin may read from several plugins |
+| Data model | **Silos**: each plugin owns its data and triage. No core item store. Services (below) let plugins of one project call each other, so a plugin can read from several others without a shared store |
 | Process layout | One plugin host per project window (option A) |
 | Shell UI | React |
 | Plugin CLI commands | Flat top-level names (`ccc browser open …`); a name taken by core or another plugin refuses the install, link or update (§5, §6) |
 | Claude skills | Stay in the app data dir (`<data>/claude-plugins/`), loaded only into Claude sessions the app starts (`--plugin-dir`); nothing is written to `~/.claude` (§5 Skills) |
 | Embedded web view | A core primitive (only main may create a `WebContentsView`): the `webview` panel kind plus `ctx.webview`; the browser plugin is built on it (§5 Web view) |
+| Plugin services | A plugin declares `services.provides` / `uses` (name + whole-number major) and calls others through `ctx.services` (§5 "Plugin services"): addressing by service name, two providers allowed with a per-project pick, a missing provider does not block enabling (calls throw, the Plugins page warns), calls and events both in scope |
 | Browser scope | Foundation plus a minimal built-in browser; a full one (tabs, history, devtools) gets its own design session |
 | "Install Claude skill" button | Dropped: with `--plugin-dir` it would only matter for Claude sessions started outside the app, which the Claude-operable foundation does not target |
 
@@ -484,7 +485,8 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
     "cli":      [{ "name": "jira", "summary": "…", "usage": "jira [issue]", "stdin": false }],
     "skills":   [{ "id": "jira", "dir": "skills/jira" }]
     // a panel may instead be {"id", "title", "kind": "webview", "defaultZone"}: no "entry"
-  }
+  },
+  "services": { "provides": { "triage": 1 }, "uses": { "mail-index": 2 } }
 }
 ```
 
@@ -497,6 +499,9 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
   another way whose id a bundled plugin already holds is skipped (the bundled one wins). Clash
   losers keep their manifest in the loaded map, so they win the name back once the owner is removed.
 - `skills[]`: see Skills below.
+- `services`: top level (a dependency between plugins, not something the app shows). Names `^[a-z][a-z0-9-]{0,63}$`,
+  versions integers 1..9999, at most 32 entries in each of `provides` and `uses`; a plugin may not provide and use
+  the same name. Absent means none. See Plugin services below.
 
 **Host API**: `activate(ctx)` is called once per project window; `ctx` is already scoped to
 that project.
@@ -513,10 +518,33 @@ that project.
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt})` |
 | commands | `ctx.commands.register(id, fn)` |
+| services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)` |
 | misc | `ctx.log`, `ctx.notify(text)` |
 
-`activate` may return an object: reserved as the plugin's exported API for the future
-cross-plugin case. Phase 1 stores it but exposes no way to reach it.
+`activate`'s return value is ignored; a plugin offers an API to others with `ctx.services`.
+
+**Plugin services**: one plugin offers a named API, others in the same project call it and listen to
+its events (`src/host/services.ts`, `src/shared/services.ts`). All plugins of a project run in one
+host and one JS realm with no isolation, so this is a contract, not a security boundary; calls are
+dispatched inside the host with no round trip to main.
+- The provider calls `ctx.services.provide('triage', { classify })` (only names in its own `provides`;
+  an object of functions, no `on`, `then`, `constructor`, `__proto__`, `prototype` or `_` names) and
+  `ctx.services.emit('triage', 'rulesChanged', data)` (only the selected provider). The consumer
+  calls `ctx.services.use('triage')` (only names in its own `uses`), then `await triage.classify(...)`
+  and `triage.on('rulesChanged', fn)`.
+- Resolved on every call, never cached in the handle: a host restart, dev reload or provider error
+  replaces or removes providers, and a handle keeps working across them. A call made while the
+  provider activates (or reloads) waits for that activation; two plugins awaiting each other during
+  `activate` fail at once with a cycle error instead of both timing out.
+- Arguments, results and event data are copied with `structuredClone` in the host: plain data only (a
+  function or symbol throws; a class instance arrives as a plain object). A provider's throw reaches the
+  consumer as a new `Error` with the same message and name. No core timeout on calls.
+- Which provider: the only one, or the project's pick (`serviceProviders` in the project record, set on
+  the Plugins page; a change restarts the project's host). Zero providers, several with no valid pick
+  (a stale pick counts as none) or a major-version mismatch make calls fail with a clear error and the
+  Plugins page warn on the consumer. `selectProvider` and `serviceStatus` (`src/shared/services.ts`)
+  are the one rule, used by the host and by main over the same set of specs, so warnings and errors
+  agree. Main decides the specs and the picks; the host only applies them.
 
 **Panel side**: a small `panel.js` SDK (`post`, `onMessage`, `theme`). Panels have no direct
 API; everything goes through their own plugin backend, so the plugin decides what its panel may do.

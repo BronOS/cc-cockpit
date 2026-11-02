@@ -18,8 +18,8 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 - `npm run build` (runs `build:hello` and `build:browser` first), `npm run build:hello` (rebuild after editing
   `plugins/hello`; the dist is committed), `npm run build:browser` (same for `plugins/browser`; its
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
-  master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, which it copies
-  to `sdk/types.ts`, must also be pushed there, and it is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
+  master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
+  pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
   editing `marketplace/tools/src` or the `src/shared` files it imports, `git-source.ts` and `marketplace.ts` above all;
   `marketplace/tools/dist` is committed because the index repo's CI runs it with plain node and no install, and a unit
   test compares the bytes), `npm run package` (unsigned mac build),
@@ -58,6 +58,10 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 - Send gate (`main/sessions/send-gate.ts`): text is delivered only in *waiting for input* (idle
   is not sendable), as a bracketed paste plus Enter, paste markers stripped, text starting
   with `/`, `!`, `#` or `&` refused, queued while busy, one delivery per `Stop`.
+- Plugin services (`ctx.services`, design.md §5 "Plugin services") are host-local: calls and events are dispatched inside the
+  plugin host with no round trip to main, resolved on every call (never a cached provider), and carry plain data only
+  (`structuredClone` both ways). Main decides the specs and the project's provider picks; `selectProvider` /
+  `serviceStatus` in `src/shared/services.ts` are the one rule for host and Plugins page, so use them, never a copy.
 - Plugin settings schemas may not use regexes (ReDoS in main). `"format": "secret"` goes only on a
   top-level string property, with no `default` and no keyword but type/format/title/description/
   `$comment`, and a schema with one has no `$ref`/`$anchor`/`$id` or other reference keyword
