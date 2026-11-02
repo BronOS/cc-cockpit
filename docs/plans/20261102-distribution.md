@@ -226,18 +226,22 @@ Version and hash are validated before they are written into Ruby.
 - [x] run tests - must pass before next task
 
 ### Task 8: Verify acceptance criteria [model: sonnet]
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled
-- [ ] build the AppImage and the deb on this Linux machine, with `CC_COCKPIT_DATA_DIR` set to a temp dir. This machine has no
+- [x] verify all requirements from Overview are implemented (Tasks 1-7 landed with tests; workflows read by unit tests, first real run is Post-Completion)
+- [x] verify edge cases are handled
+      Result: covered by the unit tests of Tasks 1-7 (bad version, bad hash, Ruby-breaking input, tag/package.json mismatch, prerelease and junk tags, missing token, empty tap); no separate edge-case run was made here
+- [x] build the AppImage and the deb on this Linux machine, with `CC_COCKPIT_DATA_DIR` set to a temp dir. This machine has no
       `libfuse.so.2` or `dpkg-deb`, so launch with `--appimage-extract-and-run`, and unpack the deb with `ar` and `tar`. Record results
       here with ⚠️ for anything that fails
-- [ ] test hooks are off in a packaged app, so check tokenless `ccc` with `--project` and the wrapper's version warning. A `ccc` from a
+- [x] test hooks are off in a packaged app, so check tokenless `ccc` with `--project` and the wrapper's version warning. A `ccc` from a
       tab and a plugin install through the UI move to the maintainer's manual list below
-- [ ] check the data folder survives a second build with a higher version, made with `-c.extraMetadata.version` so `package.json` is
+      Result: AppImage built and launched (`--appimage-extract-and-run --no-sandbox`), socket bound, wrapper written; `ccc open`, `ccc sessions [--json]` with `--project` worked tokenless and `ccc overlay --project` reached the app. The deb was built and unpacked with `ar` and `tar` (not launched; launching it is on the maintainer's list below): package `cc-cockpit` 0.1.0, `usr/share/applications/cc-cockpit.desktop` present, `opt/cc-cockpit/chrome-sandbox` present (mode 755 as extracted without root; the setuid bit was not checked), Maintainer is the placeholder `cc-cockpit <noreply@cc-cockpit.invalid>`. Version warning seen on stderr (stdout clean JSON, rc 0): `ccc: the app is running version 0.2.0, this ccc is version 0.1.0. Restart cc-cockpit.` (v1 CLI against running v2; this mismatch was staged for the test, see the next note).
+- [x] check the data folder survives a second build with a higher version, made with `-c.extraMetadata.version` so `package.json` is
       left alone
-- [ ] run full test suite: `npm test`
-- [ ] run e2e tests: `npm run test:e2e`, with only `window-bounds.spec.ts:40` and `:62` allowed to fail on Linux
-- [ ] run `npm run typecheck` and `npm run lint`
+      Result: v2 (0.2.0, `--dir`, output in a temp dir) started on the data dir v1 had used; `app.json` (open project) survived and the project reopened. Note: `extraMetadata.version` changes only the app's `package.json`, not the `__APP_VERSION__` baked into the CLI bundle, so v2's own `ccc` still says 0.1.0. That is a test artifact only: `electron.vite.config.ts` reads the version from `package.json` on disk at build time, so a real release built from a bumped `package.json` bakes the right version into the CLI.
+- [x] run full test suite: `npm test`
+- [x] run e2e tests: `npm run test:e2e`, with only `window-bounds.spec.ts:40` and `:62` allowed to fail on Linux
+      Result: 135 passed, 2 skipped, 2 failed: exactly `window-bounds.spec.ts:40` and `:62`.
+- [x] run `npm run typecheck` and `npm run lint`
 
 ### Task 9: [Final] Update documentation [model: sonnet]
 - [ ] README: Install becomes brew and Linux downloads; running from source moves to Development
