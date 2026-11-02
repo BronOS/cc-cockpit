@@ -501,3 +501,73 @@ test.describe('html overlay messages (ctx.overlay.start)', () => {
     await expect.poll(() => stack(cockpit)).toEqual([])
   })
 })
+
+test("large and full overlays are bigger than the default, and a terminal overlay refits", async ({
+  cockpit,
+}) => {
+  const { page } = cockpit;
+  const frame = page.locator(".overlay").last().locator(".overlay-frame");
+  const sizes: Record<string, { width: number; height: number }> = {};
+  const cols: Record<string, number> = {};
+  for (const size of ["default", "large", "full"]) {
+    const h = await open(cockpit, { kind: "html", html: "<p>sized</p>", size });
+    await expect(page.locator('.overlay[data-kind="html"]')).toHaveAttribute(
+      "data-size",
+      size,
+    );
+    sizes[size] = (await frame.boundingBox())!;
+    await page.keyboard.press("Escape");
+    await outcome(cockpit, h);
+
+    // The program prints its own size on every SIGWINCH and once at the start.
+    const t = await open(cockpit, {
+      kind: "terminal",
+      argv: [
+        "sh",
+        "-c",
+        `size() { stty size | cut -d' ' -f2; }; trap 'echo C-$(size)-E' WINCH; echo C-$(size)-E; while :; do sleep 0.1; done`,
+      ],
+      cwd: cockpit.projectDir,
+      size,
+    });
+    const rows = page.locator('.overlay[data-kind="terminal"] .xterm-rows');
+    await expect
+      .poll(async () => (await rows.innerText()).includes("C-"))
+      .toBe(true);
+    await expect
+      .poll(async () => {
+        const all = [
+          ...(await rows.innerText())
+            .replaceAll("\n", "")
+            .matchAll(/C-(\d+)-E/g),
+        ];
+        cols[size] = Number(all.at(-1)?.[1]);
+        return cols[size];
+      })
+      .not.toBe(80);
+    await page.keyboard.press(`${MOD}+Shift+W`);
+    await outcome(cockpit, t);
+  }
+  expect(sizes.large!.width).toBeGreaterThan(sizes.default!.width);
+  expect(sizes.large!.height).toBeGreaterThan(sizes.default!.height);
+  expect(sizes.full!.width).toBeGreaterThan(sizes.large!.width);
+  expect(sizes.full!.height).toBeGreaterThan(sizes.large!.height);
+  expect(cols.large!).toBeGreaterThan(cols.default!);
+  expect(cols.full!).toBeGreaterThanOrEqual(cols.large!);
+
+  const shot = await open(cockpit, {
+    kind: "html",
+    html: "<h1>large</h1>",
+    size: "large",
+    title: "Large overlay",
+  });
+  await expect(
+    page.getByRole("dialog", { name: "Large overlay" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path:
+      process.env.OVERLAY_SIZE_SHOT ?? join(cockpit.root, "overlay-large.png"),
+  });
+  await page.keyboard.press("Escape");
+  await outcome(cockpit, shot);
+});

@@ -534,10 +534,14 @@ export type OverlayKind = 'terminal' | 'url' | 'html'
  * served by main at `src` (`cc-overlay://<id>/` for inline html, `cc-plugin://<id>/<file>` for a
  * plugin's own page) and shown in a sandboxed iframe.
  */
-export type OverlayInfo =
+export type OverlaySize = 'default' | 'large' | 'full'
+export const OVERLAY_SIZES: readonly OverlaySize[] = ['default', 'large', 'full']
+
+export type OverlayInfoBody =
   | { id: string; kind: 'terminal'; title: string }
   | { id: string; kind: 'url'; title: string; url: string }
   | { id: string; kind: 'html'; title: string; src: string }
+export type OverlayInfo = OverlayInfoBody & { size: OverlaySize }
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
 export interface IpcInvokeMap {

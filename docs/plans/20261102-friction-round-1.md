@@ -326,9 +326,9 @@ whole window below the top bar. Named sizes rather than percentages, so pages do
 - Modify: `src/sdk/types.ts` (+ example copy), overlay validation in main, the overlay renderer and `src/renderer/styles.css`, `src/cli/guide/api.md`
 - Modify: `test/e2e/overlays.spec.ts`, unit tests for validation
 
-- [ ] validate the option in main (unknown value refused), size the overlay accordingly
-- [ ] write tests: each size's box relative to the window; invalid value refused
-- [ ] run tests - must pass before next task
+- [x] validate the option in main (unknown value refused), size the overlay accordingly
+- [x] write tests: each size's box relative to the window; invalid value refused
+- [x] run tests - must pass before next task
 
 ### Task 15: Verify acceptance criteria [model: sonnet]
 - [ ] verify every item of this plan and every FRICTION.md line is either fixed, answered in the guide, or listed in Post-Completion (not done in this round or outside the app)

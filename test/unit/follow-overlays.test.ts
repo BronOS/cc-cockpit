@@ -38,7 +38,13 @@ function fakeBridge(): {
   }
 }
 
-const html = (id: string): OverlayInfo => ({ id, kind: 'html', title: id, src: `cc-overlay://${id}/` })
+const html = (id: string): OverlayInfo => ({
+  id,
+  kind: 'html',
+  title: id,
+  src: `cc-overlay://${id}/`,
+  size: 'default'
+})
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 describe('followOverlays', () => {

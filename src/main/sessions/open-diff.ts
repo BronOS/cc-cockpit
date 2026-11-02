@@ -61,7 +61,7 @@ export async function openDiff(
     // and show nothing. Clip it the way the overlay manager clips a title it derives itself.
     const name = basename(file)
     const title = name.length > MAX_TITLE_LENGTH ? `${name.slice(0, MAX_TITLE_LENGTH - 1)}…` : name
-    opened = options.open(caller.windowId, { kind: 'terminal', argv, cwd: tab.cwd, title }, 'sessions-panel')
+    opened = options.open(caller.windowId, { kind: 'terminal', argv, cwd: tab.cwd, title, size: 'large' }, 'sessions-panel')
   } catch (err) {
     // Neither should throw (see above; open reports a refusal by rejecting), but a key left in
     // `shown` would block this diff in this window for good, so release it on any way out.

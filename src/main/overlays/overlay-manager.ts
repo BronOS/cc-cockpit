@@ -26,7 +26,15 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { toError } from '../../shared/error-text'
-import type { EventChannel, IpcEventMap, OverlayInfo, OverlayKind } from '../../shared/ipc'
+import {
+  OVERLAY_SIZES,
+  type EventChannel,
+  type IpcEventMap,
+  type OverlayInfo,
+  type OverlayInfoBody,
+  type OverlayKind,
+  type OverlaySize
+} from '../../shared/ipc'
 import { chordFromEvent } from '../../shared/keys'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { PLUGIN_SCHEME } from '../plugins/plugin-protocol'
@@ -34,14 +42,14 @@ import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
 
 export type OverlaySpec =
-  | { kind: 'terminal'; argv: string[]; cwd: string; title?: string }
-  | { kind: 'url'; url: string; title?: string }
-  | { kind: 'html'; html: string; title?: string }
+  | { kind: 'terminal'; argv: string[]; cwd: string; title?: string; size?: OverlaySize }
+  | { kind: 'url'; url: string; title?: string; size?: OverlaySize }
+  | { kind: 'html'; html: string; title?: string; size?: OverlaySize }
   /**
    * A plugin's own page at its `cc-plugin://` URL (host-api.ts builds it after checking the file
    * is inside the plugin's folder). Loaded like a panel, with the plugin's CSP and the panel SDK.
    */
-  | { kind: 'html'; src: string; title?: string }
+  | { kind: 'html'; src: string; title?: string; size?: OverlaySize }
 
 export type OverlayResult =
   | { kind: 'exit'; code: number }
@@ -638,6 +646,11 @@ export class OverlayManager {
 
 /** The renderer's view of an overlay; an html page stays in main and is served at `src`. */
 function infoOf(id: string, spec: OverlaySpec): OverlayInfo {
+  const size = spec.size ?? 'default'
+  return { ...infoBody(id, spec), size }
+}
+
+function infoBody(id: string, spec: OverlaySpec): OverlayInfoBody {
   switch (spec.kind) {
     case 'terminal':
       return { id, kind: 'terminal', title: spec.title ?? clip(spec.argv.join(' ')) }
@@ -668,7 +681,14 @@ export function parseOverlaySpec(spec: unknown): OverlaySpec {
   if (title !== undefined && (typeof title !== 'string' || title.length > MAX_TITLE_LENGTH)) {
     throw new Error(`overlay: title must be a string of at most ${MAX_TITLE_LENGTH} characters`)
   }
-  const withTitle = <T extends object>(o: T): T => (title === undefined ? o : { ...o, title })
+  const size = s.size
+  if (size !== undefined && !OVERLAY_SIZES.includes(size as OverlaySize)) {
+    throw new Error(`overlay: size must be ${OVERLAY_SIZES.join(', ')}`)
+  }
+  const withTitle = <T extends object>(o: T): T => {
+    const withSize = size === undefined ? o : { ...o, size: size as OverlaySize }
+    return title === undefined ? withSize : { ...withSize, title }
+  }
   switch (s.kind) {
     case 'terminal':
       return withTitle({ kind: 'terminal', argv: argvOf(s.argv), cwd: cwdOf(s.cwd) })

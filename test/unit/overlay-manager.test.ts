@@ -403,7 +403,7 @@ describe('results per kind', () => {
     expect(m.infos(W1)).toEqual([])
     // A good one is on the stack at once; its result comes when the program exits.
     const r = track(m.start(W1, { ...terminal(['lazygit']), title: 'Git' }, 'test'))
-    expect(m.infos(W1)).toEqual([{ id: expect.any(String), kind: 'terminal', title: 'Git' }])
+    expect(m.infos(W1)).toEqual([{ id: expect.any(String), kind: 'terminal', title: 'Git', size: 'default' }])
     backend.last.exit(3)
     await flush()
     expect(r.results).toEqual([{ kind: 'exit', code: 3 }])
@@ -671,6 +671,19 @@ describe('spec validation', () => {
     for (const spec of bad) expect(() => parseOverlaySpec(spec), JSON.stringify(spec)?.slice(0, 80)).toThrow()
   })
 
+  it('accepts the named sizes on every kind and refuses anything else', () => {
+    for (const size of ['default', 'large', 'full']) {
+      expect(parseOverlaySpec({ kind: 'url', url: 'https://example.com/', size })).toMatchObject({ size })
+      expect(parseOverlaySpec({ kind: 'html', html: '<p>x</p>', size })).toMatchObject({ size })
+      expect(parseOverlaySpec({ kind: 'terminal', argv: ['ls'], cwd: dir, size })).toMatchObject({ size })
+    }
+    expect('size' in parseOverlaySpec({ kind: 'html', html: '<p>x</p>' })).toBe(false)
+    for (const size of ['huge', 'LARGE', '', 90, null, {}]) {
+      expect(() => parseOverlaySpec({ kind: 'html', html: '<p>x</p>', size })).toThrow(/size/)
+      expect(() => parseOverlaySpec({ kind: 'terminal', argv: ['ls'], cwd: dir, size })).toThrow(/size/)
+    }
+  })
+
   it('keeps only the known fields', () => {
     expect(
       parseOverlaySpec({ kind: 'terminal', argv: ['ls', '-la'], cwd: dir, title: 'T', extra: 1 })
@@ -703,7 +716,7 @@ describe('html page', () => {
     const m = manager()
     const result = m.open(W1, { kind: 'html', src: 'cc-plugin://a.one/pick.html', title: 'Pick' }, 'plugin a.one')
     const [page] = m.infos(W1)
-    expect(page).toEqual({ id: page!.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/pick.html' })
+    expect(page).toEqual({ id: page!.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/pick.html', size: 'default' })
     expect(m.pageHtml(`cc-overlay://${page!.id}/`)).toBeUndefined()
     expect(m.result(W1, page!.id, { picked: 'b' })).toBe(true)
     await expect(result).resolves.toEqual({ kind: 'value', value: { picked: 'b' } })

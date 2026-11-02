@@ -96,7 +96,10 @@ with full Node access.
   60 navigations a minute.
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
-  the result. At most 3 open and 10 per minute.
+  the result. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
+  a centered dialog at 75 % of the window, about 90 %, or the whole window below the top bar with a
+  small margin; the title bar and close button stay, a terminal program is resized to fit. Any other
+  value is refused.
 - `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close }`
   (`open(spec)` is `start(spec).result`), so an `html` page and the plugin talk while it is open.
   `post(message)` sends JSON to the page (`ccPanel.onMessage`), queued until the page has loaded;

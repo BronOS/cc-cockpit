@@ -45,7 +45,7 @@ describe('openDiff', () => {
       {
         windowId: 7,
         opener: 'sessions-panel',
-        spec: { kind: 'terminal', argv: [...G, 'diff', '--', '/work/p/src/a.ts'], cwd: '/work/p', title: 'a.ts' }
+        spec: { kind: 'terminal', argv: [...G, 'diff', '--', '/work/p/src/a.ts'], cwd: '/work/p', title: 'a.ts', size: 'large' }
       }
     ])
   })

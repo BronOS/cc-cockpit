@@ -742,7 +742,10 @@ export class HostApi {
   private async managerSpec(plugin: HostApiPlugin, spec: unknown): Promise<unknown> {
     if (typeof spec !== 'object' || spec === null) throw new Error('overlay: spec must be an object')
     const s = spec as Record<string, unknown>
-    const title = s.title === undefined ? {} : { title: s.title }
+    const title = {
+      ...(s.title === undefined ? {} : { title: s.title }),
+      ...(s.size === undefined ? {} : { size: s.size })
+    }
     switch (s.kind) {
       case 'terminal': {
         if (s.cwd !== undefined && typeof s.cwd !== 'string') throw new Error('overlay: cwd must be a string')

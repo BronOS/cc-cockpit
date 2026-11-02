@@ -520,7 +520,7 @@ describe('overlay.open', () => {
     await waitOpen(WIN_A, 1)
     const info = overlays.infos(WIN_A)[0]!
     // Loaded like a panel (the plugin's origin and CSP, the panel SDK), not copied into memory.
-    expect(info).toEqual({ id: info.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/page.html' })
+    expect(info).toEqual({ id: info.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/page.html', size: 'default' })
     expect(info.kind === 'html' && overlays.pageHtml(info.src)).toBeUndefined()
     // What the renderer relays when the page posts `{ result: { picked: 2 } }` (HtmlOverlay).
     expect(overlays.result(WIN_A, info.id, { picked: 2 })).toBe(true)

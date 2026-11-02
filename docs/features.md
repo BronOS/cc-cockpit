@@ -63,9 +63,10 @@ behind it are in [design.md](design.md).
   (`$SHELL -l -i -c <command>`, so your aliases, functions and PATH work) in the project folder.
   The tab keeps its own copy of the command (editing the entry later does not change it). After a
   relaunch such tabs come back "not started" and run only when you click Restart. Set an entry to
-  "Overlay" instead of "Tab" and it opens over the tabs in a full-window terminal overlay (marked
+  "Overlay" instead of "Tab" and it opens over the tabs in a full-size terminal overlay (marked
   "overlay" in the menu): handy for `lazygit` or `yazi`. Esc goes to the program; the overlay
-  closes when the program exits, or with Cmd+Shift+W. Overlays are not restored.
+  closes when the program exits, or with Cmd+Shift+W. Overlays are not restored. Overlays are centered dialogs;
+  a plugin's spec can ask for `size: 'large'` (about 90 %) or `'full'` (the whole window below the top bar).
 - Claude status from hooks: tab dots, a top strip across windows, a Sessions panel with notes,
   steps and changed files (click a file for `git diff` in a terminal overlay). A permission prompt,
   a question from Claude and a plan approval all show as needing you and sort first.

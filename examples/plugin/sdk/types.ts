@@ -146,16 +146,23 @@ export interface ExecResult {
 
 export type BadgeValue = number | 'dot' | null
 
+/**
+ * How big an overlay is drawn: `default` a centered dialog (75 % of the window), `large` about 90 %,
+ * `full` the whole window below the top bar with a small margin. Every size keeps the title bar and
+ * the close button. A terminal overlay's program is resized to fit.
+ */
+export type OverlaySize = 'default' | 'large' | 'full'
+
 export type OverlaySpec =
-  | { kind: 'terminal'; argv: string[]; cwd?: string; title?: string }
-  | { kind: 'url'; url: string; title?: string }
+  | { kind: 'terminal'; argv: string[]; cwd?: string; title?: string; size?: OverlaySize }
+  | { kind: 'url'; url: string; title?: string; size?: OverlaySize }
   /**
    * One of the plugin's own pages (plugin-relative path), loaded like a panel: the plugin's CSP,
    * the app theme and the panel SDK. The page answers with `ccPanel.post({ result: value })`,
    * which closes the overlay and resolves `open` with `{ kind: 'value', value }`. With
    * `overlay.start`, anything else it posts (no `result` key) goes to the handle's `onMessage`.
    */
-  | { kind: 'html'; file: string; title?: string }
+  | { kind: 'html'; file: string; title?: string; size?: OverlaySize }
 
 export type OverlayResult =
   | { kind: 'exit'; code: number }
