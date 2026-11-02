@@ -177,6 +177,11 @@ export interface AppSettings {
   marketplaces?: string[]
   /** Look for a newer release once a day (main/updates). Absent or anything but `false` (the file is user-writable) reads as on. */
   updateCheck?: boolean
+  /**
+   * Offer to install the `ccc` command at start-up when it is missing (main/hooks/ccc-offer.ts).
+   * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").
+   */
+  cccOffer?: boolean
   /** The newest version the user dismissed in the update notice; a newer release shows again. */
   updateDismissed?: string
   /** Plugin id to the git URL it was last installed from; outlives an uninstall (repo-change warning). */

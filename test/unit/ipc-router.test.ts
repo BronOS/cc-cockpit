@@ -1132,11 +1132,13 @@ describe('registerProjectSettingsHandlers', () => {
 describe('registerCccCommandHandlers', () => {
   it('is for project windows only and passes no payload on', async () => {
     const { ipc, router } = setup()
-    const view = { state: 'missing' as const, linkPath: '/h/.local/bin/ccc', target: '/d/bin/ccc', binDir: '/h/.local/bin', onPath: false }
+    const view = { state: 'missing' as const, linkPath: '/h/.local/bin/ccc', target: '/d/bin/ccc', binDir: '/h/.local/bin', onPath: false, offerAtStart: true }
     const calls: string[] = []
     registerCccCommandHandlers(router, {
       status: () => (calls.push('status'), view),
-      install: async () => (calls.push('install'), { ...view, state: 'installed' })
+      install: async () => (calls.push('install'), { ...view, state: 'installed' }),
+      setOffer: (v) => void calls.push(`offer ${v}`),
+      offer: () => null
     })
     await expect(ipc.invoke('settings.cccInstall', 13, [{}])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])

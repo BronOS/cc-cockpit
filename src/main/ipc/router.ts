@@ -565,11 +565,20 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
 export interface CccCommandHandlerDeps {
   status(): CccCommandView | Promise<CccCommandView>
   install(): CccCommandView | Promise<CccCommandView>
+  setOffer(value: boolean): void
+  /** The start-up question (CccOffer.claim): a view when this window should ask, else null. */
+  offer(): CccCommandView | null | Promise<CccCommandView | null>
 }
 
 export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHandlerDeps): void {
   router.handleProject('settings.cccStatus', () => deps.status())
   router.handleProject('settings.cccInstall', () => deps.install())
+  router.handleProject('settings.cccOfferSet', (_ctx, payload) => {
+    const value = (payload as { value?: unknown } | undefined)?.value
+    if (typeof value !== 'boolean') throw new Error('settings.cccOfferSet: value must be a boolean')
+    deps.setOffer(value)
+  })
+  router.handleProject('ccc.offer', () => deps.offer())
 }
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */

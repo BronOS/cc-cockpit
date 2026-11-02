@@ -157,7 +157,9 @@ confirmation that shows the repo and the commit. Things to know:
 
 Settings > Appearance and keys > Command line > "Install ccc command" symlinks
 `~/.local/bin/ccc` to the wrapper in the data dir (an existing different `ccc` is left alone;
-make sure `~/.local/bin` is on your PATH). Commands:
+make sure `~/.local/bin` is on your PATH). At start-up, when nothing is at that path, the first project window asks once per
+launch whether to install it (Yes / No, "Don't ask again"); the same Settings group has "Offer to install at start-up" to turn it
+back on. Not asked when it is installed, when something else is there, or in a test run. Commands:
 
 ```
 ccc open <path>                          open (or focus) a folder as a project

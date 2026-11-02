@@ -515,6 +515,8 @@ export interface CccCommandView {
   binDir: string
   /** Whether `binDir` is on the login shell's PATH. */
   onPath: boolean
+  /** AppSettings.cccOffer with the default applied: whether start-up offers the install. */
+  offerAtStart: boolean
 }
 
 /** The zone layout of the sender's project together with the panels it may place. */
@@ -753,6 +755,13 @@ export interface IpcInvokeMap {
   'settings.cccStatus': { req: void; res: CccCommandView }
   /** Link `~/.local/bin/ccc` to the app's wrapper; refused when something else is there. */
   'settings.cccInstall': { req: void; res: CccCommandView }
+  /** Turn the start-up offer to install `ccc` on or off (Settings and the offer's "Don't ask again"). */
+  'settings.cccOfferSet': { req: { value: boolean }; res: void }
+  /**
+   * The start-up question: the link's view when this window should ask whether to install `ccc`,
+   * else null. Main decides once per app launch, so only the first window to ask can get an answer.
+   */
+  'ccc.offer': { req: void; res: CccCommandView | null }
 
   // Overlays. Every id is looked up in the sender window's own stack only.
   /**
@@ -966,6 +975,8 @@ export const INVOKE_CHANNELS = [
   'settings.tabCommandsSet',
   'settings.cccStatus',
   'settings.cccInstall',
+  'settings.cccOfferSet',
+  'ccc.offer',
   'overlays.list',
   'overlays.close',
   'overlays.input',

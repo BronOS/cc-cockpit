@@ -33,6 +33,7 @@ import { CommandRegistry } from './commands/command-registry'
 import { loadLoginEnv, type Env } from './env/login-env'
 import { buildPtyEnv } from './env/pty-env'
 import { CccCommandInstaller } from './hooks/ccc-install'
+import { CccOffer } from './hooks/ccc-offer'
 import { resolveWrapperTargets, writeCccWrapper } from './hooks/ccc-wrapper'
 import { writeHooksFile } from './hooks/hooks-file'
 import {
@@ -1292,7 +1293,14 @@ function start(): void {
   const cccCommand = new CccCommandInstaller({
     home: homedir(),
     wrapperPath: paths.cccWrapper,
-    loginPath: () => loginEnv.PATH
+    loginPath: () => loginEnv.PATH,
+    offerAtStart: () => registry.app.data.cccOffer !== false
+  })
+  const cccOffer = new CccOffer({
+    testRun,
+    forcedByTest: process.env.CC_COCKPIT_CCC_OFFER === '1',
+    enabled: () => registry.app.data.cccOffer !== false,
+    state: () => cccCommand.state()
   })
   registerCccCommandHandlers(router, {
     status: async () => {
@@ -1302,6 +1310,18 @@ function start(): void {
     install: async () => {
       await loginEnvReady
       return cccCommand.install()
+    },
+    setOffer: (value) => {
+      registry.app.update((a) => {
+        // Stored only as false: an absent key is the default (on), so the file stays as it was.
+        if (value) delete a.cccOffer
+        else a.cccOffer = false
+      })
+    },
+    offer: async () => {
+      if (!cccOffer.claim()) return null
+      await loginEnvReady
+      return cccCommand.view()
     }
   })
   registerUpdateHandlers(router, {

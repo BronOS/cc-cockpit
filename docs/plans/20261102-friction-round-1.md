@@ -251,11 +251,11 @@ Added by the user during the run: when the app starts and `ccc` isn't available,
 - Create/Modify: a modal in the renderer, following the existing confirm dialogs (e.g. the close-tab confirm)
 - Modify: `test/e2e/ccc-install.spec.ts` and unit tests for the check
 
-- [ ] main decides "not available" with the same check the Settings row uses to show its state (link missing, broken, or pointing at another app path); check once per app launch, not per window, and show the question in the first project window only
-- [ ] modal: says what `ccc` is for (Claude in tabs, plugins, scripts talk to the app), buttons Yes (install, same code path as the Settings button, then show the result or the error, including when `~/.local/bin` is not on PATH) and No, plus a "Don't ask again" checkbox saved in app settings; Settings shows the flag so it can be turned back on
-- [ ] never shown in test runs unless a test asks for it (`CC_COCKPIT_TEST` hook), never shown when already installed and current
-- [ ] write tests: unit for the decision (installed / missing / stale / don't-ask flag); e2e: modal appears when missing, Yes installs (link exists), No closes, "Don't ask again" persists across a relaunch
-- [ ] run tests - must pass before next task
+- [x] main decides "not available" with the same check the Settings row uses to show its state (link missing, broken, or pointing at another app path); check once per app launch, not per window, and show the question in the first project window only
+- [x] modal: says what `ccc` is for (Claude in tabs, plugins, scripts talk to the app), buttons Yes (install, same code path as the Settings button, then show the result or the error, including when `~/.local/bin` is not on PATH) and No, plus a "Don't ask again" checkbox saved in app settings; Settings shows the flag so it can be turned back on
+- [x] never shown in test runs unless a test asks for it (`CC_COCKPIT_TEST` hook), never shown when already installed and current
+- [x] write tests: unit for the decision (installed / missing / stale / don't-ask flag); e2e: modal appears when missing, Yes installs (link exists), No closes, "Don't ask again" persists across a relaunch
+- [x] run tests - must pass before next task
 
 ### Task 12: ➕ Plugin hook for "open file" from the sessions panel [model: opus]
 

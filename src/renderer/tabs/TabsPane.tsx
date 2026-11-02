@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import type { ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
+import type { CccCommandView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { CommandPalette } from '../commands/CommandPalette'
@@ -26,6 +26,7 @@ import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
 import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
 import { CloseTabDialog } from './CloseTabDialog'
+import { CccOfferDialog } from './CccOfferDialog'
 import { TabBar } from './TabBar'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { TerminalView } from './TerminalView'
@@ -75,6 +76,22 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }, [state])
   // "Close <tab>?" (close-confirm.ts): the question shown, null when no dialog is up.
   const [confirm, setConfirm] = useState<CloseQuestion | null>(null)
+  // The start-up "Install the ccc command?" (main decides once per launch, ccc-offer.ts): the link's
+  // view while the dialog is up, null otherwise.
+  const [cccOffer, setCccOffer] = useState<CccCommandView | null>(null)
+  // Read by the key handler and focusActive like confirmFor: modal, no command runs meanwhile.
+  const offerShown = useRef(false)
+  useEffect(() => {
+    offerShown.current = cccOffer !== null
+  }, [cccOffer])
+  useEffect(() => {
+    let cancelled = false
+    window.cockpit.invoke('ccc.offer').then(
+      (view) => { if (!cancelled && view) setCccOffer(view) },
+      () => undefined
+    )
+    return () => { cancelled = true }
+  }, [])
   // The window key handler is registered once; it reads the palette's state through this ref.
   const paletteOpen = useRef(false)
   // Whether an overlay covers the window (OverlayStack reports it); read by the key handler.
@@ -260,7 +277,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    */
   const focusActive = useCallback((): void => {
     // The close dialog keeps the focus on its own buttons until it is answered.
-    if (paletteOpen.current || overlayOpen.current || confirmFor.current !== null) return
+    if (paletteOpen.current || overlayOpen.current || confirmFor.current !== null || offerShown.current) return
     if (settingsShown.current) {
       settingsRoot.current?.focus()
       return
@@ -323,6 +340,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (wasConfirming.current && confirm === null) requestAnimationFrame(focusActive)
     wasConfirming.current = confirm !== null
   }, [confirm, focusActive])
+  const wasOffering = useRef(false)
+  useEffect(() => {
+    if (wasOffering.current && cccOffer === null) requestAnimationFrame(focusActive)
+    wasOffering.current = cccOffer !== null
+  }, [cccOffer, focusActive])
   // The last overlay went and took the focused element with it (focus is on body, where Esc
   // reaches nothing): the keyboard goes back to the settings screen when it is under it (a cli
   // login runs over it), else to the tab the user was in. Queued from an effect, after the commit
@@ -336,7 +358,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // Each of these is drawn by this page above the zones, where a webview panel's native view would
   // paint over it: the views hide while any is up (shell-layers.ts). An overlay main also hides
   // them for on its own (it knows the stack first); the palette and the dialogs only this page sees.
-  useShellLayer(settingsOpen || covered || confirm !== null || paletteCommands !== null)
+  useShellLayer(settingsOpen || covered || confirm !== null || cccOffer !== null || paletteCommands !== null)
   // Cmd+Shift+W closes the top core overlay, and with only the settings screen open that is the
   // screen. An overlay opened over it claims the chord on top of this; the handler stack in
   // keybindings.ts gives it back here when that overlay goes.
@@ -370,7 +392,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     })
     const allowed = (id: string): boolean =>
       commandAllowed(id, {
-        confirming: confirmFor.current !== null,
+        confirming: confirmFor.current !== null || offerShown.current,
         paletteOpen: paletteOpen.current,
         overlayOpen: overlayOpen.current,
         settingsShown: settingsShown.current
@@ -383,7 +405,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if (!id) return
       // Esc belongs to the palette while it is open (its field closes it); taking it here for
       // "pop the top overlay" would leave the palette stuck open. Likewise the close dialog's.
-      if ((paletteOpen.current || confirmFor.current !== null) && id === 'overlay.pop') return
+      if ((paletteOpen.current || confirmFor.current !== null || offerShown.current) && id === 'overlay.pop') return
       e.preventDefault()
       e.stopPropagation()
       // Holding Cmd+T must not open a tab per repeat.
@@ -450,9 +472,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         {...(props.project ? { project: props.project } : {})}
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
-        entries={otherWindowsEntries(snapshot.strip, [...own.values()])} onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null} />
-      <UpdateNotice inert={settingsOpen || covered || confirm !== null} />
-      <Zones inert={settingsOpen || covered || confirm !== null}>
+        entries={otherWindowsEntries(snapshot.strip, [...own.values()])} onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+      <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+      <Zones inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
         <TabBar
           tabs={state.tabs}
           activeId={state.activeId}
@@ -499,6 +521,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onAnswer={(choice, dontAskAgain) => answerClose(confirm.tabId, choice, dontAskAgain)}
         />
       )}
+      {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}
       {settingsOpen && <SettingsOverlay rootRef={settingsRoot} onClose={closeSettings} inert={covered} />}
       <OverlayStack onChange={overlaysChanged} />
     </div>
