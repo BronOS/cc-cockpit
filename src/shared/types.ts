@@ -168,6 +168,10 @@ export interface AppSettings {
    * user-writable, so main drops anything that is not a usable URL (marketplaceUrls).
    */
   marketplaces?: string[]
+  /** Look for a newer release once a day (main/updates). Absent or anything but `false` (the file is user-writable) reads as on. */
+  updateCheck?: boolean
+  /** The newest version the user dismissed in the update notice; a newer release shows again. */
+  updateDismissed?: string
   /** Plugin id to the git URL it was last installed from; outlives an uninstall (repo-change warning). */
   pluginRepos?: Record<string, string>
   /** pluginId -> app-wide plugin settings (validated against the manifest schema, Task 26). */

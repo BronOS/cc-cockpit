@@ -161,16 +161,16 @@ Version and hash are validated before they are written into Ruby.
 - Modify: `src/shared/ipc.ts`
 - Create: `test/unit/update-check.test.ts`
 
-- [ ] implement the check with an injected fetcher and clock, following `fetch-index.ts`
-- [ ] strict tag validation, and version comparison with `compareVersions` from `src/shared/marketplace.ts`
-- [ ] build the release URL from a fixed base and the validated version only
-- [ ] `updateCheck` and `updateDismissed` in `AppSettings`, with defaults; the timer stops when the setting goes off and on quit
-- [ ] never reach the real network in a test run
-- [ ] write tests for newer, same, older, and a dismissed version followed by a newer one
-- [ ] write tests for failures: 404, network error, redirect, oversized body, invalid JSON, hostile `tag_name` values, and that
+- [x] implement the check with an injected fetcher and clock, following `fetch-index.ts`
+- [x] strict tag validation, and version comparison with `compareVersions` from `src/shared/marketplace.ts`
+- [x] build the release URL from a fixed base and the validated version only
+- [x] `updateCheck` and `updateDismissed` in `AppSettings`, with defaults; the timer stops when the setting goes off and on quit
+- [x] never reach the real network in a test run
+- [x] write tests for newer, same, older, and a dismissed version followed by a newer one
+- [x] write tests for failures: 404, network error, redirect, oversized body, invalid JSON, hostile `tag_name` values, and that
       `html_url` and `body` are never used
-- [ ] write tests that the setting off makes no request
-- [ ] run tests - must pass before next task
+- [x] write tests that the setting off makes no request
+- [x] run tests - must pass before next task
 
 ### Task 5: Update notice and setting in the UI [model: sonnet]
 

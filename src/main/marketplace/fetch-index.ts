@@ -63,7 +63,7 @@ async function readFileLimited(path: string, max: number): Promise<string> {
 }
 
 /** Read a response body as text, failing as soon as it passes `max` bytes (not after buffering it). */
-async function readLimited(res: Response, max: number): Promise<string> {
+export async function readLimited(res: Response, max: number): Promise<string> {
   const declared = Number(res.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > max) {
     // Nobody will read this body: cancelling frees the connection instead of leaving it open until the timeout.

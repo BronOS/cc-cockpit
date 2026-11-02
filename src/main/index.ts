@@ -86,6 +86,7 @@ import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPluginCliHandlers, registerPluginDevHandlers } from './socket/handlers'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { BUILD_VERSION } from '../shared/app-version'
+import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
 import { ThemeService } from './themes/theme-service'
 import { FirstTab } from './tabs/first-tab'
 import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
@@ -794,6 +795,20 @@ function start(): void {
   // overlay manager (a terminal overlay's window token, mapped to the project its window shows),
   // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
   // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
+  // Notice-only update check (updates/update-check.ts). A test run never reaches the real network:
+  // its fetcher always fails, so nothing is announced (the e2e hook for a fake result arrives with the UI).
+  const updateChecker = new UpdateChecker({
+    current: app.isPackaged ? app.getVersion() : BUILD_VERSION,
+    fetchRelease: testRun ? () => Promise.reject(new Error('no network in a test run')) : createReleaseFetcher(),
+    enabled: () => registry.app.data.updateCheck !== false,
+    dismissed: () => registry.app.data.updateDismissed,
+    setDismissed: (version) => {
+      registry.app.update((a) => {
+        a.updateDismissed = version
+      })
+    },
+    log: (message) => console.warn(message)
+  })
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
@@ -1516,6 +1531,7 @@ function start(): void {
     windows.beginQuit()
   })
   app.on('will-quit', () => {
+    updateChecker.stop()
     // Main's own helper processes (the login-env shell, an install's clone, the diff probe):
     // their timeouts are timers that die with main. Synchronous SIGKILLs, never throws, and first
     // so a throw further down cannot skip it (child-registry.ts).
@@ -1551,6 +1567,7 @@ function start(): void {
       // to. Milliseconds (the stale probe is capped at 500 ms); false only logs: the app runs
       // without a socket, and its tabs get no CC_COCKPIT_SOCK (see the TabManager `sock` above).
       await socket.start()
+      updateChecker.start()
       // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
       // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
       // build/ sits two levels above out/main. A missing file only leaves the default icon.
