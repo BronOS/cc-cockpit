@@ -421,6 +421,42 @@ iframe:focus-visible {
 .tab-bar[data-close-side='left'] .tab-label {
   padding: 0 9px 0 7px;
 }
+/* Dragging a tab (TabBar.tsx): the tab follows the pointer above its neighbours, which stay put,
+   and a bar in the 2px gap shows where it lands on release. No hover tint on the others while the
+   pointer passes over them, and no text selection. */
+.tab-list.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.tab-list.dragging .tab-label {
+  cursor: grabbing;
+}
+.tab-list.dragging .tab:hover:not(.active):not(.dragged) {
+  background: none;
+  color: var(--cc-fg-muted);
+}
+.tab.dragged {
+  z-index: 1;
+  opacity: 0.85;
+  background: var(--cc-surface-2);
+  box-shadow: 0 0 0 1px var(--cc-border-strong), 0 4px 10px var(--cc-shadow);
+}
+.tab[data-drop]::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--cc-accent);
+  pointer-events: none;
+}
+.tab[data-drop='before']::before {
+  left: -2px;
+}
+.tab[data-drop='after']::before {
+  right: -2px;
+}
 .tab-text {
   min-width: 0;
   overflow: hidden;

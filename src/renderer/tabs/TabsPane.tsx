@@ -191,15 +191,19 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The strip's "+": main shows the project picker, or focuses the one already open.
   const openProject = (): void => run(window.cockpit.invoke('projects.showPicker'))
 
-  const move = (tabId: string, delta: -1 | 1): void => {
-    const from = state.tabs.findIndex((t) => t.id === tabId)
-    if (from < 0) return
-    const toIndex = Math.max(0, Math.min(state.tabs.length - 1, from + delta))
+  // A drag on the strip, or the tab menu's Move left / right. The local order changes only once
+  // main accepted it, so the strip never shows an order main doesn't have.
+  const reorder = (tabId: string, toIndex: number): void =>
     run(
       window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).then(() => {
         dispatch({ type: 'moved', tabId, toIndex })
       })
     )
+
+  const move = (tabId: string, delta: -1 | 1): void => {
+    const from = state.tabs.findIndex((t) => t.id === tabId)
+    if (from < 0) return
+    reorder(tabId, Math.max(0, Math.min(state.tabs.length - 1, from + delta)))
   }
 
   // Every close the USER starts (×, the tab menu, Close Tab by key or palette, the exited banner)
@@ -459,6 +463,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           commands={menuCommands}
           onMenuOpen={loadMenuCommands}
           onMove={move}
+          onReorder={reorder}
           sessions={own}
           onCancelQueued={cancelQueued}
         />

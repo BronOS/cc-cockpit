@@ -132,3 +132,49 @@ test('the tab context menu moves a tab and main keeps the new order', async ({ c
   const tabs = await cockpit.hook<{ kind: string }[]>('tabs', cockpit.projectDir)
   expect(tabs.map((t) => t.kind)).toEqual(['claude', 'shell'])
 })
+
+test('dragging a tab past its neighbour moves it, a tiny drag is a click, Escape cancels', async ({ cockpit }) => {
+  const { page } = cockpit
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
+
+  const shell = page.getByRole('tab', { name: /^Shell/ })
+  const claude = page.getByRole('tab', { name: /^Claude/ })
+  const centre = async (tab: typeof shell): Promise<{ x: number; y: number }> => {
+    const box = await tab.boundingBox()
+    if (!box) throw new Error('tab not visible')
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  }
+
+  // Under the threshold: no reorder, the press is a click and selects the Shell tab.
+  const s = await centre(shell)
+  await page.mouse.move(s.x, s.y)
+  await page.mouse.down()
+  await page.mouse.move(s.x + 2, s.y)
+  await page.mouse.up()
+  await expect(shell).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tab').first()).toHaveText(/^Shell/)
+
+  // Escape during a drag puts the tab back.
+  let c = await centre(claude)
+  await page.mouse.move(c.x, c.y)
+  await page.mouse.down()
+  await page.mouse.move(s.x - 40, s.y, { steps: 8 })
+  await expect(page.locator('.tab[data-drop="before"]')).toHaveCount(1)
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(page.locator('.tab[data-drop]')).toHaveCount(0)
+  await expect(page.getByRole('tab').first()).toHaveText(/^Shell/)
+
+  // A real drag past the Shell tab's centre: Claude goes first, in the strip and in main.
+  c = await centre(claude)
+  await page.mouse.move(c.x, c.y)
+  await page.mouse.down()
+  await page.mouse.move(s.x - 40, s.y, { steps: 8 })
+  await page.mouse.up()
+  await expect(page.getByRole('tab').first()).toHaveText(/^Claude/)
+  await expect.poll(async () => (await cockpit.hook<{ kind: string }[]>('tabs', cockpit.projectDir)).map((t) => t.kind))
+    .toEqual(['claude', 'shell'])
+})

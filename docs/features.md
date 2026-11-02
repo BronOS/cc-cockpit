@@ -28,6 +28,10 @@ behind it are in [design.md](design.md).
   first, naming the tab and, for Claude, its status; Cancel is the default. "Don't ask again" in
   the question, or Settings > Appearance and keys > Tabs > "Ask before closing a tab that is still
   running" (on by default), turns it off. A tab whose process already ended closes at once.
+- Drag a tab left or right to move it; a bar shows where it lands, Escape puts it back, and the
+  new order is kept after a restart. The tab menu (right-click) has Move left / Move right too.
+  The strip doesn't scroll by itself while you drag, so with more tabs than fit, move a tab out of
+  view in steps.
 - Settings > Appearance and keys > Tabs > "Close button position" puts each tab's × before its
   label (Left) or after it (Right, the default), in every open window at once. An overlay's ×
   follows the same setting.

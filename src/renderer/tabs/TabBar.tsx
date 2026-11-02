@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SessionDetail, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import { splitChord } from '../../shared/keys'
@@ -9,6 +9,17 @@ import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
 import { tabLabel } from './tab-label'
+import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
+
+/** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
+interface TabDrag {
+  tabId: string
+  pointerId: number
+  from: number
+  startX: number
+  dx: number
+  toIndex: number
+}
 
 /** What the [+] menu lists after Claude and Shell: the user's entries, app-wide then project. */
 const COMMAND_GROUPS: Array<{ level: TabCommandLevel; name: string }> = [
@@ -98,8 +109,13 @@ function CoreEntry(props: { id: string; label: string; onClick: () => void }): R
 }
 
 /**
- * The tab strip: select, close, a [+] menu (Claude / shell, then the user's command entries) and
- * a context menu for reordering (move left / right; no drag, by design).
+ * The tab strip: select, close, a [+] menu (Claude / shell, then the user's command entries),
+ * drag a tab left or right to reorder, and a context menu that does the same (move left / right)
+ * for keyboard and assistive-tech users.
+ *
+ * The drag uses pointer events, not HTML5 drag and drop: a native drag session goes through the
+ * window system (on Wayland, the compositor), shows a ghost image we don't control and can start a
+ * drop into other apps, while a tab only ever moves within its own strip.
  */
 export function TabBar(props: {
   tabs: TabInfo[]
@@ -115,6 +131,8 @@ export function TabBar(props: {
   onMenuOpen: () => void
   /** `delta` is -1 for left, +1 for right. */
   onMove: (tabId: string, delta: -1 | 1) => void
+  /** A drag ended: put the tab at `toIndex` (its index after being taken out, as main's reorder). */
+  onReorder: (tabId: string, toIndex: number) => void
   /** Status of the window's Claude tabs by tab id (shell tabs have none). */
   sessions: ReadonlyMap<string, SessionDetail>
   onCancelQueued: (tabId: string, itemId: string) => void
@@ -148,9 +166,88 @@ export function TabBar(props: {
 
   const menuIndex = menu ? tabs.findIndex((t) => t.id === menu.tabId) : -1
 
+  // Dragging. `press` is a primary-button press on a tab label that has not moved far enough to be
+  // a drag yet (below DRAG_THRESHOLD it stays a click); `drag` is set once it has, and drives the
+  // rendering (the tab follows the pointer, a marker shows where it would land).
+  const listRef = useRef<HTMLDivElement>(null)
+  const press = useRef<{ tabId: string; pointerId: number; startX: number } | null>(null)
+  const [drag, setDrag] = useState<TabDrag | null>(null)
+  const dragRef = useRef<TabDrag | null>(null)
+  const setDragBoth = (d: TabDrag | null): void => {
+    dragRef.current = d
+    setDrag(d)
+  }
+
+  // The other tabs' ids and x centres, read from the DOM at each move: the strip scrolls
+  // sideways, and a tab can be added or close (a plugin, a clean exit) while the pointer is down.
+  const othersOf = (tabId: string): { ids: string[]; centres: number[] } => {
+    const ids: string[] = []
+    const centres: number[] = []
+    for (const el of listRef.current?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? []) {
+      const id = el.dataset.tabId
+      if (id === undefined || id === tabId) continue
+      const r = el.getBoundingClientRect()
+      ids.push(id)
+      centres.push(r.left + r.width / 2)
+    }
+    return { ids, centres }
+  }
+
+  // Escape while dragging puts the tab back; the menus' own Escape handler is not running then
+  // (a drag starts only with no menu open, see onPointerDown).
+  const dragging = drag !== null
+  useEffect(() => {
+    if (!dragging) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        press.current = null
+        setDragBoth(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dragging])
+
+  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>, tabId: string): void => {
+    if (e.button !== 0 || anyOpen) return
+    press.current = { tabId, pointerId: e.pointerId, startX: e.clientX }
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    const p = press.current
+    if (!p || p.pointerId !== e.pointerId) return
+    const dx = e.clientX - p.startX
+    let d = dragRef.current
+    if (!d) {
+      if (Math.abs(dx) < DRAG_THRESHOLD) return
+      const from = tabs.findIndex((t) => t.id === p.tabId)
+      if (from < 0) return
+      // Keep the pointer's events on this label even when it leaves the strip, so the release is
+      // seen wherever it happens.
+      e.currentTarget.setPointerCapture(e.pointerId)
+      d = { tabId: p.tabId, pointerId: p.pointerId, from, startX: p.startX, dx, toIndex: from }
+    }
+    const { centres } = othersOf(d.tabId)
+    setDragBoth({ ...d, dx, toIndex: dropIndex(centres, e.clientX) })
+  }
+
+  const endDrag = (e: React.PointerEvent<HTMLButtonElement>, drop: boolean): void => {
+    if (press.current?.pointerId !== e.pointerId) return
+    press.current = null
+    const d = dragRef.current
+    if (!d) return
+    setDragBoth(null)
+    if (drop && d.toIndex !== d.from) props.onReorder(d.tabId, d.toIndex)
+  }
+
+  // From the props, not the DOM: the strip renders `tabs` in this order.
+  const marker = drag
+    ? dropMarker(tabs.filter((t) => t.id !== drag.tabId).map((t) => t.id), drag.from, drag.toIndex)
+    : null
+
   return (
     <div className="tab-bar" data-close-side={tabCloseSide}>
-      <div role="tablist" className="tab-list">
+      <div ref={listRef} role="tablist" className={`tab-list${drag ? ' dragging' : ''}`}>
         {tabs.map((tab) => {
           const status = props.sessions.get(tab.id)
           // In the DOM where it shows (not CSS `order`), so Tab moves through a tab's buttons in
@@ -165,10 +262,15 @@ export function TabBar(props: {
               <CloseGlyph size={12} />
             </button>
           )
+          const dragged = drag?.tabId === tab.id
+          const markEdge = marker?.tabId === tab.id ? marker.edge : undefined
           return (
           <div
             key={tab.id}
-            className={`tab${tab.id === activeId ? ' active' : ''}${tab.exit ? ' exited' : ''}`}
+            data-tab-id={tab.id}
+            data-drop={markEdge}
+            className={`tab${tab.id === activeId ? ' active' : ''}${tab.exit ? ' exited' : ''}${dragged ? ' dragged' : ''}`}
+            style={dragged ? { transform: `translateX(${drag.dx}px)` } : undefined}
           >
             {tabCloseSide === 'left' && close}
             <button
@@ -178,6 +280,11 @@ export function TabBar(props: {
               className="tab-label"
               title={tab.kind === 'command' && tab.command !== undefined ? `${tab.command}\n${tab.cwd}` : tab.cwd}
               onClick={() => props.onSelect(tab.id)}
+              onPointerDown={(e) => onPointerDown(e, tab.id)}
+              onPointerMove={onPointerMove}
+              onPointerUp={(e) => endDrag(e, true)}
+              onPointerCancel={(e) => endDrag(e, false)}
+              onLostPointerCapture={(e) => endDrag(e, false)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setCreateOpen(false)
