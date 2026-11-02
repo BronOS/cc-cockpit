@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { panelPortTag } from '../../src/host/ctx/ui'
 import { RpcEndpoint, type RpcHandler } from '../../src/host/rpc'
@@ -1070,6 +1073,38 @@ describe('HostManager', () => {
       expect(params?.plugins[0]?.services).toEqual(services)
       // A plugin without the field gets none (not an empty object).
       expect(params?.plugins[1]).not.toHaveProperty('services')
+    })
+
+    // Bundled reviewer/editor plan Task 6: `ctx.projectDir` is the real path (the reviewer ran
+    // `pwd -P` for it). The record's path reached through a symlink still arrives resolved.
+    it('sends the real path of the project folder as projectDir, through a symlink', async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'cc-projdir-')))
+      try {
+        mkdirSync(join(root, 'real'))
+        symlinkSync(join(root, 'real'), join(root, 'link'))
+        let params: { plugins: { projectDir: string }[] } | undefined
+        factory.handlers = () => ({
+          ...okHandlers(),
+          activate: (p) => {
+            params = p as typeof params
+            return (p as { plugins: { id: string }[] }).plugins.map((x) => ({ id: x.id, state: 'active' }))
+          }
+        })
+        const linked = new HostManager({
+          factory,
+          plugins: () => [plugin('a.one')],
+          env: () => ({}),
+          projectPath: () => join(root, 'link'),
+          layouts,
+          pluginDataDir: () => '/d',
+          pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
+          log
+        })
+        await linked.open('p8', 8)
+        expect(params?.plugins[0]?.projectDir).toBe(join(root, 'real'))
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
     })
 
     it('servicePlugins lists the set a launch would run: host code, valid settings, the listed folder', async () => {

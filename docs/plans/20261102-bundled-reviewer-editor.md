@@ -269,16 +269,24 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - Modify: `src/sdk/types.ts` (+ `examples/plugin/sdk/types.ts`), `src/cli/guide/api.md`, `src/cli/guide/panels.md`
 - Modify: `src/shared/plugin-storage.ts` only if a limit is missing
 
-- [ ] `ctx.projectDir` (real path, from main at host start) and `ctx.services.available(name)` using the shared
+- [x] `ctx.projectDir` (real path, from main at host start) and `ctx.services.available(name)` using the shared
       `serviceStatus` rule (resolved on every call)
-- [ ] guide: `SessionInfo.files` (absolute paths, outside-project files included, which open only in the built-in
+      - `available` is `selectProvider` with the caller's `uses` major (the rule `serviceStatus` is built on); a name
+        not in the caller's `uses` is false (a call would be refused); a provider still activating or errored counts.
+        `projectDir` is `realPathOf` (projects/registry) in `HostManager.buildSpec`, at each launch and in-place reload
+- [x] guide: `SessionInfo.files` (absolute paths, outside-project files included, which open only in the built-in
       viewer); `storage`/`appStorage` limits stated from the code; the outside-files rule in the openFile text
-- [ ] module scripts in html overlays: try `<script type="module">` and `import('./x.js')` in a fixture overlay, record
+      - no key count limit in code and none added: the 16 MiB total bounds it (the guide says so)
+- [x] module scripts in html overlays: try `<script type="module">` and `import('./x.js')` in a fixture overlay, record
       the result here, and state it in the panels topic (fix only if a safe CSP change makes it work)
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] unit tests for both members (available: provider on/off/wrong major/pick unresolved/unknown name; projectDir is
+      - result: both work with no change (fixture `test/fixtures/plugins/overlay-module`, e2e in `overlays.spec.ts`):
+        `script-src cc-plugin://<id>` covers the module and its imports, and the scheme already sends
+        `access-control-allow-origin: *` for the opaque-origin frame; top-level `await` works too. Bare specifiers and
+        other hosts fail (no import maps: inline script is blocked). Stated in the panels topic.
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] unit tests for both members (available: provider on/off/wrong major/pick unresolved/unknown name; projectDir is
       the realpath through a symlinked project folder); drift tests
-- [ ] run `npm test`, typecheck, lint - must pass
+- [x] run `npm test`, typecheck, lint - must pass
 
 ### Task 7: Remove the reviewer's and editor's workarounds [model: sonnet]
 

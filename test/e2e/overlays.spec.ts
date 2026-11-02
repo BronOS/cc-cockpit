@@ -502,6 +502,27 @@ test.describe('html overlay messages (ctx.overlay.start)', () => {
   })
 })
 
+// Bundled reviewer/editor plan Task 6 (reviewer FRICTION.md): module scripts in an html overlay.
+// The page's `<script type="module">` imports a sibling statically and another with import(); both
+// are its own cc-plugin: files, which the CSP's script-src allows and the scheme serves with CORS
+// (the sandboxed frame's origin is opaque, so a module fetch is cross-origin). The guide's panels
+// topic states this result.
+test('an html overlay page runs module scripts: static import and dynamic import() of its own files', async ({ cockpit }) => {
+  const PLUGIN = 'test.overlaymodule'
+  await cockpit.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', 'overlay-module'))
+  await cockpit.hook('enablePlugin', cockpit.projectDir, PLUGIN)
+  await expect
+    .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
+    .toMatchObject({ running: true, plugins: [{ id: PLUGIN, state: 'active' }] })
+
+  await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/open`)
+  const value = { fromDep: 'static import', fromLazy: 'dynamic import' }
+  await expect
+    .poll(() => cockpit.hook<string[]>('notifications'), { timeout: 15_000 })
+    .toContain(`module ${JSON.stringify({ kind: 'value', value })}`)
+  await expect.poll(() => stack(cockpit)).toEqual([])
+})
+
 test("large and full overlays are bigger than the default, and a terminal overlay refits", async ({
   cockpit,
 }) => {

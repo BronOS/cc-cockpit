@@ -7,6 +7,8 @@ import { run } from '../../src/cli/client'
 import { GUIDE_TOPICS, guideText } from '../../src/cli/guide'
 import { MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_DESCRIPTION, MAX_SKILL_DIRS, MAX_SKILL_ENTRIES, MAX_SKILL_FILES } from '../../src/main/plugins/skill-files'
 import { MAX_SKILLS } from '../../src/shared/manifest'
+import { MAX_APP_VALUE_LENGTH, MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/shared/plugin-storage'
+import { MAX_FILES } from '../../src/main/sessions/status-reducer'
 
 function capture(): { out: { stdout: (t: string) => void; stderr: (t: string) => void }; stdout: string[]; stderr: string[] } {
   const stdout: string[] = []
@@ -139,6 +141,27 @@ describe('guide drift guards', () => {
       expect(names.length, iface).toBeGreaterThan(0)
       for (const name of names) expect(api, `${iface}.${name}`).toMatch(new RegExp(`\\b${name}\\b`))
     }
+  })
+
+  // Bundled reviewer/editor plan Task 6 (reviewer FRICTION.md): the services members and the
+  // limits a plugin author asked about, stated from the code so a changed constant fails here.
+  it('names every ServicesApi member in the api topic', () => {
+    const src = readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8')
+    const body = /export interface ServicesApi \{([\s\S]*?)\n\}/.exec(src)?.[1] ?? ''
+    const names = [...body.matchAll(/^ {2}(\w+)\(/gm)].map((m) => m[1] as string)
+    expect(names).toContain('available')
+    for (const name of names) expect(topic('api'), name).toContain(`ctx.services.${name}(`)
+  })
+
+  it('states the storage limits of plugin-storage.ts and the session files cap in the api topic', () => {
+    const api = topic('api').replace(/\s+/g, ' ')
+    const MiB = 1024 * 1024
+    expect(api).toContain(`at most ${MAX_KEY_LENGTH} characters`)
+    expect(api).toContain(`a value at most ${MAX_VALUE_LENGTH / MiB} MiB as JSON`)
+    expect(api).toContain(`at most ${MAX_TOTAL_LENGTH / MiB} MiB in total`)
+    expect(MAX_VALUE_LENGTH - MAX_APP_VALUE_LENGTH).toBe(8 * 1024)
+    expect(api).toContain('Values at most 1 MiB less 8 KiB as JSON')
+    expect(api).toContain(`capped at ${MAX_FILES}`)
   })
 
   it('states the skill limits of skill-files.ts and manifest.ts in the plugins topic and docs/design.md', () => {

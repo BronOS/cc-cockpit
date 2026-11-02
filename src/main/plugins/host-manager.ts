@@ -54,6 +54,7 @@ import type { PluginCommandDef } from '../commands/command-registry'
 import type { Env } from '../env/login-env'
 import type { LayoutService, PluginPanelDef } from '../layout/layout-service'
 import { STORAGE_FILE_NAME } from '../paths'
+import { realPathOf } from '../projects/registry'
 import { callCli } from './cli-call'
 import { HostApi, type HostApiDeps } from './host-api'
 
@@ -1016,7 +1017,10 @@ export class HostManager {
       id: p.id,
       dir: p.dir,
       main: p.main as string,
-      projectDir,
+      // `ctx.projectDir` is the real path. The record's path was canonical when the project was
+      // opened, but a symlink on the way can have been repointed since; resolved here, at each
+      // start (a launch or an in-place reload), so a plugin never needs `pwd -P` (reviewer friction).
+      projectDir: realPathOf(projectDir),
       dataDir,
       appDataDir: this.deps.pluginAppDataDir(p.id),
       storageFile: join(dataDir, STORAGE_FILE_NAME),
