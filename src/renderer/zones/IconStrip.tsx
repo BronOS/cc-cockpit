@@ -17,6 +17,31 @@ export function panelLabel(info: PanelInfo): string {
 }
 
 /**
+ * A plugin's icon drawn as a CSS mask over `currentColor`, so it takes the strip's colour and the
+ * hover / open states like the core icons (an <img> would keep the file's own colours, black for
+ * a stroke="currentColor" SVG). A mask reports no load errors, so a detached Image probe loads the
+ * same url and tells PanelGlyph to fall back to the letter.
+ */
+function MaskIcon({ src, onFail }: { src: string; onFail: (src: string) => void }): React.JSX.Element {
+  useEffect(() => {
+    const probe = new Image()
+    probe.onerror = () => onFail(src)
+    probe.src = src
+    return () => {
+      probe.onerror = null
+    }
+  }, [src, onFail])
+  const url = `url(${JSON.stringify(src)})`
+  return (
+    <span
+      className="panel-icon-img"
+      aria-hidden="true"
+      style={{ maskImage: url, WebkitMaskImage: url }}
+    />
+  )
+}
+
+/**
  * A panel's glyph: the plugin's icon image when it has one, else its glyph or the title's first
  * letter. An image that fails to load (a broken file, a plugin whose folder is no longer served)
  * falls back to the letter rather than leaving an empty button.
@@ -30,17 +55,7 @@ function PanelGlyph({ info }: { info: PanelInfo }): React.JSX.Element {
     return <SessionsGlyph size={17} />
   }
   if (info.iconSrc && failed !== info.iconSrc) {
-    const src = info.iconSrc
-    return (
-      <img
-        className="panel-icon-img"
-        src={src}
-        alt=""
-        aria-hidden="true"
-        draggable={false}
-        onError={() => setFailed(src)}
-      />
-    )
+    return <MaskIcon src={info.iconSrc} onFail={setFailed} />
   }
   // A letter is drawn in a rounded square, so a panel without an icon still reads as an icon.
   return (

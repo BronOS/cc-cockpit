@@ -5,6 +5,12 @@ optional `icon` and `defaultZone` (`left`, `right` or `bottom`). The user can mo
 zones. With `"kind": "webview"` the panel is a web view instead and has no `entry`: see
 `ccc guide webview`.
 
+The `icon` (a path in the plugin folder) is an SVG or PNG used as a single-colour mask: only its
+shape and alpha count, colours in the file are ignored, and the strip paints it in its own text
+colour (so it follows the theme, hover and open states). Recommended: an SVG with
+`viewBox="0 0 24 24"`, drawn at the strip's icon size (18px). Without an icon, or when it fails to
+load, the strip shows the title's first letter.
+
 ## The page
 
 - Served from the plugin's own folder as `cc-plugin://<pluginId>/<entry>` in a sandboxed frame.

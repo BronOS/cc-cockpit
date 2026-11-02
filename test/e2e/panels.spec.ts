@@ -162,3 +162,35 @@ test("a panel page cannot open windows, reach another plugin's files or navigate
   await page.waitForTimeout(1000)
   expect(page.frames().map((f) => f.url()).filter((u) => /^https?:/.test(u))).toEqual([])
 })
+
+test('plugin panel icons are masks in the strip colour; an undecodable icon falls back to the letter', async ({
+  cockpit
+}) => {
+  const { page } = cockpit
+  await cockpit.hook('linkPlugin', FIXTURE)
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.panels')
+  const strip = page.locator('.zone-left')
+  const pic = strip.getByRole('button', { name: /^Pic/ })
+  const mask = pic.locator('.panel-icon-img')
+  await expect(mask).toHaveCSS('mask-image', 'url("cc-plugin://test.panels/icons/pic.svg")')
+  // Same colour as the button text (the strip's), not the file's black, and it follows hover.
+  const colours = (): Promise<[string, string]> =>
+    pic.evaluate((b) => {
+      const el = b.querySelector('.panel-icon-img')
+      return [getComputedStyle(el as Element).backgroundColor, getComputedStyle(b).color] as [string, string]
+    })
+  const [bg, fg] = await colours()
+  expect(bg).toBe(fg)
+  await pic.hover()
+  await expect.poll(async () => (await colours())[0]).not.toBe(bg)
+  const [hbg, hfg] = await colours()
+  expect(hbg).toBe(hfg)
+  await page.mouse.move(0, 0)
+  await expect(pic).toHaveAttribute('aria-label', 'Pic')
+  await expect(mask).toHaveAttribute('aria-hidden', 'true')
+
+  // The broken icon: the probe fails, so the letter shows and no mask is left.
+  const broken = strip.getByRole('button', { name: /^Broken/ })
+  await expect(broken.locator('.panel-icon-letter')).toHaveText('B')
+  await expect(broken.locator('.panel-icon-img')).toHaveCount(0)
+})

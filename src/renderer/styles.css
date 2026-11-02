@@ -1026,17 +1026,20 @@ iframe:focus-visible {
   letter-spacing: 1px;
 }
 
-/* A plugin's own image cannot take currentColor: it steps back at rest instead. */
+/* A plugin's icon is a single-colour mask over currentColor (IconStrip.tsx), so it follows the
+   strip's colour, hover and open states like the core icons. */
 .panel-icon-img {
   display: block;
   width: 18px;
   height: 18px;
   pointer-events: none;
-  opacity: 0.75;
-}
-.panel-icon:hover .panel-icon-img,
-.panel-icon.open .panel-icon-img {
-  opacity: 1;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
 }
 
 .panel-badge {

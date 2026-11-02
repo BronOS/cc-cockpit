@@ -150,10 +150,10 @@ External review: auto
 - Modify: `src/cli/guide/panels.md` (icon format: SVG, size, drawn as a single-colour mask)
 - Modify: an e2e that shows a plugin icon (e.g. `test/e2e/panels.spec.ts`)
 
-- [ ] render plugin icons as a mask in `currentColor` with the same hover/open states as core icons. CSP and CORS already allow it (`img-src` covers `cc-plugin:`, the protocol sends ACAO and is `corsEnabled`)
-- [ ] keep the fallback letter for plugins without an icon and for an icon that fails to load: a CSS mask can't report errors, so keep a hidden `<img>`/`Image()` probe (or equivalent) driving the existing `failed` state
-- [ ] write an e2e asserting the icon element uses the mask and takes the strip's colour (computed style), and that a missing/broken icon still shows the fallback letter
-- [ ] run tests - must pass before next task
+- [x] render plugin icons as a mask in `currentColor` with the same hover/open states as core icons. CSP and CORS already allow it (`img-src` covers `cc-plugin:`, the protocol sends ACAO and is `corsEnabled`)
+- [x] keep the fallback letter for plugins without an icon and for an icon that fails to load: a CSS mask can't report errors, so keep a hidden `<img>`/`Image()` probe (or equivalent) driving the existing `failed` state
+- [x] write an e2e asserting the icon element uses the mask and takes the strip's colour (computed style), and that a missing/broken icon still shows the fallback letter
+- [x] run tests - must pass before next task
 
 ### Task 4: `ctx.services.caller()` for providers [model: opus]
 
