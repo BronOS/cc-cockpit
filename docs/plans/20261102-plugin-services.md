@@ -171,11 +171,13 @@ External review: auto
 - Modify: `src/host/services.ts`
 - Modify: `test/unit/host-services.test.ts`
 
-- [ ] `emit(pluginId, service, event, data)`: only the selected provider of a service it declares; others dropped and logged once per plugin and service; event name pattern checked
-- [ ] `on(consumerId, service, event, fn)` from the handle, returning a disposer; delivery async, data cloned per listener, a listener throw caught and logged to the consumer's log
-- [ ] `release(pluginId)`: drop the plugin's implementations, its subscriptions (consumer side) and its "logged once" flags; keep other plugins' subscriptions to its services
-- [ ] write tests: delivery to several consumers, disposer stops delivery, non-selected provider's emit dropped, listener throw contained, subscriptions survive provider release and re-provide, released consumer receives nothing
-- [ ] run tests - must pass before next task
+- [x] `emit(pluginId, service, event, data)`: only the selected provider of a service it declares; others dropped and logged once per plugin and service; event name pattern checked
+- [x] `on(consumerId, service, event, fn)` from the handle, returning a disposer; delivery async, data cloned per listener, a listener throw caught and logged to the consumer's log
+- [x] `release(pluginId)`: drop the plugin's implementations, its subscriptions (consumer side) and its "logged once" flags; keep other plugins' subscriptions to its services
+- [x] write tests: delivery to several consumers, disposer stops delivery, non-selected provider's emit dropped, listener throw contained, subscriptions survive provider release and re-provide, released consumer receives nothing
+- [x] ➕ decisions: a consumer whose `uses` major differs from the provider's gets no events (stays subscribed; consistent with calls failing); an emit with no subscribers is a silent no-op; the event name and plain-data checks run before the drop and the subscriber lookup, so they throw even then
+- [x] ➕ a handle obtained before its consumer's `release` can no longer subscribe (a leftover timer of the old copy would otherwise listen beside the new copy); Task 4's ctx must call `use` again in the new activation, which it does naturally
+- [x] run tests - must pass before next task
 
 ### Task 4: Wire services into the host loader and ctx [model: opus]
 

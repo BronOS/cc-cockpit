@@ -42,10 +42,15 @@ async function outcome(p: Promise<unknown>): Promise<{ value: unknown } | { erro
 
 const call = (h: ServiceHandle, method: string, ...args: unknown[]): Promise<unknown> => h[method]!(...args)
 
-function setup(): { reg: ServiceRegistry; acts: FakeActivations } {
+function setup(): { reg: ServiceRegistry; acts: FakeActivations; logs: [string, string][] } {
   const acts = new FakeActivations()
-  const reg = new ServiceRegistry({ activationOf: acts.activationOf, isActivating: acts.isActivating })
-  return { reg, acts }
+  const logs: [string, string][] = []
+  const reg = new ServiceRegistry({
+    activationOf: acts.activationOf,
+    isActivating: acts.isActivating,
+    log: (id, text) => logs.push([id, text])
+  })
+  return { reg, acts, logs }
 }
 
 const provider = (id: string, provides: Record<string, number>, uses?: Record<string, number>) => ({ id, services: { provides, uses } })
@@ -156,9 +161,9 @@ describe('ServiceRegistry provide and use', () => {
     expect(() => {
       ;(h as unknown as Record<string, unknown>).x = 1
     }).toThrow(TypeError)
-    // `on` is reserved for events, which come in a later task.
+    // `on` is the reserved events member, not a method stub.
     expect(typeof h.on).toBe('function')
-    expect(() => h.on('changed', () => {})).toThrow('events are not implemented yet')
+    expect(typeof h.on('changed', () => {})).toBe('function')
   })
 
   it('a handle obtained before the provider exists works once it provides', async () => {
@@ -597,5 +602,271 @@ describe('ServiceRegistry cycles during activate', () => {
     await expect(xCall).resolves.toBe('y')
     acts.finish('x')
     await expect(nCall).resolves.toBe('x')
+  })
+})
+
+describe('ServiceRegistry events', () => {
+  it('delivers to several consumers, asynchronously and in subscription order', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c1', { s: 1 }))
+    reg.setSpec(consumer('c2', { s: 1 }))
+    const got: string[] = []
+    reg.use('c1', 's').on('changed', (d) => got.push(`c1:${String(d)}`))
+    reg.use('c2', 's').on('changed', (d) => got.push(`c2:${String(d)}`))
+    reg.use('c2', 's').on('other', () => got.push('wrong event'))
+    reg.emit('p', 's', 'changed', 'x')
+    // Never inside emit: a listener runs on a later microtask.
+    expect(got).toEqual([])
+    await flush()
+    expect(got).toEqual(['c1:x', 'c2:x'])
+  })
+
+  it('the disposer stops delivery, also for an emit already queued, and a second call is harmless', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const got: unknown[] = []
+    const off = reg.use('c', 's').on('e', (d) => got.push(d))
+    const kept = reg.use('c', 's').on('e', (d) => got.push(`kept ${String(d)}`))
+    reg.emit('p', 's', 'e', 1)
+    off()
+    await flush()
+    expect(got).toEqual(['kept 1'])
+    off()
+    reg.emit('p', 's', 'e', 2)
+    await flush()
+    expect(got).toEqual(['kept 1', 'kept 2'])
+    kept()
+    kept()
+    reg.emit('p', 's', 'e', 3)
+    await flush()
+    expect(got).toEqual(['kept 1', 'kept 2'])
+  })
+
+  it('the same listener subscribed twice is two subscriptions, each with its own disposer', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    let n = 0
+    const fn = (): void => {
+      n++
+    }
+    const h = reg.use('c', 's')
+    const off1 = h.on('e', fn)
+    h.on('e', fn)
+    reg.emit('p', 's', 'e')
+    await flush()
+    expect(n).toBe(2)
+    off1()
+    reg.emit('p', 's', 'e')
+    await flush()
+    expect(n).toBe(3)
+  })
+
+  it("a non-selected provider's emits are dropped and logged once per plugin and service", async () => {
+    const { reg, logs } = setup()
+    reg.setSpec(provider('a', { s: 1, t: 1 }))
+    reg.setSpec(provider('b', { s: 1, t: 1 }))
+    reg.setSpec(consumer('c', { s: 1, t: 1 }))
+    const got: string[] = []
+    reg.use('c', 's').on('e', (d) => got.push(String(d)))
+    // Two providers, no pick: nobody is selected.
+    reg.emit('a', 's', 'e', 'a1')
+    reg.emit('a', 's', 'e', 'a2')
+    reg.emit('a', 't', 'e', 'a3')
+    await flush()
+    expect(got).toEqual([])
+    expect(logs).toEqual([
+      ['a', 'service "s": events from a are dropped: plugins a and b both provide service "s"; pick one in Settings > Plugins'],
+      ['a', 'service "t": events from a are dropped: plugins a and b both provide service "t"; pick one in Settings > Plugins']
+    ])
+    reg.setChoices({ s: 'b' })
+    reg.emit('a', 's', 'e', 'a4')
+    reg.emit('b', 's', 'e', 'b1')
+    reg.emit('b', 's', 'e', 'b2')
+    await flush()
+    expect(got).toEqual(['b1', 'b2'])
+    // Already logged for a + s; b, the pick, logged nothing.
+    expect(logs).toHaveLength(2)
+    // A release resets the flags: the next dropped emit is logged again, with the current reason.
+    reg.release('a')
+    reg.emit('a', 's', 'e', 'a5')
+    await flush()
+    expect(got).toEqual(['b1', 'b2'])
+    expect(logs[2]).toEqual(['a', 'service "s": events from a are dropped: b is the selected provider'])
+  })
+
+  it('emit of an undeclared service throws; with no subscribers it is a silent no-op', async () => {
+    const { reg, logs } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    expect(() => reg.emit('p', 'other', 'e')).toThrow('plugin p does not declare service "other" in services.provides')
+    // A consumer cannot emit on a service it uses.
+    expect(() => reg.emit('c', 's', 'e')).toThrow('plugin c does not declare service "s" in services.provides')
+    expect(() => reg.emit('p', 's', 'nobody', { x: 1 })).not.toThrow()
+    await flush()
+    expect(logs).toEqual([])
+  })
+
+  it('a listener throw (or an async rejection) is contained and logged to the consumer', async () => {
+    const { reg, logs } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c1', { s: 1 }))
+    reg.setSpec(consumer('c2', { s: 1 }))
+    const got: unknown[] = []
+    reg.use('c1', 's').on('e', () => {
+      throw new Error('listener broke')
+    })
+    reg.use('c1', 's').on('e', async () => {
+      await flush()
+      throw new Error('later broke')
+    })
+    reg.use('c2', 's').on('e', (d) => got.push(d))
+    expect(() => reg.emit('p', 's', 'e', 7)).not.toThrow()
+    await flush()
+    await flush()
+    expect(got).toEqual([7])
+    expect(logs).toEqual([
+      ['c1', 'service "s": listener for "e" threw: listener broke'],
+      ['c1', 'service "s": listener for "e" threw: later broke']
+    ])
+  })
+
+  it('subscriptions survive a provider release and re-provide, and a swap to another provider', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const got: unknown[] = []
+    reg.use('c', 's').on('e', (d) => got.push(d))
+    reg.provide('p', 's', { m: () => 1 })
+    reg.emit('p', 's', 'e', 'before')
+    await flush()
+    // The provider reloads: released, then provides again from its new activate.
+    reg.release('p')
+    reg.provide('p', 's', { m: () => 2 })
+    reg.emit('p', 's', 'e', 'after reload')
+    await flush()
+    // Another provider appears and is picked: its events reach the same subscription.
+    reg.setSpec(provider('q', { s: 1 }))
+    reg.setChoices({ s: 'q' })
+    reg.emit('q', 's', 'e', 'from q')
+    reg.emit('p', 's', 'e', 'from p, not picked')
+    await flush()
+    expect(got).toEqual(['before', 'after reload', 'from q'])
+  })
+
+  it('a released consumer receives nothing, even an emit already queued; others keep theirs', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.setSpec(consumer('d', { s: 1 }))
+    const got: string[] = []
+    const old = reg.use('c', 's')
+    const off = old.on('e', (d) => got.push(`c:${String(d)}`))
+    reg.use('d', 's').on('e', (d) => got.push(`d:${String(d)}`))
+    reg.emit('p', 's', 'e', 1)
+    reg.release('c')
+    await flush()
+    expect(got).toEqual(['d:1'])
+    reg.emit('p', 's', 'e', 2)
+    await flush()
+    expect(got).toEqual(['d:1', 'd:2'])
+    // The old copy's disposer is harmless; its handle may not subscribe again (a leftover timer
+    // would otherwise listen beside the new copy).
+    expect(() => off()).not.toThrow()
+    expect(() => old.on('e', () => {})).toThrow('this handle belongs to a released copy of plugin c')
+    // The new copy subscribes through a new handle.
+    reg.use('c', 's').on('e', (d) => got.push(`new c:${String(d)}`))
+    reg.emit('p', 's', 'e', 3)
+    await flush()
+    expect(got).toEqual(['d:1', 'd:2', 'd:3', 'new c:3'])
+  })
+
+  it('data is copied at emit and once per listener: no listener sees another one or the emitter mutate it', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c1', { s: 1 }))
+    reg.setSpec(consumer('c2', { s: 1 }))
+    const seen: { list: number[] }[] = []
+    reg.use('c1', 's').on('e', (d) => {
+      const data = d as { list: number[] }
+      data.list.push(99)
+      seen.push(data)
+    })
+    reg.use('c2', 's').on('e', (d) => seen.push(d as { list: number[] }))
+    const sent = { list: [1] }
+    reg.emit('p', 's', 'e', sent)
+    // A change after emit returns is not seen.
+    sent.list.push(2)
+    await flush()
+    expect(seen[0]!.list).toEqual([1, 99])
+    expect(seen[1]!.list).toEqual([1])
+    expect(seen[0]).not.toBe(seen[1])
+    expect(seen[0]).not.toBe(sent)
+    expect(sent.list).toEqual([1, 2])
+  })
+
+  it('a function or symbol in the data is the plain-data error, thrown by emit even with no listener', async () => {
+    const { reg, logs } = setup()
+    reg.setSpec(provider('a', { s: 1 }))
+    reg.setSpec(provider('b', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.setChoices({ s: 'a' })
+    let calls = 0
+    reg.use('c', 's').on('e', () => calls++)
+    expect(() => reg.emit('a', 's', 'e', { cb: () => 1 })).toThrow(
+      /^service "s" event "e": the data must be plain data \(no functions or symbols\): /
+    )
+    expect(() => reg.emit('a', 's', 'e', Symbol('x'))).toThrow('the data must be plain data')
+    expect(() => reg.emit('a', 's', 'quiet', { cb: () => 1 })).toThrow('the data must be plain data')
+    // Checked before the drop: the non-selected provider hears about the bug too.
+    expect(() => reg.emit('b', 's', 'e', { cb: () => 1 })).toThrow('the data must be plain data')
+    await flush()
+    expect(calls).toBe(0)
+    expect(logs).toEqual([])
+  })
+
+  it('invalid event names are refused by emit and on; valid ones use the documented characters', () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const h = reg.use('c', 's')
+    for (const bad of ['', '1abc', '_x', 'has space', 'a/b', 'x'.repeat(65), 'é']) {
+      expect(() => reg.emit('p', 's', bad)).toThrow(`service "s": event name "${bad}" is invalid`)
+      expect(() => h.on(bad, () => {})).toThrow(`service "s": event name "${bad}" is invalid`)
+    }
+    expect(() => reg.emit('p', 's', 42 as unknown as string)).toThrow('event name of type number is invalid')
+    for (const good of ['a', 'rulesChanged', 'mail.new', 'item:updated', 'a_b-c', 'x'.repeat(64)]) {
+      expect(() => reg.emit('p', 's', good)).not.toThrow()
+      expect(() => h.on(good, () => {})).not.toThrow()
+    }
+  })
+
+  it('on refuses a non-function listener and a consumer whose reload dropped the use', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { s: 1 }))
+    const h = reg.use('c', 's')
+    expect(() => h.on('e', 'nope' as unknown as () => void)).toThrow('service "s": the listener for "e" must be a function')
+    reg.setSpec(consumer('c', {}))
+    expect(() => h.on('e', () => {})).toThrow('plugin c does not declare service "s" in services.uses')
+  })
+
+  it('a consumer with another major gets no events until the versions agree', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('old', { s: 1 }))
+    reg.setSpec(consumer('new', { s: 2 }))
+    const got: string[] = []
+    reg.use('old', 's').on('e', (d) => got.push(`old:${String(d)}`))
+    reg.use('new', 's').on('e', (d) => got.push(`new:${String(d)}`))
+    reg.emit('p', 's', 'e', 1)
+    await flush()
+    expect(got).toEqual(['old:1'])
+    // The provider reloads at version 2: the subscriptions stay, the deliveries follow the versions.
+    reg.setSpec(provider('p', { s: 2 }))
+    reg.emit('p', 's', 'e', 2)
+    await flush()
+    expect(got).toEqual(['old:1', 'new:2'])
   })
 })

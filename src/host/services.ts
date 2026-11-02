@@ -11,9 +11,14 @@
 // an errored provider or a re-`provide` replaces or removes the implementation, and a handle the
 // consumer got once in `activate` must keep working across all of them.
 //
-// Not yet here (later tasks of the plan): service events (`on`/`emit`, Task 3) and the wiring into
-// the loader and ctx (Task 4), which calls `setSpec`/`removeSpec`/`release` and backs the injected
-// `activationOf`/`isActivating` with the loader's own activation promises.
+// Events: the selected provider `emit`s, consumers subscribe with `handle.on`. Subscriptions are
+// keyed by consumer, service and event, never by a provider instance, so they survive a provider
+// release and re-provide (dev reload, restart of its activate) and a swap to another provider; the
+// provider is resolved on every emit, as it is on every call.
+//
+// Not yet here (Task 4 of the plan): the wiring into the loader and ctx, which calls
+// `setSpec`/`removeSpec`/`release` and backs the injected `activationOf`/`isActivating` with the
+// loader's own activation promises.
 import { errorText } from '../shared/error-text'
 import { selectProvider, serviceProblemMessage, type ServiceChoices, type ServicePlugin } from '../shared/services'
 
@@ -34,7 +39,7 @@ export interface ServiceRegistryDeps {
    * whether it settled without awaiting it.
    */
   isActivating(pluginId: string): boolean
-  /** A line for the plugin's log (Task 3 writes dropped emits and listener throws here). */
+  /** A line for the plugin's log: dropped emits (the emitter's log) and listener throws (the consumer's). */
   log?(pluginId: string, text: string): void
 }
 
@@ -43,7 +48,7 @@ export type ServiceOn = (event: string, listener: (data: unknown) => void) => ()
 
 /**
  * The consumer's view of a service: every string property is an async method stub, except `on`
- * (reserved for service events, Task 3) and `then`, which reads undefined so `await handle` does
+ * (subscribes to the service's events, returns a disposer) and `then`, which reads undefined so `await handle` does
  * not take the handle for a thenable and hang. (`then` is left out of the type: an `undefined`
  * member cannot sit beside the method index signature.)
  */
@@ -59,6 +64,18 @@ const RESERVED_METHODS = new Set(['then', 'constructor', '__proto__', 'prototype
 
 function isValidMethodName(name: string): boolean {
   return name !== '' && !name.startsWith('_') && !RESERVED_METHODS.has(name)
+}
+
+/** Event names (plan, Technical Details). Anchored with one bounded class: linear, no ReDoS. */
+const EVENT_NAME = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/
+
+function checkEventName(service: string, event: unknown): asserts event is string {
+  if (typeof event !== 'string' || !EVENT_NAME.test(event)) {
+    const shown = typeof event === 'string' ? `"${event}"` : `of type ${typeof event}`
+    throw new Error(
+      `service "${service}": event name ${shown} is invalid (a letter, then up to 63 letters, digits, ".", "_", ":" or "-")`
+    )
+  }
 }
 
 /** Copy `value` for the other side; a non-cloneable part becomes a clear plain-data error. */
@@ -103,6 +120,19 @@ interface WaitEdge {
   to: string
 }
 
+/** One `handle.on` call. Each is its own subscription, even for the same listener twice. */
+interface Subscription {
+  consumer: string
+  service: string
+  event: string
+  listener: (data: unknown) => unknown
+  /**
+   * Cleared by the disposer and by the consumer's `release`. Checked again at delivery, so an emit
+   * queued just before either still reaches no one.
+   */
+  live: boolean
+}
+
 export class ServiceRegistry {
   /** Each plugin's declarations, in host order (the order ambiguous-provider messages list them). */
   private readonly specs = new Map<string, ServicePlugin>()
@@ -111,6 +141,16 @@ export class ServiceRegistry {
   private readonly impls = new Map<string, Map<string, Implementation>>()
   /** Calls currently waiting for an activation, for cycle detection (call flow step 3a). */
   private readonly waits = new Set<WaitEdge>()
+  /** service -> event -> subscriptions, in subscription order (the order listeners are called). */
+  private readonly subs = new Map<string, Map<string, Set<Subscription>>>()
+  /** pluginId -> services whose dropped emits were already logged (log once per plugin and service). */
+  private readonly droppedLogged = new Map<string, Set<string>>()
+  /**
+   * pluginId -> how many times it was released. A handle remembers the count at `use`; a handle of
+   * a released copy (a timer left running after a reload or a failed activate) may not subscribe,
+   * or the old code would keep receiving events beside the new copy until the next release.
+   */
+  private readonly releases = new Map<string, number>()
 
   constructor(private readonly deps: ServiceRegistryDeps) {}
 
@@ -134,11 +174,99 @@ export class ServiceRegistry {
 
   /**
    * Drop what the plugin registered (Task 4: wherever its ctx is released: deactivate, reload,
-   * unload, errored activation). Calls already running finish on the old implementation; Task 3
-   * adds the plugin's subscriptions and its "logged once" flags here.
+   * unload, errored activation): its implementations, its own subscriptions as a consumer (events
+   * already queued for them are not delivered) and its "logged once" flags. Calls already running
+   * finish on the old implementation. Other plugins' subscriptions to the services it provides stay:
+   * they are keyed by service, so they get the events of whichever provider comes next.
    */
   release(pluginId: string): void {
     this.impls.delete(pluginId)
+    this.droppedLogged.delete(pluginId)
+    this.releases.set(pluginId, this.releaseCount(pluginId) + 1)
+    for (const byEvent of this.subs.values()) {
+      for (const set of byEvent.values()) {
+        for (const sub of set) if (sub.consumer === pluginId) this.unsubscribe(sub)
+      }
+    }
+  }
+
+  /**
+   * Send `event` to the consumers subscribed to it on `service`. Only a name in the caller's own
+   * `provides` (else it throws, like `provide`), and only from the selected provider: a provider the
+   * project did not pick (another is picked, or several and no pick) has its emits dropped, with one
+   * line in its log per service until it is released. Dropped rather than thrown: a provider cannot
+   * know whether it is the pick, and a choice change must not crash its event code.
+   *
+   * The event name and the data are checked first, whoever listens: a function or symbol in the
+   * data throws the plain-data error here, synchronously, even with no subscribers or when the emit
+   * is dropped, so the bug shows the first time the code runs. The data is copied now (a change the
+   * emitter makes after `emit` returns is not seen) and once more per listener, so listeners cannot
+   * see each other's mutations. Delivery is a microtask per listener, never inside `emit`.
+   *
+   * A consumer whose `uses` major differs from the provider's gets no events, as its calls fail with
+   * the version error: the payload of another major is not the shape it expects. It stays
+   * subscribed and receives events once the versions agree (a provider swap or a reload).
+   * An emit nobody listens to is a silent no-op.
+   */
+  emit(pluginId: string, service: string, event: string, data?: unknown): void {
+    if (this.declared(pluginId, 'provides', service) === undefined) {
+      throw new Error(`plugin ${pluginId} does not declare service "${service}" in services.provides`)
+    }
+    checkEventName(service, event)
+    const snapshot = cloneData(data, `service "${service}" event "${event}": the data`)
+    const sel = selectProvider(service, [...this.specs.values()], this.choices)
+    if (!sel.ok || sel.provider !== pluginId) {
+      const why = sel.ok ? `${sel.provider} is the selected provider` : serviceProblemMessage(sel.problem)
+      this.logDropped(pluginId, service, `service "${service}": events from ${pluginId} are dropped: ${why}`)
+      return
+    }
+    const set = this.subs.get(service)?.get(event)
+    if (!set) return
+    let first = true
+    for (const sub of set) {
+      if (this.declared(sub.consumer, 'uses', service) !== sel.version) continue
+      // The snapshot is plain data already, so these copies cannot fail.
+      const copy = first ? snapshot : structuredClone(snapshot)
+      first = false
+      queueMicrotask(() => this.deliver(sub, copy))
+    }
+  }
+
+  private logDropped(pluginId: string, service: string, text: string): void {
+    let logged = this.droppedLogged.get(pluginId)
+    if (!logged) this.droppedLogged.set(pluginId, (logged = new Set()))
+    if (logged.has(service)) return
+    logged.add(service)
+    this.deps.log?.(pluginId, text)
+  }
+
+  /** Call one listener; its throw (or an async listener's rejection) goes to the consumer's log. */
+  private deliver(sub: Subscription, data: unknown): void {
+    if (!sub.live) return
+    const fail = (err: unknown): void =>
+      this.deps.log?.(sub.consumer, `service "${sub.service}": listener for "${sub.event}" threw: ${errorText(err)}`)
+    try {
+      const listener = sub.listener
+      const result = listener(data)
+      // An async listener: without this its rejection would be unhandled in the shared host process.
+      if (result instanceof Promise) result.catch(fail)
+    } catch (err) {
+      fail(err)
+    }
+  }
+
+  private releaseCount(pluginId: string): number {
+    return this.releases.get(pluginId) ?? 0
+  }
+
+  private unsubscribe(sub: Subscription): void {
+    sub.live = false
+    const byEvent = this.subs.get(sub.service)
+    const set = byEvent?.get(sub.event)
+    if (!byEvent || !set) return
+    set.delete(sub)
+    if (set.size === 0) byEvent.delete(sub.event)
+    if (byEvent.size === 0) this.subs.delete(sub.service)
   }
 
   /**
@@ -186,6 +314,7 @@ export class ServiceRegistry {
     if (this.declared(pluginId, 'uses', service) === undefined) {
       throw new Error(`plugin ${pluginId} does not declare service "${service}" in services.uses`)
     }
+    const releasesAtUse = this.releaseCount(pluginId)
     // A null-prototype target, so no Object.prototype member answers before the trap does.
     const target = Object.create(null) as object
     return new Proxy(target, {
@@ -193,7 +322,7 @@ export class ServiceRegistry {
         // Symbols (util.inspect.custom, Symbol.toPrimitive, ...) are never methods.
         if (typeof prop === 'symbol') return undefined
         if (prop === 'then') return undefined
-        if (prop === 'on') return this.onStub(service)
+        if (prop === 'on') return this.onFor(pluginId, service, releasesAtUse)
         return (...args: unknown[]) => this.call(pluginId, service, prop, args)
       },
       set: () => false,
@@ -202,10 +331,33 @@ export class ServiceRegistry {
     }) as ServiceHandle
   }
 
-  /** Task 3 replaces this with the subscription; until then subscribing says so. */
-  private onStub(service: string): ServiceOn {
-    return () => {
-      throw new Error(`service "${service}": events are not implemented yet`)
+  /**
+   * The handle's `on`: subscribe `listener` to `event` and return its disposer (calling it again,
+   * or after the consumer's release, does nothing). Refused synchronously when the consumer no
+   * longer declares the service (a reload dropped it), for an invalid event name or a non-function
+   * listener, and from a handle of a released copy of the consumer (see `releases`).
+   */
+  private onFor(consumer: string, service: string, releasesAtUse: number): ServiceOn {
+    return (event, listener) => {
+      if (this.declared(consumer, 'uses', service) === undefined) {
+        throw new Error(`plugin ${consumer} does not declare service "${service}" in services.uses`)
+      }
+      if (this.releaseCount(consumer) !== releasesAtUse) {
+        throw new Error(`service "${service}": this handle belongs to a released copy of plugin ${consumer}; it can no longer subscribe`)
+      }
+      checkEventName(service, event)
+      if (typeof listener !== 'function') {
+        throw new Error(`service "${service}": the listener for "${event}" must be a function`)
+      }
+      const sub: Subscription = { consumer, service, event, listener, live: true }
+      let byEvent = this.subs.get(service)
+      if (!byEvent) this.subs.set(service, (byEvent = new Map()))
+      let set = byEvent.get(event)
+      if (!set) byEvent.set(event, (set = new Set()))
+      set.add(sub)
+      return () => {
+        if (sub.live) this.unsubscribe(sub)
+      }
     }
   }
 
