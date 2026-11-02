@@ -146,9 +146,11 @@ describe('ctx.schedule', () => {
     expect(() => s.schedule(5, 'no' as unknown as () => void)).toThrow('needs a function')
     // Below 1 s runs every second; above a day runs every day (setInterval overflows past 24.8 days).
     const fast = vi.fn()
-    s.schedule(0.01, fast)
+    const stopFast = s.schedule(0.01, fast)
     await vi.advanceTimersByTimeAsync(2_000)
     expect(fast).toHaveBeenCalledTimes(2)
+    // Left running, it would fire 86,400 times in the day below: over 5 s on a slow CI runner.
+    stopFast()
     const slow = vi.fn()
     s.schedule(10 * MAX_SCHEDULE_SECONDS, slow)
     await vi.advanceTimersByTimeAsync(MAX_SCHEDULE_SECONDS * 1000)
