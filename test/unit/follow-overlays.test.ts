@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OverlayInfo } from '../../src/shared/ipc'
-import { followOverlays, type OverlayStackBridge } from '../../src/renderer/overlays/follow-overlays'
+import { domOrder, followOverlays, type OverlayStackBridge } from '../../src/renderer/overlays/follow-overlays'
 
 // OverlayStack itself needs a DOM and is covered end to end in test/e2e/overlays.spec.ts; this
 // plays out the list-versus-update ordering that e2e cannot pin down.
@@ -89,5 +89,20 @@ describe('followOverlays', () => {
     f.fail(new Error('boom'))
     await flush()
     expect(errors).toHaveLength(1)
+  })
+})
+
+describe('domOrder', () => {
+  it("keeps shown overlays where they are when the stack is reordered (a plugin's focus()), appends new ones, drops gone ones", () => {
+    let order = domOrder([], [html('a'), html('b')])
+    expect(order).toEqual(['a', 'b'])
+    // `a` brought to the top: its element stays first (an html iframe moved in the DOM reloads).
+    order = domOrder(order, [html('b'), html('a')])
+    expect(order).toEqual(['a', 'b'])
+    order = domOrder(order, [html('b'), html('a'), html('c')])
+    expect(order).toEqual(['a', 'b', 'c'])
+    order = domOrder(order, [html('c'), html('a')])
+    expect(order).toEqual(['a', 'c'])
+    expect(domOrder(order, [])).toEqual([])
   })
 })

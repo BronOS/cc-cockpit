@@ -85,8 +85,10 @@ function ProjectPlugin(props: {
   const { plugin, busy, run, reload } = props
   const [showSettings, setShowSettings] = useState(false)
   const id = useId()
-  // A plugin that cannot run can still be switched off (a stale entry), never on.
-  const canToggle = busy === null && (plugin.state.ok || plugin.enabled)
+  // A plugin that cannot run can still be switched off (a stale entry), never on. A bundled plugin
+  // off in all projects (Settings > Plugins) cannot be turned on here either: main refuses it.
+  const offAll = plugin.offInAllProjects === true
+  const canToggle = busy === null && !offAll && (plugin.state.ok || plugin.enabled)
 
   return (
     <li className="settings-item column" data-plugin={plugin.id}>
@@ -103,6 +105,11 @@ function ProjectPlugin(props: {
           {!plugin.state.ok && (
             <div role="alert" className="settings-error">
               <span className="settings-badge warn">disabled</span> {plugin.state.reason}
+            </div>
+          )}
+          {offAll && (
+            <div className="settings-item-meta" data-testid="off-in-all-projects">
+              Off in all projects. Turn that off under Plugins to use this switch.
             </div>
           )}
           {plugin.problem !== undefined && (

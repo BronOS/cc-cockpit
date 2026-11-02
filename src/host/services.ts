@@ -555,6 +555,23 @@ export class ServiceRegistry {
   }
 
   /**
+   * `ctx.services.available(service)` for `pluginId`: whether a call from it would reach a provider
+   * right now, by the same rule a call resolves with (`selectProvider` over the current specs and
+   * picks, with the consumer's declared major), asked fresh on every call like everything here.
+   * False, never a throw, for anything a call would reject at resolution: a name `pluginId` does
+   * not declare in `services.uses` (or not a string at all), no provider, several and no valid
+   * pick, another major. Friction (reviewer): it hid its Edit button by matching the text of the
+   * "no enabled plugin" error. A provider still activating, or one whose activate failed, counts as
+   * available: the selection names it, and a call waits for it or reports the failure.
+   */
+  available(pluginId: string, service: unknown): boolean {
+    if (typeof service !== 'string') return false
+    const version = this.declared(pluginId, 'uses', service)
+    if (version === undefined) return false
+    return selectProvider(service, [...this.specs.values()], this.choices, { id: pluginId, version }).ok
+  }
+
+  /**
    * `ctx.services.caller()` for `pluginId`: the plugin whose call `pluginId` is serving right now,
    * or undefined. Read from the innermost frame of the current chain only, and only when that frame
    * - is a `call` frame: an `activate` frame serves no one, and listeners run outside any chain

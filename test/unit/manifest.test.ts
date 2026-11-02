@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadManifest, validateManifest } from '../../src/main/plugins/validate'
-import { PLUGIN_ID_PATTERN, relativePathProblem } from '../../src/shared/manifest'
+import { PLUGIN_ID_PATTERN, isReservedPluginId, relativePathProblem } from '../../src/shared/manifest'
 
 let dir: string
 let outside: string
@@ -166,6 +166,24 @@ describe('validateManifest', () => {
   it('reports an invalid settings schema with its scope', async () => {
     const errors = await errorsOf(manifest({ contributes: { settings: { project: { type: 'object', properties: { a: { type: 'nope' } } } } } }))
     expect(errors.some((e) => e.startsWith('settings.project: invalid settings schema'))).toBe(true)
+  })
+})
+
+describe('isReservedPluginId', () => {
+  it('reserves the cockpit. prefix in any letter case, padding or compatibility form', () => {
+    for (const id of ['cockpit.reviewer', 'cockpit.x.y', 'Cockpit.Foo', 'COCKPIT.FOO', ' cockpit.foo', '\tcockpit.foo', 'coc\u212Apit.foo', '\uFF43ockpit.foo']) {
+      expect(isReservedPluginId(id), JSON.stringify(id)).toBe(true)
+    }
+    for (const id of ['acme.cockpit', 'cockpitx.foo', 'my-cockpit.foo', 'cockpit-tools.foo', 'cockpit', 'acme.cockpit.foo']) {
+      expect(isReservedPluginId(id), id).toBe(false)
+    }
+  })
+
+  it('holds for every id the manifest pattern accepts: a valid id under the prefix is reserved', () => {
+    for (const id of ['cockpit.a', 'cockpit.a1-b', 'cockpit.0.a', 'cockpit.browser']) {
+      expect(PLUGIN_ID_PATTERN.test(id), id).toBe(true)
+      expect(isReservedPluginId(id), id).toBe(true)
+    }
   })
 })
 

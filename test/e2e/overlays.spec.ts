@@ -234,6 +234,51 @@ test('Esc pops an html overlay and only the top one', async ({ cockpit }) => {
   expect(await outcome(cockpit, lower)).toEqual({ result: { kind: 'dismissed' } })
 })
 
+// OverlayHandle.focus() on a lower html overlay: it comes to the top without its page reloading.
+// The renderer draws overlays in a stable DOM order (domOrder) and only restacks them by z-index;
+// drawing them in stack order moved the lower overlay's node, and moving an iframe in the DOM
+// reloads it (the reviewer page lost what the person had typed).
+test('focus() brings a lower html overlay to the top and keeps its page as it was', async ({ cockpit }) => {
+  const { page } = cockpit
+  const lower = await open(cockpit, { kind: 'html', html: '<input aria-label="field">', title: 'Lower' })
+  const field = page.frameLocator('iframe[title="Lower"]').getByRole('textbox', { name: 'field' })
+  await field.fill('typed before')
+  // State only a live page has: a reload would drop both the value and this global.
+  await field.evaluate((el) => {
+    ;(el.ownerDocument.defaultView as unknown as { __mark?: string }).__mark = 'same page'
+  })
+  // And the iframe element itself, so a remount (a new element) is told apart from a move.
+  await page.locator('iframe[title="Lower"]').evaluate((el) => {
+    ;(el as unknown as { __mark?: string }).__mark = 'same element'
+  })
+
+  const upper = await open(cockpit, { kind: 'html', html: '<p>upper</p>', title: 'Upper' })
+  await expect(page.getByRole('dialog', { name: 'Upper' })).toBeFocused()
+  const infos = await stack(cockpit)
+  expect(infos.map((o) => o.title)).toEqual(['Lower', 'Upper'])
+
+  expect(await cockpit.hook<boolean>('focusOverlay', cockpit.projectDir, infos[0]!.id)).toBe(true)
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title)).toEqual(['Upper', 'Lower'])
+  // Lower is the top one now: it takes the keyboard, and Upper is inert under it.
+  await expect(page.getByRole('dialog', { name: 'Lower' })).toBeFocused()
+  await expect(page.locator('.overlay[aria-label="Upper"]')).toHaveAttribute('inert', '')
+
+  expect(
+    await page.locator('iframe[title="Lower"]').evaluate((el) => (el as unknown as { __mark?: string }).__mark)
+  ).toBe('same element')
+  await expect(field).toHaveValue('typed before')
+  expect(
+    await field.evaluate((el) => (el.ownerDocument.defaultView as unknown as { __mark?: string }).__mark)
+  ).toBe('same page')
+
+  // Esc pops the focused one (Lower) first; both stay open until then.
+  expect(await cockpit.hook<Outcome>('overlayResult', upper)).toEqual({})
+  await page.keyboard.press('Escape')
+  expect(await outcome(cockpit, lower)).toEqual({ result: { kind: 'dismissed' } })
+  await page.keyboard.press('Escape')
+  expect(await outcome(cockpit, upper)).toEqual({ result: { kind: 'dismissed' } })
+})
+
 test('Esc typed inside an html page (its frame has the keyboard) still pops it', async ({
   cockpit
 }) => {
@@ -500,6 +545,27 @@ test.describe('html overlay messages (ctx.overlay.start)', () => {
     await expect.poll(() => notes(cockpit)).toContain(`chat ${JSON.stringify({ kind: 'dismissed' })}`)
     await expect.poll(() => stack(cockpit)).toEqual([])
   })
+})
+
+// Bundled reviewer/editor plan Task 6 (reviewer FRICTION.md): module scripts in an html overlay.
+// The page's `<script type="module">` imports a sibling statically and another with import(); both
+// are its own cc-plugin: files, which the CSP's script-src allows and the scheme serves with CORS
+// (the sandboxed frame's origin is opaque, so a module fetch is cross-origin). The guide's panels
+// topic states this result.
+test('an html overlay page runs module scripts: static import and dynamic import() of its own files', async ({ cockpit }) => {
+  const PLUGIN = 'test.overlaymodule'
+  await cockpit.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', 'overlay-module'))
+  await cockpit.hook('enablePlugin', cockpit.projectDir, PLUGIN)
+  await expect
+    .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
+    .toMatchObject({ running: true, plugins: [{ id: PLUGIN, state: 'active' }] })
+
+  await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/open`)
+  const value = { fromDep: 'static import', fromLazy: 'dynamic import' }
+  await expect
+    .poll(() => cockpit.hook<string[]>('notifications'), { timeout: 15_000 })
+    .toContain(`module ${JSON.stringify({ kind: 'value', value })}`)
+  await expect.poll(() => stack(cockpit)).toEqual([])
 })
 
 test("large and full overlays are bigger than the default, and a terminal overlay refits", async ({

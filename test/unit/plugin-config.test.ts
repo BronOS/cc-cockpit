@@ -274,6 +274,8 @@ function rig() {
     disableEverywhere: () => {},
     enabledInAProject: () => false,
     appPluginSettings: { get: (id) => appSettings.get(id), set: (id, value) => void appSettings.set(id, value) },
+    bundledOff: { get: () => undefined, set: () => {} },
+    bundledOffChanged: async () => {},
     pluginSettingsChanged: async () => void calls.push('app settings announced'),
     secrets
   } as SettingsDeps)
@@ -286,6 +288,7 @@ function rig() {
       }
     },
     plugins: { list: () => plugins, get: (id) => plugins.find((p) => p.id === id) },
+    disabledBundled: () => undefined,
     checkSettings: () => ({ ok: true }),
     enabledChanged: async () => {},
     settingsChanged: async (projectId, pluginId) => void calls.push(`project settings announced ${projectId} ${pluginId}`),

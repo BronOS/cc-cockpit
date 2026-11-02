@@ -87,6 +87,7 @@ beforeAll(() => {
   // Annotated: the tag ref names a tag object, whose hash is not the commit's.
   commitVariant(work, 'good', 'annotated-base', { version: '1.4.0' })
   git(work, 'tag', '-a', 'v1.4.0', '-m', 'v1.4.0')
+  commitVariant(work, 'good', 'reserved', { id: 'cockpit.good', version: '4.0.0' })
   commitVariant(work, 'bad-api', 'bad-api')
   commitVariant(work, 'escape', 'escape')
   commitVariant(work, 'bad-theme', 'bad-theme')
@@ -858,6 +859,62 @@ describe('link', () => {
     await installer.install(repoUrl, 'v1.0.0')
     await expect(installer.link(folder)).rejects.toThrow(/already installed/)
     await expect(installer.link(join(pluginsDir, 'test.good@1.0.0'))).rejects.toThrow(/inside the app's plugins directory/)
+  })
+})
+
+describe('reserved cockpit.* ids (bundled reviewer and editor, Task 3)', () => {
+  const RESERVED = /ids starting with cockpit\. are reserved for plugins that ship with the app/
+
+  it('a git install of a reserved id is refused in staging: nothing reaches plugins/ or the index', async () => {
+    const { installer } = setup()
+    await expect(installer.install(repoUrl, 'reserved')).rejects.toThrow(RESERVED)
+    expect(pluginsDirEntries()).toEqual([])
+    expect(onDisk().list()).toEqual([])
+  })
+
+  it('a marketplace install naming a reserved id is refused before anything is cloned', async () => {
+    const calls: string[][] = []
+    const { installer } = setup({ runGit: (args, o) => (calls.push(args), defaultGitRunner(args, o)) })
+    const pin = { commit: commitOf('reserved'), id: 'cockpit.good', version: '4.0.0', marketplace: 'https://example.com/index.json' }
+    await expect(installer.install(repoUrl, 'reserved', pin)).rejects.toThrow(RESERVED)
+    expect(calls).toEqual([])
+    // Any letter case: the rule is case-insensitive, whatever the id pattern allows.
+    await expect(installer.install(repoUrl, 'reserved', { ...pin, id: 'Cockpit.Good' })).rejects.toThrow(RESERVED)
+    expect(calls).toEqual([])
+    expect(onDisk().list()).toEqual([])
+  })
+
+  it('link and inspectLink refuse a reserved id with the reason, before the already-installed check', async () => {
+    const folder = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-linked-reserved-')))
+    try {
+      cpSync(join(FIXTURES, 'good'), folder, { recursive: true })
+      const manifest = JSON.parse(readFileSync(join(folder, 'plugin.json'), 'utf8')) as Record<string, unknown>
+      writeFileSync(join(folder, 'plugin.json'), JSON.stringify({ ...manifest, id: 'cockpit.good' }))
+      const { installer } = setup()
+      await expect(installer.inspectLink(folder)).rejects.toThrow(RESERVED)
+      await expect(installer.link(folder)).rejects.toThrow(RESERVED)
+      expect(onDisk().list()).toEqual([])
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  it('a git record under a reserved id (written before the rule) does not load and cannot be updated', async () => {
+    writeFileSync(
+      join(dataDir, 'plugins.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        plugins: [{ id: 'cockpit.good', version: '4.0.0', source: { kind: 'git', url: repoUrl, tag: 'reserved' }, state: { ok: true } }]
+      })
+    )
+    const { installer } = setup()
+    // Before load: view already keeps it from the hosts.
+    expect(installer.get('cockpit.good')?.manifest).toBeUndefined()
+    await installer.load()
+    const state = installer.get('cockpit.good')?.state
+    expect(state?.ok === false && state.reason).toMatch(RESERVED)
+    expect(logs.join('\n')).toMatch(/plugin cockpit\.good disabled: ids starting with cockpit\./)
+    await expect(installer.update('cockpit.good', 'v1.1.0')).rejects.toThrow(RESERVED)
   })
 })
 

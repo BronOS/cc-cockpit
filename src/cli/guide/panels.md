@@ -17,9 +17,12 @@ load, the strip shows the title's first letter.
 - CSP (sent with the page): scripts, fonts and `fetch`/XHR only from the plugin's own files;
   images from its own files and `data:`; styles from its own files and **inline**, so a `<style>`
   block and `style="..."` attributes work; no inline script, no inline event handlers, no network,
-  no frames, no form posts, no `<base>`. Put code in a separate `.js` file next to the html. The
-  frame is sandboxed with scripts only: its origin is opaque, so no `localStorage` or cookies;
-  keep state in the host.
+  no frames, no form posts, no `<base>`. Put code in a separate `.js` file next to the html.
+  Module scripts work: `<script type="module" src="main.js">` with static `import` and dynamic
+  `import('./x.js')` of your own files (and top-level `await`), so split code into ES modules
+  without a bundler; an import from another host or a bare package name (`import 'lodash'`)
+  fails (no import maps: they would be inline script). The frame is sandboxed with scripts
+  only: its origin is opaque, so no `localStorage` or cookies; keep state in the host.
 - Include the SDK first: `<script src="/__sdk/panel.js"></script>`. It defines `ccPanel`.
 
 ## `ccPanel`

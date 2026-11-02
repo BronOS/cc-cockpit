@@ -12,7 +12,7 @@ import type { LayoutView } from '../../src/shared/ipc'
 import { expect, test, type Cockpit } from './fixtures'
 
 const HELLO = join(__dirname, '..', '..', 'plugins', 'hello')
-const ID = 'cockpit.hello'
+const ID = 'example.hello'
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
 
 // A string expression: the e2e tsconfig has no DOM lib, and the code runs in the page anyway.

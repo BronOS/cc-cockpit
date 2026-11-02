@@ -4,8 +4,8 @@
 //                                      (src/main/plugins/host-api.ts) against the host's scope
 //   overlay.open(spec)                 terminal (argv only), url (http/https), html (a file of the
 //                                      plugin's own folder, read by main); resolves when it closes
-//   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close };
-//                                      open(spec) is start(spec).result
+//   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
+//                                      focus }; open(spec) is start(spec).result
 //   panels.post / panels.onMessage     over the panel's MessagePort
 //
 // Panel ports: main creates one channel per panel instance and hands the host its end, tagged with
@@ -248,7 +248,16 @@ export class OverlayLinks {
     if (this.links.get(key) === link) this.links.delete(key)
   }
 
-  /** The plugin's ctx ended: its handles end with it (the overlays close when main says so). */
+  /**
+   * The plugin has an overlay open or opening: its dispose must tell main (`plugin.disposed`),
+   * which dismisses them. Checked before removePlugin.
+   */
+  has(pluginId: string): boolean {
+    for (const link of this.links.values()) if (link.pluginId === pluginId) return true
+    return false
+  }
+
+  /** The plugin's ctx ended: its handles end with it (main dismisses the overlays on `plugin.disposed`). */
   removePlugin(pluginId: string): void {
     for (const link of [...this.links.values()]) if (link.pluginId === pluginId) this.end(link)
   }
@@ -338,7 +347,8 @@ export function createUiApi(
       link = overlays.open(pluginId)
       try {
         // No timeout: the overlay is open until the user (or its program) ends it. A host that
-        // stops rejects it (the RPC closes) and main dismisses the overlay. The request goes out
+        // stops rejects it (the RPC closes) and main dismisses the overlay; a ctx disposed in a
+        // running host (reload, unload) resolves it as dismissed (main closes it on `plugin.disposed`). The request goes out
         // synchronously, inside start(), so a post right after start() reaches main behind it.
         return (await deps.call(
           'overlay.open',
@@ -381,6 +391,11 @@ export function createUiApi(
         if (!link || link.ended) return
         deps.alive()
         send('overlay.close', { pluginId, handle: link.handle })
+      },
+      focus: (): void => {
+        if (!link || link.ended) return
+        deps.alive()
+        send('overlay.focus', { pluginId, handle: link.handle })
       }
     })
   }

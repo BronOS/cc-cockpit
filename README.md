@@ -22,12 +22,20 @@ tested).
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
+- **A built-in reviewer and editor.** Click a file Claude changed to review its diff, attach notes and send them back to
+  Claude; Edit opens the file in micro (optional, see below). Both are bundled plugins you can turn off or replace.
 
 Every feature in detail: [docs/features.md](docs/features.md).
 
 ## Install
 
-You need `claude` (Claude Code) on your PATH, and git for installing plugins.
+You need `claude` (Claude Code) on your PATH, and git for installing plugins. [micro](https://micro-editor.github.io) is
+optional: the bundled editor plugin uses it (`brew install micro`, `sudo pacman -S micro` or `sudo apt install micro`).
+
+If you linked your own `cockpit.reviewer` or `cockpit.editor` before, unlink them (`ccc plugin unlink <id>`): those ids now
+belong to the bundled plugins and the app drops an old linked copy at start with a log line.
+The template plugins were renamed the same way: `cockpit.hello` is now `example.hello` and `cockpit.example` is
+`example.plugin`; a link under an old id no longer loads, so unlink it and link the folder again.
 
 ### macOS (Apple silicon)
 

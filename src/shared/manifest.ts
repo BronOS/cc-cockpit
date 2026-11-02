@@ -20,6 +20,26 @@ export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.[a
 export const PLUGIN_ID_MAX_LENGTH = 100
 
 /**
+ * Ids starting with `cockpit.` belong to the plugins that ship with the app (main/plugins/bundled.ts).
+ * Bundling is an app release, not something a plugin can ask for, so every way in (link, git install,
+ * marketplace install, the marketplace index tools, `ccc plugin new`) refuses one and the installer
+ * loads one only from the bundled root. Third parties do the same things under their own id.
+ */
+export const RESERVED_PLUGIN_ID_PREFIX = 'cockpit.'
+export const RESERVED_PLUGIN_ID_MESSAGE = 'ids starting with cockpit. are reserved for plugins that ship with the app'
+
+/**
+ * The one reservation rule. Compared case-insensitively and after trimming, although
+ * PLUGIN_ID_PATTERN accepts only lower-case ASCII with no spaces: the rule must not depend on every
+ * caller having run the pattern first (plugins.json and an index are hand-editable), and a looser
+ * pattern later must not open a `Cockpit.foo` or ` cockpit.foo` door. NFKC first, the way a URL host
+ * is folded: a fullwidth `ｃ` or the Kelvin sign `K` would otherwise slip past as a different string.
+ */
+export function isReservedPluginId(id: string): boolean {
+  return id.normalize('NFKC').trim().toLowerCase().startsWith(RESERVED_PLUGIN_ID_PREFIX)
+}
+
+/**
  * The version is also part of a directory name, so it is a restricted semver: no slash, no
  * leading dot, nothing a path join could misread.
  */

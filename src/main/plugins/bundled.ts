@@ -17,7 +17,10 @@ export interface BundledPluginSpec {
 
 /** Folder name under the bundled root -> id and default enablement. */
 export const BUNDLED_PLUGINS: readonly BundledPluginSpec[] = [
-  { id: 'cockpit.browser', dir: 'browser', enabledByDefault: true }
+  { id: 'cockpit.browser', dir: 'browser', enabledByDefault: true },
+  { id: 'cockpit.reviewer', dir: 'reviewer', enabledByDefault: true },
+  // On by default: without micro, Edit shows how to install it instead of failing silently.
+  { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true }
 ]
 
 /**

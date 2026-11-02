@@ -1,5 +1,5 @@
 {
-  "id": "cockpit.example",
+  "id": "example.plugin",
   "name": "Example",
   "version": "1.0.1",
   "api": 1,

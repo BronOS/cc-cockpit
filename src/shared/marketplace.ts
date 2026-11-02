@@ -13,6 +13,8 @@ import {
   PLUGIN_ID_MAX_LENGTH,
   PLUGIN_ID_PATTERN,
   PLUGIN_VERSION_PATTERN,
+  RESERVED_PLUGIN_ID_MESSAGE,
+  isReservedPluginId,
 } from './manifest'
 
 /** The official index. Its revocations are enforced on every plugin, wherever it came from. */
@@ -140,6 +142,9 @@ export function parseEntry(
     !PLUGIN_ID_PATTERN.test(id)
   )
     return bad('"id" is not a valid plugin id')
+  // The app ships these itself; a listing could only ever be refused at install. Dropped here so the
+  // index tools refuse the PR and the Marketplace page never offers one.
+  if (isReservedPluginId(id)) return bad(`"id": ${RESERVED_PLUGIN_ID_MESSAGE}`)
   if (!label(name, MAX_NAME_LENGTH))
     return bad(
       `"name" must be 1 to ${MAX_NAME_LENGTH} characters, not blank, with no control or bidi characters`,

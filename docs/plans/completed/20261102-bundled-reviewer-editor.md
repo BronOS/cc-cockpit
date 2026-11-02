@@ -138,27 +138,27 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - Modify: `package.json`, `package-lock.json`, `.github/workflows/ci.yml`, `eslint.config.*` / tsconfig excludes if
   needed, `CLAUDE.md` (Commands)
 
-- [ ] `git subtree add --prefix plugins/reviewer ~/Projects/cc-cockpit-reviewer master` and the same for
+- [x] `git subtree add --prefix plugins/reviewer ~/Projects/cc-cockpit-reviewer master` and the same for
       `plugins/editor` (history kept; if subtree is unavailable or messy, one commit per plugin naming the source
       repo and its HEAD). Remove each plugin's `node_modules`, `package.json`, `package-lock.json` from the moved
       tree; keep `README.md`, `docs/`, `FRICTION.md`, `test/`
-- [ ] `.gitignore` ignores `dist/` and whitelists only `!plugins/browser/dist/`: add `!plugins/reviewer/dist/` and
+- [x] `.gitignore` ignores `dist/` and whitelists only `!plugins/browser/dist/`: add `!plugins/reviewer/dist/` and
       `!plugins/editor/dist/`, check the subtrees' own `.gitignore` files don't hide `dist/` or `overlay/`, and
       confirm with `git ls-files plugins/reviewer plugins/editor` that `dist/**`, `overlay/review.bundle.js` and
       `plugin.json` are tracked
-- [ ] add the reviewer's CodeMirror/lezer packages as app devDependencies pinned exactly to its lockfile versions;
+- [x] add the reviewer's CodeMirror/lezer packages as app devDependencies pinned exactly to its lockfile versions;
       `scripts/build-reviewer.mjs` (deterministic, see Technical Details; `legalComments: 'none'` unless a licence
       notice must ship, in which case decide where it goes and commit it) and `npm run build:reviewer`; add it to the
       `build` chain; rebuild the committed bundle and check the page still loads the same (size within a few %)
-- [ ] `npm run test:plugins` = `node --test plugins/*/test/`; fix any path assumptions in the moved tests; add a CI
+- [x] `npm run test:plugins` = `node --test plugins/*/test/`; fix any path assumptions in the moved tests; add a CI
       step running it in `ci.yml` and extend the `describe('ci.yml')` block in `test/unit/release-workflow.test.ts`
       for it (first-party actions only); check `vitest.config` doesn't pick up `plugins/*/test/*.test.js`
-- [ ] `eslint.config.js` ignores only `plugins/browser/dist/**`: add `plugins/{reviewer,editor}/dist/**`,
+- [x] `eslint.config.js` ignores only `plugins/browser/dist/**`: add `plugins/{reviewer,editor}/dist/**`,
       `plugins/reviewer/overlay/*.bundle.js` and the plugins' `test/`, `scripts/` and `src/page` JS (or lint them
       with a plain-JS config if that is easy); typecheck needs no change (tsconfig.node covers only `plugins/hello/src`)
-- [ ] write `test/unit/reviewer-plugin.test.ts`: rebuild into a temp dir equals the committed bundle; the manifests
+- [x] write `test/unit/reviewer-plugin.test.ts`: rebuild into a temp dir equals the committed bundle; the manifests
       validate with `validateManifest`
-- [ ] run `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint` - must pass before next task
+- [x] run `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint` - must pass before next task
 
 ### Task 2: Ship them as bundled plugins [model: sonnet]
 
@@ -168,15 +168,15 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   `test/unit/browser-plugin.test.ts` if it asserts the bundled list
 - Create: `test/e2e/bundled-plugins.spec.ts` (or extend the browser one)
 
-- [ ] add `cockpit.reviewer` and `cockpit.editor` to `BUNDLED_PLUGINS` (enabled by default)
-- [ ] add both folders to `extraResources` with the same filter style as the browser (no tests, no docs, no
+- [x] add `cockpit.reviewer` and `cockpit.editor` to `BUNDLED_PLUGINS` (enabled by default)
+- [x] add both folders to `extraResources` with the same filter style as the browser (no tests, no docs, no
       `src/` of the reviewer page in the package; the bundle, `dist/`, `plugin.json`, `overlay/`, README stay)
-- [ ] update the packaging unit tests that read `electron-builder.yml` and the bundled list
-- [ ] e2e: a run without `CC_COCKPIT_NO_BUNDLED` lists both in Settings > Plugins as built-in, on; a modified-file
+- [x] update the packaging unit tests that read `electron-builder.yml` and the bundled list
+- [x] e2e: a run without `CC_COCKPIT_NO_BUNDLED` lists both in Settings > Plugins as built-in, on; a modified-file
       click opens the reviewer overlay (fake claude writes a file); with `CC_COCKPIT_NO_BUNDLED=1` neither loads
-- [ ] check that existing e2e specs that assume only the browser is bundled still pass (most set
+- [x] check that existing e2e specs that assume only the browser is bundled still pass (most set
       `CC_COCKPIT_NO_BUNDLED=1`); `npm run package:dir` and confirm both folders are in `release/*/resources/plugins`
-- [ ] run `npm test`, `npm run test:plugins`, typecheck, lint, `npm run build` and the touched e2e specs - must pass
+- [x] run `npm test`, `npm run test:plugins`, typecheck, lint, `npm run build` and the touched e2e specs - must pass
 
 ### Task 3: Reserve cockpit.* ids for bundled plugins [model: opus]
 
@@ -185,26 +185,30 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   the link path, `src/main/marketplace/*`, `marketplace/tools/src/*` (+ rebuilt `marketplace/tools/dist`)
 - Modify: `src/cli/guide/plugins.md`, `src/cli/guide/dev-loop.md`
 
-- [ ] one shared rule `isReservedPluginId(id)`: the `cockpit.` prefix compared case-insensitively (check what the
+- [x] one shared rule `isReservedPluginId(id)`: the `cockpit.` prefix compared case-insensitively (check what the
       manifest id regex allows: uppercase, Unicode, surrounding spaces; the rule must hold for every id the regex
       accepts)
-- [ ] the authority is the **load** path, not only install: a plugin with a reserved id loads only when it is one of
+- [x] the authority is the **load** path, not only install: a plugin with a reserved id loads only when it is one of
       `BUNDLED_PLUGINS` and its folder's realpath equals the realpath of `<bundledRoot>/<dir>`. A symlink into the
       bundled root, a linked folder elsewhere, or a hand-edited `plugins.json` entry with a reserved id is refused at
       load with a log line (and shown in Settings > Plugins as refused, like other invalid plugins)
-- [ ] link, folder/git install and marketplace install also refuse a reserved id up front (realpath of the source,
+- [x] link, folder/git install and marketplace install also refuse a reserved id up front (realpath of the source,
       before copying anything) with "ids starting with cockpit. are reserved for plugins that ship with the app"
-- [ ] the marketplace index tools (`check-entry`, `build-index`) refuse reserved ids; run `npm run build:marketplace-tools`
+- [x] the marketplace index tools (`check-entry`, `build-index`) refuse reserved ids; run `npm run build:marketplace-tools`
       and keep the byte test green
-- [ ] an existing user's linked `cockpit.reviewer` / `cockpit.editor` record (in `plugins.json`): the bundled entry
+- [x] an existing user's linked `cockpit.reviewer` / `cockpit.editor` record (in `plugins.json`): the bundled entry
       wins, the linked record is dropped at start with a log line; project enablement and settings keyed by the same
       id carry over unchanged (same id). No extra notice UI; the guide and release notes say to unlink
-- [ ] guide: plugins topic states the reservation and that bundling happens through app releases; dev-loop says to
+- [x] guide: plugins topic states the reservation and that bundling happens through app releases; dev-loop says to
       unlink an old linked copy of a now-bundled plugin; drift tests pass
-- [ ] unit tests for each path (link, folder install, git install, marketplace install, index tools, load-time refusal
+- [x] unit tests for each path (link, folder install, git install, marketplace install, index tools, load-time refusal
       of a hand-edited `plugins.json` entry and of a symlink into the bundled root, `Cockpit.Foo` casing, the start-up
       drop of an old linked record) and that bundled loading still accepts them
-- [ ] run `npm test`, typecheck, lint, `npm run build:marketplace-tools` byte test - must pass
+- [x] run `npm test`, typecheck, lint, `npm run build:marketplace-tools` byte test - must pass
+- [x] ➕ `plugins/hello` (`cockpit.hello`) and `examples/plugin` (`cockpit.example`) used reserved ids and could no
+      longer be linked: renamed to `example.hello` and `example.plugin` (manifests, e2e and unit tests); `ccc plugin new
+      --id cockpit.x` is refused too. The app's index parser drops a reserved listing (counted as skipped), so the
+      Marketplace page never offers one
 
 ### Task 4: App-wide off for bundled plugins, and replacing them through the picks [model: opus]
 
@@ -213,18 +217,19 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   (`AppSettings.disabledBundled`), `src/main/ipc/router.ts`, `src/renderer/settings/PluginsPage.tsx`, host restart path
 - Modify: `src/cli/guide/plugins.md`
 
-- [ ] `disabledBundled` in app settings; `pluginEnabledIn`/`enabledPluginIds` take it and an app-wide-off bundled
+- [x] `disabledBundled` in app settings; `pluginEnabledIn`/`enabledPluginIds` take it and an app-wide-off bundled
       plugin is off in every project regardless of the project record; changing it restarts the affected hosts the
       way a per-project toggle does
-- [ ] Settings > Plugins: a bundled plugin shows "Off in all projects" (app-wide) next to the per-project switch;
-      the per-project switch is disabled with a note while it is off app-wide
-- [ ] verify replacement: `selectProvider` gives bundled no priority; with a third-party `editor` provider and the
+- [x] Settings > Plugins: a bundled plugin shows "Off in all projects" (app-wide) next to the per-project switch;
+      the per-project switch is disabled with a note while it is off app-wide (the per-project switch lives on This
+      project, so the lock and note are there; main also refuses enabling it while off app-wide)
+- [x] verify replacement: `selectProvider` gives bundled no priority; with a third-party `editor` provider and the
       bundled editor both on, the pick lists both; with the bundled one off (project or app-wide) the other is used;
       the same for the `@open-file` pick with a third-party `openFile` plugin. Fix anything that doesn't hold
-- [ ] guide (plugins): app-wide off, how to replace a bundled plugin (picks, turning it off), no priority for bundled
-- [ ] unit tests (enablement with `disabledBundled`, router, picks with bundled + third-party) and an e2e (app-wide
+- [x] guide (plugins): app-wide off, how to replace a bundled plugin (picks, turning it off), no priority for bundled
+- [x] unit tests (enablement with `disabledBundled`, router, picks with bundled + third-party) and an e2e (app-wide
       off hides it in a second project; replacing the open-file handler with a fixture plugin)
-- [ ] run `npm test`, typecheck, lint, build and the touched e2e specs - must pass
+- [x] run `npm test`, typecheck, lint, build and the touched e2e specs - must pass
 
 ### Task 5: Close a plugin's overlays when it reloads or stops; overlay focus() [model: opus]
 
@@ -232,19 +237,30 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - Modify: `src/main/overlays/overlay-manager.ts`, `src/main/plugins/host-manager.ts`, `src/main/plugins/host-api.ts`,
   `src/host/ctx/ui.ts`, `src/sdk/types.ts` (+ example copy), `src/cli/guide/api.md`, `src/cli/guide/dev-loop.md`
 
-- [ ] gap analysis: a host stop already dismisses its overlays (`host-manager.ts` `disposeApi` → `rec.api.dispose`).
+- [x] gap analysis: a host stop already dismisses its overlays (`host-manager.ts` `disposeApi` → `rec.api.dispose`).
       List every way a plugin's code is replaced or turned off (dev-watch reload, disable, update, uninstall, crash,
       window close, a plugin-set change) and record here which ones do **not** go through `disposeApi`
-- [ ] close the plugin's overlays on the paths that don't (if any), the same way `dispose` does; terminal overlays'
+      - through `disposeApi` (whole host stops, overlays already dismissed): crash (`exited`), window close (`close`),
+        disable/enable or a plugin-set change (`enabledChanged` → `restart`), update/uninstall (`reloadPlugin` →
+        `restart`), settings turning invalid (`settingsChanged` → `restart`), a dev reload that falls back to a restart,
+        app quit (`disposeAll`)
+      - **not** through it (the ctx is disposed in a host that keeps running; overlays stayed open): dev reload in place
+        (`reloadSpec` → `plugin.reload`), unload in place (`unloadInHost`: invalid manifest, settings invalid at reload,
+        plugin gone from the list or left without `main`), and an in-place reload whose activate fails
+- [x] close the plugin's overlays on the paths that don't (if any), the same way `dispose` does; terminal overlays'
       ptys are killed as on a normal close. If every path already closes them, say so here and add only the missing
-      test cases
-- [ ] `focus()` on the `start()` handle: main brings that overlay to the front of its window's stack (ownership
-      checked like `post`/`close`); no-op after close; types and guide
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts` (the example's own code stays free of overlays)
-- [ ] guide: dev-loop and api say overlays close on reload; api documents `focus()`
-- [ ] unit tests (close on each stop reason, ownership of focus, focus after close) and e2e (edit a linked fixture
+      test cases (done through the host's `plugin.disposed` event, ordered on the port before any request of the next
+      copy: the host now sends it for a ctx with an overlay open or opening, and `HostApi.contextDisposed` aborts that
+      plugin's overlay signal, one AbortController per plugin copy passed as `peerGone`; `dispose` aborts them all)
+- [x] `focus()` on the `start()` handle: main brings that overlay to the front of its window's stack (ownership
+      checked like `post`/`close`); no-op after close; types and guide (`OverlayManager.focus`, `overlay.focus` in
+      HostApi; the renderer keeps overlay elements in a stable DOM order (`domOrder`) so a refocused html overlay's
+      iframe is not moved and reloaded)
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts` (the example's own code stays free of overlays)
+- [x] guide: dev-loop and api say overlays close on reload; api documents `focus()`
+- [x] unit tests (close on each stop reason, ownership of focus, focus after close) and e2e (edit a linked fixture
       plugin's file while its overlay is open → the overlay closes)
-- [ ] run `npm test`, typecheck, lint, build and the overlays / plugin-dev-reload e2e specs - must pass
+- [x] run `npm test`, typecheck, lint, build and the overlays / plugin-dev-reload e2e specs - must pass
 
 ### Task 6: ctx.projectDir, ctx.services.available and the guide answers [model: opus]
 
@@ -253,16 +269,24 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - Modify: `src/sdk/types.ts` (+ `examples/plugin/sdk/types.ts`), `src/cli/guide/api.md`, `src/cli/guide/panels.md`
 - Modify: `src/shared/plugin-storage.ts` only if a limit is missing
 
-- [ ] `ctx.projectDir` (real path, from main at host start) and `ctx.services.available(name)` using the shared
+- [x] `ctx.projectDir` (real path, from main at host start) and `ctx.services.available(name)` using the shared
       `serviceStatus` rule (resolved on every call)
-- [ ] guide: `SessionInfo.files` (absolute paths, outside-project files included, which open only in the built-in
+      - `available` is `selectProvider` with the caller's `uses` major (the rule `serviceStatus` is built on); a name
+        not in the caller's `uses` is false (a call would be refused); a provider still activating or errored counts.
+        `projectDir` is `realPathOf` (projects/registry) in `HostManager.buildSpec`, at each launch and in-place reload
+- [x] guide: `SessionInfo.files` (absolute paths, outside-project files included, which open only in the built-in
       viewer); `storage`/`appStorage` limits stated from the code; the outside-files rule in the openFile text
-- [ ] module scripts in html overlays: try `<script type="module">` and `import('./x.js')` in a fixture overlay, record
+      - no key count limit in code and none added: the 16 MiB total bounds it (the guide says so)
+- [x] module scripts in html overlays: try `<script type="module">` and `import('./x.js')` in a fixture overlay, record
       the result here, and state it in the panels topic (fix only if a safe CSP change makes it work)
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] unit tests for both members (available: provider on/off/wrong major/pick unresolved/unknown name; projectDir is
+      - result: both work with no change (fixture `test/fixtures/plugins/overlay-module`, e2e in `overlays.spec.ts`):
+        `script-src cc-plugin://<id>` covers the module and its imports, and the scheme already sends
+        `access-control-allow-origin: *` for the opaque-origin frame; top-level `await` works too. Bare specifiers and
+        other hosts fail (no import maps: inline script is blocked). Stated in the panels topic.
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] unit tests for both members (available: provider on/off/wrong major/pick unresolved/unknown name; projectDir is
       the realpath through a symlinked project folder); drift tests
-- [ ] run `npm test`, typecheck, lint - must pass
+- [x] run `npm test`, typecheck, lint - must pass
 
 ### Task 7: Remove the reviewer's and editor's workarounds [model: sonnet]
 
@@ -271,31 +295,31 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   (+ rebuilt bundle), `plugins/reviewer/test/*`, `plugins/reviewer/docs/design.md`, `plugins/reviewer/FRICTION.md`
 - Modify: `plugins/editor/dist/host.js`, `plugins/editor/README.md`, `plugins/editor/test/*`
 
-- [ ] reviewer: `ctx.projectDir` instead of `pwd -P`; Edit hidden when `ctx.services.available('editor')` is false
+- [x] reviewer: `ctx.projectDir` instead of `pwd -P`; Edit hidden when `ctx.services.available('editor')` is false
       (re-checked when the overlay opens), no error-text match; a second open of the same file calls `focus()`
       on the existing handle; keys shortened if the storage limits require it
-- [ ] editor: when micro is missing, the message names the install command per system (`brew install micro`,
+- [x] editor: when micro is missing, the message names the install command per system (`brew install micro`,
       `sudo pacman -S micro`, `sudo apt install micro`, or https://micro-editor.github.io) and the `microPath` setting
-- [ ] update the plugins' design note Status line and strike or annotate each FRICTION.md entry with its outcome
-- [ ] update the plugin tests (`node:test`) for the new behaviour; rebuild the bundle (`npm run build:reviewer`)
-- [ ] run `npm run test:plugins`, `npm test` (the bundle byte test) and the bundled-plugins e2e - must pass
+- [x] update the plugins' design note Status line and strike or annotate each FRICTION.md entry with its outcome
+- [x] update the plugin tests (`node:test`) for the new behaviour; rebuild the bundle (`npm run build:reviewer`)
+- [x] run `npm run test:plugins`, `npm test` (the bundle byte test) and the bundled-plugins e2e - must pass
 
 ### Task 8: Verify acceptance criteria [model: sonnet]
-- [ ] every requirement in Overview and Decisions is implemented; every FRICTION.md entry has its outcome in the table
-- [ ] edge cases: a user with an old linked `cockpit.reviewer` gets the notice and the bundled copy; app-wide off +
+- [x] every requirement in Overview and Decisions is implemented; every FRICTION.md entry has its outcome in the table
+- [x] edge cases: a user with an old linked `cockpit.reviewer` gets the notice and the bundled copy; app-wide off +
       project on; a third-party provider replaces each bundled plugin
-- [ ] run full test suite: `npm test`, `npm run test:plugins`, `npm run test:coverage` (thresholds hold)
-- [ ] run e2e tests: `npm run test:e2e` (only `window-bounds.spec.ts:40,:62` may fail on this Linux host)
-- [ ] `npm run package:dir` and launch it with a temp `CC_COCKPIT_DATA_DIR`: the reviewer and editor are listed as built in
+- [x] run full test suite: `npm test`, `npm run test:plugins`, `npm run test:coverage` (thresholds hold)
+- [x] run e2e tests: `npm run test:e2e` (only `window-bounds.spec.ts:40,:62` may fail on this Linux host)
+- [x] `npm run package:dir` and launch it with a temp `CC_COCKPIT_DATA_DIR`: the reviewer and editor are listed as built in (smoke launch ran 15 s without crash; the built-in listing is asserted by e2e bundled-plugins.spec.ts, and release/linux-unpacked/resources/plugins holds browser, editor, reviewer)
 
 ### Task 9: [Final] Update documentation [model: sonnet]
-- [ ] `docs/design.md`: bundled set (browser, reviewer, editor), reserved ids, app-wide off, replacing through
+- [x] `docs/design.md`: bundled set (browser, reviewer, editor), reserved ids, app-wide off, replacing through
       picks, overlay close on reload, the new ctx members; the reviewer's design summarised or linked from `plugins/reviewer/docs/design.md`
-- [ ] `docs/features.md`: reviewer and editor as features; micro as an optional dependency (how to install it on
+- [x] `docs/features.md`: reviewer and editor as features; micro as an optional dependency (how to install it on
       Mac and Linux, and that Edit shows how to install it when it is missing); known limitations (outside-project files)
-- [ ] `README.md`: the reviewer and editor in the feature list, micro under requirements as optional
-- [ ] `CLAUDE.md`: `build:reviewer`, `test:plugins`, the reserved-id rule, and that bundled plugins use only the public API
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `README.md`: the reviewer and editor in the feature list, micro under requirements as optional
+- [x] `CLAUDE.md`: `build:reviewer`, `test:plugins`, the reserved-id rule, and that bundled plugins use only the public API
+- [x] move this plan to `docs/plans/completed/` (skipped - the harness moves it)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
@@ -310,5 +334,6 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 **External**
 - Archive or delete `~/Projects/cc-cockpit-reviewer` and `~/Projects/cc-cockpit-editor` once the move is merged
   (nothing was pushed from them).
-- Push the example repo's `sdk/types.ts` (new ctx members) after the merge.
+- Push the example repo's `sdk/types.ts` (new ctx members) and its renamed id (`example.plugin`, was `cockpit.example`)
+  after the merge; if the public index lists `cockpit.example`, replace that listing (the app now drops it).
 - Release when the user asks.

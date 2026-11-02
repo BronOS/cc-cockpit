@@ -28,6 +28,8 @@ with full Node access.
 ## Identity and settings
 
 - `ctx.api`: the API major (1). `ctx.pluginId`: your manifest id.
+- `ctx.projectDir`: the project folder, absolute and its real path (symlinks resolved, read when
+  the host started your plugin), the default cwd of `ctx.exec`. No need for `pwd -P`.
 - `ctx.settings`: a frozen snapshot `{ project, app }` of the validated values with schema
   defaults applied. A save replaces the whole snapshot: read `ctx.settings` again instead of
   keeping `ctx.settings.app` in a variable. A secret field is in it as plaintext when set and
@@ -41,13 +43,17 @@ with full Node access.
 ## Data
 
 - `ctx.storage.get(key)`, `set(key, value)`, `delete(key)`, `keys()`: per plugin per project
-  key-value store, JSON values.
+  key-value store, JSON values. Limits: a key is a non-empty string of at most 200 characters (any
+  characters; keys are never paths); a value at most 1 MiB as JSON text; keys plus values at most
+  16 MiB in total per plugin and project. No separate key count: the total caps it. Every call is
+  async: a write past a limit rejects (`RangeError`, the limit in its message) and stores nothing.
 - `ctx.dataDir`: `<data>/plugin-data/<projectId>/<pluginId>/`, created on first read.
 - `ctx.appStorage.get(key)`, `set(key, value)`, `delete(key)`, `keys()`, `increment(key, by = 1)`:
   the same store, but app-wide: every project window sees the same keys. `increment` adds `by`
   (a finite number; absent key counts as 0) and resolves the new value; it rejects when the
-  stored value is not a number. Values at most 1 MiB less 8 KiB as JSON; other limits as
-  `ctx.storage`.
+  stored value is not a number. Values at most 1 MiB less 8 KiB as JSON, and the key list (as
+  `keys()` returns it, as JSON) at most 1 MiB less 8 KiB, since each answer is one message; other
+  limits as `ctx.storage` (16 MiB in total per plugin, across all projects).
 - `ctx.appDataDir`: `<data>/plugin-data/_app/<pluginId>/`, the same in every project, created on
   first read. Use these two paths; don't derive others from the layout. Leave `storage.json` in
   either folder alone: it is the store's own file.
@@ -96,17 +102,20 @@ with full Node access.
   60 navigations a minute.
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
-  the result. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
+  the result. The plugin's overlays close when it stops: its host stops, or the plugin is reloaded
+  (a linked folder changed), disabled, updated or uninstalled; `result` resolves as
+  `{ kind: 'dismissed' }` in the old copy and the new copy starts with none. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
   a centered dialog at 75 % of the window, about 90 %, or the whole window below the top bar with a
   small margin; the title bar and close button stay, a terminal program is resized to fit. Any other
   value is refused.
-- `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close }`
+- `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close, focus }`
   (`open(spec)` is `start(spec).result`), so an `html` page and the plugin talk while it is open.
   `post(message)` sends JSON to the page (`ccPanel.onMessage`), queued until the page has loaded;
   `onMessage(fn)` hears what the page posts without a `result` key and returns a disposer;
-  `close()` dismisses it. `post`/`onMessage` throw for a terminal or url overlay. A message is at
+  `close()` dismisses it; `focus()` brings it to the front of the window's overlay stack (the others
+  stay open under it), e.g. on a second click for the file it already shows. `post`/`onMessage` throw for a terminal or url overlay. A message is at
   most 1,040,384 chars of JSON (1 MiB less 8 KiB for the transport); a larger one throws. Once the
-  overlay ended, `post` and `close` do nothing and the listeners are dropped. Esc, the close button
+  overlay ended, `post`, `close` and `focus` do nothing and the listeners are dropped. Esc, the close button
   and Cmd+Shift+W resolve `result` as `{ kind: 'dismissed' }` without asking the page, so a page
   that keeps a draft should post it as it goes (each change, or debounced), not only on submit.
 
@@ -114,6 +123,11 @@ with full Node access.
 
 - `ctx.sessions.list()`: the window's Claude tabs with their status. `needs-permission` also
   covers a question or plan-approval dialog (`tool` is `AskUserQuestion` or `ExitPlanMode`).
+  `files` lists what the tab's Claude wrote (Write, Edit, MultiEdit, NotebookEdit): absolute paths
+  as Claude gave them, files outside the project included, each once, in the order first written,
+  kept for the tab's life and capped at 500 (later files are not added). Only the ones inside
+  the project can reach a plugin through a click (see Files); make a path project-relative
+  yourself against `ctx.projectDir` when you need one.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change (at most 4 a second).
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
@@ -131,7 +145,8 @@ with full Node access.
   file in a pager) opens instead when the plugin is not active, has no listener, or every listener
   throws or rejects within 1 s; a listener still running after 1 s counts as handled, so one that
   awaits an overlay is fine. The app waits at most 2 s for the host. A file outside the project
-  always opens in the built-in viewer. Only this click goes through the hook: other plugins that
+  (a session can write anywhere: `/tmp`, another repo) always opens in the built-in viewer, so a
+  plugin only ever receives project-relative paths. Only this click goes through the hook: other plugins that
   want to open a file call a service of yours.
 
 ## Commands and misc
@@ -164,6 +179,13 @@ with full Node access.
     caller's own `ctx`, so it cannot be set or faked through arguments, unlike a `label` argument.
     It is not a security boundary: all plugins of a project share one JS realm, so it guards
     against honest mistakes, not against a hostile plugin.
+  - `ctx.services.available(name)`: `true` when a call on `name` would reach a provider now
+    (`name` is in your `services.uses`, an enabled plugin provides it at the same major, and with
+    several providers the project picked one), else `false`; never throws, an undeclared or
+    unknown name is `false`. Asked fresh each time, so call it when you need the answer (e.g. to
+    hide an Edit button when no editor is enabled) rather than once in `activate`. A provider
+    still activating, or whose activate failed, counts: a call waits for it, or rejects with the
+    failure.
   - No limits: a service call is a plain call inside the host process, it never reaches main, so
     there is no rate, concurrency, argument or result size cap and no timeout. A provider that
     must protect itself counts and caps its own callers (`caller()` says who).

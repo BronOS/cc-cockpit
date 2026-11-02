@@ -188,6 +188,13 @@ export interface AppSettings {
   updateDismissed?: string
   /** Plugin id to the git URL it was last installed from; outlives an uninstall (repo-change warning). */
   pluginRepos?: Record<string, string>
+  /**
+   * Bundled plugin ids switched off in every project ("Off in all projects", Settings > Plugins). Wins
+   * over the project records; each record's own switch comes back when the id leaves this list.
+   * Absent = none. Only bundled plugins count (main/plugins/enablement.ts offAppWide): the file is
+   * user-writable, and a third-party id here is ignored.
+   */
+  disabledBundled?: string[]
   /** pluginId -> app-wide plugin settings (validated against the manifest schema, Task 26). */
   pluginSettings: Record<string, unknown>
 }

@@ -11,9 +11,10 @@
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
 //   overlay.open    { pluginId, spec, handle? } -> OverlayResult on this project's window; `handle`
 //                                                                (ctx.overlay.start) names the overlay
-//                                                                in the two calls below
+//                                                                in the three calls below
 //   overlay.post    { pluginId, handle, message } -> boolean     to that html overlay's page
 //   overlay.close   { pluginId, handle }       -> boolean        dismiss it (false: it already ended)
+//   overlay.focus   { pluginId, handle }       -> boolean        bring it to the top of the window's stack
 //   secrets.get     { pluginId, key }          -> string | null  the plugin's app-wide secret store
 //   secrets.set     { pluginId, key, value }   -> null           (plugin-secrets.ts: limits, the
 //   secrets.delete  { pluginId, key }          -> null            reserved `setting:` prefix,
@@ -35,8 +36,8 @@
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
 //   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
 // and one event the host sends (host-manager routes it to contextDisposed):
-//   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls
-//                                                                and its webviews go
+//   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls,
+//                                                                its webviews and its overlays go
 //
 // `pluginId` must be one of the plugins this host process runs. Plugins sharing a host can post in
 // each other's name (host-manager.ts says why that is accepted); the boundary is the project.
@@ -58,6 +59,15 @@
 // A page's messages go to the channel registered here at open, so to this host and that plugin
 // only. Posts made before the overlay exists (the open is still checking the file) wait in the
 // handle's queue and go out, in order, once the manager created it.
+//
+// Overlays end with the plugin ctx that opened them (plan 20261102 Task 5, the user's call): a dev
+// reload, an unload (invalid manifest or settings) or a failed activate disposes the ctx inside a
+// host that keeps running, so `dispose()` (process gone) never comes for them, and a reviewer page
+// of the old copy stayed up talking to nobody. contextDisposed() dismisses every overlay that
+// plugin has open or is opening (one AbortController per plugin copy, passed to the manager as the
+// overlay's `peerGone`; dispose() aborts them all); the old copy's `result` resolves as dismissed and a
+// terminal overlay's program is ended as on ✕. A new controller is made for the next copy's first
+// open, which the port puts behind the event, so the new copy's overlays are never caught by it.
 //
 // Flood limits: a plugin is code the user installed, but a bug (a send in a loop, an overlay per
 // tick, a secret set in a loop, a sign-in per tick opening browser tabs) must not bury the user's
@@ -178,6 +188,8 @@ export interface HostApiDeps {
   postOverlay?(windowId: number, overlayId: string, text: string): boolean
   /** OverlayManager.close. */
   closeOverlay?(windowId: number, overlayId: string): boolean
+  /** OverlayManager.focus. Without it ctx.overlay.start's focus is refused. */
+  focusOverlay?(windowId: number, overlayId: string): boolean
   /** ctx.secrets (PluginSecrets). */
   secrets: PluginSecretsApi
   /** ctx.oauth (PluginOAuth). */
@@ -338,9 +350,14 @@ export class HostApi {
   private readonly openOverlays = new Map<string, number>()
   /** `<pluginId>/<handle>` -> its overlay (ctx.overlay.start), while the open is pending. */
   private readonly overlayLinks = new Map<string, OverlayLink>()
+  /**
+   * pluginId -> the `peerGone` of the overlays its running copy opens: aborted when that ctx ends
+   * (contextDisposed) or the process goes (dispose), which dismisses them.
+   */
+  private readonly overlayCopies = new Map<string, AbortController>()
   /** Panel keys this host badged: cleared when it goes, so a dead plugin leaves no stale count. */
   private readonly badged = new Set<string>()
-  /** Aborted at dispose: every overlay this host opened is dismissed (its opener is gone). */
+  /** Aborted at dispose: the oauth refreshes in flight end (overlays: `overlayCopies`). */
   private readonly gone = new AbortController()
   private readonly unsubscribe: () => void
   private readonly interval: number
@@ -372,6 +389,7 @@ export class HostApi {
       'overlay.open': (params) => this.overlay(params),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
+      'overlay.focus': (params) => this.overlayFocus(params),
       'secrets.get': (params) => this.secretsGet(params),
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
@@ -445,6 +463,12 @@ export class HostApi {
     // Its views go with it (the host sends this for a ctx that drove one): a reloaded copy starts
     // from an empty panel, and the old copy's preview tokens stop serving.
     this.destroyWebviews(pluginId)
+    // And its overlays (the host sends this for a ctx with one open or opening): the new copy
+    // starts clean. An open still checking its file finds the signal aborted and is dismissed as
+    // soon as it is created (OverlayManager.start).
+    const overlays = this.overlayCopies.get(pluginId)
+    this.overlayCopies.delete(pluginId)
+    overlays?.abort()
   }
 
   /** Whether this host set a badge on `panelKey` that is still showing. */
@@ -481,6 +505,9 @@ export class HostApi {
     this.revoke()
     this.disposed = true
     this.gone.abort()
+    // Every overlay this host opened is dismissed: its opener is gone.
+    for (const copy of this.overlayCopies.values()) copy.abort()
+    this.overlayCopies.clear()
     // The process is gone, so no `plugin.disposed` will come for its plugins: their views go now.
     // Plugins that declare webview panels too, navigated or not: a panel reports its placement from
     // mount, and main keeps it for the view created later.
@@ -618,6 +645,14 @@ export class HostApi {
     if (linkKey !== undefined && this.overlayLinks.has(linkKey)) throw new Error('overlay: that handle is already in use')
     const open = this.openOverlays.get(plugin.id) ?? 0
     if (open >= MAX_OPEN_OVERLAYS) throw new Error(`overlay: ${plugin.id} already has ${MAX_OPEN_OVERLAYS} overlays open`)
+    // Taken before the first await, like the slot: this request came from the copy that is running
+    // now, and a `plugin.disposed` for it arriving during the file check must still dismiss it.
+    let copy = this.overlayCopies.get(plugin.id)
+    if (!copy) {
+      copy = new AbortController()
+      this.overlayCopies.set(plugin.id, copy)
+    }
+    const peerGone = copy.signal
     // The slot is taken before the first await, so calls racing through the file read below
     // cannot get past the cap together.
     this.openOverlays.set(plugin.id, open + 1)
@@ -650,6 +685,9 @@ export class HostApi {
       // Built (and the html file checked) before the budget is spent, so a bad spec costs nothing.
       const managerSpec = await this.managerSpec(plugin, spec)
       this.alive()
+      // The copy that asked was disposed during the file check (a reload): nothing to show it, and
+      // no program started only to be ended.
+      if (peerGone.aborted) return { kind: 'dismissed' }
       if (!this.overlayStarts.take(plugin.id)) {
         throw new Error(`overlay: more than ${MAX_OVERLAYS_PER_WINDOW} overlays in ${OVERLAY_WINDOW_MS / 1000} s`)
       }
@@ -659,7 +697,7 @@ export class HostApi {
           this.scope.windowId,
           managerSpec,
           `plugin ${plugin.id}`,
-          this.gone.signal,
+          peerGone,
           channel
         )
       } catch (err) {
@@ -727,6 +765,18 @@ export class HostApi {
       return true
     }
     return this.deps.closeOverlay(this.scope.windowId, link.overlayId)
+  }
+
+  /**
+   * ctx.overlay.start's focus: bring it to the top of the window's stack. One still being created
+   * goes on top anyway, so that is true with nothing to do; false for one that ended.
+   */
+  private overlayFocus(params: unknown): boolean {
+    const { link } = this.overlayLink(params, 'overlay.focus')
+    if (!link) return false
+    if (!this.deps.focusOverlay) throw new Error('overlay.focus: not available')
+    if (link.overlayId === undefined) return true
+    return this.deps.focusOverlay(this.scope.windowId, link.overlayId)
   }
 
   /**

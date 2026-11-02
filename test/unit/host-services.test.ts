@@ -1265,3 +1265,64 @@ describe('ServiceRegistry caller()', () => {
     expect(seen).toEqual({ during: 'c', after: undefined })
   })
 })
+
+// Bundled reviewer/editor plan Task 6: `ctx.services.available(name)`. The reviewer hid its Edit
+// button by matching the "no enabled plugin" error text; this answers the same question by the
+// rule a call resolves with, fresh on every ask.
+describe('ServiceRegistry available()', () => {
+  it('is true with one enabled provider at the consumer major, and false once it is gone', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { editor: 1 }))
+    expect(reg.available('c', 'editor')).toBe(false)
+    reg.setSpec(provider('p', { editor: 1 }))
+    expect(reg.available('c', 'editor')).toBe(true)
+    // Disabled (the loader drops its spec): asked again, not cached.
+    reg.removeSpec('p')
+    expect(reg.available('c', 'editor')).toBe(false)
+  })
+
+  it('needs no activation or implementation: the selection decides, as for a call', () => {
+    const { reg, acts } = setup()
+    reg.setSpec(consumer('c', { editor: 1 }))
+    reg.setSpec(provider('p', { editor: 1 }))
+    acts.start('p')
+    expect(reg.available('c', 'editor')).toBe(true)
+    acts.finish('p', { state: 'errored', error: 'boom' })
+    expect(reg.available('c', 'editor')).toBe(true)
+  })
+
+  it('is false for a provider of another major', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { editor: 1 }))
+    reg.setSpec(provider('p', { editor: 2 }))
+    expect(reg.available('c', 'editor')).toBe(false)
+  })
+
+  it('with several providers, follows the pick: none or a stale one is false', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { editor: 1 }))
+    reg.setSpec(provider('a', { editor: 1 }))
+    reg.setSpec(provider('b', { editor: 2 }))
+    expect(reg.available('c', 'editor')).toBe(false)
+    reg.setChoices({ editor: 'gone' })
+    expect(reg.available('c', 'editor')).toBe(false)
+    reg.setChoices({ editor: 'a' })
+    expect(reg.available('c', 'editor')).toBe(true)
+    // The pick's major counts, not any provider's.
+    reg.setChoices({ editor: 'b' })
+    expect(reg.available('c', 'editor')).toBe(false)
+  })
+
+  it('never throws: an unknown, undeclared or non-string name is false', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { editor: 1 }))
+    reg.setSpec(provider('p', { editor: 1, other: 1 }))
+    expect(reg.available('c', 'nothing')).toBe(false)
+    // Provided, but not in c's uses: a call would be refused, so it is not available to c.
+    expect(reg.available('c', 'other')).toBe(false)
+    expect(reg.available('c', 'constructor')).toBe(false)
+    expect(reg.available('c', undefined)).toBe(false)
+    expect(reg.available('c', 42)).toBe(false)
+    expect(reg.available('unknown-plugin', 'editor')).toBe(false)
+  })
+})

@@ -224,6 +224,8 @@ describe('scaffoldPlugin', () => {
     const dir = join(root, 'p')
     expect(() => scaffoldPlugin({ dir, id: 'NoDots', panel: false, skill: false })).toThrow(PluginNewError)
     expect(() => scaffoldPlugin({ dir, cli: 'open', panel: false, skill: false })).toThrow(/command name/)
+    // Reserved for the plugins that ship with the app: the scaffold could never be linked.
+    expect(() => scaffoldPlugin({ dir, id: 'cockpit.todo', panel: false, skill: false })).toThrow(/reserved for plugins that ship with the app/)
     expect(existsSync(dir)).toBe(false)
   })
 

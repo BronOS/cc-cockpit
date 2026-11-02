@@ -15,8 +15,8 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright; the OAuth spec needs `openssl` on PATH).
 - `npm run typecheck`, `npm run lint`.
-- `npm run build` (runs `build:hello` and `build:browser` first), `npm run build:hello` (rebuild after editing
-  `plugins/hello`; the dist is committed), `npm run build:browser` (same for `plugins/browser`; its
+- `npm run build` (runs `build:hello`, `build:browser` and `build:reviewer` first), `npm run build:hello` (rebuild after editing
+  `plugins/hello`; the dist is committed), `npm run build:reviewer` (bundles the overlay page of `plugins/reviewer` into the committed `overlay/review.bundle.js`; the reviewer and editor hosts are plain JS, with no build), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
   master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
   pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
@@ -46,7 +46,7 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 - `CC_COCKPIT_TEST=1` enables test hooks on `globalThis.__ccTest`; never active in packaged builds.
   `CC_COCKPIT_FAKE_SECRETS=1` swaps the keychain for an in-memory store; it needs
   `CC_COCKPIT_TEST=1` and is ignored when packaged.
-  `CC_COCKPIT_NO_BUNDLED=1` skips the bundled plugins (browser); it too needs `CC_COCKPIT_TEST=1`
+  `CC_COCKPIT_NO_BUNDLED=1` skips all bundled plugins (browser, reviewer, editor); it too needs `CC_COCKPIT_TEST=1`
   and is ignored when packaged (`isTestRun`, `main/test-run.ts`, checked in `main/plugins/bundled.ts`).
 - Electron takes one `registerSchemesAsPrivileged` call: `cc-overlay`, `cc-plugin` and `cc-preview`
   are registered together (`overlay-protocol.ts`, `plugin-protocol.ts`, `preview-protocol.ts`). A new scheme goes in that call.
@@ -72,6 +72,11 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
   never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
 - Plugin `ccc` commands and their stdin are always bounded (30 s plugin limit, 40 s client deadline and stdin read, exit 124
   `CLI_TIMEOUT_CODE`): a new wait in `src/cli/client.ts` needs a deadline, never an unbounded await.
+- Bundled plugins (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `BUNDLED_PLUGINS` in `main/plugins/bundled.ts`) use only
+  the public plugin API: no privilege for `cockpit.*` beyond being shipped, so a gap goes into the API or the guide, never a
+  special case. Ids starting with `cockpit.` are reserved (`isReservedPluginId`): they load only from the bundled root (checked
+  at load by realpath) and every install path and the marketplace tools refuse them; templates use `example.hello` and
+  `example.plugin`. A bundled plugin can be off app-wide (`disabledBundled`) and is replaced through the picks, with no priority.
 - Plugin settings schemas may not use regexes (ReDoS in main). `"format": "secret"` goes only on a
   top-level string property, with no `default` and no keyword but type/format/title/description/
   `$comment`, and a schema with one has no `$ref`/`$anchor`/`$id` or other reference keyword

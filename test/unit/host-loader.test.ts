@@ -323,6 +323,21 @@ describe('PluginLoader services', () => {
     expect(svc().inActivate).toBeUndefined()
     expect(await (svc().handle as { hi(): Promise<unknown> }).hi()).toBe('a.consumer')
   })
+
+  it('ctx.services.available() answers for the bound plugin, fresh on each ask', async () => {
+    svc()
+    write(join(root, 'provider'), "exports.activate = (ctx) => { ctx.services.provide('greet', { hi: () => 'hi' }) }")
+    write(join(root, 'consumer'), "exports.activate = (ctx) => { __svc.available = (n) => ctx.services.available(n) }")
+    const loader = makeLoader()
+    await loader.activateAll([consumer()])
+    const available = svc().available as (name: unknown) => boolean
+    expect(available('greet')).toBe(false)
+    await loader.activateAll([provider()])
+    expect(available('greet')).toBe(true)
+    expect(available('unknown')).toBe(false)
+    await loader.unload('a.provider')
+    expect(available('greet')).toBe(false)
+  })
 })
 
 describe('PluginLoader timeouts', () => {
@@ -433,6 +448,8 @@ describe('ctx basics', () => {
     const ctx = createContext(hostSpec({ id: 'x.y', dir: '/d', main: 'm.js' }), { log: (...a) => lines.push(a) })
     expect(ctx.api).toBe(1)
     expect(ctx.pluginId).toBe('x.y')
+    // As main sent it (main resolves the real path: host-manager.test.ts).
+    expect(ctx.projectDir).toBe(hostSpec({ id: 'x.y', dir: '/d', main: 'm.js' }).projectDir)
     ctx.log.warn('count', 3, { a: 1 })
     expect(lines).toEqual([['x.y', 'warn', 'count 3 {"a":1}']])
   })

@@ -31,3 +31,5 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      # The bundled reviewer and editor keep their own node:test suites (plain JS, no build).
+      - run: npm run test:plugins

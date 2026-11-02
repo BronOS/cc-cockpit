@@ -10,7 +10,7 @@
 //
 // What exists follows what main has: the tab list, setTheme, openProject, windowLook, socket, the session
 // registry's entries, the send gate's send / cancelQueued, the zone layout (layout,
-// pluginPanels, panelStatus), the overlay stack (openOverlay, overlayResult, overlays),
+// pluginPanels, panelStatus), the overlay stack (openOverlay, overlayResult, overlays, focusOverlay),
 // `ccc notify` texts (notifications) and the plugin hosts (linkPlugin, enablePlugin, hostStatus,
 // savePluginProjectSettings, pluginCommands, runPluginCommand).
 

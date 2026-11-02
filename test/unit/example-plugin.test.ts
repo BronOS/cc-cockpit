@@ -93,7 +93,7 @@ describe('examples/plugin', () => {
   it('the manifest passes the app validation', async () => {
     const result = await loadManifest(EXAMPLE)
     if (!result.ok) throw new Error(result.errors.join('; '))
-    expect(result.manifest.id).toBe('cockpit.example')
+    expect(result.manifest.id).toBe('example.plugin')
     expect(result.manifest.contributes?.panels?.map((p) => p.id)).toEqual(['main'])
   })
 

@@ -46,7 +46,7 @@ test('ccc browser open shows a local page in the built-in panel; turning it off 
   // On by default: the host starts without any enabling.
   await expect
     .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
-    .toMatchObject({ running: true, plugins: [{ id: ID, state: 'active' }] })
+    .toMatchObject({ running: true, plugins: expect.arrayContaining([{ id: ID, state: 'active' }]) })
 
   const core = join(cockpit.dataDir, 'claude-plugins', 'core')
   const skill = join(cockpit.dataDir, 'claude-plugins', ID)
@@ -106,7 +106,7 @@ test('ccc browser open of a closed localhost port reports the error; url and the
   const { page } = cockpit
   await expect
     .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
-    .toMatchObject({ running: true, plugins: [{ id: ID, state: 'active' }] })
+    .toMatchObject({ running: true, plugins: expect.arrayContaining([{ id: ID, state: 'active' }]) })
   await cockpit.newTab('claude')
   await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
 

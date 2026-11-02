@@ -39,7 +39,7 @@ What the index does give you:
    out of the published `index.json`.
 
 The rules: `repo` is `https://` with no credentials; `commit` is the 40-character lower-case hash; `id` and `version`
-are as in `plugin.json`; `name` and `author` are at most 100 characters, `description` at most 1000; no unknown fields.
+are as in `plugin.json`, and an `id` starting with `cockpit.` is refused (reserved for plugins the app ships); `name` and `author` are at most 100 characters, `description` at most 1000; no unknown fields.
 
 The `check` workflow clones your repo at the tag, runs nothing from it, and compares `commit` and the `id`, `version`
 and `api` of `plugin.json`, and checks that the `main` file exists. A person then reviews and merges a new listing.

@@ -1904,6 +1904,16 @@ iframe:focus-visible {
 .settings-item.missing .settings-item-meta {
   opacity: 0.6;
 }
+/* A bundled plugin's "Off in all projects" switch among a row's actions, its words after it. */
+.settings-inline-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  white-space: nowrap;
+}
 .settings-confirm {
   margin-right: 4px;
   font-size: var(--cc-text-sm);

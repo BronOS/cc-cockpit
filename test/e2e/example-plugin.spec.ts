@@ -7,7 +7,7 @@ import type { LayoutView } from '../../src/shared/ipc'
 import { expect, test } from './fixtures'
 
 const EXAMPLE = join(__dirname, '..', '..', 'examples', 'plugin')
-const ID = 'cockpit.example'
+const ID = 'example.plugin'
 
 test('example plugin: panel, click counter, badge, storage and command', async ({ cockpit }) => {
   await cockpit.hook('linkPlugin', EXAMPLE)

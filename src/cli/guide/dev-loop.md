@@ -40,6 +40,8 @@ A linked folder is watched: after you change a file the plugin host reloads that
 (no restart of the others). A manifest problem then shows as the plugin's state in `ccc plugin list`. A plugin
 command run right after an edit waits for the reloaded copy (within its 30 s limit, else exit
 124) and runs there; one already running in the old copy when the reload starts ends with exit 1.
+The plugin's open overlays close on a reload (their `result` resolves as dismissed in the old
+copy): open the overlay again to see the new code, and have a page post its draft as it goes.
 
 Nested plugins are fine: a folder inside a linked plugin that has its own `plugin.json` is another
 plugin, and the parent's watcher ignores it (as it does `node_modules` and `.git`). Edit it and
@@ -74,6 +76,10 @@ A plugin with `contributes.settings` can be configured from the tab, no Settings
 - `ccc plugin unlink <id>` removes a linked plugin at once, with no dialog, and deletes that plugin's stored secrets
   (the folder stays untouched); unlink only what the person asked for. A plugin
   installed from git is managed in Settings > Plugins.
+- A plugin that now ships with the app (its `cockpit.` id, e.g. `cockpit.reviewer` or `cockpit.editor`
+  developed as a linked folder before it was built in) cannot stay linked: `ccc plugin unlink <id>` the old copy
+  before installing the app version that ships it. If it is still linked, the app drops the linked record at
+  its next start (logged) and runs the built-in copy; project enablement and settings carry over, same id.
 
 ## Checklist when a plugin does not show up
 

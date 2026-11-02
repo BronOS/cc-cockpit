@@ -133,6 +133,7 @@ beforeEach(() => {
     openOverlay: async (windowId, spec, opener, peerGone, channel) => overlays.open(windowId, spec, opener, peerGone, channel),
     postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
     closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
+    focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
     secrets: unusedSecrets,
     oauth: unusedOAuth,
     log: () => {}
@@ -484,7 +485,8 @@ describe('overlay.open', () => {
       expect(t.results).toEqual([{ kind: 'dismissed' }])
       for (const signal of signals) expect(getEventListeners(signal, 'abort')).toEqual([])
     }
-    expect(signals.size).toBe(1)
+    // One signal per plugin copy (a.one, a.two), reused by each of its overlays.
+    expect(signals.size).toBe(2)
     // A spec the manager rejects (an empty argv) gives its token back: a.one keeps what it has left.
     for (let i = 0; i < MAX_OVERLAYS_PER_WINDOW; i++) {
       await expect(call('overlay.open', { pluginId: 'a.one', spec: { kind: 'terminal', argv: [] } })).rejects.toThrow('argv')
@@ -493,6 +495,7 @@ describe('overlay.open', () => {
     const last = track(call('overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com/last' } }))
     await waitOpen(WIN_A, 1)
     expect(getEventListeners([...signals][0]!, 'abort')).toHaveLength(1)
+    expect(getEventListeners([...signals][1]!, 'abort')).toEqual([])
     apis[0]!.dispose()
     await settled(last)
     expect(last.results).toEqual([{ kind: 'dismissed' }])
@@ -658,6 +661,82 @@ describe('overlay messages (ctx.overlay.start)', () => {
     await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
     expect(overlays.pop(WIN_A)).toBe(true)
     await expect(later.result).resolves.toEqual({ kind: 'dismissed' })
+  })
+
+  it("focus brings the plugin's own overlay to the top of its window; a no-op answer once it ended", async () => {
+    const call = hostA()
+    const { result, id } = await openHtml(call)
+    // Still being created: it lands on top anyway, nothing to do.
+    await expect(call('overlay.focus', { pluginId: 'a.one', handle: H })).resolves.toBe(true)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    const mine = id()
+    // Another overlay (a.two's) opens over it.
+    void call('overlay.open', { pluginId: 'a.two', spec: { kind: 'url', url: 'https://example.com/two' }, handle: 'two-handle' })
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(2))
+    expect(overlays.infos(WIN_A).at(-1)!.id).not.toBe(mine)
+    // Only the opener reaches it: a.two under the same handle, another window's host, an unknown plugin.
+    await expect(call('overlay.focus', { pluginId: 'a.two', handle: H })).resolves.toBe(false)
+    const other = hostFor({ ...scopeA(), projectId: B, windowId: WIN_B, projectDir: projB })
+    await expect(other('overlay.focus', { pluginId: 'a.one', handle: H })).resolves.toBe(false)
+    await expect(call('overlay.focus', { pluginId: 'b.one', handle: H })).rejects.toThrow('unknown plugin')
+    await expect(call('overlay.focus', { pluginId: 'a.one', handle: 'a/b' })).rejects.toThrow('bad handle')
+    expect(overlays.infos(WIN_A).at(-1)!.id).not.toBe(mine)
+    // The owner: on top, both still open, the renderer told.
+    emitted = []
+    await expect(call('overlay.focus', { pluginId: 'a.one', handle: H })).resolves.toBe(true)
+    expect(overlays.infos(WIN_A).map((o) => o.id)).toHaveLength(2)
+    expect(overlays.infos(WIN_A).at(-1)!.id).toBe(mine)
+    expect(emitted.filter((e) => e.channel === 'overlays.updated')).toHaveLength(1)
+    // Already on top: true, nothing changes.
+    await expect(call('overlay.focus', { pluginId: 'a.one', handle: H })).resolves.toBe(true)
+    expect(emitted.filter((e) => e.channel === 'overlays.updated')).toHaveLength(1)
+    // Ended: false (the host makes it a no-op).
+    await call('overlay.close', { pluginId: 'a.one', handle: H })
+    await expect(result).resolves.toEqual({ kind: 'dismissed' })
+    await expect(call('overlay.focus', { pluginId: 'a.one', handle: H })).resolves.toBe(false)
+  })
+
+  it('refuses focus when main has no focusOverlay', async () => {
+    delete deps.focusOverlay
+    const call = hostA()
+    await openHtml(call)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    await expect(call('overlay.focus', { pluginId: 'a.one', handle: H })).rejects.toThrow('overlay.focus: not available')
+  })
+
+  it("a plugin's ctx ending (plugin.disposed) dismisses its overlays only; the next copy's open normally", async () => {
+    const call = hostA()
+    const api = apis[0]!
+    const html = await openHtml(call)
+    const term = call('overlay.open', { pluginId: 'a.one', spec: { kind: 'terminal', argv: ['tig'] }, handle: 'term-handle' })
+    const two = call('overlay.open', { pluginId: 'a.two', spec: { kind: 'url', url: 'https://example.com/two' }, handle: 'two-handle' })
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(3))
+    const pty = overlayBackend.last
+    // An open of the old copy still checking its file when the dispose arrives.
+    const late = call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html' }, handle: 'late-handle' })
+    // The handler starts a microtask later (hostFor); the RPC port runs it before the event behind it.
+    await Promise.resolve()
+    api.contextDisposed({ pluginId: 'a.one' })
+    await expect(html.result).resolves.toEqual({ kind: 'dismissed' })
+    await expect(term).resolves.toEqual({ kind: 'dismissed' })
+    await expect(late).resolves.toEqual({ kind: 'dismissed' })
+    // The terminal's program is ended as on a close; a.two's overlay stays.
+    expect(pty.killed).toBeGreaterThan(0)
+    expect(overlays.infos(WIN_A)).toHaveLength(1)
+    expect(overlays.infos(WIN_A)[0]).toMatchObject({ kind: 'url', url: 'https://example.com/two' })
+    // The next copy (same plugin id, same handle even) opens and keeps its overlay.
+    const next = await openHtml(call)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(2))
+    // A second dispose of a.two leaves a.one's new overlay alone; one for an id without overlays is a no-op.
+    api.contextDisposed({ pluginId: 'a.two' })
+    await expect(two).resolves.toEqual({ kind: 'dismissed' })
+    api.contextDisposed({ pluginId: 'a.two' })
+    api.contextDisposed({ pluginId: 5 })
+    expect(overlays.infos(WIN_A)).toHaveLength(1)
+    // The host going still dismisses what is left.
+    api.dispose()
+    await expect(next.result).resolves.toEqual({ kind: 'dismissed' })
+    expect(overlays.infos(WIN_A)).toEqual([])
   })
 
   it('refuses a bad handle, a reused one, an oversize message and a full queue', async () => {

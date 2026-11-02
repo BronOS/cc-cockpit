@@ -311,6 +311,9 @@ export class HostContexts {
     return Object.freeze({
       api: PLUGIN_API_VERSION,
       pluginId: spec.id,
+      // Main's realpath of the project folder at host start (HostManager.buildSpec); the folder
+      // does not move while its window is open. Friction (reviewer): the host ran `pwd -P` for it.
+      projectDir: spec.projectDir,
       // Getters: the snapshot is replaced when main pushes new settings, and the data dir is made
       // the first time a plugin asks for it ("created on demand").
       get settings(): PluginSettings {
@@ -383,7 +386,10 @@ export class HostContexts {
         // learn who is calling it. No alive() check, unlike the members above: a call already running
         // when the plugin is released finishes on the old copy (see ServiceRegistry.release), and a
         // read with no side effect must not break it.
-        caller: () => servicesOf().caller(spec.id)
+        caller: () => servicesOf().caller(spec.id),
+        // Resolved on every call (never cached): a provider enabled, disabled or re-picked since the
+        // last ask is seen at once. A read with no side effect, so no alive() check either.
+        available: (name: string) => servicesOf().available(spec.id, name)
       }),
       log: Object.freeze(logger),
       notify
@@ -399,9 +405,9 @@ export class HostContexts {
     if (!rt || rt.disposed) return
     rt.disposed = true
     this.runtimes.delete(pluginId)
-    if (rt.oauthCalls.size > 0 || rt.webviewUsed || (rt.spec.webviewPanels?.length ?? 0) > 0) {
-      // Main aborts the plugin's pending authorize and refreshes and closes its web views
-      // (HostApi.contextDisposed). Sent before anything else of the id can be: a new copy's
+    if (rt.oauthCalls.size > 0 || rt.webviewUsed || (rt.spec.webviewPanels?.length ?? 0) > 0 || this.overlays.has(pluginId)) {
+      // Main aborts the plugin's pending authorize and refreshes, closes its web views and
+      // dismisses its overlays (HostApi.contextDisposed). Sent before anything else of the id can be: a new copy's
       // create() runs this first, and the port keeps order, so main never takes the new copy's
       // sign-in (or view) for this one. Only when there is something: main has no sign-in of this
       // ctx that the host is not still waiting on (main answers each call only after its entry is

@@ -1,17 +1,18 @@
 // Bundled plugins (Claude-operable foundation, Task 9): indexed at every start from a fixed
 // allowlist, validated like any plugin, never copied or uninstalled, default-on per project with a
 // stored opt-out, first in the CLI name-clash order. Real installer over temp dirs; no Electron.
-import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BUNDLED_PLUGINS, bundledPluginSpecs, bundledRoot, type BundledPluginSpec } from '../../src/main/plugins/bundled'
-import { enabledPluginIds, pluginEnabledIn } from '../../src/main/plugins/enablement'
+import { enabledPluginIds, offAppWide, pluginEnabledIn, pluginOnInRecord, type EnablementPlugin } from '../../src/main/plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from '../../src/main/plugins/installer'
 import { PluginIndex } from '../../src/main/plugins/plugin-index'
 import { ProjectSettingsService, type ProjectSettingsDeps } from '../../src/main/settings/project-settings-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
 import { defaultLayout } from '../../src/shared/layout'
+import { BUILTIN_VIEWER, OPEN_FILE_PICK, openFileStatus, selectOpenFile, selectProvider, serviceStatus, type OpenFilePlugin, type ServicePlugin } from '../../src/shared/services'
 import type { ProjectRecord, ProjectView } from '../../src/shared/types'
 
 const FIXTURES = join(__dirname, '..', 'fixtures', 'plugins')
@@ -78,9 +79,14 @@ function linkedFolder(id: string, cli: string[]): string {
 }
 
 describe('allowlist and the test switch', () => {
-  it('ships the browser plugin, on by default', () => {
-    expect(BUNDLED_PLUGINS).toEqual([{ id: BID, dir: 'browser', enabledByDefault: true }])
-    expect(bundledPluginSpecs('/r', {}, false)).toEqual([{ id: BID, dir: join('/r', 'browser'), enabledByDefault: true }])
+  it('ships the browser, reviewer and editor plugins, on by default', () => {
+    const all = [
+      { id: BID, dir: 'browser', enabledByDefault: true },
+      { id: 'cockpit.reviewer', dir: 'reviewer', enabledByDefault: true },
+      { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true }
+    ]
+    expect(BUNDLED_PLUGINS).toEqual(all)
+    expect(bundledPluginSpecs('/r', {}, false)).toEqual(all.map((p) => ({ ...p, dir: join('/r', p.dir) })))
   })
 
   it('finds the folder in the repo (dev) or in resources (packaged)', () => {
@@ -92,9 +98,9 @@ describe('allowlist and the test switch', () => {
     const off = { CC_COCKPIT_TEST: '1', CC_COCKPIT_NO_BUNDLED: '1' }
     expect(bundledPluginSpecs('/r', off, false)).toEqual([])
     // Without CC_COCKPIT_TEST the switch means nothing, and a packaged app ignores it too.
-    expect(bundledPluginSpecs('/r', { CC_COCKPIT_NO_BUNDLED: '1' }, false)).toHaveLength(1)
-    expect(bundledPluginSpecs('/r', off, true)).toHaveLength(1)
-    expect(bundledPluginSpecs('/r', { CC_COCKPIT_TEST: '1' }, false)).toHaveLength(1)
+    expect(bundledPluginSpecs('/r', { CC_COCKPIT_NO_BUNDLED: '1' }, false)).toHaveLength(BUNDLED_PLUGINS.length)
+    expect(bundledPluginSpecs('/r', off, true)).toHaveLength(BUNDLED_PLUGINS.length)
+    expect(bundledPluginSpecs('/r', { CC_COCKPIT_TEST: '1' }, false)).toHaveLength(BUNDLED_PLUGINS.length)
   })
 })
 
@@ -169,15 +175,94 @@ describe('indexing', () => {
     expect(index.get(BID)).toBeDefined()
   })
 
-  it('does not take an id a person installed another way', async () => {
+})
+
+/** plugins.json as an older app (or a hand edit) left it. */
+function writeIndex(plugins: unknown[]): void {
+  writeFileSync(join(dataDir, 'plugins.json'), JSON.stringify({ schemaVersion: 1, plugins }))
+}
+
+describe('reserved cockpit.* ids load only from the bundled root', () => {
+  const RESERVED = /ids starting with cockpit\. are reserved for plugins that ship with the app/
+
+  it('an old linked copy of a now-bundled plugin is dropped at start: the bundled one runs, same id', async () => {
+    // A user who linked the reviewer from its own repo before it shipped.
     const mine = linkedFolder(BID, [])
-    const first = newInstaller(undefined)
-    await first.installer.load()
-    await first.installer.link(mine)
+    writeIndex([{ id: BID, version: '0.9.0', source: { kind: 'linked', path: mine }, state: { ok: true } }])
     const dir = bundledFolder()
-    const { index } = await restart([spec(dir)])
-    expect(index.get(BID)?.source).toEqual({ kind: 'linked', path: mine })
-    expect(logs.join('\n')).toMatch(/already installed from a linked source/)
+    const { installer, index } = await restart([spec(dir)])
+    expect(index.get(BID)).toMatchObject({ source: { kind: 'bundled', path: dir }, state: { ok: true }, enabledByDefault: true })
+    expect(installer.get(BID)?.dir).toBe(dir)
+    expect(logs.join('\n')).toContain(`plugin ${BID} linked from ${mine} dropped: the app ships it; the built-in copy is used`)
+    // The folder is the developer's: never touched.
+    expect(readFileSync(join(mine, 'plugin.json'), 'utf8')).toContain(BID)
+    // Project enablement is keyed by the id, so it carries over unchanged.
+    expect(pluginEnabledIn({ enabledPlugins: [BID] }, { id: BID, enabledByDefault: index.get(BID)?.enabledByDefault })).toBe(true)
+    expect(pluginEnabledIn({ enabledPlugins: [], disabledPlugins: [BID] }, { id: BID, enabledByDefault: true })).toBe(false)
+  })
+
+  it('a git record of a bundled id is dropped with its folder', async () => {
+    const folder = join(dataDir, 'plugins', `${BID}@0.9.0`)
+    cpSync(bundledFolder(BID, [], '0.9.0'), folder, { recursive: true })
+    writeIndex([{ id: BID, version: '0.9.0', source: { kind: 'git', url: 'https://x.invalid/b.git', tag: 'v0.9.0' }, state: { ok: true } }])
+    const { index } = await restart([spec(bundledFolder())])
+    expect(index.get(BID)?.source.kind).toBe('bundled')
+    expect(() => readFileSync(join(folder, 'plugin.json'))).toThrow()
+    expect(logs.join('\n')).toMatch(/installed from https:\/\/x\.invalid\/b\.git dropped/)
+  })
+
+  it('a git record of a bundled id survives while the bundled folder is missing', async () => {
+    const folder = join(dataDir, 'plugins', `${BID}@0.9.0`)
+    cpSync(bundledFolder(BID, [], '0.9.0'), folder, { recursive: true })
+    writeIndex([{ id: BID, version: '0.9.0', source: { kind: 'git', url: 'https://x.invalid/b.git', tag: 'v0.9.0' }, state: { ok: true } }])
+    const { index } = await restart([spec(join(dataDir, 'nowhere'))])
+    expect(index.get(BID)?.source.kind).toBe('git')
+    expect(readFileSync(join(folder, 'plugin.json'), 'utf8')).toContain(BID)
+  })
+
+  it('a hand-edited linked record under a reserved id the app does not ship is refused at load, with the reason', async () => {
+    const other = linkedFolder('cockpit.other', [])
+    writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'linked', path: other }, state: { ok: true } }])
+    const { installer, index } = await restart([spec(bundledFolder())])
+    const got = installer.get('cockpit.other')
+    expect(got?.state.ok === false && got.state.reason).toMatch(RESERVED)
+    expect(got?.manifest).toBeUndefined()
+    // Stays listed (Settings > Plugins shows it refused, like any invalid plugin) and is not dropped.
+    expect(index.get('cockpit.other')?.source).toEqual({ kind: 'linked', path: other })
+    expect(logs.join('\n')).toMatch(/plugin cockpit\.other disabled: ids starting with cockpit\./)
+    // The bundled one next to it is unaffected.
+    expect(installer.get(BID)?.state).toEqual({ ok: true })
+  })
+
+  it('a linked symlink into the bundled root is refused: only the bundled entry may use the folder', async () => {
+    // The app ships cockpit.other in its bundled root, but this run's allowlist has only BID: a linked
+    // record pointing at that folder through a symlink must not borrow the reserved id.
+    const shipped = bundledFolder('cockpit.other')
+    const link = join(dataDir, 'via-link')
+    symlinkSync(shipped, link)
+    writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'linked', path: link }, state: { ok: true } }])
+    const { installer } = await restart([spec(bundledFolder())])
+    const state = installer.get('cockpit.other')?.state
+    expect(state?.ok === false && state.reason).toMatch(RESERVED)
+  })
+
+  it('a bundled record under a reserved id outside the allowlist is refused before load and dropped by it', async () => {
+    // A plugin an older app shipped (or a hand-edited record): `kind: 'bundled'` alone is not enough.
+    const shipped = bundledFolder('cockpit.other')
+    writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'bundled', path: shipped }, state: { ok: true } }])
+    const { installer, index } = newInstaller([spec(bundledFolder())])
+    // No refresh has seen it yet: view() alone keeps it from the hosts.
+    const got = installer.get('cockpit.other')
+    expect(got?.state.ok === false && got.state.reason).toMatch(RESERVED)
+    expect(got?.manifest).toBeUndefined()
+    await installer.load()
+    expect(index.get('cockpit.other')).toBeUndefined()
+  })
+
+  it('link refuses a copy of a bundled plugin with the reason, not "uninstall it first"', async () => {
+    const { installer, index } = await restart([spec(bundledFolder())])
+    await expect(installer.link(linkedFolder(BID, []))).rejects.toThrow(RESERVED)
+    expect(index.get(BID)?.source.kind).toBe('bundled')
   })
 })
 
@@ -209,14 +294,15 @@ describe('enabledByDefault', () => {
     expect(index.get(BID)?.enabledByDefault).toBeUndefined()
   })
 
-  it('a linked entry holding a bundled id gets no default-on', async () => {
-    const first = newInstaller(undefined)
-    await first.installer.load()
-    await first.installer.link(linkedFolder(BID, []))
-    const { index } = await restart([spec(bundledFolder())])
+  it('a linked entry holding a bundled id gets no default-on, and does not run', async () => {
+    // As a run with no bundled plugins (the test switch) would see an old linked record.
+    const mine = linkedFolder(BID, [])
+    writeIndex([{ id: BID, version: '1.0.0', source: { kind: 'linked', path: mine }, state: { ok: true }, enabledByDefault: true }])
+    const { installer, index } = await restart([])
     const entry = index.get(BID)
     expect(entry?.enabledByDefault).toBeUndefined()
     expect(pluginEnabledIn({ enabledPlugins: [] }, { id: BID, enabledByDefault: entry?.enabledByDefault })).toBe(false)
+    expect(installer.get(BID)?.state.ok).toBe(false)
   })
 
   it('on for a record that never heard of it, off once listed in disabledPlugins, on again when enabled', () => {
@@ -296,8 +382,11 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
     }
   }
 
-  /** A project record kept as JSON between calls, the way registry.json keeps it across a restart. */
-  function rig(stored?: string) {
+  /**
+   * A project record kept as JSON between calls, the way registry.json keeps it across a restart.
+   * `appOff`: app.json's `disabledBundled`.
+   */
+  function rig(stored?: string, appOff?: unknown) {
     let json =
       stored ??
       JSON.stringify({
@@ -323,6 +412,7 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
         }
       },
       plugins: { list: () => [bundledPlugin()], get: (id) => (id === BID ? bundledPlugin() : undefined) },
+      disabledBundled: () => appOff,
       checkSettings: () => ({ ok: true }),
       enabledChanged: async () => {
         restarts.push('restart')
@@ -359,5 +449,104 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
     // Switching a default-on plugin off twice changes nothing and does not restart the host again.
     await c.service.setEnabled(P, BID, true)
     expect(c.restarts).toHaveLength(0)
+  })
+
+  it('off in all projects: the view says so, turning it on here is refused and stores nothing', async () => {
+    const r = rig(undefined, [BID])
+    expect(r.service.view(P).plugins[0]).toMatchObject({ id: BID, enabled: false, offInAllProjects: true })
+    const before = r.json()
+    await expect(r.service.setEnabled(P, BID, true)).rejects.toThrow(/off in all projects/)
+    // Off here is already the answer: no write, no restart.
+    await r.service.setEnabled(P, BID, false)
+    expect(r.json()).toBe(before)
+    expect(r.restarts).toEqual([])
+  })
+
+  it("the project's own choice comes back when the app-wide switch is undone", async () => {
+    const a = rig()
+    await a.service.setEnabled(P, BID, false)
+    // Off here, then off everywhere, then back on everywhere: still off here.
+    expect(rig(a.json(), [BID]).service.view(P).plugins[0]!.enabled).toBe(false)
+    expect(rig(a.json(), []).service.view(P).plugins[0]!.enabled).toBe(false)
+    // A project that never switched it: on again.
+    expect(rig(undefined, []).service.view(P).plugins[0]).toMatchObject({ enabled: true })
+    expect(rig(undefined, []).service.view(P).plugins[0]).not.toHaveProperty('offInAllProjects')
+  })
+})
+
+describe('off in all projects (disabledBundled)', () => {
+  const bundled = { id: BID, enabledByDefault: true, source: { kind: 'bundled' } }
+  const linked = { id: 'test.jira', source: { kind: 'linked' } }
+
+  it('wins over every project record, for a bundled plugin only', () => {
+    expect(pluginEnabledIn({ enabledPlugins: [] }, bundled, [BID])).toBe(false)
+    // Even listed as on in the record.
+    expect(pluginEnabledIn({ enabledPlugins: [BID] }, bundled, [BID])).toBe(false)
+    expect(enabledPluginIds({ enabledPlugins: [BID, 'test.jira'] }, [bundled, linked], [BID])).toEqual(['test.jira'])
+    // app.json is user-writable: a third-party id in the list does nothing.
+    expect(pluginEnabledIn({ enabledPlugins: ['test.jira'] }, linked, ['test.jira'])).toBe(true)
+    expect(offAppWide(linked, ['test.jira'])).toBe(false)
+    expect(enabledPluginIds({ enabledPlugins: ['test.jira'] }, [bundled, linked], ['test.jira'])).toEqual(['test.jira', BID])
+  })
+
+  it('a damaged or absent list counts as empty', () => {
+    for (const bad of [undefined, null, 'x', 7, { [BID]: true }]) {
+      expect(pluginEnabledIn({ enabledPlugins: [] }, bundled, bad)).toBe(true)
+      expect(enabledPluginIds({ enabledPlugins: [] }, [bundled], bad)).toEqual([BID])
+    }
+  })
+
+  it("pluginOnInRecord is the record's answer without the app-wide switch", () => {
+    expect(pluginOnInRecord({ enabledPlugins: [] }, bundled)).toBe(true)
+    expect(pluginOnInRecord({ enabledPlugins: [], disabledPlugins: [BID] }, bundled)).toBe(false)
+    expect(pluginOnInRecord(undefined, bundled)).toBe(false)
+  })
+})
+
+describe('replacing a bundled plugin through the picks', () => {
+  // As the real manifests declare them: the bundled editor provides `editor` v1, the bundled reviewer
+  // opens files; a third-party plugin does the same under its own id.
+  const EDITOR = 'cockpit.editor'
+  const REVIEWER = 'cockpit.reviewer'
+  const installed: (ServicePlugin & OpenFilePlugin & EnablementPlugin)[] = [
+    { id: EDITOR, enabledByDefault: true, source: { kind: 'bundled' }, services: { provides: { editor: 1 } } },
+    { id: REVIEWER, enabledByDefault: true, source: { kind: 'bundled' }, openFile: { title: 'Reviewer' }, services: { provides: { reviewer: 1 }, uses: { editor: 1 } } },
+    { id: 'acme.vim', source: { kind: 'linked' }, services: { provides: { editor: 1 } } },
+    { id: 'acme.diff', source: { kind: 'linked' }, openFile: { title: 'Acme diff' } }
+  ]
+  /** What a project's host runs (enabledIds -> hostPlugins), as the service rule sees it. */
+  const running = (record: { enabledPlugins: string[]; disabledPlugins?: string[] }, appOff?: string[]) => {
+    const ids = enabledPluginIds(record, installed, appOff)
+    return installed.filter((p) => ids.includes(p.id))
+  }
+  const both = { enabledPlugins: ['acme.vim', 'acme.diff'] }
+
+  it('with both on, the bundled one has no priority: both are candidates and nothing is chosen without a pick', () => {
+    const plugins = running(both)
+    expect(selectProvider('editor', plugins, {})).toEqual({ ok: false, problem: { kind: 'ambiguous', service: 'editor', candidates: [EDITOR, 'acme.vim'] } })
+    expect(serviceStatus(plugins, {}).services.find((s) => s.service === 'editor')).toMatchObject({ candidates: [EDITOR, 'acme.vim'], selected: null })
+    expect(selectProvider('editor', plugins, { editor: 'acme.vim' })).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
+    expect(openFileStatus(plugins, {})).toEqual({
+      candidates: [{ id: REVIEWER, title: 'Reviewer' }, { id: 'acme.diff', title: 'Acme diff' }],
+      selected: null
+    })
+    // No pick: the click opens the built-in viewer, not the bundled reviewer.
+    expect(selectOpenFile(plugins, {})).toBeNull()
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'acme.diff' })).toBe('acme.diff')
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: BUILTIN_VIEWER })).toBeNull()
+  })
+
+  it('with the bundled one off in the project, the other is used without a pick', () => {
+    const plugins = running({ ...both, disabledPlugins: [EDITOR, REVIEWER] })
+    expect(selectProvider('editor', plugins, {})).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
+    expect(selectOpenFile(plugins, {})).toBe('acme.diff')
+  })
+
+  it('with the bundled one off in all projects, the other is used even where the record lists it on', () => {
+    const plugins = running({ enabledPlugins: [EDITOR, REVIEWER, 'acme.vim', 'acme.diff'] }, [EDITOR, REVIEWER])
+    expect(plugins.map((p) => p.id)).toEqual(['acme.vim', 'acme.diff'])
+    expect(selectProvider('editor', plugins, { editor: EDITOR })).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
+    // A pick of the bundled reviewer is stale now and counts as none: the only candidate answers.
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: REVIEWER })).toBe('acme.diff')
   })
 })

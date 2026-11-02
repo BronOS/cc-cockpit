@@ -38,3 +38,17 @@ export function followOverlays(
     off()
   }
 }
+
+/**
+ * The order to keep the overlays' elements in the DOM: the ones already shown where they were,
+ * new ones after them. The stack order (who is on top) is drawn with z-index and `inert` instead.
+ * A plugin's `focus()` moves an overlay to the top of main's stack, and React moving its element
+ * would move an html overlay's iframe, which reloads the page and loses what the user typed.
+ */
+export function domOrder(previous: readonly string[], stack: readonly OverlayInfo[]): string[] {
+  const live = new Set(stack.map((o) => o.id))
+  const order = previous.filter((id) => live.has(id))
+  const placed = new Set(order)
+  for (const o of stack) if (!placed.has(o.id)) order.push(o.id)
+  return order
+}

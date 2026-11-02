@@ -330,6 +330,8 @@ function services(secrets: PluginSecrets) {
     disableEverywhere: () => {},
     enabledInAProject: () => false,
     appPluginSettings: { get: (id) => appSettings.get(id), set: (id, v) => void appSettings.set(id, v) },
+    bundledOff: { get: () => undefined, set: () => {} },
+    bundledOffChanged: async () => {},
     // What the hosts would read right now (the cache must be current when this runs).
     pluginSettingsChanged: async () => void announced.push(`app ${JSON.stringify(host(P))}`),
     secrets
@@ -343,6 +345,7 @@ function services(secrets: PluginSecrets) {
       }
     },
     plugins: { list: () => [installed], get: (id) => (id === ID ? installed : undefined) },
+    disabledBundled: () => undefined,
     checkSettings: (projectId) => {
       const r = host(projectId)
       return r.ok ? { ok: true } : r

@@ -32,7 +32,7 @@ import { zoneOf } from '../../shared/layout'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
 import type { InstalledPlugin, PluginInstaller } from '../plugins/installer'
 import { projectSettingKey } from '../secrets/plugin-secrets'
-import { pluginEnabledIn } from '../plugins/enablement'
+import { offAppWide, pluginEnabledIn } from '../plugins/enablement'
 import { tabCommandsOf } from '../tabs/tab-commands'
 import { saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
 
@@ -42,6 +42,11 @@ export interface ProjectSettingsDeps {
     update(id: string, mutate: (record: ProjectRecord) => void): void
   }
   plugins: Pick<PluginInstaller, 'list' | 'get'>
+  /**
+   * `app.json` › `disabledBundled` as stored (user-writable, so anything): the bundled plugins off in
+   * all projects, which win over this project's switch (enablement.ts).
+   */
+  disabledBundled(): unknown
   /** The plugin's stored app and project settings against its manifest, as the host checks them. */
   checkSettings(projectId: string, pluginId: string): { ok: true } | { ok: false; reason: string }
   /** The enabled set changed: restart the project's plugin host with it (HostManager.enabledChanged). */
@@ -66,7 +71,8 @@ export class ProjectSettingsService {
 
   view(projectId: string): ProjectSettingsView {
     const project = this.project(projectId)
-    const plugins = this.deps.plugins.list().map((p) => this.pluginView(project, p, pluginEnabledIn(project, p)))
+    const appOff = this.deps.disabledBundled()
+    const plugins = this.deps.plugins.list().map((p) => this.pluginView(project, p, pluginEnabledIn(project, p, appOff), offAppWide(p, appOff)))
     const layout = this.deps.layouts.view(projectId)
     const panels: ProjectPanelView[] = (layout?.panels ?? []).map((info) => ({
       panelKey: info.panelKey,
@@ -103,8 +109,15 @@ export class ProjectSettingsService {
       const why = plugin.state.ok ? 'it has no valid manifest' : plugin.state.reason
       throw new Error(`${pluginId} cannot be enabled: ${why}`)
     }
+    const appOff = this.deps.disabledBundled()
+    // Off in all projects wins over this switch: storing "on" would change nothing the user can see
+    // (pluginEnabledIn still says off) and then turn the plugin on later, unasked, when the app-wide
+    // switch is undone. Turning it off here is allowed and is a no-op below (already off).
+    if (enabled && offAppWide(plugin, appOff)) {
+      throw new Error(`${pluginId} is off in all projects; turn that off under Settings > Plugins first`)
+    }
     const project = this.project(projectId)
-    if (pluginEnabledIn(project, plugin) === enabled) return
+    if (pluginEnabledIn(project, plugin, appOff) === enabled) return
     this.deps.projects.update(projectId, (r) => {
       const list = Array.isArray(r.enabledPlugins) ? r.enabledPlugins.filter((id) => id !== pluginId) : []
       if (enabled) list.push(pluginId)
@@ -163,7 +176,7 @@ export class ProjectSettingsService {
     return project
   }
 
-  private pluginView(project: ProjectView, p: InstalledPlugin, enabled: boolean): ProjectPluginView {
+  private pluginView(project: ProjectView, p: InstalledPlugin, enabled: boolean, appOff: boolean): ProjectPluginView {
     const view: ProjectPluginView = {
       id: p.id,
       name: p.manifest?.name ?? p.id,
@@ -171,6 +184,7 @@ export class ProjectSettingsService {
       enabled,
       state: p.state
     }
+    if (appOff) view.offInAllProjects = true
     const manifest = p.manifest
     if (!manifest || !p.state.ok) return view
     if (enabled) {

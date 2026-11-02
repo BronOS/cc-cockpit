@@ -51,6 +51,11 @@ function isPlainObject(v) {
 // ../../src/shared/manifest.ts
 var PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.[a-z][a-z0-9-]*$/;
 var PLUGIN_ID_MAX_LENGTH = 100;
+var RESERVED_PLUGIN_ID_PREFIX = "cockpit.";
+var RESERVED_PLUGIN_ID_MESSAGE = "ids starting with cockpit. are reserved for plugins that ship with the app";
+function isReservedPluginId(id) {
+  return id.normalize("NFKC").trim().toLowerCase().startsWith(RESERVED_PLUGIN_ID_PREFIX);
+}
 var PLUGIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 var CONTRIBUTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 var SKILL_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -207,6 +212,7 @@ function parseEntry(raw, indexUrl) {
   const { id, name, description, author, repo, version, tag, commit, api } = raw;
   if (typeof id !== "string" || id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id))
     return bad('"id" is not a valid plugin id');
+  if (isReservedPluginId(id)) return bad(`"id": ${RESERVED_PLUGIN_ID_MESSAGE}`);
   if (!label(name, MAX_NAME_LENGTH))
     return bad(
       `"name" must be 1 to ${MAX_NAME_LENGTH} characters, not blank, with no control or bidi characters`

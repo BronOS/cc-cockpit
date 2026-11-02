@@ -155,6 +155,8 @@ async function rig(opts: {
       urls = u
     },
     appPluginSettings: { get: () => undefined, set: () => {} },
+    bundledOff: { get: () => undefined, set: () => {} },
+    bundledOffChanged: async () => {},
     pluginSettingsChanged: async () => {},
     secrets: { hasSetting: () => false, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} }
   })

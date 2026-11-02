@@ -171,6 +171,43 @@ describe('stack', () => {
     expect(m.infos(W1).map((o) => o.title)).toEqual(['b', 'c'])
   })
 
+  it('focus brings an overlay to the top of its own window only; a no-op for the top one or an ended one', async () => {
+    const m = manager()
+    void m.open(W1, url('https://a.example/'), 'test')
+    const a = views.last
+    const b = track(m.open(W1, { ...html(), title: 'b' }, 'test'))
+    void m.open(W1, { ...html(), title: 'c' }, 'test')
+    void m.open(W2, html(), 'test')
+    const [first, second] = m.infos(W1)
+    expect(a.visible).toBe(false)
+    // Another window's id is unknown here.
+    expect(m.focus(W2, first!.id)).toBe(false)
+    expect(m.focus(W1, 'nope')).toBe(false)
+    const updates = (): number => events.filter((e) => e.windowId === W1 && e.channel === 'overlays.updated').length
+    const before = updates()
+    // To the top: the url view shows and gets the keyboard; the renderer gets the new order.
+    expect(m.focus(W1, first!.id)).toBe(true)
+    expect(m.infos(W1).map((o) => o.title)).toEqual(['b', 'c', 'https://a.example/'])
+    expect(lastStack(W1).at(-1)!.id).toBe(first!.id)
+    expect(a.visible).toBe(true)
+    expect(a.focused).toBe(2)
+    expect(updates()).toBe(before + 1)
+    // Already on top: nothing changes, nothing sent.
+    expect(m.focus(W1, first!.id)).toBe(true)
+    expect(updates()).toBe(before + 1)
+    expect(a.focused).toBe(2)
+    // Covered again by focusing another: the url view hides; nothing ends.
+    expect(m.focus(W1, second!.id)).toBe(true)
+    expect(a.visible).toBe(false)
+    expect(m.infos(W1)).toHaveLength(3)
+    expect(m.infos(W2)).toHaveLength(1)
+    // Ended: false.
+    m.close(W1, second!.id)
+    await flush()
+    expect(b.results).toEqual([{ kind: 'dismissed' }])
+    expect(m.focus(W1, second!.id)).toBe(false)
+  })
+
   it('titles default from the spec and a caller title is kept', () => {
     const m = manager()
     void m.open(W1, terminal(['git', 'diff', '--', 'a b']), 'test')

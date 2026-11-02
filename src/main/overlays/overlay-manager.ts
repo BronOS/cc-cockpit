@@ -432,6 +432,22 @@ export class OverlayManager {
     return true
   }
 
+  /**
+   * ctx.overlay.start's focus(): bring that overlay to the top of its window's stack (it shows and
+   * takes the keyboard; the others stay open under it). True when it is open in this window, also
+   * when it already was the top one (nothing changes then); false for an unknown or ended one.
+   */
+  focus(windowId: number, overlayId: string): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return false
+    const stack = this.stacks.get(windowId)
+    if (!stack || stack.at(-1) === overlay) return true
+    stack.splice(stack.indexOf(overlay), 1)
+    stack.push(overlay)
+    this.changed(windowId)
+    return true
+  }
+
   /** Esc: dismiss the top overlay unless it is a terminal one (Esc belongs to its program). */
   pop(windowId: number): boolean {
     const top = this.stacks.get(windowId)?.at(-1)

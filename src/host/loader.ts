@@ -33,7 +33,7 @@ export interface HostPluginSpec {
   main: string
   // Everything below is decided by main, never derived from plugin input: the host takes these
   // paths and lists as given (CLAUDE.md: main is the only authority).
-  /** The project folder: the default cwd of `ctx.exec`. */
+  /** The project folder, real path (symlinks resolved by main): `ctx.projectDir`, the default cwd of `ctx.exec`. */
   projectDir: string
   /** `ctx.dataDir`: `<data>/plugin-data/<projectId>/<pluginId>/` (created on first use). */
   dataDir: string

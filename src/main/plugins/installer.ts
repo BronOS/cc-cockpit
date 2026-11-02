@@ -29,6 +29,8 @@ import {
   PLUGIN_ID_MAX_LENGTH,
   PLUGIN_ID_PATTERN,
   PLUGIN_VERSION_PATTERN,
+  RESERVED_PLUGIN_ID_MESSAGE,
+  isReservedPluginId,
   type PluginManifest
 } from '../../shared/manifest'
 import type { Theme } from '../../shared/theme'
@@ -342,7 +344,11 @@ export class PluginInstaller {
     return this.serial(async () => {
       this.checkWritable()
       const source = this.checkSource(url, tag)
+      // A marketplace pin names the id before anything is cloned; a plain git URL says it only in
+      // staging, checked first below, still before anything reaches plugins/.
+      if (pin !== undefined && isReservedPluginId(pin.id)) throw new PluginInstallError(RESERVED_PLUGIN_ID_MESSAGE)
       const staged = await this.cloneAndValidate(source, (m, commit) => {
+        if (isReservedPluginId(m.id)) return RESERVED_PLUGIN_ID_MESSAGE
         const mismatch = pinProblem(pin, m, commit) ?? this.revokedProblem(m.id, commit, pin?.marketplace)
         if (mismatch !== null) return mismatch
         const existing = this.options.index.get(m.id)
@@ -432,6 +438,8 @@ export class PluginInstaller {
     const result = await loadManifest(real)
     if (!result.ok) throw new PluginInstallError('invalid plugin', result.errors)
     const { manifest } = result
+    // Before the existing-entry check: linking a copy of a bundled plugin must say why, not "uninstall it first".
+    if (isReservedPluginId(manifest.id)) throw new PluginInstallError(RESERVED_PLUGIN_ID_MESSAGE)
     if (expectedId !== undefined && manifest.id !== expectedId) {
       throw new PluginInstallError(`the plugin in ${real} changed while waiting (it is ${manifest.id} now, not ${expectedId})`)
     }
@@ -459,6 +467,8 @@ export class PluginInstaller {
       if (!old) throw new PluginInstallError(`${id} is not installed`)
       if (old.source.kind === 'bundled') throw new PluginInstallError(`${id} is built in; it updates with the app`)
       if (old.source.kind !== 'git') throw new PluginInstallError(`${id} is linked from a folder; it updates from there`)
+      // A git record under a reserved id predates the reservation (or was hand-written): it no longer loads.
+      if (isReservedPluginId(id)) throw new PluginInstallError(RESERVED_PLUGIN_ID_MESSAGE)
       const source = this.checkSource(old.source.url, tag)
       const staged = await this.cloneAndValidate(source, (m, commit) => {
         if (m.id !== id) return `the tag contains plugin "${m.id}", not "${id}"`
@@ -773,8 +783,13 @@ export class PluginInstaller {
    * (version from its manifest, `enabledByDefault` from the allowlist, never from the manifest),
    * drop entries a previous run recorded for a bundled plugin that is no longer shipped (or is
    * switched off by the test switch). Validation itself is refreshEntry's, like any other entry: a
-   * bad bundled manifest stays in the index as a disabled plugin with the reason. A git or linked
-   * plugin that already holds the id is the user's choice and is left alone.
+   * bad bundled manifest stays in the index as a disabled plugin with the reason.
+   *
+   * A git or linked record holding a bundled id (a user who linked the reviewer from its own repo
+   * before it shipped, or a hand-edited plugins.json) is dropped: `cockpit.*` loads only from the
+   * bundled root (refreshEntry), so keeping it would leave the plugin off. Project enablement,
+   * settings, storage and secrets are keyed by the id and carry over to the bundled copy. A git
+   * record's folder goes with it, or nothing would ever remove it.
    */
   private async syncBundled(): Promise<void> {
     const specs = this.options.bundled ?? []
@@ -785,26 +800,32 @@ export class PluginInstaller {
       }
       for (const spec of specs) {
         const existing = this.options.index.get(spec.id)
-        if (existing && existing.source.kind !== 'bundled') {
-          this.log(`bundled plugin ${spec.id} skipped: the id is already installed from a ${existing.source.kind} source`)
-          continue
-        }
+        // Checked before a non-bundled record is dropped: with the bundled folder missing (a broken
+        // package) nothing would replace the user's working copy.
         if (!(await exists(spec.dir))) {
           this.log(`bundled plugin ${spec.id} skipped: ${spec.dir} is missing`)
-          if (existing) this.options.index.remove(spec.id)
+          if (existing?.source.kind === 'bundled') this.options.index.remove(spec.id)
           continue
         }
+        if (existing && existing.source.kind !== 'bundled') {
+          const from = existing.source.kind === 'linked' ? `linked from ${existing.source.path}` : `installed from ${existing.source.url}`
+          this.options.index.remove(spec.id)
+          this.log(`plugin ${spec.id} ${from} dropped: the app ships it; the built-in copy is used`)
+          if (existing.source.kind === 'git') await this.removeInstallDir(spec.id, existing.version)
+        }
+        // The dropped non-bundled record's state and version must not carry into the bundled entry.
+        const prior = existing?.source.kind === 'bundled' ? existing : undefined
         const result = await loadManifest(spec.dir)
         const entry: PluginEntry = {
           id: spec.id,
           // A manifest that does not load has no version; keep the last one so the entry stays valid.
-          version: result.ok ? result.manifest.version : (existing?.version ?? '0.0.0'),
+          version: result.ok ? result.manifest.version : (prior?.version ?? '0.0.0'),
           source: { kind: 'bundled', path: spec.dir },
-          state: existing?.state ?? { ok: true },
+          state: prior?.state ?? { ok: true },
           ...(spec.enabledByDefault ? { enabledByDefault: true } : {})
         }
         // Every start runs this: an unchanged entry is not worth a write.
-        if (existing && JSON.stringify(existing) === JSON.stringify(entry)) continue
+        if (prior && JSON.stringify(prior) === JSON.stringify(entry)) continue
         this.options.index.put(entry)
       }
     } catch (err) {
@@ -891,6 +912,18 @@ export class PluginInstaller {
   }
 
   /**
+   * Why `entry` may not load under its id, or null. A reserved id loads only as a bundled entry the
+   * allowlist knows: a linked folder or a hand-edited plugins.json record is refused here, at load,
+   * which is the authority (the install-time refusals only give a better message earlier). dirOf
+   * takes a bundled entry's folder from the allowlist, never from the record.
+   */
+  private reservedProblem(entry: PluginEntry): string | null {
+    if (!isReservedPluginId(entry.id)) return null
+    if (entry.source.kind === 'bundled' && this.options.bundled?.some((b) => b.id === entry.id)) return null
+    return `${RESERVED_PLUGIN_ID_MESSAGE}; this copy (${entry.source.kind}) does not load; uninstall it`
+  }
+
+  /**
    * Validate one recorded plugin's manifest again and bring the index, the loaded view and the
    * registered themes in line with it. The folder may have been edited (a linked one moved), so a
    * plugin that fails stays in the index with the reason. Its old themes go first: a theme id is
@@ -904,8 +937,11 @@ export class PluginInstaller {
   private async refreshEntry(entry: PluginEntry): Promise<PluginState> {
     const dir = this.dirOf(entry)
     const result = await loadManifest(dir)
+    const reserved = this.reservedProblem(entry)
     let state: PluginState
-    if (!result.ok) {
+    if (reserved !== null) {
+      state = { ok: false, reason: reserved }
+    } else if (!result.ok) {
       state = { ok: false, reason: `invalid plugin: ${result.errors.slice(0, 5).join('; ')}` }
     } else if (result.manifest.id !== entry.id) {
       state = { ok: false, reason: `plugin.json now has id "${result.manifest.id}", installed as "${entry.id}"` }
@@ -1048,7 +1084,10 @@ export class PluginInstaller {
   private view(entry: PluginEntry): InstalledPlugin {
     const l = this.loaded.get(entry.id)
     const revoked = entry.state.ok ? this.revocationOf(entry) : null
-    const state = revoked !== null ? revokedState(revoked) : entry.state
+    // A reserved id outside the bundled set never gets as far as a host, whatever the index says
+    // (refreshEntry records the refusal; this covers a record no refresh has seen yet).
+    const foreign = entry.state.ok ? this.reservedProblem(entry) : null
+    const state: PluginState = revoked !== null ? revokedState(revoked) : foreign !== null ? { ok: false, reason: foreign } : entry.state
     let dir: string
     try {
       dir = this.dirOf(entry)

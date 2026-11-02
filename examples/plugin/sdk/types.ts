@@ -25,7 +25,11 @@ export interface PluginSettings {
   readonly app: Readonly<Record<string, JsonValue>>
 }
 
-/** Per plugin, per project key-value store. Values are JSON. */
+/**
+ * Per plugin, per project key-value store. Values are JSON. Keys are non-empty strings of at most
+ * 200 characters; a value is at most 1 MiB as JSON; 16 MiB per plugin and project in total (no
+ * separate key count). A write past a limit rejects with a RangeError and stores nothing.
+ */
 export interface PluginStorage {
   get<T extends JsonValue = JsonValue>(key: string): Promise<T | undefined>
   set(key: string, value: JsonValue): Promise<void>
@@ -186,6 +190,12 @@ export interface OverlayHandle {
   onMessage(listener: (message: JsonValue) => void): Disposer
   /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
   close(): void
+  /**
+   * Bring the overlay to the front of the window's overlay stack (it shows and takes the keyboard;
+   * the others stay open under it), e.g. on a second click for something already open. A no-op
+   * once it ended.
+   */
+  focus(): void
 }
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -200,6 +210,13 @@ export interface SessionInfo {
   readonly lastPrompt?: string
   readonly notes: readonly string[]
   readonly steps?: { readonly done: number; readonly total: number }
+  /**
+   * Files the tab's Claude wrote (Write, Edit, MultiEdit, NotebookEdit), each once, in the order
+   * first written, as Claude gave them: absolute paths, files outside the project included. Kept
+   * for the tab's life, at most 500 (later ones are not added). A click on one in the Sessions
+   * panel reaches `ctx.files.onOpen` only for files inside the project; others open in the
+   * built-in viewer.
+   */
   readonly files: readonly string[]
 }
 
@@ -266,6 +283,12 @@ export interface PluginContext {
   readonly api: typeof PLUGIN_API_VERSION
   /** The plugin's manifest id. */
   readonly pluginId: string
+  /**
+   * The project folder: absolute, its real path (symlinks resolved), read when the host started
+   * the plugin. The default cwd of `exec`. When the folder is missing at that moment (deleted or
+   * on an unmounted volume), its nearest existing parent is resolved and the rest appended as is.
+   */
+  readonly projectDir: string
 
   // config
   readonly settings: PluginSettings
@@ -350,7 +373,8 @@ export interface PluginContext {
   }
   readonly overlay: {
     /**
-     * Resolves when the overlay ends (no timeout); dismissed when the plugin host stops. At most 3
+     * Resolves when the overlay ends (no timeout); dismissed when the plugin stops (its host stops,
+     * or it is reloaded, disabled, updated or uninstalled: the new copy starts with none). At most 3
      * open at once and 10 per minute per plugin. A terminal's `cwd` is relative to the project
      * folder and must stay inside it; a url must be http or https.
      */
@@ -467,6 +491,14 @@ export interface ServicesApi {
    * boundary: all plugins of a project share one JS realm.
    */
   caller(): string | undefined
+  /**
+   * Whether a call on service `name` would reach a provider now: `name` is in this plugin's
+   * `services.uses`, an enabled plugin provides it at the same major, and with several providers
+   * the project picked one. Asked fresh on every call. Never throws: false for anything else,
+   * an undeclared or unknown name included. A provider still activating (or whose activate failed)
+   * counts; a call then waits for it (or rejects with the failure).
+   */
+  available(name: string): boolean
 }
 
 /** What a plugin's `main` module exports. */
