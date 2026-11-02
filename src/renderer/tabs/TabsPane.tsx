@@ -21,11 +21,11 @@ import { otherWindowsEntries } from '../status/strip-order'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
+import { UpdateNotice } from '../updates/UpdateNotice'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
 import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
 import { CloseTabDialog } from './CloseTabDialog'
-import { UpdateNotice } from '../updates/UpdateNotice'
 import { TabBar } from './TabBar'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { TerminalView } from './TerminalView'
@@ -447,7 +447,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
         entries={otherWindowsEntries(snapshot.strip, [...own.values()])} onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null} />
-      <UpdateNotice />
+      <UpdateNotice inert={settingsOpen || covered || confirm !== null} />
       <Zones inert={settingsOpen || covered || confirm !== null}>
         <TabBar
           tabs={state.tabs}

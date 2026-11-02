@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createReleaseFetcher,
   LATEST_RELEASE_API,
+  MAX_RELEASE_BYTES,
   parseLatestRelease,
   releaseUrl,
+  UPDATE_CHECK_INTERVAL_MS,
   UpdateChecker,
   versionOfTag,
   type AvailableUpdate
@@ -25,7 +27,6 @@ function setup(
     body: opts.body ?? release('v1.1.0')
   }
   const changes: Array<AvailableUpdate | undefined> = []
-  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
   const fetchRelease = vi.fn(async () => {
     if (state.body instanceof Error) throw state.body
     return state.body
@@ -38,18 +39,9 @@ function setup(
     setDismissed: (v) => {
       state.dismissed = v
     },
-    onChange: (u) => changes.push(u),
-    now: () => 42,
-    setInterval: (fn, ms) => {
-      const t = { fn, ms, cleared: false }
-      timers.push(t)
-      return t
-    },
-    clearInterval: (h) => {
-      ;(h as { cleared: boolean }).cleared = true
-    }
+    onChange: (u) => changes.push(u)
   })
-  return { state, checker, fetchRelease, changes, timers }
+  return { state, checker, fetchRelease, changes }
 }
 
 describe('versionOfTag', () => {
@@ -125,7 +117,7 @@ describe('UpdateChecker.available', () => {
   it('a dismissed version stays hidden, a newer one shows again', async () => {
     const t = setup()
     await t.checker.check()
-    t.checker.dismiss()
+    t.checker.dismiss('1.1.0')
     expect(t.state.dismissed).toBe('1.1.0')
     expect(t.checker.available()).toBeUndefined()
     await t.checker.check()
@@ -133,6 +125,47 @@ describe('UpdateChecker.available', () => {
     t.state.body = release('v1.2.0')
     await t.checker.check()
     expect(t.checker.available()?.version).toBe('1.2.0')
+  })
+  it('dismiss with nothing on offer writes nothing and says nothing', async () => {
+    const t = setup({ body: release('v1.0.0') })
+    await t.checker.check()
+    t.checker.dismiss('1.0.0')
+    expect(t.state.dismissed).toBeUndefined()
+    expect(t.changes).toHaveLength(0)
+  })
+  it('a dismiss of a version no longer on offer writes nothing: the newer release stays on show', async () => {
+    const t = setup()
+    await t.checker.check()
+    // The window still shows 1.1.0 when a check brings 1.2.0.
+    t.state.body = release('v1.2.0')
+    await t.checker.check()
+    const changesBefore = t.changes.length
+    t.checker.dismiss('1.1.0')
+    expect(t.state.dismissed).toBeUndefined()
+    expect(t.changes).toHaveLength(changesBefore)
+    expect(t.checker.available()?.version).toBe('1.2.0')
+    t.checker.dismiss('1.2.0')
+    expect(t.state.dismissed).toBe('1.2.0')
+    expect(t.checker.available()).toBeUndefined()
+  })
+  it.each(['1.2.0', '', 'v1.1.0', ' 1.1.0', '1.1.00'])('a dismiss of %j, not the offer, writes nothing', async (version) => {
+    const t = setup()
+    await t.checker.check()
+    t.checker.dismiss(version)
+    expect(t.state.dismissed).toBeUndefined()
+    expect(t.checker.available()?.version).toBe('1.1.0')
+  })
+  it.each([[undefined], [null], [1.1], [['1.1.0']], [{ version: '1.1.0' }]])('a dismiss of the non-string %j writes nothing', async (version) => {
+    const t = setup()
+    await t.checker.check()
+    t.checker.dismiss(version as unknown as string)
+    expect(t.state.dismissed).toBeUndefined()
+    expect(t.checker.available()?.version).toBe('1.1.0')
+  })
+  it('ignores a non-string updateDismissed value', async () => {
+    const t = setup({ dismissed: ['1.0.0'] as unknown as string })
+    await t.checker.check()
+    expect(t.checker.available()?.version).toBe('1.1.0')
   })
   it('ignores a damaged updateDismissed value', async () => {
     const t = setup({ dismissed: 'garbage' })
@@ -157,37 +190,81 @@ describe('UpdateChecker failures', () => {
 })
 
 describe('UpdateChecker setting and timer', () => {
+  beforeEach(() => void vi.useFakeTimers())
+  afterEach(() => void vi.useRealTimers())
+  /** Lets a check whose fetch has answered run to its end. */
+  const settle = (): Promise<unknown> => vi.advanceTimersByTimeAsync(0)
+
   it('makes no request while the setting is off', async () => {
     const t = setup({ enabled: false })
     t.checker.start()
     await t.checker.check()
-    t.timers[0]!.fn()
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS)
     expect(t.fetchRelease).not.toHaveBeenCalled()
+    t.checker.stop()
   })
   it('checks at start and every 24 hours, and stop clears the timer', async () => {
     const t = setup()
     t.checker.start()
-    await vi.waitFor(() => expect(t.fetchRelease).toHaveBeenCalledTimes(1))
-    expect(t.timers).toHaveLength(1)
-    expect(t.timers[0]!.ms).toBe(24 * 60 * 60 * 1000)
-    t.timers[0]!.fn()
-    await vi.waitFor(() => expect(t.fetchRelease).toHaveBeenCalledTimes(2))
+    await settle()
+    expect(t.fetchRelease).toHaveBeenCalledTimes(1)
+    expect(UPDATE_CHECK_INTERVAL_MS).toBe(24 * 60 * 60 * 1000)
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS - 1)
+    expect(t.fetchRelease).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(t.fetchRelease).toHaveBeenCalledTimes(2)
     t.checker.stop()
-    expect(t.timers[0]!.cleared).toBe(true)
-    expect(t.checker.lastCheckedAt).toBe(42)
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS)
+    expect(t.fetchRelease).toHaveBeenCalledTimes(2)
+  })
+  it('a second start makes no second timer', async () => {
+    const t = setup()
+    t.checker.start()
+    t.checker.start()
+    await settle()
+    expect(vi.getTimerCount()).toBe(1)
+    expect(t.fetchRelease).toHaveBeenCalledTimes(1)
+    t.checker.stop()
+  })
+  it('a tick during a check in flight asks nothing more', async () => {
+    const t = setup()
+    let answer!: (s: string) => void
+    t.fetchRelease.mockImplementationOnce(() => new Promise<string>((r) => (answer = r)))
+    t.checker.start()
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS)
+    expect(t.fetchRelease).toHaveBeenCalledTimes(1)
+    answer(release('v1.1.0'))
+    await settle()
+    expect(t.checker.available()?.version).toBe('1.1.0')
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS)
+    expect(t.fetchRelease).toHaveBeenCalledTimes(2)
+    t.checker.stop()
   })
   it('turning the setting off clears the notice and stops the timer; on checks again', async () => {
     const t = setup()
     t.checker.start()
-    await vi.waitFor(() => expect(t.checker.available()).toBeDefined())
+    await settle()
+    expect(t.checker.available()).toBeDefined()
+    t.changes.length = 0
     t.state.enabled = false
     t.checker.settingChanged()
     expect(t.checker.available()).toBeUndefined()
-    expect(t.timers[0]!.cleared).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(t.changes).toEqual([undefined])
     t.state.enabled = true
     t.checker.settingChanged()
-    await vi.waitFor(() => expect(t.checker.available()).toBeDefined())
+    await settle()
+    expect(t.checker.available()).toBeDefined()
     expect(t.fetchRelease).toHaveBeenCalledTimes(2)
+    // The change itself (for the other windows' toggles), then the update the check found.
+    expect(t.changes).toEqual([undefined, undefined, { version: '1.1.0', url: releaseUrl('1.1.0') }])
+    t.checker.stop()
+  })
+  it('tells the windows of a setting change even when no notice was showing', () => {
+    const t = setup({ enabled: false })
+    t.checker.settingChanged()
+    expect(t.changes).toEqual([undefined])
   })
   it('does not announce a reply that arrives after the setting went off', async () => {
     const t = setup()
@@ -203,33 +280,28 @@ describe('UpdateChecker setting and timer', () => {
     const t = setup({ body: release('v2.0.0') })
     let stale!: (s: string) => void
     t.fetchRelease.mockImplementationOnce(() => new Promise<string>((r) => (stale = r)))
-    t.checker.start()
-    await vi.waitFor(() => expect(t.fetchRelease).toHaveBeenCalledTimes(1))
+    const old = t.checker.check()
     t.state.enabled = false
     t.checker.settingChanged()
     t.state.enabled = true
     t.checker.settingChanged()
-    await vi.waitFor(() => expect(t.checker.available()?.version).toBe('2.0.0'))
+    await settle()
+    expect(t.checker.available()?.version).toBe('2.0.0')
     expect(t.fetchRelease).toHaveBeenCalledTimes(2)
     stale(release('v3.0.0'))
-    await new Promise((r) => setTimeout(r, 0))
+    await old
     expect(t.checker.available()?.version).toBe('2.0.0')
+    t.checker.stop()
   })
 })
 
 describe('createReleaseFetcher', () => {
-  const fetcherOf = (res: Response | Error, maxBytes?: number) => {
+  const fetcherOf = (res: Response | Error) => {
     const fetchFn = vi.fn(async () => {
       if (res instanceof Error) throw res
       return res
     })
-    return {
-      fetchFn,
-      fetcher: createReleaseFetcher({
-        fetch: fetchFn as unknown as typeof fetch,
-        maxBytes
-      })
-    }
+    return { fetchFn, fetcher: createReleaseFetcher(fetchFn as unknown as typeof fetch) }
   }
 
   it('asks the fixed URL with no redirects and no credentials', async () => {
@@ -239,26 +311,26 @@ describe('createReleaseFetcher', () => {
     expect(url).toBe(LATEST_RELEASE_API)
     expect(init.redirect).toBe('error')
     expect(init.credentials).toBe('omit')
+    expect(init.signal).toBeInstanceOf(AbortSignal)
     expect(JSON.stringify(init.headers)).not.toMatch(/authorization/i)
   })
   it('fails on 404', async () => {
     await expect(fetcherOf(new Response('nf', { status: 404 })).fetcher()).rejects.toThrow('HTTP 404')
   })
-  it('fails on a network error and on a refused redirect', async () => {
+  it('fails on a network error', async () => {
     await expect(fetcherOf(new Error('down')).fetcher()).rejects.toThrow('down')
-    await expect(fetcherOf(new TypeError('redirect mode is set to error')).fetcher()).rejects.toThrow()
   })
   it('fails on an oversized body', async () => {
-    await expect(fetcherOf(new Response('x'.repeat(100)), 10).fetcher()).rejects.toThrow()
+    await expect(fetcherOf(new Response('x'.repeat(MAX_RELEASE_BYTES + 1))).fetcher()).rejects.toThrow()
     const stream = new Response(
       new ReadableStream({
         start: (c) => {
-          c.enqueue(new Uint8Array(50))
-          c.enqueue(new Uint8Array(50))
+          c.enqueue(new Uint8Array(MAX_RELEASE_BYTES))
+          c.enqueue(new Uint8Array(1))
           c.close()
         }
       })
     )
-    await expect(fetcherOf(stream, 60).fetcher()).rejects.toThrow()
+    await expect(fetcherOf(stream).fetcher()).rejects.toThrow()
   })
 })

@@ -14,7 +14,6 @@ import type {
   IpcInvokeMap,
   LayoutView,
   MarketplaceView,
-  UpdateState,
   OverlayInfo,
   PluginSettingsSaveResult,
   PluginView,
@@ -26,6 +25,7 @@ import type {
   TabCommandMenu,
   TabCreateRequest,
   TabInfo,
+  UpdateState,
   WindowInfo
 } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
@@ -517,7 +517,8 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
 export interface UpdateHandlerDeps {
   state(): UpdateState
   setEnabled(value: boolean): void
-  dismiss(): void
+  /** `version` is a string the renderer sent, not yet compared with the offer. */
+  dismiss(version: string): void
   /** Opens the release page of the available version, which main built; nothing from a renderer. */
   openRelease(): void | Promise<void>
 }
@@ -529,7 +530,11 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
     if (typeof value !== 'boolean') throw new Error('updates.setEnabled: value must be a boolean')
     deps.setEnabled(value)
   })
-  router.handleWindow('updates.dismiss', () => deps.dismiss())
+  // A wrong type is ignored, not an error, as any other version that is not on offer is.
+  router.handleWindow('updates.dismiss', (_ctx, payload) => {
+    const version = (payload as { version?: unknown } | undefined)?.version
+    if (typeof version === 'string') deps.dismiss(version)
+  })
   // No payload is read: the URL is main's own.
   router.handleWindow('updates.openRelease', () => deps.openRelease())
 }

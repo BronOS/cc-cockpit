@@ -1067,11 +1067,20 @@ describe('registerUpdateHandlers', () => {
     expect(calls).toEqual([['setEnabled', false]])
   })
 
-  it('ignores any payload on dismiss and openRelease', async () => {
+  it('dismiss passes on a string version and drops anything else without an error', async () => {
     const { ipc, calls } = updateSetup()
+    for (const bad of [[], [null], ['9.9.9'], [{}], [{ version: 9 }], [{ version: null }], [{ version: ['9.9.9'] }], [{ version: { toString: '9.9.9' } }]]) {
+      await expect(ipc.invoke('updates.dismiss', 11, bad)).resolves.toBeUndefined()
+    }
+    expect(calls).toEqual([])
     await ipc.invoke('updates.dismiss', 11, [{ version: '9.9.9' }])
+    expect(calls).toEqual([['dismiss', '9.9.9']])
+  })
+
+  it('ignores any payload on openRelease', async () => {
+    const { ipc, calls } = updateSetup()
     await ipc.invoke('updates.openRelease', 11, [{ url: 'https://evil.example' }])
-    expect(calls).toEqual([['dismiss'], ['openRelease']])
+    expect(calls).toEqual([['openRelease']])
   })
 })
 

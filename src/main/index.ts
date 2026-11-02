@@ -23,6 +23,7 @@ import {
 import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
 import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type UpdateState } from '../shared/ipc'
@@ -86,7 +87,6 @@ import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-dif
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPluginCliHandlers, registerPluginDevHandlers } from './socket/handlers'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
-import { BUILD_VERSION } from '../shared/app-version'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
 import { ThemeService } from './themes/theme-service'
 import { FirstTab } from './tabs/first-tab'
@@ -791,18 +791,20 @@ function start(): void {
     }
   })
 
-  // The CLI socket. Identity comes from main's own tables: a token through the tab manager (a
-  // Claude tab's is a session token, a shell or command tab's a window token) and then the
-  // overlay manager (a terminal overlay's window token, mapped to the project its window shows),
-  // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
-  // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
   // Notice-only update check (updates/update-check.ts). A test run never reaches the real network:
   // its fetcher answers only what the `fakeRelease` test hook set, and fails otherwise.
+  // Started as `electron out/main/index.js` (e2e), app.getVersion() is Electron's own version and every
+  // `ccc` would warn. A checkout has no upgrade to warn about, so it reports what it was built from.
   const appVersion = app.isPackaged ? app.getVersion() : BUILD_VERSION
   let fakeReleaseTag: string | undefined
+  // Reads `updateChecker` (declared below): only ever called after it exists (a window event or an IPC call).
   const updateState = (): UpdateState => {
-    const a = updateChecker.available()
-    return { current: appVersion, enabled: registry.app.data.updateCheck !== false, available: a ? { version: a.version } : null }
+    const release = updateChecker.available()
+    return {
+      current: appVersion,
+      enabled: registry.app.data.updateCheck !== false,
+      available: release ? { version: release.version } : null
+    }
   }
   // Every window shows the bar, so every window hears (the picker ignores it).
   const broadcastUpdateState = (): void => {
@@ -829,12 +831,15 @@ function start(): void {
     onChange: broadcastUpdateState,
     log: (message) => console.warn(message)
   })
+  // The CLI socket. Identity comes from main's own tables: a token through the tab manager (a
+  // Claude tab's is a session token, a shell or command tab's a window token) and then the
+  // overlay manager (a terminal overlay's window token, mapped to the project its window shows),
+  // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
+  // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
-    // Started as `electron out/main/index.js` (e2e), app.getVersion() is Electron's own version and
-    // every `ccc` would warn. A checkout has no upgrade to warn about, so it reports what it was built from.
-    appVersion: app.isPackaged ? app.getVersion() : BUILD_VERSION,
+    appVersion,
     resolveToken: (token): TokenOwner | undefined => {
       // Both tables are walked whatever the first finds, so the time taken does not say which
       // kind of thing (if any) holds a token close to the guess.
@@ -1251,12 +1256,10 @@ function start(): void {
       registry.app.update((a) => {
         a.updateCheck = value
       })
+      // Always one onChange, so the toggles in the other windows follow.
       updateChecker.settingChanged()
-      // Off clears the notice through onChange only when one was showing (a second, identical
-      // event is harmless); the other windows' toggles follow this event either way.
-      broadcastUpdateState()
     },
-    dismiss: () => updateChecker.dismiss(),
+    dismiss: (version) => updateChecker.dismiss(version),
     openRelease: () => {
       const a = updateChecker.available()
       if (a) return shell.openExternal(a.url)

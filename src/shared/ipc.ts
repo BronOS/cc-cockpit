@@ -577,8 +577,8 @@ export interface IpcInvokeMap {
   'updates.state': { req: void; res: UpdateState }
   /** The Settings toggle "Check for new versions". Off clears the notice and stops asking. */
   'updates.setEnabled': { req: { value: boolean }; res: void }
-  /** Dismiss the notice for the version it shows; a newer release shows again. */
-  'updates.dismiss': { req: void; res: void }
+  /** Dismiss the notice for the version it shows; a newer release shows again. Ignored unless `version` is what main offers now. */
+  'updates.dismiss': { req: { version: string }; res: void }
   /** Open the release page main built for the available version. Takes no URL: main opens its own. */
   'updates.openRelease': { req: void; res: void }
   /** The active theme (app-wide). The renderer applies it on :root and to every terminal. */

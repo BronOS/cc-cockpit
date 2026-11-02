@@ -6,7 +6,7 @@
 // base and that validated version. `html_url` and `body` are never read, so a hostile or
 // compromised response cannot put a URL or text in front of the user.
 // Any failure is silent (a private repo answers 404; offline is normal): logged at most.
-// Pure Node, so unit tests load it (fetcher, clock and timers are injected).
+// Pure Node, so unit tests load it (the fetcher is injected, the timer is faked).
 import { compareVersions } from '../../shared/marketplace'
 import { readLimited } from '../marketplace/fetch-index'
 
@@ -29,35 +29,21 @@ export function versionOfTag(tag: unknown): string | undefined {
 /** Gets the text of the latest-release response, or throws. */
 export type ReleaseFetcher = () => Promise<string>
 
-export interface ReleaseFetcherOptions {
-  fetch?: typeof fetch
-  timeoutMs?: number
-  maxBytes?: number
-}
-
-export function createReleaseFetcher(options: ReleaseFetcherOptions = {}): ReleaseFetcher {
-  const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
-  const timeoutMs = options.timeoutMs ?? UPDATE_FETCH_TIMEOUT_MS
-  const max = options.maxBytes ?? MAX_RELEASE_BYTES
+export function createReleaseFetcher(doFetch: typeof fetch = globalThis.fetch.bind(globalThis)): ReleaseFetcher {
   return async () => {
-    const timeout = AbortSignal.timeout(timeoutMs)
-    try {
-      // redirect:'error' and no credentials: the request goes to one fixed host and nowhere else.
-      const res = await doFetch(LATEST_RELEASE_API, {
-        redirect: 'error',
-        signal: timeout,
-        credentials: 'omit',
-        headers: { Accept: 'application/vnd.github+json' }
-      })
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => undefined)
-        throw new Error(`HTTP ${res.status}`)
-      }
-      return await readLimited(res, max)
-    } catch (err) {
-      if (timeout.aborted) throw new Error('no answer in time', { cause: err })
-      throw err
+    // redirect:'error' and no credentials: the request goes to one fixed host and nowhere else.
+    // The timeout also covers reading the body: a stalled stream aborts the read.
+    const res = await doFetch(LATEST_RELEASE_API, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(UPDATE_FETCH_TIMEOUT_MS),
+      credentials: 'omit',
+      headers: { Accept: 'application/vnd.github+json' }
+    })
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined)
+      throw new Error(`HTTP ${res.status}`)
     }
+    return await readLimited(res, MAX_RELEASE_BYTES)
   }
 }
 
@@ -93,23 +79,14 @@ export interface UpdateCheckDeps {
   setDismissed(version: string): void
   /** The available update changed (or was cleared). */
   onChange?(update: AvailableUpdate | undefined): void
-  now?: () => number
-  setInterval?: (fn: () => void, ms: number) => unknown
-  clearInterval?: (handle: unknown) => void
-  intervalMs?: number
   log?: (message: string) => void
 }
 
 export class UpdateChecker {
   private latest: string | undefined
-  private timer: unknown
-  /** Generation of the request in flight: a stop() makes it stale, so a new check may start beside it. */
-  private inFlight: number | undefined
-  /** Bumped by stop(): a reply requested before it is stale. */
-  private generation = 0
-  private started = false
-  /** Epoch ms of the last attempt that reached the network layer; for tests and diagnostics. */
-  lastCheckedAt: number | undefined
+  private timer: ReturnType<typeof setInterval> | undefined
+  /** The request in flight. stop() forgets it: its reply is dropped, and a new check may start beside it. */
+  private inFlight: object | undefined
 
   constructor(private readonly deps: UpdateCheckDeps) {}
 
@@ -118,65 +95,66 @@ export class UpdateChecker {
     const v = this.latest
     if (v === undefined || compareVersions(v, this.deps.current) <= 0) return undefined
     const d = this.deps.dismissed()
-    if (d !== undefined && versionOfTag('v' + d) !== undefined && compareVersions(v, d) <= 0) return undefined
+    // Validated (a string first: app.json can hold an array, which a tag check coerces): app.json can be damaged, and compareVersions reads a malformed value as equal, which would
+    // hide every update for good.
+    if (typeof d === 'string' && versionOfTag('v' + d) !== undefined && compareVersions(v, d) <= 0) return undefined
     return { version: v, url: releaseUrl(v) }
   }
 
   /** Check at once and then every interval. Off in Settings makes no request, now or later. */
   start(): void {
-    if (this.started) return
-    this.started = true
-    const every = this.deps.setInterval ?? ((fn, ms) => setInterval(fn, ms))
-    this.timer = every(() => void this.check(), this.deps.intervalMs ?? UPDATE_CHECK_INTERVAL_MS)
+    if (this.timer !== undefined) return
+    this.timer = setInterval(() => void this.check(), UPDATE_CHECK_INTERVAL_MS)
     // A timer must not keep the app alive on its own.
-    ;(this.timer as { unref?: () => void } | undefined)?.unref?.()
+    this.timer.unref()
     void this.check()
   }
 
   stop(): void {
-    this.started = false
-    this.generation++
-    if (this.timer !== undefined) (this.deps.clearInterval ?? ((h) => clearInterval(h as never)))(this.timer)
+    this.inFlight = undefined
+    clearInterval(this.timer)
     this.timer = undefined
   }
 
-  /** The setting changed: off clears the notice and stops asking, on checks at once. */
+  /** The setting changed: off clears the notice and stops asking, on checks at once. One onChange either way. */
   settingChanged(): void {
-    if (this.deps.enabled()) {
-      this.stop()
-      this.start()
-    } else {
-      this.stop()
-      this.setLatest(undefined)
-    }
+    this.stop()
+    if (this.deps.enabled()) this.start()
+    else this.latest = undefined
+    this.deps.onChange?.(this.available())
   }
 
   /** One check. Resolves when done; never rejects. */
   async check(): Promise<void> {
-    const generation = this.generation
-    if (!this.deps.enabled() || this.inFlight === generation) return
-    this.inFlight = generation
+    if (!this.deps.enabled() || this.inFlight !== undefined) return
+    const request = {}
+    this.inFlight = request
     try {
-      this.lastCheckedAt = (this.deps.now ?? Date.now)()
       const version = parseLatestRelease(await this.deps.fetchRelease())
       // Switched off or stopped while the request was out: say nothing.
-      if (version !== undefined && this.deps.enabled() && generation === this.generation) this.setLatest(version)
+      if (version !== undefined && this.deps.enabled() && this.inFlight === request) this.setLatest(version)
     } catch (err) {
       this.deps.log?.(`update check failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      if (this.inFlight === generation) this.inFlight = undefined
+      if (this.inFlight === request) this.inFlight = undefined
     }
   }
 
-  /** The user dismissed what `available()` showed; a newer release shows again. */
-  dismiss(): void {
+  /**
+   * The user dismissed `version`, the one their window shows; a newer release shows again.
+   * Recorded only when it is what main offers now: a check can land while the click is on its way,
+   * and recording the current offer instead would hide, in every window and for good, a release
+   * nobody saw. The renderer's value is untrusted, so anything else writes nothing; the window that
+   * sent a stale version gets the new one through its own `updates.changed`.
+   */
+  dismiss(version: string): void {
     const a = this.available()
-    if (!a) return
+    if (!a || a.version !== version) return
     this.deps.setDismissed(a.version)
     this.deps.onChange?.(this.available())
   }
 
-  private setLatest(version: string | undefined): void {
+  private setLatest(version: string): void {
     const before = this.available()
     this.latest = version
     const after = this.available()
