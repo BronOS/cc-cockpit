@@ -1,0 +1,20 @@
+{
+  "id": "test.hostwebview",
+  "name": "Host Webview",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [
+      { "id": "view", "title": "View", "kind": "webview", "defaultZone": "right" },
+      { "id": "page", "title": "Page", "entry": "page.html", "defaultZone": "left" }
+    ],
+    "cli": [
+      {
+        "name": "wv",
+        "summary": "Drive the fixture's webview panel",
+        "usage": "wv open <url|file> | wv show [panel] | wv current | wv back | wv forward | wv reload"
+      }
+    ]
+  }
+}

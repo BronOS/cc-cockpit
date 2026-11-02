@@ -1,0 +1,211 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { OverlayInfo } from '../../shared/ipc'
+import { registerHandlers } from '../commands/keybindings'
+import { usePrefs } from '../prefs/prefs-store'
+import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
+import { followOverlays } from './follow-overlays'
+import { HtmlOverlay } from './HtmlOverlay'
+import { CloseGlyph } from '../window-icons'
+import { TerminalOverlay } from './TerminalOverlay'
+
+/** A terminal overlay's keystrokes, acks and size, through the overlay channels. */
+function overlayIo(overlayId: string): TerminalIo {
+  return {
+    input: (data) => {
+      window.cockpit.invoke('overlays.input', { overlayId, data }).catch(() => {})
+    },
+    ack: (count) => {
+      window.cockpit.invoke('overlays.ack', { overlayId, count }).catch(() => {})
+    },
+    resize: (cols, rows) => {
+      window.cockpit.invoke('overlays.resize', { overlayId, cols, rows }).catch(() => {})
+    }
+  }
+}
+
+function closeOverlay(overlayId: string): void {
+  window.cockpit.invoke('overlays.close', { overlayId }).catch(() => {})
+}
+
+function OverlayClose(props: { overlayId: string }): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className="overlay-close"
+      aria-label="Close overlay"
+      title="Close"
+      onClick={() => closeOverlay(props.overlayId)}
+    >
+      <CloseGlyph size={14} />
+    </button>
+  )
+}
+
+/**
+ * `overlays.list` resets terminal overlays' flow control in main, so it runs once per page load
+ * (the same rule as `tabs.list`); a StrictMode remount reuses the answer.
+ */
+let listed: Promise<OverlayInfo[]> | undefined
+function listOverlays(): Promise<OverlayInfo[]> {
+  listed ??= window.cockpit.invoke('overlays.list')
+  return listed
+}
+
+/**
+ * The window's overlay stack (design §4), drawn from main's list: each overlay covers the whole
+ * window, the newest on top. main owns the stack and the results; this reports ✕ and the overlay
+ * keys and lays out what main shows natively (a url overlay's page).
+ *
+ * Keys: `overlay.closeTop` (Cmd+Shift+W) is claimed while any overlay is open, `overlay.pop`
+ * (Esc) only while the top one is not a terminal, so Esc otherwise reaches the program (or, with
+ * no overlay, the tab's terminal). Keys typed inside a url page or an html iframe never reach
+ * this page; main resolves those itself (overlay-manager.ts handleChord).
+ */
+export function OverlayStack(props: {
+  /** The stack's size changed (0 when the last overlay closed). */
+  onChange: (count: number) => void
+}): React.JSX.Element {
+  const [stack, setStack] = useState<OverlayInfo[]>([])
+  const { tabCloseSide } = usePrefs()
+  const [terms] = useState(() => new SessionRegistry(overlayIo))
+  /** Terminal overlays that have a session here, to dispose it once main drops the overlay. */
+  const seen = useRef(new Set<string>())
+  const onChange = useRef(props.onChange)
+  useEffect(() => {
+    onChange.current = props.onChange
+  })
+
+  useEffect(() => {
+    const known = seen.current
+    const offData = window.cockpit.on('overlays.data', ({ overlayId, data }) => {
+      known.add(overlayId)
+      terms.write(overlayId, data)
+    })
+    // An update that lands before the list answer wins over it (follow-overlays.ts).
+    const offUpdated = followOverlays(
+      { list: listOverlays, onUpdated: (listener) => window.cockpit.on('overlays.updated', listener) },
+      setStack,
+      (err) => console.warn('overlays.list failed', err)
+    )
+    return () => {
+      offData()
+      offUpdated()
+      terms.disposeAll()
+      known.clear()
+    }
+  }, [terms])
+
+  useEffect(() => {
+    const ids = new Set(stack.map((o) => o.id))
+    // Includes overlays that came and went between two renders (a `true` that exited at once).
+    for (const id of seen.current) {
+      if (ids.has(id)) continue
+      terms.dispose(id)
+      seen.current.delete(id)
+    }
+    for (const o of stack) if (o.kind === 'terminal') seen.current.add(o.id)
+  }, [stack, terms])
+
+  // A layout effect, declared before the focus effect below: the owner makes what is under the
+  // overlays inert from this count (TabsPane `covered`). A state update made in a layout effect
+  // re-renders synchronously, before the browser paints or handles the next key. In a passive
+  // effect the overlay took focus one render before the content below went inert, and a
+  // Shift+Tab in that gap walked focus out to a button (or a terminal) under the overlay.
+  useLayoutEffect(() => {
+    onChange.current(stack.length)
+  }, [stack])
+
+  const top = stack.at(-1)
+  const topId = top?.id
+  const topKind = top?.kind
+  const topEl = useRef<HTMLDivElement>(null)
+  // A layout effect: the handlers must change with the DOM, before the next key is handled. With
+  // a passive effect a key pressed right after a new overlay appeared would still find the old
+  // top's handler and close the overlay underneath.
+  useLayoutEffect(() => {
+    if (topId === undefined) return
+    // An html overlay on top gets the keyboard on the overlay element, not in its frame: keys in
+    // the frame never reach this page, so Esc there only works through main, and keys typed
+    // behind the overlay must not reach the tab's terminal. The page gets keys once the user
+    // clicks into it. (A terminal overlay focuses its xterm; main gives a url view native focus.)
+    if (topKind === 'html') topEl.current?.focus()
+    const close = (): void => closeOverlay(topId)
+    return registerHandlers(
+      topKind === 'terminal'
+        ? { 'overlay.closeTop': close }
+        : { 'overlay.closeTop': close, 'overlay.pop': close }
+    )
+  }, [topId, topKind])
+
+  return (
+    <>
+      {stack.map((overlay, i) => {
+        const active = i === stack.length - 1
+        return (
+          <div
+            key={overlay.id}
+            ref={active ? topEl : undefined}
+            tabIndex={-1}
+            // Only the top overlay takes keys: Tab / Shift+Tab must not walk into one under it
+            // (a terminal overlay's xterm textarea, a frame, a ✕) that the user cannot see.
+            inert={!active}
+            className="overlay"
+            // Later overlays paint over earlier ones; all above the palette (z-index 100).
+            style={{ zIndex: 200 + i }}
+            role="dialog"
+            aria-modal="true"
+            aria-label={overlay.title}
+            data-kind={overlay.kind}
+          >
+            {/* The ✕ follows the tabs' close-side setting, so it sits where the user's hand already
+                goes for a tab's ✕. Moved in the DOM (not CSS order) so focus order matches. */}
+            <header className="overlay-header" data-close-side={tabCloseSide}>
+              {tabCloseSide === 'left' && <OverlayClose overlayId={overlay.id} />}
+              <span className="overlay-title">{overlay.title}</span>
+              {tabCloseSide === 'right' && <OverlayClose overlayId={overlay.id} />}
+            </header>
+            <div className="overlay-body">
+              {overlay.kind === 'terminal' && (
+                <TerminalOverlay overlayId={overlay.id} active={active} sessions={terms} />
+              )}
+              {overlay.kind === 'html' && (
+                <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
+              )}
+              {overlay.kind === 'url' && <UrlBody overlayId={overlay.id} url={overlay.url} />}
+            </div>
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+/**
+ * The area a url overlay's page fills. The page is a native view main lays over the window, so
+ * this only reports where it is, again whenever it moves or resizes.
+ */
+function UrlBody(props: { overlayId: string; url: string }): React.JSX.Element {
+  const { overlayId } = props
+  const el = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const node = el.current
+    if (!node) return
+    const report = (): void => {
+      const r = node.getBoundingClientRect()
+      window.cockpit
+        .invoke('overlays.bounds', { overlayId, x: r.left, y: r.top, width: r.width, height: r.height })
+        .catch(() => {})
+    }
+    const observer = new ResizeObserver(report)
+    observer.observe(node)
+    // The size can stay the same while the position changes (the window resized around it).
+    window.addEventListener('resize', report)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', report)
+    }
+  }, [overlayId])
+
+  return <div ref={el} className="overlay-url" data-url={props.url} />
+}

@@ -1,0 +1,845 @@
+# cc-cockpit — design
+
+Status: agreed in brainstorm, 2026-10-29. Source of truth for the phase-1 implementation plan.
+
+## 1. What cc-cockpit is
+
+A desktop app (Electron) that wraps Claude Code terminal sessions and adds a cockpit around them:
+
+1. **Terminal**: tabs running `claude` (or a shell) in the central zone, with the ability to send
+   text into a running Claude session safely.
+2. **Claude status**: a core view of every in-app Claude session (working, waiting, needs
+   permission, changed files), across all windows.
+3. **Plugins**: everything source-specific (Jira, Gmail, calendar, Forgejo, file tree, editor…)
+   is an externally installed plugin that brings its own data, panels, settings and triage.
+
+**Project = folder; one window holds one project.** Settings, enabled plugins and layout belong
+to the project.
+
+### What belongs in core
+
+**Core is the foundation for plugins plus the base functions every user needs without any
+plugin.** A feature is core only if at least one holds:
+
+1. everyone needs it with no plugin installed (projects and windows, terminal tabs, Claude in a
+   tab with status, send gate, hooks and resume, themes, keys, settings, the `ccc` CLI);
+2. only main can do it safely (PTYs, checking which window or host asks, the OS keychain, typing
+   into a Claude session);
+3. it connects parties that cannot reach each other directly (plugins ↔ Claude sessions,
+   plugins ↔ their panels, the outside world ↔ the app through `ccc` and hooks, later
+   plugin ↔ plugin).
+
+Everything else is a plugin, even if every user installs it. Named accounts fail all three, so
+they left core (removed in 2026-10); what stays is what only main can do: `ctx.secrets`, the
+secret settings field and the optional `ctx.oauth` helper (§6).
+
+### Phase 1 scope
+
+In: projects and windows, zones and panel moving, terminal tabs, Claude status (tab dots, top
+strip, Sessions panel, notes/steps), overlay stack, plugin host and API, plugin secrets and
+sign-in helpers (`ctx.secrets`, secret settings field, `ctx.oauth`), settings, themes, commands
+and keybindings, CLI, the `hello` reference plugin.
+Until an editor exists, clicking a changed file opens `git diff` in a terminal overlay.
+
+Out (later, each real plugin in its own design session): every real data plugin, editor and
+file tree, drag-and-drop of panels, the cross-plugin export API, a plugin registry server (the marketplace is a static index, see §5), binary
+downloads, Windows builds, sessions that outlive the app.
+
+### Decisions log
+
+| Question | Decision |
+|---|---|
+| Sessions on quit/crash | They die; on start each Claude tab reopens with `claude --resume <id>` |
+| Which Claude sessions are tracked | Only the app's own tabs, across all project windows |
+| Plugin trust/runtime | VS Code model: backend in a Node plugin host, panels in sandboxed iframes |
+| Plugins vs projects | Plugins are app-wide; each project enables plugins. No named accounts: a plugin brings its own sign-in (§6) |
+| Project settings storage | App data dir, keyed by folder path (repos stay clean) |
+| Panel placement | Manifest default zone; zone menu (header "…" or icon right-click) to move/hide; saved per project |
+| Overlay | Stack over the whole window; Esc pops the top one (not a terminal one: Esc is its program's) |
+| Plugin install | Git URL pinned to a tag, a linked local folder (dev), or the Marketplace: a static index file in a git repo, no registry server (§5, Marketplace) |
+| Phase-1 plugin API | UI + background, settings + secrets, session access, commands/keys/themes |
+| Data model | **Silos**: each plugin owns its data and triage. No core item store. A future cross-plugin plugin may read from several plugins |
+| Process layout | One plugin host per project window (option A) |
+| Shell UI | React |
+| Plugin CLI commands | Flat top-level names (`ccc browser open …`); a name taken by core or another plugin refuses the install, link or update (§5, §6) |
+| Claude skills | Stay in the app data dir (`<data>/claude-plugins/`), loaded only into Claude sessions the app starts (`--plugin-dir`); nothing is written to `~/.claude` (§5 Skills) |
+| Embedded web view | A core primitive (only main may create a `WebContentsView`): the `webview` panel kind plus `ctx.webview`; the browser plugin is built on it (§5 Web view) |
+| Browser scope | Foundation plus a minimal built-in browser; a full one (tabs, history, devtools) gets its own design session |
+| "Install Claude skill" button | Dropped: with `--plugin-dir` it would only matter for Claude sessions started outside the app, which the Claude-operable foundation does not target |
+
+## 2. Processes and responsibilities
+
+```
+main (Electron)
+ ├─ windows: one per project (folder), plus a project picker when none is open or on request
+ ├─ PTYs: node-pty per terminal tab (owned here, never in a renderer)
+ ├─ session registry: tab → {project, cwd, claude session id, status, files}
+ ├─ app store: app settings, project settings (keyed by path), installed plugins
+ ├─ secrets: per-plugin encrypted store in the OS keychain (safeStorage)
+ ├─ CLI socket: <data>/app.sock (Unix socket / named pipe on Windows)
+ │
+ ├─ window "my-project" (renderer)
+ │    ├─ shell UI: zones, icon strips, tabs, overlay stack, top strip
+ │    ├─ xterm.js per tab ⇄ IPC ⇄ its PTY in main
+ │    └─ panel iframes (sandboxed) ⇄ MessagePort ⇄ plugin host
+ └─ plugin host "my-project" (utilityProcess)
+      └─ plugins enabled in my-project: activate(ctx) with my-project's settings and its plugins' secrets
+```
+
+- **main is the only authority.** Renderers and plugin hosts ask; main knows which window or
+  host is asking and acts only within that project. A plugin can see only its own window's tabs.
+  This is enforced by main, never by trusting an id the plugin passes.
+- **Trust boundary, honestly stated.** Plugins have full Node access (like VS Code extensions),
+  so per-window hosts protect against mistakes (bugs, mixed-up state, crashes), not against a
+  malicious plugin. Installing a plugin means trusting its author. The CLI socket requires a
+  per-tab token so nothing poses as a session by accident. There are two kinds, decided by main's
+  own lookup and never by anything the CLI sends: a Claude tab's **session token** is good for
+  everything (hooks, `session note`/`steps`), and a shell tab's, a command tab's or a terminal
+  overlay's **window token** only selects that window's project, as `--project <path>` would,
+  for the window-level commands (§6); every command that needs a Claude session refuses it. A
+  window token grants nothing `--project` does not already grant any local process; it only spares
+  naming the folder and keeps naming the right window after the shell cd's elsewhere. Main mints
+  each token at spawn and revokes it when the tab (or overlay) closes; Restart mints a fresh one.
+- **Renderer** runs with `contextIsolation` and a minimal preload.
+- **No daemon.** Quitting ends everything. On launch main reopens the last projects' windows;
+  each window reopens its tabs and starts its plugin host.
+- **The CLI** talks to main over the socket. If the app is not running it exits 0 silently:
+  a Claude hook must never fail a session.
+
+## 3. Terminal tabs and Claude sessions
+
+**Tabs** (central zone): a Claude tab (main spawns `claude` in a PTY, `cwd` = project folder or a
+subfolder), a shell tab (`$SHELL -l`), or a command tab (below). GUI apps on macOS do not get the
+shell's PATH, so main reads the environment from `$SHELL -l -i` once at startup and uses it for
+every PTY.
+
+**Custom commands.** The [+] menu lists Claude and Shell, then the user's own entries: the
+app-wide ones (Settings › Appearance and keys › Tabs; `app.json` › `tabCommands`), then this
+project's (Settings › This project; the project record's `tabCommands`), a separator before each
+group. An entry is a label (1-60 characters, one line) and a command line (1-4096 characters, no
+NUL), at most 50 per level: `lazygit`, `npm run dev`, `docker compose logs -f | grep api`.
+Picking one opens a tab titled by the label that runs the command **in the user's login shell**,
+as if typed into a terminal: `$SHELL -l -i -c <command>` (the flags of the login-env capture, so
+.zshrc aliases and functions work), with the same env and PATH as every tab, in the project
+folder. The shell parsing the command is deliberate and is not the argv-only rule's concern: the
+text is the user's own setting, never renderer, plugin or hook input, and it still travels as one
+argv element. Main is the authority: the renderer's `tabs.create` names the entry by level and id
+and main looks the command up in its own settings (unknown id: refused); a command or label in
+the payload is never read, and plugins cannot open command tabs (their tab APIs open Claude tabs
+only). Ids are minted by main; a saved list may keep only ids its level already has. A damaged
+settings file costs its bad entries (dropped on read), not the menu; saving refuses an invalid
+list as a whole. The tab keeps its own copy of label and command: editing or deleting the entry
+later does not change an open tab, its Restart, or its restore. A command tab is like a shell tab
+otherwise: a window token, not a session token (§2: `ccc browser open …` after `npm run dev &`
+reaches the window without `--project`; `hook` and `session note`/`steps` are refused), not in
+the session registry, the status strip, `ccc sessions` or plugin `sessions` events; Exit (below) applies as to any tab: a clean
+exit closes it, a failure keeps "exited (code N): Restart · Close", and Restart runs its command
+again.
+
+*Open as overlay.* Each entry also says where it opens: Tab (the default) or Overlay (a select per
+entry in both editors; stored as `open: "overlay"` and only then: an absent or damaged value is a
+tab, so files from before the field keep opening tabs). An overlay entry (`lazygit`, `yazi`)
+opens a terminal overlay (§4 Overlay stack) in the window it was picked in, titled by the label:
+the same `$SHELL -l -i -c <command>` argv, project folder and env as its tab would get (the
+overlays' env is the login env with the overlay's own window token for the window it is shown
+in, and no `APP_TAB_ID`; the token dies with the overlay). It
+closes when the program exits, whatever the code (nothing is shown for a failure: the program's
+own screen was the place for that), or on Cmd+Shift+W / ✕; Esc goes to the program like in every
+terminal overlay. Nothing about it is saved or restored, and it has no Restart. Main decides tab
+vs overlay from its own entry when `tabs.create` arrives (the menu's mark is only a hint; a
+stale menu or a forged request cannot pick), and answers `null` instead of a tab for an overlay.
+A program that cannot start fails the click like a tab's would (OverlayManager.start throws
+before anything is on the stack). Every [+] menu row starts with an icon for where it opens: a
+tab (Claude, Shell and tab entries) or two stacked panes (overlay entries); the chord stays at
+the right edge. Two picks open two overlays, stacked; in practice
+the second pick waits, since the menu and every non-overlay chord are inert while an overlay is
+up. Plugins still cannot start entries.
+
+*Keys for entries.* Every entry is also a command of the key table:
+`tab.newCommand.app.<entryId>` / `tab.newCommand.project.<entryId>`, titled "New tab: <label>"
+("Overlay: <label>" for an overlay entry; the id is the same either way, so switching keeps the
+chord).
+An app-wide entry's command exists in every project window, a project entry's only in that
+project's (like a plugin's commands). None has a default chord: the user binds one in the
+keybinding list (Settings › Appearance and keys) like any command, with the same overrides
+(`app.json` › `keyOverrides`, keyed by the command id, so a rename keeps the chord), conflict
+warnings, Unbind and Reset. The [+] menu shows an entry's chord next to its label, and the
+palette lists the entries. The chord opens the tab the menu's way, by level and id (main looks
+the command up); like every chord it does nothing while the settings screen, an overlay, the
+palette or the close dialog is up. Saving a level's list sends the new key table to the windows
+that see that level (all for app-wide, the project's for a project entry), so an added entry is
+bindable at once and a removed one's chord stops firing. The removed entry's override stays in
+`app.json`, ignored like any override for an unknown command (an id from a hand-edited file may
+be shared by two projects' entries, so it is not pruned).
+
+**Exit.** A tab whose process ends normally closes, exactly as if the user clicked Close; what
+"normally" means depends on the kind. A Claude tab (`/exit`, Ctrl+D) and a command tab (`lazygit`
+quit with q) close only on exit code 0 with no signal: a crashed `npm run dev` keeps its output
+visible. A terminal (shell) tab closes on any exit code, because a shell's exit code is the status
+of the user's last command, not whether the shell ended normally (zsh leaves `$?` = 1 at the first
+prompt when the rc files end on a failing command, and `exit` after Ctrl+C returns 130). It keeps
+its banner only when killed by a signal or when it exited within 1 s of its spawn
+(`SHELL_MIN_LIFE_MS`, counted per process, so Restart resets it): a broken `$SHELL` or an rc file
+that dies must not vanish silently. Main decides and tells
+the window (`tabs.removed`); the session leaves the status strip, `ccc sessions` and plugin
+`sessions` events; a Claude tab's record (and its session id) leaves the restore record. Any other
+exit (by the rules above) keeps the tab with "exited (code N): Restart · Close",
+so a failure stays visible. Exceptions that never close: a Claude tab started with `--resume`
+that has not reported its SessionStart yet, or whose resume failed (its saved id must survive
+until a fresh process replaces it), and tabs that end because the app is quitting (they restore
+next launch). The last tab closing leaves the window open and empty. The app setting "When a
+tab's process exits" (Settings › Appearance and keys; `app.json` › `tabExit`) switches between
+this (`close-clean`, the default) and `keep`: every exited tab stays with its banner. It is read
+at each exit, so a change applies to open tabs. Terminal overlays are not tabs: they close when
+their program ends, whatever the code.
+
+**Close.** A tab the user closes while its process is still running asks first: "Close
+“<tab>”?", with a Claude tab's status ("Claude is working in this tab"), Cancel focused (Enter alone
+keeps the tab), Close, and a "Don't ask again" box that, with Close, turns the setting off. Every
+close the user starts goes through the same check: the tab's ×, the tab menu's Close, Close Tab by
+key (Cmd+W) or from the palette, and the exited banner's Close (which never asks: its process
+ended). There is no middle-click close.
+A tab that has exited, and a restored command tab that is not started, close at once. Closes that
+are not a user's click never ask: a clean exit (§3 Exit), a plugin or main closing a tab, a
+project window closing, the app quitting (the last two kill running tabs without a question; out of
+scope for now). The question is a modal of the renderer (`CloseTabDialog`): the strip and the
+zones under it are inert and the key handler runs no command while it is up, so no key typed there
+can reach a terminal; Esc and a click outside cancel; an overlay opening dismisses it as a Cancel,
+and so does its tab going meanwhile. The app setting "Ask before closing a tab that is still
+running" (Settings › Appearance and keys; `app.json` › `confirmTabClose`, default on; only `false`
+turns it off) is read from main at each close (`settings.confirmTabClose`), so a change made in one
+window applies to the next close in every window.
+The × sits after the tab's label (status dot, name, queued chip, then ×) or, with "Close button
+position: Left" (Settings › Appearance and keys › Tabs; `app.json` › `tabCloseSide`, `'right'`
+by default; anything but `'left'` reads as right), before it. It moves in the DOM, not by CSS
+order, so keyboard focus follows what is drawn. An overlay's header ✕ follows the same setting
+(before or after its title), so it sits where the hand already goes for a tab's ×.
+
+**First tab.** A project window that opens with nothing to bring back (from the picker, `ccc
+open`, File › Open Folder, the command line) gets one Claude tab in the project folder, started by
+main exactly as "New tab › Claude" would. Eligibility is fixed when the window opens: a window
+with a queued restore plan, or whose saved record still holds tabs (a project whose folder was
+missing at launch), is never given one, even when every restored tab fails to start; a fresh tab
+there would be one nobody asked for, and for the saved record it would overwrite the session ids
+waiting in it. The tab starts when the window's renderer first attaches, after its restore has
+resolved and the login env is known (as restored tabs do, so no early output is lost), and only if
+the project has no live tab at that moment: a tab a plugin opened during startup wins. It fires at
+most once per window open; a page reload or the last tab closing later (by hand or by a clean
+exit) never brings one back. A missing `claude` gives the usual exited banner. The app setting
+"Open a Claude tab when a project opens with no tabs" (Settings › Appearance and keys; `app.json`
+› `claudeTabOnOpen`, default on; only `false` turns it off) is read at that attach.
+
+**Wiring.** Main launches `claude --settings <app>/hooks.json` with `APP_TAB_ID` and
+`APP_TAB_TOKEN` in the environment. The hooks run `<app> hook <event>`, which forwards the hook's
+stdin JSON plus the token to main over the socket. The user's global Claude settings are never
+touched; Claude outside the app is never seen.
+
+**Status per tab**, from hook events:
+
+| Event | Status |
+|---|---|
+| `SessionStart` | idle (a working tab stays working when `source` is `compact`: auto-compaction mid-turn); `session_id` stored for `--resume` |
+| `UserPromptSubmit`, `PreToolUse` | working (current tool shown) |
+| `Notification` (permission) | needs permission |
+| Enter or a digit typed into a needs-permission tab | working (the dialog was answered) |
+| `Stop`, `Notification` (idle) | waiting for input |
+| `SessionEnd` / PTY exit | ended |
+
+`PostToolUse` for Edit / Write / MultiEdit / NotebookEdit adds `file_path` to the tab's
+changed-files list.
+
+**Sending text into a session** — the core safety rule:
+
+- Allowed only while the status is *waiting for input*.
+- Sent as a bracketed paste (`ESC[200~ … ESC[201~`) followed by Enter, so multi-line text
+  arrives as one message.
+- If busy, the text is queued and shown as a "queued" chip on the tab; delivered on the next
+  `Stop`, cancellable from the chip.
+- Never sent while *needs permission*: a keystroke must never answer a permission prompt.
+
+**Claude status UI** (core, not plugins):
+
+- each Claude tab shows a status dot where shell and command tabs show a glyph of their kind;
+  a *working* dot pulses (a slow ring), off under `prefers-reduced-motion`;
+- the **top strip** in every window lists the Claude tabs of the *other* windows
+  (project · status · tool), the ones needing you first (a *needs permission* entry is tinted);
+  a click focuses that window and tab. This window's own tabs are left out (they are in its tab
+  bar and Sessions panel): the renderer drops the snapshot's strip entries whose tab id is in the
+  snapshot's `own` list, so nothing new crosses IPC. With no other window's session the strip is
+  just the "+". It is one bar with the window title (§4 Window chrome):
+  the project's name and folder lead it. The entries end with a "+" ("Open project…") that shows
+  the project picker, so the strip is shown even with no Claude tab anywhere. A gear at the right
+  end opens settings (the `app.openSettings` toggle). A strip entry carries its project's colour
+  (`projectColor`, §6 Project colour) for a dot by the project's name;
+- a built-in **Sessions panel** (placeable in zones like plugin panels): a card per Claude tab
+  with last prompt, status, notes, steps done (a count over a small bar) and changed files under
+  an "N changed files" caption; a file click opens it in an overlay. Its header counts the
+  window's sessions ("2 in this window").
+
+**Restore.** Main saves each project's tabs (kind, cwd, `session_id`, order; a command tab's own
+label and command); on next start Claude tabs reopen with `claude --resume <id>`, shell tabs start
+fresh. Command tabs come back **not started**: a re-run of something like a deploy on app launch
+would be a nasty surprise, so the tab is restored without a process (gen 0), shows "not started"
+with Restart · Close, and runs only when the user clicks Restart. A saved command tab whose label
+or command no longer validates is skipped. A running tool call does not survive. A window
+*reopen* (§4 Window background) goes through the same path without a quit: the tabs are saved and
+queued from the live ones as the window closes (`TabRestorer.requeue`), overlays are not restored.
+
+## 4. Window layout, zones, overlay
+
+```
+┌─● ● ●─ project ~/path │ strip: Claude sessions (all windows)  [+] ───────────────── ⚙ ─┐
+├──┬────────────┬─────────────────────────────────────────────┬────────────┬──┤
+│ic│ panel A  … │ tabs: ( claude ● | claude ○ | >_ zsh ) [+]  │ panel X  … │ic│
+│on│────────────│                                             │            │on│
+│s │ panel B    │            terminal (xterm.js)              │            │s │
+│  │            │                                             │            │  │
+├──┴────────────┴─────────────────────────────────────────────┴────────────┴──┤
+│ icons │ panel C  │ panel D  │                bottom zone                    │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Zones.** Left and right: an icon strip plus a panel area where open panels stack vertically
+with draggable splitters. Bottom: the same, panels side by side. A click on an icon toggles its
+panel; each zone collapses with a keybinding. Sizes, open panels and order are saved per project.
+Plugins set a badge on their icon (a count or a "needs you" dot). The zone menu (move to
+left / right / bottom, or hide) opens from the "…" button in a panel's header or a right-click on
+its icon. Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
+keeps its strip, captioned "Bottom zone collapsed" with its key.
+
+**Window chrome.** One bar across the top (variant A of the window redesign): the project's
+folder glyph, name and path, then the strip (above), then the gear. On macOS the bar is the
+window's title bar: project windows use `titleBarStyle: 'hiddenInset'` with the traffic lights
+centred on the 40px bar (`main/windows/window-chrome.ts`), the bar reserves their room (collapsed
+in full screen, where macOS hides the lights: main sends `window.state` on `enter-full-screen` /
+`leave-full-screen`, and `window.info` carries the state for a window restored in full screen)
+and is a drag region, every control in it `no-drag`; full-window layers (overlays, settings) start under
+it. Other platforms keep the native title bar above the same bar. The BrowserWindow title stays
+the project's name (Window menu, Mission Control); the picker keeps its native frame (as a modal
+child of a project window it is a sheet on macOS) and is never transparent (Window background
+below). The tabs sit
+above the terminal as a segmented control followed by the [+] menu (Claude, Shell, then the
+"App commands" / "Project commands" groups under captions). Panel headers carry the title and the
+"…" zone-menu button; splitters are a hairline with a grip mark that turns accent on hover or
+focus. The project path is shown in full: project windows are not told the home folder, so it is
+not abbreviated to `~`.
+
+**Panels** are sandboxed iframes (`sandbox="allow-scripts"`, no same-origin, strict CSP) loaded
+from the plugin's files, talking to their plugin backend through a `MessagePort` that main hands
+over. The core injects the theme's CSS variables into every panel.
+
+**Overlay stack.** Opened by plugins (API), the CLI and the user's overlay entries of the new-tab
+menu (§3 Custom commands); covers the whole window (on macOS, everything under the in-page title bar); overlays stack.
+
+- `terminal`: an argv command with a cwd in its own PTY; the overlay closes on exit and the
+  opener gets the exit code. Its xterm fills the window under the overlay's title bar, with the
+  terminal font of the tabs, and the PTY is resized with it (a TUI gets the real size).
+- `html`: a plugin page in a sandboxed iframe with the panel message API.
+- `url`: an Electron `WebContentsView`, no Node, its own session partition; links to other
+  sites open in the system browser.
+
+Esc pops the top overlay, except in a terminal overlay of any opener (Esc belongs to the program,
+nvim / lazygit / yazi need it; close with ✕ or Cmd+Shift+W, or by quitting the program). Neither
+the shell page nor main's key watch takes Esc while a terminal overlay is on top. The opener receives a result when its overlay closes: exit code, a value
+the page sent, or "dismissed".
+
+**Themes**: a set of CSS variables plus an xterm palette. Light and dark are built in; theme
+plugins add more. The active theme is app-wide. A plugin theme inherits every variable it does
+not set from the built-in of its kind (accent, surfaces and focus tokens came later than some
+themes). Colour tokens only; radii, fonts and the type scale are fixed in the shell's stylesheet.
+
+**Window background** (Settings › Appearance and keys › Window; `app.json` › `windowBackground`,
+`{ transparent, opacity, blur, area }`, defaults off / 80 / off / `'window'`; checks in
+`main/settings/window-background.ts`: booleans, opacity a whole percent 40–100, area `'window'` or
+`'main'`, a damaged stored
+field reads as its own default, one bad field refuses a change). Background-only transparency:
+the shell's own surfaces (top bar, icon strips, tab bar, panel areas and so panel headers, the
+terminal, the empty terminal area) let the desktop through; text, icons, borders and the accent
+stay opaque, and so do menus, the palette, dialogs, overlays (terminal overlays included) and the
+settings screen. Plugin iframes and the web view keep their own pages' backgrounds. Project
+windows only; the picker and other windows stay opaque.
+
+- *Transparent* is creation-only in Electron (`transparent: true` with a `#00000000`
+  `backgroundColor`): main reads the setting when it creates a project window
+  (`WindowManager` › `projectWindowLook`, options from `window-chrome.ts`
+  `projectWindowBackground`) and records which windows it made transparent. `window.info` tells
+  the page `transparent: true` from main's record, never from the current setting: a window is
+  what it was made as for its whole life. So a flip of the switch that leaves the window it was
+  made in looking otherwise shows an in-page confirm there ("Reopen this window to apply? Claude
+  conversations resume; shells start fresh, and anything running now is stopped." · Reopen window
+  · Later); flipping back hides it. *Reopen window* sends `window.reopen` (project windows only;
+  main takes the project from the sender, never from the payload) and main remakes that window
+  (`WindowManager.reopen`): a modal picker over it is closed, the window is closed, and in its
+  `closed` a new one is opened for the project at once, from the current setting. In between the
+  project is never treated as closed: it stays in the open list, no picker shows, the app does not
+  quit, `onProjectClosed` gets `reopening` and, instead of clearing the saved tabs, saves and
+  queues them from the live tabs before killing them (§3 Restore: Claude tabs come back with
+  `--resume <id>`, shell tabs fresh, command tabs not started; a running turn or command is
+  stopped, overlays are not restored). The bounds and maximised / full-screen state saved as the
+  old window closes are where the new one opens; the plugin host restarts with the window (a new
+  host waits for the old one to go), the zone layout is in the record and stays. *Later*, and every
+  other open project window, keep how they were made until they are next opened (or the app
+  restarts). If the folder is gone by then, the project simply closes (the picker shows).
+- *Opacity* is live: it travels in the shell prefs (`backgroundOpacity`, `prefs.changed`) and a
+  transparent window sets `--cc-window-alpha` from it. The page draws (`html.see-through`,
+  `renderer/theme/see-through.ts`) glass tokens: the theme's `--cc-bg`, `--cc-bg-bar` and the
+  terminal colour mixed with transparent at that alpha (`color-mix`), so a theme switch re-colours
+  them with no extra code. Exactly one translucent layer per pixel: the body goes transparent and
+  each surface carries the glass (two 85 % layers would read as 98 %). The tab terminals' xterm gets
+  the theme palette with a fully transparent background in the background's own rgb (xterm draws
+  inverse and dim text with the opaque background) and `allowTransparency` (only there: it costs
+  drawing time); the terminal host paints the glass, in xterm's background colour, and xterm's
+  stylesheet `#000` viewport and native scrollbar track are made transparent.
+- *Area* ("See-through": Whole window / Main area only) is live like the opacity (`seeThroughArea`
+  in the shell prefs). `'main'` sets `html.see-through-main`, which gives the icon strips and the
+  panel areas (so the side and bottom zones, panel headers included) their solid theme colours
+  again; the top bar, the tab bar and the terminal keep the glass. The splitters are solid border
+  lines either way.
+- *Blur* is live on the windows created transparent (`WindowManager.setBlur`): macOS
+  `vibrancy: 'under-window'` with `visualEffectState: 'active'` (`setVibrancy`), Windows
+  `backgroundMaterial: 'acrylic'` (`setBackgroundMaterial`; Windows 11 22H2 and later, ignored
+  before). Linux has no blur-behind in Electron: the switch is shown disabled with that reason, and
+  a transparent window there needs a compositing window manager. On macOS the vibrancy material is
+  itself a fairly solid tint, so with blur the desktop shows mostly as colour; a lower opacity shows
+  more. Windows is untested: Electron documents that `transparent` does not work on a framed
+  window, and project windows keep the native frame there.
+
+**Shell prefs**: app settings the shell page applies itself as it draws (the tab close button's
+side, the terminal font, a transparent window's background opacity) travel like the theme: the page reads them once at load (`prefs.get`,
+before the first render) and main pushes every change to every window (`prefs.changed`), so a pick
+made in one window's settings shows in all of them at once. Main applies the defaults; a damaged
+`app.json` value never reaches a window.
+
+**Terminal font**: every xterm (tabs and terminal overlays; there is one place one is made,
+`TerminalSession`) draws with Settings › Appearance and keys › Terminal, apart from the app UI's
+own font: family (a CSS font list), size (6–72 px), line height (1–2; xterm throws below 1),
+letter spacing (−5–10 px), weight and bold weight (`normal`, `bold`, `100`–`900`). `app.json` ›
+`terminalFont`; the defaults are `"Cockpit JetBrains Mono NF", monospace` (the bundled font below),
+13, 1, 0, normal, bold. Only the fields the user set are stored (a change is merged into them), so
+a field left alone follows the default; the pre-bundling default family (`Menlo, Monaco, "Courier
+New", monospace`, which the first version stored on any change) reads as unset. Main checks each
+value (`main/settings/terminal-font.ts`) and refuses a whole change for one bad field; a damaged
+stored field reads as its own default. The family may not hold control characters, `;`, `{`, `}`
+or `/*` (xterm writes it raw into a style rule) and is at most 512 characters. A change reaches
+every open terminal at once: once the font has loaded (`document.fonts.load` at the regular and
+bold weight, so the cell is not measured with a fallback; after 1.5 s the terminal goes on
+without it), its options are set, the terminal is fitted again and the new cols x rows go to the
+PTY through the resize path (a hidden tab does that when shown). The first window renders, and its
+terminals open, only after the font in effect has loaded (`startPrefs`).
+
+*Bundled fonts*: JetBrains Mono Nerd Font (the Nerd Fonts "Mono" variant, so icons are one cell
+wide; SIL OFL 1.1) and MesloLGS NF (romkatv/powerlevel10k-media; Apache 2.0), regular, bold,
+italic and bold italic, as WOFF2 in `renderer/assets/fonts` with their licences. The shell page
+declares them with `@font-face` (`fonts.css`); Vite emits the files with the renderer build (inside
+`app.asar` when packaged; the licence texts go to `Resources/fonts/` through electron-builder's
+`extraResources`) and they load under the page's `font-src 'self'`. Nothing is installed
+on the system. Their families are `Cockpit JetBrains Mono NF` and `Cockpit MesloLGS NF`, a name no
+installed copy can have, so the cell measures the same on every machine; the page shows the
+friendly names. A drift test (`bundled-fonts.test.ts`) ties `fonts.css` to
+`BUNDLED_TERMINAL_FONTS` (shared/terminal-font.ts).
+
+*The family dropdown* (`TerminalFontPicker`, logic in `font-picker-model.ts`): an editable
+combobox (ARIA combobox + listbox; ↑/↓, Enter, Esc closes the list only, typing filters) with
+sections Bundled, Installed and a last Custom…. Each name is drawn in its own face with a short
+sample. Installed lists the monospaced families (Chromium's `queryLocalFonts`, started by the click
+or key that opens the list, which is the user activation it needs; monospace is measured on a
+canvas); when the API is missing or refused the section says so. A pick stores a CSS font list as
+before: a bundled font as `"Cockpit … NF", monospace`, an installed one as `<name>, monospace`.
+Custom… reveals the free-text CSS font list field (main's checks above); it is also shown for a
+stored family no pick produces. The preview line includes a few Nerd Font icons so the user sees
+whether a font draws them.
+
+**Browser permissions: denied by default** (`main/windows/permissions.ts`). Electron grants every
+permission to a session without a handler, so every session gets one: the default session (the
+shell page and the plugin panels and html overlays it embeds) and each URL overlay partition
+(`electron-url-view.ts`, and any other session a WebContents is created in, from
+`web-contents-created`). The request and the check handler answer alike (the check handler is
+what `navigator.permissions.query` and the first step of some APIs read). Only the shell page's
+own top frame is granted anything (its URL is the dev server's origin or the built `index.html`,
+`appPageMatcher`, AND it is the main frame, so an iframe of the page is not), and only what it
+uses: `local-fonts`. Terminal copy and paste are the Edit menu's native commands, links go
+through the `app.openExternal` IPC and notifications are main's, none of which ask the handler.
+Plugin panels, html overlays and URL overlays get nothing (no clipboard, notifications,
+geolocation, media, MIDI, fullscreen, pointer lock, `openExternal`, ...): a plugin that needs a
+privileged thing asks main through `ctx`. The paths that bypass the permission handler are
+closed too: the device permission handler refuses (WebHID, Web Serial, WebUSB), the HID, USB,
+serial and (per WebContents) Bluetooth choosers are cancelled, and `getDisplayMedia` is refused.
+A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider rule.
+
+## 5. Plugin package and API
+
+**Package**: a folder or git repo with `plugin.json`; ships built JS (no build at install).
+
+```jsonc
+{
+  "id": "bronos.jira", "name": "Jira", "version": "0.3.0",
+  "api": 1,                          // plugin API major; the app refuses unknown majors
+  "main": "dist/host.js",            // runs in the plugin host
+  "contributes": {
+    "panels":   [{ "id": "board", "title": "Board", "icon": "icons/board.svg",
+                   "entry": "panels/board.html", "defaultZone": "left" }],
+    "settings": { "project": { /* JSON Schema */ }, "app": { /* JSON Schema */ } },
+    "commands": [{ "id": "refresh", "title": "Jira: Refresh", "key": "cmd+shift+j" }],
+    "themes":   [{ "id": "solar", "file": "themes/solar.json" }],
+    "cli":      [{ "name": "jira", "summary": "…", "usage": "jira [issue]", "stdin": false }],
+    "skills":   [{ "id": "jira", "dir": "skills/jira" }]
+    // a panel may instead be {"id", "title", "kind": "webview", "defaultZone"}: no "entry"
+  }
+}
+```
+
+- `panels[].kind`: `"html"` (default, needs `entry`) or `"webview"` (no `entry`; see Web view below).
+- `cli[].name`: `^[a-z][a-z0-9-]{1,31}$`, not a core command (or `app`, `config`, `version`), at
+  most 10, and the manifest needs `main`. `stdin: true` lets the command receive stdin.
+  A name already owned by another plugin refuses install, link and update, naming the owner; it
+  is also re-checked at every load and dev reload (bundled plugins first, then the earlier index
+  entry): the loser gets a not-ok state naming the clash and is not activated. A plugin installed
+  another way whose id a bundled plugin already holds is skipped (the bundled one wins). Clash
+  losers keep their manifest in the loaded map, so they win the name back once the owner is removed.
+- `skills[]`: see Skills below.
+
+**Host API**: `activate(ctx)` is called once per project window; `ctx` is already scoped to
+that project.
+
+| Area | API |
+|---|---|
+| config | `ctx.settings` (project + app, validated by schema), `ctx.onSettingsChange` |
+| secrets | `ctx.secrets.get/set/delete/keys` → this plugin's encrypted store (app-wide, OS keychain) |
+| oauth | `ctx.oauth.authorize(spec)` / `refresh(spec, token)` → loopback + PKCE sign-in, optional helper |
+| data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir` |
+| work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
+| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result |
+| web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
+| cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
+| sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt})` |
+| commands | `ctx.commands.register(id, fn)` |
+| misc | `ctx.log`, `ctx.notify(text)` |
+
+`activate` may return an object: reserved as the plugin's exported API for the future
+cross-plugin case. Phase 1 stores it but exposes no way to reach it.
+
+**Panel side**: a small `panel.js` SDK (`post`, `onMessage`, `theme`). Panels have no direct
+API; everything goes through their own plugin backend, so the plugin decides what its panel may do.
+
+**Skills**: a plugin brings Claude skills with `contributes.skills`. Main keeps a generated tree
+`<data>/claude-plugins/`, rebuilt at start and whenever the plugin set changes (temp dir, then
+renamed per child, so a starting tab never sees half a tree): `core/` (Claude plugin
+`cc-cockpit`, whose skill maps the `ccc guide` topics) and one `<pluginId>/` per enabled plugin
+with skills (Claude plugin `ccc-<id with dots as dashes>`, a hash added to a later id when two
+map to one name). A Claude tab starts with `--plugin-dir` for `core` and each skill plugin
+enabled in its project (`claudeArgv`, read at every spawn; restore waits for the first build).
+Running sessions keep what they started with; new tabs and restarts see changes. The
+`SKILL.md` front matter is read by a strict parser of our own (`src/main/plugins/skill-files.ts`):
+exactly `name: <id>` and a one-line plain-string `description` (at most 1024 chars); any other
+key (`allowed-tools`, `model`, `hooks`) refuses the plugin, since those change what Claude may
+do. Copy limits per plugin: 50 files, 50 folders, 1000 directory entries (dot ones too), 1 MiB, 8 folders deep, regular files only (dot entries skipped, never copied), no `SKILL.md` (any case) below the top one, re-checked
+while copied.
+
+**Telling Claude about the app**: `ccc guide [topic]` prints docs bundled into the CLI (Vite
+`?raw` imports; works with the app closed), and `ccc hook SessionStart` prints one line before
+delivering the event ("You are inside cc-cockpit; run `ccc guide` …"), produced locally so it
+cannot fail the hook. Two ways in, so one failing does not leave Claude blind. Drift tests tie
+the guide to `USAGE`, the host `ctx` members and the core skill.
+
+**Web view**: a panel with `"kind": "webview"` is a `WebContentsView` main lays over the panel's
+bounds (`src/main/webview/`; `electron-webview.ts` is the only file that creates it). Hardened
+like url overlays (no preload, sandbox, in-memory partition `webview-<project>-<plugin>`,
+permissions denied, downloads cancelled, WebRTC limited), but http(s) navigation stays in the
+view. The shell draws a toolbar (back, forward, reload, URL, open in system browser) and a
+placeholder; the renderer reports the placeholder's bounds and visibility, main moves the view
+and hides it while the panel is hidden or covered (palette, menus, dialogs, settings, overlay
+stack, splitter drag). Local files are served read-only through the privileged `cc-preview`
+scheme, registered on the view's own session: a token maps to the file's folder; no traversal,
+symlink escape or dot-files, 50 MiB per response and 100 MiB of unread responses per session
+(then a 503), a CSP with no network and `Referrer-Policy: no-referrer`, and a folder of `/`, home, an ancestor of home, one with a dot-folder anywhere on
+its real path, `~/Library` (except cloud-storage folders), a mount point or a temp root is
+refused. `ctx.webview.navigate` file targets follow the same rules: dot-files and files inside any
+dot-folder (`~/.ssh`, a project's `.git`) or `~/Library` (except `CloudStorage` and `Mobile
+Documents`) are refused. Navigate is capped at 60 per minute
+per plugin and 32 folder tokens per view; sub-frames may navigate anywhere except `file:` and
+other views' tokens. Chords with
+Cmd/Ctrl/Alt typed into a view are forwarded to the app.
+
+**Bundled plugins**: `PluginSource` has a third kind, `bundled`, for plugins shipped in the app
+resources (`plugins/browser`, `extraResources`). They are indexed from an allowlist at every
+start, never copied, cannot be uninstalled (only disabled per project) and update with the app.
+The index entry (not the manifest) may set `enabledByDefault`; the project record keeps
+`disabledPlugins` so a default-on plugin can be switched off. The built-in browser
+(`cockpit.browser`) has a webview panel, an app setting `home`, `ccc browser open|url|reload`
+and a skill.
+
+**Lifecycle**: install = clone the git URL at a tag into `<data>/plugins/<id>@<version>/`,
+validate manifest and `api` → enable per project → activate on window open, deactivate on close
+(with timeout) → on host crash, restart with backoff; affected panels show "plugin stopped:
+Restart". A linked dev folder is watched; a change reloads that plugin in every open host.
+
+### Marketplace
+
+A browsable list of plugins in Settings > Marketplace. There is no server: the index is one static
+`index.json` that anyone can host, and the default one lives in the repo `BronOS/cc-cockpit-marketplace`
+(fetched from `raw.githubusercontent.com`). That repo does not exist until it is created; until then the
+default fetch fails and the page shows the error. The template for it is `marketplace/` in this repo.
+
+- **Untrusted input.** Every byte of an index is untrusted: `parseMarketplaceIndex` (`src/shared/marketplace.ts`)
+  caps the size and each field, refuses `git@`, non-https and non-ASCII repos (a `file:` repo only from a `file:` index),
+  drops duplicate ids, and refuses the whole index on a bad body or unknown `schema` (the last good cache is kept).
+- **Fetch.** The app refreshes at every launch (no staleness check), fetching every configured index, every index recorded
+  on an installed plugin, and always the default index (removing it only hides its plugins; it cannot be turned off).
+  While it runs, a 15-minute timer refetches any of those over an hour old or whose last fetch failed. Redirects are
+  refused, so the default index's repo must never be renamed or transferred: installed copies would keep their cache and a fetch error.
+  The Marketplace page refetches when an index is stale or failed (Refresh forces it), and adding or removing an index fetches. The cache is read first, so an offline start still lists plugins and still enforces
+  revocations. The Plugins tab never touches the network. The repo of an entry is shown as plain text, not a link.
+- **Pinning.** An entry pins a tag and the full commit. Install and update clone the tag, read `rev-parse HEAD` in
+  staging and refuse when it differs from the commit (a moved tag), or when id or version differ from the entry.
+  The UI sends the repo and commit it showed (`expect`); main refuses when the entry changed meanwhile.
+  The commit and the index it came from are recorded in the install record (`commit`, `marketplace`).
+- **"Listed" is not "reviewed".** The app checks shape and refuses a pin mismatch at install; the official index's CI also checks that an entry
+  matches its repo and a person reviews and merges a new listing, but nobody audits the code. An added index may have no CI,
+  so there "listed" only means the index names it. A plugin runs with full access, so install, update and move-to-safe-version always ask for confirmation.
+- **Revocation.** `revoked.json` lists bad commits. The authority is the default index plus the index a plugin
+  was installed from (even if it was later removed from the list). A plugin whose recorded commit is revoked is
+  disabled and shown as revoked, enforced where the installer hands a plugin out (list and get), so no host gets one
+  however its state became ok; the way out is moving to a safe version from the plugin's recorded index, or uninstalling
+  (the only option when none is listed). There is no override for the default index's revocations; one from another index can be
+  sidestepped by reinstalling the commit by git URL or from another index, which changes the authorities. A revocation from any other
+  index is shown as a warning and never enforced. Linked plugins and installs with no recorded commit never match.
+  A withdrawn revocation restores the plugin; a failed fetch keeps what was enforced. It takes effect only at a
+  successful fetch, not on a first offline run with no cache, and it cannot undo what the plugin already ran.
+  An authority with no usable copy answers "unknown", and an install or update then goes ahead: a known exception, since
+  refusing would block every install until the default repo exists and answers, and a first run with no network has
+  nothing to clone either. A recorded revocation is withdrawn by a good copy of the index that issued it with no matching row, whatever the other authority's state; an issuer with no usable copy cannot have it lifted.
+- **Repo changes.** `app.json` `pluginRepos` remembers the last repo per plugin id. Installing an id from a different
+  repo through the Marketplace, or with no recorded repo while a project still has the id on, disables it in all projects, on disk, once the clone passed its checks and before the plugin is recorded; when that write fails nothing is installed (a git URL install records the repo but does not disable) and the view reports `repoChangedFrom`. The repo itself is written to disk at the same point, and an install whose write fails is refused; an uninstall first corrects a record that disagrees with the installed plugin, best effort: a write that fails is logged and the uninstall goes on, since it is the way out of a bad plugin. The index repo never auto-merges a `repo` change.
+- **Settings.** `marketplaces` in app settings is the list of index URLs (https, or `file:`); it replaces the default list, so the
+  default index is listed only if the array contains it (it is still fetched and still enforces revocations).
+  `CC_COCKPIT_MARKETPLACE_URLS` overrides it in a test run only (`CC_COCKPIT_TEST=1`, unpackaged app). Index repo CI (`marketplace/.github/workflows`) validates entries, lets an owner (numeric
+  GitHub id) publish a new version by PR without a human, and publishes `index.json` with a token. A bad entry on main keeps its last published listing and fails the run without holding up `index.json`, since revocations travel in the same file; only a bad `revoked.json` stops the publish.
+
+## 6. Plugin sign-ins and secrets, settings, projects, CLI
+
+There are no named accounts and no Accounts page: a plugin that needs a sign-in brings its own UI
+and flow (its panels or overlays, or a secret field in its settings form; not a settings page of
+its own). (Named accounts were removed in 2026-10; an old `accounts.json` in the data dir is
+ignored and can be deleted by hand.) Core keeps only what main alone can do:
+
+- **`ctx.secrets`**: `get(key)`, `set(key, value)`, `delete(key)`, `keys()` over a small
+  keychain-backed store per plugin (Electron `safeStorage` exists only in main; the plugin host
+  is a `utilityProcess` and cannot reach it). App-wide per plugin id; a plugin that wants
+  per-project sign-ins names its keys itself (`google:work`) and lets the project pick one
+  through a normal project setting. Keys match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, values are
+  at most 64 KiB, at most 100 keys per plugin. The prefix `setting:` is reserved for secret
+  settings fields (below): plugins are refused `set` / `delete` on it, `keys()` hides those keys,
+  and they do not count toward the 100. `set` rejects when the OS cannot encrypt: plaintext is
+  never stored. Uninstalling a plugin deletes its secrets (credentials should not outlive the
+  plugin, unlike per-project plugin data), and forgetting a project drops every plugin's
+  `setting:project:<projectId>:*` keys.
+- **Secret settings field**: a top-level string property with `"format": "secret"` in a plugin's
+  settings schema. A token-style sign-in is one password field in the plugin's own settings
+  form. The value is stored encrypted under `setting:app:<field>` or
+  `setting:project:<projectId>:<field>`, never in the settings files, and never reaches a
+  renderer: the form shows "Set" / "Not set" with Replace and Clear. The plugin host receives the
+  plaintext in `ctx.settings`. An unset secret, even a required one, does not mark the plugin's
+  settings invalid or disable the plugin: `ctx.settings` just lacks the field and the form shows
+  "Not set". The format is refused anywhere but a top-level string property (nested, `items`,
+  `allOf`/`anyOf`/`oneOf`, `$ref`), with a `default`, or with any keyword but `type`, `format`,
+  `title`, `description` and `$comment` (the value is not validated). A root
+  `allOf`/`anyOf`/`oneOf`/`not`/`if`/`then`/`else`/`dependencies` may not name a secret field: it
+  would act on values checked without it. A schema with a secret field holds no reference or
+  identity keyword at all (`$ref`, `$dynamicRef`, `$recursiveRef`, `$anchor`, `$dynamicAnchor`,
+  `$recursiveAnchor`, `$id`), anywhere: ajv and the form resolve references differently, and main
+  must see the same secret fields as both. Known limitation: a plugin update or dev
+  reload that drops a secret field or makes it plain leaves its encrypted `setting:` value in
+  `secrets.json` (unused) until the plugin is uninstalled or, for a project field, the project is
+  forgotten; a field that becomes secret leaves its old plain value in the settings file (unused)
+  until that form is saved again.
+- **`ctx.oauth`**: optional helper wrapping the loopback + PKCE code. `authorize(spec)` opens
+  the system browser, catches the loopback redirect and exchanges the code; `refresh(spec,
+  refreshToken)` gets a fresh access token. `spec` is `{ authUrl, tokenUrl, clientId,
+  clientSecret?, scopes }`; both URLs must be https. One `authorize` per plugin at a time and 5 a
+  minute, counted per plugin per project (the limit lives in the project's host API, not
+  app-wide). Each call belongs to the plugin's ctx that made it: when that ctx is disposed, for
+  any reason (deactivate, unload or reload, a failed or timed-out `activate`, the host
+  stopping), the call rejects at once, main aborts it (loopback closed, token request dropped)
+  and tokens never reach the disposed copy; the window closing or the host stopping aborts every
+  pending one too. At most 4 `refresh` calls per plugin in flight.
+  Storing the tokens is the plugin's job (`ctx.secrets`).
+- **CLI-style login** (`gh auth login`) needs nothing new: the plugin opens a terminal overlay
+  with `ctx.overlay.open` and checks the result with `ctx.exec`.
+- **Sharing one sign-in between features** is done by one plugin with several panels (a "Google"
+  plugin with mail, calendar and drive panels), not by core.
+
+**Trust boundary**: one plugin host serves every plugin of a project window. Main knows which
+host (so which project) asks; the plugin id in a request comes from the payload and is only
+checked to be one of this host's plugins. Plugins enabled together in any one project therefore
+share a host and can read each other's whole store, which is app-wide: every sign-in, the
+`setting:app:*` values and this project's `setting:project:*` values (main refuses a read of
+another project's, which only that project's host has a reason to see). That is no worse than
+what they can already do with `ctx.exec` as the user. Main enforces only which plugins a host may
+name, not which plugin is asking; installed plugins are trusted code.
+
+**Settings** open as an overlay:
+
+- Projects: list, open, relink a moved folder, remove.
+- Plugins: install from git URL, link a local folder, update to a newer tag, uninstall,
+  app-wide settings form.
+- Marketplace: browse and install from the configured indexes, add or remove an index, refresh;
+  see §5 Marketplace.
+- This project: the project's colour (below, Project colour), enable plugins, project settings
+  form, panel zones, the project's commands in the new-tab menu (§3 Custom commands).
+- Appearance and keys: theme; the window background (transparent project windows, opacity, blur;
+  §4 Window background); what a tab does when its process exits (close when it ends normally, or
+  keep; §3 Exit); whether a project that opens empty gets a Claude tab (§3 First tab); whether
+  closing a running tab asks first, and which end of a tab its × sits at (§3 Close); the terminal
+  font (a family dropdown: bundled, installed, Custom…), with a preview and Reset to defaults
+  (§4 Terminal font); the
+  app-wide commands in the new-tab menu (an editable list: add, edit, remove, move up / down;
+  §3 Custom commands); keybinding list with overrides (the new-tab menu entries included, §3
+  Custom commands › Keys for entries).
+
+All plugin forms are rendered from the manifest's JSON Schema; no plugin-owned settings pages.
+
+**Projects**: File › Open Folder or `<app> open <path>`; an already-open folder focuses its
+window. The project picker (recent projects + Open Folder…) appears by itself when no project
+window is left, and on request from an open one: the top strip's "+" or File › Open Project…
+(no default key: none existed, and a new chord could take one Claude or a plugin uses). The
+renderer asks main (`projects.showPicker`, project windows only); there is only ever one picker,
+so asking again focuses it, and it re-reads the recent list when it gains the focus. Picking a
+project there opens its window, or focuses it when it is already open; either way the picker
+closes. Opened from a project window (the "+", the menu item while one is focused) the picker is a
+**modal child of that window** (`parent` + `modal`; a sheet on macOS): the window takes no focus or
+input until the picker closes. Main picks the parent from its own window table (the IPC sender's
+window, or the focused window for the menu), never from an id a renderer names. With no calling
+window (start with nothing to restore, the last window closed, the Dock) it is a standalone
+window. A modal picker offers Cancel and Esc (`projects.closePicker`, refused for a standalone one,
+whose close button is the app's quit decision); every way of closing it returns focus to the
+parent. If the parent window closes first, a standalone picker replaces its sheet. An already open
+picker is only focused, whichever window asks. The record (path, settings, layout, tabs, window bounds) lives in
+`<data>/projects/<id>.json`. A missing folder at open → relink or forget. Forgetting a project
+also drops its plugins' secret project settings (§6 `ctx.secrets`).
+
+**Project colour**: a mark to tell project windows apart (`src/shared/project-color.ts`). None
+by default; one of eight palette colours like Finder tags (`red`, `orange`, `yellow`, `green`,
+`teal`, `blue`, `purple`, `grey`), or a custom `#rrggbb`. Stored as the record's `color`
+(lowercase hex); the file is user-writable, so the registry reads anything else as none.
+Settings › This project › Colour sets it (`settings.projectColorSet`, a project route: always the
+sender's own project; the picker cannot set one). Main checks it strictly (a palette name or exactly
+`#` plus six hex digits, a character loop, no regex) and refuses anything else with the reason.
+A palette colour is a theme token, `--cc-project-<name>`, defined per built-in theme to read on
+its bars (a plugin theme inherits the missing ones from the built-in of its kind); a custom hex
+is drawn as-is in every theme. It shows as a 3px line along the window's top edge (absolutely
+placed over the top bar: no layout shift, the traffic lights and the full-screen collapse
+untouched), a 10 % tint of the top bar (in a see-through window the tint goes into the bar
+colour before the glass alpha, so the bar stays one translucent layer), and a dot by the
+project's name: its own title-bar chip, its entries in other windows' strips, the picker's rows.
+A change is live everywhere: main sends the project's window `project.updated` (its summary, as
+`window.info` gives it), sends every window's session snapshot again (strip entries carry
+`projectColor`), and tells an open picker `projects.changed` (it reads the list again). Settings
+› Projects does not show the colour.
+
+**Window bounds**: each project window reopens at its last size and place. The record's `bounds`
+holds the normal x/y/width/height plus `maximized` / `fullScreen` (set only when true); it is
+saved on move, resize, maximise and full-screen changes (debounced by the store) and again on
+close, never while minimised. On open it is validated (damaged → the default 1280×800, centred;
+a half position → OS-centred) and fitted to the connected displays: a window overlapping no
+display by 64 px (a monitor unplugged) is clamped onto the nearest one, shrunk to its work area.
+A maximised or full-screen window is created at its normal bounds and switched once shown, so
+un-maximising lands there. New projects and the picker keep the default sizes
+(`src/main/windows/window-bounds.ts`).
+
+**CLI** (`<app> …` over the socket; exits 0 silently when the app is not running):
+
+| Command | Used by |
+|---|---|
+| `open <path>` | user, scripts |
+| `hook <event>` | the app's Claude hooks (internal) |
+| `session note "…"`, `session steps 3/5` | Claude or a skill inside a Claude tab: extra lines on its status entry |
+| `overlay --terminal -- argv…` / `--url U` / `--html F` | anyone; waits and prints the result |
+| `notify "…"` | anyone |
+| `sessions --json` | scripts: current Claude status |
+| `guide [topic]`, `<command> --help` | Claude or a person: bundled docs; works with the app closed |
+| `plugin new <dir>` / `link <dir>` / `unlink <id>` / `list` / `logs <id> [--follow]` | the plugin dev loop; `new` and `logs` are local, `link` asks the person to confirm in a native dialog (Deny is the default); the dialog rate limit is per window and counts only requests that reach a dialog; linking an already-linked folder (same id and path) only enables it in the calling project after the confirm; the manifest is re-checked against the inspected id, so a swap between dialog and link is refused |
+| `<name> …` | a command a plugin declared in `contributes.cli`; main routes it to the owning plugin of the caller's project (30 s limit, 256 KiB each for stdin, stdout and stderr); `ccc help` lists them inside a tab |
+
+Inside a tab of any kind or a terminal overlay, the token (`APP_TAB_TOKEN` and `CC_COCKPIT_SOCK`,
+the same variables for both kinds; tabs also get `APP_TAB_ID`) selects that window; outside,
+`--project <path>` does. A window token (shell tab, command tab, terminal overlay; §2) is taken by exactly
+the commands a `--project` caller may use (`open`, `notify`, `overlay`, `sessions`, plugin
+commands, `plugin link|unlink|list`) plus the plugin list behind `ccc help`
+(`WINDOW_TOKEN_COMMANDS`, `src/shared/protocol.ts`); `hook` and `session note`/`steps` need a
+Claude tab's session token. A `ccc hook` with a window token still exits 0 and records nothing.
+
+## 7. Stack, errors, testing
+
+**Stack**: TypeScript, Electron, `electron-vite`; `xterm.js` (fit, web-links, unicode11
+addons) + `node-pty`; React for the shell UI; `@rjsf` for JSON-Schema forms; `electron-builder`
+for packaging. Phase 1 builds mac and Linux; socket and PTY sit behind one interface so named
+pipes and ConPTY can follow for Windows.
+
+**Repo layout**:
+
+```
+src/main/        windows, pty, session registry, socket + CLI server, store, secrets, oauth, plugin install
+src/host/        plugin host: loader, ctx implementation, scheduler, exec
+src/renderer/    shell UI: zones, tabs, overlay stack, top strip, settings
+src/sdk/         plugin types + panel.js (published for plugin authors)
+src/cli/         the `<app>` CLI (small Node script talking to the socket)
+plugins/hello/   reference plugin exercising every contribution point
+test/            unit + e2e, fake `claude`
+```
+
+**Errors**: a plugin throwing in `activate` or a scheduled job is logged and shows ⚠ on its
+icon (error in the tooltip), never takes down the window. Host crash → restart with backoff. A
+broken manifest or settings failing the schema → that plugin is disabled with the reason on the
+settings page. Hook delivery failures are dropped silently.
+
+**Testing**: vitest for logic without a window (hook → status reducer, send-text gate and
+queue, manifest/settings validation, layout state, restore). Playwright on Electron with a fake
+`claude` script that emits hook events and reads stdin: open a project, open a tab, status
+reaches the strip, the hello plugin's panel sends text, text is queued while busy, an overlay
+returns a result.
+
+## 8. Open points for the plan
+
+All decided in phase 1:
+
+- CLI binary name: `ccc`. Data dir: Electron's `userData`, overridable with `CC_COCKPIT_DATA_DIR`.
+- Keybindings: Cmd-based, mac-first (on Linux Cmd = Ctrl), e.g. Cmd+T new Claude tab,
+  Cmd+Shift+T shell tab, Cmd+W close tab, Cmd+B / Cmd+J / Cmd+Shift+B toggle zones, Cmd+, settings,
+  Cmd+Shift+P palette, Cmd+Shift+W close the top overlay. All editable in Settings.
+- Hooks: `PreToolUse` on every tool (`*`); `PostToolUse` only for `Edit|Write|MultiEdit|NotebookEdit`.
+  All hooks are synchronous, so arrival order equals event order. No hook fires when a permission
+  dialog is answered (and `PostToolUse` only when the tool ends), so an answer key typed into a
+  needs-permission tab is what moves it back to working; widening the `PostToolUse` matcher would
+  not cover a long-running approved tool and would cost ~90 ms per tool call.
+- Idle is not sendable: text is delivered only while a session is waiting for input.
+
+### Implementation notes (differences from the sections above)
+
+- The send gate also refuses text starting with `/`, `!`, `#` or `&` (slash commands, bash mode,
+  memory and background prompts could bypass a permission prompt).
+- Plugin settings schemas may not use regexes (`pattern`, `patternProperties`): ReDoS in main.
+- `ccc overlay --html` reads the file once in main and serves it from the privileged
+  `cc-overlay://<overlayId>/` scheme; there is no one-shot protocol.
+- A plugin's html overlay is served the same way (no port to the page yet).
+- The settings screen is a renderer-drawn overlay below the overlay stack, not part of it.
+- The hello plugin is not bundled in the packaged app: plugins are linked or installed from a
+  folder, and hello is a template to link in dev (`electron-builder.yml`). Only the built-in
+  browser (`plugins/browser`) ships, as a bundled plugin.
+- `ctx.cli.register` is host-local (no call to main); main routes by manifest. Plugin commands are
+  listed by `ccc help` only inside a tab.
+- The web view is also reachable at `cc-preview://<token>/…` only on its own partition session; a
+  hostile page can still navigate the top level to http(s) with data in the URL (the CSP cannot
+  stop that), so a preview folder should hold only what the page may see.
+- Linux targets (AppImage, deb) are x64 only; mac builds arm64 and x64.
+- The "Install ccc command" button only creates the `~/.local/bin/ccc` symlink; nothing in the
+  app removes it again (`src/main/hooks/ccc-install.ts`).
+- The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z (they would be eaten from the terminal).
+- "Cmd = Ctrl" on Linux is kept as decided: the defaults Cmd+T/W/B/J/O become Ctrl chords that
+  Claude Code and readline also use, so on Linux they never reach the terminal until rebound.
+  A Linux-specific default table (Ctrl+Shift, as terminal emulators do) is left for when the
+  Linux build is actually tried; it cannot simply be Ctrl+Shift for everything, since Cmd+T and
+  Cmd+Shift+T (and W, B) would collide.
+- Closing a tab or window sends SIGHUP and, after 3 s, SIGKILL to a child still running
+  (`PtyService.terminate`), as a dismissed terminal overlay does. A child that exits while its PTY
+  is paused for flow control still delivers its tail: the node-pty backend polls the paused
+  child and resumes once it is gone (`src/main/pty/exit-drain.ts`).

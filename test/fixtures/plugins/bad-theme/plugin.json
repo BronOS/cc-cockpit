@@ -1,0 +1,9 @@
+{
+  "id": "test.badtheme",
+  "name": "Bad theme",
+  "version": "1.0.0",
+  "api": 1,
+  "contributes": {
+    "themes": [{ "id": "broken", "file": "themes/broken.json" }]
+  }
+}

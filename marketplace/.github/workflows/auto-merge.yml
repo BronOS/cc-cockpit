@@ -1,0 +1,87 @@
+# Merges a routine version bump once check.yml is green. `workflow_run` always runs this file from
+# main, so this is the trusted side, with a write token: nothing from the PR is executed here, the
+# tools come from main, and untrusted values reach the shell only through env.
+name: auto-merge
+on:
+  workflow_run:
+    workflows: [check]
+    types: [completed]
+permissions: {}
+jobs:
+  merge:
+    # `path` too: a workflow in a PR can call itself "check". The decision below refuses such a PR anyway.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/check.yml'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GitHub's permission tables list the merge call (PUT .../pulls/N/merge) under Contents: write alone,
+    # so `pull-requests` stays at the read the Decide step needs. Unproven until a real run: the README's
+    # setup has the test bump that proves it, and what to change on a 403.
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # `workflow_run.pull_requests` is empty for a fork: the tool resolves the PR from head_sha,
+      # compares that commit with main's by hash (the PR's file list follows the branch) and applies
+      # the rule (tools/src/auto-merge.ts).
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          ENTRY_FILE: ${{ runner.temp }}/entry.json
+        run: node tools/dist/auto-merge.js
+      # The check again, by main's tools, on the exact commit about to merge. No token in this step:
+      # it clones a repo somebody else controls.
+      - name: Re-check the entry
+        if: steps.decide.outputs.merge == 'true'
+        env:
+          ENTRY_FILE: ${{ runner.temp }}/entry.json
+        run: node tools/dist/check-entry.js --entry "$ENTRY_FILE"
+      # `sha`: GitHub refuses the merge if the PR's head has moved since the decision, so a push made
+      # after the check cannot slip in. Branch protection still applies to this call.
+      #
+      # The decision read `owners` and revoked.json at BASE_SHA, and the re-check can take minutes, so
+      # an owner removed meanwhile could still have their bump merged. The merge endpoint has no
+      # condition on the base, so re-reading main here only narrows that window to the moment between
+      # the read and the PUT; it does NOT close it. Removal landing in that moment merges, and the
+      # remedy is a revocation. If main moved, the PR stays for a human and the job stays green, like
+      # any other "not a clean yes"; re-running this workflow decides again against the new main.
+      - name: Merge
+        id: merge
+        if: steps.decide.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.decide.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          BASE_SHA: ${{ steps.decide.outputs.base }}
+        run: |
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [ "$current" != "$BASE_SHA" ]; then
+            echo "auto-merge: left for a human: main moved from $BASE_SHA to $current after the decision"
+            exit 0
+          fi
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/merge" -f sha="$HEAD_SHA" -f merge_method=squash
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+  # A merge made with GITHUB_TOKEN triggers no other workflow, so the push trigger of
+  # publish-index.yml never fires for it: publish from here.
+  publish:
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/publish-index.yml
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}

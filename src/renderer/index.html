@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Strict CSP: only our own bundle may run. 'unsafe-inline' for styles only, because xterm.js
+      positions its DOM with inline styles.
+      frame-src cc-overlay: is for html overlays: main serves their page with its own CSP
+      (a data: or srcdoc frame would inherit this one and could not run its script), in an iframe
+      sandboxed with allow-scripts only, so it runs in an opaque origin with no way into this page.
+      frame-src cc-plugin: is for plugin panels and the html overlays plugins open: the
+      same kind of sandboxed iframe, with the plugin's own CSP sent by the protocol handler.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: cc-plugin:; font-src 'self'; connect-src 'self'; frame-src cc-overlay: cc-plugin:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cc-cockpit</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

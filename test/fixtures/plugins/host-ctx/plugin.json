@@ -1,0 +1,16 @@
+{
+  "id": "test.hostctx",
+  "name": "Host ctx",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "ping", "title": "Ctx: Ping", "key": "Cmd+Shift+9" }],
+    "settings": {
+      "project": {
+        "type": "object",
+        "properties": { "greeting": { "type": "string", "default": "hello" } }
+      }
+    }
+  }
+}

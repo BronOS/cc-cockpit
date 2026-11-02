@@ -1,0 +1,204 @@
+// The panel SDK's logic (design §5 › Panel side: `post`, `onMessage`, `theme`), DOM-free so unit
+// tests run it in plain Node with fakes. src/sdk/panel.ts wires it to the page's window and is
+// what plugins load, as `<script src="/__sdk/panel.js">` (served inside every plugin's origin).
+//
+// What reaches a panel page, all from its parent (the shell renderer), checked by the bootstrap to
+// come from `window.parent`:
+//   { type: 'cc-plugin.port' } + a MessagePort   the line to the plugin's host (or, for an html
+//                                                 overlay, to the overlay itself); a later one
+//                                                 replaces the earlier one
+//   { type: 'cc-plugin.theme', theme: { kind, vars } }   the app's theme, again on every change
+//
+// Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
+// the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
+// wait in a bounded queue and go out, in order, once it does.
+
+export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
+/** Posts kept while the page has no port yet; more is a page in a loop, not a page loading. */
+export const MAX_QUEUED_MESSAGES = 100
+
+export const PORT_MESSAGE = 'cc-plugin.port'
+export const THEME_MESSAGE = 'cc-plugin.theme'
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
+/** The page's end of its channel: a MessagePort in the browser, a fake in tests. */
+export interface PortLike {
+  postMessage(message: string): void
+  onmessage: ((event: { data: unknown }) => void) | null
+  close(): void
+}
+
+export interface PanelTheme {
+  kind: 'light' | 'dark'
+  vars: Record<string, string>
+}
+
+/** Where the theme goes: the page's `:root` style in the browser. */
+export interface ThemeRoot {
+  setProperty(name: string, value: string): void
+  removeProperty(name: string): unknown
+  colorScheme: string
+}
+
+export interface PanelApi {
+  /** Send to the plugin (JSON, at most 1 MiB as text). Queued until the page is connected. */
+  post(message: JsonValue): void
+  /** Hear what the plugin posts; returns the unsubscribe. */
+  onMessage(listener: (message: JsonValue) => void): () => void
+  readonly theme: {
+    /** The app's current theme (`vars` are the CSS variables already set on `:root`). */
+    readonly current: PanelTheme | undefined
+    onChange(listener: (theme: PanelTheme) => void): () => void
+  }
+}
+
+const VAR_NAME = /^--[A-Za-z][A-Za-z0-9_-]*$/
+
+// A copy of src/shared/error-text.ts, on purpose: this file is bundled into out/sdk/panel.js, a
+// classic script. A module that main imports as well would land in a shared chunk that panel.js
+// loads with `require`, which throws in a page (see the build notes in electron.vite.config.ts).
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** Only plausible theme data: names of CSS variables, short string values (the shell validated them). */
+function cleanTheme(raw: unknown): PanelTheme | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const { kind, vars } = raw as { kind?: unknown; vars?: unknown }
+  if ((kind !== 'light' && kind !== 'dark') || typeof vars !== 'object' || vars === null) return undefined
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(vars).slice(0, 200)) {
+    if (VAR_NAME.test(name) && typeof value === 'string' && value.length <= 100) out[name] = value
+  }
+  return { kind, vars: out }
+}
+
+export class PanelClient {
+  private port: PortLike | undefined
+  private queue: string[] = []
+  private readonly listeners = new Set<(message: JsonValue) => void>()
+  private readonly themeListeners = new Set<(theme: PanelTheme) => void>()
+  private theme: PanelTheme | undefined
+  private applied: string[] = []
+  readonly api: PanelApi
+
+  constructor(
+    private readonly root: ThemeRoot,
+    private readonly warn: (message: string) => void = () => {}
+  ) {
+    const theme = {
+      onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
+        if (typeof listener !== 'function') throw new TypeError('theme.onChange needs a function')
+        this.themeListeners.add(listener)
+        return () => {
+          this.themeListeners.delete(listener)
+        }
+      }
+    }
+    // A getter (a copy each read): the page sees the latest theme and cannot change the SDK's.
+    Object.defineProperty(theme, 'current', {
+      enumerable: true,
+      get: (): PanelTheme | undefined => this.theme && { kind: this.theme.kind, vars: { ...this.theme.vars } }
+    })
+    this.api = Object.freeze({
+      post: (message: JsonValue) => this.post(message),
+      onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),
+      theme: Object.freeze(theme) as PanelApi['theme']
+    })
+  }
+
+  /** A message from the parent window (the bootstrap checked its source). */
+  receive(data: unknown, ports: readonly PortLike[]): void {
+    const type = (data as { type?: unknown } | null)?.type
+    if (type === PORT_MESSAGE && ports[0]) this.connect(ports[0])
+    else if (type === THEME_MESSAGE) this.applyTheme((data as { theme?: unknown }).theme)
+  }
+
+  private connect(port: PortLike): void {
+    if (this.port) {
+      this.port.onmessage = null
+      try {
+        this.port.close()
+      } catch {
+        // Already closed.
+      }
+    }
+    this.port = port
+    // Assigning onmessage also starts the port (a MessagePort queues until then).
+    port.onmessage = (event) => this.deliver(event.data)
+    for (const text of this.queue.splice(0)) port.postMessage(text)
+  }
+
+  private post(message: JsonValue): void {
+    let text: string | undefined
+    try {
+      text = JSON.stringify(message)
+    } catch (err) {
+      throw new TypeError(`post: the message is not JSON: ${errorText(err)}`, { cause: err })
+    }
+    if (text === undefined) throw new TypeError('post: the message is not JSON')
+    if (text.length > MAX_PANEL_MESSAGE_LENGTH) {
+      throw new RangeError(`post: message of ${text.length} chars exceeds ${MAX_PANEL_MESSAGE_LENGTH}`)
+    }
+    if (this.port) {
+      this.port.postMessage(text)
+      return
+    }
+    if (this.queue.length >= MAX_QUEUED_MESSAGES) {
+      this.warn(`post: not connected and ${MAX_QUEUED_MESSAGES} messages are waiting; this one is dropped`)
+      return
+    }
+    this.queue.push(text)
+  }
+
+  private onMessage(listener: (message: JsonValue) => void): () => void {
+    if (typeof listener !== 'function') throw new TypeError('onMessage needs a function')
+    // Wrapped, so the same function added twice is two listeners and each unsubscribe removes one.
+    const entry = (m: JsonValue): void => listener(m)
+    this.listeners.add(entry)
+    return () => {
+      this.listeners.delete(entry)
+    }
+  }
+
+  /** What arrived on the port: one JSON string within the cap, else dropped. */
+  private deliver(raw: unknown): void {
+    if (typeof raw !== 'string' || raw.length > MAX_PANEL_MESSAGE_LENGTH) {
+      this.warn('dropped a message that is not a JSON string within the size cap')
+      return
+    }
+    let parsed: JsonValue
+    try {
+      parsed = JSON.parse(raw) as JsonValue
+    } catch {
+      this.warn('dropped a message that is not JSON')
+      return
+    }
+    for (const listener of [...this.listeners]) {
+      try {
+        // Each listener its own copy: one cannot change what the next one sees.
+        listener(structuredClone(parsed))
+      } catch (err) {
+        this.warn(`an onMessage listener threw: ${errorText(err)}`)
+      }
+    }
+  }
+
+  private applyTheme(raw: unknown): void {
+    const theme = cleanTheme(raw)
+    if (!theme) return
+    for (const name of this.applied) if (!(name in theme.vars)) this.root.removeProperty(name)
+    for (const [name, value] of Object.entries(theme.vars)) this.root.setProperty(name, value)
+    this.applied = Object.keys(theme.vars)
+    this.root.colorScheme = theme.kind
+    this.theme = theme
+    for (const listener of [...this.themeListeners]) {
+      try {
+        listener({ kind: theme.kind, vars: { ...theme.vars } })
+      } catch (err) {
+        this.warn(`a theme.onChange listener threw: ${errorText(err)}`)
+      }
+    }
+  }
+}

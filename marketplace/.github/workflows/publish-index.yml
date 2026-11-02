@@ -1,0 +1,68 @@
+# Regenerates index.json on main, the file the app fetches. Runs on a human's push to main and, called
+# from auto-merge.yml, after a machine merge. Also hourly: nothing else retries a publish that failed
+# (an expired PUBLISH_TOKEN, say), so this catches up on its own and each failed run shows red and
+# notifies, instead of index.json and its revocations going stale in silence.
+#
+# main is protected, so GITHUB_TOKEN cannot push here. PUBLISH_TOKEN is a fine-grained token for this
+# repo alone with `contents: write`, whose owner is on the branch protection's bypass list (README.md).
+# Its push changes only index.json, which is not in the path filter below, so this cannot loop.
+name: publish-index
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/**'
+      - 'revoked.json'
+      - 'tools/dist/**'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      PUBLISH_TOKEN:
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One at a time. A waiting run replaced by a newer one loses nothing: each builds from the latest main.
+    concurrency:
+      group: publish-index
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.PUBLISH_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # A retry rather than a failure: another merge can land between the build and the push.
+      # Exit 2 from the tool: index.json was written but an entry is bad (the log names it). It is still
+      # pushed, since a revocation must not wait for somebody's entry, and the job then fails to say so.
+      - name: Build and push index.json
+        run: |
+          git config user.name "cc-cockpit-marketplace"
+          git config user.email "cc-cockpit-marketplace@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            status=0
+            node tools/dist/build-index.js --root . --out index.json || status=$?
+            if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+            git add index.json
+            if git diff --cached --quiet; then
+              echo "index.json is up to date"
+              exit "$status"
+            fi
+            git commit -q -m "chore: publish index.json"
+            if git push origin HEAD:main; then
+              exit "$status"
+            fi
+            git fetch origin main
+            git reset -q --hard origin/main
+          done
+          echo "could not push index.json after 3 attempts" >&2
+          exit 1

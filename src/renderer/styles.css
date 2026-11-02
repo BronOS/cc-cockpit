@@ -1,0 +1,2928 @@
+/* Minimal shell layout for the tabs UI. Colours are theme variables (--cc-*), set on :root from main's active theme (src/themes). */
+
+/* Non-colour tokens. Not per theme: the theme validator accepts colours only (its values land in
+   style properties, so anything else is refused), and a radius or a font stack is not something a
+   colour theme should be able to move. Plugin panels do not get these; they get the colour vars. */
+:root {
+  --cc-radius-sm: 4px;
+  --cc-radius-md: 6px;
+  --cc-radius-lg: 10px;
+  /* -apple-system is the macOS system font (SF Pro); the named fallbacks are for Linux, where
+     system-ui alone can resolve to a bitmap-era default. */
+  --cc-font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Inter, 'Segoe UI', system-ui, sans-serif;
+  --cc-font-mono: ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', 'DejaVu Sans Mono', Consolas, monospace;
+  /* Type scale: 13px is the body; one step either way for meta text and section titles. */
+  --cc-text-xs: 11px;
+  --cc-text-sm: 12px;
+  --cc-text-md: 13px;
+  --cc-text-lg: 15px;
+  --cc-text-xl: 20px;
+  /* The project window's top bar (TopStrip). On macOS it is the title bar: main centres the
+     traffic lights on it (TITLE_BAR_HEIGHT in main/windows/window-chrome.ts) and this reserves
+     their room: a 16px inset, three 12px lights 8px apart, 18px before the project name. */
+  --cc-titlebar-h: 40px;
+  --cc-traffic-lights-w: 86px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--cc-font-ui);
+  font-size: var(--cc-text-md);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+}
+
+/* See-through window (Settings › Appearance and keys › Window; renderer/theme/see-through.ts).
+   Only in a window main created transparent: `html.see-through` is set from `window.info`, never
+   from the setting (an open window keeps what it was made as). The glass tokens are the theme's
+   colours mixed with transparent at --cc-window-alpha (the opacity slider, pushed live), so a theme
+   switch re-colours them with no help. They go on the shell's own surfaces only: the top bar, the
+   icon strips, the tab bar, the panel areas (panel headers draw on them), the terminal, and the
+   empty terminal area. Text, icons, borders and the accent are untouched, and menus, the palette,
+   dialogs, overlays and the settings screen keep their opaque tokens; plugin iframes and the web
+   view draw their own pages. Each pixel gets ONE glass layer, so the body goes transparent and the
+   surfaces that used to sit on it carry the glass themselves (two 85 % layers would be 98 %). */
+:root {
+  --cc-window-alpha: 1;
+}
+html.see-through {
+  --cc-glass-bg: color-mix(in srgb, var(--cc-bg) calc(var(--cc-window-alpha) * 100%), transparent);
+  --cc-glass-bar: color-mix(in srgb, var(--cc-bg-bar) calc(var(--cc-window-alpha) * 100%), transparent);
+  /* xterm's own background when the theme gives one (see-through.ts applyTerminalBase): the text
+     area keeps the colour it has in an opaque window, and xterm itself paints nothing behind it. */
+  --cc-glass-terminal: color-mix(
+    in srgb,
+    var(--cc-terminal-glass-base, var(--cc-terminal-bg)) calc(var(--cc-window-alpha) * 100%),
+    transparent
+  );
+}
+html.see-through body {
+  background: transparent;
+}
+.see-through .top-strip,
+.see-through .icon-strip {
+  background: var(--cc-glass-bar);
+}
+.see-through .tab-bar,
+.see-through .panel-area,
+.see-through .terminals:has(> .tabs-empty) {
+  background: var(--cc-glass-bg);
+}
+.see-through .terminal-host {
+  background: var(--cc-glass-terminal);
+}
+/* "Main area only" (WindowBackground.area 'main', see-through.ts applySeeThroughArea): the side and
+   bottom zones keep their solid colours, so panels read like they do in an opaque window while the
+   top bar, tabs and terminal stay glass. Same specificity plus one class, so it wins over the glass
+   rules above; the splitters between zones are solid border lines either way. */
+.see-through.see-through-main .icon-strip {
+  background: var(--cc-bg-bar);
+}
+.see-through.see-through-main .panel-area {
+  background: var(--cc-bg);
+}
+/* xterm's stylesheet paints its viewport #000 ("for the scroll bar to appear fully opaque" on
+   macOS); opaque, the theme background set on the scrollable element covers it, but here it would
+   be a black sheet under the transparent palette. Its native scrollbar track (overflow-y: scroll;
+   xterm draws its own thumb, .slider, over it) would stay a solid strip down the right edge. */
+.see-through .terminal-host .xterm .xterm-viewport {
+  background-color: transparent;
+  scrollbar-color: transparent transparent;
+}
+
+/* One keyboard focus ring for every control. First in the file on purpose: a rule further down
+   that sets `outline: none` at the same specificity (the palette field, the settings screen) still
+   wins. Not on elements focused only from code (tabindex -1: dialogs, the settings root), on the
+   terminal's hidden textarea, or on plugin iframes, which draw their own content edge to edge. */
+:focus-visible {
+  outline: 2px solid var(--cc-focus);
+  outline-offset: 1px;
+}
+[tabindex='-1']:focus-visible,
+.xterm-helper-textarea:focus-visible,
+iframe:focus-visible {
+  outline: none;
+}
+
+.tabs-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Stroke glyphs (window-icons.tsx): never a hit target of their own, so a click on the drawing
+   is a click on its button (e.target is the button, as the menus' dismiss checks expect). */
+.glyph {
+  flex: none;
+  pointer-events: none;
+}
+
+/* Icon buttons in bars: the title bar's "+" and gear, panel headers' "…", the web view's
+   toolbar, the tab bar's [+]. Subtle at rest, full text colour on a tint under the pointer. */
+.icon-button,
+.tab-new > button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font: inherit;
+  color: var(--cc-fg-subtle);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.icon-button.sm {
+  width: 24px;
+  height: 24px;
+}
+.icon-button:hover:not(:disabled),
+.tab-new > button:hover {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Keycaps (the [+] menu's chords, the collapsed bottom zone's caption): a key as printed on a
+   cap, the bottom edge one pixel deeper; the settings screen's chips at menu size. */
+.keys {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.keys kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 20px;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid var(--cc-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-surface-2);
+  color: var(--cc-fg-muted);
+  font-family: var(--cc-font-ui);
+  font-size: var(--cc-text-xs);
+  letter-spacing: 0.04em;
+}
+.key-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.key-sep {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+}
+
+/* ── Title bar + strip (TopStrip.tsx): one bar, variant A of the window redesign ── */
+.top-strip {
+  position: relative;
+  z-index: 6;
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: var(--cc-titlebar-h);
+  padding-left: 12px;
+  box-sizing: border-box;
+  background: var(--cc-bg-bar);
+  border-bottom: 1px solid var(--cc-border);
+  user-select: none;
+}
+/* macOS: the bar is the window's title bar (main hides the native one, window-chrome.ts). It
+   leaves the traffic lights their room and drags the window; every control in it opts out of the
+   drag, or a click on it would start moving the window instead of pressing it (the list too, so
+   it can still be scrolled sideways). What is left between the controls drags. */
+.top-strip.title-bar {
+  padding-left: var(--cc-traffic-lights-w);
+  -webkit-app-region: drag;
+}
+.top-strip.title-bar.full-screen {
+  /* Full screen hides the traffic lights (main sends window.state), so their room is just a gap. */
+  padding-left: 12px;
+}
+.top-strip.title-bar button,
+.top-strip.title-bar .strip-list {
+  -webkit-app-region: no-drag;
+}
+.titlebar-project {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 40%;
+  height: 20px;
+  padding-right: 16px;
+  margin-right: 10px;
+  border-right: 1px solid var(--cc-border);
+  white-space: nowrap;
+}
+.titlebar-project .glyph {
+  color: var(--cc-fg-subtle);
+}
+.titlebar-project-name {
+  flex: none;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.titlebar-project-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-subtle);
+}
+.strip-nav {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+/* The entries scroll here, not in the bar: the gear after it stays at the right end. Only as
+   wide as its entries, so the rest of the bar stays a drag region. */
+.strip-list {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.strip-entry {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px 0 9px;
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.strip-entry:hover {
+  border-color: var(--cc-border-strong);
+  color: var(--cc-fg);
+}
+.strip-project {
+  color: var(--cc-fg);
+  font-weight: 500;
+}
+/* The entry that waits on the user stands out by a tint of its status colour, not only by
+   weight. */
+.strip-entry[data-status='needs-permission'] {
+  color: var(--cc-fg);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--cc-status-needs-permission) 13%, transparent);
+  border-color: color-mix(in srgb, var(--cc-status-needs-permission) 40%, transparent);
+}
+.strip-entry[data-status='needs-permission'] .strip-project {
+  font-weight: 600;
+}
+.strip-entry[data-status='ended'] {
+  opacity: 0.6;
+}
+.titlebar-end {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+/* Project colour (Settings › This project; shared/project-color.ts). TopStrip sets
+   `data-project-color` and `--cc-project-color` (a palette token or the custom hex) on the bar only
+   when the project has one, so with none no rule here applies. The bar gets a faint tint of it, a
+   10 % mix that keeps the bar's own text colours readable in both themes, and a 3px line along the
+   window's top edge. The line is absolutely placed over the bar's top pixels: it takes no room, so
+   the bar's height, the room kept for the traffic lights (centred by main on the 40px bar) and the
+   full-screen collapse are exactly as without a colour. It never takes a click or a drag. */
+.top-strip[data-project-color] {
+  --cc-bar-tinted: color-mix(in srgb, var(--cc-project-color) 10%, var(--cc-bg-bar));
+  background: var(--cc-bar-tinted);
+}
+.top-strip[data-project-color]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--cc-project-color);
+  pointer-events: none;
+}
+/* See-through: the tinted bar colour takes the glass alpha, the same formula as --cc-glass-bar, so
+   the bar stays ONE translucent layer (mixing the tint into the glass instead would raise its
+   alpha). Higher specificity than `.see-through .top-strip` above. The line stays solid, like the
+   accent and the borders. */
+.see-through .top-strip[data-project-color] {
+  background: color-mix(in srgb, var(--cc-bar-tinted) calc(var(--cc-window-alpha) * 100%), transparent);
+}
+/* The dot by a project's name: the title-bar chip, other windows' strip entries, the picker rows.
+   A hairline ring in the text colour keeps a light colour visible on a light bar. */
+.project-dot {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent);
+}
+.strip-text .project-dot {
+  margin-right: 6px;
+  vertical-align: 0;
+}
+
+/* ── Tab bar (TabBar.tsx): a segmented control at the top of the centre column ── */
+.tab-bar {
+  position: relative;
+  z-index: 5;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  background: var(--cc-bg);
+  border-bottom: 1px solid var(--cc-border);
+}
+/* The track. No tabs, no track: an empty pill would read as a broken control. */
+.tab-list {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--cc-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 4%, transparent);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-list:empty {
+  display: none;
+}
+.tab {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  max-width: 220px;
+  border-radius: var(--cc-radius-md);
+  color: var(--cc-fg-muted);
+  white-space: nowrap;
+}
+.tab:hover:not(.active) {
+  background: color-mix(in srgb, var(--cc-fg) 5%, transparent);
+  color: var(--cc-fg);
+}
+.tab.active {
+  background: var(--cc-surface-2);
+  box-shadow: 0 0 0 1px var(--cc-border-strong), 0 1px 3px var(--cc-shadow);
+  color: var(--cc-fg);
+  font-weight: 500;
+}
+.tab-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 7px 0 9px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.tab-bar[data-close-side='left'] .tab-label {
+  padding: 0 9px 0 7px;
+}
+.tab-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab.exited .tab-text {
+  opacity: 0.6;
+}
+.tab-kind {
+  color: var(--cc-fg-subtle);
+}
+.tab.active .tab-kind {
+  color: var(--cc-fg-muted);
+}
+.tab-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: 0 5px 0 0;
+  padding: 0;
+  color: var(--cc-fg-subtle);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.tab-bar[data-close-side='left'] .tab-close {
+  margin: 0 0 0 5px;
+}
+.tab.active .tab-close,
+.tab:hover .tab-close {
+  opacity: 1;
+}
+.tab-close:hover {
+  background: color-mix(in srgb, var(--cc-fg) 9%, transparent);
+  color: var(--cc-fg);
+}
+.tab-new {
+  position: relative;
+  flex: none;
+}
+.tab-new > button[aria-expanded='true'] {
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent);
+}
+/* Opens rightwards from the [+]: with few tabs the button is near the left zone, and a menu
+   hung leftwards from it would run off the window when the left zone is collapsed. */
+.tab-new > .menu {
+  top: calc(100% + 6px);
+  left: 0;
+  width: 272px;
+}
+
+/* ── Menus: the [+] menu, context menus (tab, panel), the hidden-panels list, the queued list ── */
+.menu {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  margin: 0;
+  padding: 5px;
+  box-sizing: border-box;
+  list-style: none;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-menu);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  color: var(--cc-fg);
+  font-weight: 400;
+  font-size: var(--cc-text-md);
+}
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.menu button:hover:not(:disabled) {
+  background: var(--cc-accent-soft);
+}
+.menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* The [+] menu's user command entries: a group per level, a rule and a caption above each. */
+.menu-group {
+  display: flex;
+  flex-direction: column;
+}
+.menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--cc-border);
+}
+.menu-caption {
+  padding: 3px 9px 4px;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+}
+/* Every [+] menu row (core and user entries alike): mark, label, chord pinned right. A class
+   rather than `.menu-group button`, because the Claude/Shell rows sit outside any group. */
+.menu .menu-entry {
+  padding-right: 6px;
+}
+/* The label gives way (ellipsis) before the entry's chord does. */
+.menu .menu-entry .menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Where the entry opens (tab / overlay), left of the label; accent with the row under the pointer. */
+.menu .menu-entry .menu-icon {
+  flex: none;
+  color: var(--cc-fg-subtle);
+}
+.menu .menu-entry:hover .menu-icon {
+  color: var(--cc-accent);
+}
+.context-menu {
+  position: fixed;
+}
+.menu-empty {
+  padding: 6px 9px;
+  color: var(--cc-fg-subtle);
+  white-space: nowrap;
+}
+
+.tabs-error {
+  flex: none;
+  margin: 0;
+  padding: 6px 14px;
+  font-size: var(--cc-text-sm);
+  background: var(--cc-bg-error);
+  border-bottom: 1px solid var(--cc-border);
+}
+.tabs-empty {
+  margin: 0;
+  padding: 16px 14px;
+  color: var(--cc-fg-muted);
+}
+
+.terminals {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.terminal-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.terminal-view[hidden] {
+  display: none;
+}
+/* The fit addon measures the host's content box, so this padding is room around the text, not
+   cells lost off the edge. Less on the right: xterm's scrollbar sits there. */
+.terminal-host {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 6px 8px 12px;
+  background: var(--cc-terminal-bg);
+}
+.exited-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  background: var(--cc-bg-banner);
+  border-top: 1px solid var(--cc-border);
+}
+.exited-banner button {
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--cc-accent);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  cursor: pointer;
+}
+.exited-banner button:hover {
+  background: var(--cc-accent-soft);
+}
+
+/* Command palette (Cmd+Shift+P) */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 100;
+}
+.palette {
+  width: min(560px, 90vw);
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  overflow: hidden;
+}
+.palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--cc-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--cc-text-lg);
+  outline: none;
+}
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 5px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.palette-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.palette-list li.selected {
+  background: var(--cc-accent-soft);
+}
+.palette-list kbd {
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+  letter-spacing: 0.04em;
+}
+.palette-empty {
+  color: var(--cc-fg-subtle);
+  cursor: default;
+}
+
+/* "Close <tab>?" (CloseTabDialog). z-index 120: above the palette (100), which a Close Tab run from
+   it has closed already; below the settings screen (150), which no close starts under; below the
+   overlay stack (200+), and an overlay opening dismisses the dialog anyway. The backdrop dims the
+   window, whose zones and strip are inert meanwhile. */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 18vh;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 120;
+}
+.confirm-dialog {
+  width: min(440px, 90vw);
+  padding: 16px 18px;
+  box-sizing: border-box;
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+}
+.confirm-title {
+  margin: 0 0 8px;
+  font-size: var(--cc-text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.confirm-check {
+  display: block;
+  margin: 10px 0 16px;
+  color: var(--cc-fg-muted);
+}
+.confirm-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.confirm-buttons button {
+  height: 28px;
+  padding: 0 14px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.confirm-buttons button:hover {
+  background: var(--cc-surface-3);
+}
+.confirm-buttons .confirm-danger {
+  color: var(--cc-status-ended, #cd3131);
+}
+
+/* Claude status. The dot colours are theme variables; the fallbacks are for a theme (a plugin's)
+   that does not define them. Spacing comes from the row it sits in (gap), not the dot. */
+.status-dot {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cc-status-idle, #8a8a8a);
+}
+.status-starting {
+  background: var(--cc-status-starting, #8a8a8a);
+}
+.status-idle {
+  background: var(--cc-status-idle, #8a8a8a);
+}
+.status-working {
+  background: var(--cc-status-working, #3b8eea);
+}
+.status-needs-permission {
+  background: var(--cc-status-needs-permission, #e5a00d);
+}
+.status-waiting {
+  background: var(--cc-status-waiting, #23a55a);
+}
+.status-ended {
+  background: var(--cc-status-ended, #cd3131);
+  opacity: 0.6;
+}
+/* A slow ring off a working dot: busy reads at a glance in the strip, the tabs and the Sessions
+   panel, without a spinner. The window's only motion nobody asked for, so it is off when the OS
+   asks for less (status.spec.ts checks both). */
+.status-dot.status-working::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid var(--cc-status-working, #3b8eea);
+  opacity: 0;
+  animation: cc-status-pulse 2.4s ease-out infinite;
+}
+@keyframes cc-status-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  70%,
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.status-working::after {
+    animation: none;
+  }
+}
+
+/* The "queued N" chip on a Claude tab (QueuedChip.tsx) and its list. */
+.queued-chip {
+  display: inline-flex;
+}
+.tab .queued-chip-button {
+  flex: none;
+  height: 17px;
+  margin-right: 2px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  line-height: 15px;
+  color: var(--cc-status-working);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--cc-status-working) 45%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.queued-list {
+  position: fixed;
+  min-width: 220px;
+  max-width: 420px;
+}
+.queued-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 0 0 9px;
+}
+.queued-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queued-item button {
+  flex: none;
+  width: auto;
+  color: var(--cc-accent);
+}
+
+/* Zones (design §4): left / right / bottom icon strips and panel areas around the centre. */
+.zones {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.zones-upper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The centre: tab bar, then terminals filling the rest. */
+.zones-centre {
+  position: relative;
+  flex: 1;
+  /* MIN_CENTRE in PanelArea.tsx: two zones at the 70vw cap would otherwise squeeze the terminal
+     to 0 columns. The side zones shrink instead (below). */
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+}
+
+.zone {
+  display: flex;
+}
+
+.zone-left,
+.zone-right {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.zone-bottom {
+  flex: none;
+  flex-direction: column;
+}
+
+.icon-strip {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 40px;
+  padding: 8px 0;
+  box-sizing: border-box;
+  background: var(--cc-bg-bar);
+}
+
+.zone-left .icon-strip {
+  border-right: 1px solid var(--cc-border);
+}
+
+.zone-right .icon-strip {
+  border-left: 1px solid var(--cc-border);
+}
+
+.zone-bottom .icon-strip {
+  flex-direction: row;
+  width: auto;
+  height: 30px;
+  padding: 0 6px;
+  border-top: 1px solid var(--cc-border);
+}
+
+.panel-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  font-weight: 600;
+  color: var(--cc-fg-subtle);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.zone-bottom .panel-icon {
+  width: 26px;
+  height: 24px;
+}
+.panel-icon:hover {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+.panel-icon.open {
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent);
+}
+/* A panel with no icon image: its letter (or glyph) in a rounded square, drawn in currentColor. */
+.panel-icon-letter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 2px;
+  border: 1.25px solid currentColor;
+  border-radius: 5px;
+  font-size: 10.5px;
+  line-height: 1;
+}
+.panel-more {
+  font-weight: 400;
+  letter-spacing: 1px;
+}
+
+/* A plugin's own image cannot take currentColor: it steps back at rest instead. */
+.panel-icon-img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  opacity: 0.75;
+}
+.panel-icon:hover .panel-icon-img,
+.panel-icon.open .panel-icon-img {
+  opacity: 1;
+}
+
+.panel-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: var(--cc-status-needs-permission);
+  /* A ring in the strip's colour, so the badge reads as on top of the icon, not touching it. */
+  box-shadow: 0 0 0 2px var(--cc-bg-bar);
+  color: var(--cc-accent-fg);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+.zone-bottom .panel-badge {
+  top: -3px;
+  right: -4px;
+}
+
+.panel-badge-dot {
+  min-width: 0;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+}
+
+.panel-error {
+  position: absolute;
+  bottom: -3px;
+  right: -2px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--cc-status-ended);
+}
+
+.strip-menu {
+  top: 8px;
+  left: calc(100% + 4px);
+}
+
+.zone-right .strip-menu {
+  left: auto;
+  right: calc(100% + 4px);
+}
+
+.zone-bottom .strip-menu {
+  top: auto;
+  left: 6px;
+  bottom: calc(100% + 4px);
+}
+
+/* "Bottom zone collapsed ⌘J" on a collapsed bottom strip. */
+.zone-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+  white-space: nowrap;
+}
+
+.panel-area {
+  flex: 0 1 auto;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  background: var(--cc-bg);
+}
+
+.panel-area-left,
+.panel-area-right {
+  max-width: 70vw;
+}
+
+.panel-area-bottom {
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+.panel-stack {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* MIN_SIZE in shared/layout.ts: fixed panels shrink (flex-shrink 1) when the zone is shorter
+   than their saved sizes, but never below this, and the last panel keeps it too, so it and the
+   splitters stay on screen and grabbable. */
+.panel-stack-column > .panel {
+  min-height: 48px;
+}
+
+.panel-stack-row > .panel {
+  min-width: 48px;
+}
+
+.panel-stack-column {
+  flex-direction: column;
+}
+
+.panel-stack-row {
+  flex-direction: row;
+}
+
+.panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* A panel's header: its title (and the Sessions count), then the "…" that opens the zone menu. */
+.panel-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 6px 0 14px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--cc-border);
+  white-space: nowrap;
+}
+.panel-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.panel-meta {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-subtle);
+}
+.panel-header-spacer {
+  flex: 1;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.panel-placeholder {
+  color: var(--cc-fg-subtle);
+}
+
+/* Plugin panels (renderer/zones/PluginPanel.tsx): the page fills the body edge to edge. */
+.plugin-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.plugin-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+}
+.plugin-panel-error {
+  flex: none;
+  margin: 0;
+  padding: 6px 14px;
+  font-size: var(--cc-text-sm);
+  background: var(--cc-bg-error);
+  border-bottom: 1px solid var(--cc-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Webview panels (renderer/zones/WebviewPanel.tsx): a toolbar, then the placeholder main lays the
+   native view over (it paints above the page, so the placeholder only marks the place). */
+.webview-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.webview-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--cc-border);
+}
+/* The address in a well; the host at full strength, the scheme and the rest dimmed. */
+.webview-url {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  margin: 0 4px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: color-mix(in srgb, var(--cc-fg) 3%, transparent);
+  font-size: var(--cc-text-sm);
+  line-height: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.webview-url-dim {
+  color: var(--cc-fg-subtle);
+}
+.webview-placeholder {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+}
+.plugin-stopped {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Sessions panel (renderer/sessions/SessionsPanel.tsx): a card per Claude tab. */
+.sessions-empty {
+  margin: 0;
+  color: var(--cc-fg-muted);
+}
+
+.sessions-list,
+.session-notes,
+.session-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-item {
+  padding: 11px 12px 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-surface-1);
+  overflow: hidden;
+}
+
+.session-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.session-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.session-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  white-space: nowrap;
+}
+
+/* Steps done: the count over a small bar of the same fraction. */
+.session-steps {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.session-steps-bar {
+  display: block;
+  width: 34px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--cc-surface-3);
+  overflow: hidden;
+}
+.session-steps-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--cc-fg-subtle);
+}
+.session-item[data-status='working'] .session-steps-bar > span {
+  background: var(--cc-status-working);
+}
+
+.session-prompt {
+  margin: 8px 0 0;
+  font-size: var(--cc-text-sm);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.session-notes {
+  margin-top: 8px;
+  font-size: var(--cc-text-sm);
+  line-height: 1.45;
+  color: var(--cc-fg-muted);
+}
+
+.session-notes li {
+  position: relative;
+  padding-left: 12px;
+  overflow-wrap: anywhere;
+}
+.session-notes li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--cc-fg-subtle);
+}
+
+/* The changed files: a tray across the bottom of the card (out to its edges). */
+.session-files-box {
+  margin: 10px -12px 0;
+  padding: 8px 6px 7px;
+  border-top: 1px solid var(--cc-border);
+  background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
+}
+.session-files-box:last-child {
+  margin-bottom: -12px;
+}
+.session-files-caption {
+  padding: 0 6px 4px;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+}
+
+.session-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: none;
+  color: var(--cc-fg-muted);
+  font-family: var(--cc-font-mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-file .glyph {
+  color: var(--cc-fg-subtle);
+}
+.session-file-path {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.session-file-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-file-name {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--cc-fg);
+}
+
+.session-file:hover {
+  background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
+}
+
+.session-error {
+  margin: 8px 0 0;
+  padding: 4px 8px;
+  border-radius: var(--cc-radius-sm);
+  font-size: var(--cc-text-sm);
+  background: var(--cc-bg-error);
+  overflow-wrap: anywhere;
+}
+
+/* Splitters: a hairline with a grip mark in the middle. The element is the 1px line; its ::before
+   widens the grab area to 7px over the neighbours (z-index above them), and pointer events on a
+   pseudo-element land on the element, so the drag code sees the bar. Accent under the pointer
+   and with the keyboard focus (which then needs no ring of its own). */
+.splitter {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  background: var(--cc-border);
+}
+.splitter::before {
+  content: '';
+  position: absolute;
+}
+.splitter::after {
+  content: '';
+  position: absolute;
+  border-radius: 2px;
+  background: var(--cc-border-strong);
+}
+.splitter:hover,
+.splitter:hover::after,
+.splitter:focus-visible,
+.splitter:focus-visible::after {
+  background: var(--cc-accent);
+}
+.splitter:focus-visible {
+  outline: none;
+}
+
+.splitter-x {
+  width: 1px;
+  cursor: col-resize;
+}
+.splitter-x::before {
+  inset: 0 -3px;
+}
+.splitter-x::after {
+  top: 50%;
+  left: -1.5px;
+  width: 4px;
+  height: 28px;
+  margin-top: -14px;
+}
+
+.splitter-y {
+  height: 1px;
+  cursor: row-resize;
+}
+.splitter-y::before {
+  inset: -3px 0;
+}
+.splitter-y::after {
+  left: 50%;
+  top: -1.5px;
+  width: 28px;
+  height: 4px;
+  margin-left: -14px;
+}
+
+/* Overlay stack: each overlay covers the window; the newest is on top (its z-index comes from its
+   place in the stack). */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+}
+/* macOS: full-window layers start under the in-page title bar, which stays the window's (it
+   drags it, and the traffic lights sit on it); the bar is inert under them like the zones. */
+.in-page-title-bar .overlay,
+.in-page-title-bar .settings {
+  top: var(--cc-titlebar-h);
+}
+.overlay-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 6px 0 14px;
+  box-sizing: border-box;
+  background: var(--cc-bg-bar);
+  border-bottom: 1px solid var(--cc-border);
+}
+/* With the ✕ on the left, the title's inset moves to the right edge. */
+.overlay-header[data-close-side='left'] {
+  padding: 0 14px 0 6px;
+}
+.overlay-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.overlay-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: inherit;
+  color: var(--cc-fg-subtle);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.overlay-close:hover {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+.overlay-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.overlay-terminal {
+  background: var(--cc-terminal-bg);
+}
+.overlay-html,
+.overlay-url {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  width: 100%;
+}
+
+/* Settings screen: a core overlay. z-index 150 sits above the palette (100) and below
+   the overlay stack (200+), so a terminal overlay opened from here (a cli login) is on top.
+   The look follows the picker's (ProjectPicker): cards on --cc-surface-1 with a hairline border,
+   muted secondary text, quiet bordered buttons and one accent for the primary action. Every rule
+   is scoped under .settings so the window's own chrome keeps its controls. */
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  outline: none;
+}
+
+/* Sidebar: the title over the section list. */
+.settings-sidebar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  box-sizing: border-box;
+  padding: 22px 12px;
+  background: var(--cc-bg-bar);
+  border-right: 1px solid var(--cc-border);
+}
+.settings-sidebar-title {
+  margin: 0 10px 16px;
+  font-size: var(--cc-text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  background: none;
+  color: var(--cc-fg-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-nav button .settings-glyph {
+  flex: none;
+  color: var(--cc-fg-subtle);
+}
+/* A tint of the text colour, not --cc-surface-3: in light that is within a shade of the
+   sidebar's own background and the hover would not show. */
+.settings-nav button:hover {
+  background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
+  color: var(--cc-fg);
+}
+.settings-nav button.active {
+  background: var(--cc-accent-soft);
+  color: var(--cc-fg);
+  font-weight: 500;
+}
+.settings-nav button.active .settings-glyph {
+  color: var(--cc-accent);
+}
+
+/* The page column: the close button floats at its top right over the scrolling page. */
+.settings-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.settings-close {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  background: none;
+  color: var(--cc-fg-subtle);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-close:hover {
+  background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
+  color: var(--cc-fg);
+}
+.settings-close kbd {
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  letter-spacing: 0.02em;
+}
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* A page long enough to scroll would otherwise shift the centred column by the bar's width. */
+  scrollbar-gutter: stable;
+  padding: 40px 56px 72px;
+}
+.settings-content {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+/* Page header and groups. */
+.settings-page-header {
+  margin-bottom: 28px;
+}
+.settings-page-header h2 {
+  margin: 0;
+  font-size: var(--cc-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.settings-page-header p {
+  margin: 6px 0 0;
+  color: var(--cc-fg-muted);
+  line-height: 1.5;
+}
+.settings-group + .settings-group {
+  margin-top: 32px;
+}
+.settings-group-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 2px 10px;
+}
+.settings-group-title {
+  min-width: 0;
+}
+.settings-group-head h3 {
+  margin: 0;
+  font-size: var(--cc-text-md);
+  font-weight: 600;
+}
+.settings-group-desc {
+  margin: 4px 0 0;
+  max-width: 68ch;
+  font-size: var(--cc-text-sm);
+  line-height: 1.5;
+  color: var(--cc-fg-muted);
+}
+.settings-group-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+/* A card: the picker's panel. Its direct children are divided by hairlines. */
+.settings-card {
+  margin: 0;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-surface-1);
+  overflow: hidden;
+}
+.settings-card > * + *,
+.settings-card > .settings-list > * + * {
+  border-top: 1px solid var(--cc-border);
+}
+.settings-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
+}
+.settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A setting: label and help on the left, the control on the right. */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 32px;
+  padding: 12px 16px;
+}
+.settings-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.settings-row-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.settings-row-help {
+  max-width: 60ch;
+  font-size: var(--cc-text-sm);
+  line-height: 1.5;
+  color: var(--cc-fg-muted);
+}
+.settings-row-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-form-foot {
+  justify-content: flex-end;
+  gap: 8px;
+  background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
+}
+
+/* List rows (projects, plugins, panels, keys): a glyph, a title over muted meta, actions. */
+.settings-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+}
+.settings-item.column {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.settings-item-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.settings-item-glyph {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 1px;
+  color: var(--cc-fg-subtle);
+}
+.settings-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.settings-item-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.settings-item-title label {
+  cursor: pointer;
+}
+.settings-item-meta {
+  font-size: var(--cc-text-sm);
+  line-height: 1.45;
+  color: var(--cc-fg-muted);
+}
+.settings-item-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* A folder that is gone: the row steps back, its badge and actions do not (as in the picker). */
+.settings-item.missing .settings-item-glyph,
+.settings-item.missing .settings-item-meta {
+  opacity: 0.6;
+}
+.settings-confirm {
+  margin-right: 4px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+/* Settings › Window's offer to reopen the window: the question, then its two buttons. */
+.settings-reopen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding: 10px 16px;
+}
+.settings-reopen .settings-confirm {
+  flex: 1;
+  min-width: 0;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+/* Under a row's text, lined up with it past the glyph (16px + the 12px gap). */
+.settings-item-foot {
+  margin-left: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* The install confirmation's facts: author, repository, tag, commit, index. Long values (a commit,
+   a URL) wrap instead of widening the card. */
+.settings-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+  font-size: var(--cc-text-sm);
+}
+.settings-facts dt {
+  color: var(--cc-fg-muted);
+}
+.settings-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+/* A line of help set under a card's last row. */
+.settings-note {
+  margin: 0;
+  padding: 10px 16px;
+}
+/* An expanded form under a row (a plugin's settings). */
+.settings-subpanel {
+  margin-left: 28px;
+  padding: 14px 16px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg);
+}
+.settings-subform .settings-row {
+  padding: 6px 0;
+}
+/* Submit at the right, as in the cards' footers; "Saved." sits just before it. */
+.settings-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+.settings-saved {
+  order: -1;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-status-waiting);
+}
+
+/* Text roles. */
+.settings-sub,
+.settings-note {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.settings-note {
+  margin: 0 2px 16px;
+}
+.settings .warn {
+  color: var(--cc-status-needs-permission);
+}
+.settings-error {
+  color: var(--cc-status-ended);
+  font-size: var(--cc-text-sm);
+}
+.settings code {
+  font-family: var(--cc-font-mono);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: var(--cc-radius-sm);
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+}
+.settings button code {
+  padding: 0;
+  background: none;
+}
+.settings .mono {
+  font-family: var(--cc-font-mono);
+  font-size: 0.9em;
+}
+/* A mono field (a command line, a URL): one class more than the field rule further down, whose
+   `font: inherit` would otherwise win. The field's own size, not 0.9em of it. */
+.settings .settings-page input.mono {
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+}
+/* The hint is prose: in the mono face it runs out of the field half way. */
+.settings .settings-page input.mono::placeholder {
+  font-family: var(--cc-font-ui);
+}
+/* An error or warning for the page or a form: the picker's banner. */
+.settings-alert {
+  margin: 0 0 20px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--cc-status-ended) 35%, transparent);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-error);
+  font-size: var(--cc-text-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.settings-alert.warn {
+  color: var(--cc-fg);
+  border-color: color-mix(in srgb, var(--cc-status-needs-permission) 45%, transparent);
+  background: color-mix(in srgb, var(--cc-status-needs-permission) 12%, transparent);
+  margin-bottom: 12px;
+}
+.settings-alert.inset {
+  margin: 0 16px 12px;
+}
+ul.settings-alert {
+  margin: 0 0 12px;
+  padding-left: 28px;
+}
+.settings-empty {
+  margin: 0;
+  padding: 22px 16px;
+  text-align: center;
+  color: var(--cc-fg-muted);
+}
+
+/* Badges (state) and chips (facts: a version, an auth kind). Two classes on purpose: the specs
+   count .settings-badge to tell a disabled plugin or an open project. */
+.settings-badge,
+.settings-chip {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 999px;
+  font-size: var(--cc-text-xs);
+  font-weight: 400;
+  line-height: 16px;
+  color: var(--cc-fg-muted);
+}
+.settings-badge.accent {
+  border-color: transparent;
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent);
+}
+.settings-badge.warn {
+  border-color: color-mix(in srgb, var(--cc-status-needs-permission) 45%, transparent);
+  color: var(--cc-status-needs-permission);
+}
+.settings-chip {
+  font-family: var(--cc-font-mono);
+  border-color: var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+}
+/* A sign-in state: a dot before the text. */
+.settings-status::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px 0;
+  border-radius: 50%;
+  background: var(--cc-fg-subtle);
+  vertical-align: middle;
+}
+.settings-status[data-state='ok']::before {
+  background: var(--cc-status-waiting);
+}
+.settings-status[data-state='warn']::before {
+  background: var(--cc-status-needs-permission);
+}
+
+/* Buttons. The default is the picker's quiet bordered button with full-strength text; .primary
+   is the accent one (one per form), .quiet drops the border, .danger is the confirming step of a
+   removal, .icon is square. */
+.settings-page button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-surface-2);
+  color: var(--cc-fg);
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.settings-page button:hover:not(:disabled) {
+  background: var(--cc-surface-3);
+}
+.settings-page button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.settings-page button.primary {
+  border-color: transparent;
+  background: var(--cc-accent);
+  color: var(--cc-accent-fg);
+}
+.settings-page button.primary:hover:not(:disabled) {
+  background: var(--cc-accent-hover);
+}
+.settings-page button.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--cc-fg-muted);
+}
+.settings-page button.quiet:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+.settings-page button.danger {
+  border-color: color-mix(in srgb, var(--cc-status-ended) 45%, transparent);
+  background: transparent;
+  color: var(--cc-status-ended);
+}
+.settings-page button.danger:hover:not(:disabled) {
+  background: var(--cc-bg-error);
+}
+.settings-page button.quiet.danger {
+  border-color: transparent;
+  color: var(--cc-fg-subtle);
+}
+.settings-page button.quiet.danger:hover:not(:disabled) {
+  color: var(--cc-status-ended);
+}
+.settings-page button.icon {
+  width: 28px;
+  padding: 0;
+}
+
+/* Fields. Filled with the page background, so inside a card they read as wells (in light the
+   card is white, like --cc-surface-2, and a white field would only have its border). */
+.settings-page input[type='text'],
+.settings-page input[type='password'],
+.settings-page input[type='number'],
+.settings-page select,
+.settings-page textarea,
+.settings-plugin-form .form-control {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  font: inherit;
+}
+.settings-page textarea {
+  height: auto;
+  padding: 6px 9px;
+}
+.settings-page input::placeholder,
+.settings-page textarea::placeholder {
+  color: var(--cc-fg-subtle);
+}
+.settings-page input:hover:not(:disabled):not(:focus),
+.settings-page select:hover:not(:disabled):not(:focus) {
+  border-color: color-mix(in srgb, var(--cc-fg) 28%, transparent);
+}
+/* A field shows focus on a click too (it is where the typing goes): an accent border and a soft
+   halo in place of the global 2px ring, which on a field reads as a second border. */
+.settings-page input:not([type='checkbox']):focus,
+.settings-page select:focus,
+.settings-page textarea:focus {
+  outline: none;
+  border-color: var(--cc-focus);
+  box-shadow: 0 0 0 3px var(--cc-accent-soft);
+}
+.settings-page input:disabled,
+.settings-page select:disabled {
+  opacity: 0.55;
+}
+
+/* Project colour swatches (ProjectColorSettings.tsx): native radios drawn as round swatches, then
+   the custom swatch around a native colour field. The picked one wears a ring a gap away (a shape,
+   not only a colour, so it reads without colour vision); keyboard focus is the global focus ring
+   further out. Scoped one class deeper than the field rules above, whose focus halo and border
+   would otherwise land on the swatches. */
+.project-swatches {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.project-swatch-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-page .project-swatches input.project-swatch,
+.project-swatch-custom {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  appearance: none;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 16%, transparent);
+  cursor: pointer;
+}
+/* None: an empty well with a slash through it. */
+.settings-page .project-swatches input.project-swatch.none {
+  background:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - 0.75px),
+      var(--cc-fg-subtle) calc(50% - 0.75px),
+      var(--cc-fg-subtle) calc(50% + 0.75px),
+      transparent calc(50% + 0.75px)
+    ),
+    var(--cc-bg);
+}
+.settings-page .project-swatches input.project-swatch:checked,
+.project-swatch-custom.checked {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 16%, transparent),
+    0 0 0 2px var(--cc-surface-1),
+    0 0 0 3.5px var(--cc-fg-muted);
+}
+.settings-page .project-swatches input.project-swatch:focus {
+  outline: none;
+}
+.settings-page .project-swatches input.project-swatch:focus-visible,
+.project-swatch-custom:has(input:focus-visible) {
+  outline: 2px solid var(--cc-focus);
+  outline-offset: 4px;
+}
+/* Custom…: a colour wheel until a custom colour is set, then that colour. The native field covers
+   the swatch, invisible, so a click (or Space on it) opens the platform's colour panel. */
+.project-swatch-custom {
+  background: conic-gradient(#f0625b, #e6c24a, #5ec26e, #45c0bb, #5b9df5, #b484f2, #f0625b);
+}
+.project-swatch-custom.checked {
+  background: var(--swatch);
+}
+.settings-page .project-swatch-custom input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+/* The spinner arrows are platform drawing in a drawn page; the arrow keys still step. */
+.settings-page input[type='number'] {
+  width: 76px;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.settings-page input[type='number']::-webkit-inner-spin-button,
+.settings-page input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.settings-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-unit {
+  width: 16px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.settings-field-input {
+  width: 280px;
+}
+/* The Custom… CSS font list: as wide as the family dropdown above it. */
+.settings-font-family {
+  width: 260px;
+}
+.settings-grow {
+  flex: 1;
+  min-width: 0;
+}
+.settings-tag {
+  width: 150px;
+}
+.settings-install {
+  gap: 8px;
+}
+
+/* Select: the native element without its platform drawing, a chevron over its right end. */
+.settings-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.settings-page .settings-select select {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 112px;
+  padding-right: 30px;
+  cursor: pointer;
+}
+.settings-select.wide select {
+  width: 280px;
+}
+.settings-select-chevron {
+  position: absolute;
+  right: 9px;
+  pointer-events: none;
+  color: var(--cc-fg-subtle);
+}
+
+/* The terminal font dropdown (TerminalFontPicker): a field drawn like the selects above, and a
+   list in the menus' look (.menu: --cc-bg-menu, strong border, the accent-soft highlight). The
+   list is portalled to .settings with position: fixed (the card would clip it), so it is styled
+   from .settings, not from the page. */
+.settings-page .font-picker input.font-picker-field {
+  width: 260px;
+  padding-right: 30px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.settings-page .font-picker input.font-picker-field[aria-expanded='true'] {
+  cursor: text;
+}
+.settings .font-picker-list {
+  position: fixed;
+  z-index: 1;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-menu);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  color: var(--cc-fg);
+}
+.font-picker-group + .font-picker-group {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--cc-border);
+}
+.font-picker-heading {
+  padding: 4px 9px 3px;
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cc-fg-subtle);
+}
+.font-picker-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 30px;
+  padding: 6px 9px;
+  box-sizing: border-box;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.font-picker-option.active {
+  background: var(--cc-accent-soft);
+}
+/* The font in use: an accent dot before its name (the highlight alone moves with the keys). */
+.font-picker-option[aria-selected='true'] .font-picker-name::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px -2px;
+  border-radius: 50%;
+  background: var(--cc-accent);
+  vertical-align: middle;
+}
+.font-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.font-picker-sample {
+  flex: none;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  white-space: pre;
+}
+.font-picker-note {
+  padding: 6px 9px;
+  font-size: var(--cc-text-sm);
+  line-height: 1.5;
+  color: var(--cc-fg-muted);
+}
+
+/* Slider (Window › Background opacity): the native range input in the accent, with its value
+   beside it in tabular figures so the row does not shift as the number changes width. */
+.settings-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-range input[type='range'] {
+  width: 160px;
+  margin: 0;
+  accent-color: var(--cc-accent);
+}
+.settings-range input[type='range']:disabled {
+  opacity: 0.45;
+}
+.settings-range-value {
+  min-width: 40px;
+  font-size: var(--cc-text-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--cc-fg-muted);
+  text-align: right;
+}
+
+/* Switch: a checkbox drawn as a track and a thumb (::before; Chromium draws pseudo-elements on an
+   appearance: none input). The thumb is white when on in both themes: the dark theme's
+   --cc-accent-fg is near-black, which on terracotta reads as a hole, not a knob. */
+.settings-switch,
+.settings-plugin-form input[type='checkbox'] {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--cc-surface-3);
+  box-shadow: inset 0 0 0 1px var(--cc-border-strong);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.settings-switch::before,
+.settings-plugin-form input[type='checkbox']::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--cc-fg-subtle);
+  transition:
+    transform 0.15s ease,
+    background-color 0.15s ease;
+}
+.settings-switch:checked,
+.settings-plugin-form input[type='checkbox']:checked {
+  background: var(--cc-accent);
+  box-shadow: none;
+}
+.settings-switch:checked::before,
+.settings-plugin-form input[type='checkbox']:checked::before {
+  transform: translateX(12px);
+  background: #fff;
+}
+.settings-switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.settings-switch:focus-visible {
+  outline-offset: 2px;
+}
+
+/* Key chips: a key as printed on a keycap, a bottom edge one pixel deeper. */
+.settings kbd {
+  font-family: var(--cc-font-ui);
+}
+.settings-page kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--cc-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-surface-2);
+  color: var(--cc-fg);
+  font-size: var(--cc-text-sm);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.settings-page kbd.unbound {
+  border-style: dashed;
+  border-bottom-width: 1px;
+  background: transparent;
+  color: var(--cc-fg-muted);
+  letter-spacing: 0;
+}
+/* Recording a chord: the chip's shape in the accent, waiting. */
+.settings-page input.settings-key-capture {
+  width: 210px;
+  height: 24px;
+  border-color: var(--cc-accent);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-accent-soft);
+  font-size: var(--cc-text-sm);
+  text-align: center;
+  caret-color: transparent;
+  cursor: default;
+}
+.settings-page input.settings-key-capture::placeholder {
+  color: var(--cc-accent);
+}
+
+/* Keybindings: a filter field at the head of the card (the picker's search), dense rows. */
+.settings-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  color: var(--cc-fg-subtle);
+  cursor: text;
+}
+.settings-page .settings-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.settings-page .settings-search input:focus {
+  box-shadow: none;
+}
+.settings-search:focus-within {
+  color: var(--cc-accent);
+  box-shadow: inset 0 -1px 0 var(--cc-focus);
+}
+.key-row {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.key-row:hover {
+  background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
+}
+/* Muted, not subtle: --cc-fg-subtle is under 4.5:1 on the dark card, too faint for 11px text. */
+.key-row .settings-item-meta {
+  font-size: var(--cc-text-xs);
+}
+.key-row-buttons {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.key-row:hover .key-row-buttons,
+.key-row:focus-within .key-row-buttons {
+  opacity: 1;
+}
+.key-row .settings-page button,
+.key-row-buttons button {
+  height: 24px;
+  padding: 0 8px;
+}
+
+/* New-tab menu entries (TabCommandsEditor): a table. Every row is the same grid (label, the wider
+   command line, opens as, a save slot, the row's actions); an entry's <form> is display: contents
+   so its fields are cells of the row. Fields look like text until hovered or focused. */
+.tab-command-grid,
+.tab-commands-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr) 112px 56px 92px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px 7px 8px;
+}
+.tab-commands-head {
+  padding-top: 9px;
+  padding-bottom: 9px;
+  font-size: var(--cc-text-xs);
+  font-weight: 500;
+  color: var(--cc-fg-muted);
+}
+.tab-commands-head span {
+  padding-left: 10px;
+}
+.tab-command-form {
+  display: contents;
+}
+.tab-command-item input,
+.tab-command-item select {
+  width: 100%;
+  min-width: 0;
+}
+.settings-page .tab-command-item input:not(:focus):not(:hover),
+.settings-page .tab-command-item select:not(:focus):not(:hover) {
+  border-color: transparent;
+  background: transparent;
+}
+.tab-command-item .settings-select,
+.tab-command-add .settings-select {
+  width: 100%;
+}
+.settings-page .tab-command-grid .settings-select select {
+  width: 100%;
+  min-width: 0;
+}
+.tab-command-submit {
+  grid-column: 4;
+}
+.tab-command-actions {
+  grid-column: 5;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.tab-command-add {
+  background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
+}
+.tab-command-add input {
+  min-width: 0;
+}
+.settings-page .tab-command-add .tab-command-submit {
+  grid-column: 4 / span 2;
+  justify-self: start;
+}
+
+/* Settings › Terminal: a sample in the terminal font, on the terminal's background. */
+.settings-preview-row {
+  display: block;
+}
+.terminal-font-preview {
+  padding: 12px 14px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--cc-terminal-bg, var(--cc-bg));
+}
+
+/* rjsf's default theme draws plain markup: each field is a label over its input in a .rjsf-field
+   (.rjsf-field-<type>; the root object is one too). Drawn here as the screen's rows, the label
+   left and the field right. */
+.settings-plugin-form fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.settings-plugin-form legend {
+  display: none;
+}
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  column-gap: 16px;
+  align-items: center;
+  padding: 6px 0;
+}
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > :not(label):not(input):not(select):not(textarea):not(.settings-secret) {
+  grid-column: 1 / -1;
+}
+/* A secret field (PluginSettingsForm SecretWidget): its state and buttons in the field column, at
+   the right like the other controls; while replacing, the password field takes the room. */
+.settings-plugin-form .settings-secret {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-plugin-form .settings-secret .settings-badge {
+  margin-right: auto;
+}
+.settings-plugin-form .settings-secret input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-plugin-form .form-control {
+  width: 100%;
+}
+.settings-plugin-form label.control-label {
+  font-weight: 500;
+}
+.settings-plugin-form .field-description,
+.settings-plugin-form .help-block {
+  margin: 2px 0 0;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+/* A boolean: rjsf wraps the checkbox and its title in one label; the switch goes to the right. */
+.settings-plugin-form .checkbox label {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* Project picker (ProjectPicker.tsx). A fixed-size window (electron-window-factory.ts): the page is
+   a column whose recent-projects panel takes the height left under the header and scrolls inside,
+   so a long recent list never pushes the window into a page scroll. */
+.picker {
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 28px 32px 28px;
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+.picker-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.app-icon {
+  flex: none;
+  display: block;
+}
+.picker-title {
+  flex: 1;
+  min-width: 0;
+}
+.picker-title h1 {
+  margin: 0;
+  font-size: var(--cc-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.picker-tagline {
+  margin: 2px 0 0;
+  color: var(--cc-fg-muted);
+}
+
+/* The one accent-coloured control in the window. */
+.picker-primary {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 12px 0 14px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-accent);
+  color: var(--cc-accent-fg);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.picker-primary:hover {
+  background: var(--cc-accent-hover);
+}
+.picker-primary:focus-visible {
+  outline-offset: 2px;
+}
+.picker-primary kbd {
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  font-weight: 400;
+  opacity: 0.72;
+}
+
+/* Only in a modal picker (a sheet over a project window): the quiet way out beside Open Folder. */
+.picker-cancel {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: transparent;
+  color: var(--cc-fg);
+  font: inherit;
+  cursor: pointer;
+}
+.picker-cancel:hover {
+  background: var(--cc-bg-bar);
+}
+
+.picker-error {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--cc-status-ended) 35%, transparent);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-error);
+  overflow-wrap: anywhere;
+}
+
+.picker-recent {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.picker-recent h2 {
+  margin: 0 2px;
+  font-size: var(--cc-text-sm);
+  font-weight: 500;
+  color: var(--cc-fg-muted);
+}
+.picker-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-surface-1);
+  overflow: hidden;
+}
+
+.picker-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  height: 42px;
+  border-bottom: 1px solid var(--cc-border);
+  color: var(--cc-fg-subtle);
+}
+.picker-search-glyph {
+  flex: none;
+}
+.picker-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--cc-fg);
+  font: inherit;
+  /* The field is always focused (it is where the keys go); a ring around it would only be noise.
+     The highlighted row shows where Enter goes. */
+  outline: none;
+}
+.picker-search input::placeholder {
+  color: var(--cc-fg-subtle);
+}
+
+.picker-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+}
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--cc-radius-md);
+}
+.picker-row.highlighted {
+  background: var(--cc-accent-soft);
+}
+/* The row's button fills it: a click anywhere on the row opens the project. */
+.picker-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.picker-open:disabled {
+  cursor: default;
+}
+.picker-glyph {
+  flex: none;
+  color: var(--cc-fg-subtle);
+}
+.picker-row.highlighted .picker-glyph {
+  color: var(--cc-accent);
+}
+.picker-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.picker-row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.picker-row-name,
+.picker-row-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.picker-row-name {
+  min-width: 0;
+  font-weight: 500;
+}
+.picker-row-path {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+/* "Enter opens this": only on the highlighted row. */
+.picker-enter {
+  flex: none;
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-subtle);
+  visibility: hidden;
+}
+.picker-row.highlighted .picker-enter {
+  visibility: visible;
+}
+
+/* A folder that is gone: the name and path step back, the badge and the actions do not. */
+.picker-row.missing .picker-row-name,
+.picker-row.missing .picker-row-path,
+.picker-row.missing .picker-glyph {
+  opacity: 0.55;
+}
+.picker-badge {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 999px;
+  font-size: var(--cc-text-xs);
+  line-height: 16px;
+  color: var(--cc-fg-muted);
+}
+.picker-row-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding-right: 8px;
+}
+.picker-quiet {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-fg-muted);
+  font: inherit;
+  font-size: var(--cc-text-sm);
+  cursor: pointer;
+}
+.picker-quiet:hover {
+  background: var(--cc-surface-3);
+  color: var(--cc-fg);
+}
+
+/* Centred in the room the list would take, so an empty panel reads as calm rather than broken. */
+.picker-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  color: var(--cc-fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Read by screen readers, not drawn. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

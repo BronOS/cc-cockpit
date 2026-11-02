@@ -1,0 +1,32 @@
+MesloLGS NF, as bundled with cc-cockpit
+=======================================
+
+Source: "MesloLGS NF Regular/Bold/Italic/Bold Italic.ttf" from
+https://github.com/romkatv/powerlevel10k-media
+
+Meslo LG: Copyright 2009, 2010, 2013 André Berg, licensed under the Apache
+License, Version 2.0 (LICENSE.txt, LICENSE-2.0.txt). Meslo LG is a customised
+version of Apple's Menlo, itself based on Bitstream Vera Sans Mono and DejaVu
+Sans Mono.
+
+Changes made for cc-cockpit: each TTF was converted to WOFF2 (file names
+changed accordingly). Glyphs, metrics and names inside the font are unchanged.
+The app refers to the font under the CSS alias "Cockpit MesloLGS NF".
+
+Icon glyphs: the font is patched with the Nerd Fonts icon sets
+(https://github.com/ryanoasis/nerd-fonts). Each set keeps its own licence:
+
+- Codicons (Microsoft): CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+  https://github.com/microsoft/vscode-codicons
+- Font Awesome (Fonticons, Inc.): icons CC BY 4.0,
+  https://creativecommons.org/licenses/by/4.0/, https://fontawesome.com/license/free
+- Material Design Icons: Apache 2.0, https://github.com/Templarian/MaterialDesign-Font
+- Weather Icons (Erik Flowers): SIL OFL 1.1, https://github.com/erikflowers/weather-icons
+- Pomicons (Gabriele Lana): SIL OFL 1.1, Reserved Font Name "Pomicons",
+  https://github.com/gabrielelana/pomicons
+- Devicons, Font Awesome Extension, Octicons, Seti UI, Powerline Symbols,
+  Powerline Extra Symbols, Power Symbols IEC, Hack extra glyphs: MIT
+- Font Logos: Unlicense (public domain), https://github.com/lukas-w/font-logos
+
+The exact sets and versions depend on the Nerd Fonts release the font was
+patched with; the Nerd Fonts README lists them.

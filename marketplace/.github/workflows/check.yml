@@ -1,0 +1,37 @@
+# Checks every PR. Runs the PR's own copy of this file, in a fork's context: read-only token, no
+# secrets. Never `pull_request_target`, which would hand a write token to a run next to fork content.
+# Because a PR can edit this file, its green tick proves nothing on its own: auto-merge.yml, which
+# runs from main, establishes separately that the PR touches one entry file and re-runs the check.
+name: check
+on:
+  pull_request:
+    branches: [main]
+    # ready_for_review: a draft bump is refused by auto-merge; marking it ready must start the check again.
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  # The job name is the required status check in branch protection (see README.md).
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # The tools come from the base commit: a PR must not be judged by its own edit of them.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      # The merge commit (the default ref of this event): the data under test, never executed.
+      - uses: actions/checkout@v4
+        with:
+          path: pr
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every changed entry matches its repo
+        run: node base/tools/dist/check-entry.js --base base --head pr
+      # --base: a bad entry already on main is not this PR's doing, and must not block a revocation.
+      - name: The index still builds
+        run: node base/tools/dist/build-index.js --root pr --out "$RUNNER_TEMP/index.json" --base base

@@ -1,0 +1,10 @@
+{
+  "id": "test.hostthrows",
+  "name": "Host throws",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [{ "id": "board", "title": "Board", "entry": "panel.html", "defaultZone": "left" }]
+  }
+}

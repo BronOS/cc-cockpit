@@ -1,0 +1,11 @@
+{
+  "id": "test.panels",
+  "name": "Panels",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [{ "id": "echo", "title": "Echo", "entry": "panel.html", "defaultZone": "left" }],
+    "commands": [{ "id": "pick", "title": "Panels: Pick", "key": "Cmd+Shift+8" }]
+  }
+}

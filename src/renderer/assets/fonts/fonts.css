@@ -1,0 +1,76 @@
+/* The terminal fonts that ship with the app (shared/terminal-font.ts BUNDLED_TERMINAL_FONTS), for
+   the shell page only: nothing is installed on the system or written outside the app. Vite emits
+   each file next to the built CSS (out/renderer/assets, inside app.asar when packaged) and rewrites
+   the url()s, so they load under the page's `font-src 'self'` in dev, from file:// and packaged.
+
+   The family names carry a "Cockpit" prefix so they never match a copy installed under the real
+   name: the page would draw with whichever it found, and an older or non-Mono copy measures
+   differently. The four styles of each are declared so bold and italic are the real faces, not
+   synthesised (a synthetic bold is wider and breaks the grid). A face is fetched only when text
+   asks for it (the terminals' wait, tabs/terminal-font.ts, asks for regular and bold up front).
+   `swap`: the settings dropdown draws each name in its face, and a name should show at once.
+
+   Sources (converted TTF -> WOFF2 with fontTools, no glyph changes):
+   - jetbrains-mono-nf: JetBrainsMonoNerdFontMono-*.ttf from the Nerd Fonts v3.5.1 release
+     (ryanoasis/nerd-fonts, JetBrainsMono.tar.xz; JetBrains Mono 2.304). SIL OFL 1.1 (OFL.txt);
+     the icon sets' own licences are listed in NERD-FONTS-README.md.
+   - meslolgs-nf: "MesloLGS NF *.ttf" from romkatv/powerlevel10k-media. Apache License 2.0
+     (LICENSE.txt, full text in LICENSE-2.0.txt). */
+
+@font-face {
+  font-family: 'Cockpit JetBrains Mono NF';
+  src: url('./jetbrains-mono-nf/JetBrainsMonoNerdFontMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cockpit JetBrains Mono NF';
+  src: url('./jetbrains-mono-nf/JetBrainsMonoNerdFontMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cockpit JetBrains Mono NF';
+  src: url('./jetbrains-mono-nf/JetBrainsMonoNerdFontMono-Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cockpit JetBrains Mono NF';
+  src: url('./jetbrains-mono-nf/JetBrainsMonoNerdFontMono-BoldItalic.woff2') format('woff2');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Cockpit MesloLGS NF';
+  src: url('./meslolgs-nf/MesloLGSNF-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cockpit MesloLGS NF';
+  src: url('./meslolgs-nf/MesloLGSNF-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cockpit MesloLGS NF';
+  src: url('./meslolgs-nf/MesloLGSNF-Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cockpit MesloLGS NF';
+  src: url('./meslolgs-nf/MesloLGSNF-BoldItalic.woff2') format('woff2');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}

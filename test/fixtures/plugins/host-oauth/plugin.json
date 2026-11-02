@@ -1,0 +1,21 @@
+{
+  "id": "test.hostoauth",
+  "name": "Host OAuth",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "signin", "title": "OAuth fixture: Sign in" }],
+    "settings": {
+      "project": {
+        "type": "object",
+        "properties": {
+          "authUrl": { "type": "string", "title": "Authorization URL" },
+          "tokenUrl": { "type": "string", "title": "Token URL" },
+          "clientId": { "type": "string", "title": "Client ID" },
+          "clientSecret": { "type": "string", "title": "Client secret", "format": "secret" }
+        }
+      }
+    }
+  }
+}

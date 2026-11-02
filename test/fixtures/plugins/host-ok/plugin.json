@@ -1,0 +1,7 @@
+{
+  "id": "test.hostok",
+  "name": "Host OK",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js"
+}

@@ -1,0 +1,270 @@
+// The plugin manifest (`plugin.json`, design §5): types, the JSON Schema that describes it and the
+// pure checks that need no filesystem. The manifest is untrusted input from a plugin folder, so
+// every string that ends up in a path, an id or a command line is constrained here, before
+// `src/main/plugins/validate.ts` (ajv, file containment, settings schemas) accepts it.
+import type { ZoneId } from './layout'
+
+/** The plugin API major this app implements; any other major is refused. */
+export const SUPPORTED_PLUGIN_API = 1
+
+/**
+ * Plugin ids: reverse-DNS-ish, lower case, at least two dot-separated labels (`bronos.jira`).
+ * The id becomes a directory name (`plugins/<id>@<version>`) and a URL host (`cc-plugin://<id>`),
+ * so no slash, no `..` (a label cannot be empty or contain a dot) and no upper case (hosts are
+ * case-insensitive; two ids differing in case must not alias). The last label must start with a
+ * letter: `cc-plugin` is a standard scheme, and the WHATWG URL parser reads a host whose last label
+ * is a number (`1.2`, `a.0x7f`) as IPv4, so `1.2` would become host `1.0.0.2` and share an origin
+ * (and the per-plugin CSP) with a plugin called `1.0.0.2`.
+ */
+export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.[a-z][a-z0-9-]*$/
+export const PLUGIN_ID_MAX_LENGTH = 100
+
+/**
+ * The version is also part of a directory name, so it is a restricted semver: no slash, no
+ * leading dot, nothing a path join could misread.
+ */
+export const PLUGIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+
+/**
+ * Contribution ids (panel, command, theme) are namespaced at runtime as `<pluginId>/<id>`, so the
+ * id itself must not contain the separator.
+ */
+export const CONTRIBUTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/**
+ * Skill ids are stricter than other contribution ids: the id is the skill's folder name in the
+ * generated Claude plugin (`skills/<id>/`), the `name:` in its SKILL.md and, to Claude, the part
+ * after the colon of `<plugin>:<id>`. Claude Code's skill names are lower-case letters, digits and
+ * hyphens, at most 64; no dot, so the folder name can never be `.` or `..`.
+ */
+export const SKILL_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/** At most this many skills per plugin (each is copied and loaded into every Claude tab). */
+export const MAX_SKILLS = 10
+
+/**
+ * Plugin CLI command names (`ccc <name> …`, plan: Claude-operable foundation, Task 4). The name is
+ * typed on a command line and routed by the CLI as the first argument, so it is a plain lower-case
+ * word: no leading dash (an option), no dot or slash. Minimum two characters keeps single-letter
+ * flags-by-habit out.
+ */
+export const CLI_NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/
+
+/**
+ * The core `ccc` commands, in USAGE order: the first words the CLI routes itself. src/cli/args.ts
+ * dispatches through a table typed by this list (a core command missing here, or listed here and
+ * not handled there, is a type error), and the manifest check reserves the same names, so the two
+ * cannot drift. Shared because main must not import the CLI.
+ */
+export const CORE_CLI_COMMANDS = ['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'guide', 'plugin', 'help'] as const
+export type CoreCliCommand = (typeof CORE_CLI_COMMANDS)[number]
+
+export function isCoreCliCommand(name: string): name is CoreCliCommand {
+  return (CORE_CLI_COMMANDS as readonly string[]).includes(name)
+}
+
+/**
+ * Names the CLI keeps for itself: every core command, plus words reserved so a later core command
+ * does not collide with a plugin that took the name first.
+ */
+export const RESERVED_CLI_NAMES: readonly string[] = [...CORE_CLI_COMMANDS, 'app', 'config', 'version']
+
+/** At most this many CLI commands per plugin. */
+export const MAX_CLI_COMMANDS = 10
+
+/**
+ * A top-level `ccc` command the plugin brings; the plugin's host implements it with
+ * `ctx.cli.register(name, handler)`. `summary` and `usage` feed `ccc help`; `stdin` is opt-in
+ * because reading stdin whenever it is not a TTY would hang a `ccc` started with an open but silent
+ * pipe (a tool runner's usual setup).
+ */
+export interface CliContribution {
+  name: string
+  summary: string
+  usage?: string
+  stdin?: boolean
+}
+
+/**
+ * What a panel shows: `html` (the default) is the plugin's own page from `entry`, in a sandboxed
+ * iframe; `webview` is a native web view main lays over the panel (a browser: http(s) pages and
+ * local files through `cc-preview://`, driven with `ctx.webview`), so it has no `entry`.
+ */
+export type PanelKind = 'html' | 'webview'
+
+export interface PanelContribution {
+  id: string
+  title: string
+  /** Default `html`. */
+  kind?: PanelKind
+  /** Plugin-relative path to an icon (svg/png). */
+  icon?: string
+  /**
+   * Plugin-relative path to the panel's html: required for an `html` panel, forbidden for a
+   * `webview` one (the schema's conditional below).
+   */
+  entry?: string
+  defaultZone?: ZoneId
+}
+
+export interface CommandContribution {
+  id: string
+  title: string
+  /** Default chord, as written for macOS (`Cmd+Shift+J`). */
+  key?: string
+}
+
+export interface ThemeContribution {
+  id: string
+  /** Plugin-relative path to a theme JSON file (src/shared/theme.ts format). */
+  file: string
+}
+
+/**
+ * A Claude skill the plugin brings (plan: Claude-operable foundation, Task 3). `dir` holds a
+ * SKILL.md; the folder is copied into the app's generated Claude plugin tree and loaded only into
+ * the Claude sessions the app starts, for projects that enable the plugin. Its contents are
+ * checked in `src/main/plugins/skill-files.ts` (limits, strict front matter).
+ */
+export interface SkillContribution {
+  id: string
+  /** Plugin-relative folder holding SKILL.md. */
+  dir: string
+}
+
+/** A JSON Schema as plugins write it; compiled and limited in `validate.ts`. */
+export type JsonSchema = Record<string, unknown>
+
+export interface PluginManifest {
+  id: string
+  name: string
+  version: string
+  api: number
+  /** Plugin-relative path to the host entry; optional so a theme-only plugin is possible. */
+  main?: string
+  contributes?: {
+    panels?: PanelContribution[]
+    settings?: { project?: JsonSchema; app?: JsonSchema }
+    commands?: CommandContribution[]
+    themes?: ThemeContribution[]
+    skills?: SkillContribution[]
+    cli?: CliContribution[]
+  }
+}
+
+const MAX_PATH_LENGTH = 260
+const MAX_LIST = 100
+
+const relativePath = { type: 'string', minLength: 1, maxLength: MAX_PATH_LENGTH }
+const title = { type: 'string', minLength: 1, maxLength: 100 }
+const contributionId = { type: 'string', pattern: CONTRIBUTION_ID_PATTERN.source }
+// The settings schemas themselves are checked (meta-schema, limits) in validate.ts; here they only
+// have to be objects.
+const settingsSchema = { type: 'object' }
+
+/**
+ * JSON Schema (draft-07, what ajv's default class speaks) for `plugin.json`. Unknown properties
+ * are tolerated so a later minor release can add fields; known ones are strict. Reasons that
+ * need more than a schema (api major, duplicates, paths, chords) are checked in validate.ts.
+ */
+export const MANIFEST_SCHEMA = {
+  type: 'object',
+  required: ['id', 'name', 'version', 'api'],
+  properties: {
+    id: { type: 'string', maxLength: PLUGIN_ID_MAX_LENGTH, pattern: PLUGIN_ID_PATTERN.source },
+    name: title,
+    version: { type: 'string', maxLength: 64, pattern: PLUGIN_VERSION_PATTERN.source },
+    api: { type: 'integer' },
+    main: relativePath,
+    contributes: {
+      type: 'object',
+      properties: {
+        panels: {
+          type: 'array',
+          maxItems: MAX_LIST,
+          items: {
+            type: 'object',
+            required: ['id', 'title'],
+            properties: {
+              id: contributionId,
+              title,
+              kind: { enum: ['html', 'webview'] },
+              icon: relativePath,
+              entry: relativePath,
+              defaultZone: { enum: ['left', 'right', 'bottom'] }
+            },
+            // A conditional, not `entry` dropped from `required`: an html panel (kind absent or
+            // "html") still must name its page. The `if` needs `required: ['kind']`: `properties`
+            // alone holds vacuously when `kind` is absent, which would forbid `entry` on every
+            // existing manifest. validate.ts repeats both rules with readable messages.
+            if: { required: ['kind'], properties: { kind: { const: 'webview' } } },
+            then: { not: { required: ['entry'] } },
+            else: { required: ['entry'] }
+          }
+        },
+        settings: {
+          type: 'object',
+          properties: { project: settingsSchema, app: settingsSchema }
+        },
+        commands: {
+          type: 'array',
+          maxItems: MAX_LIST,
+          items: {
+            type: 'object',
+            required: ['id', 'title'],
+            properties: { id: contributionId, title, key: { type: 'string', minLength: 1, maxLength: 50 } }
+          }
+        },
+        themes: {
+          type: 'array',
+          maxItems: MAX_LIST,
+          items: {
+            type: 'object',
+            required: ['id', 'file'],
+            properties: { id: contributionId, file: relativePath }
+          }
+        },
+        skills: {
+          type: 'array',
+          maxItems: MAX_SKILLS,
+          items: {
+            type: 'object',
+            required: ['id', 'dir'],
+            properties: { id: { type: 'string', pattern: SKILL_ID_PATTERN.source }, dir: relativePath }
+          }
+        },
+        cli: {
+          type: 'array',
+          maxItems: MAX_CLI_COMMANDS,
+          items: {
+            type: 'object',
+            required: ['name', 'summary'],
+            properties: {
+              name: { type: 'string', pattern: CLI_NAME_PATTERN.source },
+              summary: { type: 'string', minLength: 1, maxLength: 200 },
+              usage: { type: 'string', minLength: 1, maxLength: 500 },
+              stdin: { type: 'boolean' }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Syntax-only check of a plugin-relative file reference; returns the reason it is refused, or
+ * null. Refuses absolute paths (POSIX, Windows drive and UNC), backslashes (one separator means
+ * one parsing), NUL, and any `..` segment. Whether the file exists and where symlinks lead is
+ * checked against the real folder in validate.ts.
+ */
+export function relativePathProblem(p: string): string | null {
+  if (p === '') return 'is empty'
+  if (p.includes('\0')) return 'contains a NUL byte'
+  if (p.includes('\\')) return 'must use "/" separators'
+  if (p.startsWith('/') || /^[A-Za-z]:/.test(p)) return 'must be relative to the plugin folder'
+  const segments = p.split('/')
+  if (segments.includes('..')) return 'must not contain ".." segments'
+  if (segments.every((s) => s === '' || s === '.')) return 'does not name a file'
+  return null
+}

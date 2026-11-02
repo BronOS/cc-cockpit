@@ -1,0 +1,12 @@
+{
+  "id": "test.hostsecrets",
+  "name": "Host secrets",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "settings": {
+      "project": { "type": "object", "properties": { "token": { "type": "string", "format": "secret" } } }
+    }
+  }
+}

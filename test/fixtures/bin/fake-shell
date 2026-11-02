@@ -1,0 +1,13 @@
+#!/bin/sh
+# Stand-in for the user's login shell in the e2e suite (SHELL points here).
+#
+# Why: the app asks `$SHELL -l -i -c 'env -0 ...'` once for the login environment and starts shell
+# tabs as `$SHELL -l`. A real login shell would source the developer's rc files, which can put a
+# real `claude` ahead of the fake one on PATH, print noise or hang. This one never reads an rc
+# file: the env capture runs the command under plain sh (PATH untouched), a shell tab is an
+# interactive sh that first prints a marker naming this script.
+if [ "$3" = "-c" ]; then
+  exec /bin/sh -c "$4"
+fi
+echo "FAKE-SHELL ready"
+exec /bin/sh -i

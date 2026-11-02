@@ -1,0 +1,22 @@
+JetBrains Mono Nerd Font Mono, as bundled with cc-cockpit
+=========================================================
+
+Source: JetBrainsMonoNerdFontMono-{Regular,Bold,Italic,BoldItalic}.ttf from the
+Nerd Fonts v3.5.1 release (https://github.com/ryanoasis/nerd-fonts,
+JetBrainsMono.tar.xz), patched from JetBrains Mono 2.304.
+
+JetBrains Mono: Copyright 2020 The JetBrains Mono Project Authors
+(https://github.com/JetBrains/JetBrainsMono), licensed under the SIL Open Font
+License, Version 1.1 (OFL.txt). No Reserved Font Name is declared.
+
+Changes made for cc-cockpit: each TTF was converted to WOFF2. Glyphs, metrics
+and names inside the font are unchanged. The app refers to the font under the
+CSS alias "Cockpit JetBrains Mono NF".
+
+Icon glyphs: the Nerd Fonts icon sets, each under its own licence, are listed
+with their sources and versions in NERD-FONTS-README.md. Two of them require
+attribution under Creative Commons Attribution 4.0
+(https://creativecommons.org/licenses/by/4.0/):
+
+- Codicons, (c) Microsoft Corporation, https://github.com/microsoft/vscode-codicons
+- Font Awesome Free icons, (c) Fonticons, Inc., https://fontawesome.com/license/free

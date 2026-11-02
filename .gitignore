@@ -1,0 +1,19 @@
+node_modules/
+out/
+dist/
+release/
+.vite/
+*.log
+.DS_Store
+coverage/
+test-results/
+playwright-report/
+
+# The hello reference plugin ships its built host (plugins/hello/dist/host.js); see scripts/build-hello.mjs.
+!plugins/hello/dist/
+# The built-in browser plugin ships its built host too (scripts/build-browser.mjs).
+!plugins/browser/dist/
+# The marketplace index repo template ships its built CI tools (scripts/build-marketplace-tools.mjs).
+!marketplace/tools/dist/
+# The example plugin ships its built host too: it is the master copy of a public template repo (examples/plugin/README.md).
+!examples/plugin/dist/

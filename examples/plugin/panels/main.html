@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Example</title>
+    <!-- The plugin CSP allows script from this plugin's own files only: no inline script, no network.
+         The SDK gives the page `ccPanel` and the app's theme variables. -->
+    <script src="/__sdk/panel.js"></script>
+    <script src="main.js"></script>
+    <style>
+      body { margin: 0; padding: 12px; font: 13px/1.4 system-ui, sans-serif; background: var(--cc-bg); color: var(--cc-fg); }
+      h1 { font-size: 15px; margin: 0 0 8px; }
+      button { font: inherit; color: inherit; background: var(--cc-bg-menu); border: 1px solid var(--cc-border); border-radius: 4px; padding: 3px 6px; }
+    </style>
+  </head>
+  <body>
+    <h1 id="greeting">Hello</h1>
+    <p>Clicks: <span id="clicks">0</span></p>
+    <button id="click" type="button">Click</button>
+    <button id="reset" type="button">Reset</button>
+  </body>
+</html>

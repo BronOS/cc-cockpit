@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hello</title>
+    <!-- The plugin CSP allows script from this plugin's own files only (no inline script), so the
+         logic lives in hello.js. The SDK gives the page `ccPanel` and the app theme variables. -->
+    <script src="/__sdk/panel.js"></script>
+    <script src="hello.js"></script>
+    <style>
+      body { margin: 0; padding: 12px; font: 13px/1.4 system-ui, sans-serif; background: var(--cc-bg); color: var(--cc-fg); }
+      h1 { font-size: 15px; margin: 0 0 8px; }
+      section { margin-bottom: 14px; }
+      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px; opacity: 0.7; }
+      select, textarea, button { font: inherit; color: inherit; background: var(--cc-bg-menu); border: 1px solid var(--cc-border); border-radius: 4px; padding: 3px 6px; }
+      textarea { width: 100%; box-sizing: border-box; display: block; margin: 4px 0; }
+      pre { margin: 0; white-space: pre-wrap; background: var(--cc-bg-bar); padding: 6px; border-radius: 4px; }
+      .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    </style>
+  </head>
+  <body>
+    <h1 id="greeting">Hello</h1>
+    <p>Visits: <span id="visits">0</span> · ticks: <span id="ticks">0</span>
+      <button id="reset" type="button">Reset badge</button></p>
+
+    <section>
+      <h2>Secrets</h2>
+      <p>API token (Settings &gt; Plugins &gt; Hello): <strong id="token-state">not set</strong></p>
+      <p>Secret counter: <span id="bumps">not set</span> · keys: <span id="secret-keys">(none)</span></p>
+      <div class="row">
+        <button id="bump" type="button">Bump</button>
+        <button id="forget-bumps" type="button">Forget counter</button>
+        <span id="secret-error"></span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Send text to a session</h2>
+      <select id="sessions" aria-label="Session"></select>
+      <textarea id="text" rows="2" aria-label="Text to send"></textarea>
+      <div class="row">
+        <button id="send" type="button">Send</button>
+        <span id="send-result"></span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Git status</h2>
+      <pre id="git">...</pre>
+      <button id="git-refresh" type="button">Refresh</button>
+    </section>
+
+    <section>
+      <h2>Overlays</h2>
+      <div class="row">
+        <button id="term-overlay" type="button">Terminal overlay</button>
+        <button id="html-overlay" type="button">HTML overlay</button>
+      </div>
+      <p id="overlay-result"></p>
+    </section>
+  </body>
+</html>

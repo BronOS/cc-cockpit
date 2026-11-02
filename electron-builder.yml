@@ -1,0 +1,85 @@
+# Packaging for mac and Linux (plan Task 35; design §7 Stack). Windows is out of phase 1.
+# Run `npm run package` (current OS) or `npm run package:dir` (unpacked app, for a smoke launch);
+# both build first (`npm run build` fills out/) and never publish.
+#
+# Decisions:
+#  - productName equals package.json `name`: Electron derives `userData` (the data dir, and the path
+#    the CLI recomputes in src/main/paths.ts `defaultDataDir`) from the app name, and the packaged
+#    app must keep using the same `cc-cockpit` folder as dev.
+#  - The build output ships (out/: main, preload, renderer, cli, host, sdk/panel.js) plus the
+#    production node_modules electron-builder adds by itself, and the built-in browser plugin
+#    (extraResources below: plugins/browser). main reaches the CLI, the plugin host
+#    entry, the SDK and the preload through __dirname, i.e. inside app.asar, which Electron (and
+#    Electron run as Node, for `ccc`) reads transparently. The `hello` reference plugin is NOT
+#    bundled (only browser is): plugins are installed or linked from a folder (design §5), and hello is a template
+#    to link in dev (plugins/hello/README.md), not a feature of the app.
+#  - node-pty is a native module with a helper executable (spawn-helper): neither can be loaded or
+#    executed from inside an archive, so the whole package is unpacked (node-pty finds it under
+#    app.asar.unpacked by itself) and rebuilt for the Electron ABI (npmRebuild; Linux has no prebuilt binary).
+#  - Building another arch (mac lists arm64 and x64) rebuilds node-pty in node_modules/ for that arch
+#    and leaves it there, which would break `npm run dev` and the e2e suite on the host arch;
+#    `npm run package` ends with `postinstall` (electron-builder install-app-deps) to put it back.
+#  - Not signed or notarised: no identity (`mac.identity: null`). A downloaded unsigned mac build
+#    needs System Settings > Privacy & Security (or `xattr -cr`) on first launch. Signing is a later decision.
+#  - `publish: null` turns off the publisher electron-builder would infer from the git remote, so no
+#    invocation (a bare `npx electron-builder` in CI with GH_TOKEN, on a tag) can upload; the
+#    `--publish never` in the npm scripts is a second guard.
+#  - Layout expectations (checked by test/unit/packaging-config.test.ts): app.asar holds out/cli,
+#    out/host, out/sdk and out/preload; node-pty (pty.node, spawn-helper) is unpacked. Linux
+#    AppImage/deb and the x64 mac build have not been launched. In an AppImage, execPath and
+#    resourcesPath sit under a per-launch /tmp/.mount_* path, so the `ccc` wrapper works only while
+#    the app runs and exits 0 silently otherwise, as it does for any missing app.
+appId: dev.cc-cockpit.app
+productName: cc-cockpit
+copyright: Copyright © 2026 Oleg Bronzov
+publish: null
+directories:
+  output: release
+files:
+  - out/**
+  - '!out/**/*.map'
+  - package.json
+asar: true
+asarUnpack:
+  - node_modules/node-pty/**
+# Bundled plugins (src/main/plugins/bundled.ts): plugin.json plus its built dist, read from
+# resources/plugins/<name> (not from inside app.asar: a plugin host is a separate process and a
+# plugin's folder is served to panels, so plain files are the simpler contract). Only the browser
+# plugin's shipped files; its dist is committed like the hello plugin's.
+extraResources:
+  - from: plugins/browser
+    to: plugins/browser
+    filter:
+      - plugin.json
+      - dist/**
+      - skills/**
+      - '!**/*.map'
+  # The bundled terminal fonts ship inside app.asar (Vite emits them with the renderer); their
+  # licences must travel with them (SIL OFL 1.1 and Apache 2.0 both ask each copy to carry the
+  # licence text), so the texts go next to the app as plain files: Resources/fonts/<font>/.
+  - from: src/renderer/assets/fonts
+    to: fonts
+    filter:
+      - '*/*.txt'
+      - '*/*.md'
+npmRebuild: true
+#  - Icons: build/icon.svg is the source; `npm run build:icon` renders build/icon.png and
+#    build/icon.icns (scripts/render-icon.cjs), both committed like the hello plugin's dist.
+mac:
+  icon: build/icon.icns
+  category: public.app-category.developer-tools
+  identity: null
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+linux:
+  icon: build/icon.png
+  category: Development
+  maintainer: cc-cockpit <noreply@cc-cockpit.invalid>
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]

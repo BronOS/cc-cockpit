@@ -1,0 +1,13 @@
+{
+  "id": "test.hostcli",
+  "name": "Host CLI",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "cli": [
+      { "name": "demo", "summary": "Echo the arguments back", "usage": "demo echo <words...> | demo fail | demo cwd" },
+      { "name": "demo-in", "summary": "Echo stdin back", "stdin": true }
+    ]
+  }
+}

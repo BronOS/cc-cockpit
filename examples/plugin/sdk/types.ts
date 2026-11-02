@@ -1,0 +1,350 @@
+// The public plugin API, version 1 (design §5 › Host API). A plugin's `main` module exports
+// `activate(ctx: PluginContext)` and, optionally, `deactivate()`. `ctx` is already scoped to ONE
+// project window: nothing in it takes a project id, and the ids it does take (a tab, a panel) are
+// only looked up inside that project by main.
+//
+// This file is types only, so a plugin author can depend on it without pulling in app code. A
+// later minor release may add members; a breaking change bumps PLUGIN_API_VERSION, and the app
+// refuses a manifest whose `api` major it does not know (src/shared/manifest.ts).
+//
+// The phase-1 host implements every member (src/host/ctx/). The page side of panels is the panel SDK
+// (src/sdk/panel.ts, loaded as `/__sdk/panel.js`).
+
+export const PLUGIN_API_VERSION = 1
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
+/** Undo a registration (a listener, a schedule, a command). Calling it twice is harmless. */
+export type Disposer = () => void
+
+/** The plugin's settings, validated against the manifest's JSON Schemas with defaults applied. */
+export interface PluginSettings {
+  /** This project's values (`contributes.settings.project`). */
+  readonly project: Readonly<Record<string, JsonValue>>
+  /** App-wide values (`contributes.settings.app`). */
+  readonly app: Readonly<Record<string, JsonValue>>
+}
+
+/** Per plugin, per project key-value store. Values are JSON. */
+export interface PluginStorage {
+  get<T extends JsonValue = JsonValue>(key: string): Promise<T | undefined>
+  set(key: string, value: JsonValue): Promise<void>
+  delete(key: string): Promise<void>
+  keys(): Promise<string[]>
+}
+
+/**
+ * This plugin's secrets (tokens, passwords), encrypted by main with the OS keychain. APP-WIDE per
+ * plugin, unlike `storage`: every project sees the same keys, so a plugin with per-project
+ * sign-ins names its keys itself (`google:work`) and lets a project setting pick one. Keys match
+ * `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`; values are strings of at most 64 KiB; at most 100 keys.
+ * Keys starting with `setting:` belong to the plugin's secret settings fields: readable, never
+ * written or deleted here, and not listed by `keys()`. Other plugins enabled in the same project
+ * share its host and can reach this store too (design §6 trust boundary).
+ */
+export interface PluginSecrets {
+  /** The value, or null when not set. Rejects when the stored value cannot be decrypted. */
+  get(key: string): Promise<string | null>
+  /** Encrypts and stores; rejects when the OS cannot encrypt (plaintext is never stored). */
+  set(key: string, value: string): Promise<void>
+  /** Removes the key; an unknown key is not an error. */
+  delete(key: string): Promise<void>
+  /** Keys this plugin has set, sorted. */
+  keys(): Promise<string[]>
+}
+
+/**
+ * An OAuth 2.0 client for `ctx.oauth` (authorization code + PKCE, RFC 6749 / 7636 / 8252). Both URLs
+ * must be https (no exception, not even 127.0.0.1) and hold no user:password. The auth URL may
+ * carry the provider's own query parameters (Google: `access_type=offline&prompt=consent`, without
+ * which it sends no refresh token); main's own (response_type, client_id, redirect_uri, state,
+ * PKCE, and scope when `scopes` is non-empty) replace any of the same name, and one named
+ * `client_secret` is refused. With `scopes: []` the auth URL's own `scope` (or the provider's
+ * default) stands. The client secret, if any, goes only in the POST body to `tokenUrl`, never
+ * into the browser.
+ */
+export interface OAuthSpec {
+  authUrl: string
+  tokenUrl: string
+  /** 1 to 500 characters. */
+  clientId: string
+  /** At most 4096 characters; empty means none. Keep it in a secret settings field. */
+  clientSecret?: string
+  /** At most 50, each 1 to 256 printable ASCII characters with no space, quote or backslash. */
+  scopes: string[]
+}
+
+/** What the token endpoint granted. Storing it (with `ctx.secrets`) is the plugin's job. */
+export interface OAuthTokens {
+  /** A bearer token (other token types are refused). */
+  accessToken: string
+  /**
+   * The refresh token, or null when the provider sent none. After `refresh`, null means the
+   * provider did not rotate it: keep the one you have.
+   */
+  refreshToken: string | null
+  /** When the access token expires, ms since the epoch (counted from when the request was sent). */
+  expiresAt: number
+}
+
+export interface PluginOAuth {
+  /**
+   * Opens the system browser on the provider's sign-in page, waits for its redirect to a loopback
+   * server on 127.0.0.1 and exchanges the code. Rejects when the user does not finish within 5
+   * minutes, the provider refuses, the spec is invalid (before any browser opens), another
+   * `authorize` of this plugin is still pending, or after 5 in a minute (per project window). A
+   * pending one is cancelled when the plugin host stops or the window closes.
+   */
+  authorize(spec: OAuthSpec): Promise<OAuthTokens>
+  /**
+   * Exchanges a refresh token for a fresh access token (`invalid_grant` in the error: sign in
+   * again). At most 4 in flight per plugin; more reject.
+   */
+  refresh(spec: OAuthSpec, refreshToken: string): Promise<OAuthTokens>
+}
+
+export interface ExecOptions {
+  /** Written to the process's stdin, which is then closed. */
+  stdin?: string
+  /** An existing directory; defaults to the project folder, a relative path is relative to it. */
+  cwd?: string
+  /** Killed (with its whole process group) after this long. Default 60 000, at most 600 000. */
+  timeoutMs?: number
+}
+
+export interface ExecResult {
+  /**
+   * Exit code; null when killed by a signal (or the timeout). A non-zero code resolves; the call
+   * rejects when the program cannot be started or writes more than 10 MiB (stdout and stderr
+   * together).
+   */
+  code: number | null
+  stdout: string
+  stderr: string
+}
+
+export type BadgeValue = number | 'dot' | null
+
+export type OverlaySpec =
+  | { kind: 'terminal'; argv: string[]; cwd?: string; title?: string }
+  | { kind: 'url'; url: string; title?: string }
+  /**
+   * One of the plugin's own pages (plugin-relative path), loaded like a panel: the plugin's CSP,
+   * the app theme and the panel SDK. The page answers with `ccPanel.post({ result: value })`,
+   * which closes the overlay and resolves `open` with `{ kind: 'value', value }`.
+   */
+  | { kind: 'html'; file: string; title?: string }
+
+export type OverlayResult =
+  | { kind: 'exit'; code: number }
+  | { kind: 'value'; value: JsonValue }
+  | { kind: 'dismissed' }
+
+export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
+
+/** One Claude tab of this project window. */
+export interface SessionInfo {
+  readonly tabId: string
+  readonly status: SessionStatus
+  readonly cwd: string
+  readonly sessionId?: string
+  readonly tool?: string
+  readonly lastPrompt?: string
+  readonly notes: readonly string[]
+  readonly steps?: { readonly done: number; readonly total: number }
+  readonly files: readonly string[]
+}
+
+/** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */
+export type SendResult = { readonly delivered: true } | { readonly queued: true; readonly itemId: string }
+
+/** What a `ccc <name>` handler gets besides its arguments. */
+export interface CliCall {
+  /**
+   * The caller's stdin, read whole. Only for a command whose manifest entry sets `"stdin": true`
+   * and only when stdin is not a terminal; `''` otherwise. At most 256 KiB once JSON-encoded.
+   */
+  readonly stdin: string
+  /** The caller's working directory (absolute): resolve relative path arguments against it. */
+  readonly cwd: string
+  /** Aborted when the call is cancelled: the caller pressed Ctrl+C, it timed out (30 s), or the plugin is deactivated. */
+  readonly signal: AbortSignal
+}
+
+/**
+ * What a `ccc <name>` handler answers. `stdout` and `stderr` are printed as they are (each cut at
+ * 256 KiB once JSON-encoded), `code` is the exit code of `ccc` (an integer 0-255; default 0).
+ */
+export interface CliResult {
+  stdout?: string
+  stderr?: string
+  code?: number
+}
+
+/** What a webview panel shows (`ctx.webview.current`, `onNavigate`). */
+export interface WebviewPage {
+  /** The page's URL: http(s), or `cc-preview://<token>/<file>` for a local file. */
+  readonly url: string
+  readonly title: string
+  /**
+   * Why the page failed to load (Chromium's `ERR_…` name and code, like
+   * `ERR_CONNECTION_REFUSED (-102)`), absent for a page that loaded. The view then shows an empty
+   * page at `url` and the toolbar the error; a reload tries again.
+   */
+  readonly error?: string
+}
+
+export type CliHandler = (argv: string[], call: CliCall) => CliResult | void | Promise<CliResult | void>
+
+export interface PluginLogger {
+  info(...args: unknown[]): void
+  warn(...args: unknown[]): void
+  error(...args: unknown[]): void
+}
+
+export interface PluginContext {
+  /** The API major this context implements. */
+  readonly api: typeof PLUGIN_API_VERSION
+  /** The plugin's manifest id. */
+  readonly pluginId: string
+
+  // config
+  readonly settings: PluginSettings
+  onSettingsChange(listener: (settings: PluginSettings) => void): Disposer
+
+  // data
+  readonly storage: PluginStorage
+  /** `<data>/plugin-data/<projectId>/<pluginId>/`, created the first time it is read. */
+  readonly dataDir: string
+  /** Encrypted, app-wide per plugin (see PluginSecrets). */
+  readonly secrets: PluginSecrets
+  /** An optional sign-in helper: browser, loopback redirect, PKCE, code exchange, refresh. */
+  readonly oauth: PluginOAuth
+
+  // work
+  /**
+   * Run `fn` every `seconds` (1 to 86 400; the first run is one interval from now). A run still in
+   * progress skips the tick; a run over 60 s is abandoned and reported; an error shows as ⚠ on
+   * the plugin's panels. Cleared on deactivate.
+   */
+  schedule(seconds: number, fn: () => unknown): Disposer
+  /** Run argv (never through a shell); argv[0] is looked up on the login-shell PATH. */
+  exec(argv: readonly string[], options?: ExecOptions): Promise<ExecResult>
+
+  // UI
+  /**
+   * This plugin's own panels; `panelId` must be declared in the manifest (throws otherwise).
+   * `post` and `onMessage` message an html panel (they throw for a `webview` panel: it has no page
+   * of the plugin's to talk to); `show` works for both kinds.
+   */
+  readonly panels: {
+    /** JSON only, at most 1 MiB. Dropped while the panel is not shown (it asks again when it connects). */
+    post(panelId: string, message: JsonValue): void
+    onMessage(panelId: string, listener: (message: JsonValue) => void): Disposer
+    /**
+     * Bring one of this plugin's own panels (either kind, a `webview` one included) into sight: a
+     * hidden panel comes back, a closed one opens, its zone expands. Throws for an undeclared id;
+     * a refusal from main is logged.
+     */
+    show(panelId: string): void
+  }
+  /**
+   * Badge on one of this plugin's own panel icons: a count, a dot, or null to clear. Throws for a
+   * panel the manifest does not declare; cleared when the plugin host stops.
+   */
+  badge(panelId: string, value: BadgeValue): void
+  /**
+   * The native web view of one of this plugin's own `"kind": "webview"` panels (throws for any other
+   * panel id). The view is created on the first `navigate` and closed when the plugin deactivates.
+   */
+  readonly webview: {
+    /**
+     * Show an http(s) URL, or a local file given as an absolute path (resolve a relative one
+     * yourself). A file is served read-only with the files next to it, through `cc-preview://`;
+     * its CSP blocks fetch, images, frames and form posts to http(s), but not a navigation to an
+     * http(s) URL carrying data, prefetch hints or WebRTC, so it is not off the network. Refused:
+     * a dot-file, a file directly in the home folder (or above it, or `/`), in a shared temp
+     * folder itself or a disk's top folder, inside any dot-folder (`~/.ssh`, a project's `.git`)
+     * or ~/Library (`ccc guide webview` has the details). Links and redirects may go to http(s) and to the view's own
+     * `cc-preview` pages; `window.open` goes to the system browser (3 per 10 s). At most 60 a
+     * minute. Resolves once the page loaded (or after 10 s for a slow one); rejects when it failed
+     * to load before that (no server on the port, a refused connection), with the error in the
+     * message; `current()` then carries it too.
+     */
+    navigate(panelId: string, target: string): Promise<void>
+    /** History and reload; no-ops before the first navigate. */
+    back(panelId: string): Promise<void>
+    forward(panelId: string): Promise<void>
+    reload(panelId: string): Promise<void>
+    /** What the view shows; empty strings before the first navigate; `error` after a failed load. */
+    current(panelId: string): Promise<WebviewPage>
+    /**
+     * Called when the view commits a page (link, redirect, history), a load fails (`error`) or its
+     * title changes; at most once per 100 ms (a burst reports its first and its last state). Url
+     * and title are capped.
+     */
+    onNavigate(panelId: string, listener: (page: WebviewPage) => void): Disposer
+  }
+  readonly overlay: {
+    /**
+     * Resolves when the overlay ends (no timeout); dismissed when the plugin host stops. At most 3
+     * open at once and 10 per minute per plugin. A terminal's `cwd` is relative to the project
+     * folder and must stay inside it; a url must be http or https.
+     */
+    open(spec: OverlaySpec): Promise<OverlayResult>
+  }
+
+  // sessions
+  readonly sessions: {
+    list(): Promise<SessionInfo[]>
+    /** The whole list again whenever one of this window's Claude tabs changes (at most 4 per second). */
+    onChange(listener: (sessions: SessionInfo[]) => void): Disposer
+    /**
+     * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
+     * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute.
+     */
+    send(tabId: string, text: string): Promise<SendResult>
+    /**
+     * A new Claude tab in this window; `cwd` must resolve inside the project folder, `prompt` is
+     * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute.
+     */
+    open(options: { cwd?: string; prompt?: string }): Promise<{ tabId: string }>
+  }
+
+  // commands
+  readonly commands: {
+    /** `id` must be declared in the manifest's `contributes.commands` (throws otherwise). */
+    register(id: string, run: () => unknown): Disposer
+  }
+
+  // cli
+  readonly cli: {
+    /**
+     * Implement `ccc <name> …`: `name` must be declared in the manifest's `contributes.cli` (throws
+     * otherwise), one handler per name. `argv` is everything after the name, verbatim. A handler
+     * that throws exits 1 with the message on stderr; one that runs past 30 s exits 124. At most 4
+     * calls of this plugin run at once.
+     */
+    register(name: string, handler: CliHandler): Disposer
+  }
+
+  // misc
+  /** Lines go to `<data>/logs/<pluginId>.log` (rotated at 5 MiB). */
+  readonly log: PluginLogger
+  /**
+   * A system notification; text is cut at 500 characters, at most 10 per minute per plugin and
+   * window (more reject).
+   */
+  notify(text: string): Promise<void>
+}
+
+/** What a plugin's `main` module exports. */
+export interface PluginModule {
+  /**
+   * Called once per project window, with a 10 s limit. A returned object is kept as the plugin's
+   * exported API (reserved for cross-plugin use; phase 1 offers no way to reach it).
+   */
+  activate(ctx: PluginContext): unknown
+  /** Called when the window closes or the plugin reloads; the host is killed 5 s later regardless. */
+  deactivate?(): unknown
+}

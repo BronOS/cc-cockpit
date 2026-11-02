@@ -1,0 +1,27 @@
+{
+  "id": "cockpit.example",
+  "name": "Example",
+  "version": "1.0.1",
+  "api": 1,
+  "main": "dist/host.js",
+  "contributes": {
+    "panels": [
+      {
+        "id": "main",
+        "title": "Example",
+        "icon": "icons/example.svg",
+        "entry": "panels/main.html",
+        "defaultZone": "left"
+      }
+    ],
+    "settings": {
+      "project": {
+        "type": "object",
+        "properties": {
+          "greeting": { "type": "string", "title": "Greeting", "default": "Hello", "maxLength": 100 }
+        }
+      }
+    },
+    "commands": [{ "id": "say-hello", "title": "Example: Say hello" }]
+  }
+}

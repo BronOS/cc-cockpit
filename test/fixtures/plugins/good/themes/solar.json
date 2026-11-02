@@ -1,0 +1,43 @@
+{
+  "id": "solar",
+  "name": "Solar",
+  "kind": "light",
+  "vars": {
+    "--cc-bg": "#ffffff",
+    "--cc-fg": "#222222",
+    "--cc-bg-bar": "#ececec",
+    "--cc-bg-menu": "#f6f6f6",
+    "--cc-bg-banner": "#e4e4e4",
+    "--cc-bg-error": "#f8d7d7",
+    "--cc-border": "#c8c8c8",
+    "--cc-terminal-bg": "#ffffff",
+    "--cc-status-starting": "#8a8a8a",
+    "--cc-status-idle": "#8a8a8a",
+    "--cc-status-working": "#2472c8",
+    "--cc-status-needs-permission": "#c27c00",
+    "--cc-status-waiting": "#0e8a4f",
+    "--cc-status-ended": "#cd3131"
+  },
+  "xterm": {
+    "foreground": "#222222",
+    "background": "#ffffff",
+    "cursor": "#222222",
+    "selectionBackground": "#b5d5ff",
+    "black": "#000000",
+    "red": "#cd3131",
+    "green": "#00805a",
+    "yellow": "#949800",
+    "blue": "#0451a5",
+    "magenta": "#bc05bc",
+    "cyan": "#0598bc",
+    "white": "#555555",
+    "brightBlack": "#666666",
+    "brightRed": "#cd3131",
+    "brightGreen": "#14ce14",
+    "brightYellow": "#b5ba00",
+    "brightBlue": "#0451a5",
+    "brightMagenta": "#bc05bc",
+    "brightCyan": "#0598bc",
+    "brightWhite": "#a5a5a5"
+  }
+}

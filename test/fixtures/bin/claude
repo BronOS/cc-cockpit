@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+// Fake `claude` for the e2e suite (Task 9). Found first on PATH by the tabs the app starts.
+//
+// What it does: prints a banner with its argv, records that argv as one JSON line in
+// $FAKE_CLAUDE_LOG, echoes every stdin line, and exits with the code of an `/exit N` input line.
+// $FAKE_CLAUDE_EXIT, when set, makes it exit with that code right after the banner (a claude
+// that dies at start); without it `/exit` alone exits 0 and end of input exits 0.
+//
+// Finding about the real CLI (Task 7), checked with claude 2.1.312. `claude --help` truncates
+// itself after 20 lines when stdout is not a TTY; the full help (314 lines) needs a PTY:
+//     script -q /dev/null claude --help
+// It shows `Usage: claude [options] [command] [prompt]`, `Arguments: prompt  Your prompt`,
+// `--settings <file-or-json>` and `-r, --resume [value]`, i.e. commander.js. In commander `--`
+// ends option parsing for every program, so `claude --settings f -- <prompt>` is the right shape
+// (src/main/tabs/claude-argv.ts, PROMPT_AFTER_DOUBLE_DASH). One commander quirk matters:
+// operands[0] is dispatched to a subcommand even when it came after `--`, so a prompt that is
+// exactly `update` or `purge` would run that command. claude-argv.ts therefore passes the prompt
+// with a leading space, and this fake dispatches the same way so a test can tell the two apart.
+//
+// The `--` behaviour itself was not exercised against a live session (that would start one).
+//
+// Hooks (Task 14). Given `--settings <hooks.json>` the fake behaves like Claude: it reads the file
+// and runs the configured hook command for an event (`sh -c <command>`, the event's JSON on stdin,
+// the env it inherited from the tab: APP_TAB_TOKEN, CC_COCKPIT_SOCK), synchronously and one after
+// the other, as Claude does. The command finds `ccc` through the path written in hooks.json, not
+// through PATH. SessionStart runs right after the banner (not when FAKE_CLAUDE_EXIT is set, and
+// FAKE_CLAUDE_NO_HOOKS=1 turns every hook off). Scripted input lines:
+//     /prompt <text>      UserPromptSubmit { prompt }
+//     /tool <name>        PreToolUse { tool_name, tool_input: {} }
+//     /edit <path>        PostToolUse { tool_name: Edit, tool_input: { file_path } }
+//     /notebook <path>    PostToolUse { tool_name: NotebookEdit, tool_input: { notebook_path } }
+//     /permission         Notification { notification_type: permission_prompt }
+//     /idle               Notification { notification_type: idle_prompt }
+//     /stop               Stop
+//     /end                SessionEnd { reason: other }
+//     /ccc <args...>      run `ccc <args>` the way Claude would from its Bash tool: found on PATH
+//                         (main prepends <data>/bin), with the tab's env (APP_TAB_TOKEN,
+//                         CC_COCKPIT_SOCK); args split on whitespace, no shell. Prints
+//                         `FAKE-CLAUDE ccc exit=<code> out=<json stdout> err=<json stderr>`.
+// Each prints `FAKE-CLAUDE hook <Event>` once the hook command has returned.
+//
+// Bracketed paste (Task 15). Input from `ESC[200~` up to `ESC[201~` is one paste, even across
+// lines; it is appended verbatim (markers included) as one JSON string per line to
+// $FAKE_CLAUDE_PASTE_LOG, printed as `FAKE-CLAUDE paste <json>`, and then submitted like a prompt
+// (UserPromptSubmit with the text between the markers), as Claude does on the Enter after a paste.
+// The PTY is in cooked mode, so the line discipline has already turned the paste's trailing `\r`
+// into the `\n` that ends the line (not recorded), and an embedded newline splits the paste into
+// lines that are joined back with `\n` here. Canonical mode caps a line at 1024 bytes on macOS:
+// keep pasted lines short.
+'use strict'
+const fs = require('node:fs')
+const { spawnSync } = require('node:child_process')
+const readline = require('node:readline')
+
+// Subcommands listed by the full `claude --help` (2.1.312); aliases included.
+const SUBCOMMANDS = new Set([
+  'agents', 'attach', 'auth', 'auto-mode', 'doctor', 'gateway', 'import', 'install', 'logs',
+  'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm', 'setup-token', 'stop', 'kill',
+  'ultrareview', 'update', 'upgrade'
+])
+
+const argv = process.argv.slice(2)
+
+// Option parsing just deep enough for what the app passes: `--settings <v>`, `--plugin-dir <v>`,
+// `--resume [v]` and operands after `--`. Anything else that starts with `-` is skipped.
+const operands = []
+let settings
+let resume
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i]
+  if (arg === '--') {
+    operands.push(...argv.slice(i + 1))
+    break
+  }
+  if (arg === '--settings') settings = argv[++i]
+  // `--plugin-dir <path>` (repeatable): skip the value, or it would read as the prompt operand.
+  else if (arg === '--plugin-dir') i++
+  else if (arg === '--resume' || arg === '-r') {
+    // `[value]`: optional, taken only when the next token is not an option.
+    if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('-')) resume = argv[++i]
+    else resume = true
+  } else if (!arg.startsWith('-')) operands.push(arg)
+}
+
+const log = process.env.FAKE_CLAUDE_LOG
+if (log) fs.appendFileSync(log, JSON.stringify(argv) + '\n')
+
+if (operands.length > 0 && SUBCOMMANDS.has(operands[0])) {
+  console.log(`FAKE-CLAUDE subcommand ${operands[0]}`)
+  process.exit(0)
+}
+
+console.log(`FAKE-CLAUDE banner argv=${JSON.stringify(argv)}`)
+if (settings !== undefined) console.log(`FAKE-CLAUDE settings=${settings}`)
+if (resume !== undefined) console.log(`FAKE-CLAUDE resume=${resume}`)
+if (operands.length > 0) console.log(`FAKE-CLAUDE prompt=${JSON.stringify(operands[0])}`)
+
+if (process.env.FAKE_CLAUDE_EXIT !== undefined) {
+  process.exit(Number(process.env.FAKE_CLAUDE_EXIT) || 0)
+}
+
+// Hook commands from --settings, by event name. A missing or unreadable file is no hooks.
+const hookCommands = {}
+if (settings !== undefined && process.env.FAKE_CLAUDE_NO_HOOKS !== '1') {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(settings, 'utf8'))
+    for (const [event, groups] of Object.entries(parsed.hooks || {})) {
+      const command = groups && groups[0] && groups[0].hooks && groups[0].hooks[0] && groups[0].hooks[0].command
+      if (typeof command === 'string') hookCommands[event] = command
+    }
+  } catch {
+    // not a hooks file
+  }
+}
+const sessionId = `fake-session-${process.pid}`
+
+function fireHook(event, fields) {
+  const command = hookCommands[event]
+  if (!command) return
+  const input = JSON.stringify({
+    session_id: sessionId,
+    cwd: process.cwd(),
+    hook_event_name: event,
+    ...fields
+  })
+  // Synchronous like the real hooks: Claude waits for the command, so events keep their order.
+  spawnSync('/bin/sh', ['-c', command], { input, stdio: ['pipe', 'ignore', 'ignore'], timeout: 5000 })
+  console.log(`FAKE-CLAUDE hook ${event}`)
+}
+
+// Input line -> hook event, for the scripted lines described at the top.
+function scripted(line) {
+  const c = /^\/ccc(?:\s+(.*))?$/.exec(line)
+  if (c) {
+    const args = (c[1] || '').split(/\s+/).filter(Boolean)
+    const r = spawnSync('ccc', args, { encoding: 'utf8', timeout: 15000 })
+    console.log(`FAKE-CLAUDE ccc exit=${r.status} out=${JSON.stringify(r.stdout)} err=${JSON.stringify(r.stderr)}`)
+    return true
+  }
+  const m = /^\/(prompt|tool|edit|notebook|permission|idle|stop|end)(?:\s+(.*))?$/.exec(line)
+  if (!m) return false
+  const arg = m[2] === undefined ? '' : m[2]
+  switch (m[1]) {
+    case 'prompt': fireHook('UserPromptSubmit', { prompt: arg }); break
+    case 'tool': fireHook('PreToolUse', { tool_name: arg, tool_input: {} }); break
+    case 'edit': fireHook('PostToolUse', { tool_name: 'Edit', tool_input: { file_path: arg } }); break
+    case 'notebook':
+      fireHook('PostToolUse', { tool_name: 'NotebookEdit', tool_input: { notebook_path: arg } })
+      break
+    case 'permission':
+      fireHook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission' })
+      break
+    case 'idle':
+      fireHook('Notification', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' })
+      break
+    case 'stop': fireHook('Stop', {}); break
+    case 'end': fireHook('SessionEnd', { reason: 'other' }); break
+  }
+  return true
+}
+
+fireHook('SessionStart', { source: 'startup' })
+
+// terminal:false on purpose: the PTY's own line discipline already echoes what the user types,
+// and readline in terminal mode would switch it to raw mode and echo a second time.
+const PASTE_START = '\x1b[200~'
+const PASTE_END = '\x1b[201~'
+let paste // lines of a paste whose end marker has not arrived yet
+
+function pasted(raw) {
+  const pasteLog = process.env.FAKE_CLAUDE_PASTE_LOG
+  if (pasteLog) fs.appendFileSync(pasteLog, JSON.stringify(raw) + '\n')
+  console.log(`FAKE-CLAUDE paste ${JSON.stringify(raw)}`)
+  const text = raw.slice(raw.indexOf(PASTE_START) + PASTE_START.length, raw.lastIndexOf(PASTE_END))
+  fireHook('UserPromptSubmit', { prompt: text })
+}
+
+const rl = readline.createInterface({ input: process.stdin, terminal: false })
+rl.on('line', (line) => {
+  if (paste !== undefined || line.includes(PASTE_START)) {
+    paste = paste === undefined ? [line] : [...paste, line]
+    if (!line.includes(PASTE_END)) return
+    const raw = paste.join('\n')
+    paste = undefined
+    pasted(raw)
+    return
+  }
+  const exit = /^\/exit(?:\s+(\d+))?\s*$/.exec(line)
+  if (exit) process.exit(exit[1] === undefined ? 0 : Number(exit[1]))
+  if (scripted(line)) return
+  console.log(`FAKE-CLAUDE echo: ${line}`)
+})
+rl.on('close', () => process.exit(0))

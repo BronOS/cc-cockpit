@@ -1,0 +1,10 @@
+{
+  "id": "test.good",
+  "name": "Good",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "themes": [{ "id": "solar", "file": "themes/solar.json" }]
+  }
+}

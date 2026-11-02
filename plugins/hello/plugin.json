@@ -1,0 +1,47 @@
+{
+  "id": "cockpit.hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "contributes": {
+    "panels": [
+      {
+        "id": "hello",
+        "title": "Hello",
+        "icon": "icons/hello.svg",
+        "entry": "panels/hello.html",
+        "defaultZone": "left"
+      }
+    ],
+    "settings": {
+      "project": {
+        "type": "object",
+        "properties": {
+          "greeting": { "type": "string", "title": "Greeting", "default": "Hello", "maxLength": 100 },
+          "tickSeconds": {
+            "type": "integer",
+            "title": "Badge tick (seconds)",
+            "minimum": 1,
+            "maximum": 3600,
+            "default": 10
+          }
+        }
+      },
+      "app": {
+        "type": "object",
+        "properties": {
+          "shout": { "type": "boolean", "title": "Shout the greeting", "default": false },
+          "apiToken": {
+            "type": "string",
+            "format": "secret",
+            "title": "API token",
+            "description": "A demo secret field: stored encrypted, never shown. The panel only says whether it is set."
+          }
+        }
+      }
+    },
+    "commands": [{ "id": "say-hello", "title": "Hello: Say hello", "key": "Cmd+Shift+H" }],
+    "themes": [{ "id": "hello-dusk", "file": "themes/hello-dusk.json" }]
+  }
+}

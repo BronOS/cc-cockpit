@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>__NAME__</title>
+    <!-- The panel CSP allows script from this plugin's own files only (no inline script), so the
+         logic lives in main.js. The SDK gives the page `ccPanel` and the app theme variables. -->
+    <script src="/__sdk/panel.js"></script>
+    <script src="main.js"></script>
+    <style>
+      body { margin: 0; padding: 12px; font: 13px/1.4 system-ui, sans-serif; background: var(--cc-bg); color: var(--cc-fg); }
+      button { font: inherit; color: inherit; background: var(--cc-bg-menu); border: 1px solid var(--cc-border); border-radius: 4px; padding: 3px 6px; }
+      pre { white-space: pre-wrap; background: var(--cc-bg-bar); padding: 6px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>__NAME__</h1>
+    <p><button id="ping" type="button">Ping the host</button></p>
+    <pre id="out">(nothing yet)</pre>
+  </body>
+</html>

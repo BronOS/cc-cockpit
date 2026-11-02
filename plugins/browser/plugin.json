@@ -1,0 +1,31 @@
+{
+  "id": "cockpit.browser",
+  "name": "Browser",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "contributes": {
+    "panels": [{ "id": "view", "title": "Browser", "kind": "webview", "defaultZone": "right" }],
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "string",
+            "title": "Home page",
+            "description": "An http(s) URL loaded into the browser panel when it starts. Empty: start blank.",
+            "maxLength": 2000
+          }
+        }
+      }
+    },
+    "cli": [
+      {
+        "name": "browser",
+        "summary": "Show a page or a local file in the browser panel",
+        "usage": "browser open <url|file> | browser url | browser reload"
+      }
+    ],
+    "skills": [{ "id": "browser", "dir": "skills/browser" }]
+  }
+}

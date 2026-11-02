@@ -1,0 +1,9 @@
+{
+  "id": "test.with-skill",
+  "name": "With skill",
+  "version": "1.0.0",
+  "api": 1,
+  "contributes": {
+    "skills": [{ "id": "demo", "dir": "skills/demo" }]
+  }
+}

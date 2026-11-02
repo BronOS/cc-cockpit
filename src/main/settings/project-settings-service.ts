@@ -1,0 +1,188 @@
+// "This project" in the settings overlay (design §6): which plugins are enabled for the
+// project, the plugins' project-level settings, the zone of each panel, and the project's new-tab
+// menu entries (shown here; saved by TabCommandsService, main/tabs/tab-commands.ts). Plain
+// TypeScript over injected pieces, like settings-service.ts; the router
+// resolves the asking window's project from `event.sender` and passes only that id.
+//
+// Authority and decisions:
+//  - Every method acts on the project main resolved for the sender. A plugin id or panel key in a
+//    payload is only looked up in main's own tables (installed plugins, the project's layout);
+//    nothing from the payload reaches a path or argv.
+//  - Enabling is refused for a plugin whose manifest did not validate (the host would skip it
+//    silently). Disabling needs no such check, so a stale entry can always be turned off.
+//  - Project settings are validated here against the manifest's `settings.project` schema
+//    (validate.ts: no regexes, defaults applied), whatever the renderer's form thought, and a
+//    failure stores nothing. The renderer's form has no validator of its own.
+//  - The project's colour is checked strictly here (shared/project-color.ts checkProjectColor: a
+//    palette name or `#rrggbb`, nothing else) and refused with the reason; reading it back is
+//    lenient (the registry repairs a damaged stored value to none).
+//  - Secret fields are stored encrypted under `setting:project:<projectId>:<field>` (keyed by the
+//    project main resolved, never one from the payload); the renderer only learns whether each is set.
+import type {
+  LayoutView,
+  PluginSettingsSaveResult,
+  ProjectPanelView,
+  ProjectPluginView,
+  ProjectSettingsView
+} from '../../shared/ipc'
+import { isPlainObject } from '../../shared/guards'
+import { checkProjectColor, projectColorOf, type ProjectColor } from '../../shared/project-color'
+import { zoneOf } from '../../shared/layout'
+import type { ProjectRecord, ProjectView } from '../../shared/types'
+import type { InstalledPlugin, PluginInstaller } from '../plugins/installer'
+import { projectSettingKey } from '../secrets/plugin-secrets'
+import { pluginEnabledIn } from '../plugins/enablement'
+import { tabCommandsOf } from '../tabs/tab-commands'
+import { saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
+
+export interface ProjectSettingsDeps {
+  projects: {
+    get(id: string): ProjectView | undefined
+    update(id: string, mutate: (record: ProjectRecord) => void): void
+  }
+  plugins: Pick<PluginInstaller, 'list' | 'get'>
+  /** The plugin's stored app and project settings against its manifest, as the host checks them. */
+  checkSettings(projectId: string, pluginId: string): { ok: true } | { ok: false; reason: string }
+  /** The enabled set changed: restart the project's plugin host with it (HostManager.enabledChanged). */
+  enabledChanged(projectId: string): Promise<void>
+  /** One plugin's project settings changed: push them to it alone (HostManager.settingsChanged). */
+  settingsChanged(projectId: string, pluginId: string): Promise<void>
+  layouts: {
+    view(projectId: string): LayoutView | undefined
+    move(projectId: string, panelKey: string, zone: unknown): LayoutView | undefined
+  }
+  /** Where secret fields are stored (PluginSecrets; it also updates the hosts' decrypted cache). */
+  secrets: SecretSettingsStore
+  /**
+   * The project's colour was stored (changed or not): tell the windows (its own window's title
+   * bar, every other window's strip, an open picker). Not awaited; a failed push stores nothing less.
+   */
+  colorChanged?(projectId: string): void
+}
+
+export class ProjectSettingsService {
+  constructor(private readonly deps: ProjectSettingsDeps) {}
+
+  view(projectId: string): ProjectSettingsView {
+    const project = this.project(projectId)
+    const plugins = this.deps.plugins.list().map((p) => this.pluginView(project, p, pluginEnabledIn(project, p)))
+    const layout = this.deps.layouts.view(projectId)
+    const panels: ProjectPanelView[] = (layout?.panels ?? []).map((info) => ({
+      panelKey: info.panelKey,
+      title: info.title,
+      zone: layout ? (zoneOf(layout.layout, info.panelKey) ?? 'hidden') : 'hidden'
+    }))
+    const view: ProjectSettingsView = { name: project.name, plugins, panels, tabCommands: tabCommandsOf(project.tabCommands) }
+    const color = projectColorOf(project.color)
+    if (color !== undefined) view.color = color
+    return view
+  }
+
+  /**
+   * Set the project's colour, or clear it with null. A value that is not a palette name or a
+   * `#rrggbb` throws and stores nothing; a hex is stored in lower case. Returns what is stored.
+   */
+  setColor(projectId: string, value: unknown): ProjectColor | null {
+    this.project(projectId)
+    const color = checkProjectColor(value)
+    this.deps.projects.update(projectId, (r) => {
+      if (color === null) delete r.color
+      else r.color = color
+    })
+    this.deps.colorChanged?.(projectId)
+    return color
+  }
+
+  /** Enable or disable an installed plugin; the host restarts with the new set. */
+  async setEnabled(projectId: string, pluginId: unknown, enabled: unknown): Promise<void> {
+    if (typeof pluginId !== 'string' || typeof enabled !== 'boolean') throw new Error('give the plugin and on or off')
+    const plugin = this.deps.plugins.get(pluginId)
+    if (!plugin) throw new Error('unknown plugin')
+    if (enabled && !(plugin.manifest && plugin.state.ok)) {
+      const why = plugin.state.ok ? 'it has no valid manifest' : plugin.state.reason
+      throw new Error(`${pluginId} cannot be enabled: ${why}`)
+    }
+    const project = this.project(projectId)
+    if (pluginEnabledIn(project, plugin) === enabled) return
+    this.deps.projects.update(projectId, (r) => {
+      const list = Array.isArray(r.enabledPlugins) ? r.enabledPlugins.filter((id) => id !== pluginId) : []
+      if (enabled) list.push(pluginId)
+      r.enabledPlugins = list
+      // A default-on plugin is off only while listed here: turning it off adds the id, turning it
+      // back on removes it, and either way the choice outlives a restart (it is in the record).
+      const off = Array.isArray(r.disabledPlugins) ? r.disabledPlugins.filter((id) => id !== pluginId) : []
+      if (!enabled && plugin.enabledByDefault === true) off.push(pluginId)
+      if (off.length > 0 || r.disabledPlugins !== undefined) r.disabledPlugins = off
+    })
+    await this.deps.enabledChanged(projectId)
+  }
+
+  /**
+   * Store the plugin's project-level settings. A failure stores nothing and lists the reasons;
+   * `secrets` sets or clears secret fields (encrypted first: a keychain that refuses also stores
+   * nothing). On success the running plugin hears of it (or a plugin disabled for invalid
+   * settings starts).
+   */
+  async saveSettings(projectId: string, pluginId: unknown, values: unknown, secrets?: unknown): Promise<PluginSettingsSaveResult> {
+    this.project(projectId)
+    const plugin = typeof pluginId === 'string' ? this.deps.plugins.get(pluginId) : undefined
+    if (!plugin?.manifest) throw new Error('unknown plugin')
+    const schema = plugin.manifest.contributes?.settings?.project
+    if (schema === undefined) throw new Error(`${plugin.id} declares no project settings`)
+    return saveSettingsForm({
+      pluginId: plugin.id,
+      // Refused once this project is forgotten (a reopen makes a new record under the same id).
+      projectId,
+      schema,
+      values,
+      secrets,
+      // Keyed by the project main resolved for the sender, never one from the payload.
+      keyOf: (field) => projectSettingKey(projectId, field),
+      store: this.deps.secrets,
+      save: (value) =>
+        this.deps.projects.update(projectId, (r) => {
+          // The record file is user-writable: a damaged top level is replaced rather than written into.
+          if (!isPlainObject(r.pluginSettings)) r.pluginSettings = {}
+          r.pluginSettings[plugin.id] = value
+        }),
+      announce: () => this.deps.settingsChanged(projectId, plugin.id)
+    })
+  }
+
+  /** Move a panel of the project to a zone. */
+  movePanel(projectId: string, panelKey: unknown, zone: unknown): void {
+    this.project(projectId)
+    if (typeof panelKey !== 'string') throw new Error('give the panel')
+    this.deps.layouts.move(projectId, panelKey, zone)
+  }
+
+  private project(projectId: string): ProjectView {
+    const project = this.deps.projects.get(projectId)
+    if (!project) throw new Error('the project record is gone')
+    return project
+  }
+
+  private pluginView(project: ProjectView, p: InstalledPlugin, enabled: boolean): ProjectPluginView {
+    const view: ProjectPluginView = {
+      id: p.id,
+      name: p.manifest?.name ?? p.id,
+      version: p.version,
+      enabled,
+      state: p.state
+    }
+    const manifest = p.manifest
+    if (!manifest || !p.state.ok) return view
+    if (enabled) {
+      const check = this.deps.checkSettings(project.id, p.id)
+      if (!check.ok) view.problem = check.reason
+    }
+    const schema = manifest.contributes?.settings?.project
+    if (schema !== undefined) {
+      const stored: unknown = isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, p.id)
+        ? project.pluginSettings[p.id]
+        : undefined
+      view.projectSettings = settingsViewOf(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
+    }
+    return view
+  }
+}

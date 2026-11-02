@@ -1,0 +1,438 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SessionsSnapshot } from '../../src/shared/ipc'
+import { hookHandler } from '../../src/main/sessions/hook-handler'
+import { SessionRegistry, type SessionChange } from '../../src/main/sessions/session-registry'
+
+const P1 = 'p1'
+const P2 = 'p2'
+const names: Record<string, string> = { [P1]: 'alpha', [P2]: 'beta' }
+
+/** What the window of project p1 was sent, each time. */
+let sent: SessionsSnapshot[]
+let reg: SessionRegistry
+let logs: string[]
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+  sent = []
+  logs = []
+  reg = new SessionRegistry({
+    projectName: (id) => names[id],
+    broadcast: (snapshotFor) => sent.push(snapshotFor(P1)),
+    write: () => {},
+    log: (m) => logs.push(m)
+  })
+})
+
+afterEach(() => {
+  reg.dispose()
+  vi.useRealTimers()
+})
+
+const start = (tabId: string, projectId = P1, kind: 'claude' | 'shell' = 'claude'): void =>
+  reg.tabStarted({ tabId, projectId, kind, cwd: '/proj' })
+
+describe('entries', () => {
+  it('creates a `starting` entry for a Claude tab only', () => {
+    start('c1')
+    start('s1', P1, 'shell')
+    expect(reg.list().map((e) => [e.tabId, e.status])).toEqual([['c1', 'starting']])
+    expect(reg.get('s1')).toBeUndefined()
+  })
+
+  it('applies hook events and exit, and keeps the entry until the tab closes', () => {
+    start('c1')
+    expect(reg.applyHook('c1', 'SessionStart', { session_id: 'sess' })).toBe(true)
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'hi' })
+    expect(reg.get('c1')).toMatchObject({ status: 'working', sessionId: 'sess', lastPrompt: 'hi' })
+    reg.tabExited('c1', 2)
+    expect(reg.get('c1')).toMatchObject({ status: 'ended', exitCode: 2 })
+    reg.tabClosed('c1')
+    expect(reg.get('c1')).toBeUndefined()
+  })
+
+  it('stores a signal death as 128 + n, also when node-pty reports it as code 0', () => {
+    start('c1')
+    start('c2')
+    reg.tabExited('c1', 0, 9)
+    reg.tabExited('c2', 0, null)
+    expect(reg.get('c1')).toMatchObject({ status: 'ended', exitCode: 137 })
+    expect(reg.get('c2')).toMatchObject({ status: 'ended', exitCode: 0 })
+  })
+
+  it('an answer key typed into a needs-permission tab moves it to working; nothing else does', () => {
+    start('c1')
+    reg.applyHook('c1', 'SessionStart', { session_id: 'sess' })
+    reg.applyHook('c1', 'PreToolUse', { tool_name: 'Bash' })
+    reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+    // An arrow key, a focus report, another project's window: still blocked on the user.
+    reg.userInput(P1, 'c1', '\x1b[B')
+    reg.userInput(P1, 'c1', '\x1b[I')
+    reg.userInput(P2, 'c1', '\r')
+    reg.userInput(P1, 'nope', '\r')
+    expect(reg.get('c1')?.status).toBe('needs-permission')
+    reg.userInput(P1, 'c1', '\r')
+    expect(reg.get('c1')).toMatchObject({ status: 'working', tool: 'Bash' })
+  })
+
+  it('ignores a hook for a tab it does not know', () => {
+    expect(reg.applyHook('nope', 'Stop', {})).toBe(false)
+    reg.tabExited('nope', 1)
+    reg.tabClosed('nope')
+    expect(sent).toEqual([])
+  })
+
+  it('a restart starts a fresh entry in the same place, keeping only the session id', () => {
+    start('c1')
+    start('c2')
+    reg.applyHook('c1', 'SessionStart', { session_id: 'sess' })
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'old' })
+    reg.applyHook('c1', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/a' } })
+    reg.tabExited('c1', 0)
+    start('c1')
+    expect(reg.get('c1')).toMatchObject({ status: 'starting', sessionId: 'sess', files: [], queue: [] })
+    expect(reg.get('c1')?.lastPrompt).toBeUndefined()
+    expect(reg.get('c1')?.exitCode).toBeUndefined()
+    expect(reg.list().map((e) => e.tabId)).toEqual(['c1', 'c2'])
+  })
+
+  it('lists by project', () => {
+    start('a', P1)
+    start('b', P2)
+    start('c', P1)
+    expect(reg.listByProject(P1).map((e) => e.tabId)).toEqual(['a', 'c'])
+    expect(reg.listByProject('other')).toEqual([])
+  })
+})
+
+describe('onChange', () => {
+  it('reports start, change, exit and close synchronously, with the previous entry', () => {
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    start('c1')
+    reg.applyHook('c1', 'Stop', {})
+    reg.tabExited('c1', 0)
+    reg.tabClosed('c1')
+    expect(changes.map((c) => [c.entry?.status, c.prev?.status])).toEqual([
+      ['starting', undefined],
+      ['waiting', 'starting'],
+      ['ended', 'waiting'],
+      [undefined, 'ended']
+    ])
+  })
+
+  it('does not fire for an event the reducer ignored', () => {
+    start('c1')
+    reg.tabExited('c1', 0)
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    reg.applyHook('c1', 'Stop', {})
+    reg.tabExited('c1', 5)
+    expect(changes).toEqual([])
+  })
+
+  it('unsubscribes, and a throwing subscriber breaks neither the others nor the hook', () => {
+    const seen: string[] = []
+    reg.onChange(() => {
+      throw new Error('boom')
+    })
+    const off = reg.onChange((c) => seen.push(c.entry?.status ?? 'gone'))
+    start('c1')
+    reg.applyHook('c1', 'Stop', {})
+    expect(seen).toEqual(['starting', 'waiting'])
+    expect(logs.some((l) => l.includes('boom'))).toBe(true)
+    off()
+    reg.applyHook('c1', 'UserPromptSubmit', {})
+    expect(seen).toHaveLength(2)
+    expect(reg.get('c1')?.status).toBe('working')
+  })
+})
+
+describe('snapshotFor (the per-window split)', () => {
+  /** Two projects with private data in both. */
+  function seed(): void {
+    start('a', P1)
+    start('b', P2)
+    reg.applyHook('a', 'UserPromptSubmit', { prompt: 'alpha secret prompt' })
+    reg.applyHook('a', 'PreToolUse', { tool_name: 'Bash' })
+    reg.applyHook('a', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/alpha/secret.ts' } })
+    reg.applyHook('b', 'UserPromptSubmit', { prompt: 'beta secret prompt' })
+    reg.applyHook('b', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/beta/secret.ts' } })
+    reg.send('b', 'beta queued text')
+  }
+
+  it('lists every tab with the strip fields for every window, in creation order', () => {
+    seed()
+    const strip = [
+      { tabId: 'a', projectName: 'alpha', status: 'working', tool: 'Bash' },
+      { tabId: 'b', projectName: 'beta', status: 'working' }
+    ]
+    expect(reg.snapshotFor(P1).strip).toEqual(strip)
+    expect(reg.snapshotFor(P2).strip).toEqual(strip)
+    // A project with no window tab at all still sees the whole strip, and owns nothing.
+    expect(reg.snapshotFor('nobody')).toEqual({ strip, own: [] })
+  })
+
+  it('gives the full entries of the window’s own project only', () => {
+    seed()
+    expect(reg.snapshotFor(P1).own).toEqual([
+      {
+        tabId: 'a',
+        status: 'working',
+        tool: 'Bash',
+        lastPrompt: 'alpha secret prompt',
+        notes: [],
+        files: ['/alpha/secret.ts'],
+        queue: []
+      }
+    ])
+    expect(reg.snapshotFor(P2).own).toMatchObject([
+      {
+        tabId: 'b',
+        lastPrompt: 'beta secret prompt',
+        files: ['/beta/secret.ts'],
+        queue: [{ text: 'beta queued text' }]
+      }
+    ])
+  })
+
+  it('window A receives no lastPrompt, notes, files or queue of project B', () => {
+    seed()
+    const forA = reg.snapshotFor(P1)
+    const text = JSON.stringify(forA)
+    for (const secret of ['beta secret prompt', '/beta/', 'beta queued text']) {
+      expect(text).not.toContain(secret)
+    }
+    // The strip part of any window carries the strip fields and nothing else.
+    for (const e of reg.snapshotFor(P2).strip) {
+      expect(Object.keys(e).every((k) => ['tabId', 'projectName', 'projectColor', 'status', 'tool'].includes(k))).toBe(true)
+    }
+    expect(JSON.stringify(reg.snapshotFor(P2).strip)).not.toMatch(/secret|projectId|\/proj|cwd/)
+  })
+
+  it('exposes no field of the entry that detail does not name (cwd, project id, delivering, session id)', () => {
+    start('a', P1)
+    reg.applyHook('a', 'SessionStart', { session_id: 'sess-1' })
+    const [own] = reg.snapshotFor(P1).own
+    expect(Object.keys(own!).sort()).toEqual(['files', 'notes', 'queue', 'status', 'tabId'])
+  })
+
+  it('a queue change reaches the owning window’s next snapshot', () => {
+    start('b', P2)
+    const sentTo = (): SessionsSnapshot => reg.snapshotFor(P2)
+    const { id } = reg.send('b', 'later')
+    expect(sentTo().own[0]?.queue).toEqual([{ id, text: 'later' }])
+    expect(reg.cancelQueued('b', id)).toBe(true)
+    expect(sentTo().own[0]?.queue).toEqual([])
+  })
+})
+
+describe('project colour', () => {
+  it('each strip entry carries its project’s colour, read at each snapshot; none is no field', () => {
+    const colors: Record<string, string | undefined> = { [P1]: 'blue' }
+    const colored = new SessionRegistry({
+      projectName: (id) => names[id],
+      projectColor: (id) => colors[id] as never,
+      broadcast: (snapshotFor) => sent.push(snapshotFor(P2)),
+      write: () => {}
+    })
+    colored.tabStarted({ tabId: 'a', projectId: P1, kind: 'claude', cwd: '/proj' })
+    colored.tabStarted({ tabId: 'b', projectId: P2, kind: 'claude', cwd: '/proj' })
+    expect(colored.snapshotFor(P2).strip).toEqual([
+      { tabId: 'a', projectName: 'alpha', projectColor: 'blue', status: 'starting' },
+      { tabId: 'b', projectName: 'beta', status: 'starting' }
+    ])
+    colors[P2] = '#12abef'
+    expect(colored.snapshotFor(P1).strip[1]).toMatchObject({ tabId: 'b', projectColor: '#12abef' })
+    colored.dispose()
+  })
+
+  it('refresh sends the snapshot again with no entry changed, through the throttle', () => {
+    start('c1')
+    expect(sent).toHaveLength(1)
+    vi.advanceTimersByTime(500)
+    reg.refresh() // a quiet spell: at once
+    expect(sent).toHaveLength(2)
+    reg.refresh()
+    reg.refresh()
+    expect(sent).toHaveLength(2) // folded into one trailing send
+    vi.advanceTimersByTime(100)
+    expect(sent).toHaveLength(3)
+  })
+})
+
+describe('cancelQueuedFor', () => {
+  it('cancels an item of the project’s own tab', () => {
+    start('a', P1)
+    const { id } = reg.send('a', 'x')
+    expect(reg.cancelQueuedFor(P1, 'a', id)).toBe(true)
+    expect(reg.get('a')?.queue).toEqual([])
+  })
+
+  it('treats another project’s tab as unknown and leaves its queue alone', () => {
+    start('a', P1)
+    const { id } = reg.send('a', 'x')
+    expect(reg.cancelQueuedFor(P2, 'a', id)).toBe(false)
+    expect(reg.get('a')?.queue).toHaveLength(1)
+    expect(reg.cancelQueuedFor(P1, 'nope', id)).toBe(false)
+    expect(reg.cancelQueuedFor(P1, 'a', 'no-such-item')).toBe(false)
+  })
+})
+
+describe('broadcast throttle', () => {
+  it('sends the first change at once, then at most 10 per second, always the latest state', () => {
+    start('c1') // leading edge: sent now
+    expect(sent).toHaveLength(1)
+    reg.applyHook('c1', 'SessionStart', {})
+    reg.applyHook('c1', 'UserPromptSubmit', {})
+    reg.applyHook('c1', 'PreToolUse', { tool_name: 'Bash' })
+    expect(sent).toHaveLength(1) // folded into one trailing send
+    vi.advanceTimersByTime(99)
+    expect(sent).toHaveLength(1)
+    vi.advanceTimersByTime(1)
+    expect(sent).toHaveLength(2)
+    expect(sent[1]?.strip).toEqual([{ tabId: 'c1', projectName: 'alpha', status: 'working', tool: 'Bash' }])
+    expect(sent[1]?.own).toMatchObject([{ tabId: 'c1', status: 'working', tool: 'Bash' }])
+    // Nothing pending: no further send.
+    vi.advanceTimersByTime(1000)
+    expect(sent).toHaveLength(2)
+  })
+
+  it('a change after a quiet spell goes out immediately again', () => {
+    start('c1')
+    vi.advanceTimersByTime(500)
+    reg.applyHook('c1', 'Stop', {})
+    expect(sent).toHaveLength(2)
+  })
+
+  it('never exceeds 10 snapshots in a second under a burst', () => {
+    start('c1')
+    for (let i = 0; i < 200; i++) {
+      reg.applyHook('c1', i % 2 ? 'Stop' : 'UserPromptSubmit', {})
+      vi.advanceTimersByTime(5)
+    }
+    // 200 changes over 1000 ms: the leading send plus one per 100 ms window.
+    expect(sent.length).toBeLessThanOrEqual(11)
+    expect(sent.length).toBeGreaterThanOrEqual(9)
+  })
+
+  it('dispose cancels a pending trailing send', () => {
+    start('c1')
+    reg.applyHook('c1', 'Stop', {})
+    reg.dispose()
+    vi.advanceTimersByTime(1000)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('a failing broadcast is logged and later ones still go out', () => {
+    let calls = 0
+    const bad = new SessionRegistry({
+      projectName: () => 'x',
+      broadcast: () => {
+        calls++
+        if (calls === 1) throw new Error('window gone')
+      },
+      write: () => {},
+      log: (m) => logs.push(m)
+    })
+    bad.tabStarted({ tabId: 't', projectId: P1, kind: 'claude', cwd: '/' })
+    vi.advanceTimersByTime(100)
+    bad.applyHook('t', 'Stop', {})
+    expect(calls).toBe(2)
+    expect(logs.some((l) => l.includes('window gone'))).toBe(true)
+    bad.dispose()
+  })
+})
+
+describe('hook handler', () => {
+  const tab = { kind: 'session', tabId: 'c1', projectId: P1 } as const
+
+  it("applies the event for the caller's tab, synchronously, and replies null", () => {
+    start('c1')
+    const handler = hookHandler(reg)
+    const result = handler({ event: 'UserPromptSubmit', payload: { prompt: 'hi' } }, tab)
+    expect(result).toBeNull() // not a promise: nothing to await between dispatch and apply
+    expect(reg.get('c1')).toMatchObject({ status: 'working', lastPrompt: 'hi' })
+  })
+
+  it('treats a null or non-object payload (oversized or non-JSON stdin) as no payload', () => {
+    start('c1')
+    const handler = hookHandler(reg)
+    handler({ event: 'UserPromptSubmit', payload: null, truncated: true }, tab)
+    expect(reg.get('c1')).toMatchObject({ status: 'working' })
+    handler({ event: 'PreToolUse', payload: 'junk' }, tab)
+    expect(reg.get('c1')).toMatchObject({ status: 'working' })
+    expect(reg.get('c1')?.tool).toBeUndefined()
+  })
+
+  it('refuses an unknown event, a missing event and a non-tab caller', () => {
+    start('c1')
+    const handler = hookHandler(reg)
+    expect(() => handler({ event: 'Bogus' }, tab)).toThrow(/unknown hook event/)
+    expect(() => handler({}, tab)).toThrow(/unknown hook event/)
+    expect(() => handler({ event: 42 }, tab)).toThrow(/unknown hook event/)
+    expect(() => handler({ event: 'Stop' }, { kind: 'project', path: '/p', projectId: P1 })).toThrow(
+      /Claude session token/
+    )
+    expect(reg.get('c1')?.status).toBe('starting')
+  })
+
+  it('refuses a window token (a shell tab running `ccc hook`) and creates no entry', () => {
+    start('c1')
+    const before = reg.list().map((e) => e.tabId)
+    const handler = hookHandler(reg)
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      expect(() => handler({ event, payload: { session_id: 'x' } }, { kind: 'window', projectId: P1 })).toThrow(/Claude session token/)
+    }
+    expect(reg.list().map((e) => e.tabId)).toEqual(before)
+    expect(reg.get('c1')?.status).toBe('starting')
+  })
+
+  it("uses the caller's tab, never an id from the args", () => {
+    start('c1')
+    start('c2')
+    hookHandler(reg)({ event: 'Stop', tabId: 'c2', payload: { tabId: 'c2' } }, tab)
+    expect(reg.get('c1')?.status).toBe('waiting')
+    expect(reg.get('c2')?.status).toBe('starting')
+  })
+
+  it('a tab that is gone is ignored without an error (a hook can land after close)', () => {
+    expect(hookHandler(reg)({ event: 'Stop' }, tab)).toBeNull()
+  })
+})
+
+describe('addNote / setSteps (ccc session note / steps)', () => {
+  it('updates the tab\'s entry, notifies subscribers and puts it in the own-project snapshot', () => {
+    start('c1')
+    const seen: SessionChange[] = []
+    reg.onChange((c) => seen.push(c))
+    reg.addNote('c1', 'building')
+    reg.setSteps('c1', 2, 4)
+    expect(reg.get('c1')).toMatchObject({ notes: ['building'], steps: { done: 2, total: 4 } })
+    expect(seen.map((c) => c.tabId)).toEqual(['c1', 'c1'])
+    expect(reg.snapshotFor(P1).own[0]).toMatchObject({ notes: ['building'], steps: { done: 2, total: 4 } })
+    // Another project's window gets neither.
+    expect(reg.snapshotFor(P2).own).toEqual([])
+    expect(JSON.stringify(reg.snapshotFor(P2))).not.toContain('building')
+  })
+
+  it('throws for a tab with no entry (a shell tab or an unknown id) and for bad input', () => {
+    start('s1', P1, 'shell')
+    expect(() => reg.addNote('s1', 'x')).toThrow(/no Claude session/)
+    expect(() => reg.setSteps('nope', 1, 2)).toThrow(/no Claude session/)
+    start('c1')
+    expect(() => reg.addNote('c1', ' ')).toThrow(/empty/)
+    expect(() => reg.setSteps('c1', 3, 2)).toThrow(/steps/)
+    expect(reg.get('c1')).toMatchObject({ notes: [] })
+  })
+
+  it('keeps notes and steps across hook events', () => {
+    start('c1')
+    reg.addNote('c1', 'n')
+    reg.setSteps('c1', 1, 3)
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'p' })
+    reg.applyHook('c1', 'Stop', {})
+    expect(reg.get('c1')).toMatchObject({ notes: ['n'], steps: { done: 1, total: 3 } })
+  })
+})

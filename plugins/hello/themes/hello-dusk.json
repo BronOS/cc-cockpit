@@ -1,0 +1,43 @@
+{
+  "id": "hello-dusk",
+  "name": "Hello Dusk",
+  "kind": "dark",
+  "vars": {
+    "--cc-bg": "#1b1a2e",
+    "--cc-fg": "#dcdaf0",
+    "--cc-bg-bar": "#262444",
+    "--cc-bg-menu": "#2f2c52",
+    "--cc-bg-banner": "#38355f",
+    "--cc-bg-error": "#5a1d3a",
+    "--cc-border": "#0f0e1c",
+    "--cc-terminal-bg": "#12111f",
+    "--cc-status-starting": "#8a8aa8",
+    "--cc-status-idle": "#8a8aa8",
+    "--cc-status-working": "#6aa0ff",
+    "--cc-status-needs-permission": "#f5a623",
+    "--cc-status-waiting": "#3fd7a0",
+    "--cc-status-ended": "#f1647c"
+  },
+  "xterm": {
+    "foreground": "#dcdaf0",
+    "background": "#12111f",
+    "cursor": "#dcdaf0",
+    "selectionBackground": "#443f7a",
+    "black": "#000000",
+    "red": "#cd3131",
+    "green": "#0dbc79",
+    "yellow": "#e5e510",
+    "blue": "#2472c8",
+    "magenta": "#bc3fbc",
+    "cyan": "#11a8cd",
+    "white": "#e5e5e5",
+    "brightBlack": "#666666",
+    "brightRed": "#f14c4c",
+    "brightGreen": "#23d18b",
+    "brightYellow": "#f5f543",
+    "brightBlue": "#3b8eea",
+    "brightMagenta": "#d670d6",
+    "brightCyan": "#29b8db",
+    "brightWhite": "#ffffff"
+  }
+}

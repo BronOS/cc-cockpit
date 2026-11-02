@@ -1,0 +1,27 @@
+{
+  "id": "test.settingsui",
+  "name": "Settings UI fixture",
+  "version": "1.0.0",
+  "api": 1,
+  "contributes": {
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "greeting": { "type": "string", "title": "Greeting", "default": "hello" },
+          "limit": { "type": "integer", "title": "Limit", "minimum": 1, "default": 10 },
+          "token": { "type": "string", "title": "API token", "format": "secret" }
+        },
+        "required": ["token"]
+      },
+      "project": {
+        "type": "object",
+        "properties": {
+          "board": { "type": "string", "title": "Board", "default": "main" },
+          "pageSize": { "type": "integer", "title": "Page size", "minimum": 1, "default": 20 },
+          "key": { "type": "string", "title": "Project key", "format": "secret" }
+        }
+      }
+    }
+  }
+}
