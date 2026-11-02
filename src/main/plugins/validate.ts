@@ -231,6 +231,14 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
   for (const cli of c.cli ?? []) {
     if (RESERVED_CLI_NAMES.includes(cli.name)) errors.push(`cli command "${cli.name}" is reserved for the app`)
   }
+  // Providing and using one name would make the plugin its own consumer: the call would resolve to
+  // itself (or, with a second provider, be ambiguous), which is never what the author meant.
+  const provided = Object.keys(manifest.services?.provides ?? {})
+  for (const name of provided) {
+    if (Object.hasOwn(manifest.services?.uses ?? {}, name)) {
+      errors.push(`service "${name}" is both provided and used; a plugin cannot use a service it provides`)
+    }
+  }
   // The command is implemented by the plugin's host, which only starts from `main`.
   if ((c.cli ?? []).length > 0 && manifest.main === undefined) {
     errors.push('contributes.cli needs "main": a plugin\'s commands run in its host')

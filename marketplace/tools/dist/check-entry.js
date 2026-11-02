@@ -101,12 +101,22 @@ var CLI_NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 var CORE_CLI_COMMANDS = ["open", "hook", "session", "overlay", "sessions", "notify", "guide", "plugin", "help"];
 var RESERVED_CLI_NAMES = [...CORE_CLI_COMMANDS, "app", "config", "version"];
 var MAX_CLI_COMMANDS = 10;
+var SERVICE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+var SERVICE_VERSION_MIN = 1;
+var SERVICE_VERSION_MAX = 9999;
+var MAX_SERVICES = 32;
 var MAX_PATH_LENGTH = 260;
 var MAX_LIST = 100;
 var relativePath = { type: "string", minLength: 1, maxLength: MAX_PATH_LENGTH };
 var title = { type: "string", minLength: 1, maxLength: 100 };
 var contributionId = { type: "string", pattern: CONTRIBUTION_ID_PATTERN.source };
 var settingsSchema = { type: "object" };
+var serviceMap = {
+  type: "object",
+  maxProperties: MAX_SERVICES,
+  propertyNames: { pattern: SERVICE_NAME_PATTERN.source },
+  additionalProperties: { type: "integer", minimum: SERVICE_VERSION_MIN, maximum: SERVICE_VERSION_MAX }
+};
 var MANIFEST_SCHEMA = {
   type: "object",
   required: ["id", "name", "version", "api"],
@@ -116,6 +126,7 @@ var MANIFEST_SCHEMA = {
     version: { type: "string", maxLength: 64, pattern: PLUGIN_VERSION_PATTERN.source },
     api: { type: "integer" },
     main: relativePath,
+    services: { type: "object", properties: { provides: serviceMap, uses: serviceMap } },
     contributes: {
       type: "object",
       properties: {

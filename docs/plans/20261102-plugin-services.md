@@ -143,12 +143,12 @@ External review: auto
 - Modify: `test/unit/manifest.test.ts`
 - Create: `test/unit/services-status.test.ts`
 
-- [ ] add `services?: { provides?: Record<string, number>; uses?: Record<string, number> }` to `PluginManifest` and `MANIFEST_SCHEMA` (name pattern, integer 1..9999, at most 32 entries each); confirm the schema stays tolerant of unknown top-level keys
-- [ ] in `validateManifest`, refuse a name that is both provided and used by the same plugin, with a clear error
-- [ ] create `src/shared/services.ts` with the pure `selectProvider(service, plugins, choices)` and `serviceStatus(plugins, choices)` described in Technical Details (missing, ambiguous, version-mismatch, selected provider; a choice naming a plugin that is not a provider in the set counts as no choice). Tasks 2-6 use these, never their own copy of the rule
-- [ ] write tests for valid manifests (with and without `services`) and the schema/validate errors
-- [ ] write tests for `serviceStatus`: none, one, two unpicked, two picked, stale pick, version mismatch
-- [ ] run tests - must pass before next task
+- [x] add `services?: { provides?: Record<string, number>; uses?: Record<string, number> }` to `PluginManifest` and `MANIFEST_SCHEMA` (name pattern, integer 1..9999, at most 32 entries each); confirm the schema stays tolerant of unknown top-level keys
+- [x] in `validateManifest`, refuse a name that is both provided and used by the same plugin, with a clear error
+- [x] create `src/shared/services.ts` with the pure `selectProvider(service, plugins, choices)` and `serviceStatus(plugins, choices)` described in Technical Details (missing, ambiguous, version-mismatch, selected provider; a choice naming a plugin that is not a provider in the set counts as no choice). Tasks 2-6 use these, never their own copy of the rule
+- [x] write tests for valid manifests (with and without `services`) and the schema/validate errors
+- [x] write tests for `serviceStatus`: none, one, two unpicked, two picked, stale pick, version mismatch
+- [x] run tests - must pass before next task
 
 ### Task 2: Host service registry: provide, use and calls [model: opus]
 

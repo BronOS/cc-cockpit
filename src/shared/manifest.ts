@@ -132,6 +132,18 @@ export interface SkillContribution {
   dir: string
 }
 
+/**
+ * Plugin services (plan: plugin services). A service name is a plain lower-case word because it is
+ * a key in `serviceProviders` (project record), a Settings label and an error-message fragment;
+ * `constructor`-like words match it too, so every map keyed by it is read with `Object.hasOwn`.
+ */
+export const SERVICE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
+/** Versions are whole-number majors in this range. */
+export const SERVICE_VERSION_MIN = 1
+export const SERVICE_VERSION_MAX = 9999
+/** At most this many entries in each of `provides` and `uses`. */
+export const MAX_SERVICES = 32
+
 /** A JSON Schema as plugins write it; compiled and limited in `validate.ts`. */
 export type JsonSchema = Record<string, unknown>
 
@@ -150,6 +162,12 @@ export interface PluginManifest {
     skills?: SkillContribution[]
     cli?: CliContribution[]
   }
+  /**
+   * Named APIs this plugin offers (`provides`) and calls (`uses`), each with a major version. A
+   * top-level field, not under `contributes`: it is a dependency between plugins, not something
+   * the app shows. Absent means none, so existing plugins are unaffected.
+   */
+  services?: { provides?: Record<string, number>; uses?: Record<string, number> }
 }
 
 const MAX_PATH_LENGTH = 260
@@ -161,6 +179,14 @@ const contributionId = { type: 'string', pattern: CONTRIBUTION_ID_PATTERN.source
 // The settings schemas themselves are checked (meta-schema, limits) in validate.ts; here they only
 // have to be objects.
 const settingsSchema = { type: 'object' }
+// name -> major version. `propertyNames` (draft-07) pins the key syntax; the cap keeps a hostile
+// manifest from making the status computation (run in main per project) large.
+const serviceMap = {
+  type: 'object',
+  maxProperties: MAX_SERVICES,
+  propertyNames: { pattern: SERVICE_NAME_PATTERN.source },
+  additionalProperties: { type: 'integer', minimum: SERVICE_VERSION_MIN, maximum: SERVICE_VERSION_MAX }
+}
 
 /**
  * JSON Schema (draft-07, what ajv's default class speaks) for `plugin.json`. Unknown properties
@@ -176,6 +202,7 @@ export const MANIFEST_SCHEMA = {
     version: { type: 'string', maxLength: 64, pattern: PLUGIN_VERSION_PATTERN.source },
     api: { type: 'integer' },
     main: relativePath,
+    services: { type: 'object', properties: { provides: serviceMap, uses: serviceMap } },
     contributes: {
       type: 'object',
       properties: {

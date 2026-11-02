@@ -404,3 +404,52 @@ describe('panel kind (plan B Task 7)', () => {
     expect(await loadManifest(join(__dirname, '../fixtures/plugins/host-webview'))).toMatchObject({ ok: true })
   })
 })
+
+describe('services', () => {
+  const withServices = (services: unknown): Record<string, unknown> => manifest({ services })
+
+  it('accepts a manifest without services and one with provides and uses', async () => {
+    expect((await validateManifest(manifest(), dir)).ok).toBe(true)
+    const services = { provides: { triage: 1 }, uses: { 'mail-index': 2 } }
+    const r = await validateManifest(withServices(services), dir)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.manifest.services).toEqual(services)
+    expect((await validateManifest(withServices({}), dir)).ok).toBe(true)
+  })
+
+  it('tolerates unknown top-level and services keys', async () => {
+    expect((await validateManifest(manifest({ future: 1, services: { later: true } }), dir)).ok).toBe(true)
+  })
+
+  it.each(['Triage', '1abc', 'has space', 'dot.ted', 'a'.repeat(65), ''])('refuses the service name %j', async (name) => {
+    expect((await errorsOf(withServices({ provides: { [name]: 1 } }))).join()).toMatch(/services\/provides|propertyNames|pattern/)
+    expect((await errorsOf(withServices({ uses: { [name]: 1 } }))).join()).toMatch(/services\/uses|propertyNames|pattern/)
+  })
+
+  it('accepts the longest name and the version bounds', async () => {
+    expect((await validateManifest(withServices({ provides: { ['a'.repeat(64)]: 1, b: 9999 } }), dir)).ok).toBe(true)
+  })
+
+  it.each([0, -1, 10000, 1.5, '1', null, true])('refuses the version %j', async (v) => {
+    expect((await errorsOf(withServices({ provides: { triage: v } }))).join()).toMatch(/services\/provides/)
+  })
+
+  it('refuses more than 32 entries in provides or uses', async () => {
+    const many = (n: number): Record<string, number> => Object.fromEntries(Array.from({ length: n }, (_, i) => [`s${i}`, 1]))
+    expect((await validateManifest(withServices({ provides: many(32), uses: many(32) }), dir)).ok).toBe(false)
+    expect((await validateManifest(withServices({ provides: many(32) }), dir)).ok).toBe(true)
+    expect((await errorsOf(withServices({ provides: many(33) }))).join()).toMatch(/services\/provides/)
+    expect((await errorsOf(withServices({ uses: many(33) }))).join()).toMatch(/services\/uses/)
+  })
+
+  it('refuses a name both provided and used', async () => {
+    const errs = await errorsOf(withServices({ provides: { triage: 1 }, uses: { triage: 1, other: 1 } }))
+    expect(errs).toEqual(['service "triage" is both provided and used; a plugin cannot use a service it provides'])
+  })
+
+  it('refuses non-object services, provides and uses', async () => {
+    expect((await errorsOf(withServices([]))).join()).toMatch(/services/)
+    expect((await errorsOf(withServices({ provides: [] }))).join()).toMatch(/services\/provides/)
+    expect((await errorsOf(withServices({ uses: 'x' }))).join()).toMatch(/services\/uses/)
+  })
+})
