@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
-import { serviceProblemMessage, type PluginServiceStatus, type ServiceProblem, type ServicesStatus } from '../../shared/services'
+import { serviceProblemMessage, type PluginServiceStatus, type ServicesStatus } from '../../shared/services'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { Empty, Group, PageHeader, Row, Select } from './ui'
@@ -13,22 +13,6 @@ const loadMarketplace = (): Promise<MarketplaceView | null> => window.cockpit.in
 
 // Services are this project's: main answers for the window's project and only over the plugins its host runs.
 const loadServices = (): Promise<ServicesStatus | null> => window.cockpit.invoke('settings.pluginServices').catch(() => null)
-
-/**
- * The warning a consumer's row shows for one problem. Missing and version-mismatch say what to do in
- * the page's own words; the ambiguous case (several providers, no pick) reuses the runtime's text, which
- * already points at the pick below.
- */
-function problemText(problem: ServiceProblem, nameOf: (id: string) => string): string {
-  switch (problem.kind) {
-    case 'missing':
-      return `Needs a plugin that provides ${problem.service}`
-    case 'version-mismatch':
-      return `Uses ${problem.service} v${problem.usesVersion}, but ${nameOf(problem.provider)} provides v${problem.providesVersion}`
-    case 'ambiguous':
-      return serviceProblemMessage(problem, nameOf)
-  }
-}
 
 /**
  * What the Marketplace says about an installed plugin, for its row: a newer version, a safe version to
@@ -244,7 +228,7 @@ function PluginItem(props: {
           )}
           {props.services?.problems.map((problem, i) => (
             <div key={i} className="settings-warning" data-testid="service-warning">
-              {problemText(problem, props.nameOf)}
+              {serviceProblemMessage(problem, props.nameOf)}
             </div>
           ))}
           {plugin.appSettings?.problem !== undefined && (

@@ -77,14 +77,34 @@ ids it does take (a tab, a panel) are looked up inside that project only.
   - `ctx.services.emit(name, event, data)`: only the provider the project selected reaches
     consumers (others are dropped, logged once); `handle.on(event, listener)` subscribes and
     returns the unsubscriber. Listeners run later, never inside `emit`.
-  - Plain data only: arguments, results and event data are copied (structured clone); a function
-    or symbol throws, a class instance arrives as a plain object.
-  - A call rejects when no enabled plugin provides the service, two do and none is picked in
-    Settings > Plugins, the major versions differ, the provider failed to activate or never called
-    `provide`, the method does not exist, or the provider threw (a fresh Error, its message only).
-    No timeout: race your own.
+  - Plain data only: arguments, results and event data are copied (structured clone). A function
+    or symbol throws `<what> must be plain data (no functions or symbols): ...`; a class instance
+    arrives as a plain object (prototype and methods gone). `provide` takes a plain object, not a
+    class instance (`service "x": the implementation must be a plain object (not a class instance)`).
+  - Errors a consumer can get (a call rejects, `use`/`on` throw): `plugin <id> does not declare
+    service "x" in services.uses`; `no enabled plugin in this project provides service "x"`;
+    `plugins A and B both provide service "x"; pick one in Settings > Plugins`; `"x": A uses version
+    1, B provides version 2` (major versions differ); `service "x": plugin P failed to activate:
+    <reason>`; `P declares service "x" but did not provide it`; `service "x" (plugin P) has no
+    method "m"`; and the provider's own throw (a fresh Error with its message only). No timeout:
+    race your own.
   - Cycles: two plugins that call each other while both are in `activate` would wait forever; the
-    call closing the cycle fails at once instead. Call from timers or commands to avoid it.
+    call closing the cycle fails at once with `A -> B -> A: services called in a cycle during
+    activate`. Call from timers or commands to avoid it.
+  - Events: `emit` only reaches consumers when the caller is the selected provider (with several
+    providers, the one picked in Settings > Plugins); a consumer whose `uses` major differs gets no
+    events; an `emit` with no subscriber is a silent no-op; the event name and data are checked
+    even then (plain data, else it throws). A handle from before the consumer's reload can no longer
+    subscribe (`... belongs to a released copy of plugin C; it can no longer subscribe`): call
+    `use` again in `activate`.
+  - Provider pick: when several enabled plugins provide a service, the Plugins page shows "Plugin
+    used for <service>" in its Services group, stored per project. A pick naming a plugin that is
+    disabled or gone counts as no pick. Each plugin row shows Provides/Uses lines and warnings
+    (same texts as above).
+  - Example. Provider manifest `"services": { "provides": { "greetings": 1 } }`, host code:
+    `ctx.services.provide('greetings', { hello: async (n) => `hi ${n}` }); ctx.services.emit('greetings', 'ready', {})`.
+    Consumer manifest `"services": { "uses": { "greetings": 1 } }`, host code:
+    `const g = ctx.services.use('greetings'); g.on('ready', () => ctx.log.info('up')); ctx.commands.register('hi', async () => ctx.log.info(await g.hello('Ann')))`.
   - `activate`'s return value is ignored; `ctx.services` is the only way to share an API.
 - `ctx.log.info(...)`, `warn`, `error`: lines go to `<data>/logs/<pluginId>.log`.
 - `ctx.notify(text)`: a system notification, at most 10 a minute.

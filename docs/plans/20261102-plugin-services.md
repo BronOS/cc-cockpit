@@ -251,9 +251,9 @@ External review: auto
 - Modify: `src/cli/guide/api.md` (the base text landed in Task 4)
 - Modify: `examples/plugin/sdk/types.ts` via `npm run build:example` (copies `src/sdk/types.ts`)
 
-- [ ] complete the guide text with what Tasks 5-7 added: the copy rule (plain data only, class instances arrive as plain objects), every error a consumer can get, the cycle rule, the provider pick on the Plugins page, and a short provider + consumer example
-- [ ] run `npm run build:example` so the example's copy of the types matches; keep the example plugin itself free of services (it stays listed and minimal)
-- [ ] run drift tests and the full unit suite - must pass before next task
+- [x] complete the guide text with what Tasks 5-7 added: the copy rule (plain data only, class instances arrive as plain objects), every error a consumer can get, the cycle rule, the provider pick on the Plugins page, and a short provider + consumer example
+- [x] run `npm run build:example` so the example's copy of the types matches; keep the example plugin itself free of services (it stays listed and minimal)
+- [x] run drift tests and the full unit suite - must pass before next task
 
 ### Task 9: Verify acceptance criteria [model: sonnet]
 - [ ] verify all requirements from Overview and the four agreed decisions are implemented

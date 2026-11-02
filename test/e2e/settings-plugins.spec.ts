@@ -242,7 +242,7 @@ test('settings: services warn about a missing provider and offer the pick betwee
   await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.svcconsumer')
   await reopen()
   await expect(consumer.getByTestId('service-uses')).toHaveText('Uses: greet v1')
-  await expect(consumer.getByTestId('service-warning')).toHaveText('Needs a plugin that provides greet')
+  await expect(consumer.getByTestId('service-warning')).toHaveText('no enabled plugin in this project provides service "greet"')
   await expect(picks).toHaveCount(0)
 
   // One provider enabled: the warning goes, no pick is needed.
