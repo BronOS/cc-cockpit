@@ -3,8 +3,8 @@
 A desktop cockpit for [Claude Code](https://claude.com/claude-code). It runs `claude` in terminal tabs, shows the live
 status of every session across your projects, and lets plugins bring your other tools into panels around the terminal.
 
-**Status: early.** It runs from source on macOS and Linux. There are no prebuilt downloads yet, and the plugin API may
-still change.
+**Status: early.** The plugin API may still change. Prebuilt downloads are set up but have not been published yet (see
+Install).
 
 ## What it does
 
@@ -27,22 +27,46 @@ Every feature in detail: [docs/features.md](docs/features.md).
 
 ## Install
 
-You need [Node.js](https://nodejs.org) with npm, git and `claude` on your PATH. On Linux, `npm install` also compiles a
-native terminal module, so you need Python, `make` and a C++ compiler.
+You need `claude` (Claude Code) on your PATH, and git for installing plugins.
+
+### macOS (Apple silicon)
+
+The app is not notarised, so macOS may refuse to open it the first time. The first-launch step is:
+
+> TODO: fill this in after the first real run on a Mac (Post-Completion in
+> `docs/plans/20261102-distribution.md`). Not tested yet, so no step is stated here.
+
+Then install with Homebrew:
 
 ```sh
-git clone https://github.com/BronOS/cc-cockpit.git
-cd cc-cockpit
-npm install
-npm run dev
+brew install --cask BronOS/tap/cc-cockpit
 ```
+
+`brew install` does not work yet. It needs the `BronOS/cc-cockpit` repo and the `BronOS/homebrew-tap` repo to be public.
+Intel Macs are not supported yet.
+
+### Linux (x64)
+
+Download the `.AppImage` or the `.deb` from the
+[releases page](https://github.com/BronOS/cc-cockpit/releases) once a release is published there. Until the repo is
+public, there is nothing to download.
+
+### Upgrading
+
+On a Mac run `brew upgrade --cask cc-cockpit`. On Linux download the new file. Quit cc-cockpit before upgrading, or
+restart it afterwards. A running app keeps its old code, and `ccc` prints a warning when its version differs from the
+running app's.
+
+### What was tested
 
 | Platform | State |
 | --- | --- |
-| macOS, arm64 | Primary target; the packaged build has been launched too |
-| Linux | Runs from source, tried on Hyprland/Wayland; restoring window size and position may not work there |
-| macOS x64, packaged Linux | Configured, but never launched |
+| macOS, arm64 | Runs from source. The packaged app and the brew path are untested until the manual runs in the plan's Post-Completion |
+| Linux x64 | Runs from source, tried on Hyprland/Wayland; restoring window size and position may not work there. The packaged AppImage launched only via `--appimage-extract-and-run --no-sandbox` (no libfuse2 here); a plain double-click run (FUSE, Chromium sandbox) and Ubuntu are untested; the `.deb` was built and unpacked but not launched |
+| macOS x64 | Not supported yet |
 | Windows | Not supported |
+
+To run from source instead, see Development below.
 
 ## Plugins
 
@@ -55,6 +79,10 @@ what you trust. The index pins each version to a commit, and it can revoke a bad
 **Network use:** at every launch, and about hourly while open, the app fetches the plugin index from
 `raw.githubusercontent.com`, plus any index you added or installed a plugin from. These requests send no account data,
 but those hosts see them, and there is no setting to turn them off.
+
+The app also asks `api.github.com` once a day, and at launch, whether a newer release exists. It never downloads or
+installs anything; it only shows a notice. To turn this off, go to Settings > Appearance and keys > Updates and switch off
+"Check for new versions". Off means no request at all.
 
 ### Write your own
 
@@ -93,7 +121,13 @@ The full list is in [docs/features.md](docs/features.md#known-limitations).
 
 ## Development
 
+To run from source you need [Node.js](https://nodejs.org) with npm, git and `claude` on your PATH. On Linux,
+`npm install` also compiles a native terminal module, so you need Python, `make` and a C++ compiler.
+
 ```sh
+git clone https://github.com/BronOS/cc-cockpit.git
+cd cc-cockpit
+npm install
 npm run dev            # run the app from source
 npm test               # unit tests (vitest)
 npm run test:e2e       # builds, then Playwright against the built app (needs openssl)

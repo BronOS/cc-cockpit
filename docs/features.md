@@ -91,6 +91,26 @@ behind it are in [design.md](design.md).
 - Plugin dev loop from a tab: `ccc plugin new|link|unlink|list|logs`. `link` asks you to confirm
   in a native dialog, since a linked plugin runs with full access.
 
+## Updates and versions
+
+- **Update notice.** Once at launch and then every 24 hours the app asks `api.github.com` for the latest release. If it
+  is newer, each project window shows a dismissible bar with the new version. On a Mac it says to run
+  `brew upgrade --cask cc-cockpit`; elsewhere it links to the release page. Both say to quit cc-cockpit before
+  upgrading, or restart it afterwards. Dismissing hides that version; a newer one shows again. The app never downloads
+  or installs anything, because replacing it under running Claude sessions would restart them. Failures (offline, a
+  private repo answering 404) are silent. Only a plain `vX.Y.Z` tag is accepted.
+- **The setting.** Settings > Appearance and keys > Updates > "Check for new versions" (on by default). Off makes no
+  request at all and clears the notice.
+- **Version warning.** After an upgrade over a running app, `ccc` is the new version and the app is the old one. A
+  `ccc` command prints `ccc: the app is running version X, this ccc is version Y. Restart cc-cockpit.` on stderr (stdout
+  stays clean for `--json`) and still runs. Hooks never print it. An old app sends no version, and then nothing is
+  printed.
+- **Packaged builds.** Linux x64: the AppImage was built and launched with a temporary data folder (via
+  `--appimage-extract-and-run`); the app started, bound its socket, and tokenless `ccc open`, `ccc sessions` and
+  `ccc overlay --project` worked. The `.deb` was built and unpacked but not launched. A second build with a higher
+  version started on the first one's data folder and kept the open project. macOS: the packaged path is untested until
+  the manual runs listed in the plan's Post-Completion. Test hooks are off in packaged apps.
+
 ## Marketplace
 
 Settings > Marketplace lists plugins from one or more static `index.json` files and installs one after a

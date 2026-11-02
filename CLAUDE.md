@@ -27,6 +27,13 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 
 ## Implementation patterns
 
+- Distribution (design.md "Distribution"): `.github/workflows/` has `ci.yml`, `release.yml` (a `v*` tag makes a draft
+  release) and `publish-cask.yml` (publishing writes the Homebrew cask). Keep first-party actions only, least
+  permissions, and the token only in the step that needs it; unit tests read the workflow files. `publish: null` in
+  `electron-builder.yml` stays: electron-builder never uploads. The update check (`main/updates/update-check.ts`) is
+  notice-only, setting `updateCheck`, never the real network in test runs. `ccc` warns on stderr when the app's version
+  differs (`appVersion` in the reply); hooks never print.
+
 - Core is the foundation for plugins plus the base functions every user needs without any plugin
   (docs/design.md §1, "What belongs in core"); everything else is a plugin. No accounts in core.
 - Electron-only modules sit behind adapter files so logic stays testable under vitest:

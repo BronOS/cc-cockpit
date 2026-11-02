@@ -798,6 +798,22 @@ queue, manifest/settings validation, layout state, restore). Playwright on Elect
 reaches the strip, the hello plugin's panel sends text, text is queued while busy, an overlay
 returns a result.
 
+### Distribution
+
+A `v*` tag runs `.github/workflows/release.yml`: it checks the tag equals `v` + the `package.json` version
+(`scripts/check-release-tag.mjs`), runs `ci.yml`, builds the arm64 dmg on macOS and the AppImage and deb on Linux, then
+creates a draft GitHub Release with a `SHA256SUMS` file. Only the last job has a write token and it checks out no code.
+Publishing the draft by hand runs `publish-cask.yml`, which verifies the dmg against `SHA256SUMS`, renders the cask
+(`scripts/render-cask.mjs`) and pushes it to `BronOS/homebrew-tap` with the `TAP_TOKEN` secret. Prereleases skip it.
+electron-builder never publishes (`publish: null`, guarded by `packaging-config.test.ts`). There is no auto-updater: the app
+checks `releases/latest` (`main/updates/update-check.ts`) and shows a notice, since replacing the app under running
+sessions would restart them. Builds are unsigned (Mac: ad-hoc). The `ccc` reply carries `appVersion` so the CLI can warn on a
+mismatch.
+
+To cut a release: run `npm test` and `npm run test:e2e` (CI does not run e2e; on Linux only `window-bounds.spec.ts:40`
+and `:62` may fail), bump the version in `package.json`, commit, tag `vX.Y.Z` and push the tag, try the draft's files on a
+Mac and a Linux machine, then publish the draft. On a failed run, delete the draft and the tag and tag again.
+
 ## 8. Open points for the plan
 
 All decided in phase 1:

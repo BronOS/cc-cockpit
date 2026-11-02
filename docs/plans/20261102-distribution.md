@@ -244,15 +244,15 @@ Version and hash are validated before they are written into Ruby.
 - [x] run `npm run typecheck` and `npm run lint`
 
 ### Task 9: [Final] Update documentation [model: sonnet]
-- [ ] README: Install becomes brew and Linux downloads; running from source moves to Development
-- [ ] README: the Mac first-launch step, stated before installing, with a placeholder marked for the result of the real test in
+- [x] README: Install becomes brew and Linux downloads; running from source moves to Development
+- [x] README: the Mac first-launch step, stated before installing, with a placeholder marked for the result of the real test in
       Post-Completion; Intel Mac listed as not supported yet
-- [ ] README: quit before upgrading, or restart after; the update check in the network note, and how to turn it off
-- [ ] `docs/features.md`: the notice, the setting and the version warning; replace "packaged builds never launched" with the results
+- [x] README: quit before upgrading, or restart after; the update check in the network note, and how to turn it off
+- [x] `docs/features.md`: the notice, the setting and the version warning; replace "packaged builds never launched" with the results
       from Task 8
-- [ ] `docs/design.md`: a short section on distribution, and how to cut a release (`npm test`, e2e, bump, tag, try the draft, publish)
-- [ ] `CLAUDE.md`: the new commands and rules: workflows, the version check, `publish: null` staying
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `docs/design.md`: a short section on distribution, and how to cut a release (`npm test`, e2e, bump, tag, try the draft, publish)
+- [x] `CLAUDE.md`: the new commands and rules: workflows, the version check, `publish: null` staying
+- [x] move this plan to `docs/plans/completed/` (skipped - the harness moves the plan)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
