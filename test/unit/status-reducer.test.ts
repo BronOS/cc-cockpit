@@ -261,6 +261,68 @@ describe('ordering', () => {
   })
 })
 
+describe('dialog tools (AskUserQuestion, ExitPlanMode)', () => {
+  it.each(['AskUserQuestion', 'ExitPlanMode'])('PreToolUse(%s) -> needs-permission, the tool kept', (tool) => {
+    const entry = reduce(withStatus('working'), hook('PreToolUse', { tool_name: tool }))
+    expect(entry).toMatchObject({ status: 'needs-permission', tool })
+  })
+
+  it('enters needs-permission from every live status, never waiting', () => {
+    for (const status of ['starting', 'idle', 'working', 'needs-permission', 'waiting'] as const) {
+      expect(reduce(withStatus(status), hook('PreToolUse', { tool_name: 'AskUserQuestion' })).status).toBe(
+        'needs-permission'
+      )
+    }
+  })
+
+  it('other tools, and a near-miss name, stay plain working', () => {
+    for (const tool of ['Bash', 'askuserquestion', 'AskUserQuestion ', 'EnterPlanMode', '']) {
+      expect(reduce(withStatus('waiting'), hook('PreToolUse', { tool_name: tool })).status).toBe('working')
+    }
+  })
+
+  it('question -> answered (PostToolUse) -> working with the tool cleared -> Stop -> waiting', () => {
+    const steps: Array<[ReducerEvent, TabStatus, string | undefined]> = [
+      [hook('UserPromptSubmit', { prompt: 'plan it' }), 'working', undefined],
+      [hook('PreToolUse', { tool_name: 'AskUserQuestion' }), 'needs-permission', 'AskUserQuestion'],
+      // An idle Notification during the dialog must not make the tab sendable.
+      [hook('Notification', { notification_type: 'idle_prompt' }), 'needs-permission', 'AskUserQuestion'],
+      [hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } }), 'working', undefined],
+      [hook('PreToolUse', { tool_name: 'ExitPlanMode' }), 'needs-permission', 'ExitPlanMode'],
+      [hook('PostToolUse', { tool_name: 'ExitPlanMode' }), 'working', undefined],
+      [hook('PreToolUse', { tool_name: 'Edit' }), 'working', 'Edit'],
+      [hook('Stop'), 'waiting', undefined]
+    ]
+    let entry = base()
+    for (const [event, status, tool] of steps) {
+      entry = reduce(entry, event)
+      expect([entry.status, entry.tool]).toEqual([status, tool])
+    }
+    expect(entry.files).toEqual([])
+  })
+
+  it('a file tool PostToolUse keeps its tool name, as before', () => {
+    const entry = reduce(
+      withStatus('working', { tool: 'Edit' }),
+      hook('PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/a' } })
+    )
+    expect(entry.tool).toBe('Edit')
+  })
+
+  it('an answer key does not leave a dialog tool (several questions take several keys)', () => {
+    const asking = reduce(withStatus('working'), hook('PreToolUse', { tool_name: 'AskUserQuestion' }))
+    expect(reduce(asking, { type: 'answer' })).toBe(asking)
+    const planning = reduce(withStatus('working'), hook('PreToolUse', { tool_name: 'ExitPlanMode' }))
+    expect(reduce(planning, { type: 'answer' })).toBe(planning)
+  })
+
+  it('UserPromptSubmit and SessionEnd leave it like a permission prompt', () => {
+    const asking = reduce(withStatus('working'), hook('PreToolUse', { tool_name: 'AskUserQuestion' }))
+    expect(reduce(asking, hook('UserPromptSubmit', { prompt: 'x' }))).toMatchObject({ status: 'working', tool: undefined })
+    expect(reduce(asking, hook('SessionEnd')).status).toBe('ended')
+  })
+})
+
 describe('answering a permission dialog (keystroke)', () => {
   const answer: ReducerEvent = { type: 'answer' }
 

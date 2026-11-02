@@ -50,7 +50,8 @@ ids it does take (a tab, a panel) are looked up inside that project only.
 
 ## Sessions
 
-- `ctx.sessions.list()`: the window's Claude tabs with their status.
+- `ctx.sessions.list()`: the window's Claude tabs with their status. `needs-permission` also
+  covers a question or plan-approval dialog (`tool` is `AskUserQuestion` or `ExitPlanMode`).
 - `ctx.sessions.onChange(listener)`: the whole list again on every change (at most 4 a second).
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.

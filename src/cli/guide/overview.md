@@ -2,7 +2,8 @@
 
 cc-cockpit is a desktop app that runs Claude Code in terminal tabs, one window per project (a
 project is a folder). Beside the tabs it shows a core status view of every Claude session
-(working, waiting for input, needs permission) and hosts plugins. Plugins add panels, commands,
+(working, waiting for input, needs permission; a question or plan approval from Claude shows as
+"needs you") and hosts plugins. Plugins add panels, commands,
 settings, themes and their own `ccc` subcommands.
 
 You are probably running inside one of its tabs. `ccc` is on your PATH there.

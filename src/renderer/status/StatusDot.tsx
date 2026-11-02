@@ -1,5 +1,5 @@
 import type { TabStatus } from '../../shared/ipc'
-import { statusLabel } from './strip-order'
+import { statusText } from './strip-order'
 
 /**
  * A status dot: the colour comes from `--cc-status-*` theme variables (styles.css gives each a
@@ -9,8 +9,7 @@ import { statusLabel } from './strip-order'
  * a strip entry already spells the status out in text.
  */
 export function StatusDot(props: { status: TabStatus; tool?: string }): React.JSX.Element {
-  const label = statusLabel(props.status)
-  const title = props.tool ? `${label} · ${props.tool}` : label
+  const title = statusText(props.status, props.tool)
   return (
     <span
       className={`status-dot status-${props.status}`}

@@ -54,9 +54,12 @@ describe('buildHooksSettings', () => {
     expect(HOOK_TIMEOUT_SECONDS).toBe(5)
   })
 
-  it('uses the matchers from the plan: * for PreToolUse, the file tools for PostToolUse, none elsewhere', () => {
+  it('uses the matchers: * for PreToolUse, the file and dialog tools for PostToolUse, none elsewhere', () => {
     expect(settings.hooks.PreToolUse?.[0]?.matcher).toBe('*')
-    expect(settings.hooks.PostToolUse?.[0]?.matcher).toBe('Edit|Write|MultiEdit|NotebookEdit')
+    // The dialog tools' PostToolUse is the sign their dialog was answered (status-reducer.ts).
+    expect(settings.hooks.PostToolUse?.[0]?.matcher).toBe(
+      'Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion|ExitPlanMode'
+    )
     for (const event of HOOK_EVENTS) {
       if (event !== 'PreToolUse' && event !== 'PostToolUse') {
         expect(settings.hooks[event]?.[0]).not.toHaveProperty('matcher')

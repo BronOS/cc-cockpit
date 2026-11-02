@@ -29,6 +29,7 @@
 //     /tool <name>        PreToolUse { tool_name, tool_input: {} }
 //     /edit <path>        PostToolUse { tool_name: Edit, tool_input: { file_path } }
 //     /notebook <path>    PostToolUse { tool_name: NotebookEdit, tool_input: { notebook_path } }
+//     /done <name>        PostToolUse { tool_name, tool_input: {} } (a dialog tool answered)
 //     /permission         Notification { notification_type: permission_prompt }
 //     /idle               Notification { notification_type: idle_prompt }
 //     /stop               Stop
@@ -137,12 +138,13 @@ function scripted(line) {
     console.log(`FAKE-CLAUDE ccc exit=${r.status} out=${JSON.stringify(r.stdout)} err=${JSON.stringify(r.stderr)}`)
     return true
   }
-  const m = /^\/(prompt|tool|edit|notebook|permission|idle|stop|end)(?:\s+(.*))?$/.exec(line)
+  const m = /^\/(prompt|tool|done|edit|notebook|permission|idle|stop|end)(?:\s+(.*))?$/.exec(line)
   if (!m) return false
   const arg = m[2] === undefined ? '' : m[2]
   switch (m[1]) {
     case 'prompt': fireHook('UserPromptSubmit', { prompt: arg }); break
     case 'tool': fireHook('PreToolUse', { tool_name: arg, tool_input: {} }); break
+    case 'done': fireHook('PostToolUse', { tool_name: arg, tool_input: {} }); break
     case 'edit': fireHook('PostToolUse', { tool_name: 'Edit', tool_input: { file_path: arg } }); break
     case 'notebook':
       fireHook('PostToolUse', { tool_name: 'NotebookEdit', tool_input: { notebook_path: arg } })

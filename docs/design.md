@@ -241,13 +241,28 @@ touched; Claude outside the app is never seen.
 |---|---|
 | `SessionStart` | idle (a working tab stays working when `source` is `compact`: auto-compaction mid-turn); `session_id` stored for `--resume` |
 | `UserPromptSubmit`, `PreToolUse` | working (current tool shown) |
+| `PreToolUse` of a dialog tool (AskUserQuestion, ExitPlanMode) | needs permission, shown as "needs you · question" / "needs you · plan approval" |
 | `Notification` (permission) | needs permission |
-| Enter or a digit typed into a needs-permission tab | working (the dialog was answered) |
+| Enter or a digit typed into a needs-permission tab | working (the dialog was answered); not for a dialog tool |
+| `PostToolUse` | working (a dialog tool's: the dialog was answered, its tool name cleared) |
 | `Stop`, `Notification` (idle) | waiting for input |
 | `SessionEnd` / PTY exit | ended |
 
 `PostToolUse` for Edit / Write / MultiEdit / NotebookEdit adds `file_path` to the tab's
-changed-files list.
+changed-files list; it is also registered for the dialog tools, whose PostToolUse is the one sign
+that their dialog was answered.
+
+*Dialog tools* (`DIALOG_TOOLS`, `shared/hooks.ts`) are the tools whose call is a dialog the user
+answers: AskUserQuestion (a question with options) and ExitPlanMode (plan approval). Claude is
+blocked on the user from their `PreToolUse` on, and no Notification comes for them, so that hook
+puts the tab in *needs permission* at once: the strip sorts it first and tints it, the send gate
+holds text (its Enter would pick an option). The status stays `needs-permission` for plugins and
+`ccc sessions` (with the tool naming the dialog); only the renderer's wording differs. An answer
+key does not take a tab out of a dialog tool (several questions take one Enter each); the tool's
+`PostToolUse` or any later hook does. The list is the terminal CLI's tools that declare
+`requiresUserInteraction` (claude 2.1.316); EnterPlanMode asks through the ordinary permission
+flow. A background subagent's tool hook while the dialog is up moves the tab to working: wrong
+on screen, still not sendable.
 
 **Sending text into a session** — the core safety rule:
 
@@ -256,7 +271,8 @@ changed-files list.
   arrives as one message.
 - If busy, the text is queued and shown as a "queued" chip on the tab; delivered on the next
   `Stop`, cancellable from the chip.
-- Never sent while *needs permission*: a keystroke must never answer a permission prompt.
+- Never sent while *needs permission*: a keystroke must never answer a permission prompt, a
+  question or a plan approval.
 
 **Claude status UI** (core, not plugins):
 
@@ -871,7 +887,8 @@ All decided in phase 1:
 - Keybindings: Cmd-based, mac-first (on Linux Cmd = Ctrl), e.g. Cmd+T new Claude tab,
   Cmd+Shift+T shell tab, Cmd+W close tab, Cmd+B / Cmd+J / Cmd+Shift+B toggle zones, Cmd+, settings,
   Cmd+Shift+P palette, Cmd+Shift+W close the top overlay. All editable in Settings.
-- Hooks: `PreToolUse` on every tool (`*`); `PostToolUse` only for `Edit|Write|MultiEdit|NotebookEdit`.
+- Hooks: `PreToolUse` on every tool (`*`); `PostToolUse` only for `Edit|Write|MultiEdit|NotebookEdit` and the
+  dialog tools `AskUserQuestion|ExitPlanMode` (§3 Status per tab).
   All hooks are synchronous, so arrival order equals event order. No hook fires when a permission
   dialog is answered (and `PostToolUse` only when the tool ends), so an answer key typed into a
   needs-permission tab is what moves it back to working; widening the `PostToolUse` matcher would

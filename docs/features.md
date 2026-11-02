@@ -67,7 +67,8 @@ behind it are in [design.md](design.md).
   "overlay" in the menu): handy for `lazygit` or `yazi`. Esc goes to the program; the overlay
   closes when the program exits, or with Cmd+Shift+W. Overlays are not restored.
 - Claude status from hooks: tab dots, a top strip across windows, a Sessions panel with notes,
-  steps and changed files (click a file for `git diff` in a terminal overlay).
+  steps and changed files (click a file for `git diff` in a terminal overlay). A permission prompt,
+  a question from Claude and a plan approval all show as needing you and sort first.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
@@ -196,6 +197,11 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - A tab leaves "needs permission" when Enter or an option digit is typed into it (no hook fires
   when a dialog is answered). After Esc, or Enter on "No", it keeps showing "needs permission"
   until Claude's next turn.
+- A question from Claude (AskUserQuestion) or its plan-approval dialog (ExitPlanMode) shows as
+  "needs you · question" / "needs you · plan approval" and holds sends like a permission prompt
+  (plugins and `ccc sessions` see status `needs-permission` with that tool). It ends when Claude
+  reports the tool done, not on a key; a cancelled question (Esc) keeps showing until Claude's
+  next turn, and a background subagent's tool call while the dialog is up shows "working".
 - Closing a whole project window, or quitting, does not ask, even with running tabs.
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z; the app may take some chords before plugins.
 - On Linux `Cmd` is Ctrl, so the default chords take Ctrl+T, Ctrl+W, Ctrl+B, Ctrl+J and Ctrl+O, which

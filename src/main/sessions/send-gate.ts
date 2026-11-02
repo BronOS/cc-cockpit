@@ -3,7 +3,8 @@
 //
 // THE core safety rule of the app (CLAUDE.md): never type into a Claude session unless its status
 // is *waiting for input*. Any other screen may be a dialog that a keystroke answers: the
-// permission prompt (needs-permission), the trust-folder dialog right after start (starting,
+// permission prompt or a question / plan-approval dialog (needs-permission; a dialog tool's
+// PreToolUse enters it, status-reducer.ts), the trust-folder dialog right after start (starting,
 // idle: "Idle is not sendable" in the plan), a turn in progress (working). So:
 //   - the ONLY state that may receive text is `waiting`, and only while no earlier paste is still
 //     in flight (`delivering`);

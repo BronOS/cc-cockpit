@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionStripEntry, TabStatus } from '../../src/shared/ipc'
-import { orderStrip, otherWindowsEntries, topStripClass, statusLabel, stripText } from '../../src/renderer/status/strip-order'
+import { orderStrip, otherWindowsEntries, topStripClass, statusLabel, statusText, stripText } from '../../src/renderer/status/strip-order'
 
 // The strip components themselves need a DOM; they are covered end to end in
 // test/e2e/top-strip.spec.ts.
@@ -69,6 +69,17 @@ describe('stripText', () => {
       'alpha · needs permission'
     )
     expect(statusLabel('waiting')).toBe('waiting for input')
+  })
+
+  it('a dialog tool in needs-permission reads as needing you, not as a permission', () => {
+    expect(stripText(entry('a', 'needs-permission', { projectName: 'alpha', tool: 'AskUserQuestion' }))).toBe(
+      'alpha · needs you · question'
+    )
+    expect(statusText('needs-permission', 'ExitPlanMode')).toBe('needs you · plan approval')
+    expect(statusText('needs-permission', 'Bash')).toBe('needs permission · Bash')
+    // Only a needs-permission tab: a stale tool name on another status is shown as it is.
+    expect(statusText('working', 'AskUserQuestion')).toBe('working · AskUserQuestion')
+    expect(statusText('idle')).toBe('idle')
   })
 })
 

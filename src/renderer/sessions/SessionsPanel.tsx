@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { SessionDetail } from '../../shared/ipc'
 import { StatusDot } from '../status/StatusDot'
-import { statusLabel } from '../status/strip-order'
+import { statusText } from '../status/strip-order'
 import { useSessions } from '../status/use-sessions'
 import { FileGlyph } from '../window-icons'
 
@@ -66,10 +66,7 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
         >
           Claude {props.index}
         </button>
-        <span className="session-status">
-          {statusLabel(session.status)}
-          {session.tool ? ` · ${session.tool}` : ''}
-        </span>
+        <span className="session-status">{statusText(session.status, session.tool)}</span>
         {steps && (
           <span className="session-steps" title="Steps done">
             {steps.done}/{steps.total}

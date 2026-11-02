@@ -282,6 +282,39 @@ describe('registry wiring', () => {
     expect(writes).toEqual([])
   })
 
+  it('a question dialog holds a send until a real Stop, which delivers it once', () => {
+    ev('UserPromptSubmit', { prompt: 'plan it' })
+    ev('PreToolUse', { tool_name: 'AskUserQuestion' })
+    expect(reg.get('t1')).toMatchObject({ status: 'needs-permission', tool: 'AskUserQuestion' })
+    // The Enter this would type picks an option in the dialog: it must wait.
+    expect(reg.send('t1', 'a').delivered).toBe(false)
+    // The user's own keys in the dialog (one per question) neither deliver nor leave it.
+    reg.userInput('p1', 't1', '1')
+    reg.userInput('p1', 't1', '\r')
+    ev('Notification', { notification_type: 'idle_prompt' })
+    expect(reg.get('t1')?.status).toBe('needs-permission')
+    expect(writes).toEqual([])
+    ev('PostToolUse', { tool_name: 'AskUserQuestion' }) // answered: Claude goes on
+    expect(reg.get('t1')?.status).toBe('working')
+    expect(writes).toEqual([])
+    ev('Stop')
+    expect(texts()).toEqual([paste('a')])
+    ev('Stop')
+    expect(texts()).toEqual([paste('a')])
+  })
+
+  it('the plan-approval dialog (ExitPlanMode) holds a send the same way', () => {
+    ev('UserPromptSubmit')
+    ev('PreToolUse', { tool_name: 'ExitPlanMode' })
+    reg.send('t1', 'a')
+    reg.userInput('p1', 't1', '\r')
+    expect(reg.get('t1')?.status).toBe('needs-permission')
+    expect(writes).toEqual([])
+    ev('PostToolUse', { tool_name: 'ExitPlanMode' })
+    ev('Stop')
+    expect(texts()).toEqual([paste('a')])
+  })
+
   it('an idle Notification that promotes to waiting does not deliver; the next Stop does', () => {
     ev('SessionStart')
     reg.send('t1', 'a')

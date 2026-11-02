@@ -23,9 +23,21 @@
 // The one signal main has is the keystroke that answers the dialog, typed in the tab's terminal:
 // the `answer` event (isAnswerKey). Both states are non-sendable, so a wrong guess can never make
 // the gate type anything; the next Notification(permission_prompt) puts the tab back.
+//
+// Dialog tools (AskUserQuestion, ExitPlanMode: shared/hooks.ts DIALOG_TOOLS). Their call is a
+// dialog the user answers, so their PreToolUse enters needs-permission right away (the incident:
+// the strip showed "working · AskUserQuestion" while Claude sat blocked on a question, and a
+// plugin's send would have been typed into it had the status been waiting). No Notification
+// arrives for them, so the PreToolUse is the only signal. They leave it on their own PostToolUse
+// (registered for them: the tool ends the moment the dialog is answered) or on any later hook,
+// like a permission prompt, but NOT on an answer key: a question dialog with several questions
+// takes one Enter per question plus a submit screen, and a multi-select toggles with Enter, so
+// the first key proves nothing. The known gap: a PreToolUse/PostToolUse of a BACKGROUND subagent
+// while the dialog is up moves the tab to working (no ignore rule, as above). Working is not
+// sendable either, so this costs display accuracy, never a keystroke.
 import { SESSION_ID } from '../tabs/claude-argv'
 import { isPlainObject } from '../../shared/guards'
-import type { HookEvent } from '../../shared/hooks'
+import { isDialogTool, type HookEvent } from '../../shared/hooks'
 import type { TabStatus } from '../../shared/ipc'
 import type { TabKind } from '../../shared/types'
 
@@ -118,9 +130,12 @@ export function newEntry(init: {
 export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
   if (event.type === 'exit') return exited(entry, event.code)
   // Only out of needs-permission: from any other status the key was ordinary typing (a prompt's
-  // Enter is followed by UserPromptSubmit anyway), and an ended entry stays ended.
+  // Enter is followed by UserPromptSubmit anyway), and an ended entry stays ended. Not out of a
+  // dialog tool's needs-permission either: one key may not finish that dialog (header).
   if (event.type === 'answer') {
-    return entry.status === 'needs-permission' ? { ...entry, status: 'working' } : entry
+    return entry.status === 'needs-permission' && !isDialogTool(entry.tool)
+      ? { ...entry, status: 'working' }
+      : entry
   }
   // An entry that ended with an exit code belongs to a dead process: nothing a late hook says
   // revives it (a restart makes a new entry). One that ended through SessionEnd alone may still
@@ -155,13 +170,19 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
       return next
     }
     case 'PreToolUse': {
-      const next: SessionEntry = { ...entry, status: 'working' }
       const tool = payload.tool_name
+      // A dialog tool blocks on the user from this very event (header): never `working`, and
+      // never anything sendable.
+      const next: SessionEntry = { ...entry, status: isDialogTool(tool) ? 'needs-permission' : 'working' }
       if (typeof tool === 'string' && tool !== '') next.tool = cap(tool, MAX_TOOL_CHARS)
       return next
     }
     case 'PostToolUse': {
       const next: SessionEntry = { ...entry, status: 'working' }
+      // The dialog was answered and Claude goes on thinking: "working · AskUserQuestion" would
+      // read as the question still being up. Other tools keep their name until the next one, as
+      // before (a file tool's PostToolUse is the only other one registered).
+      if (isDialogTool(payload.tool_name) && entry.tool === payload.tool_name) next.tool = undefined
       const file = changedFile(payload)
       if (file !== undefined && !entry.files.includes(file) && entry.files.length < MAX_FILES) {
         next.files = [...entry.files, file]

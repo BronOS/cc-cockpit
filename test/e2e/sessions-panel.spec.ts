@@ -131,6 +131,24 @@ test('inside a repository a click shows the diff of a tracked file and of a new 
   await expect(overlay).toHaveCount(0)
 })
 
+test('a question from Claude reads as needing you on the card and the tab dot', async ({ cockpit }) => {
+  const { page } = cockpit
+  await openPanel(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
+  await cockpit.typeLine('/prompt plan it')
+  await cockpit.typeLine('/tool AskUserQuestion')
+  const item = page.locator('.session-item')
+  await expect(item).toHaveAttribute('data-status', 'needs-permission')
+  await expect(item.locator('.session-status')).toHaveText('needs you · question')
+  await expect(page.locator('.tab .status-dot')).toHaveAttribute('title', 'needs you · question')
+
+  await cockpit.typeLine('/done AskUserQuestion')
+  await expect(item.locator('.session-status')).toHaveText('working')
+  await cockpit.typeLine('/tool ExitPlanMode')
+  await expect(item.locator('.session-status')).toHaveText('needs you · plan approval')
+})
+
 test('the session title jumps to its tab', async ({ cockpit }) => {
   const { page } = cockpit
   await openPanel(cockpit)

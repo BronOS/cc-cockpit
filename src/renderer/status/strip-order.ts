@@ -1,8 +1,10 @@
 // Pure helpers for the top strip, so the order and the labels are unit-testable without a DOM.
+import { isDialogTool, type DialogTool } from '../../shared/hooks'
 import type { SessionStripEntry, TabStatus } from '../../shared/ipc'
 
 /**
- * The strip shows what needs the user first: a permission prompt, then a session waiting for
+ * The strip shows what needs the user first: a permission prompt or a question / plan dialog
+ * (both `needs-permission`), then a session waiting for
  * input, then the busy ones, then the quiet ones. `starting` shares the idle rank (a process
  * that has not reported yet is as quiet as an idle one), `ended` is last.
  */
@@ -40,11 +42,26 @@ export function statusLabel(status: TabStatus): string {
   return LABEL[status]
 }
 
-/** `project · status · tool` (the tool only while there is one). */
+/**
+ * What a dialog tool's dialog is called. A `needs-permission` tab whose tool is one of these is
+ * not asking for permission: Claude put a question (or its plan) to the user, so the status reads
+ * "needs you · question" instead of "needs permission · AskUserQuestion". A Record over the type,
+ * so a tool added to DIALOG_TOOLS without a word here fails the typecheck.
+ */
+const DIALOG_WORD: Record<DialogTool, string> = {
+  AskUserQuestion: 'question',
+  ExitPlanMode: 'plan approval'
+}
+
+/** `status · tool` (the tool only while there is one); a dialog tool's dialog as `needs you · <dialog>`. */
+export function statusText(status: TabStatus, tool?: string): string {
+  if (status === 'needs-permission' && isDialogTool(tool)) return `needs you · ${DIALOG_WORD[tool]}`
+  return tool ? `${statusLabel(status)} · ${tool}` : statusLabel(status)
+}
+
+/** `project · status · tool` (the tool only while there is one; statusText). */
 export function stripText(entry: SessionStripEntry): string {
-  const parts = [entry.projectName, statusLabel(entry.status)]
-  if (entry.tool) parts.push(entry.tool)
-  return parts.join(' · ')
+  return `${entry.projectName} · ${statusText(entry.status, entry.tool)}`
 }
 
 /**

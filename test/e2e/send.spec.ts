@@ -60,6 +60,33 @@ test('a send while working is queued and delivered on Stop as one bracketed past
   expect(cockpit.pastes()).toEqual(['\x1b[200~line one\nline two\x1b[201~', '\x1b[200~second\x1b[201~'])
 })
 
+test('a question dialog holds a send until the turn ends; Enter typed into it is no answer', async ({ cockpit }) => {
+  await cockpit.newTab('claude')
+  await expectEntry(cockpit, { status: 'idle' })
+  await cockpit.typeLine('/prompt plan the refactor')
+  // Claude asks: blocked on the user, like a permission prompt, never waiting for input.
+  await cockpit.typeLine('/tool AskUserQuestion')
+  await expectEntry(cockpit, { status: 'needs-permission' })
+  const { tabId } = await entry(cockpit)
+
+  const sent = await cockpit.hook<{ id: string; delivered: boolean }>('send', tabId, 'from a plugin')
+  expect(sent.delivered).toBe(false)
+  // The line below ends with a typed Enter, which would leave a plain permission prompt; a
+  // question stays until its PostToolUse.
+  await cockpit.typeLine('/idle')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE hook Notification')
+  await expectEntry(cockpit, { status: 'needs-permission', queue: [{ id: sent.id, text: 'from a plugin' }] })
+  expect(cockpit.pastes()).toEqual([])
+
+  await cockpit.typeLine('/done AskUserQuestion')
+  await expectEntry(cockpit, { status: 'working' })
+  expect(cockpit.pastes()).toEqual([])
+
+  await cockpit.typeLine('/stop')
+  await expectEntry(cockpit, { status: 'working', lastPrompt: 'from a plugin', queue: [], delivering: false })
+  expect(cockpit.pastes()).toEqual(['\x1b[200~from a plugin\x1b[201~'])
+})
+
 test('a queued text can be cancelled and is never typed', async ({ cockpit }) => {
   await cockpit.newTab('claude')
   await expectEntry(cockpit, { status: 'idle' })
