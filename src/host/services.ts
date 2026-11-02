@@ -20,6 +20,9 @@
 // in a `beginActivate` frame (the root of the call chain cycle detection follows) and backs the
 // injected `activationOf`/`isActivating` with its own activation promises; ctx.services binds the
 // plugin id.
+//
+// Caller id: each provider method runs in a call frame that records the consumer's bound id, and
+// `caller` reads it back to the provider (per-caller usage, caps). Same contract-not-boundary rule.
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { errorText } from '../shared/error-text'
 import { selectProvider, serviceProblemMessage, type ServiceChoices, type ServicePlugin } from '../shared/services'
@@ -189,6 +192,12 @@ interface Frame {
   plugin: string
   kind: 'activate' | 'call'
   live: boolean
+  /**
+   * A `call` frame's consumer: the plugin id its handle was bound to at `use`, never anything from
+   * the arguments (`ServiceRegistry.caller`). Not always the previous frame's plugin: a call from a
+   * command, a listener or a late timer starts a chain of its own.
+   */
+  caller?: string
 }
 
 /** What the loader runs each activate() in (see `ServiceRegistry.beginActivate`). */
@@ -532,7 +541,7 @@ export class ServiceRegistry {
     const input = cloneData(args, `service "${service}" ${method}(): arguments`)
     // The method runs as a frame of the caller's chain, so a call it makes back into an activation
     // that is waiting on this one is seen as the cycle it is (step 3a, through an active provider).
-    const frame: Frame = { plugin: provider, kind: 'call', live: true }
+    const frame: Frame = { plugin: provider, kind: 'call', live: true, caller: consumer }
     const chain = [...this.liveChain(), frame]
     let result: unknown
     try {
@@ -543,6 +552,28 @@ export class ServiceRegistry {
       frame.live = false
     }
     return cloneData(result, `service "${service}" ${method}(): the result`)
+  }
+
+  /**
+   * `ctx.services.caller()` for `pluginId`: the plugin whose call `pluginId` is serving right now,
+   * or undefined. Read from the innermost frame of the current chain only, and only when that frame
+   * - is a `call` frame: an `activate` frame serves no one, and listeners run outside any chain
+   *   (`emit` delivers them with `chain.exit`), so both read undefined;
+   * - is still live: a timer or promise callback the method started carries the frame, but once
+   *   the method's promise settled the call is over, and a late timer must not be counted against
+   *   a caller that is gone (the same rule `liveChain` applies for cycles);
+   * - is a call into `pluginId` itself. All plugins share one realm, so code of plugin X can run
+   *   inside a frame where another plugin is the provider (a function X left on a global, called
+   *   from Y's method). X is not serving that call; answering Y's caller to X would let X count work
+   *   against a plugin that never called X.
+   * Nested calls answer the innermost: inside C, for A -> B -> C, the caller is B, and back in B
+   * after its await of C the context is B's own frame again, whose caller is A.
+   */
+  caller(pluginId: string): string | undefined {
+    const frames = this.chain.getStore()
+    const frame = frames?.[frames.length - 1]
+    if (!frame || frame.kind !== 'call' || !frame.live || frame.plugin !== pluginId) return undefined
+    return frame.caller
   }
 
   /**

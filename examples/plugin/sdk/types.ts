@@ -376,6 +376,15 @@ export interface ServicesApi {
    * the project selected; otherwise dropped (one log line). A function or symbol in `data` throws.
    */
   emit(name: string, event: string, data?: unknown): void
+  /**
+   * The id of the plugin whose call this plugin is serving: inside one of its provided methods, and
+   * in code that method awaits or timers it starts while the call is still running. With nested
+   * calls it is the innermost caller (for A -> B -> C, C sees B). `undefined` in `activate`, in
+   * event listeners, outside any call, and once the call has returned (a late timer). Set from the
+   * caller's own `ctx`, never from arguments; for per-caller usage counts or caps. Not a security
+   * boundary: all plugins of a project share one JS realm.
+   */
+  caller(): string | undefined
 }
 
 /** What a plugin's `main` module exports. */

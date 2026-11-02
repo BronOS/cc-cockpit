@@ -310,6 +310,19 @@ describe('PluginLoader services', () => {
     expect(Date.now() - started).toBeLessThan(1_000)
     expect(svc().error).toBe('p.a -> p.b -> p.a: services called in a cycle during activate')
   })
+
+  it('ctx.services.caller() names the consumer inside a provided method, and nobody in activate', async () => {
+    svc()
+    write(
+      join(root, 'provider'),
+      "exports.activate = (ctx) => { __svc.inActivate = ctx.services.caller(); ctx.services.provide('greet', { hi: () => ctx.services.caller() }) }"
+    )
+    write(join(root, 'consumer'), "exports.activate = (ctx) => { __svc.handle = ctx.services.use('greet') }")
+    const loader = makeLoader()
+    await loader.activateAll([provider(), consumer()])
+    expect(svc().inActivate).toBeUndefined()
+    expect(await (svc().handle as { hi(): Promise<unknown> }).hi()).toBe('a.consumer')
+  })
 })
 
 describe('PluginLoader timeouts', () => {

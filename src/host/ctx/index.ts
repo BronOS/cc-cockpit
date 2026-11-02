@@ -354,7 +354,12 @@ export class HostContexts {
         emit: (name: string, event: string, data?: unknown) => {
           alive()
           servicesOf().emit(spec.id, name, event, data)
-        }
+        },
+        // The registry answers from the call frame, keyed by the id bound here, so a plugin can only
+        // learn who is calling it. No alive() check, unlike the members above: a call already running
+        // when the plugin is released finishes on the old copy (see ServiceRegistry.release), and a
+        // read with no side effect must not break it.
+        caller: () => servicesOf().caller(spec.id)
       }),
       log: Object.freeze(logger),
       notify

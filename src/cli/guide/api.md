@@ -78,6 +78,15 @@ ids it does take (a tab, a panel) are looked up inside that project only.
   - `ctx.services.emit(name, event, data)`: only the provider the project selected reaches
     consumers (others are dropped, logged once); `handle.on(event, listener)` subscribes and
     returns the unsubscriber. Listeners run later, never inside `emit`.
+  - `ctx.services.caller()`: in a provider, the id of the plugin whose call it is serving, for
+    per-caller usage counts or caps. It holds inside the provided method and in what that method
+    awaits or starts (timers, promise callbacks) while the call is still running; with nested calls
+    it is the innermost caller (A calls B, B's method calls C: C sees B). `undefined` in `activate`,
+    in event listeners, outside any call, and after the call returned (a late timer), and it never
+    answers another plugin's call (only calls into your own plugin). The registry takes it from the
+    caller's own `ctx`, so it cannot be set or faked through arguments, unlike a `label` argument.
+    It is not a security boundary: all plugins of a project share one JS realm, so it guards
+    against honest mistakes, not against a hostile plugin.
   - Plain data only: arguments, results and event data are copied (structured clone). A function
     or symbol throws `<what> must be plain data (no functions or symbols): ...`; shared memory (a
     SharedArrayBuffer, a typed array or DataView over one, a shared WebAssembly.Memory), nested too,

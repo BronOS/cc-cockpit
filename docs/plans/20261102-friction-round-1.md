@@ -162,10 +162,10 @@ External review: auto
 - Modify: `test/unit/host-services.test.ts`
 - Modify: `src/cli/guide/api.md`; copy `src/sdk/types.ts` to `examples/plugin/sdk/types.ts`
 
-- [ ] `caller()` per Technical Details: the calling plugin's id inside a provider method and anything it awaits for that call; `undefined` in activate, timers not started by a call, and event listeners
-- [ ] guide: what it is for (per-caller usage, caps), that it can't be set through arguments, and that it isn't a security boundary
-- [ ] write tests: two consumers see their own ids; nested call A→B→C shows B inside C; concurrent calls don't mix ids; `undefined` outside calls and in activate; a timer started during a call sees the id while the call runs and `undefined` after it returned
-- [ ] run tests - must pass before next task
+- [x] `caller()` per Technical Details: the calling plugin's id inside a provider method and anything it awaits for that call; `undefined` in activate, timers not started by a call, and event listeners
+- [x] guide: what it is for (per-caller usage, caps), that it can't be set through arguments, and that it isn't a security boundary
+- [x] write tests: two consumers see their own ids; nested call A→B→C shows B inside C; concurrent calls don't mix ids; `undefined` outside calls and in activate; a timer started during a call sees the id while the call runs and `undefined` after it returned
+- [x] run tests - must pass before next task
 
 ### Task 5: App-wide plugin storage [model: opus]
 
