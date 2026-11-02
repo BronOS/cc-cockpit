@@ -38,35 +38,34 @@ describe('choosePasswordStore', () => {
     expect(NAME_HAS_OWNER_ARGV).toContain('string:org.freedesktop.secrets')
   })
 
-  it('also on a recognised desktop when the owner exists (harmless, same backend)', () => {
-    expect(choose({ env: { ...bus, XDG_CURRENT_DESKTOP: 'GNOME' } })).toBe('gnome-libsecret')
+  it('a recognised desktop keeps Electron\'s own backend even with an owner, and the bus is not asked', () => {
+    // KDE with KWallet-encrypted secrets and a separate Secret Service: libsecret would make them unreadable.
+    const run = vi.fn(owner(true))
+    for (const d of ['GNOME', 'ubuntu:GNOME', 'KDE', 'X-Cinnamon', 'XFCE', 'Pantheon', 'Unity', 'Deepin', 'UKUI', 'LXQt']) {
+      expect(choose({ run, env: { ...bus, XDG_CURRENT_DESKTOP: d } }), d).toBeNull()
+    }
+    expect(run).not.toHaveBeenCalled()
+    expect(RECOGNISED_DESKTOPS).toContain('kde')
   })
 
   it('no owner on the bus: no switch, even on an unknown desktop', () => {
     expect(choose({ run: owner(false) })).toBeNull()
   })
 
-  it('check impossible, unrecognised desktop, bus address set: libsecret anyway', () => {
-    expect(choose({ run: broken })).toBe('gnome-libsecret')
+  it('check impossible (no dbus-send, a timeout): no switch, fail closed', () => {
+    // Forced libsecret with no keyring behind it makes Electron encrypt with its built-in key while
+    // reporting gnome_libsecret; only a confirmed owner earns the switch.
+    expect(choose({ run: broken })).toBeNull()
+    expect(choose({ run: broken, env: { ...bus } })).toBeNull()
   })
 
-  it('check impossible and unreadable output behave the same', () => {
-    expect(choose({ run: () => 'garbage' })).toBe('gnome-libsecret')
+  it('unreadable output is no answer: no switch', () => {
+    expect(choose({ run: () => 'garbage' })).toBeNull()
+    expect(choose({ run: () => 'boolean truer' })).toBeNull()
   })
 
-  it('check impossible, unrecognised desktop, no bus address: none', () => {
-    expect(choose({ run: broken, env: { XDG_CURRENT_DESKTOP: 'Hyprland' } })).toBeNull()
-  })
-
-  it('check impossible, recognised desktop: none (Electron picks its own backend)', () => {
-    for (const d of ['GNOME', 'ubuntu:GNOME', 'KDE', 'X-Cinnamon', 'XFCE', 'Pantheon', 'Unity', 'Deepin', 'UKUI']) {
-      expect(choose({ run: broken, env: { ...bus, XDG_CURRENT_DESKTOP: d } }), d).toBeNull()
-    }
-    expect(RECOGNISED_DESKTOPS).toContain('gnome')
-  })
-
-  it('check impossible and no XDG_CURRENT_DESKTOP at all: counts as unrecognised', () => {
-    expect(choose({ run: broken, env: { ...bus } })).toBe('gnome-libsecret')
+  it('no XDG_CURRENT_DESKTOP at all counts as unrecognised: the bus decides', () => {
+    expect(choose({ env: { ...bus } })).toBe('gnome-libsecret')
   })
 
   it('an explicit --password-store wins, in both spellings', () => {

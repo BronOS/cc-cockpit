@@ -769,6 +769,10 @@ ignored and can be deleted by hand.) Core keeps only what main alone can do:
   `dbus-send ... NameHasOwner` call, argv only, bounded; any failure means no switch). With no keyring the
   error names the fix: start and unlock a Secret Service keyring, or launch with
   `--password-store=gnome-libsecret` (`kwallet6` on KDE 6). There is still no plaintext fallback.
+  The backend name and `isAsyncEncryptionAvailable` are not trusted alone: with a forced
+  `--password-store` and no keyring behind it, Electron 45 reports both as fine and encrypts with
+  Chromium's hard-coded key, tagging the ciphertext `v10`. On Linux the store encrypts a probe and
+  accepts only `v11` (a key from the keyring), on the probe and on every value it returns.
   App-wide per plugin id; a plugin that wants
   per-project sign-ins names its keys itself (`google:work`) and lets the project pick one
   through a normal project setting. Keys match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, values are

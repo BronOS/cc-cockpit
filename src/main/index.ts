@@ -158,7 +158,8 @@ function start(): void {
   // Linux desktops Electron does not recognise (Hyprland, sway ...): safeStorage falls back to
   // `basic_text` and secrets are refused although a Secret Service keyring is running. Chromium reads
   // this switch at `ready`, so it goes before selectSecretStore and app.whenReady
-  // (secrets/password-store.ts decides; it skips an explicit --password-store).
+  // (secrets/password-store.ts decides: only on an unrecognised desktop with a confirmed Secret
+  // Service owner, never over an explicit --password-store).
   const passwordStore = choosePasswordStore({
     platform: process.platform,
     argv: process.argv,

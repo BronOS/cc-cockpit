@@ -5,6 +5,17 @@
 // owns `org.freedesktop.secrets` on the session bus. Telling Chromium to use libsecret fixes that
 // when a Secret Service really is there.
 //
+// The switch is appended only when the bus confirms an owner, never on a guess: with the switch and
+// no keyring, Electron 45 does NOT report the problem. Checked by hand on a private bus without a
+// Secret Service: `isAsyncEncryptionAvailable()` true, `getSelectedStorageBackend()`
+// `gnome_libsecret`, and ciphertext tagged `v10`, Chromium's hard-coded key. secret-store.ts refuses
+// that tag as well (the keyring can still fail after this check), so this file only decides when the
+// switch is worth trying.
+//
+// Recognised desktops keep Electron's own choice even when a Secret Service runs: on KDE the backend
+// is KWallet, and switching an existing user to libsecret would make every secret stored through
+// KWallet unreadable (a separately running Secret Service is common there).
+//
 // Pure decision logic with an injected bus check, so it runs under vitest; only `main/index.ts`
 // calls `app.commandLine.appendSwitch` (before `selectSecretStore` and `ready`). No `electron`
 // import here.
@@ -16,8 +27,8 @@ import { execFileSync } from 'node:child_process'
  * `safeStorage.getSelectedStorageBackend()` docs (node_modules/electron/electron.d.ts), which list
  * GNOME, X-Cinnamon, Deepin, Pantheon, XFCE, UKUI and Unity for libsecret and KDE for KWallet;
  * Chromium's `base::nix::GetDesktopEnvironment` also knows LXQt and the KDE aliases, so those are
- * kept as recognised too: no switch is forced there when the bus cannot be asked. XDG_CURRENT_DESKTOP is a
- * colon-separated list (`ubuntu:GNOME`); any entry counts.
+ * kept as recognised too: no switch is ever appended there. XDG_CURRENT_DESKTOP is a colon-separated
+ * list (`ubuntu:GNOME`); any entry counts.
  */
 export const RECOGNISED_DESKTOPS: readonly string[] = [
   'gnome',
@@ -79,28 +90,24 @@ function recognisedDesktop(env: Record<string, string | undefined>): boolean {
 /**
  * Decides whether to append `--password-store=gnome-libsecret`.
  *  - Not Linux, an explicit `--password-store` in argv, or a test run with the fake store: null.
- *  - Secret Service has an owner: the switch.
- *  - No owner: null (safeStorage reports unavailable and the error says how to fix it).
- *  - The check cannot run (no `dbus-send` on a minimal install, a timeout, an error): a silent miss
- *    would leave the bug in place, so append anyway when a session bus address is set and the
- *    desktop is not one Electron recognises; `safeStorage` then reports unavailable if there really
- *    is no keyring.
+ *  - A desktop Electron recognises: null, whatever the bus says (its own backend, KWallet on KDE,
+ *    is where an existing user's secrets are).
+ *  - Otherwise the bus decides: the switch only when `org.freedesktop.secrets` has an owner. No
+ *    owner, or no answer at all (no `dbus-send`, a timeout, an error, unreadable output): null, so
+ *    Electron stays on `basic_text` and secret-store.ts refuses with the fix in its message.
  */
 export function choosePasswordStore(input: PasswordStoreInput): PasswordStoreChoice {
   const { platform, argv, env, isPackaged, run } = input
   if (platform !== 'linux') return null
   if (argv.some((a) => a === '--password-store' || a.startsWith('--password-store='))) return null
   if (env.CC_COCKPIT_FAKE_SECRETS === '1' && env.CC_COCKPIT_TEST === '1' && !isPackaged) return null
+  if (recognisedDesktop(env)) return null
 
   let out: string
   try {
     out = run([...NAME_HAS_OWNER_ARGV])
   } catch {
-    out = ''
+    return null
   }
-  const m = /boolean\s+(true|false)/.exec(out)
-  if (m) return m[1] === 'true' ? 'gnome-libsecret' : null
-  // Check impossible (or unreadable output).
-  const hasBus = (env.DBUS_SESSION_BUS_ADDRESS ?? '') !== ''
-  return hasBus && !recognisedDesktop(env) ? 'gnome-libsecret' : null
+  return /boolean\s+true\b/.test(out) ? 'gnome-libsecret' : null
 }
