@@ -146,6 +146,26 @@ class Client {
 }
 
 describe('requests', () => {
+  it('stamps appVersion on ok, error, refused and unserializable replies when it has one', async () => {
+    const s = await started({ appVersion: '1.2.3' })
+    s.handle('cycle', () => {
+      const a: Record<string, unknown> = {}
+      a.self = a
+      return a
+    })
+    const c = await Client.open()
+    expect(await c.request({ token: TOKEN, cmd: 'echo' })).toMatchObject({ ok: true, appVersion: '1.2.3' })
+    expect(await c.request({ token: TOKEN, cmd: 'boom' })).toMatchObject({ ok: false, appVersion: '1.2.3' })
+    expect(await c.request({ token: 'nope', cmd: 'echo' })).toMatchObject({ ok: false, error: 'invalid token', appVersion: '1.2.3' })
+    expect(await c.request({ token: TOKEN, cmd: 'cycle' })).toMatchObject({ ok: false, appVersion: '1.2.3' })
+  })
+
+  it('sends no appVersion when it has none', async () => {
+    await started()
+    const c = await Client.open()
+    expect(await c.request({ token: TOKEN, cmd: 'echo' })).not.toHaveProperty('appVersion')
+  })
+
   it('round-trips a tokened request with the caller resolved by main', async () => {
     await started()
     const c = await Client.open()

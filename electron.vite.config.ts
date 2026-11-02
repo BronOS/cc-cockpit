@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
@@ -15,8 +16,13 @@ import { defineConfig } from 'electron-vite'
 // cli and host are extra Node entries of the main build: they share main's Node target and
 // externalisation rules, and their input keys carry the directory so one `outDir: out` yields
 // the three folders above.
+// Compiled into the main bundles (src/shared/app-version.ts): `ccc` runs as plain Node, where
+// app.getVersion() does not exist, and compares this with the version the running app reports.
+const { version } = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }
+
 export default defineConfig({
   main: {
+    define: { __APP_VERSION__: JSON.stringify(version) },
     build: {
       outDir: 'out',
       // Empties the whole of out/, including out/preload and out/renderer. That is only safe

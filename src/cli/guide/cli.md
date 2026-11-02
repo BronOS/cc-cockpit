@@ -44,6 +44,8 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
 
 ## Things to know
 
+- After an upgrade over a running app, a command warns on stderr that the app and `ccc` are
+  different versions, then runs as usual: stdout and the exit code do not change. Restart the app.
 - Text for `session note` and `notify` is one value; it is never run through a shell.
 - Paths you pass are resolved against your current directory by `ccc`, not by the app.
 - Plugins can add commands of their own (`contributes.cli`, see the `plugins` and `api` topics).

@@ -141,16 +141,16 @@ Version and hash are validated before they are written into Ruby.
 - Modify: `src/cli/guide/cli.md`
 - Modify: `test/unit/` (the existing client and socket-server tests)
 
-- [ ] inject `__APP_VERSION__` into the CLI bundle, with a declaration for typecheck and a fallback for tests
-- [ ] replies carry `appVersion` as described under Technical Details, and `parseReply` keeps it
-- [ ] on a mismatch print the one-line warning to stderr and carry on, with the exit code and stdout unchanged
-- [ ] `runHook` and its request line stay byte-for-byte as they are
-- [ ] add a line to the guide, as the drift tests require
-- [ ] write tests: match prints nothing; mismatch warns on stderr only; `--json` stdout still parses; a reply with no `appVersion`
+- [x] inject `__APP_VERSION__` into the CLI bundle, with a declaration for typecheck and a fallback for tests
+- [x] replies carry `appVersion` as described under Technical Details, and `parseReply` keeps it
+- [x] on a mismatch print the one-line warning to stderr and carry on, with the exit code and stdout unchanged
+- [x] `runHook` and its request line stay byte-for-byte as they are
+- [x] add a line to the guide, as the drift tests require
+- [x] write tests: match prints nothing; mismatch warns on stderr only; `--json` stdout still parses; a reply with no `appVersion`
       (an older app) prints nothing; an `appVersion` of a wrong type, huge length or with control characters prints nothing unsafe;
       a plugin command warns exactly once
-- [ ] write a test that a hook request has no version field and a hook prints nothing
-- [ ] run tests - must pass before next task
+- [x] write a test that a hook request has no version field and a hook prints nothing
+- [x] run tests - must pass before next task
 
 ### Task 4: Update check in main [model: sonnet]
 

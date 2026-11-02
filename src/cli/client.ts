@@ -15,6 +15,7 @@ import { dirname, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
 import { dataPaths, defaultDataDir, fallbackSocketDir, resolveDataDir, socketPath } from '../main/paths'
 import { connect } from '../main/socket/transport'
+import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import {
   encodeRequest,
@@ -256,6 +257,29 @@ const processOutput: Output = {
   stderr: (text) => void process.stderr.write(text)
 }
 
+/** A version as the app reports it. Anything else in a reply is not worth printing. */
+const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+const MAX_VERSION_LENGTH = 64
+
+/**
+ * After an upgrade over a running app, `ccc` (rewritten to the new bundle) and the app that answers
+ * it are different versions. Say so on stderr and carry on: stdout stays clean for `--json` and
+ * scripts, and the exit code remains the command's. Not for hooks, which never read a reply. An
+ * older app sends no version, which never warns; nor does a value that is not a version, since the
+ * reply is only as trustworthy as whatever owns the socket.
+ */
+function warnOnVersionMismatch(trip: RoundTrip, out: Output): void {
+  if (!('reply' in trip)) return
+  const running = trip.reply.appVersion
+  if (running === undefined || running === BUILD_VERSION) return
+  if (running.length > MAX_VERSION_LENGTH || !VERSION_RE.test(running)) return
+  try {
+    out.stderr(`ccc: the app is running version ${plainLine(running)}, this ccc is version ${plainLine(BUILD_VERSION)}. Restart cc-cockpit.\n`)
+  } catch {
+    // stderr closed: the warning must not change the command's result
+  }
+}
+
 /**
  * A command that talks to the app with one request (everything `parseArgs` returns except
  * hook/help/guide/usage/none, and `plugin`, which takes two: runPlugin).
@@ -408,6 +432,7 @@ export async function runCommand(
     const waits =
       command.kind === 'overlay' || command.kind === 'plugin-link' || command.kind === 'plugin-unlink' ? undefined : REPLY_TIMEOUT_MS
     const trip = await roundTrip(socket, encodeRequest(request), waits)
+    warnOnVersionMismatch(trip, out)
     if ('closed' in trip) {
       // The connection was made and then dropped with no reply: not "the app is not there". Main
       // drops a request over the size limit and the framer refuses an oversized reply, so silence
@@ -528,6 +553,8 @@ export async function runPlugin(
 
   const specTrip = await ask(env, request(1, 'plugin.cli.spec', { name: command.name }), REPLY_TIMEOUT_MS)
   if ('absent' in specTrip) return 0
+  // Once per command: the second request below goes to the same app.
+  warnOnVersionMismatch(specTrip, out)
   const specResult = resultOf(specTrip, out)
   if ('code' in specResult) return specResult.code
   const spec = (specResult.result ?? {}) as Partial<PluginCliSpec>

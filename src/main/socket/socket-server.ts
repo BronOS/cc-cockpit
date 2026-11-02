@@ -85,6 +85,8 @@ export interface SocketServerOptions {
   resolveToken(token: string): TokenOwner | undefined
   /** An absolute folder path -> its canonical path and project id (if a record exists). */
   resolveProject(path: string): { path: string; projectId: string | undefined }
+  /** The running app's version, sent on every reply so `ccc` can tell it is from another version. */
+  appVersion?: string
   log?: (message: string) => void
   /** How long the stale-socket probe waits for an answer. */
   probeTimeoutMs?: number
@@ -276,12 +278,13 @@ export class SocketServer {
     } catch (err) {
       reply = { id: err instanceof ProtocolError ? err.id : id, ok: false, error: errorText(err) }
     }
+    const stamp = this.options.appVersion === undefined ? {} : { appVersion: this.options.appVersion }
     let text: string
     try {
-      text = encodeReply(reply)
+      text = encodeReply({ ...reply, ...stamp })
     } catch (err) {
       // A handler returned something JSON cannot carry (a cycle, a BigInt).
-      text = encodeReply({ id, ok: false, error: `unserializable result: ${errorText(err)}` })
+      text = encodeReply({ id, ok: false, error: `unserializable result: ${errorText(err)}`, ...stamp })
     }
     // The client may be gone: `ccc hook` is fire-and-forget and closes without reading.
     if (!socket.destroyed && socket.writable) socket.write(text)

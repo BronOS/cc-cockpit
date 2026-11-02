@@ -4,6 +4,8 @@
 // Newline-delimited JSON, one request or reply per line:
 //   request  { "v": 1, "id": n, "token"?: string, "project"?: string, "cmd": string, "args": {...} }
 //   reply    { "id": n, "ok": true, "result": ... }  |  { "id": n, "ok": false, "error": string }
+//            either may carry "appVersion": the running app's version. An older app sends none. Only
+//            the reply has it: the CLI does the comparing, and a hook's request line stays as it was.
 // A reply to a line that could not be parsed (or has no usable id) carries `"id": null`.
 // A client may half-close after its last request (`socket.end(line)`): main still answers every
 // request on the connection, then ends it. A connection with no traffic and nothing in progress
@@ -86,8 +88,8 @@ export interface Request {
 }
 
 export type Reply =
-  | { id: number | null; ok: true; result: unknown }
-  | { id: number | null; ok: false; error: string }
+  | { id: number | null; ok: true; result: unknown; appVersion?: string }
+  | { id: number | null; ok: false; error: string; appVersion?: string }
 
 /** One complete request line (with the trailing newline). */
 export function encodeRequest(request: Request): string {
@@ -147,8 +149,10 @@ export function parseReply(line: string): Reply {
   if (!isPlainObject(value)) throw new Error('reply must be an object')
   const id = value.id === null || Number.isSafeInteger(value.id) ? (value.id as number | null) : undefined
   if (id === undefined) throw new Error('reply id must be an integer or null')
-  if (value.ok === true) return { id, ok: true, result: value.result }
-  if (value.ok === false && typeof value.error === 'string') return { id, ok: false, error: value.error }
+  // Any string gets through here, unvalidated: only the CLI prints it, and it checks first (client.ts).
+  const version = typeof value.appVersion === 'string' ? { appVersion: value.appVersion } : {}
+  if (value.ok === true) return { id, ok: true, result: value.result, ...version }
+  if (value.ok === false && typeof value.error === 'string') return { id, ok: false, error: value.error, ...version }
   throw new Error('malformed reply')
 }
 

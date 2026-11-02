@@ -76,6 +76,12 @@ describe('parseReply', () => {
     expect(parseReply(encodeReply({ id: null, ok: false, error: 'no' }))).toEqual({ id: null, ok: false, error: 'no' })
   })
 
+  it('keeps a string appVersion on ok and error replies, and drops any other type', () => {
+    expect(parseReply('{"id":1,"ok":true,"result":null,"appVersion":"1.2.3"}')).toEqual({ id: 1, ok: true, result: null, appVersion: '1.2.3' })
+    expect(parseReply('{"id":1,"ok":false,"error":"no","appVersion":"1.2.3"}')).toEqual({ id: 1, ok: false, error: 'no', appVersion: '1.2.3' })
+    expect(parseReply('{"id":1,"ok":true,"result":null,"appVersion":7}')).toEqual({ id: 1, ok: true, result: null })
+  })
+
   it('throws on a malformed reply', () => {
     expect(() => parseReply('{"id":1}')).toThrow()
     expect(() => parseReply('{"id":"x","ok":true}')).toThrow()

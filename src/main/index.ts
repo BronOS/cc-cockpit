@@ -85,6 +85,7 @@ import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-dif
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPluginCliHandlers, registerPluginDevHandlers } from './socket/handlers'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
+import { BUILD_VERSION } from '../shared/app-version'
 import { ThemeService } from './themes/theme-service'
 import { FirstTab } from './tabs/first-tab'
 import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
@@ -796,6 +797,9 @@ function start(): void {
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
+    // Started as `electron out/main/index.js` (e2e), app.getVersion() is Electron's own version and
+    // every `ccc` would warn. A checkout has no upgrade to warn about, so it reports what it was built from.
+    appVersion: app.isPackaged ? app.getVersion() : BUILD_VERSION,
     resolveToken: (token): TokenOwner | undefined => {
       // Both tables are walked whatever the first finds, so the time taken does not say which
       // kind of thing (if any) holds a token close to the guess.
