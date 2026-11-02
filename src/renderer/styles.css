@@ -362,7 +362,9 @@ iframe:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 44px;
+  /* Same height as a panel header (.panel-header), so the tab bar and the side zones' headers
+     line up across the window. */
+  height: 36px;
   padding: 0 10px;
   box-sizing: border-box;
   background: var(--cc-bg);
@@ -373,8 +375,8 @@ iframe:focus-visible {
   display: flex;
   gap: 2px;
   min-width: 0;
-  padding: 3px;
-  border-radius: 9px;
+  padding: 2px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--cc-fg) 5%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 4%, transparent);
   overflow-x: auto;
@@ -388,7 +390,7 @@ iframe:focus-visible {
   flex: none;
   display: flex;
   align-items: center;
-  height: 28px;
+  height: 26px;
   max-width: 220px;
   border-radius: var(--cc-radius-md);
   color: var(--cc-fg-muted);
