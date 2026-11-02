@@ -5,7 +5,9 @@
   "api": 1,
   "main": "dist/host.js",
   "contributes": {
-    "openFile": { "title": "Reviewer (diff and notes)" },
+    "openFile": {
+      "title": "Reviewer (diff and notes)"
+    },
     "cli": [
       {
         "name": "review",
@@ -14,5 +16,12 @@
       }
     ]
   },
-  "services": { "provides": { "reviewer": 1 } }
+  "services": {
+    "provides": {
+      "reviewer": 1
+    },
+    "uses": {
+      "editor": 1
+    }
+  }
 }

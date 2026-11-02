@@ -24,3 +24,9 @@ Where the guide was unclear or wrong, an API was missing, or I had to guess, fou
 - `panels` / overlay: whether an overlay page may use module scripts (`type="module"`, dynamic `import()`) under
   the sandbox's opaque origin is not stated. I assumed not and bundle one classic script (1 MB), which rules out
   loading languages on demand.
+- `api` / services: there is no way to ask whether a service has a provider without calling it (something like
+  `ctx.services.available('editor')`). The design hides Edit when no editor plugin is enabled; instead the button is
+  always shown, and a click that fails with the "no enabled plugin ... provides" text shows a hint (`dist/host.js`).
+  Matching that error text is brittle.
+- `dev-loop` (question, not checked): what happens to an open overlay when its plugin reloads (edit of a linked file)
+  is not documented. Does it close, stay with its handle dead, or stay connected to the new copy?

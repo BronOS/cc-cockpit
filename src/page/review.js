@@ -184,7 +184,7 @@ function extensionsFor(side, path) {
     drawSelection(),
     highlightSelectionMatches(),
     EditorState.readOnly.of(true), // the reviewer only reads; Edit opens the editor
-    keymap.of([...searchKeymap, { key: 'a', run: () => (addNote(side), true) }, { key: 'j', run: goToNextChunk }, { key: 'k', run: goToPreviousChunk }]),
+    keymap.of([...searchKeymap, { key: 'a', run: () => (addNote(side), true) }, { key: 'e', run: () => (edit(), true) }, { key: 'j', run: goToNextChunk }, { key: 'k', run: goToPreviousChunk }]),
     languageFor(path),
     baseTheme,
     themeCompartment.of(syntaxFor()),
@@ -389,6 +389,17 @@ function updateQueuedHint() {
   $('queued').textContent = t && t.status !== 'waiting' ? 'Claude is busy: the review is queued until it waits for input.' : ''
 }
 
+/** Asks the host to open the editor at the new side's cursor line (the old side has no file). */
+function edit() {
+  if (state.sides.newMissing) return
+  const v = state.views.new
+  const line = v ? v.state.doc.lineAt(v.state.selection.main.head).number : 1
+  clearTimeout(draftTimer)
+  ccPanel.post({ type: 'draft', draft: state.draft })
+  $('status').textContent = 'Opening the editor…'
+  ccPanel.post({ type: 'edit', line })
+}
+
 function finish(action) {
   clearTimeout(draftTimer)
   const empty = !state.draft.global.trim() && state.draft.notes.every((n) => !n.text.trim())
@@ -420,6 +431,8 @@ function init(m) {
   $('note').textContent = s.note || ''
   $('note').hidden = !s.note
   $('global').value = state.draft.global
+  $('edit').disabled = !!s.newMissing
+  $('edit').title = s.newMissing ? 'The file is deleted: nothing to edit' : $('edit').title
   buildEditors()
   renderNotes()
   renderTabs()
@@ -446,11 +459,13 @@ $('target').addEventListener('change', (e) => {
 $('target').addEventListener('focus', () => ccPanel.post({ type: 'tabs' }))
 $('discuss').addEventListener('click', () => finish('discuss'))
 $('new-session').addEventListener('click', () => finish('new'))
+$('edit').addEventListener('click', () => edit())
 $('close').addEventListener('click', () => finish('close'))
 
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return
   if (m.type === 'init') init(m)
+  else if (m.type === 'error') $('status').textContent = m.message
   else if (m.type === 'tabs') {
     state.tabs = m.tabs || []
     renderTabs()

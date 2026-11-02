@@ -29,6 +29,9 @@ exports.activate = (ctx) => {
       throw e
     }))
   const exec = (argv) => ctx.exec(argv, { timeoutMs: 15000 })
+  // The editor is whichever plugin the project uses for the "editor" service (cockpit.editor,
+  // micro, by default). Resolved on every call, so it may come and go.
+  const editor = ctx.services.use('editor')
 
   // One overlay per file: a second open of the same file is ignored while the first is up (the
   // API has no way to focus an existing overlay).
@@ -90,6 +93,20 @@ exports.activate = (ctx) => {
           .catch((e) => ctx.log.error(`draft save: ${e.message}`))
       } else if (m.type === 'layout' && LAYOUTS.includes(m.layout)) {
         ctx.appStorage.set(LAYOUT_KEY, m.layout).catch((e) => ctx.log.error(`layout save: ${e.message}`))
+      } else if (m.type === 'edit') {
+        // Open the editor first and close the review only when that worked, so a missing editor
+        // leaves the person where they were, with the reason. The draft is already saved.
+        const line = Number.isInteger(m.line) && m.line >= 1 ? m.line : undefined
+        editor
+          .open(sides.path, { line })
+          .then(() => handle.close())
+          .catch((e) => {
+            const missing = /no enabled plugin in this project provides service "editor"/.test(e.message)
+            handle.post({
+              type: 'error',
+              message: missing ? 'No editor: enable "Editor (micro)" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''),
+            })
+          })
       } else if (m.type === 'tabs') {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
       }
