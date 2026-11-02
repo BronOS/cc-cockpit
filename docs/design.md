@@ -822,6 +822,9 @@ version. It runs once the release is public, so if it fails the update notice is
 old version; re-running it picks up the newest release. An older release published late changes nothing there, and the run
 never moves the cask to an older version than the tap has.
 
+The packed app must have no world-writable file: `scripts/after-pack.cjs` clears those bits, because Electron's own files can
+carry them, and the release workflow stops if any remain.
+
 The first-launch text in the README and the cask caveats (`scripts/render-cask.mjs`) comes from the v0.1.0 run on a Mac: macOS
 asks once to allow the app. Check it still holds when the signing setup or the macOS floor changes.
 

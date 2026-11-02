@@ -9,6 +9,10 @@ const yml = readFileSync(join(root, 'electron-builder.yml'), 'utf8')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
 
 describe('electron-builder.yml', () => {
+  it('clears shared write access from the packed app before making installers', () => {
+    expect(yml).toMatch(/^afterPack: scripts\/after-pack\.cjs$/m)
+  })
+
   it('never publishes and ships the build output with node-pty unpacked', () => {
     expect(yml).toMatch(/^publish: null$/m)
     // out/ holds cli, host, sdk/panel.js and preload next to main: all of it goes into app.asar.

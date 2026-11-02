@@ -38,6 +38,8 @@ appId: dev.cc-cockpit.app
 productName: cc-cockpit
 copyright: Copyright © 2026 Oleg Bronzov
 publish: null
+# Electron's own files can be world-writable; this clears that before any installer is made.
+afterPack: scripts/after-pack.cjs
 directories:
   output: release
 files:
