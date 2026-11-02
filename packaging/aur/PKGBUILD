@@ -2,7 +2,7 @@
 #
 # Repackages the released .deb, so Arch runs the same build as everyone else.
 pkgname=cc-cockpit-bin
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Desktop cockpit for Claude Code: terminal tabs, session status and plugin panels'
 arch=('x86_64')
@@ -10,12 +10,14 @@ url='https://github.com/BronOS/cc-cockpit'
 license=('MIT')
 depends=('alsa-lib' 'at-spi2-core' 'gtk3' 'libnotify' 'libsecret' 'libxss' 'libxtst' 'nss' 'util-linux-libs' 'xdg-utils')
 optdepends=('git: install plugins'
-            'libappindicator-gtk3: tray support')
+            'libappindicator-gtk3: tray support'
+            'micro: editor plugin (Edit in the reviewer, ccc edit)'
+            'wl-clipboard: copy and paste in micro on Wayland')
 options=('!strip' '!debug')
 source=("cc-cockpit-${pkgver}.deb::${url}/releases/download/v${pkgver}/cc-cockpit-${pkgver}-linux-x64.deb"
         "LICENSE-${pkgver}::https://raw.githubusercontent.com/BronOS/cc-cockpit/v${pkgver}/LICENSE")
 noextract=("cc-cockpit-${pkgver}.deb")
-sha256sums=('39579dd5bad3eb111442feb11c807ec84b4c993f3f87e5c9bb26e00d80c14065'
+sha256sums=('1fa02ef94eb799d5a6c036afca9ceedcaa7652310fce81fcae31a716708f5be6'
             'SKIP')
 
 prepare() {
