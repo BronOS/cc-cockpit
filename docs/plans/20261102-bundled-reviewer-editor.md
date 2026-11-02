@@ -305,12 +305,12 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - [x] run `npm run test:plugins`, `npm test` (the bundle byte test) and the bundled-plugins e2e - must pass
 
 ### Task 8: Verify acceptance criteria [model: sonnet]
-- [ ] every requirement in Overview and Decisions is implemented; every FRICTION.md entry has its outcome in the table
-- [ ] edge cases: a user with an old linked `cockpit.reviewer` gets the notice and the bundled copy; app-wide off +
+- [x] every requirement in Overview and Decisions is implemented; every FRICTION.md entry has its outcome in the table
+- [x] edge cases: a user with an old linked `cockpit.reviewer` gets the notice and the bundled copy; app-wide off +
       project on; a third-party provider replaces each bundled plugin
-- [ ] run full test suite: `npm test`, `npm run test:plugins`, `npm run test:coverage` (thresholds hold)
-- [ ] run e2e tests: `npm run test:e2e` (only `window-bounds.spec.ts:40,:62` may fail on this Linux host)
-- [ ] `npm run package:dir` and launch it with a temp `CC_COCKPIT_DATA_DIR`: the reviewer and editor are listed as built in
+- [x] run full test suite: `npm test`, `npm run test:plugins`, `npm run test:coverage` (thresholds hold)
+- [x] run e2e tests: `npm run test:e2e` (only `window-bounds.spec.ts:40,:62` may fail on this Linux host)
+- [x] `npm run package:dir` and launch it with a temp `CC_COCKPIT_DATA_DIR`: the reviewer and editor are listed as built in (smoke launch ran 15 s without crash; the built-in listing is asserted by e2e bundled-plugins.spec.ts, and release/linux-unpacked/resources/plugins holds browser, editor, reviewer)
 
 ### Task 9: [Final] Update documentation [model: sonnet]
 - [ ] `docs/design.md`: bundled set (browser, reviewer, editor), reserved ids, app-wide off, replacing through
