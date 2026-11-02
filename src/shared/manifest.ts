@@ -56,7 +56,7 @@ export const CLI_NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/
  * not handled there, is a type error), and the manifest check reserves the same names, so the two
  * cannot drift. Shared because main must not import the CLI.
  */
-export const CORE_CLI_COMMANDS = ['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'guide', 'plugin', 'help'] as const
+export const CORE_CLI_COMMANDS = ['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'guide', 'plugin', 'panel', 'help'] as const
 export type CoreCliCommand = (typeof CORE_CLI_COMMANDS)[number]
 
 export function isCoreCliCommand(name: string): name is CoreCliCommand {

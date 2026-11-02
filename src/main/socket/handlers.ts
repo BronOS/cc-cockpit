@@ -498,6 +498,47 @@ export function registerPluginConfigHandler(server: { handle(cmd: string, handle
   server.handle('plugin.config', pluginConfigHandler(options))
 }
 
+/** What `panel.show` needs from main (index.ts binds the plugin list, the project record and the layout service). */
+export interface PanelShowOptions {
+  /** Whether the plugin is installed and valid. */
+  pluginKnown(pluginId: string): boolean
+  /** Whether the plugin is enabled in the project. */
+  enabledIn(projectId: string, pluginId: string): boolean
+  /** The project window that is open now. */
+  windowIdOf(projectId: string): number | undefined
+  /** LayoutService.show, the call behind ctx.panels.show: false for a panel the project does not have. */
+  showPanel(projectId: string, panelKey: string): boolean
+}
+
+/**
+ * `panel.show { plugin, panel }` (friction round 1, Task 7): reveal a panel in the caller's project
+ * window, as `ctx.panels.show` does for the plugin itself. The project is the caller's (a token's,
+ * or the one `--project` named), never a field of `args`. Refuses, in this order, an unknown
+ * plugin, a plugin not enabled in the project, a project with no open window, and a panel the
+ * project does not have (undeclared, or its plugin's host not reporting it).
+ */
+export function panelShowHandler(options: PanelShowOptions): Handler {
+  return (args, caller) => {
+    const projectId = projectOf(caller, 'panel show')
+    const { plugin, panel } = args
+    if (typeof plugin !== 'string' || plugin.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(plugin)) {
+      throw new Error('panel show needs a plugin id')
+    }
+    if (typeof panel !== 'string' || panel === '' || panel.length > 200 || panel.includes('/')) {
+      throw new Error('panel show needs a panel id')
+    }
+    if (!options.pluginKnown(plugin)) throw new Error(`unknown plugin: ${plugin}`)
+    if (!options.enabledIn(projectId, plugin)) throw new Error(`plugin ${plugin} is not enabled in this project`)
+    if (options.windowIdOf(projectId) === undefined) throw new Error(NOT_OPEN)
+    if (!options.showPanel(projectId, `${plugin}/${panel}`)) throw new Error(`plugin ${plugin} has no panel "${panel}" in this project`)
+    return null
+  }
+}
+
+export function registerPanelShowHandler(server: { handle(cmd: string, handler: Handler): void }, options: PanelShowOptions): void {
+  server.handle('panel.show', panelShowHandler(options))
+}
+
 /** Register every user command on the server (a `handle(cmd, handler)` is all it needs). */
 export function registerCliHandlers(
   server: { handle(cmd: string, handler: Handler): void },

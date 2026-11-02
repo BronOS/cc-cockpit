@@ -204,9 +204,10 @@ External review: auto
 - Modify: `src/cli/guide/cli.md`
 - Modify: e2e (e.g. `test/e2e/panels.spec.ts` or `plugin-cli.spec.ts`)
 
-- [ ] reveal `<plugin>/<panel>` in the caller's project window; refuse unknown panels and plugins not enabled there with clear messages
-- [ ] write e2e: the panel becomes visible after the command; error cases
-- [ ] run tests - must pass before next task
+- [x] reveal `<plugin>/<panel>` in the caller's project window; refuse unknown panels and plugins not enabled there with clear messages
+- [x] write e2e: the panel becomes visible after the command; error cases
+- [x] run tests - must pass before next task
+- ➕ the command is a new core command `panel` (reserved name, so `marketplace/tools/dist` was rebuilt); main refuses in this order: unknown plugin, not enabled in the project, no open window, no such panel (`LayoutService.show` false). Handler `panelShowHandler` in `socket/handlers.ts`; unit tests `test/unit/panel-show.test.ts`, e2e in `test/e2e/panels.spec.ts`
 
 ### Task 8: `ccc guide types` [model: sonnet]
 

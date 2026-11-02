@@ -368,6 +368,11 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       cmd = 'plugin.list'
       routing = callerOf(env, command.project, cwd, 'plugin list')
       break
+    case 'panel-show':
+      cmd = 'panel.show'
+      args = { plugin: command.plugin, panel: command.panel }
+      routing = callerOf(env, command.project, cwd, 'panel show')
+      break
     case 'plugin-config':
       // No project in args: main takes the project from the routing (token or --project).
       cmd = 'plugin.config'
@@ -702,6 +707,7 @@ function formatResult(command: UserCommand, result: unknown): string {
     return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
   }
   if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
+  if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`
   if (command.kind === 'plugin-config') {
     if (command.json) return `${JSON.stringify(result)}\n`
     return command.set.length > 0

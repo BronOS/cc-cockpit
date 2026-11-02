@@ -89,7 +89,7 @@ import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
@@ -969,6 +969,14 @@ function start(): void {
         state: p.state.ok ? 'ok' : p.state.reason
       }))
     }
+  })
+
+  // `ccc panel show` (friction round 1, Task 7): LayoutService.show, what ctx.panels.show calls.
+  registerPanelShowHandler(socket, {
+    pluginKnown: (pluginId) => validPlugins().some((p) => p.id === pluginId),
+    enabledIn: (projectId, pluginId) => enabledIds(projectId).includes(pluginId),
+    windowIdOf: (projectId) => windows.windowIdOf(projectId),
+    showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey)
   })
 
   // `ccc plugin config` (friction round 1, Task 6): the Settings pages' own views and saves (both

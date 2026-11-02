@@ -63,6 +63,8 @@ export type Command =
    * (parseConfigValue). `scope` is `--scope app|project`, only with `set`.
    */
   | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; project?: string }
+  /** `ccc panel show <plugin>/<panel>` (friction round 1, Task 7). */
+  | { kind: 'panel-show'; plugin: string; panel: string; project?: string }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -106,6 +108,15 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       return { kind: 'open', path }
     },
     usage: [{ synopsis: ['open <path>'], text: ['open (or focus) a folder as a project'] }]
+  },
+  panel: {
+    parse: (rest) => parsePanel(rest),
+    usage: [
+      {
+        synopsis: ['panel show [--project <path>] <plugin>/<panel>'],
+        text: ["reveal a plugin's panel in this project's window (unhide, open, expand);", '--project names an open folder when run outside a tab']
+      }
+    ]
   },
   hook: {
     parse: (rest) => {
@@ -230,7 +241,8 @@ export function parseArgs(argv: readonly string[]): Command {
 /** The core commands that take `--project`, and where (their USAGE synopses say the same). */
 const PROJECT_AFTER_NAME: Partial<Record<string, string>> = {
   overlay: 'ccc overlay --project <path> ...',
-  plugin: 'ccc plugin link|unlink|list|config --project <path> ...'
+  plugin: 'ccc plugin link|unlink|list|config --project <path> ...',
+  panel: 'ccc panel show --project <path> <plugin>/<panel>'
 }
 
 /**
@@ -396,6 +408,29 @@ function parseSession(rest: readonly string[]): Command {
     return { kind: 'steps', done, total }
   }
   return usage(sub === undefined ? 'session needs note or steps' : `unknown session command: ${sub}`)
+}
+
+/** `ccc panel show [--project <path>] <plugin>/<panel>`: the panel key is the plugin id, a slash, the manifest's panel id. */
+function parsePanel(rest: readonly string[]): Command {
+  const [sub, ...args] = rest
+  if (sub !== 'show') return usage(sub === undefined ? 'panel needs show' : `unknown panel command: ${sub}`)
+  let project: string | undefined
+  const positional: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (arg === '--project') {
+      project = args[++i]
+      if (!project) return usage('panel show: --project needs a value')
+    } else if (arg.startsWith('--')) return usage(`panel show: unknown option ${arg}`)
+    else positional.push(arg)
+  }
+  const key = positional.length === 1 ? (positional[0] as string) : ''
+  const cut = key.lastIndexOf('/')
+  if (cut <= 0 || cut === key.length - 1) return usage('panel show takes one <plugin>/<panel>, like acme.todo/list')
+  const plugin = key.slice(0, cut)
+  const problem = pluginIdProblem(plugin)
+  if (problem !== undefined) return usage(`panel show: ${problem}`)
+  return { kind: 'panel-show', plugin, panel: key.slice(cut + 1), ...(project !== undefined ? { project } : {}) }
 }
 
 function parseOverlay(rest: readonly string[]): Command {

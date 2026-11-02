@@ -360,6 +360,7 @@ describe('runCommand against a fake app', () => {
         ['plugin', 'config', '--project', '/p', 'acme.x', '--json'],
         ['plugin', 'config', '--project', '/p', 'acme.x', '--scope', 'app', 'limit=5']
       ],
+      'panel show': [['panel', 'show', '--project', '/p', 'acme.x/list']],
       // A plugin command: the spec lookup, then the call.
       '': [['--project', '/p', 'demo', 'x']]
     }
@@ -374,7 +375,7 @@ describe('runCommand against a fake app', () => {
     }
     expect(err).toBe('')
     const sent = new Set(app.seen.map((r) => r.cmd))
-    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'plugin.cli.spec', 'plugin.cli', 'open', 'notify', 'sessions']) {
+    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'panel.show', 'plugin.cli.spec', 'plugin.cli', 'open', 'notify', 'sessions']) {
       expect(sent.has(cmd), cmd).toBe(true)
     }
     for (const r of app.seen) {
@@ -397,6 +398,7 @@ describe('runCommand against a fake app', () => {
       ['plugin', 'list'],
       ['plugin', 'config', 'acme.x'],
       ['plugin', 'config', 'acme.x', 'limit=5'],
+      ['panel', 'show', 'acme.x/list'],
       ['demo', 'x'],
       ['help'],
       ['open', '/p'],
@@ -408,7 +410,7 @@ describe('runCommand against a fake app', () => {
     }
     expect(err).toBe('')
     const sent = new Set(app.seen.map((r) => r.cmd))
-    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'plugin.cli.spec', 'plugin.cli', 'plugin.cli.list', 'open', 'notify', 'sessions']) {
+    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'panel.show', 'plugin.cli.spec', 'plugin.cli', 'plugin.cli.list', 'open', 'notify', 'sessions']) {
       expect(sent.has(cmd), cmd).toBe(true)
     }
     for (const r of app.seen) {
