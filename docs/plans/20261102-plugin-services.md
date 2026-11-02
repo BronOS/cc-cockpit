@@ -156,14 +156,14 @@ External review: auto
 - Create: `src/host/services.ts`
 - Create: `test/unit/host-services.test.ts`
 
-- [ ] create `ServiceRegistry` holding, per host, each plugin's declared `services`, the project's choices, the registered implementations and a way to await a plugin's activation state (injected, so the unit test needs no loader)
-- [ ] `provide(pluginId, name, impl)`: only declared names, impl must be a plain object of functions with valid method names, `on` reserved; a second `provide` of the same name by the same plugin replaces the first
-- [ ] `use(pluginId, name)` returns the Proxy handle; undeclared names throw synchronously; `then` is undefined
-- [ ] implement the call flow steps 1-6 (including 3a, cycle detection) from Technical Details, resolving the provider on every call with `selectProvider` from Task 1
-- [ ] write tests: successful call, args/results copied (mutation on either side doesn't leak), class instance arrives as a plain object, waits for a still-activating provider, every error message (missing, ambiguous, version, errored provider, never provided, unknown method, function/symbol in data, provider throw rethrown as a fresh Error)
-- [ ] write tests: A calls B while B calls A during activate fails at once with the cycle error (and a three-plugin cycle); A calling B during A's activate with no cycle works
-- [ ] write tests: provider replaced between two calls (second call reaches the new implementation); provider removed (call fails with the missing/never-provided error)
-- [ ] run tests - must pass before next task
+- [x] create `ServiceRegistry` holding, per host, each plugin's declared `services`, the project's choices, the registered implementations and a way to await a plugin's activation state (injected, so the unit test needs no loader)
+- [x] `provide(pluginId, name, impl)`: only declared names, impl must be a plain object of functions with valid method names, `on` reserved; a second `provide` of the same name by the same plugin replaces the first
+- [x] `use(pluginId, name)` returns the Proxy handle; undeclared names throw synchronously; `then` is undefined
+- [x] implement the call flow steps 1-6 (including 3a, cycle detection) from Technical Details, resolving the provider on every call with `selectProvider` from Task 1
+- [x] write tests: successful call, args/results copied (mutation on either side doesn't leak), class instance arrives as a plain object, waits for a still-activating provider, every error message (missing, ambiguous, version, errored provider, never provided, unknown method, function/symbol in data, provider throw rethrown as a fresh Error)
+- [x] write tests: A calls B while B calls A during activate fails at once with the cycle error (and a three-plugin cycle); A calling B during A's activate with no cycle works
+- [x] write tests: provider replaced between two calls (second call reaches the new implementation); provider removed (call fails with the missing/never-provided error)
+- [x] run tests - must pass before next task
 
 ### Task 3: Service events [model: opus]
 
@@ -191,6 +191,7 @@ External review: auto
 - [ ] `HostPluginSpec` gains `services` (from the validated manifest, set by main); `parsePluginSpecs` treats an absent field as none; the host's activate message carries the project's `serviceProviders`, which host-manager reads through a new dependency `serviceProviders(projectId)` (Task 5 backs it with the project record; here it is stubbed in tests and returns `{}` in `main/index.ts`)
 - [ ] one `ServiceRegistry` per host; `ctx.services` = `{ provide, use, emit }` bound to the plugin id; `setSpec` on activate and `plugin.reload`, declarations removed on `unload`; `release` called wherever a ctx is released (deactivate, reload, unload, errored activation)
 - [ ] loader `activationOf(id)` that also covers the reload gap (Technical Details step 3)
+- [ ] ➕ loader `isActivating(id)`: synchronous, true while `activationOf(id)` is unsettled (the reload gap included); Task 2's `ServiceRegistry` takes `{ activationOf, isActivating, log? }` and needs it for cycle detection (a promise cannot be asked synchronously whether it settled)
 - [ ] remove `Loaded.exports` and the "reserved for cross-plugin" comments in `loader.ts` and `sdk/types.ts`; `activate`'s return value is ignored (document it)
 - [ ] add `ServicesApi` and `ServiceHandle` types to `src/sdk/types.ts`
 - [ ] document `services` in the manifest and `ctx.services` in `src/cli/guide/api.md` in this same task (CLAUDE.md: a new `ctx` member needs its guide text in the same change, and the drift tests check it)

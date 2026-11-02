@@ -1,0 +1,601 @@
+import { describe, expect, it } from 'vitest'
+import { ServiceRegistry, type ActivationState, type ServiceHandle } from '../../src/host/services'
+
+// Stands in for the loader (Task 4 backs these with its activation promises): a plugin is
+// activating between start() and finish(); a settled one answers its last state.
+class FakeActivations {
+  private readonly pending = new Map<string, { promise: Promise<ActivationState>; resolve: (s: ActivationState) => void }>()
+  private readonly settled = new Map<string, ActivationState>()
+
+  start(id: string): void {
+    let resolve!: (s: ActivationState) => void
+    const promise = new Promise<ActivationState>((r) => (resolve = r))
+    this.pending.set(id, { promise, resolve })
+  }
+
+  finish(id: string, state: ActivationState = { state: 'active' }): void {
+    const p = this.pending.get(id)
+    this.pending.delete(id)
+    this.settled.set(id, state)
+    p?.resolve(state)
+  }
+
+  activationOf = (id: string): Promise<ActivationState> | undefined =>
+    this.pending.get(id)?.promise ?? (this.settled.has(id) ? Promise.resolve(this.settled.get(id)!) : undefined)
+
+  isActivating = (id: string): boolean => this.pending.has(id)
+}
+
+/** Let every queued microtask and promise continuation run. */
+const flush = (): Promise<void> => new Promise((r) => setImmediate(r))
+
+/** Where a promise stands after a flush: still pending, resolved or rejected. */
+async function outcome(p: Promise<unknown>): Promise<{ value: unknown } | { error: Error } | 'pending'> {
+  let r: { value: unknown } | { error: Error } | 'pending' = 'pending'
+  p.then(
+    (value) => (r = { value }),
+    (error: Error) => (r = { error })
+  )
+  await flush()
+  return r
+}
+
+const call = (h: ServiceHandle, method: string, ...args: unknown[]): Promise<unknown> => h[method]!(...args)
+
+function setup(): { reg: ServiceRegistry; acts: FakeActivations } {
+  const acts = new FakeActivations()
+  const reg = new ServiceRegistry({ activationOf: acts.activationOf, isActivating: acts.isActivating })
+  return { reg, acts }
+}
+
+const provider = (id: string, provides: Record<string, number>, uses?: Record<string, number>) => ({ id, services: { provides, uses } })
+const consumer = (id: string, uses: Record<string, number>, provides?: Record<string, number>) => ({ id, services: { uses, provides } })
+
+describe('ServiceRegistry provide and use', () => {
+  it('calls the provider and returns its answer', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { triage: 1 }))
+    reg.setSpec(consumer('c', { triage: 1 }))
+    acts.finish('p')
+    reg.provide('p', 'triage', {
+      classify(items: string[], q: string) {
+        return items.map((i) => `${q}:${i}`)
+      },
+      async slow() {
+        await flush()
+        return 'late'
+      }
+    })
+    const h = reg.use('c', 'triage')
+    await expect(call(h, 'classify', ['a', 'b'], 'q')).resolves.toEqual(['q:a', 'q:b'])
+    await expect(call(h, 'slow')).resolves.toBe('late')
+  })
+
+  it('calls the method with the provided object as this', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', {
+      base() {
+        return 40
+      },
+      plus(this: { base(): number }, n: number) {
+        return this.base() + n
+      }
+    })
+    await expect(call(reg.use('c', 's'), 'plus', 2)).resolves.toBe(42)
+  })
+
+  it('refuses a provide of an undeclared name and a use of an undeclared name, synchronously', () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { triage: 1 }))
+    reg.setSpec(consumer('c', { triage: 1 }))
+    expect(() => reg.provide('p', 'other', {})).toThrow('plugin p does not declare service "other" in services.provides')
+    // A consumer's `uses` does not let it provide, and a provider's `provides` does not let it use.
+    expect(() => reg.provide('c', 'triage', {})).toThrow('plugin c does not declare service "triage" in services.provides')
+    expect(() => reg.use('p', 'triage')).toThrow('plugin p does not declare service "triage" in services.uses')
+    expect(() => reg.use('c', 'other')).toThrow('plugin c does not declare service "other" in services.uses')
+    expect(() => reg.use('unknown', 'triage')).toThrow('plugin unknown does not declare service "triage" in services.uses')
+  })
+
+  it('reads declarations with hasOwn: constructor is a name, not Object.prototype', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { triage: 1 }))
+    expect(() => reg.use('c', 'constructor')).toThrow('does not declare service "constructor"')
+    expect(() => reg.provide('c', 'toString', {})).toThrow('does not declare service "toString"')
+  })
+
+  it('accepts only a plain object of functions with valid method names', () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    const bad = (impl: unknown): (() => void) => () => reg.provide('p', 's', impl)
+    expect(bad(null)).toThrow('must be an object of functions')
+    expect(bad(() => 1)).toThrow('must be an object of functions')
+    expect(bad('x')).toThrow('must be an object of functions')
+    class Impl {
+      m(): number {
+        return 1
+      }
+    }
+    expect(bad(new Impl())).toThrow('must be a plain object (not a class instance)')
+    expect(bad({ m: 1 })).toThrow('"m" must be a function')
+    expect(bad({ on: () => 1 })).toThrow('"on" is not a valid method name (reserved for events)')
+    expect(bad({ then: () => 1 })).toThrow('"then" is not a valid method name')
+    expect(bad({ _private: () => 1 })).toThrow('"_private" is not a valid method name')
+    expect(bad(JSON.parse('{"__proto__": 1}'))).toThrow('"__proto__" is not a valid method name')
+    expect(bad({ prototype: () => 1 })).toThrow('"prototype" is not a valid method name')
+    const withCtor = Object.create(null) as Record<string, unknown>
+    withCtor.constructor = () => 1
+    expect(bad(withCtor)).toThrow('"constructor" is not a valid method name')
+    // An enumerable getter is not a function value (and is not run to find out).
+    let ran = false
+    const getter = Object.defineProperty({}, 'g', {
+      enumerable: true,
+      get() {
+        ran = true
+        return () => 1
+      }
+    })
+    expect(bad(getter)).toThrow('"g" must be a function')
+    expect(ran).toBe(false)
+    // Null-prototype objects, empty objects and non-enumerable extras are fine.
+    const nullProto = Object.create(null) as Record<string, unknown>
+    nullProto.m = () => 1
+    expect(bad(nullProto)).not.toThrow()
+    expect(bad({})).not.toThrow()
+    expect(bad(Object.defineProperty({ m: () => 1 }, 'hidden', { value: 5, enumerable: false }))).not.toThrow()
+  })
+
+  it('a handle reads then as undefined (await does not hang) and is not writable', async () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { s: 1 }))
+    const h = reg.use('c', 's')
+    expect((h as unknown as { then: unknown }).then).toBeUndefined()
+    await expect(Promise.resolve(h)).resolves.toBe(h)
+    expect((h as unknown as Record<symbol, unknown>)[Symbol.toPrimitive]).toBeUndefined()
+    expect(() => {
+      ;(h as unknown as Record<string, unknown>).x = 1
+    }).toThrow(TypeError)
+    // `on` is reserved for events, which come in a later task.
+    expect(typeof h.on).toBe('function')
+    expect(() => h.on('changed', () => {})).toThrow('events are not implemented yet')
+  })
+
+  it('a handle obtained before the provider exists works once it provides', async () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { s: 1 }))
+    const h = reg.use('c', 's')
+    await expect(call(h, 'm')).rejects.toThrow('no enabled plugin in this project provides service "s"')
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.provide('p', 's', { m: () => 'ok' })
+    await expect(call(h, 'm')).resolves.toBe('ok')
+  })
+})
+
+describe('ServiceRegistry data copying', () => {
+  it('copies arguments and results: a mutation on either side does not leak', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const kept = { list: [1, 2] }
+    let received: { list: number[] } | undefined
+    reg.provide('p', 's', {
+      take(arg: { list: number[] }) {
+        received = arg
+        arg.list.push(99)
+        return 'ok'
+      },
+      give() {
+        return kept
+      }
+    })
+    const h = reg.use('c', 's')
+    const mine = { list: [1] }
+    await call(h, 'take', mine)
+    expect(mine.list).toEqual([1])
+    expect(received!.list).toEqual([1, 99])
+    mine.list.push(7)
+    expect(received!.list).toEqual([1, 99])
+    const got = (await call(h, 'give')) as { list: number[] }
+    expect(got).toEqual({ list: [1, 2] })
+    expect(got).not.toBe(kept)
+    got.list.push(3)
+    expect(kept.list).toEqual([1, 2])
+  })
+
+  it('a class instance arrives as a plain object (prototype and methods dropped)', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    class Point {
+      constructor(
+        public x: number,
+        public y: number
+      ) {}
+      sum(): number {
+        return this.x + this.y
+      }
+    }
+    let arrived: unknown
+    reg.provide('p', 's', {
+      echo(p: unknown) {
+        arrived = p
+        return new Point(3, 4)
+      }
+    })
+    const got = await call(reg.use('c', 's'), 'echo', new Point(1, 2))
+    expect(arrived).toEqual({ x: 1, y: 2 })
+    expect(Object.getPrototypeOf(arrived)).toBe(Object.prototype)
+    expect(got).toEqual({ x: 3, y: 4 })
+    expect(got).not.toBeInstanceOf(Point)
+    expect((got as { sum?: unknown }).sum).toBeUndefined()
+  })
+
+  it('a function or symbol in the arguments or the result is a plain-data error', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    let calls = 0
+    reg.provide('p', 's', {
+      echo(v: unknown) {
+        calls++
+        return v
+      },
+      fn() {
+        return { cb: () => 1 }
+      },
+      sym() {
+        return Symbol('x')
+      }
+    })
+    const h = reg.use('c', 's')
+    await expect(call(h, 'echo', { cb: () => 1 })).rejects.toThrow(
+      /^service "s" echo\(\): arguments must be plain data \(no functions or symbols\): /
+    )
+    await expect(call(h, 'echo', Symbol('x'))).rejects.toThrow('service "s" echo(): arguments must be plain data')
+    // Refused before the provider runs.
+    expect(calls).toBe(0)
+    await expect(call(h, 'fn')).rejects.toThrow('service "s" fn(): the result must be plain data')
+    await expect(call(h, 'sym')).rejects.toThrow('service "s" sym(): the result must be plain data')
+  })
+})
+
+describe('ServiceRegistry errors', () => {
+  it('missing: no provider in this host', async () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { triage: 1 }))
+    await expect(call(reg.use('c', 'triage'), 'm')).rejects.toThrow('no enabled plugin in this project provides service "triage"')
+  })
+
+  it('ambiguous: two providers and no pick, then the pick decides', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('a', { triage: 1 }))
+    reg.setSpec(provider('b', { triage: 1 }))
+    reg.setSpec(consumer('c', { triage: 1 }))
+    reg.provide('a', 'triage', { who: () => 'a' })
+    reg.provide('b', 'triage', { who: () => 'b' })
+    const h = reg.use('c', 'triage')
+    await expect(call(h, 'who')).rejects.toThrow('plugins a and b both provide service "triage"; pick one in Settings > Plugins')
+    reg.setChoices({ triage: 'b' })
+    await expect(call(h, 'who')).resolves.toBe('b')
+    // A stale pick (not a provider here) counts as no pick.
+    reg.setChoices({ triage: 'gone' })
+    await expect(call(h, 'who')).rejects.toThrow('both provide service "triage"')
+  })
+
+  it('version mismatch between the consumer and the provider', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { triage: 1 }))
+    reg.setSpec(consumer('c', { triage: 2 }))
+    reg.provide('p', 'triage', { m: () => 1 })
+    await expect(call(reg.use('c', 'triage'), 'm')).rejects.toThrow('"triage": c uses version 2, p provides version 1')
+  })
+
+  it('errored provider: its activation error text', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', { m: () => 1 })
+    acts.finish('p', { state: 'errored', error: 'activate() failed: boom' })
+    await expect(call(reg.use('c', 's'), 'm')).rejects.toThrow('service "s": plugin p failed to activate: activate() failed: boom')
+  })
+
+  it('never provided: active but provide was not called', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.finish('p')
+    await expect(call(reg.use('c', 's'), 'm')).rejects.toThrow('p declares service "s" but did not provide it')
+  })
+
+  it('unknown method, including Object.prototype names', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', { m: () => 1 })
+    const h = reg.use('c', 's')
+    await expect(call(h, 'nope')).rejects.toThrow('service "s" (plugin p) has no method "nope"')
+    await expect(call(h, 'toString')).rejects.toThrow('has no method "toString"')
+    await expect(call(h, 'constructor')).rejects.toThrow('has no method "constructor"')
+  })
+
+  it('a provider throw reaches the consumer as a fresh Error with the same message and name', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const original = new TypeError('bad input')
+    ;(original as unknown as { secret: string }).secret = 'provider internals'
+    reg.provide('p', 's', {
+      sync() {
+        throw original
+      },
+      async later() {
+        await flush()
+        throw new RangeError('too far')
+      },
+      notAnError() {
+        throw 'just a string'
+      }
+    })
+    const h = reg.use('c', 's')
+    const err = (await call(h, 'sync').catch((e: unknown) => e)) as Error & { service: string; plugin: string; secret?: string }
+    expect(err).not.toBe(original)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toBe('bad input')
+    expect(err.name).toBe('TypeError')
+    expect(err.service).toBe('s')
+    expect(err.plugin).toBe('p')
+    expect(err.secret).toBeUndefined()
+    await expect(call(h, 'later')).rejects.toMatchObject({ message: 'too far', name: 'RangeError', service: 's', plugin: 'p' })
+    await expect(call(h, 'notAnError')).rejects.toMatchObject({ message: 'just a string', name: 'Error', service: 's', plugin: 'p' })
+  })
+
+  it('a consumer whose reload dropped the use is refused on the next call', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', { m: () => 1 })
+    const h = reg.use('c', 's')
+    reg.setSpec(consumer('c', {}))
+    await expect(call(h, 'm')).rejects.toThrow('plugin c does not declare service "s" in services.uses')
+  })
+})
+
+describe('ServiceRegistry activation waits', () => {
+  it('waits for a still-activating provider, then calls it', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.start('p')
+    // Provided early in activate, but the call still waits for the activation to finish.
+    reg.provide('p', 's', { m: () => 'done' })
+    const p = call(reg.use('c', 's'), 'm')
+    expect(await outcome(p)).toBe('pending')
+    acts.finish('p')
+    await expect(p).resolves.toBe('done')
+  })
+
+  it('a wait that ends in an errored activation fails with its error', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.start('p')
+    reg.provide('p', 's', { m: () => 'done' })
+    const p = call(reg.use('c', 's'), 'm')
+    // The loader releases an errored plugin's ctx, then settles its activation.
+    reg.release('p')
+    acts.finish('p', { state: 'errored', error: 'activate() did not finish within 10 s' })
+    await expect(p).rejects.toThrow('plugin p failed to activate: activate() did not finish within 10 s')
+  })
+
+  it('a call made in the reload gap waits for the new copy and reaches it', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.finish('p')
+    reg.provide('p', 's', { v: () => 'old' })
+    const h = reg.use('c', 's')
+    await expect(call(h, 'v')).resolves.toBe('old')
+    // Reload: the old copy is released and activationOf covers the gap with the new activation.
+    reg.release('p')
+    acts.start('p')
+    const p = call(h, 'v')
+    expect(await outcome(p)).toBe('pending')
+    reg.provide('p', 's', { v: () => 'new' })
+    acts.finish('p')
+    await expect(p).resolves.toBe('new')
+  })
+
+  it('re-resolves after the wait: a reload that changed the declarations is honoured', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(provider('q', { other: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.finish('q')
+    acts.start('p')
+    const p = call(reg.use('c', 's'), 'm')
+    expect(await outcome(p)).toBe('pending')
+    // While p reloads, the declarations move: p no longer provides s, q now does.
+    reg.setSpec(provider('p', {}))
+    reg.setSpec(provider('q', { s: 1 }))
+    reg.provide('q', 's', { m: () => 'from q' })
+    acts.finish('p')
+    await expect(p).resolves.toBe('from q')
+  })
+
+  it('a call already running finishes on the old implementation after a release', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    let finish!: (v: string) => void
+    reg.provide('p', 's', { m: () => new Promise<string>((r) => (finish = r)) })
+    const p = call(reg.use('c', 's'), 'm')
+    await flush()
+    reg.release('p')
+    finish('old answer')
+    await expect(p).resolves.toBe('old answer')
+  })
+})
+
+describe('ServiceRegistry provider replaced or removed', () => {
+  it('a second provide replaces the first: the next call reaches the new implementation', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', { v: () => 1 })
+    const h = reg.use('c', 's')
+    await expect(call(h, 'v')).resolves.toBe(1)
+    reg.provide('p', 's', { v: () => 2, extra: () => 'x' })
+    await expect(call(h, 'v')).resolves.toBe(2)
+    await expect(call(h, 'extra')).resolves.toBe('x')
+  })
+
+  it('methods are snapshotted at provide: a later change to the object is not seen', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const impl: Record<string, () => number> = { v: () => 1 }
+    reg.provide('p', 's', impl)
+    impl.v = () => 2
+    impl.added = () => 3
+    const h = reg.use('c', 's')
+    await expect(call(h, 'v')).resolves.toBe(1)
+    await expect(call(h, 'added')).rejects.toThrow('has no method "added"')
+  })
+
+  it('released provider: the call fails with the never-provided error', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.finish('p')
+    reg.provide('p', 's', { v: () => 1 })
+    const h = reg.use('c', 's')
+    await expect(call(h, 'v')).resolves.toBe(1)
+    reg.release('p')
+    await expect(call(h, 'v')).rejects.toThrow('p declares service "s" but did not provide it')
+  })
+
+  it('unloaded provider (spec removed): the call fails with the missing error', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    reg.provide('p', 's', { v: () => 1 })
+    const h = reg.use('c', 's')
+    reg.removeSpec('p')
+    reg.release('p')
+    await expect(call(h, 'v')).rejects.toThrow('no enabled plugin in this project provides service "s"')
+  })
+})
+
+describe('ServiceRegistry cycles during activate', () => {
+  it('A calls B while B calls A, both activating: the closing call fails at once', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sa: 1 }))
+    acts.start('a')
+    acts.start('b')
+    reg.provide('a', 'sa', { hi: () => 'from a' })
+    reg.provide('b', 'sb', { hi: () => 'from b' })
+    // a's activate awaits b; b's activate then awaits a.
+    const aCall = call(reg.use('a', 'sb'), 'hi')
+    expect(await outcome(aCall)).toBe('pending')
+    const bCall = call(reg.use('b', 'sa'), 'hi')
+    const bResult = await outcome(bCall)
+    expect(bResult).toMatchObject({ error: { message: 'b -> a -> b: services called in a cycle during activate' } })
+    // b's activate catches and finishes; a's waiting call then reaches b.
+    acts.finish('b')
+    await expect(aCall).resolves.toBe('from b')
+    acts.finish('a')
+  })
+
+  it('a three-plugin cycle fails at once, naming the whole path', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sc: 1 }))
+    reg.setSpec(provider('c', { sc: 1 }, { sa: 1 }))
+    for (const id of ['a', 'b', 'c']) acts.start(id)
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    reg.provide('b', 'sb', { hi: () => 'b' })
+    reg.provide('c', 'sc', { hi: () => 'c' })
+    const aCall = call(reg.use('a', 'sb'), 'hi')
+    const bCall = call(reg.use('b', 'sc'), 'hi')
+    expect(await outcome(aCall)).toBe('pending')
+    expect(await outcome(bCall)).toBe('pending')
+    const cCall = call(reg.use('c', 'sa'), 'hi')
+    expect(await outcome(cCall)).toMatchObject({
+      error: { message: 'c -> a -> b -> c: services called in a cycle during activate' }
+    })
+    // c's activate fails on it: b's wait ends with c's error, then b finishes and a's call goes through.
+    acts.finish('c', { state: 'errored', error: 'activate() failed: cycle' })
+    await expect(bCall).rejects.toThrow('plugin c failed to activate: activate() failed: cycle')
+    acts.finish('b')
+    await expect(aCall).resolves.toBe('b')
+  })
+
+  it('A calling B during A activate with no cycle works, whether B is active or still activating', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }))
+    reg.setSpec(consumer('d', { sa: 1 }))
+    acts.start('a')
+    acts.start('b')
+    reg.provide('b', 'sb', { hi: () => 'b' })
+    const aCall = call(reg.use('a', 'sb'), 'hi')
+    expect(await outcome(aCall)).toBe('pending')
+    // An unrelated consumer waiting on a (d is not activating) adds no edge and closes no cycle.
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    const dCall = call(reg.use('d', 'sa'), 'hi')
+    expect(await outcome(dCall)).toBe('pending')
+    acts.finish('b')
+    await expect(aCall).resolves.toBe('b')
+    // b is now active: a second call during a's activate does not wait.
+    await expect(call(reg.use('a', 'sb'), 'hi')).resolves.toBe('b')
+    acts.finish('a')
+    await expect(dCall).resolves.toBe('a')
+  })
+
+  it('a finished wait leaves no edge behind: the reverse call later is not a cycle', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sa: 1 }))
+    acts.start('a')
+    acts.start('b')
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    reg.provide('b', 'sb', { hi: () => 'b' })
+    const aCall = call(reg.use('a', 'sb'), 'hi')
+    acts.finish('b')
+    await expect(aCall).resolves.toBe('b')
+    // b reloads and calls a while a is still activating: one edge, b -> a, no cycle.
+    acts.start('b')
+    const bCall = call(reg.use('b', 'sa'), 'hi')
+    expect(await outcome(bCall)).toBe('pending')
+    acts.finish('a')
+    await expect(bCall).resolves.toBe('a')
+  })
+
+  it('an edge from a plugin whose activate already ended does not count', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('x', { sx: 1 }, { sy: 1 }))
+    reg.setSpec(provider('y', { sy: 1 }, { sn: 1 }))
+    reg.setSpec(provider('n', { sn: 1 }, { sx: 1 }))
+    for (const id of ['x', 'y', 'n']) acts.start(id)
+    reg.provide('x', 'sx', { hi: () => 'x' })
+    reg.provide('y', 'sy', { hi: () => 'y' })
+    reg.provide('n', 'sn', { hi: () => 'n' })
+    // Edges y -> n and n -> x.
+    const yCall = call(reg.use('y', 'sn'), 'hi')
+    const nCall = call(reg.use('n', 'sx'), 'hi')
+    expect(await outcome(yCall)).toBe('pending')
+    expect(await outcome(nCall)).toBe('pending')
+    // n's activate times out; before y's wait has even resumed, x calls y. n's call still waits on
+    // x, but n holds no activation back any more, so y -> n -> x is no cycle.
+    acts.finish('n', { state: 'errored', error: 'activate() did not finish within 10 s' })
+    const xCall = call(reg.use('x', 'sy'), 'hi')
+    expect(await outcome(xCall)).toBe('pending')
+    await expect(yCall).rejects.toThrow('plugin n failed to activate')
+    acts.finish('y')
+    await expect(xCall).resolves.toBe('y')
+    acts.finish('x')
+    await expect(nCall).resolves.toBe('x')
+  })
+})
