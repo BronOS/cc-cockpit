@@ -66,6 +66,26 @@ ids it does take (a tab, a panel) are looked up inside that project only.
   It returns `{ stdout?, stderr?, code? }` (code 0-255, default 0); each output is cut at 256 KiB
   once JSON-encoded. A throw is exit 1 with the message on stderr, 30 s without an answer is exit
   124, and at most 4 calls of one plugin run at once.
+- `ctx.services`: calls between the plugins of one project window, declared in the manifest's
+  `services` (`plugins` topic). Only names declared there are accepted, else it throws.
+  - `ctx.services.provide(name, impl)`: `impl` is a plain object of functions (no method `on`,
+    `then`, `constructor` or starting with `_`); providing again replaces it; withdrawn at
+    deactivate.
+  - `ctx.services.use(name)` returns a handle: `await handle.method(...args)` calls the provider
+    (async always). The provider is resolved on every call, so a handle got in `activate` keeps
+    working across provider reloads. A call waits for a provider that is still activating.
+  - `ctx.services.emit(name, event, data)`: only the provider the project selected reaches
+    consumers (others are dropped, logged once); `handle.on(event, listener)` subscribes and
+    returns the unsubscriber. Listeners run later, never inside `emit`.
+  - Plain data only: arguments, results and event data are copied (structured clone); a function
+    or symbol throws, a class instance arrives as a plain object.
+  - A call rejects when no enabled plugin provides the service, two do and none is picked in
+    Settings > Plugins, the major versions differ, the provider failed to activate or never called
+    `provide`, the method does not exist, or the provider threw (a fresh Error, its message only).
+    No timeout: race your own.
+  - Cycles: two plugins that call each other while both are in `activate` would wait forever; the
+    call closing the cycle fails at once instead. Call from timers or commands to avoid it.
+  - `activate`'s return value is ignored; `ctx.services` is the only way to share an API.
 - `ctx.log.info(...)`, `warn`, `error`: lines go to `<data>/logs/<pluginId>.log`.
 - `ctx.notify(text)`: a system notification, at most 10 a minute.
 

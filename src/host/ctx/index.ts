@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, secrets, oauth, schedule, exec, commands, cli, log and notify; sessions, badge, overlay,
+// It holds settings, storage, secrets, oauth, schedule, exec, commands, cli, services, log and notify; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -21,12 +21,14 @@ import {
   type OAuthTokens,
   type PluginContext,
   type PluginLogger,
-  type PluginSettings
+  type PluginSettings,
+  type ServiceHandle
 } from '../../sdk/types'
 import { errorText, toError } from '../../shared/error-text'
 import { normalizeCliResult, type PluginCliResult } from '../../shared/plugin-cli'
 import { capText } from '../../shared/text'
 import type { HostPluginSpec } from '../loader'
+import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
@@ -51,6 +53,11 @@ export interface ContextDeps {
   emit?(event: string, params: unknown): void
   /** The environment children of `ctx.exec` get (default: this process's). */
   env?: NodeJS.ProcessEnv
+  /**
+   * The host's service registry (`ctx.services`); a getter because the loader that owns it is
+   * built after the contexts. Absent: every `ctx.services` call throws.
+   */
+  services?: () => ServiceRegistry
   /** Test knobs. */
   scheduleTimeoutMs?: number
   execMaxOutputBytes?: number
@@ -157,6 +164,11 @@ export class HostContexts {
     this.runtimes.set(spec.id, rt)
 
     /** After deactivate (or a failed activate) a plugin's leftover timers and promises must do nothing. */
+    const servicesOf = (): ServiceRegistry => {
+      const registry = deps.services?.()
+      if (!registry) throw new Error('ctx.services is not available in this host')
+      return registry
+    }
     const alive = (): void => {
       if (rt.disposed) throw new Error('the plugin is deactivated')
     }
@@ -330,6 +342,20 @@ export class HostContexts {
       sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions }),
       commands: Object.freeze({ register }),
       cli: Object.freeze({ register: registerCli }),
+      services: Object.freeze({
+        provide: (name: string, impl: Record<string, (...args: never[]) => unknown>) => {
+          alive()
+          servicesOf().provide(spec.id, name, impl)
+        },
+        use: (name: string) => {
+          alive()
+          return servicesOf().use(spec.id, name) as ServiceHandle
+        },
+        emit: (name: string, event: string, data?: unknown) => {
+          alive()
+          servicesOf().emit(spec.id, name, event, data)
+        }
+      }),
       log: Object.freeze(logger),
       notify
     })

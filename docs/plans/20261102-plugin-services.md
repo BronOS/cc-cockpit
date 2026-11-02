@@ -190,15 +190,17 @@ External review: auto
 - Modify: `src/cli/guide/api.md` (and the manifest topic if it lists manifest fields)
 - Modify: `test/unit/host-loader.test.ts`, `test/unit/host-manager.test.ts`, and drift tests if needed (`cli-guide.test.ts`, `claude-plugins.test.ts`)
 
-- [ ] `HostPluginSpec` gains `services` (from the validated manifest, set by main); `parsePluginSpecs` treats an absent field as none; the host's activate message carries the project's `serviceProviders`, which host-manager reads through a new dependency `serviceProviders(projectId)` (Task 5 backs it with the project record; here it is stubbed in tests and returns `{}` in `main/index.ts`)
-- [ ] one `ServiceRegistry` per host; `ctx.services` = `{ provide, use, emit }` bound to the plugin id; `setSpec` on activate and `plugin.reload`, declarations removed on `unload`; `release` called wherever a ctx is released (deactivate, reload, unload, errored activation)
-- [ ] loader `activationOf(id)` that also covers the reload gap (Technical Details step 3)
-- [ ] ➕ loader `isActivating(id)`: synchronous, true while `activationOf(id)` is unsettled (the reload gap included); Task 2's `ServiceRegistry` takes `{ activationOf, isActivating, log? }` and needs it for cycle detection (a promise cannot be asked synchronously whether it settled)
-- [ ] remove `Loaded.exports` and the "reserved for cross-plugin" comments in `loader.ts` and `sdk/types.ts`; `activate`'s return value is ignored (document it)
-- [ ] add `ServicesApi` and `ServiceHandle` types to `src/sdk/types.ts`
-- [ ] document `services` in the manifest and `ctx.services` in `src/cli/guide/api.md` in this same task (CLAUDE.md: a new `ctx` member needs its guide text in the same change, and the drift tests check it)
-- [ ] write tests: two plugins in one loader, consumer calls provider while both activate concurrently; a call issued mid-`reload` of the provider waits and reaches the new copy; a reload that changes the provider's declared services is honoured; `parsePluginSpecs` with and without `services`; host-manager passes `services` and the stubbed choices into the host
-- [ ] run tests - must pass before next task
+- [x] `HostPluginSpec` gains `services` (from the validated manifest, set by main); `parsePluginSpecs` treats an absent field as none; the host's activate message carries the project's `serviceProviders`, which host-manager reads through a new dependency `serviceProviders(projectId)` (Task 5 backs it with the project record; here it is stubbed in tests and returns `{}` in `main/index.ts`)
+- [x] one `ServiceRegistry` per host; `ctx.services` = `{ provide, use, emit }` bound to the plugin id; `setSpec` on activate and `plugin.reload`, declarations removed on `unload`; `release` called wherever a ctx is released (deactivate, reload, unload, errored activation)
+- [x] loader `activationOf(id)` that also covers the reload gap (Technical Details step 3)
+- [x] ➕ loader `isActivating(id)`: synchronous, true while `activationOf(id)` is unsettled (the reload gap included); Task 2's `ServiceRegistry` takes `{ activationOf, isActivating, log? }` and needs it for cycle detection (a promise cannot be asked synchronously whether it settled)
+- [x] remove `Loaded.exports` and the "reserved for cross-plugin" comments in `loader.ts` and `sdk/types.ts`; `activate`'s return value is ignored (document it)
+- [x] add `ServicesApi` and `ServiceHandle` types to `src/sdk/types.ts`
+- [x] document `services` in the manifest and `ctx.services` in `src/cli/guide/api.md` in this same task (CLAUDE.md: a new `ctx` member needs its guide text in the same change, and the drift tests check it)
+- [x] write tests: two plugins in one loader, consumer calls provider while both activate concurrently; a call issued mid-`reload` of the provider waits and reaches the new copy; a reload that changes the provider's declared services is honoured; `parsePluginSpecs` with and without `services`; host-manager passes `services` and the stubbed choices into the host
+- [x] ➕ the loader owns the registry (`loader.services`; ctx gets it through a `services` getter dep); a reload sets the new spec first and keeps it through the gap (`unload(id, { keepSpec })`), plain `unload` removes it at once; `parseServiceProviders` reads the activate's picks
+- [x] ➕ `npm run build:example` does not copy `sdk/types.ts`; it is a plain `cp src/sdk/types.ts examples/plugin/sdk/types.ts` (Task 8 too)
+- [x] run tests - must pass before next task
 
 ### Task 5: Project provider choice in main [model: opus]
 

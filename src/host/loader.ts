@@ -16,8 +16,10 @@ import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { JsonValue, PluginContext, PluginModule } from '../sdk/types'
+import type { PluginManifest } from '../shared/manifest'
 import { errorText, toError } from '../shared/error-text'
 import { isSettingsRecord } from './ctx/settings'
+import { ServiceRegistry } from './services'
 
 export const ACTIVATE_TIMEOUT_MS = 10_000
 export const DEACTIVATE_TIMEOUT_MS = 5_000
@@ -48,6 +50,11 @@ export interface HostPluginSpec {
   webviewPanels?: string[]
   /** CLI command names the manifest declares (`contributes.cli`); `ctx.cli.register` accepts only these. */
   cli?: string[]
+  /**
+   * The manifest's `services` field as main validated it (`ctx.services` accepts only these names).
+   * Absent is none.
+   */
+  services?: PluginManifest['services']
   /** The validated settings with defaults applied (main checked them against the schemas). */
   settings: { project: Record<string, JsonValue>; app: Record<string, JsonValue> }
 }
@@ -57,7 +64,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, storageFile, commands, panels, webviewPanels, cli, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, storageFile, commands, panels, webviewPanels, cli, services, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -81,6 +88,11 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     if (cli !== undefined && (!Array.isArray(cli) || cli.some((c) => typeof c !== 'string'))) {
       throw new Error(`activate: plugin ${i} cli must be an array of strings`)
     }
+    // Absent is none (a plugin without services, or a spec from before the field existed). Main
+    // validated the manifest; this only keeps a malformed spec from reaching the registry.
+    if (services !== undefined && !isServicesField(services)) {
+      throw new Error(`activate: plugin ${i} services must be an object of provides/uses maps`)
+    }
     const { project, app } = (settings ?? {}) as Record<string, unknown>
     if (!isSettingsRecord(project) || !isSettingsRecord(app)) {
       throw new Error(`activate: plugin ${i} settings must have project and app objects`)
@@ -96,9 +108,34 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       panels: (panels as string[] | undefined) ?? [],
       webviewPanels: (webviewPanels as string[] | undefined) ?? [],
       cli: (cli as string[] | undefined) ?? [],
+      ...(services !== undefined ? { services } : {}),
       settings: { project, app }
     }
   })
+}
+
+/**
+ * The project's provider picks main sends with `activate` (`serviceProviders: { [service]: pluginId }`).
+ * Absent is none; a malformed value fails like a malformed plugin list.
+ */
+export function parseServiceProviders(params: unknown): Record<string, string> {
+  const raw = (params as { serviceProviders?: unknown } | null)?.serviceProviders
+  if (raw === undefined) return {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.values(raw).some((v) => typeof v !== 'string')) {
+    throw new Error('activate: serviceProviders must be an object of strings')
+  }
+  return { ...(raw as Record<string, string>) }
+}
+
+/** `{ provides?: {name: int}, uses?: {name: int} }`: the shape only; main checked names and ranges. */
+function isServicesField(v: unknown): v is NonNullable<PluginManifest['services']> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  for (const [key, map] of Object.entries(v)) {
+    if (key !== 'provides' && key !== 'uses') return false
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) return false
+    if (Object.values(map).some((n) => !Number.isInteger(n))) return false
+  }
+  return true
 }
 
 export type PluginRunState = { id: string; state: 'active' } | { id: string; state: 'errored'; error: string }
@@ -121,6 +158,8 @@ export interface LoaderOptions {
    */
   clearModules?: (dir: string) => void
   log?: (message: string) => void
+  /** A line in a plugin's own log (ctx.log): dropped service emits and throwing event listeners. */
+  pluginLog?: (pluginId: string, text: string) => void
 }
 
 interface Loaded {
@@ -128,15 +167,18 @@ interface Loaded {
   module?: PluginModule
   state: PluginRunState
   /**
-   * What `activate` returned: reserved as the plugin's exported API for the future cross-plugin
-   * case (design §5). Phase 1 keeps it and offers no way to reach it.
-   */
-  exports?: unknown
-  /**
    * The activation under way or done (never rejects). `state` reads 'active' until it settles, so
    * a deactivate that arrives meanwhile (the window closed, a restart) awaits this first.
    */
   activation?: Promise<PluginRunState>
+  /** `activation` has settled (set in its own chain, so it is true by the time an awaiter resumes). */
+  settled?: boolean
+}
+
+/** A reload under way: its promise settles with the new copy's activation. */
+interface Reloading {
+  promise: Promise<PluginRunState>
+  settle(state: PluginRunState): void
 }
 
 /**
@@ -211,6 +253,14 @@ function asPluginModule(mod: unknown): PluginModule | undefined {
 
 export class PluginLoader {
   private readonly loaded = new Map<string, Loaded>()
+  /** Reloads in progress by plugin id: covers the gap between unload and the new activation. */
+  private readonly reloading = new Map<string, Reloading>()
+  /**
+   * The host's one service registry (ctx.services of every plugin goes through it). The loader
+   * owns it because it owns the lifecycle the registry depends on: declarations are set before
+   * activate, implementations dropped at every release, and activations awaited by calls.
+   */
+  readonly services: ServiceRegistry
   private readonly requireModule: (absPath: string) => unknown
   private readonly activateTimeoutMs: number
   private readonly deactivateTimeoutMs: number
@@ -223,6 +273,27 @@ export class PluginLoader {
     this.activateTimeoutMs = options.activateTimeoutMs ?? ACTIVATE_TIMEOUT_MS
     this.deactivateTimeoutMs = options.deactivateTimeoutMs ?? DEACTIVATE_TIMEOUT_MS
     this.log = options.log ?? ((m) => console.error(m))
+    this.services = new ServiceRegistry({
+      activationOf: (id) => this.activationOf(id),
+      isActivating: (id) => this.isActivating(id),
+      log: options.pluginLog
+    })
+  }
+
+  /**
+   * The plugin's activation for service calls: during a reload, the NEW copy's (unload deletes the
+   * entry before activateAll adds it back, and a call in that window must wait, not fail as
+   * missing); else the loaded entry's; undefined when the plugin is not loaded.
+   */
+  activationOf(id: string): Promise<PluginRunState> | undefined {
+    return this.reloading.get(id)?.promise ?? this.loaded.get(id)?.activation
+  }
+
+  /** True while `activationOf(id)` is unsettled, the whole reload included. */
+  isActivating(id: string): boolean {
+    if (this.reloading.has(id)) return true
+    const l = this.loaded.get(id)
+    return l !== undefined && l.activation !== undefined && l.settled !== true
   }
 
   /** Every plugin's state, in activation order. */
@@ -235,9 +306,13 @@ export class PluginLoader {
     const fresh = specs.filter((s) => !this.loaded.has(s.id))
     return Promise.all(
       fresh.map((s) => {
-        const activation = this.activate(s)
         // activate() registers the entry synchronously, before its first await.
+        const raw = this.activate(s)
         const entry = this.loaded.get(s.id)
+        const activation = raw.then((state) => {
+          if (entry) entry.settled = true
+          return state
+        })
         if (entry) entry.activation = activation
         return activation
       })
@@ -250,19 +325,40 @@ export class PluginLoader {
    * of the host are not touched. Never rejects.
    */
   async reload(spec: HostPluginSpec): Promise<PluginRunState> {
-    await this.unload(spec.id)
+    // A second reload of the same id while one runs chains onto it (main serialises reloads, but a
+    // late one must not leave the first's waiters on a promise nobody settles).
+    const previous = this.reloading.get(spec.id)
+    if (previous) await previous.promise
+    let settle!: (state: PluginRunState) => void
+    const promise = new Promise<PluginRunState>((r) => (settle = r))
+    const reloading: Reloading = { promise, settle }
+    this.reloading.set(spec.id, reloading)
+    // The new declarations at once (a reload may change them): a call resolved during the gap is
+    // routed by what the new copy will provide, and waits for it.
+    this.services.setSpec(spec)
+    let state: PluginRunState = { id: spec.id, state: 'errored', error: 'activation failed' }
     try {
-      this.clearModules(spec.dir)
-    } catch (err) {
-      this.log(`plugin ${spec.id}: clearing its modules failed: ${errorText(err)}`)
+      await this.unload(spec.id, { keepSpec: true })
+      try {
+        this.clearModules(spec.dir)
+      } catch (err) {
+        this.log(`plugin ${spec.id}: clearing its modules failed: ${errorText(err)}`)
+      }
+      const [s] = await this.activateAll([spec])
+      if (s) state = s
+      return state
+    } finally {
+      if (this.reloading.get(spec.id) === reloading) this.reloading.delete(spec.id)
+      settle(state)
     }
-    const [state] = await this.activateAll([spec])
-    return state ?? { id: spec.id, state: 'errored', error: 'activation failed' }
   }
 
   /** Deactivate one plugin and forget it (its manifest became invalid). No-op when not loaded. */
-  async unload(id: string): Promise<void> {
+  async unload(id: string, options: { keepSpec?: boolean } = {}): Promise<void> {
     const l = this.loaded.get(id)
+    // Its declarations go at once (unless a reload replaces them): calls to it fail as missing
+    // from now on, rather than waiting on a plugin that is leaving.
+    if (!options.keepSpec) this.services.removeSpec(id)
     if (!l) return
     this.loaded.delete(id)
     await this.deactivate(l)
@@ -272,12 +368,16 @@ export class PluginLoader {
   async deactivateAll(): Promise<void> {
     const all = [...this.loaded.values()]
     this.loaded.clear()
+    for (const l of all) this.services.removeSpec(l.spec.id)
     await Promise.all(all.map((l) => this.deactivate(l)))
   }
 
   private async activate(spec: HostPluginSpec): Promise<PluginRunState> {
     const entry: Loaded = { spec, state: { id: spec.id, state: 'active' } }
     this.loaded.set(spec.id, entry)
+    // Before any plugin code runs: another plugin's call made while this one activates must find
+    // it as a provider and wait for it, and this plugin's own provide/use check against it.
+    this.services.setSpec(spec)
     const fail = (error: string): PluginRunState => {
       this.log(`plugin ${spec.id}: ${error}`)
       entry.state = { id: spec.id, state: 'errored', error }
@@ -307,7 +407,8 @@ export class PluginLoader {
     const seconds = Math.round(this.activateTimeoutMs / 1000)
     try {
       // Through a then: a synchronous throw in activate becomes a rejection like an async one.
-      entry.exports = await withTimeout(
+      // What activate returns is ignored: a plugin offers an API to others with ctx.services.
+      await withTimeout(
         Promise.resolve().then(() => mod.activate(ctx)),
         this.activateTimeoutMs,
         `activate() did not finish within ${seconds} s`
@@ -315,7 +416,7 @@ export class PluginLoader {
       return entry.state
     } catch (err) {
       // A late-settling activate is left to finish on its own; the plugin stays errored and its
-      // eventual return value is not kept.
+      // eventual return value is ignored like any other.
       return fail(`activate() failed: ${errorText(err)}`)
     }
   }
@@ -345,6 +446,8 @@ export class PluginLoader {
   }
 
   private release(spec: HostPluginSpec): void {
+    // Its implementations and subscriptions go first, so no call reaches a copy that is gone.
+    this.services.release(spec.id)
     try {
       this.options.release?.(spec)
     } catch (err) {

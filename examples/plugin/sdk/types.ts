@@ -328,6 +328,12 @@ export interface PluginContext {
     register(name: string, handler: CliHandler): Disposer
   }
 
+  /**
+   * Services between the plugins of one project (manifest `services`). Names must be declared:
+   * `provide` only names in `services.provides`, `use` only names in `services.uses`.
+   */
+  readonly services: ServicesApi
+
   // misc
   /** Lines go to `<data>/logs/<pluginId>.log` (rotated at 5 MiB). */
   readonly log: PluginLogger
@@ -338,11 +344,46 @@ export interface PluginContext {
   notify(text: string): Promise<void>
 }
 
+/**
+ * A consumer's view of a service (`ctx.services.use`). Every property but `on` is an async method
+ * of the provider: `await handle.search(q)`. The provider is resolved on each call, so the handle
+ * keeps working across provider reloads and restarts. Arguments and results are copied as plain
+ * data (structured clone): a function or symbol in them fails the call, a class instance arrives as
+ * a plain object. A call waits for a still-activating provider; it rejects when no enabled plugin
+ * provides the service, two do and none is picked in Settings > Plugins, the major versions differ,
+ * the provider failed to activate or never called `provide`, the method does not exist, or the
+ * provider threw (a fresh Error with its message). There is no timeout: race your own.
+ */
+export type ServiceHandle = {
+  /**
+   * Listen for an event the selected provider `emit`s; returns the unsubscriber. Survives provider
+   * reloads; dropped when this plugin deactivates.
+   */
+  readonly on: (event: string, listener: (data: unknown) => void) => Disposer
+} & { readonly [method: string]: (...args: unknown[]) => Promise<unknown> }
+
+export interface ServicesApi {
+  /**
+   * Offer `impl` (a plain object of functions; no method named `on`, `then`, `constructor` or
+   * starting with `_`) as service `name`. Providing the same name again replaces it. Withdrawn
+   * when this plugin deactivates.
+   */
+  provide(name: string, impl: Record<string, (...args: never[]) => unknown>): void
+  /** A handle on service `name`; it never throws for a missing provider (calls do). */
+  use(name: string): ServiceHandle
+  /**
+   * Send `event` with plain-data `data` to the consumers of service `name`. Only from the provider
+   * the project selected; otherwise dropped (one log line). A function or symbol in `data` throws.
+   */
+  emit(name: string, event: string, data?: unknown): void
+}
+
 /** What a plugin's `main` module exports. */
 export interface PluginModule {
   /**
-   * Called once per project window, with a 10 s limit. A returned object is kept as the plugin's
-   * exported API (reserved for cross-plugin use; phase 1 offers no way to reach it).
+   * Called once per project window, with a 10 s limit. Its return value is ignored; offer an API
+   * to other plugins with `ctx.services.provide`. Calling another plugin's service in here waits
+   * for that plugin to activate, unless the two call each other (a cycle fails at once).
    */
   activate(ctx: PluginContext): unknown
   /** Called when the window closes or the plugin reloads; the host is killed 5 s later regardless. */

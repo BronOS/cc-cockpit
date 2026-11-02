@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createContext, formatLogArgs } from '../../src/host/ctx'
-import { ACTIVATE_TIMEOUT_MS, clearRequireCache, parsePluginSpecs, PluginLoader, type HostPluginSpec } from '../../src/host/loader'
+import { ACTIVATE_TIMEOUT_MS, clearRequireCache, parsePluginSpecs, parseServiceProviders, PluginLoader, type HostPluginSpec } from '../../src/host/loader'
 import type { PluginContext } from '../../src/sdk/types'
 import { hostSpec } from '../fakes/host-spec'
 
@@ -202,6 +202,88 @@ describe('PluginLoader.reload', () => {
   })
 })
 
+describe('PluginLoader services', () => {
+  let root: string
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-services-')))
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+    delete (globalThis as Record<string, unknown>).__svc
+  })
+
+  const write = (dir: string, text: string): void => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'host.js'), text)
+  }
+  const svc = (): Record<string, unknown> => ((globalThis as Record<string, unknown>).__svc ??= {}) as Record<string, unknown>
+  const makeLoader = (): PluginLoader => {
+    const loader: PluginLoader = new PluginLoader({
+      makeContext: (spec) => createContext(spec, { log: () => {}, services: () => loader.services }),
+      log: () => {}
+    })
+    return loader
+  }
+  const provider = (services: HostPluginSpec['services'] = { provides: { greet: 1 } }): HostPluginSpec =>
+    hostSpec({ id: 'a.provider', dir: join(root, 'provider'), main: 'host.js', services })
+  const consumer = (): HostPluginSpec =>
+    hostSpec({ id: 'a.consumer', dir: join(root, 'consumer'), main: 'host.js', services: { uses: { greet: 1 } } })
+
+  it('lets a consumer call a provider while both activate concurrently', async () => {
+    svc()
+    // The provider provides only after a delay: the consumer's call, made first, has to wait.
+    write(
+      join(root, 'provider'),
+      "exports.activate = async (ctx) => { await new Promise((r) => setTimeout(r, 20)); ctx.services.provide('greet', { hi: (n) => 'hi ' + n }) }"
+    )
+    write(join(root, 'consumer'), "exports.activate = async (ctx) => { __svc.result = await ctx.services.use('greet').hi('you') }")
+    const loader = makeLoader()
+    const states = await loader.activateAll([consumer(), provider()])
+    expect(states.map((s) => s.state)).toEqual(['active', 'active'])
+    expect(svc().result).toBe('hi you')
+    expect(loader.isActivating('a.provider')).toBe(false)
+  })
+
+  it('makes a call issued mid-reload of the provider wait and reach the new copy', async () => {
+    svc()
+    const providerCode = (tag: string): string =>
+      `exports.activate = (ctx) => { ctx.services.provide('greet', { hi: () => '${tag}' }) }; ` +
+      'exports.deactivate = () => new Promise((r) => setTimeout(r, 20))'
+    write(join(root, 'provider'), providerCode('v1'))
+    write(join(root, 'consumer'), "exports.activate = (ctx) => { __svc.handle = ctx.services.use('greet') }")
+    const loader = makeLoader()
+    await loader.activateAll([provider(), consumer()])
+    const handle = svc().handle as { hi(): Promise<string> }
+    expect(await handle.hi()).toBe('v1')
+
+    write(join(root, 'provider'), providerCode('v2'))
+    const reloading = loader.reload(provider())
+    // Started synchronously: the old copy is still deactivating, the new one not loaded yet.
+    expect(loader.isActivating('a.provider')).toBe(true)
+    const call = handle.hi()
+    await reloading
+    expect(await call).toBe('v2')
+    expect(loader.isActivating('a.provider')).toBe(false)
+  })
+
+  it('honours a reload that changes the provider\'s declared services', async () => {
+    svc()
+    write(join(root, 'provider'), "exports.activate = (ctx) => { ctx.services.provide('greet', { hi: () => 'hello' }) }")
+    write(join(root, 'consumer'), "exports.activate = (ctx) => { __svc.handle = ctx.services.use('greet') }")
+    const loader = makeLoader()
+    // First declared without greet: its provide throws, so activate fails, and the call finds no provider.
+    const [first] = await loader.activateAll([provider({ provides: { other: 1 } }), consumer()])
+    expect(first).toMatchObject({ state: 'errored', error: expect.stringContaining('services.provides') })
+    const handle = svc().handle as { hi(): Promise<string> }
+    await expect(handle.hi()).rejects.toThrow('no enabled plugin in this project provides service "greet"')
+    expect(await loader.reload(provider())).toEqual({ id: 'a.provider', state: 'active' })
+    expect(await handle.hi()).toBe('hello')
+    // Unloading removes the declarations again.
+    await loader.unload('a.provider')
+    await expect(handle.hi()).rejects.toThrow('no enabled plugin in this project provides service "greet"')
+  })
+})
+
 describe('PluginLoader timeouts', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -325,6 +407,15 @@ describe('ctx basics', () => {
   })
 })
 
+describe('parseServiceProviders', () => {
+  it('reads the project\'s picks, absent as none, and refuses a malformed value', () => {
+    expect(parseServiceProviders({ plugins: [] })).toEqual({})
+    expect(parseServiceProviders({ serviceProviders: { triage: 'a.b' } })).toEqual({ triage: 'a.b' })
+    expect(() => parseServiceProviders({ serviceProviders: { triage: 1 } })).toThrow('serviceProviders')
+    expect(() => parseServiceProviders({ serviceProviders: ['a.b'] })).toThrow('serviceProviders')
+  })
+})
+
 describe('parsePluginSpecs', () => {
   it('accepts main\'s plugin list and refuses a malformed one', () => {
     const good = hostSpec({ id: 'a.b', dir: '/d', main: 'm.js', commands: ['go'], cli: ['go'], webviewPanels: [] })
@@ -343,5 +434,12 @@ describe('parsePluginSpecs', () => {
     // And for webviewPanels (a spec from a main before webview panels).
     expect(parsePluginSpecs({ plugins: [{ ...good, webviewPanels: undefined }] })[0]?.webviewPanels).toEqual([])
     expect(() => parsePluginSpecs({ plugins: [{ ...good, webviewPanels: 'view' }] })).toThrow('webviewPanels must be an array of strings')
+    // services: absent is none (left out of the spec); present, it is kept as main sent it.
+    expect(parsePluginSpecs({ plugins: [good] })[0]?.services).toBeUndefined()
+    const services = { provides: { triage: 1 }, uses: { mail: 2 } }
+    expect(parsePluginSpecs({ plugins: [{ ...good, services }] })[0]?.services).toEqual(services)
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, services: { provides: { triage: '1' } } }] })).toThrow('services must be')
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, services: { other: {} } }] })).toThrow('services must be')
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, services: [] }] })).toThrow('services must be')
   })
 })

@@ -6,7 +6,7 @@
 // the user installed, but everything app-level they do goes through `ctx` and main's checks.
 //
 // Methods main may call (src/host/rpc.ts):
-//   activate   { plugins: HostPluginSpec[] }  -> PluginRunState[]   load and activate them
+//   activate   { plugins: HostPluginSpec[], serviceProviders? } -> PluginRunState[]  load and activate them
 //   deactivate {}                           -> null               every plugin's deactivate()
 //   command.run { pluginId, id }             -> null               run a command the plugin registered
 //   plugin.reload { plugin: HostPluginSpec } -> PluginRunState     deactivate, forget its modules,
@@ -31,7 +31,7 @@
 // RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts).
 import { HostContexts, type LogLevel } from './ctx'
 import { fromMainPort, panelPortTag, type MainPortLike, type PanelPort } from './ctx/ui'
-import { parsePluginSpecs, PluginLoader } from './loader'
+import { parsePluginSpecs, parseServiceProviders, PluginLoader } from './loader'
 import { RpcEndpoint, type RpcPort } from './rpc'
 import { installShutdownHandlers } from './shutdown'
 
@@ -86,17 +86,25 @@ function start(): void {
     log: (pluginId: string, level: LogLevel, text: string) => rpc.emit('log', { pluginId, level, text }),
     call: (method, params, options) => rpc.call(method, params, options),
     emit: (event, params) => rpc.emit(event, params),
-    env: process.env
+    env: process.env,
+    services: () => loader.services
   })
   const loader: PluginLoader = new PluginLoader({
     makeContext: (spec) => contexts.create(spec),
+    // Dropped emits and throwing event listeners land in the plugin's own log.
+    pluginLog: (pluginId, text) => rpc.emit('log', { pluginId, level: 'warn', text }),
     // A failed activate or a finished deactivate: schedules, children and storage are let go.
     release: (spec) => contexts.dispose(spec.id)
   })
   const rpc: RpcEndpoint = new RpcEndpoint({
     port,
     handlers: {
-      activate: (params) => loader.activateAll(parsePluginSpecs(params)),
+      activate: (params) => {
+        const specs = parsePluginSpecs(params)
+        // The project's provider picks come with every activate (main recomputes them on restart).
+        loader.services.setChoices(parseServiceProviders(params))
+        return loader.activateAll(specs)
+      },
       deactivate: async () => {
         // First, before any plugin code: main kills the host 5 s after asking, while the loader
         // may wait up to 10 s for a pending activate and 5 s more for its deactivate(), and

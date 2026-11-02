@@ -45,7 +45,7 @@ import { errorText } from '../../shared/error-text'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
-import type { CliContribution } from '../../shared/manifest'
+import type { CliContribution, PluginManifest } from '../../shared/manifest'
 import { CLI_CALL_TIMEOUT_MS, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
 import { capText } from '../../shared/text'
 import type { PluginCommandDef } from '../commands/command-registry'
@@ -180,6 +180,8 @@ export interface HostPlugin {
   commands?: PluginCommandDef[]
   /** The manifest's `contributes.cli`: the `ccc <name>` commands main routes to this plugin. */
   cli?: CliContribution[]
+  /** The manifest's `services` (validated): what the plugin provides to and uses from others. */
+  services?: PluginManifest['services']
 }
 
 /**
@@ -284,6 +286,11 @@ export interface HostManagerDeps {
    * the project's switch already off (disablePluginEverywhere).
    */
   pluginSource?(projectId: string, pluginId: string): HostPluginSource | undefined
+  /**
+   * The project's service provider picks (`{ [service]: pluginId }`), sent with every activate.
+   * Read at the activate itself, so a restart picks up a changed choice. Default: none.
+   */
+  serviceProviders?(projectId: string): Record<string, string>
   /** The project's command registry: commands appear when a plugin registers them. */
   commands?: HostCommandSink
   /** `ctx.notify`: show a system notification. */
@@ -818,7 +825,7 @@ export class HostManager {
       try {
         states = await rpc.call(
           'activate',
-          { plugins: specs },
+          { plugins: specs, serviceProviders: this.serviceProvidersOf(rec.projectId) },
           { timeoutMs: activateBudgetMs(specs.length, this.activateTimeoutMs) }
         )
       } catch (err) {
@@ -875,10 +882,21 @@ export class HostManager {
       panels: p.panels.map((panel) => panel.id),
       webviewPanels: p.panels.filter((panel) => panel.kind === 'webview').map((panel) => panel.id),
       cli: (p.cli ?? []).map((c) => c.name),
+      ...(p.services !== undefined ? { services: p.services } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']
       }
+    }
+  }
+
+  /** The project's provider picks; a throwing dependency means none (logged), not a failed launch. */
+  private serviceProvidersOf(projectId: string): Record<string, string> {
+    try {
+      return { ...(this.deps.serviceProviders?.(projectId) ?? {}) }
+    } catch (err) {
+      this.log(`plugin host ${projectId}: reading service providers failed: ${errorText(err)}`)
+      return {}
     }
   }
 

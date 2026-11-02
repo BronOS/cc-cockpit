@@ -571,6 +571,7 @@ function start(): void {
           ...(c.key !== undefined ? { key: c.key } : {})
         })),
         cli: plugin.manifest.contributes?.cli ?? [],
+        ...(plugin.manifest.services !== undefined ? { services: plugin.manifest.services } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -630,6 +631,8 @@ function start(): void {
     settings: (projectId, pluginId) => hostSettingsOf(projectId, pluginId),
     // On hostPlugins' own terms: revoked, replaced or switched off during the wait, no.
     pluginSource: hostSourceOf,
+    // No provider picks yet (plan: plugin services, Task 5 backs this with the project record).
+    serviceProviders: () => ({}),
     // Every change goes to the project's window too: its key table and palette were read at
     // window open, before any plugin registered a command (`commands.updated`).
     commands: {

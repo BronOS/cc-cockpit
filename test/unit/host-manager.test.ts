@@ -972,8 +972,42 @@ describe('HostManager', () => {
             cli: [],
             settings: { project: {}, app: {} }
           }
-        ]
+        ],
+        // No serviceProviders dependency: no picks.
+        serviceProviders: {}
       })
+    })
+
+    it('passes each plugin\'s declared services and the project\'s provider picks into the host', async () => {
+      const services = { provides: { triage: 1 }, uses: { mail: 2 } }
+      const asked: string[] = []
+      let params: { plugins: { id: string; services?: unknown }[]; serviceProviders: unknown } | undefined
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) => {
+          params = p as typeof params
+          return (p as { plugins: { id: string }[] }).plugins.map((x) => ({ id: x.id, state: 'active' }))
+        }
+      })
+      const withServices = new HostManager({
+        factory,
+        plugins: () => [{ ...plugin('a.one'), services }, plugin('a.two')],
+        env: () => ({}),
+        projectPath: () => '/p',
+        layouts,
+        pluginDataDir: () => '/d',
+        serviceProviders: (projectId) => {
+          asked.push(projectId)
+          return { triage: 'a.one' }
+        },
+        log
+      })
+      await withServices.open('p7', 7)
+      expect(asked).toEqual(['p7'])
+      expect(params?.serviceProviders).toEqual({ triage: 'a.one' })
+      expect(params?.plugins[0]?.services).toEqual(services)
+      // A plugin without the field gets none (not an empty object).
+      expect(params?.plugins[1]).not.toHaveProperty('services')
     })
 
     it('names the webview panels of each plugin (only those kind: webview drive ctx.webview)', async () => {

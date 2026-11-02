@@ -22,7 +22,8 @@ so a person chooses to install or link it.
     "themes": [{ "id": "dusk", "file": "themes/dusk.json" }],
     "cli": [{ "name": "hello", "summary": "Say hello", "usage": "hello [name]" }],
     "skills": [{ "id": "hello", "dir": "skills/hello" }]
-  }
+  },
+  "services": { "provides": { "greetings": 1 }, "uses": { "triage": 1 } }
 }
 ```
 
@@ -33,6 +34,9 @@ so a person chooses to install or link it.
 - All paths are plugin-relative, with `/` separators, no `..`, no absolute path. They must exist.
 - `contributes` ids (panel, command, theme) match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
 - Unknown manifest properties are tolerated; known ones are strict.
+- `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
+  (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
+  not provide and use the same name. Only declared names work with `ctx.services` (`api` topic).
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
   `description: <one line, at most 1024 chars>`; any other key, a multi-line value, a `name`
@@ -52,7 +56,7 @@ exports.activate = (ctx) => {
 exports.deactivate = () => {}
 ```
 
-`activate(ctx)` has 10 s. `ctx` is scoped to one project window. See the `api` topic for every
+`activate(ctx)` has 10 s; its return value is ignored (share an API with `ctx.services`). `ctx` is scoped to one project window. See the `api` topic for every
 member. Types: `src/sdk/types.ts` in the cc-cockpit repo (`PluginContext`); a starting point to copy, with the
 types and a build: https://github.com/BronOS/cc-cockpit-plugin-example.
 
