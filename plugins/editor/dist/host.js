@@ -54,6 +54,21 @@ function microArgv(app, rel, line) {
   return argv
 }
 
+/**
+ * Races an overlay's `result` against OPEN_SETTLE_MS: null when it is still open after the wait,
+ * else `{ error }` (refused) or `{ result }` (ended). Call it after all wiring is done, so the wait
+ * delays nothing.
+ */
+async function earlyEnd(result) {
+  let timer
+  const wait = new Promise((resolve) => (timer = setTimeout(resolve, OPEN_SETTLE_MS, null)))
+  try {
+    return await Promise.race([result.then((r) => ({ result: r }), (error) => ({ error })), wait])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 exports.microArgv = microArgv
 exports.relativePath = relativePath
 exports.overlayTitle = overlayTitle
@@ -84,19 +99,16 @@ exports.activate = (ctx) => {
     // The terminal's cwd defaults to the project folder, so the relative path resolves there.
     const handle = ctx.overlay.start({ kind: 'terminal', argv: microArgv(a, rel, line), title: overlayTitle('Edit: ', rel), size: 'large' })
     // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a failed spawn)
-    // rejects `result` at once, while one that opened settles only when the person closes it. So
-    // wait briefly for a rejection: without this, the reviewer closed itself for an editor that never
-    // appeared and `ccc edit` reported success.
-    let timer
-    const refused = await Promise.race([
-      handle.result.then(
-        () => null,
-        (e) => e,
-      ),
-      new Promise((resolve) => (timer = setTimeout(() => resolve(null), OPEN_SETTLE_MS))),
-    ])
-    clearTimeout(timer)
-    if (refused) throw new Error(`the editor overlay did not open: ${refused.message}`)
+    // rejects `result` at once, and micro failing right after spawning (bad option, unreadable
+    // terminal) resolves it with a nonzero exit; one that opened settles only when the person closes
+    // it, never within the wait. So any end within the wait is a failed open: without this, the
+    // reviewer closed itself for an editor that never appeared and `ccc edit` reported success.
+    const ended = await earlyEnd(handle.result)
+    if (ended && ended.error) throw new Error(`the editor overlay did not open: ${ended.error.message}`)
+    if (ended) {
+      const r = ended.result
+      throw new Error(r && r.kind === 'exit' ? `micro exited at once with code ${r.code}` : 'the editor overlay closed at once')
+    }
     handle.result.catch((e) => ctx.log.warn(`editor overlay: ${e.message}`))
     return rel
   }

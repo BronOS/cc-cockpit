@@ -67,6 +67,19 @@ test('a refused overlay fails editor.open and ccc edit instead of reporting succ
   assert.match(r.stderr, /did not open/)
 })
 
+test('micro exiting at once with a nonzero code fails editor.open and ccc edit', async () => {
+  // micro failing right after spawning resolves `result` with { kind: 'exit', code: 1 }; counting
+  // every resolved result as shown made `ccc edit` report success and closed the reviewer.
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.overlay.start = (spec) => (f.started.push(spec), { result: Promise.resolve({ kind: 'exit', code: 1 }) })
+  host.activate(f.ctx)
+  await assert.rejects(f.provided.editor.open('a.txt'), /editor: micro exited at once with code 1/)
+  const r = await f.cli.edit(['a.txt'], { cwd: '/proj' })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /exited at once with code 1/)
+})
+
 test('a backslash stays part of the file name off Windows', { skip: require('node:path').sep === '\\' }, () => {
   // `a\b.js` is one valid file name on macOS and Linux; turning it into `a/b.js` opened another file.
   assert.equal(relativePath('a\\b.js'), 'a\\b.js')

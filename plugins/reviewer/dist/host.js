@@ -34,6 +34,21 @@ function overlayTitle(prefix, p) {
 }
 exports.overlayTitle = overlayTitle
 
+/**
+ * Races an overlay's `result` against OPEN_SETTLE_MS: null when it is still open after the wait,
+ * else `{ error }` (refused) or `{ result }` (ended). Call it after all wiring is done, so the wait
+ * delays nothing.
+ */
+async function earlyEnd(result) {
+  let timer
+  const wait = new Promise((resolve) => (timer = setTimeout(resolve, OPEN_SETTLE_MS, null)))
+  try {
+    return await Promise.race([result.then((r) => ({ result: r }), (error) => ({ error })), wait])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 let disposers = []
 
 exports.activate = (ctx) => {
@@ -102,33 +117,7 @@ exports.activate = (ctx) => {
     }
     const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: overlayTitle('Review: ', sides.path), size: 'large' })
     open.set(sides.path, handle)
-    try {
-      handle.post(init)
-    } catch (e) {
-      open.delete(sides.path)
-      handle.close()
-      throw e
-    }
-    // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a closed window)
-    // rejects `result` at once, while one that opened settles only when the person closes it. Wait
-    // briefly for a rejection and throw it: a click then goes to the built-in viewer, and the service
-    // and `ccc review` report the failure. Before this, the rejection reached only the `done` catch
-    // below, so the click counted as handled with nothing on screen. A second open of the same file
-    // during the wait finds the handle in `open` and focuses it, as for a shown overlay.
-    let timer
-    const refused = await Promise.race([
-      handle.result.then(
-        () => null,
-        (e) => e,
-      ),
-      new Promise((resolve) => (timer = setTimeout(() => resolve(null), OPEN_SETTLE_MS))),
-    ])
-    clearTimeout(timer)
-    if (refused) {
-      if (open.get(sides.path) === handle) open.delete(sides.path)
-      throw new files.ReviewError(`the review overlay did not open: ${refused.message}`, { fallback: true })
-    }
-
+    // Registered before init is posted: the page posts drafts and Edit as soon as it has loaded.
     // Drafts arrive on every change (debounced in the page): Esc closes the overlay without
     // asking the page, so the last posted draft is what Close keeps.
     let saving = Promise.resolve()
@@ -154,6 +143,26 @@ exports.activate = (ctx) => {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
       }
     })
+
+    try {
+      handle.post(init)
+    } catch (e) {
+      open.delete(sides.path)
+      handle.close()
+      throw e
+    }
+    // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a closed window)
+    // rejects `result` at once, while one that opened settles only when the person closes it. Wait
+    // briefly for a rejection and throw it: a click then goes to the built-in viewer, and the service
+    // and `ccc review` report the failure. The listener above and the post are wired first, so the
+    // page's first drafts and an early Edit are handled during the wait. A person closing it within
+    // the wait is a shown overlay; `done` below handles that result. A second open of the same file
+    // during the wait finds the handle in `open` and focuses it, as for a shown overlay.
+    const ended = await earlyEnd(handle.result)
+    if (ended && ended.error) {
+      if (open.get(sides.path) === handle) open.delete(sides.path)
+      throw new files.ReviewError(`the review overlay did not open: ${ended.error.message}`, { fallback: true })
+    }
 
     const done = handle.result
       .then(async (res) => {

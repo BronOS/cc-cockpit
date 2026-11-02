@@ -123,6 +123,37 @@ test('a refused overlay fails the open, so a click falls back and the service an
   host.deactivate()
 })
 
+test('a page message sent right after init is handled, not lost to the open wait', async () => {
+  // The listener was registered after the 500 ms "did it open" wait, so a draft or an Edit click
+  // the page sent as soon as it loaded was dropped.
+  const f = setup({ editorAvailable: true })
+  const saved = []
+  f.ctx.storage.set = async (k, v) => saved.push([k, v])
+  f.ctx.overlay.start = () => {
+    const h = {
+      listeners: [],
+      posts: [],
+      onMessage: (l) => (h.listeners.push(l), () => {}),
+      post: (m) => {
+        h.posts.push(m)
+        // The page answers init at once with a draft.
+        if (m.type === 'init') for (const l of h.listeners) l({ type: 'draft', draft: { global: 'early note', notes: [] } })
+      },
+      focus() {},
+      close() {},
+      result: new Promise(() => {}),
+    }
+    f.handles.push(h)
+    return h
+  }
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  assert.equal(f.handles[0].listeners.length, 1)
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0][1].global, 'early note')
+  host.deactivate()
+})
+
 test('a long path is cut from the left to fit the overlay title limit', async () => {
   // main refuses a title over 200 chars, so a path over 192 chars could never be reviewed.
   assert.equal(host.overlayTitle('Review: ', 'a.js'), 'Review: a.js')
