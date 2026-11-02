@@ -168,15 +168,15 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   `test/unit/browser-plugin.test.ts` if it asserts the bundled list
 - Create: `test/e2e/bundled-plugins.spec.ts` (or extend the browser one)
 
-- [ ] add `cockpit.reviewer` and `cockpit.editor` to `BUNDLED_PLUGINS` (enabled by default)
-- [ ] add both folders to `extraResources` with the same filter style as the browser (no tests, no docs, no
+- [x] add `cockpit.reviewer` and `cockpit.editor` to `BUNDLED_PLUGINS` (enabled by default)
+- [x] add both folders to `extraResources` with the same filter style as the browser (no tests, no docs, no
       `src/` of the reviewer page in the package; the bundle, `dist/`, `plugin.json`, `overlay/`, README stay)
-- [ ] update the packaging unit tests that read `electron-builder.yml` and the bundled list
-- [ ] e2e: a run without `CC_COCKPIT_NO_BUNDLED` lists both in Settings > Plugins as built-in, on; a modified-file
+- [x] update the packaging unit tests that read `electron-builder.yml` and the bundled list
+- [x] e2e: a run without `CC_COCKPIT_NO_BUNDLED` lists both in Settings > Plugins as built-in, on; a modified-file
       click opens the reviewer overlay (fake claude writes a file); with `CC_COCKPIT_NO_BUNDLED=1` neither loads
-- [ ] check that existing e2e specs that assume only the browser is bundled still pass (most set
+- [x] check that existing e2e specs that assume only the browser is bundled still pass (most set
       `CC_COCKPIT_NO_BUNDLED=1`); `npm run package:dir` and confirm both folders are in `release/*/resources/plugins`
-- [ ] run `npm test`, `npm run test:plugins`, typecheck, lint, `npm run build` and the touched e2e specs - must pass
+- [x] run `npm test`, `npm run test:plugins`, typecheck, lint, `npm run build` and the touched e2e specs - must pass
 
 ### Task 3: Reserve cockpit.* ids for bundled plugins [model: opus]
 

@@ -78,9 +78,14 @@ function linkedFolder(id: string, cli: string[]): string {
 }
 
 describe('allowlist and the test switch', () => {
-  it('ships the browser plugin, on by default', () => {
-    expect(BUNDLED_PLUGINS).toEqual([{ id: BID, dir: 'browser', enabledByDefault: true }])
-    expect(bundledPluginSpecs('/r', {}, false)).toEqual([{ id: BID, dir: join('/r', 'browser'), enabledByDefault: true }])
+  it('ships the browser, reviewer and editor plugins, on by default', () => {
+    const all = [
+      { id: BID, dir: 'browser', enabledByDefault: true },
+      { id: 'cockpit.reviewer', dir: 'reviewer', enabledByDefault: true },
+      { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true }
+    ]
+    expect(BUNDLED_PLUGINS).toEqual(all)
+    expect(bundledPluginSpecs('/r', {}, false)).toEqual(all.map((p) => ({ ...p, dir: join('/r', p.dir) })))
   })
 
   it('finds the folder in the repo (dev) or in resources (packaged)', () => {
@@ -92,9 +97,9 @@ describe('allowlist and the test switch', () => {
     const off = { CC_COCKPIT_TEST: '1', CC_COCKPIT_NO_BUNDLED: '1' }
     expect(bundledPluginSpecs('/r', off, false)).toEqual([])
     // Without CC_COCKPIT_TEST the switch means nothing, and a packaged app ignores it too.
-    expect(bundledPluginSpecs('/r', { CC_COCKPIT_NO_BUNDLED: '1' }, false)).toHaveLength(1)
-    expect(bundledPluginSpecs('/r', off, true)).toHaveLength(1)
-    expect(bundledPluginSpecs('/r', { CC_COCKPIT_TEST: '1' }, false)).toHaveLength(1)
+    expect(bundledPluginSpecs('/r', { CC_COCKPIT_NO_BUNDLED: '1' }, false)).toHaveLength(BUNDLED_PLUGINS.length)
+    expect(bundledPluginSpecs('/r', off, true)).toHaveLength(BUNDLED_PLUGINS.length)
+    expect(bundledPluginSpecs('/r', { CC_COCKPIT_TEST: '1' }, false)).toHaveLength(BUNDLED_PLUGINS.length)
   })
 })
 

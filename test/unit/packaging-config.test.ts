@@ -25,6 +25,14 @@ describe('electron-builder.yml', () => {
     expect(yml).toMatch(/^extraResources:$/m)
     expect(yml).toMatch(/^ {2}- from: plugins\/browser$/m)
     expect(yml).toMatch(/^ {4}to: plugins\/browser$/m)
+    for (const name of ['reviewer', 'editor']) {
+      expect(yml).toMatch(new RegExp(`^ {2}- from: plugins/${name}$`, 'm'))
+      expect(yml).toMatch(new RegExp(`^ {4}to: plugins/${name}$`, 'm'))
+    }
+    // Page sources, tests and docs stay out of the package: the filters list files, never the whole folder.
+    const reviewer = yml.slice(yml.indexOf('- from: plugins/reviewer'), yml.indexOf('- from: plugins/editor'))
+    expect(reviewer).toMatch(/^ {6}- overlay\/\*\*$/m)
+    expect(reviewer).not.toMatch(/src|test|docs|FRICTION/)
   })
 
   it('points mac and Linux at the rendered app icon, and the files exist', () => {
