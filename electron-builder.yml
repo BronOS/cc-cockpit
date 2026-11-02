@@ -24,7 +24,7 @@
 #    artifact names fixed below so nothing has to guess them. It is ad-hoc signed (`identity: "-"`), not
 #    notarised: Apple Silicon refuses to run unsigned arm64 code, an ad-hoc signature satisfies that.
 #    The hardened runtime conflicts with an ad-hoc signature, so it is off. A downloaded build still
-#    needs System Settings > Privacy & Security (or `xattr -cr`) on first launch.
+#    needs allowing once on first launch (tried with v0.1.0 through brew).
 #  - `publish: null` turns off the publisher electron-builder would infer from the git remote, so no
 #    invocation (a bare `npx electron-builder` in CI with GH_TOKEN, on a tag) can upload; the
 #    `--publish never` in the npm scripts is a second guard.

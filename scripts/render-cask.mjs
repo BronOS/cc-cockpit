@@ -16,7 +16,7 @@ export function renderCask(version, sha256) {
   }
   // The url and file name follow electron-builder.yml `mac.artifactName`. The macOS floor is Electron's
   // own (node_modules/electron/README.md); raise it when an Electron upgrade does. The caveats' first-launch
-  // step is unverified until the Mac run in docs/design.md "To cut a release"; replace it with the result.
+  // step comes from the v0.1.0 run on a Mac: allowing the app once was enough.
   return `cask "cc-cockpit" do
   version "${version}"
   sha256 "${sha256}"
@@ -40,9 +40,8 @@ export function renderCask(version, sha256) {
   ]
 
   caveats <<~EOS
-    The app is not notarised, so macOS may refuse to open it the first time. The exact step has not
-    been tested on a Mac yet. Usually it is System Settings > Privacy & Security > "Open Anyway", or:
-    xattr -cr /Applications/cc-cockpit.app
+    The app is not notarised, so the first time you open it macOS asks you to allow it. If it offers
+    no way to, use System Settings > Privacy & Security > "Open Anyway".
 
     Quit cc-cockpit before upgrading, or restart it afterwards.
   EOS

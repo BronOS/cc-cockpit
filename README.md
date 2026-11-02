@@ -37,8 +37,8 @@ Install with Homebrew:
 brew install --cask BronOS/tap/cc-cockpit
 ```
 
-The app is not notarised, so macOS may refuse to open it the first time. The exact step has not been tested on a Mac yet.
-Usually it is System Settings > Privacy & Security > "Open Anyway", or `xattr -cr /Applications/cc-cockpit.app`.
+The app is not notarised, so the first time you open it macOS asks you to allow it. If it offers no way to, use System
+Settings > Privacy & Security > "Open Anyway".
 
 Intel Macs are not supported yet.
 
@@ -67,7 +67,7 @@ running app's.
 
 | Platform | State |
 | --- | --- |
-| macOS, arm64 | Runs from source. The packaged app and the brew path are untested until the manual runs in the plan's Post-Completion |
+| macOS, arm64 | v0.1.0 installed with `brew` on a Mac and ran: first launch needed allowing the app once. Upgrading over a running app is untested |
 | Linux x64 | Runs from source, tried on Hyprland/Wayland; restoring window size and position may not work there. The packaged AppImage launched only via `--appimage-extract-and-run --no-sandbox` (no libfuse2 here); a plain double-click run (FUSE, Chromium sandbox) and Ubuntu are untested; the `.deb` was built and unpacked but not launched |
 | macOS x64 | Not supported yet |
 | Windows | Not supported |

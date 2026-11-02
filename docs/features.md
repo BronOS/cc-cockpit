@@ -108,8 +108,8 @@ behind it are in [design.md](design.md).
 - **Packaged builds.** Linux x64: the AppImage was built and launched with a temporary data folder (via
   `--appimage-extract-and-run --no-sandbox`; a plain FUSE launch with the Chromium sandbox and Ubuntu are untested); the app started, bound its socket, and tokenless `ccc open`, `ccc sessions` and
   `ccc overlay --project` worked. The `.deb` was built and unpacked but not launched. A second build with a higher
-  version started on the first one's data folder and kept the open project. macOS: the packaged path is untested until
-  the manual runs listed in the plan's Post-Completion. Test hooks are off in packaged apps by design (`isTestRun`,
+  version started on the first one's data folder and kept the open project. macOS: v0.1.0 installed with `brew` on a Mac and
+  ran, with the app allowed once at first launch; upgrading over a running app is untested. Test hooks are off in packaged apps by design (`isTestRun`,
   `main/test-run.ts`); a packaged build was not checked for that.
 
 ## Marketplace

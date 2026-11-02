@@ -58,9 +58,8 @@ describe('renderCask', () => {
   ]
 
   caveats <<~EOS
-    The app is not notarised, so macOS may refuse to open it the first time. The exact step has not
-    been tested on a Mac yet. Usually it is System Settings > Privacy & Security > "Open Anyway", or:
-    xattr -cr /Applications/cc-cockpit.app
+    The app is not notarised, so the first time you open it macOS asks you to allow it. If it offers
+    no way to, use System Settings > Privacy & Security > "Open Anyway".
 
     Quit cc-cockpit before upgrading, or restart it afterwards.
   EOS

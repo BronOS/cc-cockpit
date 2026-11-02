@@ -822,9 +822,8 @@ version. It runs once the release is public, so if it fails the update notice is
 old version; re-running it picks up the newest release. An older release published late changes nothing there, and the run
 never moves the cask to an older version than the tap has.
 
-Before the first public release, replace the TODO in the README and the first-launch text in the cask caveats
-(`scripts/render-cask.mjs`) with the step the real run on a Mac found. Tagging can't check this, because that run needs the
-draft's dmg.
+The first-launch text in the README and the cask caveats (`scripts/render-cask.mjs`) comes from the v0.1.0 run on a Mac: macOS
+asks once to allow the app. Check it still holds when the signing setup or the macOS floor changes.
 
 ## 8. Open points for the plan
 
