@@ -1,6 +1,6 @@
 pkgbase = cc-cockpit-bin
 	pkgdesc = Desktop cockpit for Claude Code: terminal tabs, session status and plugin panels
-	pkgver = 0.1.1
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/BronOS/cc-cockpit
 	arch = x86_64
@@ -17,12 +17,12 @@ pkgbase = cc-cockpit-bin
 	depends = xdg-utils
 	optdepends = git: install plugins
 	optdepends = libappindicator-gtk3: tray support
-	noextract = cc-cockpit-0.1.1.deb
+	noextract = cc-cockpit-0.2.0.deb
 	options = !strip
 	options = !debug
-	source = cc-cockpit-0.1.1.deb::https://github.com/BronOS/cc-cockpit/releases/download/v0.1.1/cc-cockpit-0.1.1-linux-x64.deb
-	source = LICENSE-0.1.1::https://raw.githubusercontent.com/BronOS/cc-cockpit/v0.1.1/LICENSE
-	sha256sums = ea17f99676287da2a40b76f6d85d067f77998176a586b8e6dfd64f3b957df2d0
+	source = cc-cockpit-0.2.0.deb::https://github.com/BronOS/cc-cockpit/releases/download/v0.2.0/cc-cockpit-0.2.0-linux-x64.deb
+	source = LICENSE-0.2.0::https://raw.githubusercontent.com/BronOS/cc-cockpit/v0.2.0/LICENSE
+	sha256sums = 8196d2b550346721d92e9455fdec62eb756e4ea4cc13bc9aedb83d8ce0600661
 	sha256sums = SKIP
 
 pkgname = cc-cockpit-bin
