@@ -14,7 +14,6 @@ const files = require('./lib/files')
 const review = require('./lib/review')
 
 const OVERLAY_FILE = 'overlay/review.html'
-const DRAFT_PREFIX = 'draft:'
 const LAST_PROMPT_MAX = 80
 const LAYOUT_KEY = 'layout' // ctx.appStorage: the person's last diff layout, the same in every project
 const LAYOUTS = ['split', 'unified']
@@ -22,19 +21,13 @@ const LAYOUTS = ['split', 'unified']
 let disposers = []
 
 exports.activate = (ctx) => {
-  let rootPromise = null
-  const root = () =>
-    (rootPromise ||= files.projectRoot((argv) => ctx.exec(argv)).catch((e) => {
-      rootPromise = null // retry next time (a transient exec failure must not stick)
-      throw e
-    }))
+  const root = async () => ctx.projectDir
   const exec = (argv) => ctx.exec(argv, { timeoutMs: 15000 })
   // The editor is whichever plugin the project uses for the "editor" service (cockpit.editor,
   // micro, by default). Resolved on every call, so it may come and go.
   const editor = ctx.services.use('editor')
 
-  // One overlay per file: a second open of the same file is ignored while the first is up (the
-  // API has no way to focus an existing overlay).
+  // One overlay per file: a second open of the same file brings the first to the front.
   const open = new Map() // path -> OverlayHandle
 
   async function tabsInfo() {
@@ -64,10 +57,10 @@ exports.activate = (ctx) => {
     const r = await root()
     const sides = await files.readSides(exec, r, rel)
     if (open.has(sides.path)) {
-      ctx.log.info(`already open: ${sides.path}`)
+      open.get(sides.path).focus()
       return { done: Promise.resolve() }
     }
-    const draftKey = DRAFT_PREFIX + sides.path
+    const draftKey = review.draftKey(sides.path)
     let draft = review.cleanDraft(await ctx.storage.get(draftKey))
     const tabs = await tabsInfo()
     const savedLayout = await ctx.appStorage.get(LAYOUT_KEY).catch(() => null)
@@ -78,7 +71,7 @@ exports.activate = (ctx) => {
 
     const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: `Review: ${sides.path}`, size: 'large' })
     open.set(sides.path, handle)
-    handle.post({ type: 'init', sides, draft, tabs, tabId: target, layout })
+    handle.post({ type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: ctx.services.available('editor') })
 
     // Drafts arrive on every change (debounced in the page): Esc closes the overlay without
     // asking the page, so the last posted draft is what Close keeps.
@@ -100,13 +93,7 @@ exports.activate = (ctx) => {
         editor
           .open(sides.path, { line })
           .then(() => handle.close())
-          .catch((e) => {
-            const missing = /no enabled plugin in this project provides service "editor"/.test(e.message)
-            handle.post({
-              type: 'error',
-              message: missing ? 'No editor: enable "Editor (micro)" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''),
-            })
-          })
+          .catch((e) => handle.post({ type: 'error', message: e.message.replace(/^editor: /, '') }))
       } else if (m.type === 'tabs') {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
       }

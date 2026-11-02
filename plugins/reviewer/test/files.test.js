@@ -39,11 +39,6 @@ test('relativeFromCwd', () => {
   assert.throws(() => files.relativeFromCwd('/p', '/p', '../q/a.js'), /not inside/)
 })
 
-test('projectRoot is where exec runs', async () => {
-  const { root, exec } = repo()
-  assert.equal(await files.projectRoot(exec), root)
-})
-
 test('readSides: changed, new, deleted, unchanged', async () => {
   const { root, exec } = repo()
   fs.writeFileSync(path.join(root, 'src/a.js'), 'one\nTWO\n')

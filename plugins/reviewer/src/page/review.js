@@ -431,6 +431,7 @@ function init(m) {
   $('note').textContent = s.note || ''
   $('note').hidden = !s.note
   $('global').value = state.draft.global
+  $('edit').hidden = m.canEdit === false // no plugin provides the editor service
   $('edit').disabled = !!s.newMissing
   $('edit').title = s.newMissing ? 'The file is deleted: nothing to edit' : $('edit').title
   buildEditors()

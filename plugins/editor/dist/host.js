@@ -10,7 +10,10 @@
 
 const path = require('node:path')
 
-const INSTALL_HINT = 'micro is not installed (or not on your login-shell PATH): https://micro-editor.github.io, e.g. `brew install micro` or `pacman -S micro`; or set its path in Settings > Plugins > Editor (micro)'
+const INSTALL_HINT =
+  'micro is not installed (or not on your login-shell PATH). Install it with `brew install micro` (macOS), ' +
+  '`sudo pacman -S micro` (Arch) or `sudo apt install micro` (Debian, Ubuntu), or see https://micro-editor.github.io. ' +
+  'If it is installed elsewhere, set its path in Settings > Plugins > Editor (micro), setting "microPath".'
 
 let disposers = []
 
@@ -38,6 +41,7 @@ function microArgv(app, rel, line) {
 
 exports.microArgv = microArgv
 exports.relativePath = relativePath
+exports.INSTALL_HINT = INSTALL_HINT
 
 exports.activate = (ctx) => {
   const app = () => ctx.settings.app || {}
@@ -84,10 +88,8 @@ exports.activate = (ctx) => {
       return { stdout: 'usage: ccc edit <file> [line]   edit a file of this project in micro\n' }
     }
     try {
-      // Resolve against the caller's cwd, then make it project-relative: the project folder is
-      // exec's default cwd (the guide has no ctx.projectDir).
-      const r = await ctx.exec(['pwd', '-P'])
-      const root = r.stdout.trim()
+      // Resolve against the caller's cwd, then make it project-relative.
+      const root = ctx.projectDir
       const rel = path.relative(root, path.resolve(cwd || root, argv[0]))
       const shown = await openEditor(rel, argv[1])
       return { stdout: `editing ${shown}\n` }

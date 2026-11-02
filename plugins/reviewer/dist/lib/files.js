@@ -62,17 +62,6 @@ function insideRoot(root, abs) {
 const isBinary = (buf) => buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)
 
 /**
- * The project folder, as a real path. The guide gives no ctx.projectDir; ctx.exec's default cwd
- * is the project folder (`ccc guide types`, ExecOptions.cwd), so ask a process where it runs.
- */
-async function projectRoot(exec) {
-  const r = await exec(['pwd', '-P'])
-  const out = (r.stdout || '').trim()
-  if (r.code !== 0 || !out) throw new ReviewError(`cannot find the project folder (pwd: ${(r.stderr || '').trim()})`)
-  return fs.realpathSync(out)
-}
-
-/**
  * Both sides of `rel` for a review:
  * { path, root, git, head, old, new, oldMissing, newMissing, mode, note }
  * mode: 'diff' (both or one side present in git), 'plain' (no git or no commit: the file only).
@@ -151,4 +140,4 @@ async function readSides(exec, root, rel) {
   }
 }
 
-module.exports = { ReviewError, MAX_SIDE_BYTES, normalizeRelative, relativeFromCwd, projectRoot, readSides }
+module.exports = { ReviewError, MAX_SIDE_BYTES, normalizeRelative, relativeFromCwd, readSides }

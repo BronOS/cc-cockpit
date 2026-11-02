@@ -56,3 +56,13 @@ test('formatReview: an unchanged file says so and drops side labels', () => {
   const t = formatReview({ notes: [{ from: 2, to: 2, side: 'new', text: 'n', quote: 'q' }] }, { ...sides, old: 'a', new: 'a' })
   assert.match(t, /^Review of src\/a\.ts \(unchanged since the last commit 0123456789ab\)\n\n1\. Line 2:\n/)
 })
+
+test('draftKey: plain prefix, hashed when the path would exceed the key limit', () => {
+  const { draftKey } = require('../dist/lib/review')
+  assert.equal(draftKey('src/a.ts'), 'draft:src/a.ts')
+  const long = 'd/'.repeat(150) + 'a.ts'
+  const k = draftKey(long)
+  assert.ok(k.length <= 200)
+  assert.equal(k, draftKey(long))
+  assert.notEqual(k, draftKey(long + 'x'))
+})

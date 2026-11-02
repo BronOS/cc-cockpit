@@ -295,14 +295,14 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   (+ rebuilt bundle), `plugins/reviewer/test/*`, `plugins/reviewer/docs/design.md`, `plugins/reviewer/FRICTION.md`
 - Modify: `plugins/editor/dist/host.js`, `plugins/editor/README.md`, `plugins/editor/test/*`
 
-- [ ] reviewer: `ctx.projectDir` instead of `pwd -P`; Edit hidden when `ctx.services.available('editor')` is false
+- [x] reviewer: `ctx.projectDir` instead of `pwd -P`; Edit hidden when `ctx.services.available('editor')` is false
       (re-checked when the overlay opens), no error-text match; a second open of the same file calls `focus()`
       on the existing handle; keys shortened if the storage limits require it
-- [ ] editor: when micro is missing, the message names the install command per system (`brew install micro`,
+- [x] editor: when micro is missing, the message names the install command per system (`brew install micro`,
       `sudo pacman -S micro`, `sudo apt install micro`, or https://micro-editor.github.io) and the `microPath` setting
-- [ ] update the plugins' design note Status line and strike or annotate each FRICTION.md entry with its outcome
-- [ ] update the plugin tests (`node:test`) for the new behaviour; rebuild the bundle (`npm run build:reviewer`)
-- [ ] run `npm run test:plugins`, `npm test` (the bundle byte test) and the bundled-plugins e2e - must pass
+- [x] update the plugins' design note Status line and strike or annotate each FRICTION.md entry with its outcome
+- [x] update the plugin tests (`node:test`) for the new behaviour; rebuild the bundle (`npm run build:reviewer`)
+- [x] run `npm run test:plugins`, `npm test` (the bundle byte test) and the bundled-plugins e2e - must pass
 
 ### Task 8: Verify acceptance criteria [model: sonnet]
 - [ ] every requirement in Overview and Decisions is implemented; every FRICTION.md entry has its outcome in the table

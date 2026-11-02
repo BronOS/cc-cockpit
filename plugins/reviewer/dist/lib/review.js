@@ -85,4 +85,14 @@ function formatReview(draft, sides) {
   return build(0).slice(0, MAX_MESSAGE - 40) + '\n\n(review cut: too long)'
 }
 
-module.exports = { cleanDraft, isEmpty, formatReview, MAX_MESSAGE }
+const DRAFT_PREFIX = 'draft:'
+const MAX_KEY = 200 // ctx.storage key limit (`ccc guide api`)
+
+/** The ctx.storage key of a file's draft; a path too long for a key is replaced by its hash. */
+function draftKey(path) {
+  const key = DRAFT_PREFIX + path
+  if (key.length <= MAX_KEY) return key
+  return `${DRAFT_PREFIX}#${require('node:crypto').createHash('sha256').update(path).digest('hex')}`
+}
+
+module.exports = { draftKey, cleanDraft, isEmpty, formatReview, MAX_MESSAGE }

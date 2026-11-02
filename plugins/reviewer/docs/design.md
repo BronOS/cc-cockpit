@@ -1,10 +1,10 @@
 # Reviewer: design
 
-Status (2026-11-02): milestones 1-3 built and tried in the app, linked from ~/Projects/cc-cockpit-reviewer and
-~/Projects/cc-cockpit-editor (`cockpit.editor`, micro). Not yet bundled with the app. Differences from this note: Edit is
-always shown (no way to ask whether an `editor` provider exists, see FRICTION.md); the diff layout (side by side or
-unified) is remembered app-wide; an unchanged file shows as one plain pane; in unified, a click on a removed block
-picks it for a note on the old side.
+Status (2026-11-02): milestones 1-3 built and tried in the app; now bundled with the app as `cockpit.reviewer` (with
+`cockpit.editor`, micro), using only the public plugin API. Differences from this note: Edit is hidden when
+`ctx.services.available('editor')` is false; the diff layout (side by side or unified) is remembered app-wide; an
+unchanged file shows as one plain pane; in unified, a click on a removed block picks it for a note on the old side;
+a second click on a file already under review brings its overlay to the front. Every FRICTION.md entry has its outcome.
 
 ## Goal
 
