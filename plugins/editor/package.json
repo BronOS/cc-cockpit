@@ -1,5 +1,0 @@
-{
-  "name": "cc-cockpit-editor",
-  "private": true,
-  "scripts": { "test": "node --test test/" }
-}
