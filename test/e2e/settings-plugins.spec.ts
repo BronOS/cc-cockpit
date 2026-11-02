@@ -4,7 +4,7 @@
 // over the screen shows on top of it. There is no Accounts page any more (design §6: a plugin
 // brings its own sign-in); its secret settings field (`"format": "secret"`) is set, replaced and
 // cleared here, stored encrypted by main (the harness's fake secret store) and never shown.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { expect, test } from './fixtures'
@@ -209,4 +209,66 @@ test('settings: link a plugin, save its app settings, an overlay over the screen
   await expect(plugin).toHaveCount(0)
 
   expect(violations).toEqual([])
+})
+
+// Plugin services on the Plugins page: a consumer without a provider is warned, the warning goes
+// once a provider is enabled, and with two providers the project's pick is a select that survives
+// reopening the page. Plugins are linked through the stubbed folder dialog and enabled through the
+// test hook (the page itself reads the project's enabled set, so each step reopens it).
+test('settings: services warn about a missing provider and offer the pick between two', async ({ cockpit }) => {
+  const { page, app } = cockpit
+  const fixture = (name: string): string => join(__dirname, '..', 'fixtures', 'plugins', name)
+  const settings = page.getByRole('dialog', { name: 'Settings' })
+  await cockpit.newTab('shell')
+  await page.keyboard.press('ControlOrMeta+,')
+  await expect(settings).toBeVisible()
+  const nav = (name: string) => settings.getByRole('navigation').getByRole('button', { name, exact: true })
+  const reopen = async (): Promise<void> => {
+    await nav('Projects').click()
+    await nav('Plugins').click()
+  }
+  await nav('Plugins').click()
+  const link = async (name: string): Promise<void> => {
+    await app.evaluate(({ dialog }, folder) => {
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [folder] })) as typeof dialog.showOpenDialog
+    }, fixture(name))
+    await settings.getByRole('button', { name: 'Link folder…' }).click()
+  }
+  const consumer = settings.locator('[data-plugin="test.svcconsumer"]')
+  const picks = settings.getByTestId('service-picks')
+
+  await link('svc-consumer')
+  await expect(consumer).toContainText('Svc Consumer')
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.svcconsumer')
+  await reopen()
+  await expect(consumer.getByTestId('service-uses')).toHaveText('Uses: greet v1')
+  await expect(consumer.getByTestId('service-warning')).toHaveText('Needs a plugin that provides greet')
+  await expect(picks).toHaveCount(0)
+
+  // One provider enabled: the warning goes, no pick is needed.
+  await link('svc-provider')
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.svcprovider')
+  await reopen()
+  const first = settings.locator('[data-plugin="test.svcprovider"]')
+  await expect(first.getByTestId('service-provides')).toHaveText('Provides: greet v1')
+  await expect(consumer.getByTestId('service-warning')).toHaveCount(0)
+  await expect(picks).toHaveCount(0)
+
+  // Two providers: the consumer needs a pick, the select starts empty.
+  await link('svc-provider-2')
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.svcprovider2')
+  await reopen()
+  const select = settings.getByLabel('Plugin used for greet')
+  await expect(select).toHaveValue('')
+  await expect(select.locator('option')).toHaveText(['Pick one', 'Svc Provider', 'Svc Provider Two'])
+  await expect(consumer.getByTestId('service-warning')).toContainText('Svc Provider and Svc Provider Two both provide')
+
+  await select.selectOption('test.svcprovider2')
+  await expect(consumer.getByTestId('service-warning')).toHaveCount(0)
+  await reopen()
+  await expect(select).toHaveValue('test.svcprovider2')
+  await expect(select.locator('option')).toHaveText(['Svc Provider', 'Svc Provider Two'])
+  const recorded = (): string[] =>
+    readdirSync(join(cockpit.dataDir, 'projects')).map((f) => readFileSync(join(cockpit.dataDir, 'projects', f), 'utf8'))
+  expect(recorded().some((t) => t.includes('"serviceProviders"') && t.includes('test.svcprovider2'))).toBe(true)
 })

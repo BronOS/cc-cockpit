@@ -1927,6 +1927,10 @@ iframe:focus-visible {
 .settings .warn {
   color: var(--cc-status-needs-permission);
 }
+.settings-warning {
+  color: var(--cc-status-needs-permission);
+  font-size: var(--cc-text-sm);
+}
 .settings-error {
   color: var(--cc-status-ended);
   font-size: var(--cc-text-sm);

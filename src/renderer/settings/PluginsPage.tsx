@@ -1,14 +1,34 @@
 import { useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
+import { serviceProblemMessage, type PluginServiceStatus, type ServiceProblem, type ServicesStatus } from '../../shared/services'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
-import { Empty, Group, PageHeader } from './ui'
+import { Empty, Group, PageHeader, Row, Select } from './ui'
 import { useAction } from './use-action'
 import { useLoaded } from './use-loaded'
 
 const loadPlugins = (): Promise<PluginView[]> => window.cockpit.invoke('settings.plugins')
 // The notes below are a courtesy: an index that cannot be read must not break the list of installed plugins.
 const loadMarketplace = (): Promise<MarketplaceView | null> => window.cockpit.invoke('settings.marketplace').catch(() => null)
+
+// Services are this project's: main answers for the window's project and only over the plugins its host runs.
+const loadServices = (): Promise<ServicesStatus | null> => window.cockpit.invoke('settings.pluginServices').catch(() => null)
+
+/**
+ * The warning a consumer's row shows for one problem. Missing and version-mismatch say what to do in
+ * the page's own words; the ambiguous case (several providers, no pick) reuses the runtime's text, which
+ * already points at the pick below.
+ */
+function problemText(problem: ServiceProblem, nameOf: (id: string) => string): string {
+  switch (problem.kind) {
+    case 'missing':
+      return `Needs a plugin that provides ${problem.service}`
+    case 'version-mismatch':
+      return `Uses ${problem.service} v${problem.usesVersion}, but ${nameOf(problem.provider)} provides v${problem.providesVersion}`
+    case 'ambiguous':
+      return serviceProblemMessage(problem, nameOf)
+  }
+}
 
 /**
  * What the Marketplace says about an installed plugin, for its row: a newer version, a safe version to
@@ -40,10 +60,17 @@ export function PluginsPage(props: {
 }): React.JSX.Element {
   const { data, error: loadError, reload: reloadPlugins } = useLoaded(loadPlugins)
   const market = useLoaded(loadMarketplace)
+  const services = useLoaded(loadServices)
   const notes = marketplaceNotes(market.data)
   const reload = (): void => {
     reloadPlugins()
     market.reload()
+    services.reload()
+  }
+  const nameOf = (id: string): string => data?.find((p) => p.id === id)?.name ?? id
+  const shared = (services.data?.services ?? []).filter((s) => s.candidates.length >= 2)
+  const pickProvider = (service: string, pluginId: string | null): void => {
+    void run('provider', () => window.cockpit.invoke('settings.pluginServiceProvider', { service, pluginId })).then(reload)
   }
   const { busy, error, run } = useAction()
   const [url, setUrl] = useState('')
@@ -114,6 +141,30 @@ export function PluginsPage(props: {
           </div>
         </form>
       </Group>
+      {shared.length > 0 && (
+        <Group title="Services" description="Several enabled plugins provide these in this project; calls go to the one picked.">
+          <div className="settings-card" data-testid="service-picks">
+            {shared.map((svc) => (
+              <Row key={svc.service} label={`Plugin used for ${svc.service}`} htmlFor={`service-pick-${svc.service}`}>
+                <Select
+                  id={`service-pick-${svc.service}`}
+                  wide
+                  disabled={busy !== null}
+                  value={svc.selected ?? ''}
+                  onChange={(e) => pickProvider(svc.service, e.target.value === '' ? null : e.target.value)}
+                >
+                  {svc.selected === null && <option value="">Pick one</option>}
+                  {svc.candidates.map((id) => (
+                    <option key={id} value={id}>
+                      {nameOf(id)}
+                    </option>
+                  ))}
+                </Select>
+              </Row>
+            ))}
+          </div>
+        </Group>
+      )}
       <Group title="Installed">
         {data === null ? null : data.length === 0 ? (
           <div className="settings-card">
@@ -127,6 +178,8 @@ export function PluginsPage(props: {
                 plugin={plugin}
                 busy={busy}
                 note={notes.get(plugin.id)}
+                services={services.data?.plugins.find((p) => p.id === plugin.id)}
+                nameOf={nameOf}
                 run={run}
                 reload={reload}
                 onOpenProject={props.onOpenProject}
@@ -144,6 +197,9 @@ function PluginItem(props: {
   busy: string | null
   /** What the Marketplace says about this plugin (a newer version, why none is offered). */
   note: string | undefined
+  /** What the plugin provides and uses here; absent when it is not enabled in this project or has no host. */
+  services: PluginServiceStatus | undefined
+  nameOf: (id: string) => string
   run: ReturnType<typeof useAction>['run']
   reload: () => void
   onOpenProject: () => void
@@ -176,6 +232,21 @@ function PluginItem(props: {
           </div>
           {!plugin.state.ok && <div role="alert" className="settings-error">{plugin.state.reason}</div>}
           {props.note !== undefined && <div className="settings-item-meta" data-testid="marketplace-note">{props.note}</div>}
+          {props.services !== undefined && props.services.provides.length > 0 && (
+            <div className="settings-item-meta" data-testid="service-provides">
+              Provides: {props.services.provides.map((e) => `${e.service} v${e.version}`).join(', ')}
+            </div>
+          )}
+          {props.services !== undefined && props.services.uses.length > 0 && (
+            <div className="settings-item-meta" data-testid="service-uses">
+              Uses: {props.services.uses.map((e) => `${e.service} v${e.version}`).join(', ')}
+            </div>
+          )}
+          {props.services?.problems.map((problem, i) => (
+            <div key={i} className="settings-warning" data-testid="service-warning">
+              {problemText(problem, props.nameOf)}
+            </div>
+          ))}
           {plugin.appSettings?.problem !== undefined && (
             <div className="settings-error">Stored settings are invalid; the plugin stays disabled until they are fixed.</div>
           )}

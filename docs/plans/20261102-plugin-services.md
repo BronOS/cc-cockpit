@@ -226,11 +226,11 @@ External review: auto
 - Modify: `test/e2e/settings-plugins.spec.ts`
 - Create: fixture plugins under `test/fixtures/plugins/` as needed (e.g. `svc-provider`, `svc-provider-2`, `svc-consumer`)
 
-- [ ] each plugin row shows "Provides: triage v1" / "Uses: triage v1" when declared (plain text)
-- [ ] warnings on the consumer's row: "Needs a plugin that provides triage", "Uses triage v2, but <name> provides v1"
-- [ ] when two enabled plugins provide one service, a project-level select "Plugin used for triage" lists them; picking calls `settings.pluginServiceProvider`
-- [ ] write e2e: missing-provider warning appears and goes away once a provider is enabled; with two providers the select appears and picking one is saved
-- [ ] run tests - must pass before next task
+- [x] each plugin row shows "Provides: triage v1" / "Uses: triage v1" when declared (plain text)
+- [x] warnings on the consumer's row: "Needs a plugin that provides triage", "Uses triage v2, but <name> provides v1"
+- [x] when two enabled plugins provide one service, a project-level select "Plugin used for triage" lists them; picking calls `settings.pluginServiceProvider`
+- [x] write e2e: missing-provider warning appears and goes away once a provider is enabled; with two providers the select appears and picking one is saved
+- [x] run tests - must pass before next task
 
 ### Task 7: End-to-end calls and events between real plugins [model: sonnet]
 
