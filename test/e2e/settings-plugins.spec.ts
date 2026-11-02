@@ -270,5 +270,8 @@ test('settings: services warn about a missing provider and offer the pick betwee
   await expect(select.locator('option')).toHaveText(['Svc Provider', 'Svc Provider Two'])
   const recorded = (): string[] =>
     readdirSync(join(cockpit.dataDir, 'projects')).map((f) => readFileSync(join(cockpit.dataDir, 'projects', f), 'utf8'))
-  expect(recorded().some((t) => t.includes('"serviceProviders"') && t.includes('test.svcprovider2'))).toBe(true)
+  // The registry writes the record debounced, so the file may lag the page a moment.
+  await expect
+    .poll(() => recorded().some((t) => t.includes('"serviceProviders"') && t.includes('test.svcprovider2')), { timeout: 5_000 })
+    .toBe(true)
 })

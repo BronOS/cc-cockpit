@@ -238,11 +238,12 @@ External review: auto
 - Create: `test/e2e/plugin-services.spec.ts`
 - Modify: the fixture plugins from Task 6 (provider exposes a method and emits an event; consumer calls it and reports results through a panel, `ctx.log` or a CLI command, whichever existing fixtures already use to report)
 
-- [ ] e2e: the consumer's call returns the provider's answer in a running app
-- [ ] e2e: an event emitted by the provider reaches the consumer
-- [ ] e2e: with the provider disabled, the consumer still runs and its call reports the missing-provider error
-- [ ] e2e: with two providers, the picked one answers, and changing the pick switches it
-- [ ] run tests - must pass before next task
+- [x] e2e: the consumer's call returns the provider's answer in a running app
+- [x] e2e: an event emitted by the provider reaches the consumer
+- [x] e2e: with the provider disabled, the consumer still runs and its call reports the missing-provider error
+- [x] e2e: with two providers, the picked one answers, and changing the pick switches it
+- [x] ➕ the consumer reports through `$HOME/svc-consumer.json` (as host-ctx does) and a `call` command run with the `runPluginCommand` hook; enable/disable/pick go through the Settings IPC channels. The Task 6 spec read the debounced project record without polling and flaked once: it polls now
+- [x] run tests - must pass before next task
 
 ### Task 8: Guide polish and example plugin types [model: sonnet]
 

@@ -4,5 +4,8 @@
   "version": "1.0.0",
   "api": 1,
   "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "call", "title": "Svc: Call greet" }]
+  },
   "services": { "uses": { "greet": 1 } }
 }
