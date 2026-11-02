@@ -1,4 +1,5 @@
-# Packaging for mac and Linux (plan Task 35; design §7 Stack). Windows is out of phase 1.
+# Packaging for mac (arm64 dmg) and Linux (x64 AppImage and deb); no Windows (plan Task 35; design §7 Stack;
+# distribution plan Task 2).
 # Run `npm run package` (current OS) or `npm run package:dir` (unpacked app, for a smoke launch);
 # both build first (`npm run build` fills out/) and never publish.
 #
@@ -16,17 +17,20 @@
 #  - node-pty is a native module with a helper executable (spawn-helper): neither can be loaded or
 #    executed from inside an archive, so the whole package is unpacked (node-pty finds it under
 #    app.asar.unpacked by itself) and rebuilt for the Electron ABI (npmRebuild; Linux has no prebuilt binary).
-#  - Building another arch (mac lists arm64 and x64) rebuilds node-pty in node_modules/ for that arch
+#  - Building for another arch than the host rebuilds node-pty in node_modules/ for that arch
 #    and leaves it there, which would break `npm run dev` and the e2e suite on the host arch;
 #    `npm run package` ends with `postinstall` (electron-builder install-app-deps) to put it back.
-#  - Not signed or notarised: no identity (`mac.identity: null`). A downloaded unsigned mac build
-#    needs System Settings > Privacy & Security (or `xattr -cr`) on first launch. Signing is a later decision.
+#  - Mac is arm64 only and dmg only (the Homebrew cask and the release workflow rely on it), with
+#    artifact names fixed below so nothing has to guess them. It is ad-hoc signed (`identity: "-"`), not
+#    notarised: Apple Silicon refuses to run unsigned arm64 code, an ad-hoc signature satisfies that.
+#    The hardened runtime conflicts with an ad-hoc signature, so it is off. A downloaded build still
+#    needs System Settings > Privacy & Security (or `xattr -cr`) on first launch.
 #  - `publish: null` turns off the publisher electron-builder would infer from the git remote, so no
 #    invocation (a bare `npx electron-builder` in CI with GH_TOKEN, on a tag) can upload; the
 #    `--publish never` in the npm scripts is a second guard.
 #  - Layout expectations (checked by test/unit/packaging-config.test.ts): app.asar holds out/cli,
 #    out/host, out/sdk and out/preload; node-pty (pty.node, spawn-helper) is unpacked. Linux
-#    AppImage/deb and the x64 mac build have not been launched. In an AppImage, execPath and
+#    AppImage/deb have not been launched. In an AppImage, execPath and
 #    resourcesPath sit under a per-launch /tmp/.mount_* path, so the `ccc` wrapper works only while
 #    the app runs and exits 0 silently otherwise, as it does for any missing app.
 appId: dev.cc-cockpit.app
@@ -68,16 +72,17 @@ npmRebuild: true
 mac:
   icon: build/icon.icns
   category: public.app-category.developer-tools
-  identity: null
+  identity: '-'
+  hardenedRuntime: false
+  artifactName: cc-cockpit-${version}-mac-arm64.${ext}
   target:
     - target: dmg
-      arch: [arm64, x64]
-    - target: zip
-      arch: [arm64, x64]
+      arch: [arm64]
 linux:
   icon: build/icon.png
   category: Development
   maintainer: cc-cockpit <noreply@cc-cockpit.invalid>
+  artifactName: cc-cockpit-${version}-linux-x64.${ext}
   target:
     - target: AppImage
       arch: [x64]

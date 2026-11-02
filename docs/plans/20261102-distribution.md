@@ -122,13 +122,13 @@ Version and hash are validated before they are written into Ruby.
 - Modify: `electron-builder.yml`
 - Modify: `test/unit/packaging-config.test.ts`
 
-- [ ] mac: arm64 only, `dmg` target only, with stable artifact names through `artifactName` so the workflows and the cask don't guess
-- [ ] mac: `identity: "-"` for ad-hoc signing with `hardenedRuntime: false`: 26.18 supports the value, and its docs say the default
+- [x] mac: arm64 only, `dmg` target only, with stable artifact names through `artifactName` so the workflows and the cask don't guess
+- [x] mac: `identity: "-"` for ad-hoc signing with `hardenedRuntime: false`: 26.18 supports the value, and its docs say the default
       hardened runtime conflicts with ad-hoc signing. Proving it launches is in Post-Completion
-- [ ] Linux: keep AppImage and deb, x64. Replace the `.invalid` maintainer only if the deb build needs a real address
-- [ ] update the comments in the file that state the old targets
-- [ ] write tests for the targets, the architecture, the artifact names and `publish: null`
-- [ ] run tests - must pass before next task
+- [x] Linux: keep AppImage and deb, x64. Replace the `.invalid` maintainer only if the deb build needs a real address
+- [x] update the comments in the file that state the old targets
+- [x] write tests for the targets, the architecture, the artifact names and `publish: null`
+- [x] run tests - must pass before next task
 
 ### Task 3: CLI and app version check [model: opus]
 

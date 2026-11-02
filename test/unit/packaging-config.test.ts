@@ -38,4 +38,26 @@ describe('electron-builder.yml', () => {
     const script = readFileSync(join(root, 'scripts', 'package.mjs'), 'utf8')
     expect(script.indexOf("'install-app-deps'")).toBeGreaterThan(script.indexOf("'--publish', 'never'"))
   })
+
+  // Distribution plan Task 2: the workflows and the cask rely on these exact targets and names.
+  it('builds mac as an arm64 dmg only, ad-hoc signed without the hardened runtime', () => {
+    const mac = yml.slice(yml.indexOf('\nmac:'), yml.indexOf('\nlinux:'))
+    expect(mac).toMatch(/^ {2}identity: '-'$/m)
+    expect(mac).toMatch(/^ {2}hardenedRuntime: false$/m)
+    expect(mac).toMatch(/^ {4}- target: dmg$/m)
+    expect(mac).toMatch(/^ {6}arch: \[arm64\]$/m)
+    expect(mac).not.toMatch(/x64|zip|universal/)
+    expect(mac).toMatch(/^ {2}artifactName: cc-cockpit-\$\{version\}-mac-arm64\.\$\{ext\}$/m)
+  })
+
+  it('builds Linux as x64 AppImage and deb with fixed artifact names', () => {
+    const linux = yml.slice(yml.indexOf('\nlinux:'))
+    expect(linux).toMatch(/^ {4}- target: AppImage$/m)
+    expect(linux).toMatch(/^ {4}- target: deb$/m)
+    expect(linux.match(/arch: \[x64\]/g)).toHaveLength(2)
+    expect(linux).not.toMatch(/arm64|ia32/)
+    expect(linux).toMatch(/^ {2}artifactName: cc-cockpit-\$\{version\}-linux-x64\.\$\{ext\}$/m)
+    // The placeholder address is deliberate.
+    expect(linux).toMatch(/^ {2}maintainer: .*<noreply@cc-cockpit\.invalid>$/m)
+  })
 })
