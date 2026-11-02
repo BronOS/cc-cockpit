@@ -225,9 +225,10 @@ External review: auto
 - Modify: `src/cli/guide/*.md` as needed
 - Modify: drift tests only if they need it
 
-- [ ] answer each item after checking the code (state behaviour, not intent): `ctx.onSettingsChange` argument shape and whether `ctx.settings` updates; whether `ctx.panels.onMessage` returns a disposer; what `ctx.panels.post` does when the panel is closed/never opened; service call limits (rate, concurrency, size) or their absence; the full list of theme CSS variables a panel may use (including muted/accent/error if they exist; add tokens to the list only if they already exist in the app); inline `<style>` under the panel CSP; the known top-level manifest keys; per-command/CLI description fields; settings-form keywords that render (`enum` labels, `description`, `integer`/`number`, conditional fields support or not); what an unset secret reads as at activate; Node version and globals in the host (`fetch`); whether `require` of sibling files from `main` is supported; that enabling/linking a plugin restarts the project's host; what the `[…]` log prefix is
-- [ ] keep the guide's style; no promises the code doesn't keep
-- [ ] run drift tests and `npm test` - must pass before next task
+- [x] answer each item after checking the code (state behaviour, not intent): `ctx.onSettingsChange` argument shape and whether `ctx.settings` updates; whether `ctx.panels.onMessage` returns a disposer; what `ctx.panels.post` does when the panel is closed/never opened; service call limits (rate, concurrency, size) or their absence; the full list of theme CSS variables a panel may use (including muted/accent/error if they exist; add tokens to the list only if they already exist in the app); inline `<style>` under the panel CSP; the known top-level manifest keys; per-command/CLI description fields; settings-form keywords that render (`enum` labels, `description`, `integer`/`number`, conditional fields support or not); what an unset secret reads as at activate; Node version and globals in the host (`fetch`); whether `require` of sibling files from `main` is supported; that enabling/linking a plugin restarts the project's host; what the `[…]` log prefix is
+- [x] keep the guide's style; no promises the code doesn't keep
+- [x] run drift tests and `npm test` - must pass before next task
+- ➕ no code bug found; two quirks documented rather than fixed. The settings form (rjsf with a validator that always says valid) cannot hide a field on a condition, and a `oneOf` of `const`/`title` choices without a `default` shows the first choice as selected and saves it. Where each answer lives: host process, `ctx.settings`/`onSettingsChange`, panel post/onMessage and service limits in `api.md`; theme variables and panel CSP in `panels.md`; manifest keys and cli description fields in `plugins.md`; form keywords and unset secrets in `settings-secrets.md`; host restarts and the log prefix in `dev-loop.md`
 
 ### Task 10: Scaffold and dev-loop fixes [model: sonnet]
 
@@ -256,12 +257,83 @@ Added by the user during the run: when the app starts and `ccc` isn't available,
 - [ ] write tests: unit for the decision (installed / missing / stale / don't-ask flag); e2e: modal appears when missing, Yes installs (link exists), No closes, "Don't ask again" persists across a relaunch
 - [ ] run tests - must pass before next task
 
-### Task 12: Verify acceptance criteria [model: sonnet]
+### Task 12: ➕ Plugin hook for "open file" from the sessions panel [model: opus]
+
+Added by the user during the run for the planned reviewer plugin (`~/Projects/cc-cockpit-reviewer/docs/design.md`,
+"What core must add" item 1; read it, do not build the plugin).
+
+**API:**
+- Manifest: `contributes.openFile: { "title": "Review" }` declares that the plugin can handle a click on a
+  modified file in core's sessions panel (`title` labels the choice in Settings).
+- Host: `ctx.files.onOpen((req) => { ... })` returns a disposer; `req` is `{ path, tabId }`: `path`
+  relative to the project folder, `tabId` the Claude tab whose file list was clicked. Both come from main
+  (the click happened in core's UI, main checks the tab belongs to that window), never from a plugin.
+- Choice: no enabled handler → core's pager; one → it; several → the project picks one in Settings >
+  Plugins ("Plugin used to open files", with "Built-in viewer" as an option), using the same selection
+  rule and Services UI as service providers (Task 1 of the services plan), stored under a reserved key that
+  can never collide with a service name. A stale pick counts as no pick.
+- Fallback: core's pager also opens when the chosen plugin is not active, has no `onOpen` listener, or its
+  listener throws; main never waits more than a short bound (about 2 s) for the host to acknowledge.
+- Only the click in core's UI goes through this hook. Other plugins (a file tree) open files through the
+  reviewer's own service.
+
+**Files:**
+- Modify: `src/shared/manifest.ts`, `src/main/plugins/validate.ts`, `src/shared/services.ts` (reuse), the sessions panel file-click path (renderer and main), `src/main/plugins/host-manager.ts`, `src/main/plugins/host-api.ts` (event to host + ack), `src/host/ctx/index.ts`, `src/renderer/settings/PluginsPage.tsx`, `src/sdk/types.ts` (+ copy to `examples/plugin/sdk/types.ts`), `src/cli/guide/api.md`, `src/cli/guide/plugins.md`
+- Create/Modify: fixture plugin, unit tests, an e2e (`test/e2e/sessions-panel.spec.ts`)
+
+- [ ] manifest field and validation; `ctx.files.onOpen`; main routes the click to the chosen plugin's host with path and tab id, waits for an ack within the bound, else opens the pager
+- [ ] provider pick reuses the services selection and UI with the reserved key; "Built-in viewer" choice
+- [ ] guide and types in the same change
+- [ ] write tests: no handler → pager; one handler gets `{ path, tabId }`; two handlers + pick; handler throws / not active / no listener → pager; tab id of another window never reaches a plugin
+- [ ] run tests - must pass before next task
+
+### Task 13: ➕ Two-way messaging with an open html overlay [model: opus]
+
+Reviewer design item 2. Today the page can only answer once (`ccPanel.post({ result })` closes it).
+
+**API:**
+- Host: `ctx.overlay.start(spec)` returns a handle `{ result, post(message), onMessage(fn) → disposer, close() }`;
+  `result` is the same `Promise<OverlayResult>` that `ctx.overlay.open(spec)` resolves, and `open(spec)` stays
+  as it is (it equals `start(spec).result`). `post`/`onMessage` exist for `html` overlays only.
+- Page: `ccPanel.post(message)` without a `result` key goes to the handle's `onMessage` and leaves the overlay
+  open; `ccPanel.post({ result })` still closes it and resolves `result`. `ccPanel.onMessage(fn)` receives the
+  host's posts, as in panels.
+- Host posts made before the page has loaded are queued and delivered on load (bounded queue); after the
+  overlay ends, `post` is a no-op and `onMessage` listeners are dropped.
+- Same message size limit as panels (1 MiB) and the existing rate limits; main routes messages only between
+  an overlay and the plugin host (and window) that opened it.
+
+**Files:**
+- Modify: the overlay code in main (`src/main/overlays/`), the overlay protocol/page SDK (the `ccPanel` script), `src/main/plugins/host-api.ts`, `src/host/ctx/ui.ts` (or wherever `ctx.overlay` lives), `src/sdk/types.ts` (+ example copy), `src/cli/guide/api.md`, `src/cli/guide/panels.md`
+- Modify/Create: unit tests, a fixture html overlay, `test/e2e/overlays.spec.ts`
+
+- [ ] handle API and page messaging per the API above; ownership checks in main (overlay id → plugin and window)
+- [ ] guide and types in the same change; say that Esc (core closes the top overlay) resolves `{ kind: 'dismissed' }` without asking the page, so a page that keeps drafts should save them as it goes
+- [ ] write tests: host→page before and after load, page→host without closing, final result still resolves, post after end is a no-op, another plugin's overlay unreachable, size limit
+- [ ] run tests - must pass before next task
+
+### Task 14: ➕ Overlay size option [model: sonnet]
+
+Reviewer design item 3.
+
+**API:** `size?: 'default' | 'large' | 'full'` on every overlay kind (a terminal overlay for `$EDITOR`, the
+reviewer's fallback, benefits too). `default` is today's size, `large` about 90 % of the window, `full` the
+whole window below the top bar. Named sizes rather than percentages, so pages don't pick odd values.
+
+**Files:**
+- Modify: `src/sdk/types.ts` (+ example copy), overlay validation in main, the overlay renderer and `src/renderer/styles.css`, `src/cli/guide/api.md`
+- Modify: `test/e2e/overlays.spec.ts`, unit tests for validation
+
+- [ ] validate the option in main (unknown value refused), size the overlay accordingly
+- [ ] write tests: each size's box relative to the window; invalid value refused
+- [ ] run tests - must pass before next task
+
+### Task 15: Verify acceptance criteria [model: sonnet]
 - [ ] verify every item of this plan and every FRICTION.md line is either fixed, answered in the guide, or listed in Post-Completion (not done in this round or outside the app)
 - [ ] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`
 - [ ] run e2e tests: `npm run test:e2e` (only the known host failures may fail)
 
-### Task 13: [Final] Update documentation [model: sonnet]
+### Task 16: [Final] Update documentation [model: sonnet]
 - [ ] `docs/design.md` (§5 ctx table: `ctx.appStorage`, `ctx.appDataDir`, `ctx.services.caller()`; §6 CLI: `ccc plugin config`, `ccc panel show`, `ccc guide types`; keyring note), `docs/features.md`, README `ccc` list if it names these commands
 - [ ] `CLAUDE.md` if a new pattern appeared (e.g. main-owned app storage)
 - [ ] move this plan to `docs/plans/completed/`

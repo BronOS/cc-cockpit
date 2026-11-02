@@ -14,8 +14,12 @@ load, the strip shows the title's first letter.
 ## The page
 
 - Served from the plugin's own folder as `cc-plugin://<pluginId>/<entry>` in a sandboxed frame.
-- CSP: the plugin's own files only; no network, no inline script, no inline event handlers. Put
-  code in a separate `.js` file next to the html.
+- CSP (sent with the page): scripts, fonts and `fetch`/XHR only from the plugin's own files;
+  images from its own files and `data:`; styles from its own files and **inline**, so a `<style>`
+  block and `style="..."` attributes work; no inline script, no inline event handlers, no network,
+  no frames, no form posts, no `<base>`. Put code in a separate `.js` file next to the html. The
+  frame is sandboxed with scripts only: its origin is opaque, so no `localStorage` or cookies;
+  keep state in the host.
 - Include the SDK first: `<script src="/__sdk/panel.js"></script>`. It defines `ccPanel`.
 
 ## `ccPanel`
@@ -26,8 +30,32 @@ load, the strip shows the title's first letter.
 - `ccPanel.onMessage(listener)`: hear what the host sends with `ctx.panels.post`. Returns an
   unsubscribe function.
 - `ccPanel.theme.current`: the app's current theme `{ kind, vars }`; the CSS variables are
-  already set on `:root`, so style with `var(--...)`. `ccPanel.theme.onChange(listener)` fires on
-  every change.
+  already set on `:root` (and `color-scheme` is `kind`), so style with `var(--...)`.
+  `ccPanel.theme.onChange(listener)` fires on every change. The shell sends the theme in a
+  message after the page loads, so the first paint can come before it.
+
+## Theme variables
+
+Every variable below is set on a panel's `:root`, in light and dark and in any theme, since a
+theme a plugin contributes is laid over the built-in one of its `kind` and so never lacks a name.
+A theme may also bring names of its own, which panels get too.
+
+- Surfaces: `--cc-bg` (window), `--cc-bg-bar`, `--cc-bg-menu`, `--cc-bg-banner`, `--cc-bg-error`
+  (a tinted error background), `--cc-surface-1`, `--cc-surface-2`, `--cc-surface-3` (raised
+  steps), `--cc-terminal-bg`.
+- Text: `--cc-fg`, `--cc-fg-muted`, `--cc-fg-subtle` (the two weaker steps).
+- Lines: `--cc-border`, `--cc-border-strong`.
+- Accent: `--cc-accent`, `--cc-accent-hover`, `--cc-accent-fg` (text on an accent fill),
+  `--cc-accent-soft` (a translucent tint), `--cc-focus` (focus ring).
+- `--cc-shadow`: a shadow colour.
+- Status, the colours the Claude tabs use: `--cc-status-starting`, `--cc-status-idle` (greys),
+  `--cc-status-working` (blue), `--cc-status-needs-permission` (orange, a warning),
+  `--cc-status-waiting` (green, ok), `--cc-status-ended` (red, an error).
+- Project colours: `--cc-project-red`, `-orange`, `-yellow`, `-green`, `-teal`, `-blue`,
+  `-purple`, `-grey` (each prefixed `--cc-project-`).
+
+There is no separate error or success token: use `--cc-status-ended` / `--cc-status-waiting` for
+red and green text or dots, and `--cc-bg-error` behind an error message.
 
 A panel has no API of its own: everything goes through its plugin host, which decides what the
 page may do. Fetch data in the host (`ctx.exec`, network) and post the result.

@@ -29,8 +29,13 @@ requests a minute. A manifest problem, a command name another plugin owns or a p
 already installed is refused before any dialog, with the reason. Outside the app's tabs (a
 terminal of your own) add `--project <path>` after `link`.
 
+Linking (and unlinking) restarts the project's plugin host: every plugin enabled in the project
+gets `deactivate()` and then a fresh `activate()`, not only the new one, so a provider that keeps
+state in memory is re-activated when another plugin is linked (enabling or disabling a plugin in
+a project does the same; `api` topic, "The host process").
+
 A linked folder is watched: after you change a file the plugin host reloads that plugin by itself
-(no restart). A manifest problem then shows as the plugin's state in `ccc plugin list`. A plugin
+(no restart of the others). A manifest problem then shows as the plugin's state in `ccc plugin list`. A plugin
 command run right after an edit waits for the reloaded copy (within its 30 s limit, else exit
 124) and runs there; one already running in the old copy when the reload starts ends with exit 1.
 
@@ -55,7 +60,9 @@ A plugin with `contributes.settings` can be configured from the tab, no Settings
   `{ id, name?, version, source, enabled, state }`.
 - `ccc plugin logs <id> [--follow]` prints the last 200 lines of `<data>/logs/<id>.log` (what
   `ctx.log.info/warn/error` wrote, and an uncaught error in the host); `--follow` keeps printing
-  new lines until Ctrl+C. It reads the file directly, so it works while the plugin is broken.
+  new lines until Ctrl+C. A line is `<ISO time, UTC> <level> [<projectId>] <text>`: the `[...]`
+  is the id of the project (window) whose host wrote it (16 hex digits, a hash of the folder's real path), there so one file can
+  serve every project the plugin runs in. Plugins do not see it. It reads the file directly, so it works while the plugin is broken.
   The log rotates at 5 MiB.
 - `ccc plugin unlink <id>` removes a linked plugin at once, with no dialog, and deletes that plugin's stored secrets
   (the folder stays untouched); unlink only what the person asked for. A plugin

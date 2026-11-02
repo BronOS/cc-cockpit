@@ -33,7 +33,15 @@ so a person chooses to install or link it.
 - `main`: path to the host entry, optional (a theme-only plugin has none).
 - All paths are plugin-relative, with `/` separators, no `..`, no absolute path. They must exist.
 - `contributes` ids (panel, command, theme) match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
-- Unknown manifest properties are tolerated; known ones are strict.
+- Known top-level keys: `id`, `name`, `version`, `api` (all four required), `main`, `contributes`,
+  `services`. Every other key (`description`, `author`, `license`, `homepage`, ...) is tolerated
+  and ignored: nothing in the app shows it (a marketplace entry has its own `description`). Known
+  keys are strict. Unknown keys inside `contributes` and its entries are ignored as well; only
+  `services` rejects them.
+- Fields per contribution: panel `id`, `title`, `kind`, `icon`, `entry`, `defaultZone`; command
+  `id`, `title`, `key`; theme `id`, `file`; skill `id`, `dir`; cli `name`, `summary`, `usage`,
+  `stdin`. There is no `description` field on a command or a cli entry: a command is one palette
+  line (`title`), a cli entry is a `summary` (200 chars) and a `usage` (500 chars).
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
   not provide and use the same name. No other key inside `services` (unlike the top level, an
@@ -71,7 +79,11 @@ needs `main`.
   `config`, `version` are reserved. A name another installed plugin already has is refused at
   install or link, naming the owner.
 - `summary` (one line, shown by `ccc help`) and `usage` (shown by `ccc <name> --help`, starts with
-  the name).
+  the name). Both are one line of plain text: a line break becomes a space. `ccc <name> --help`
+  (as the first word) is answered by the app from these two and never reaches your handler, so
+  for several subcommands (`jev usage|balance|ask`) put the synopsis in `usage`, e.g. `jev
+  usage|balance|ask [args]; jev help for details`, and handle `help` and `<sub> --help` in the
+  handler, which gets those words verbatim.
 - `stdin`: `true` to receive the caller's stdin; without it, stdin is never read.
 
 ## Walkthrough: a plugin in five files
