@@ -237,19 +237,30 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - Modify: `src/main/overlays/overlay-manager.ts`, `src/main/plugins/host-manager.ts`, `src/main/plugins/host-api.ts`,
   `src/host/ctx/ui.ts`, `src/sdk/types.ts` (+ example copy), `src/cli/guide/api.md`, `src/cli/guide/dev-loop.md`
 
-- [ ] gap analysis: a host stop already dismisses its overlays (`host-manager.ts` `disposeApi` → `rec.api.dispose`).
+- [x] gap analysis: a host stop already dismisses its overlays (`host-manager.ts` `disposeApi` → `rec.api.dispose`).
       List every way a plugin's code is replaced or turned off (dev-watch reload, disable, update, uninstall, crash,
       window close, a plugin-set change) and record here which ones do **not** go through `disposeApi`
-- [ ] close the plugin's overlays on the paths that don't (if any), the same way `dispose` does; terminal overlays'
+      - through `disposeApi` (whole host stops, overlays already dismissed): crash (`exited`), window close (`close`),
+        disable/enable or a plugin-set change (`enabledChanged` → `restart`), update/uninstall (`reloadPlugin` →
+        `restart`), settings turning invalid (`settingsChanged` → `restart`), a dev reload that falls back to a restart,
+        app quit (`disposeAll`)
+      - **not** through it (the ctx is disposed in a host that keeps running; overlays stayed open): dev reload in place
+        (`reloadSpec` → `plugin.reload`), unload in place (`unloadInHost`: invalid manifest, settings invalid at reload,
+        plugin gone from the list or left without `main`), and an in-place reload whose activate fails
+- [x] close the plugin's overlays on the paths that don't (if any), the same way `dispose` does; terminal overlays'
       ptys are killed as on a normal close. If every path already closes them, say so here and add only the missing
-      test cases
-- [ ] `focus()` on the `start()` handle: main brings that overlay to the front of its window's stack (ownership
-      checked like `post`/`close`); no-op after close; types and guide
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts` (the example's own code stays free of overlays)
-- [ ] guide: dev-loop and api say overlays close on reload; api documents `focus()`
-- [ ] unit tests (close on each stop reason, ownership of focus, focus after close) and e2e (edit a linked fixture
+      test cases (done through the host's `plugin.disposed` event, ordered on the port before any request of the next
+      copy: the host now sends it for a ctx with an overlay open or opening, and `HostApi.contextDisposed` aborts that
+      plugin's overlay signal, one AbortController per plugin copy passed as `peerGone`; `dispose` aborts them all)
+- [x] `focus()` on the `start()` handle: main brings that overlay to the front of its window's stack (ownership
+      checked like `post`/`close`); no-op after close; types and guide (`OverlayManager.focus`, `overlay.focus` in
+      HostApi; the renderer keeps overlay elements in a stable DOM order (`domOrder`) so a refocused html overlay's
+      iframe is not moved and reloaded)
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts` (the example's own code stays free of overlays)
+- [x] guide: dev-loop and api say overlays close on reload; api documents `focus()`
+- [x] unit tests (close on each stop reason, ownership of focus, focus after close) and e2e (edit a linked fixture
       plugin's file while its overlay is open → the overlay closes)
-- [ ] run `npm test`, typecheck, lint, build and the overlays / plugin-dev-reload e2e specs - must pass
+- [x] run `npm test`, typecheck, lint, build and the overlays / plugin-dev-reload e2e specs - must pass
 
 ### Task 6: ctx.projectDir, ctx.services.available and the guide answers [model: opus]
 

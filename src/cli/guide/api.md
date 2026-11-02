@@ -96,17 +96,20 @@ with full Node access.
   60 navigations a minute.
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
-  the result. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
+  the result. The plugin's overlays close when it stops: its host stops, or the plugin is reloaded
+  (a linked folder changed), disabled, updated or uninstalled; `result` resolves as
+  `{ kind: 'dismissed' }` in the old copy and the new copy starts with none. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
   a centered dialog at 75 % of the window, about 90 %, or the whole window below the top bar with a
   small margin; the title bar and close button stay, a terminal program is resized to fit. Any other
   value is refused.
-- `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close }`
+- `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close, focus }`
   (`open(spec)` is `start(spec).result`), so an `html` page and the plugin talk while it is open.
   `post(message)` sends JSON to the page (`ccPanel.onMessage`), queued until the page has loaded;
   `onMessage(fn)` hears what the page posts without a `result` key and returns a disposer;
-  `close()` dismisses it. `post`/`onMessage` throw for a terminal or url overlay. A message is at
+  `close()` dismisses it; `focus()` brings it to the front of the window's overlay stack (the others
+  stay open under it), e.g. on a second click for the file it already shows. `post`/`onMessage` throw for a terminal or url overlay. A message is at
   most 1,040,384 chars of JSON (1 MiB less 8 KiB for the transport); a larger one throws. Once the
-  overlay ended, `post` and `close` do nothing and the listeners are dropped. Esc, the close button
+  overlay ended, `post`, `close` and `focus` do nothing and the listeners are dropped. Esc, the close button
   and Cmd+Shift+W resolve `result` as `{ kind: 'dismissed' }` without asking the page, so a page
   that keeps a draft should post it as it goes (each change, or debounced), not only on submit.
 

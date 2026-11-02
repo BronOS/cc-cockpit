@@ -186,6 +186,12 @@ export interface OverlayHandle {
   onMessage(listener: (message: JsonValue) => void): Disposer
   /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
   close(): void
+  /**
+   * Bring the overlay to the front of the window's overlay stack (it shows and takes the keyboard;
+   * the others stay open under it), e.g. on a second click for something already open. A no-op
+   * once it ended.
+   */
+  focus(): void
 }
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -350,7 +356,8 @@ export interface PluginContext {
   }
   readonly overlay: {
     /**
-     * Resolves when the overlay ends (no timeout); dismissed when the plugin host stops. At most 3
+     * Resolves when the overlay ends (no timeout); dismissed when the plugin stops (its host stops,
+     * or it is reloaded, disabled, updated or uninstalled: the new copy starts with none). At most 3
      * open at once and 10 per minute per plugin. A terminal's `cwd` is relative to the project
      * folder and must stay inside it; a url must be http or https.
      */

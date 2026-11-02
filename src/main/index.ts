@@ -706,6 +706,7 @@ function start(): void {
       openOverlay,
       postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
       closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
+      focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
       secrets: pluginSecrets,
       oauth: pluginOAuth,
       appStorage,

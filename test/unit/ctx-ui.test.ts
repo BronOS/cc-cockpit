@@ -180,10 +180,11 @@ describe('ctx.overlay.start', () => {
     end({ kind: 'value', value: { done: true } })
     await expect(overlay.result).resolves.toEqual({ kind: 'value', value: { done: true } })
 
-    // Ended: post and close are no-ops (nothing sent), listeners are gone, onMessage is inert.
+    // Ended: post, close and focus are no-ops (nothing sent), listeners are gone, onMessage is inert.
     const before = calls.length
     overlay.post({ late: true })
     overlay.close()
+    overlay.focus()
     expect(calls.length).toBe(before)
     contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 3 } })
     expect(heard).toEqual([{ n: 1 }])
@@ -199,6 +200,38 @@ describe('ctx.overlay.start', () => {
     expect(calls[1]).toMatchObject({ method: 'overlay.close', params: { pluginId: 'a.one', handle: handleOf(calls) } })
     end({ kind: 'dismissed' })
     await expect(term.result).resolves.toEqual({ kind: 'dismissed' })
+  })
+
+  it('focus asks main to bring it to the front, for any kind', async () => {
+    const { ctx, calls, end } = pending()
+    const term = ctx.overlay.start({ kind: 'terminal', argv: ['micro', 'a.ts'] })
+    term.focus()
+    expect(calls[1]).toEqual({ method: 'overlay.focus', params: { pluginId: 'a.one', handle: handleOf(calls) } })
+    end({ kind: 'dismissed' })
+    await expect(term.result).resolves.toEqual({ kind: 'dismissed' })
+    term.focus()
+    expect(calls).toHaveLength(2)
+    // A refused open leaves nothing to focus.
+    const bad = ctx.overlay.start(null as never)
+    await expect(bad.result).rejects.toThrow('needs a spec object')
+    bad.focus()
+    expect(calls).toHaveLength(2)
+  })
+
+  it("disposing a plugin with an overlay open or opening tells main (plugin.disposed); one without does not", () => {
+    const emitted: { event: string; params: unknown }[] = []
+    const contexts = new HostContexts({
+      log: () => {},
+      call: () => new Promise(() => {}),
+      emit: (event, params) => emitted.push({ event, params })
+    })
+    const one = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js' }))
+    contexts.create(hostSpec({ id: 'a.two', dir: '/p/two', main: 'h.js' }))
+    void one.overlay.open({ kind: 'terminal', argv: ['tig'] })
+    contexts.dispose('a.two')
+    expect(emitted).toEqual([])
+    contexts.dispose('a.one')
+    expect(emitted).toEqual([{ event: 'plugin.disposed', params: { pluginId: 'a.one' } }])
   })
 
   it('refuses a message over the limit or not JSON, naming the limit', () => {

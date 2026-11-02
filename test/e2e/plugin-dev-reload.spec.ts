@@ -4,6 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
+import type { OverlayInfo } from '../../src/shared/ipc'
 import { expect, test } from './fixtures'
 
 const manifest = (extra: Record<string, unknown> = {}): string =>
@@ -120,4 +121,47 @@ exports.deactivate = () => wait(500)
   // The new copy took over, and at least one call landed in the gap and waited for it.
   expect(calls.at(-1)?.[3]).toBe('v2 x')
   expect(Math.max(...calls.map((c) => Number(c?.[2])))).toBeGreaterThan(300)
+})
+
+// Plan 20261102 Task 5: a plugin's open overlays close when it reloads. The old copy's `result`
+// resolves as dismissed (it writes that down); the new copy opens its own, which stays.
+test('editing a linked plugin closes the overlay its old copy opened; the new copy starts clean', async ({ cockpit }) => {
+  const folder = join(cockpit.root, 'overlayplugin')
+  mkdirSync(folder)
+  writeFileSync(
+    join(folder, 'plugin.json'),
+    JSON.stringify({ id: 'test.reloadoverlay', name: 'Reload overlay', version: '1.0.0', api: 1, main: 'host.js' })
+  )
+  writeFileSync(join(folder, 'page.html'), '<!doctype html><title>page</title><p>overlay page</p>')
+  const opener = (tag: string): string => `
+const fs = require('node:fs')
+const path = require('node:path')
+exports.activate = (ctx) => {
+  ctx.overlay.open({ kind: 'html', file: 'page.html', title: '${tag}' }).then((r) => {
+    fs.appendFileSync(path.join(process.env.HOME, 'overlay-result.log'), '${tag} ' + r.kind + '\\n')
+  })
+}
+`
+  writeFileSync(join(folder, 'host.js'), opener('v1'))
+  const logFile = join(cockpit.root, 'home', 'overlay-result.log')
+  const results = (): string => {
+    try {
+      return readFileSync(logFile, 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  const titles = async (): Promise<string[]> =>
+    (await cockpit.hook<OverlayInfo[]>('overlays', cockpit.projectDir)).map((o) => o.title)
+
+  await cockpit.hook('linkPlugin', folder)
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.reloadoverlay')
+  await expect.poll(titles, { timeout: 15_000 }).toEqual(['v1'])
+  await expect(cockpit.page.locator('.overlay[data-kind="html"]')).toBeVisible()
+
+  writeFileSync(join(folder, 'host.js'), opener('v2'))
+  await expect.poll(titles, { timeout: 15_000 }).toEqual(['v2'])
+  await expect.poll(results, { timeout: 10_000 }).toBe('v1 dismissed\n')
+  await expect(cockpit.page.locator('.overlay')).toHaveCount(1)
+  await expect(cockpit.page.locator('.overlay .overlay-title')).toHaveText('v2')
 })

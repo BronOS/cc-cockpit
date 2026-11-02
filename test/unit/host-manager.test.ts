@@ -786,6 +786,61 @@ describe('HostManager', () => {
       expect(listeners.size).toBe(0)
     })
 
+    // Plan 20261102 Task 5: every way a plugin's code is replaced or turned off closes its overlays.
+    // A whole-host stop goes through disposeApi; an in-place reload or unload through the host's
+    // `plugin.disposed` (what the real host sends for a ctx with an overlay open, host/ctx).
+    describe("closes the plugin's overlays whenever its code goes", () => {
+      const openFromHost = (pluginId = 'a.one'): Promise<unknown> => {
+        const pending = factory.last.host.call('overlay.open', { pluginId, spec: { kind: 'url', url: 'https://x' } }, { timeoutMs: Infinity })
+        void pending.catch(() => {})
+        return pending
+      }
+      /** The fake host disposes the plugin's ctx inside `plugin.reload` / `plugin.unload`, as the loader does. */
+      const disposingHandlers = (): Record<string, RpcHandler> => ({
+        ...okHandlers(),
+        'plugin.reload': (p) => {
+          const id = (p as { plugin: { id: string } }).plugin.id
+          factory.last.host.emit('plugin.disposed', { pluginId: id })
+          return { id, state: 'active' }
+        },
+        'plugin.unload': (p) => {
+          factory.last.host.emit('plugin.disposed', { pluginId: (p as { pluginId: string }).pluginId })
+          return null
+        }
+      })
+      const scenarios: [string, () => Promise<void>][] = [
+        ['window close', () => manager.close('p1')],
+        ['disabled (or another plugin enabled) in the project', () => manager.enabledChanged('p1')],
+        ['updated or uninstalled', () => manager.reloadPlugin('a.one')],
+        ['dev reload in place', () => manager.devReload('a.one')],
+        ['dev reload with an invalid manifest', () => manager.devReload('a.one', 'invalid plugin: main is required')]
+      ]
+      for (const [reason, stop] of scenarios) {
+        it(reason, async () => {
+          factory.handlers = disposingHandlers
+          await manager.open('p1', 1)
+          const mine = openFromHost('a.one')
+          void openFromHost('a.two')
+          await flush()
+          expect(overlaysOpened).toHaveLength(2)
+          await stop()
+          await flush()
+          expect(overlaysOpened[0]!.signal?.aborted).toBe(true)
+          // An in-place reload of a.one leaves a.two's overlay alone; a host stop takes both.
+          const inPlace = reason.startsWith('dev reload')
+          // The old copy hears dismissed (in place); a stopped host's call ends with its RPC.
+          if (inPlace) await expect(mine).resolves.toEqual({ kind: 'dismissed' })
+          expect(overlaysOpened[1]!.signal?.aborted).toBe(!inPlace)
+          if (inPlace) {
+            // The new copy's overlays are not caught by the old copy's dispose.
+            void openFromHost('a.one')
+            await flush()
+            expect(overlaysOpened[2]!.signal?.aborted).toBe(false)
+          }
+        })
+      }
+    })
+
     it("a host still deactivating after its window closed cannot reach the reopened window's tabs", async () => {
       const sent: string[] = []
       const opened: number[] = []

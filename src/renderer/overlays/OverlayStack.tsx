@@ -3,7 +3,7 @@ import type { OverlayInfo } from '../../shared/ipc'
 import { registerHandlers } from '../commands/keybindings'
 import { usePrefs } from '../prefs/prefs-store'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
-import { followOverlays } from './follow-overlays'
+import { domOrder, followOverlays } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
 import { CloseGlyph } from '../window-icons'
 import { TerminalOverlay } from './TerminalOverlay'
@@ -65,7 +65,7 @@ export function OverlayStack(props: {
   /** The stack's size changed (0 when the last overlay closed). */
   onChange: (count: number) => void
 }): React.JSX.Element {
-  const [stack, setStack] = useState<OverlayInfo[]>([])
+  const [{ stack, order }, setView] = useState<{ stack: OverlayInfo[]; order: string[] }>({ stack: [], order: [] })
   const { tabCloseSide } = usePrefs()
   const [terms] = useState(() => new SessionRegistry(overlayIo))
   /** Terminal overlays that have a session here, to dispose it once main drops the overlay. */
@@ -84,7 +84,7 @@ export function OverlayStack(props: {
     // An update that lands before the list answer wins over it (follow-overlays.ts).
     const offUpdated = followOverlays(
       { list: listOverlays, onUpdated: (listener) => window.cockpit.on('overlays.updated', listener) },
-      setStack,
+      (next) => setView((prev) => ({ stack: next, order: domOrder(prev.order, next) })),
       (err) => console.warn('overlays.list failed', err)
     )
     return () => {
@@ -139,7 +139,11 @@ export function OverlayStack(props: {
 
   return (
     <>
-      {stack.map((overlay, i) => {
+      {order.map((id) => {
+        // Drawn in a stable DOM order (domOrder); `i` is the overlay's place in main's stack.
+        const i = stack.findIndex((o) => o.id === id)
+        const overlay = stack[i]
+        if (!overlay) return null
         const active = i === stack.length - 1
         return (
           <div
