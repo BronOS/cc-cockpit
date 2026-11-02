@@ -149,6 +149,21 @@ test('a question from Claude reads as needing you on the card and the tab dot', 
   await expect(item.locator('.session-status')).toHaveText('needs you · plan approval')
 })
 
+test('the card shows a pasted prompt without Claude\'s paste wrapper', async ({ cockpit }) => {
+  const { page } = cockpit
+  await openPanel(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
+  await cockpit.typeLine('/stop')
+  await expect(page.locator('.session-item')).toHaveAttribute('data-status', 'waiting')
+  const [tab] = await cockpit.hook<Array<{ tabId: string }>>('sessions', cockpit.projectDir)
+  // The fake submits a paste as the prompt verbatim, as Claude reports a wrapped paste.
+  await cockpit.hook('send', tab?.tabId, 'look:\n<pasted_content id="91a8">\nnpm ERR!\n</pasted_content id="91a8">\nthanks')
+  const prompt = page.locator('.session-item .session-prompt')
+  await expect(prompt).toHaveText(/npm ERR!/)
+  await expect(prompt).not.toContainText('pasted_content')
+})
+
 test('the session title jumps to its tab', async ({ cockpit }) => {
   const { page } = cockpit
   await openPanel(cockpit)

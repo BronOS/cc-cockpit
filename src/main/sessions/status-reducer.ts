@@ -38,6 +38,7 @@
 import { SESSION_ID } from '../tabs/claude-argv'
 import { isPlainObject } from '../../shared/guards'
 import { isDialogTool, type HookEvent } from '../../shared/hooks'
+import { unwrapPastes } from './paste-wrappers'
 import type { TabStatus } from '../../shared/ipc'
 import type { TabKind } from '../../shared/types'
 
@@ -166,7 +167,9 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
     case 'UserPromptSubmit': {
       const next: SessionEntry = { ...entry, status: 'working', tool: undefined }
       const prompt = payload.prompt
-      if (typeof prompt === 'string') next.lastPrompt = cap(prompt, MAX_PROMPT_CHARS)
+      // Unwrapped before the cap: a long paste would lose its closing tag to the cut, and the
+      // opener would then stay.
+      if (typeof prompt === 'string') next.lastPrompt = cap(unwrapPastes(prompt), MAX_PROMPT_CHARS)
       return next
     }
     case 'PreToolUse': {

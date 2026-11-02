@@ -442,6 +442,13 @@ describe('caps', () => {
     expect(entry.lastPrompt).toBe('p'.repeat(MAX_PROMPT_CHARS))
   })
 
+  it('unwraps paste wrappers before the cap, so a long paste loses no closing tag to the cut', () => {
+    const body = 'q'.repeat(MAX_PROMPT_CHARS * 2)
+    const prompt = `see:\n<pasted_content id="91a8">\n${body}\n</pasted_content id="91a8">\n`
+    const entry = reduce(base(), hook('UserPromptSubmit', { prompt }))
+    expect(entry.lastPrompt).toBe(`see:\n${body}`.slice(0, MAX_PROMPT_CHARS))
+  })
+
   it('truncates a long tool name to 100 chars', () => {
     const entry = reduce(base(), hook('PreToolUse', { tool_name: 't'.repeat(MAX_TOOL_CHARS + 50) }))
     expect(entry.tool).toHaveLength(MAX_TOOL_CHARS)

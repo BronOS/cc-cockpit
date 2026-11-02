@@ -289,7 +289,9 @@ on screen, still not sendable.
   end opens settings (the `app.openSettings` toggle). A strip entry carries its project's colour
   (`projectColor`, §6 Project colour) for a dot by the project's name;
 - a built-in **Sessions panel** (placeable in zones like plugin panels): a card per Claude tab
-  with last prompt, status, notes, steps done (a count over a small bar) and changed files under
+  with last prompt (main takes Claude's paste wrappers, `<pasted_content id="…">` and its closer,
+  out of the hook's prompt before storing it, keeping the pasted text, so every consumer gets the
+  text the user saw: `main/sessions/paste-wrappers.ts`), status, notes, steps done (a count over a small bar) and changed files under
   an "N changed files" caption; a file click opens it in an overlay. Its header counts the
   window's sessions ("2 in this window").
 
