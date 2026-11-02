@@ -6,7 +6,7 @@
 // renderers and plugins never pass a path or id that is trusted without going through here.
 import * as nodeFs from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
-import { dataPaths, projectFile, projectId } from '../paths'
+import { dataPaths, PROJECT_ID_PATTERN, projectFile, projectId } from '../paths'
 import { JsonFile, type FsOps } from '../store/json-file'
 import { isPlainObject } from '../../shared/guards'
 import { defaultLayout, normalizeLayout, type LayoutState } from '../../shared/layout'
@@ -19,7 +19,8 @@ export const MAX_RECENT_PROJECTS = 20
 
 /** The only file names that count as project records in `projects/` (ignores .tmp, .corrupt-*). */
 const RECORD_FILE = /^([0-9a-f]{16})\.json$/
-const ID_PATTERN = /^[0-9a-f]{16}$/
+// One pattern for every id check (paths.ts): it is also what keeps `plugin-data/_app` apart.
+const ID_PATTERN = PROJECT_ID_PATTERN
 
 export interface RegistryOptions {
   dataDir: string

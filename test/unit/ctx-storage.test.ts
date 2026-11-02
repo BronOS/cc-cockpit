@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
-import { createStorage, MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/host/ctx/storage'
+import { createStorage } from '../../src/host/ctx/storage'
+import { MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/shared/plugin-storage'
 import { hostSpec } from '../fakes/host-spec'
 
 describe('ctx.storage', () => {

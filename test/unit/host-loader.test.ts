@@ -463,7 +463,7 @@ describe('parsePluginSpecs', () => {
     expect(parsePluginSpecs({ plugins: [{ ...good, extra: 1 }] })).toEqual([good])
     expect(() => parsePluginSpecs({})).toThrow('plugins must be an array')
     expect(() => parsePluginSpecs({ plugins: [{ ...good, dir: 5 }] })).toThrow('plugin 0')
-    expect(() => parsePluginSpecs({ plugins: [{ ...good, dataDir: undefined }] })).toThrow('projectDir, dataDir and storageFile')
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, dataDir: undefined }] })).toThrow('projectDir, dataDir, appDataDir and storageFile')
     expect(() => parsePluginSpecs({ plugins: [{ ...good, commands: ['ok', 3] }] })).toThrow('commands must be an array of strings')
     expect(() => parsePluginSpecs({ plugins: [{ ...good, settings: { project: {} } }] })).toThrow('settings must have project and app')
     expect(() => parsePluginSpecs({ plugins: [{ ...good, panels: 'board' }] })).toThrow('panels must be an array of strings')

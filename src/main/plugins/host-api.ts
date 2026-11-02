@@ -14,6 +14,13 @@
 //   secrets.set     { pluginId, key, value }   -> null           (plugin-secrets.ts: limits, the
 //   secrets.delete  { pluginId, key }          -> null            reserved `setting:` prefix,
 //   secrets.keys    { pluginId }               -> string[]        encryption; ctx.secrets)
+//   appStorage.get  { pluginId, key }          -> { value } | null  the plugin's app-wide KV store
+//   appStorage.set  { pluginId, key, value }   -> null              (app-storage.ts: one file per
+//   appStorage.delete { pluginId, key }        -> null               plugin, the same key rules and
+//   appStorage.keys { pluginId }               -> string[]           caps as ctx.storage; every call
+//   appStorage.increment { pluginId, key, by? } -> number            applied whole, one at a time,
+//                                                                     so increment is atomic across
+//                                                                     windows; ctx.appStorage)
 //   oauth.authorize { pluginId, spec }         -> OAuthTokens    browser + loopback + PKCE (plugin-oauth.ts)
 //   oauth.refresh   { pluginId, spec, refreshToken } -> OAuthTokens
 //   webview.navigate { pluginId, panelId, target } -> null      a webview panel the plugin declares, in this
@@ -72,6 +79,7 @@ import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
 import type { SessionEntry } from '../sessions/status-reducer'
 import { checkOAuthSpec, checkRefreshToken, type PluginOAuthApi } from '../oauth/plugin-oauth'
+import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
 import { resolveCwd } from '../tabs/tab-manager'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
@@ -147,6 +155,8 @@ export interface HostApiDeps {
   secrets: PluginSecretsApi
   /** ctx.oauth (PluginOAuth). */
   oauth: PluginOAuthApi
+  /** ctx.appStorage (AppStorage, one for the whole app). Without it the appStorage requests are refused. */
+  appStorage?: AppStorageApi
   /** ctx.webview (WebviewManager). Without it the webview requests are refused. */
   webview?: Pick<WebviewManager, 'navigate' | 'back' | 'forward' | 'reload' | 'current' | 'destroyPlugin'>
   log?: (message: string) => void
@@ -322,6 +332,20 @@ export class HostApi {
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
       'secrets.keys': (params) => this.secretsKeys(params),
+      'appStorage.get': (params) => this.appStorageCall(params, 'appStorage.get', (store, id, p) => store.get(id, p.key)),
+      'appStorage.set': (params) =>
+        this.appStorageCall(params, 'appStorage.set', (store, id, p) => {
+          store.set(id, p.key, p.value)
+          return null
+        }),
+      'appStorage.delete': (params) =>
+        this.appStorageCall(params, 'appStorage.delete', (store, id, p) => {
+          store.delete(id, p.key)
+          return null
+        }),
+      'appStorage.keys': (params) => this.appStorageCall(params, 'appStorage.keys', (store, id) => store.keys(id)),
+      'appStorage.increment': (params) =>
+        this.appStorageCall(params, 'appStorage.increment', (store, id, p) => store.increment(id, p.key, p.by)),
       'oauth.authorize': (params) => this.oauthAuthorize(params),
       'oauth.refresh': (params) => this.oauthRefresh(params),
       'webview.navigate': (params) => this.webviewNavigate(params),
@@ -670,6 +694,23 @@ export class HostApi {
   private async secretsKeys(params: unknown): Promise<string[]> {
     const { secrets, id } = this.secretsFor(params, 'secrets.keys')
     return secrets.keys(id)
+  }
+
+  // App storage: app-wide like secrets, so it too checks `disposed`, not `revoked` (a deactivate()
+  // saving a counter touches nothing of the window). The store's methods are synchronous and the
+  // handler awaits nothing before calling one: main's single thread applies each call whole, so
+  // calls from the hosts of several windows never interleave inside a read-modify-write.
+
+  private appStorageCall<T>(
+    params: unknown,
+    method: string,
+    body: (store: AppStorageApi, pluginId: string, rest: Record<string, unknown>) => T
+  ): T {
+    if (this.disposed) throw new Error('the plugin host is gone')
+    const { pluginId, ...rest } = (params ?? {}) as Record<string, unknown>
+    const id = this.plugin(pluginId, method).id
+    if (!this.deps.appStorage) throw new Error(`${method}: app storage is not available`)
+    return body(this.deps.appStorage, id, rest)
   }
 
   // OAuth. authorize is a window thing (a browser tab the user is looking at for this window), so

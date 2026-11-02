@@ -636,6 +636,7 @@ describe('HostManager.runCli with a real host context', () => {
       projectPath: () => '/projects/p1',
       layouts: { setPluginPanels: () => {}, setError: () => true },
       pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+      pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
       cliTimeoutMs: 200,
       log: () => {}
     })
@@ -918,6 +919,7 @@ describe('ctx.cli.register', () => {
     main: 'host.js',
     projectDir: '/p',
     dataDir: '/p/.data',
+    appDataDir: '/p/.app-data',
     storageFile: '/p/.data/storage.json',
     commands: [],
     panels: [],

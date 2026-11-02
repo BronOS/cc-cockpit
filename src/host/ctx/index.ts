@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, secrets, oauth, schedule, exec, commands, cli, services, log and notify; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, services, log and notify; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -30,6 +30,7 @@ import { capText } from '../../shared/text'
 import type { HostPluginSpec } from '../loader'
 import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
+import { createAppStorageApi } from './app-storage'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { SettingsHolder } from './settings'
@@ -44,7 +45,7 @@ export interface ContextDeps {
   log(pluginId: string, level: LogLevel, text: string): void
   /**
    * A request to main (`commands.register`, `notify`, `sessions.*`, `badge`, `overlay.open`,
-   * `secrets.*`, `oauth.*`).
+   * `secrets.*`, `oauth.*`, `appStorage.*`).
    * Default: rejects (no connection to main). `timeoutMs: Infinity` waits until main answers or the
    * connection closes (an overlay is open as long as the user wants).
    */
@@ -101,6 +102,7 @@ interface Runtime {
   /** This ctx called ctx.webview.navigate: main has views of it to close at dispose. */
   webviewUsed: boolean
   dataDirReady: boolean
+  appDataDirReady: boolean
   disposed: boolean
 }
 
@@ -159,6 +161,7 @@ export class HostContexts {
       oauthCalls: new Set(),
       webviewUsed: false,
       dataDirReady: false,
+      appDataDirReady: false,
       disposed: false
     }
     this.runtimes.set(spec.id, rt)
@@ -310,6 +313,8 @@ export class HostContexts {
         return rt.settings.onChange(listener)
       },
       storage: Object.freeze(storage),
+      // An RPC like secrets: main owns the app-wide file, the one writer for every window's host.
+      appStorage: createAppStorageApi({ pluginId: spec.id, call, guardAsync }),
       secrets: Object.freeze(secrets),
       oauth: Object.freeze(oauth),
       get dataDir(): string {
@@ -319,6 +324,16 @@ export class HostContexts {
           rt.dataDirReady = true
         }
         return spec.dataDir
+      },
+      // The same in every project; made here on first read like dataDir (main makes it too, on
+      // the first appStorage write, for its storage.json inside).
+      get appDataDir(): string {
+        alive()
+        if (!rt.appDataDirReady) {
+          mkdirSync(spec.appDataDir, { recursive: true, mode: 0o700 })
+          rt.appDataDirReady = true
+        }
+        return spec.appDataDir
       },
       schedule: (seconds: number, fn: () => unknown) => {
         alive()

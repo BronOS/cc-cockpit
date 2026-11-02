@@ -60,8 +60,9 @@ import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager } from './webview/webview-manager'
 import { chordOfInput, OverlayManager, type OverlayResult } from './overlays/overlay-manager'
 import { handleOverlayScheme, handlePluginScheme, registerAppSchemes } from './overlays/overlay-protocol'
-import { dataPaths, fallbackSocketDir, pluginDataDir, resolveDataDir, socketPath } from './paths'
+import { dataPaths, fallbackSocketDir, pluginAppDataDir, pluginDataDir, resolveDataDir, socketPath } from './paths'
 import { createFolderWatcher, DevWatcher } from './plugins/dev-watch'
+import { AppStorage } from './plugins/app-storage'
 import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, type HostSettings } from './plugins/host-manager'
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
@@ -629,6 +630,9 @@ function start(): void {
     else if (Notification.isSupported()) new Notification({ title, body: text }).show()
   }
   const pluginLogs = new PluginLogWriter({ dir: paths.logsDir, log: (m) => console.warn(m) })
+  // ctx.appStorage (app-storage.ts): one store for the whole app, so the hosts of every window
+  // share it and main applies their calls one at a time. Flushed on quit (will-quit).
+  const appStorage = new AppStorage({ dataDir, log: (m) => console.warn(m) })
   // One plugin host (utilityProcess) per project window.
   const hosts = new HostManager({
     factory: new ElectronHostProcessFactory(),
@@ -641,6 +645,7 @@ function start(): void {
     projectName: (projectId) => registry.get(projectId)?.name,
     layouts,
     pluginDataDir: (projectId, pluginId) => pluginDataDir(dataDir, projectId, pluginId),
+    pluginAppDataDir: (pluginId) => pluginAppDataDir(dataDir, pluginId),
     // The stored values (app.json, the project's record) against the manifest's schemas; a failure
     // disables the plugin for this launch (host-manager.ts).
     settings: (projectId, pluginId) => hostSettingsOf(projectId, pluginId),
@@ -671,8 +676,8 @@ function start(): void {
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
     notify: (text, source) => showNotification(text, `cc-cockpit: ${source.pluginId}`),
     pluginLog: (entry) => pluginLogs.write(entry),
-    // ctx.sessions, ctx.badge, ctx.overlay, ctx.secrets, ctx.oauth (host-api.ts). Functions, not objects: `sessions` and
-    // `tabs` are defined below; these only run once a host exists.
+    // ctx.sessions, ctx.badge, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage (host-api.ts).
+    // Functions, not objects: `sessions` and `tabs` are defined below; these only run once a host exists.
     api: {
       listSessions: (projectId) => sessions.listByProject(projectId),
       session: (tabId) => sessions.get(tabId),
@@ -692,6 +697,7 @@ function start(): void {
       openOverlay,
       secrets: pluginSecrets,
       oauth: pluginOAuth,
+      appStorage,
       webview: webviews
     }
   })
@@ -1619,6 +1625,8 @@ function start(): void {
     registry.flushAll()
     pluginIndex.flush()
     pluginSecrets.flush()
+    // After hosts.disposeAll(): no host is left to write after this.
+    appStorage.flush()
   })
   app.on('activate', () => windows.activate())
   // The menu's accelerator is the focused project's (AppMenu). A blur passes the window that is

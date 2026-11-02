@@ -15,6 +15,23 @@ ids it does take (a tab, a panel) are looked up inside that project only.
 - `ctx.storage.get(key)`, `set(key, value)`, `delete(key)`, `keys()`: per plugin per project
   key-value store, JSON values.
 - `ctx.dataDir`: `<data>/plugin-data/<projectId>/<pluginId>/`, created on first read.
+- `ctx.appStorage.get(key)`, `set(key, value)`, `delete(key)`, `keys()`, `increment(key, by = 1)`:
+  the same store, but app-wide: every project window sees the same keys. `increment` adds `by`
+  (a finite number; absent key counts as 0) and resolves the new value; it rejects when the
+  stored value is not a number. Values at most 1 MiB less 8 KiB as JSON; other limits as
+  `ctx.storage`.
+- `ctx.appDataDir`: `<data>/plugin-data/_app/<pluginId>/`, the same in every project, created on
+  first read. Use these two paths; don't derive others from the layout. Leave `storage.json` in
+  either folder alone: it is the store's own file.
+- Which store: per-project state (a project's board, its last sync) goes in `ctx.storage`;
+  state that must add up across windows (a monthly usage cap, a cache all projects share) goes
+  in `ctx.appStorage`. Each window runs its own host, so two windows can act at the same time.
+  `ctx.storage` has one writer (the project's host). `ctx.appStorage` lives in main, which
+  applies calls one at a time: each call is atomic, and `increment` is the safe counter across
+  windows. A `get` followed by a `set` is not atomic (another window can write in between);
+  there are no locks. Files you write in `ctx.appDataDir` yourself have no such guarantee.
+- Both stores and both folders are kept when the plugin is uninstalled (only `ctx.secrets` is
+  deleted), and a reinstall finds them again. Forgetting a project keeps its `ctx.storage` too.
 - `ctx.secrets.get(key)`, `set(key, value)`, `delete(key)`, `keys()`: encrypted with the OS
   keychain, app-wide per plugin. Keys `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, values at most 64
   KiB, at most 100 keys. The `setting:` prefix is reserved.

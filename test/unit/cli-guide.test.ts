@@ -122,7 +122,7 @@ describe('guide drift guards', () => {
     for (const name of nested) expect(api, name).toMatch(new RegExp(`\\b${name}\\b`))
 
     // The helper objects' own methods (storage, secrets, oauth, logger, settings).
-    for (const iface of ['PluginStorage', 'PluginSecrets', 'PluginOAuth', 'PluginLogger', 'PluginSettings']) {
+    for (const iface of ['PluginStorage', 'PluginAppStorage', 'PluginSecrets', 'PluginOAuth', 'PluginLogger', 'PluginSettings']) {
       const m = new RegExp(`export interface ${iface} \\{([\\s\\S]*?)\\n\\}`).exec(src)?.[1] ?? ''
       const names = [...m.matchAll(/^ {2}(?:readonly )?(\w+)/gm)].map((x) => x[1] as string)
       expect(names.length, iface).toBeGreaterThan(0)

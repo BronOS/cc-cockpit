@@ -37,6 +37,11 @@ export interface HostPluginSpec {
   projectDir: string
   /** `ctx.dataDir`: `<data>/plugin-data/<projectId>/<pluginId>/` (created on first use). */
   dataDir: string
+  /**
+   * `ctx.appDataDir`: `<data>/plugin-data/_app/<pluginId>/`, the same in every project (created on
+   * first use). Its `ctx.appStorage` file inside is main's, reached by RPC, never opened here.
+   */
+  appDataDir: string
   /** The plugin's KV file (`ctx.storage`), inside `dataDir`. */
   storageFile: string
   /** Command ids the manifest declares; `ctx.commands.register` accepts only these. */
@@ -69,15 +74,15 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, storageFile, commands, panels, webviewPanels, cli, services, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, services, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
     if (typeof id !== 'string' || typeof dir !== 'string' || typeof main !== 'string') {
       throw new Error(`activate: plugin ${i} must have string id, dir and main`)
     }
-    if (typeof projectDir !== 'string' || typeof dataDir !== 'string' || typeof storageFile !== 'string') {
-      throw new Error(`activate: plugin ${i} must have string projectDir, dataDir and storageFile`)
+    if (typeof projectDir !== 'string' || typeof dataDir !== 'string' || typeof appDataDir !== 'string' || typeof storageFile !== 'string') {
+      throw new Error(`activate: plugin ${i} must have string projectDir, dataDir, appDataDir and storageFile`)
     }
     if (!Array.isArray(commands) || commands.some((c) => typeof c !== 'string')) {
       throw new Error(`activate: plugin ${i} commands must be an array of strings`)
@@ -109,6 +114,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       main,
       projectDir,
       dataDir,
+      appDataDir,
       storageFile,
       commands: commands as string[],
       panels: (panels as string[] | undefined) ?? [],

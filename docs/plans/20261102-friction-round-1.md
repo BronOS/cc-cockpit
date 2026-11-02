@@ -175,11 +175,12 @@ External review: auto
 - Create: `test/unit/app-storage.test.ts`; modify host-manager/ctx tests
 - Modify: `src/cli/guide/api.md`; copy types to `examples/plugin/sdk/types.ts`
 
-- [ ] main-owned store per Technical Details (one file per plugin, writes serialised, atomic file replace). Share the key validation and limits with `src/host/ctx/storage.ts` through one module in `src/shared/` (no copy). Host → main methods `appStorage.get`, `appStorage.set`, `appStorage.delete`, `appStorage.keys`, `appStorage.increment` added to `host-api.ts`'s allow-list and its header comment. `HostPluginSpec.appDataDir` set by main; the `_app` folder created lazily by main on first use
-- [ ] `ctx.appDataDir` and `ctx.appStorage` (`get`, `set`, `delete`, `keys`, `increment`) through RPC with the `pluginId` check
-- [ ] guide: when to use app vs project storage, concurrency guarantee (main serialises; `increment` is atomic across windows), that it survives uninstall
-- [ ] write tests: two hosts incrementing concurrently end at the exact sum; limits and key pattern; `increment` on a non-number errors; another plugin's id refused; a test that `_app` can never be a valid project id
-- [ ] run tests - must pass before next task
+- [x] main-owned store per Technical Details (one file per plugin, writes serialised, atomic file replace). Share the key validation and limits with `src/host/ctx/storage.ts` through one module in `src/shared/` (no copy). Host → main methods `appStorage.get`, `appStorage.set`, `appStorage.delete`, `appStorage.keys`, `appStorage.increment` added to `host-api.ts`'s allow-list and its header comment. `HostPluginSpec.appDataDir` set by main; the `_app` folder created lazily by main on first use
+- [x] `ctx.appDataDir` and `ctx.appStorage` (`get`, `set`, `delete`, `keys`, `increment`) through RPC with the `pluginId` check
+- [x] guide: when to use app vs project storage, concurrency guarantee (main serialises; `increment` is atomic across windows), that it survives uninstall
+- [x] write tests: two hosts incrementing concurrently end at the exact sum; limits and key pattern; `increment` on a non-number errors; another plugin's id refused; a test that `_app` can never be a valid project id
+- [x] run tests - must pass before next task
+- ➕ an app value is capped at 1 MiB less 8 KiB (`MAX_APP_VALUE_LENGTH`) and the key list at the same as JSON: both cross the 1 MiB RPC message cap with their envelope; key rules and the 16 MiB total are ctx.storage's (`src/shared/plugin-storage.ts`)
 
 ### Task 6: `ccc plugin config` [model: opus]
 
@@ -237,12 +238,27 @@ External review: auto
 - [ ] write tests for each
 - [ ] run tests - must pass before next task
 
-### Task 11: Verify acceptance criteria [model: sonnet]
+### Task 11: ➕ Offer to install `ccc` at start-up [model: sonnet]
+
+Added by the user during the run: when the app starts and `ccc` isn't available, ask once whether to install it.
+
+**Files:**
+- Modify: the existing "Install ccc command" code (Settings > Appearance and keys > Command line; find it from `src/main/index.ts`, `src/main/ipc/router.ts`, `src/shared/ipc.ts`), the app settings store (`app.json`) for a "don't ask again" flag
+- Create/Modify: a modal in the renderer, following the existing confirm dialogs (e.g. the close-tab confirm)
+- Modify: `test/e2e/ccc-install.spec.ts` and unit tests for the check
+
+- [ ] main decides "not available" with the same check the Settings row uses to show its state (link missing, broken, or pointing at another app path); check once per app launch, not per window, and show the question in the first project window only
+- [ ] modal: says what `ccc` is for (Claude in tabs, plugins, scripts talk to the app), buttons Yes (install, same code path as the Settings button, then show the result or the error, including when `~/.local/bin` is not on PATH) and No, plus a "Don't ask again" checkbox saved in app settings; Settings shows the flag so it can be turned back on
+- [ ] never shown in test runs unless a test asks for it (`CC_COCKPIT_TEST` hook), never shown when already installed and current
+- [ ] write tests: unit for the decision (installed / missing / stale / don't-ask flag); e2e: modal appears when missing, Yes installs (link exists), No closes, "Don't ask again" persists across a relaunch
+- [ ] run tests - must pass before next task
+
+### Task 12: Verify acceptance criteria [model: sonnet]
 - [ ] verify every item of this plan and every FRICTION.md line is either fixed, answered in the guide, or listed in Post-Completion (not done in this round or outside the app)
 - [ ] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`
 - [ ] run e2e tests: `npm run test:e2e` (only the known host failures may fail)
 
-### Task 12: [Final] Update documentation [model: sonnet]
+### Task 13: [Final] Update documentation [model: sonnet]
 - [ ] `docs/design.md` (§5 ctx table: `ctx.appStorage`, `ctx.appDataDir`, `ctx.services.caller()`; §6 CLI: `ccc plugin config`, `ccc panel show`, `ccc guide types`; keyring note), `docs/features.md`, README `ccc` list if it names these commands
 - [ ] `CLAUDE.md` if a new pattern appeared (e.g. main-owned app storage)
 - [ ] move this plan to `docs/plans/completed/`

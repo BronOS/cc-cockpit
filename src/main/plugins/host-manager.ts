@@ -52,6 +52,7 @@ import { capText } from '../../shared/text'
 import type { PluginCommandDef } from '../commands/command-registry'
 import type { Env } from '../env/login-env'
 import type { LayoutService, PluginPanelDef } from '../layout/layout-service'
+import { STORAGE_FILE_NAME } from '../paths'
 import { callCli } from './cli-call'
 import { HostApi, type HostApiDeps } from './host-api'
 
@@ -91,8 +92,6 @@ export const MAX_LOG_LINES_PER_WINDOW = 100
 export const NOTIFY_WINDOW_MS = 60_000
 export const MAX_NOTIFICATIONS_PER_WINDOW = 10
 const MAX_NOTIFY_TEXT = 500
-/** The file name of a plugin's KV store inside its data dir (ctx.storage). */
-export const STORAGE_FILE_NAME = 'storage.json'
 
 /** How long main waits for a host to answer `activate` for `count` plugins before killing it. */
 export function activateBudgetMs(count: number, activateTimeoutMs = ACTIVATE_TIMEOUT_MS): number {
@@ -273,6 +272,11 @@ export interface HostManagerDeps {
   layouts: Pick<LayoutService, 'setPluginPanels' | 'setError'>
   /** `ctx.dataDir` for a plugin in a project (`<data>/plugin-data/<projectId>/<pluginId>/`). */
   pluginDataDir(projectId: string, pluginId: string): string
+  /**
+   * `ctx.appDataDir` for a plugin, the same in every project (`<data>/plugin-data/_app/<pluginId>/`).
+   * Only a path: the host creates the folder on first read, main's app storage on first write.
+   */
+  pluginAppDataDir(pluginId: string): string
   /**
    * The plugin's validated settings (defaults applied). A failure disables the plugin: it is not
    * started and its panels show the reason. Default: no settings. Synchronous on purpose: a
@@ -976,6 +980,7 @@ export class HostManager {
       main: p.main as string,
       projectDir,
       dataDir,
+      appDataDir: this.deps.pluginAppDataDir(p.id),
       storageFile: join(dataDir, STORAGE_FILE_NAME),
       commands: (p.commands ?? []).map((c) => c.id),
       panels: p.panels.map((panel) => panel.id),

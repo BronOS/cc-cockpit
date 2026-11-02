@@ -34,6 +34,27 @@ export interface PluginStorage {
 }
 
 /**
+ * Per plugin, APP-WIDE key-value store: the hosts of every project window see the same keys (an
+ * app-wide quota, a cache shared by all projects). Main owns it and applies one call at a time, so
+ * `increment` is atomic across windows; a `get` then `set` is not (another window can write in
+ * between). Keys are non-empty strings of at most 200 characters; a value is at most 1 MiB less 8
+ * KiB as JSON (it travels in one message to main); 16 MiB per plugin in total. Kept when the
+ * plugin is uninstalled.
+ */
+export interface PluginAppStorage {
+  get<T extends JsonValue = JsonValue>(key: string): Promise<T | undefined>
+  set(key: string, value: JsonValue): Promise<void>
+  delete(key: string): Promise<void>
+  keys(): Promise<string[]>
+  /**
+   * Adds `by` (default 1; a finite number, negative to subtract) to the number stored under `key`
+   * (absent counts as 0), stores it and resolves the new value. Rejects when the stored value is
+   * not a number.
+   */
+  increment(key: string, by?: number): Promise<number>
+}
+
+/**
  * This plugin's secrets (tokens, passwords), encrypted by main with the OS keychain. APP-WIDE per
  * plugin, unlike `storage`: every project sees the same keys, so a plugin with per-project
  * sign-ins names its keys itself (`google:work`) and lets a project setting pick one. Keys match
@@ -216,6 +237,10 @@ export interface PluginContext {
   readonly storage: PluginStorage
   /** `<data>/plugin-data/<projectId>/<pluginId>/`, created the first time it is read. */
   readonly dataDir: string
+  /** App-wide per plugin, held by main (see PluginAppStorage). */
+  readonly appStorage: PluginAppStorage
+  /** `<data>/plugin-data/_app/<pluginId>/`, the same in every project, created the first time it is read. */
+  readonly appDataDir: string
   /** Encrypted, app-wide per plugin (see PluginSecrets). */
   readonly secrets: PluginSecrets
   /** An optional sign-in helper: browser, loopback redirect, PKCE, code exchange, refresh. */

@@ -181,6 +181,7 @@ describe('HostManager', () => {
       projectName: (projectId) => `name-${projectId}`,
       layouts,
       pluginDataDir: (projectId, pluginId) => `/data/plugin-data/${projectId}/${pluginId}`,
+      pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
       settings: (projectId, pluginId) => settingsFor[`${projectId}:${pluginId}`] ?? { ok: true, project: {}, app: {} },
       commands: sink,
       notify: (text, source) => void notified.push({ text, ...source }),
@@ -655,6 +656,7 @@ describe('HostManager', () => {
       projectPath: () => undefined,
       layouts,
       pluginDataDir: () => '/data',
+      pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
       log
     })
     const opening = slow.open('p1', 1)
@@ -718,6 +720,7 @@ describe('HostManager', () => {
         projectPath: (projectId) => `/projects/${projectId}`,
         layouts,
         pluginDataDir: (projectId, pluginId) => `/data/plugin-data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         settings: (projectId, pluginId) => settingsFor[`${projectId}:${pluginId}`] ?? { ok: true, project: {}, app: {} },
         api: {
           listSessions: (projectId) =>
@@ -795,6 +798,7 @@ describe('HostManager', () => {
         projectPath: (projectId) => `/projects/${projectId}`,
         layouts,
         pluginDataDir: (projectId, pluginId) => `/data/plugin-data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         notify: (text) => notified.push(text),
         api: {
           listSessions: (projectId) => (projectId === 'p1' ? [p1Tab] : []),
@@ -952,6 +956,7 @@ describe('HostManager', () => {
             main: 'host.js',
             projectDir: '/projects/p1',
             dataDir: '/data/plugin-data/p1/a.one',
+            appDataDir: '/data/plugin-data/_app/a.one',
             storageFile: '/data/plugin-data/p1/a.one/storage.json',
             commands: ['refresh', 'other'],
             panels: ['main'],
@@ -965,6 +970,7 @@ describe('HostManager', () => {
             main: 'host.js',
             projectDir: '/projects/p1',
             dataDir: '/data/plugin-data/p1/a.two',
+            appDataDir: '/data/plugin-data/_app/a.two',
             storageFile: '/data/plugin-data/p1/a.two/storage.json',
             commands: [],
             panels: ['main'],
@@ -996,6 +1002,7 @@ describe('HostManager', () => {
         projectPath: () => '/p',
         layouts,
         pluginDataDir: () => '/d',
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         serviceProviders: (projectId) => {
           asked.push(projectId)
           return { triage: 'a.one' }
@@ -1025,6 +1032,7 @@ describe('HostManager', () => {
         projectPath: () => '/p',
         layouts,
         pluginDataDir: () => '/d',
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         settings: (_p, id) => (id === 'a.bad' ? { ok: false, reason: 'invalid' } : { ok: true, project: {}, app: {} }),
         pluginSource: (_p, id) => {
           const p = plugin(id)
@@ -1093,6 +1101,7 @@ describe('HostManager', () => {
         projectPath: () => '/p',
         layouts,
         pluginDataDir: () => '/d',
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         settings: () => {
           throw new Error('registry gone')
         },
@@ -1530,6 +1539,7 @@ describe('HostManager', () => {
         projectPath: (projectId) => `/projects/${projectId}`,
         layouts,
         pluginDataDir: (projectId, pluginId) => `/data/plugin-data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         settings: () => ({ ok: true, project: {}, app: {} }),
         api: {
           listSessions: () => [],
@@ -1849,6 +1859,7 @@ describe('HostManager', () => {
         projectPath: () => '/work/p1',
         layouts,
         pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         pluginSource: () => (dir === undefined ? undefined : { dir }),
         log
       })
@@ -1918,6 +1929,7 @@ describe('HostManager', () => {
         projectPath: () => '/work/p1',
         layouts,
         pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
         pluginSource: () => hostPluginSource(state.installed, state.enabled),
         log
       })

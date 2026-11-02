@@ -791,6 +791,7 @@ describe('the host spec', () => {
       projectPath: () => '/work/p',
       layouts: { setPluginPanels: () => {}, setError: () => true },
       pluginDataDir: () => join(dataDir, 'plugin-data'),
+      pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
       settings: (projectId) => hostSettingsOf(manifest, stored, secrets, projectId)
     })
     return { hosts, factory }

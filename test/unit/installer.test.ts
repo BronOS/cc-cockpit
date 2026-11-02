@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cloneArgs, gitEnv, gitTagProblem, gitUrlProblem } from '../../src/shared/git-source'
 import { ProjectRegistry } from '../../src/main/projects/registry'
+import { pluginAppDataDir } from '../../src/main/paths'
 import {
   defaultGitRunner,
   GIT_STDOUT_CAP,
@@ -675,19 +676,24 @@ describe('update', () => {
 })
 
 describe('uninstall', () => {
-  it('removes the folder, the entry and the themes, and keeps per-project plugin data', async () => {
+  it('removes the folder, the entry and the themes, and keeps per-project and app-wide plugin data', async () => {
     const reloadHosts = vi.fn(async () => {})
     const { installer, themes } = setup({ reloadHosts })
     await installer.install(repoUrl, 'v1.0.0')
     const data = join(dataDir, 'plugin-data', '0123456789abcdef', 'test.good')
-    mkdirSync(data, { recursive: true })
-    writeFileSync(join(data, 'storage.json'), '{}')
+    // ctx.appDataDir and main's ctx.appStorage file (app-storage.ts): kept like the project data.
+    const appData = pluginAppDataDir(dataDir, 'test.good')
+    for (const dir of [data, appData]) {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'storage.json'), '{}')
+    }
     await installer.uninstall('test.good')
     expect(reloadHosts).toHaveBeenCalledWith('test.good')
     expect(pluginsDirEntries()).toEqual([])
     expect(onDisk().list()).toEqual([])
     expect(themes.list().map((t) => t.id)).not.toContain('test.good/solar')
     expect(existsSync(join(data, 'storage.json'))).toBe(true)
+    expect(existsSync(join(appData, 'storage.json'))).toBe(true)
   })
 
   it('runs beforeRemove while the plugin is still recorded; when it throws nothing is removed', async () => {
