@@ -3,8 +3,8 @@
 A desktop cockpit for [Claude Code](https://claude.com/claude-code). It runs `claude` in terminal tabs, shows the live
 status of every session across your projects, and lets plugins bring your other tools into panels around the terminal.
 
-**Status: early.** The plugin API may still change. Prebuilt downloads are set up but have not been published yet (see
-Install).
+**Status: early.** The plugin API may still change, and the packaged builds have had little testing so far (see What was
+tested).
 
 ## What it does
 
@@ -31,25 +31,21 @@ You need `claude` (Claude Code) on your PATH, and git for installing plugins.
 
 ### macOS (Apple silicon)
 
-The app is not notarised, so macOS may refuse to open it the first time. The first-launch step is:
-
-> TODO: fill this in after the first real run on a Mac (Post-Completion in
-> `docs/plans/completed/20261102-distribution.md`). Not tested yet, so no step is stated here.
-
-Then install with Homebrew:
+Install with Homebrew:
 
 ```sh
 brew install --cask BronOS/tap/cc-cockpit
 ```
 
-`brew install` does not work yet. It needs the `BronOS/cc-cockpit` repo and the `BronOS/homebrew-tap` repo to be public.
+The app is not notarised, so macOS may refuse to open it the first time. The exact step has not been tested on a Mac yet.
+Usually it is System Settings > Privacy & Security > "Open Anyway", or `xattr -cr /Applications/cc-cockpit.app`.
+
 Intel Macs are not supported yet.
 
 ### Linux (x64)
 
 Download the `.AppImage` or the `.deb` from the
-[releases page](https://github.com/BronOS/cc-cockpit/releases) once a release is published there. Until the repo is
-public, there is nothing to download.
+[releases page](https://github.com/BronOS/cc-cockpit/releases).
 
 ```sh
 sudo apt install ./cc-cockpit-X.Y.Z-linux-x64.deb
