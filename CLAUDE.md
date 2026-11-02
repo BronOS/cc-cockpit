@@ -62,6 +62,16 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
   plugin host with no round trip to main, resolved on every call (never a cached provider), and carry plain data only
   (`structuredClone` both ways). Main decides the specs and the project's provider picks; `selectProvider` /
   `serviceStatus` in `src/shared/services.ts` are the one rule for host and Plugins page, so use them, never a copy.
+- App-wide plugin state is owned by main (`ctx.appStorage`, `main/plugins/app-storage.ts`): each window has its own plugin host,
+  so a store the hosts wrote themselves would lose updates; main applies calls one at a time (design.md §5 "App-wide plugin
+  storage"). A new app-wide plugin store goes through main the same way, never a file a host writes.
+- `src/sdk/panel.ts` is built as a classic script with no `require`: a module both it and main/host import becomes a shared
+  chunk that `out/sdk/panel.js` loads with `require`, which throws in a page (`electron.vite.config.ts`). So a constant main
+  or the host needs (`MAX_OVERLAY_MESSAGE_LENGTH`) lives in its own file (`src/shared/overlay-message.ts`), not in `panel-core.ts`.
+- `serviceProviders` in the project record also holds the reserved key `@open-file` (plugin id or `@builtin`; a service name
+  never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
+- Plugin `ccc` commands and their stdin are always bounded (30 s plugin limit, 40 s client deadline and stdin read, exit 124
+  `CLI_TIMEOUT_CODE`): a new wait in `src/cli/client.ts` needs a deadline, never an unbounded await.
 - Plugin settings schemas may not use regexes (ReDoS in main). `"format": "secret"` goes only on a
   top-level string property, with no `default` and no keyword but type/format/title/description/
   `$comment`, and a schema with one has no `$ref`/`$anchor`/`$id` or other reference keyword

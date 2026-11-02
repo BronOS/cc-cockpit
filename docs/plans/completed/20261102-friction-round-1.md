@@ -367,9 +367,9 @@ whole window below the top bar. Named sizes rather than percentages, so pages do
   - no FRICTION line is left uncovered
 
 ### Task 16: [Final] Update documentation [model: sonnet]
-- [ ] `docs/design.md` (§5 ctx table: `ctx.appStorage`, `ctx.appDataDir`, `ctx.services.caller()`; §6 CLI: `ccc plugin config`, `ccc panel show`, `ccc guide types`; keyring note), `docs/features.md`, README `ccc` list if it names these commands
-- [ ] `CLAUDE.md` if a new pattern appeared (e.g. main-owned app storage)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `docs/design.md` (§5 ctx table: `ctx.appStorage`, `ctx.appDataDir`, `ctx.services.caller()`; §6 CLI: `ccc plugin config`, `ccc panel show`, `ccc guide types`; keyring note), `docs/features.md`, README `ccc` list if it names these commands
+- [x] `CLAUDE.md` if a new pattern appeared (e.g. main-owned app storage)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

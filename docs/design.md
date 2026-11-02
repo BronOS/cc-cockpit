@@ -353,14 +353,40 @@ menu (§3 Custom commands); covers the whole window (on macOS, everything under 
 - `terminal`: an argv command with a cwd in its own PTY; the overlay closes on exit and the
   opener gets the exit code. Its xterm fills the window under the overlay's title bar, with the
   terminal font of the tabs, and the PTY is resized with it (a TUI gets the real size).
-- `html`: a plugin page in a sandboxed iframe with the panel message API.
+- `html`: a plugin page in a sandboxed iframe with the panel message API. Opened with
+  `ctx.overlay.start(spec)` it is two-way (below).
 - `url`: an Electron `WebContentsView`, no Node, its own session partition; links to other
   sites open in the system browser.
 
 Esc pops the top overlay, except in a terminal overlay of any opener (Esc belongs to the program,
 nvim / lazygit / yazi need it; close with ✕ or Cmd+Shift+W, or by quitting the program). Neither
 the shell page nor main's key watch takes Esc while a terminal overlay is on top. The opener receives a result when its overlay closes: exit code, a value
-the page sent, or "dismissed".
+the page sent, or "dismissed". Esc on an html or url overlay (like ✕ and Cmd+Shift+W) resolves
+`{ kind: 'dismissed' }` without asking the page, so a page that holds a draft posts it as it goes.
+
+**Overlay size.** Every kind takes `size?: 'default' | 'large' | 'full'` (`OVERLAY_SIZES`,
+`src/shared/ipc.ts`; anything else is refused by `parseOverlaySpec`). The overlay is a centered dialog:
+`default` is 75 % of the window in both directions, `large` about 90 %, `full` the whole window below the
+top bar with a small margin (`data-size` on `.overlay`, `styles.css`). The title bar and ✕ stay; a
+terminal overlay's PTY is resized to the frame (the existing fit path). The CLI's `ccc overlay` and the
+user's overlay entries use `default`.
+
+**Two-way html overlays.** `ctx.overlay.start(spec)` returns `{ result, post, onMessage, close }`
+(`open(spec)` is `start(spec).result`). The opener passes an `OverlayChannel` to `OverlayManager.start`,
+kept on the overlay's record, so what the page posts without a `result` key reaches only that callback:
+nothing a renderer sends can name another receiver, and a message for an overlay id of another window is
+dropped (`pageMessage` looks the id up in the sender's own window stack). A page's `ccPanel.post(m)` with
+a `result` key still closes the overlay; without one it is relayed (renderer → main → host RPC) to
+`onMessage` and the overlay stays open. The host's `post` goes out as `overlays.message` once the renderer
+reports the page's port up (`pageReady`); until then, and again after a renderer reload, it waits in a
+per-overlay outbox (at most 100 messages and 8 MiB of JSON; a full outbox throws to the poster, with the
+limit named). A message is at most `MAX_OVERLAY_MESSAGE_LENGTH` = 1 MiB less 8 KiB of JSON text, a page's
+over-limit message is dropped with a log line, and a post to a gone overlay is a no-op. The constant lives
+in `src/shared/overlay-message.ts`, not next to the panel SDK's cap: the transport is the host RPC, capped
+at 1 MiB with its envelope, and a module shared with `panel.js` would pull a common chunk that `panel.js`
+loads with `require`, which throws in a page. `post`/`onMessage` throw for a terminal or url overlay.
+Ownership: only the plugin whose host opened the overlay can post to it or hear it (HostApi looks the
+overlay up by its own plugin and handle).
 
 **Themes**: a set of CSS variables plus an xterm palette. Light and dark are built in; theme
 plugins add more. The active theme is app-wide. A plugin theme inherits every variable it does
@@ -501,7 +527,8 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
     "commands": [{ "id": "refresh", "title": "Jira: Refresh", "key": "cmd+shift+j" }],
     "themes":   [{ "id": "solar", "file": "themes/solar.json" }],
     "cli":      [{ "name": "jira", "summary": "…", "usage": "jira [issue]", "stdin": false }],
-    "skills":   [{ "id": "jira", "dir": "skills/jira" }]
+    "skills":   [{ "id": "jira", "dir": "skills/jira" }],
+    "openFile": { "title": "Jira viewer" }   // takes a click on a changed file in the Sessions panel
     // a panel may instead be {"id", "title", "kind": "webview", "defaultZone"}: no "entry"
   },
   "services": { "provides": { "triage": 1 }, "uses": { "mail-index": 2 } }
@@ -517,6 +544,13 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
   another way whose id a bundled plugin already holds is skipped (the bundled one wins). Clash
   losers keep their manifest in the loaded map, so they win the name back once the owner is removed.
 - `skills[]`: see Skills below.
+- `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars }`). The plugin may
+  take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
+- A panel's `icon` (an SVG or PNG in the plugin folder) is drawn as a mask in the strip's text colour,
+  not as an image: only its shape and alpha count, so it follows the theme, hover and open states (a
+  `stroke="currentColor"` SVG drawn by `<img>` came out black). `IconStrip.tsx` paints a CSS
+  `mask-image` over `currentColor`; a mask reports no load error, so a detached `Image` probe falls back to the
+  title's first letter when the file fails.
 - `services`: top level (a dependency between plugins, not something the app shows). Names `^[a-z][a-z0-9-]{0,63}$`,
   versions integers 1..9999, at most 32 entries in each of `provides` and `uses`; a plugin may not provide and use
   the same name; no other key inside `services` (strict, unlike the top level). Absent means none. The host ignores
@@ -531,17 +565,53 @@ that project.
 | config | `ctx.settings` (project + app, validated by schema), `ctx.onSettingsChange` |
 | secrets | `ctx.secrets.get/set/delete/keys` → this plugin's encrypted store (app-wide, OS keychain) |
 | oauth | `ctx.oauth.authorize(spec)` / `refresh(spec, token)` → loopback + PKCE sign-in, optional helper |
-| data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir` |
+| data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir`; `ctx.appStorage` (the same KV, app-wide, with an atomic `increment`), `ctx.appDataDir` |
 | work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
-| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result |
+| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close}` (two-way html overlay, §4) |
+| files | `ctx.files.onOpen(({path, tabId}) => …)` → disposer (needs `contributes.openFile`) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt})` |
 | commands | `ctx.commands.register(id, fn)` |
-| services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)` |
+| services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)`, `caller()` → the calling plugin's id or `undefined` |
 | misc | `ctx.log`, `ctx.notify(text)` |
 
 `activate`'s return value is ignored; a plugin offers an API to others with `ctx.services`.
+
+**App-wide plugin storage** (`ctx.appStorage`, `ctx.appDataDir`; `src/main/plugins/app-storage.ts`).
+`ctx.storage` has one writer, the project's host, and lives in `<data>/plugin-data/<projectId>/<pluginId>/`.
+`ctx.appStorage` is the same API (`get`, `set`, `delete`, `keys`) plus `increment(key, by = 1)`, shared by
+every project window, and **main owns it**: each window runs its own host, so a file the hosts wrote
+themselves would have one writer per window and a read-modify-write (a usage cap counted from every
+window) would lose updates. Main is one thread and every store method is synchronous, so calls from any
+number of hosts apply one at a time in arrival order, each call is atomic and `increment` is the safe
+counter. A `get` then a `set` is not atomic; there are no locks. The host only forwards through RPC
+(`src/host/ctx/app-storage.ts`; the plugin id is checked against the host's own plugins). Data lives in
+`<data>/plugin-data/_app/<pluginId>/storage.json` (`ctx.appDataDir` is that folder, created on first
+read; `_app` can never be a project id). Writes go through `JsonFile` (tmp, fsync, rename: never a half
+file), debounced by 300 ms from the first unsaved change and flushed at quit (`will-quit`); the in-memory
+object is what every host reads meanwhile. So a crash or kill of main (not of a host, and not a normal
+quit) can lose the last ~300 ms of changes, and the file is then the previous complete one. Keys and value
+caps are `ctx.storage`'s (`src/shared/plugin-storage.ts`), except a value is capped at 1 MiB less 8 KiB so it
+fits one RPC message. Like the per-project data, both folders stay after uninstall and after forgetting a
+project (only a plugin's secrets are deleted), and a reinstall finds them again.
+
+**Open file**: core's Sessions panel offers a click on a changed file to a plugin before its own viewer
+(`src/main/sessions/open-file.ts`). Which plugin: the plugins of the project's host that declare
+`contributes.openFile`, run through `selectProvider` as providers of one reserved name (`selectOpenFile`,
+`openFileStatus` in `src/shared/services.ts`, the rule the Plugins page shares). The pick is stored in
+`serviceProviders` under the reserved key `@open-file` (a service name never starts with `@`); its value is
+a plugin id or `@builtin` for core's viewer, and changing it needs no host restart (main routes each click).
+With one candidate it gets the clicks; with several and no valid pick (a stale pick counts as none) or with
+`@builtin`, the built-in viewer opens. Main is the authority for what the plugin receives: the tab must
+belong to the asking window's project and the file must be one main recorded for that tab (the checks
+`openDiff` makes), the path is made relative to the project folder by main (lexically, then through real
+paths) and a file outside the project is never sent (the built-in viewer shows it), the `tabId` is the one
+just checked, and a repeated click on the same file while the first is pending is dropped. The plugin's
+`onOpen({ path, tabId })` listener is awaited for 1 s (a listener still running then counts as handled, so
+one that awaits an overlay is fine); a throw or rejection of every listener, no listener, an inactive
+plugin, or no ack from the host within 2 s falls back to the built-in viewer, so a click always shows
+something. Only this click goes through the hook; other file-opening goes through services.
 
 **Plugin services**: one plugin offers a named API, others in the same project call it and listen to
 its events (`src/host/services.ts`, `src/shared/services.ts`). All plugins of a project run in one
@@ -570,6 +640,13 @@ dispatched inside the host with no round trip to main.
   Plugins page warn on the consumer. `selectProvider` and `serviceStatus` (`src/shared/services.ts`)
   are the one rule, used by the host and by main over the same set of specs, so warnings and errors
   agree. Main decides the specs and the picks; the host only applies them.
+- `ctx.services.caller()`, inside a provider's method, is the id of the plugin whose call it serves, for per-caller
+  counts or caps. The registry takes it from the calling plugin's own `ctx` (the AsyncLocalStorage frame it
+  pushes for each provider method), never from an argument, so a caller cannot name another plugin; it holds in
+  what the method awaits or starts while the call runs, the innermost caller wins (A calls B, B calls C: C sees
+  B), and it is `undefined` in `activate`, in event listeners, outside a call and after the call returned. Not a
+  security boundary (one JS realm); it guards against honest mistakes. A service call reaches no limits: no rate,
+  size or time cap, since it never leaves the host; a provider that must protect itself counts its callers.
 
 **Panel side**: a small `panel.js` SDK (`post`, `onMessage`, `theme`). Panels have no direct
 API; everything goes through their own plugin backend, so the plugin decides what its panel may do.
@@ -624,7 +701,13 @@ and a skill.
 **Lifecycle**: install = clone the git URL at a tag into `<data>/plugins/<id>@<version>/`,
 validate manifest and `api` → enable per project → activate on window open, deactivate on close
 (with timeout) → on host crash, restart with backoff; affected panels show "plugin stopped:
-Restart". A linked dev folder is watched; a change reloads that plugin in every open host.
+Restart". A linked dev folder is watched; a change reloads that plugin in every open host (`dev-watch.ts`). The watcher
+ignores `node_modules`, `.git` and any nested folder that has its own `plugin.json`: that is another plugin
+with its own link and watcher, so editing it reloads only it (if linked) and editing the parent reloads only the
+parent. Plugin files without a manifest of their own, such as a `test/` folder, still reload the parent.
+Enabling, disabling, linking or unlinking a plugin restarts the project's whole host, not a dev edit.
+`ccc plugin new` writes into a new folder or one that holds other files (a nested plugin inside another, or a
+parent around a nested one) and refuses only when a file it would write already exists, naming those files.
 
 ### Marketplace
 
@@ -677,7 +760,16 @@ ignored and can be deleted by hand.) Core keeps only what main alone can do:
 
 - **`ctx.secrets`**: `get(key)`, `set(key, value)`, `delete(key)`, `keys()` over a small
   keychain-backed store per plugin (Electron `safeStorage` exists only in main; the plugin host
-  is a `utilityProcess` and cannot reach it). App-wide per plugin id; a plugin that wants
+  is a `utilityProcess` and cannot reach it). On Linux, Electron picks its keyring backend from
+  `XDG_CURRENT_DESKTOP` and falls back to `basic_text` on a desktop it does not know (Hyprland, sway, i3),
+  which the store refuses even when gnome-keyring or KeePassXC owns `org.freedesktop.secrets`. So before
+  `ready`, `main/index.ts` asks `choosePasswordStore` (`src/main/secrets/password-store.ts`) and appends
+  `--password-store=gnome-libsecret` when the desktop is not one Electron maps to a keyring, the user passed
+  no `--password-store` of their own and the Secret Service name has an owner on the session bus (a
+  `dbus-send ... NameHasOwner` call, argv only, bounded; any failure means no switch). With no keyring the
+  error names the fix: start and unlock a Secret Service keyring, or launch with
+  `--password-store=gnome-libsecret` (`kwallet6` on KDE 6). There is still no plaintext fallback.
+  App-wide per plugin id; a plugin that wants
   per-project sign-ins names its keys itself (`google:work`) and lets the project pick one
   through a normal project setting. Keys match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, values are
   at most 64 KiB, at most 100 keys per plugin. The prefix `setting:` is reserved for secret
@@ -810,8 +902,22 @@ un-maximising lands there. New projects and the picker keep the default sizes
 | `notify "…"` | anyone |
 | `sessions --json` | scripts: current Claude status |
 | `guide [topic]`, `<command> --help` | Claude or a person: bundled docs; works with the app closed |
+| `guide types` | the SDK types (`src/sdk/types.ts`, bundled with the CLI by a `?raw` import); works with the app closed |
+| `plugin config <id> [--json]` / `plugin config <id> [--scope app\|project] key=value…` | the plugin's settings (one `scope key = JSON` line per top-level field, a secret only `set` / `not set`) or a save through the Settings form's own path (`settings.pluginSettingsSave`: the same schema check, then `ctx.onSettingsChange`); a value is JSON if it parses, else text; the scope is the one whose schema declares the key (both: `--scope` needed); a secret field is refused, a person sets it in Settings |
+| `panel show <plugin>/<panel>` | reveals the panel in the caller's project window (unhidden, opened, its zone expanded: what `ctx.panels.show` does); refused for an unknown or not enabled plugin, an undeclared panel, or a project with no open window |
 | `plugin new <dir>` / `link <dir>` / `unlink <id>` / `list` / `logs <id> [--follow]` | the plugin dev loop; `new` and `logs` are local, `link` asks the person to confirm in a native dialog (Deny is the default); the dialog rate limit is per window and counts only requests that reach a dialog; linking an already-linked folder (same id and path) only enables it in the calling project after the confirm; the manifest is re-checked against the inspected id, so a swap between dialog and link is refused |
 | `<name> …` | a command a plugin declared in `contributes.cli`; main routes it to the owning plugin of the caller's project (30 s limit, 256 KiB each for stdin, stdout and stderr); `ccc help` lists them inside a tab |
+
+A plugin command never waits without a bound. A plugin that is reloading or still starting is waited for
+inside the same 30 s (`HostManager.waitCliReady`), and the command then runs in the new copy; if it is not
+active by then, or the limit passes, the answer is exit 124 (`CLI_TIMEOUT_CODE`, also `timeout(1)`'s). A call
+already running in the old copy when the reload starts ends with exit 1. The client adds its own bounds: a reply
+timer of 35 s (`CLI_REPLY_TIMEOUT_MS`) and a hard deadline of 40 s over the whole call
+(`CLI_CLIENT_DEADLINE_MS`, a backstop for whatever the round trip fails to settle), each exit 124. Stdin is read
+only for a command declared `stdin: true` and only when it is not a terminal; if it is not closed within 40 s
+(`STDIN_READ_TIMEOUT_MS`, an open pipe a tool runner leaves attached) the command prints the reason and exits 124.
+`plugin config` with values, like `overlay` and `plugin link`, has no 10 s reply timer: it waits behind the plugin's settings-save
+queue (a form save may sit at a keychain prompt) and for a host the change restarts.
 
 Inside a tab of any kind or a terminal overlay, the token (`APP_TAB_TOKEN` and `CC_COCKPIT_SOCK`,
 the same variables for both kinds; tabs also get `APP_TAB_ID`) selects that window; outside,
@@ -917,6 +1023,14 @@ All decided in phase 1:
 - Linux targets (AppImage, deb) are x64 only; mac builds arm64 only.
 - The "Install ccc command" button only creates the `~/.local/bin/ccc` symlink; nothing in the
   app removes it again (`src/main/hooks/ccc-install.ts`).
+  A start-up question offers the same install (`src/main/hooks/ccc-offer.ts`, `CccOfferDialog` in the
+  renderer; main decides, the renderer only asks `ccc.offer` and draws it): only when nothing is at the
+  path (an installed link needs nothing; a foreign file or other link is something the installer refuses to
+  replace, so a Yes could only fail and the Settings row explains it), once per launch to the first project
+  window that asks (a second window or a page reload never asks again), never when the link cannot be
+  inspected, and never in a test run unless `CC_COCKPIT_CCC_OFFER=1` (itself honoured only in a test run).
+  "Don't ask again" sets `cccOffer: false` in `app.json`; Settings > Appearance and keys > Command line >
+  "Offer to install at start-up" turns it back on.
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z (they would be eaten from the terminal).
 - "Cmd = Ctrl" on Linux is kept as decided: the defaults Cmd+T/W/B/J/O become Ctrl chords that
   Claude Code and readline also use, so on Linux they never reach the terminal until rebound.
