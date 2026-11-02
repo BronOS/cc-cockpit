@@ -182,6 +182,18 @@ script served at `/__sdk/panel.js`. See the `panels` topic.
 See the `settings-secrets` topic. In short: JSON Schema forms from the manifest, a `secret`
 format for tokens, `ctx.secrets` for stored credentials and `ctx.oauth` for a PKCE sign-in.
 
+## Built-in plugins
+
+The app ships `cockpit.browser`, `cockpit.reviewer` and `cockpit.editor`. They are on in every project
+until switched off: per project under This project, or for the whole app with "Off in all projects" on
+their row in Settings > Plugins. Off in all projects wins over every project's switch (which cannot turn
+it on meanwhile) and gives each project its own choice back when undone; only built-in plugins have it.
+A built-in plugin has no priority over yours. To replace one, provide the same thing under your own id:
+another `editor` or `reviewer` provider appears in "Plugin used for <service>", another `openFile`
+plugin in "Plugin used to open files"; with both on, the project picks (until then a service call
+fails as ambiguous and a file click opens the built-in viewer). Turn the built-in one off (in the
+project or everywhere) and yours is the only provider, used without a pick.
+
 ## Build and ship
 
 Plugins ship built JavaScript. Plain JS needs no build step. For TypeScript, bundle with esbuild

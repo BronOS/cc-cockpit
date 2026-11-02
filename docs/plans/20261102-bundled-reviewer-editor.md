@@ -217,18 +217,19 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   (`AppSettings.disabledBundled`), `src/main/ipc/router.ts`, `src/renderer/settings/PluginsPage.tsx`, host restart path
 - Modify: `src/cli/guide/plugins.md`
 
-- [ ] `disabledBundled` in app settings; `pluginEnabledIn`/`enabledPluginIds` take it and an app-wide-off bundled
+- [x] `disabledBundled` in app settings; `pluginEnabledIn`/`enabledPluginIds` take it and an app-wide-off bundled
       plugin is off in every project regardless of the project record; changing it restarts the affected hosts the
       way a per-project toggle does
-- [ ] Settings > Plugins: a bundled plugin shows "Off in all projects" (app-wide) next to the per-project switch;
-      the per-project switch is disabled with a note while it is off app-wide
-- [ ] verify replacement: `selectProvider` gives bundled no priority; with a third-party `editor` provider and the
+- [x] Settings > Plugins: a bundled plugin shows "Off in all projects" (app-wide) next to the per-project switch;
+      the per-project switch is disabled with a note while it is off app-wide (the per-project switch lives on This
+      project, so the lock and note are there; main also refuses enabling it while off app-wide)
+- [x] verify replacement: `selectProvider` gives bundled no priority; with a third-party `editor` provider and the
       bundled editor both on, the pick lists both; with the bundled one off (project or app-wide) the other is used;
       the same for the `@open-file` pick with a third-party `openFile` plugin. Fix anything that doesn't hold
-- [ ] guide (plugins): app-wide off, how to replace a bundled plugin (picks, turning it off), no priority for bundled
-- [ ] unit tests (enablement with `disabledBundled`, router, picks with bundled + third-party) and an e2e (app-wide
+- [x] guide (plugins): app-wide off, how to replace a bundled plugin (picks, turning it off), no priority for bundled
+- [x] unit tests (enablement with `disabledBundled`, router, picks with bundled + third-party) and an e2e (app-wide
       off hides it in a second project; replacing the open-file handler with a fixture plugin)
-- [ ] run `npm test`, typecheck, lint, build and the touched e2e specs - must pass
+- [x] run `npm test`, typecheck, lint, build and the touched e2e specs - must pass
 
 ### Task 5: Close a plugin's overlays when it reloads or stops; overlay focus() [model: opus]
 

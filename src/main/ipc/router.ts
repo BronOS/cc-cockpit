@@ -365,6 +365,8 @@ export interface SettingsHandlerDeps {
   linkPlugin(windowId: number): Promise<boolean>
   updatePlugin(id: unknown, tag: unknown): Promise<PluginView>
   uninstallPlugin(id: unknown): Promise<void>
+  /** "Off in all projects" of a bundled plugin; the service refuses any other id. */
+  setBundledOff(id: unknown, off: unknown): Promise<void>
   marketplace(): MarketplaceView
   installMarketplace(indexUrl: unknown, id: unknown, expect: unknown): Promise<PluginView>
   updateMarketplace(indexUrl: unknown, id: unknown, expect: unknown): Promise<PluginView>
@@ -414,6 +416,10 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
   router.handleProject('settings.pluginUninstall', (_ctx, payload) =>
     deps.uninstallPlugin(idOf('settings.pluginUninstall', payload))
   )
+  router.handleProject('settings.pluginBundledOff', (_ctx, payload) => {
+    const p = fields('settings.pluginBundledOff', payload)
+    return deps.setBundledOff(p.id, p.off)
+  })
   router.handleProject('settings.marketplace', () => deps.marketplace())
   router.handleProject('settings.marketplaceInstall', (_ctx, payload) => {
     const p = fields('settings.marketplaceInstall', payload)

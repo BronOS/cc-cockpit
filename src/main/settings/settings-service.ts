@@ -22,6 +22,7 @@ import type { ProjectRecord, ProjectView } from '../../shared/types'
 import { checkMarketplaceUrl } from '../marketplace/fetch-index'
 import type { MarketplaceService } from '../marketplace/marketplace-service'
 import { buildMarketplaceView, repoChangeFrom, resolveMarketplace, type MarketplaceViewInput } from '../marketplace/marketplace-view'
+import { offAppWide } from '../plugins/enablement'
 import type { InstalledPlugin, PluginInstaller } from '../plugins/installer'
 import type { PluginEntry } from '../plugins/plugin-index'
 import { appSettingKey } from '../secrets/plugin-secrets'
@@ -57,6 +58,16 @@ export interface SettingsDeps {
   enabledInAProject(pluginId: string): boolean
   /** `app.json` › `pluginSettings[pluginId]`, as stored. */
   appPluginSettings: { get(pluginId: string): unknown; set(pluginId: string, value: Record<string, unknown>): void }
+  /**
+   * `app.json` › `disabledBundled`: `get` as stored (user-writable, so anything), `set` stores the
+   * cleaned list (an empty one removes the key).
+   */
+  bundledOff: { get(): unknown; set(ids: string[]): void }
+  /**
+   * A bundled plugin's "Off in all projects" flipped: restart the open hosts whose project it changes
+   * (the ones whose own switch has it on), as a per-project toggle restarts its host.
+   */
+  bundledOffChanged(pluginId: string): Promise<void>
   /** Plugin settings changed: tell every open host (HostManager.settingsChanged per window). */
   pluginSettingsChanged(): Promise<void>
   /** Where secret fields are stored (PluginSecrets; it also updates the hosts' decrypted cache). */
@@ -177,6 +188,25 @@ export class SettingsService {
         console.warn(`uninstall of ${entry.id}: repository history not updated: ${err instanceof Error ? err.message : String(err)}`)
       }
     })
+  }
+
+  /**
+   * "Off in all projects" for a bundled plugin (design: bundled reviewer and editor plan, "App-wide
+   * off"). Only a bundled plugin has it: a third-party one is per project by design (§5), and the
+   * record would be ignored for it anyway (enablement.ts offAppWide). Setting what is already stored
+   * changes nothing and restarts nothing.
+   */
+  async setBundledOff(id: unknown, off: unknown): Promise<void> {
+    if (typeof id !== 'string' || typeof off !== 'boolean') throw new Error('give the plugin and on or off')
+    const plugin = this.deps.plugins.get(id)
+    if (!plugin) throw new Error('unknown plugin')
+    if (plugin.source.kind !== 'bundled') throw new Error(`${id} is not built in; turn it off per project under This project`)
+    const stored = this.deps.bundledOff.get()
+    // app.json is user-writable: keep only the strings, once each.
+    const current = [...new Set(Array.isArray(stored) ? stored.filter((x): x is string => typeof x === 'string') : [])]
+    if (current.includes(id) === off) return
+    this.deps.bundledOff.set(off ? [...current, id] : current.filter((x) => x !== id))
+    await this.deps.bundledOffChanged(id)
   }
 
   // -------------------------------------------------------------------------------------------
@@ -345,6 +375,7 @@ export class SettingsService {
     }
     const appSettings = this.appSettingsView(p)
     if (appSettings !== undefined) view.appSettings = appSettings
+    if (p.source.kind === 'bundled') view.offInAllProjects = offAppWide(p, this.deps.bundledOff.get())
     return view
   }
 }

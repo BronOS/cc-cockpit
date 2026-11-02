@@ -307,6 +307,8 @@ export interface PluginView {
   /** `ok: false` = disabled, with the reason the manifest or settings check gave. */
   state: { ok: true } | { ok: false; reason: string; revoked?: { reason: string; source: string } }
   appSettings?: PluginAppSettingsView
+  /** Bundled plugins only: switched off in every project (`AppSettings.disabledBundled`). Absent for any other source. */
+  offInAllProjects?: boolean
 }
 
 /** The repository and commit a confirmation displayed; main compares them with its own pin before it installs. */
@@ -386,6 +388,11 @@ export interface ProjectPluginView {
   version: string
   /** The project has it enabled (its host runs it, its panels show). */
   enabled: boolean
+  /**
+   * A bundled plugin switched off in all projects (Settings > Plugins): `enabled` is false and the
+   * project's switch cannot turn it on until that is undone. Absent otherwise.
+   */
+  offInAllProjects?: true
   /** `ok: false` = the plugin itself is disabled (invalid manifest); it cannot be enabled. */
   state: { ok: true } | { ok: false; reason: string }
   /** Enabled, but the stored settings do not validate: why the plugin does not run here. */
@@ -663,6 +670,11 @@ export interface IpcInvokeMap {
   'settings.pluginLink': { req: void; res: boolean }
   'settings.pluginUpdate': { req: { id: string; tag: string }; res: PluginView }
   'settings.pluginUninstall': { req: { id: string }; res: void }
+  /**
+   * Switch a bundled plugin off in all projects (`off: true`) or back to each project's own switch.
+   * Refused for any other source. The hosts of open projects it changes restart.
+   */
+  'settings.pluginBundledOff': { req: { id: string; off: boolean }; res: void }
   /**
    * Plugin services in the asking window's project: per plugin what it provides and uses and the
    * problems, per service the providers and the one calls reach (over the plugins its host runs).
@@ -962,6 +974,7 @@ export const INVOKE_CHANNELS = [
   'settings.pluginLink',
   'settings.pluginUpdate',
   'settings.pluginUninstall',
+  'settings.pluginBundledOff',
   'settings.pluginServices',
   'settings.pluginServiceProvider',
   'settings.marketplace',

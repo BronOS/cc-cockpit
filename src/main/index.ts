@@ -68,7 +68,7 @@ import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, 
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
-import { enabledPluginIds } from './plugins/enablement'
+import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
 import { servePluginRequest } from './plugins/plugin-protocol'
@@ -214,8 +214,10 @@ function start(): void {
   // The plugin ids on for a project: its `enabledPlugins` plus the default-on bundled ones it has
   // not switched off (enablement.ts). Every "is this plugin on here" question goes through this, so
   // a bundled plugin and an installed one are never treated differently by accident. `plugins` is
-  // read at call time only.
-  const enabledIds = (projectId: string): string[] => enabledPluginIds(registry.get(projectId), plugins.list())
+  // read at call time only. A bundled plugin switched off in all projects (app.json
+  // `disabledBundled`) is left out whatever the project record says.
+  const enabledIds = (projectId: string): string[] =>
+    enabledPluginIds(registry.get(projectId), plugins.list(), registry.app.data.disabledBundled)
   const skillPlugins = (): SkillSource[] =>
     plugins.list().flatMap((p): SkillSource[] => {
       const skills = p.manifest?.contributes?.skills ?? []
@@ -1143,6 +1145,26 @@ function start(): void {
         })
       }
     },
+    bundledOff: {
+      get: () => registry.app.data.disabledBundled,
+      set: (ids) => {
+        registry.app.update((a) => {
+          if (ids.length > 0) a.disabledBundled = ids
+          else delete a.disabledBundled
+        })
+      }
+    },
+    // Only the projects whose own switch has it on see a change (enabledIds already reads the new
+    // list); their hosts restart as on a This project toggle. Every open window's settings page
+    // reads the views again on its next load.
+    bundledOffChanged: async (pluginId) => {
+      const plugin = plugins.get(pluginId)
+      if (!plugin) return
+      for (const { projectId } of windows.projectWindows()) {
+        if (!pluginOnInRecord(registry.get(projectId), plugin)) continue
+        await hosts.enabledChanged(projectId).catch((err: unknown) => console.error(`restarting the plugin host of ${projectId} failed`, err))
+      }
+    },
     // Running plugins get the new values (ctx.onSettingsChange); one disabled for invalid
     // settings starts when they are valid now (HostManager.settingsChanged).
     pluginSettingsChanged: async () => {
@@ -1168,6 +1190,7 @@ function start(): void {
   const projectSettings = new ProjectSettingsService({
     projects: registry,
     plugins,
+    disabledBundled: () => registry.app.data.disabledBundled,
     checkSettings: (projectId, pluginId) => {
       const checked = hostSettingsOf(projectId, pluginId)
       return checked.ok ? { ok: true } : checked

@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
-import { Empty, Group, PageHeader, Row, Select } from './ui'
+import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
 import { useLoaded } from './use-loaded'
 
@@ -219,6 +219,10 @@ function PluginItem(props: {
   const [updateTag, setUpdateTag] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const offId = useId()
+  // Bundled plugins only (main sends the field for no other source): off in every project at once,
+  // over each project's own switch, which comes back when this is undone.
+  const offAll = plugin.offInAllProjects
 
   return (
     <li className="settings-item column" data-plugin={plugin.id}>
@@ -242,6 +246,11 @@ function PluginItem(props: {
                 : 'built in'}
           </div>
           {!plugin.state.ok && <div role="alert" className="settings-error">{plugin.state.reason}</div>}
+          {offAll === true && (
+            <div className="settings-item-meta" data-testid="off-in-all-projects">
+              Off in all projects: it runs nowhere, whatever each project's switch says.
+            </div>
+          )}
           {props.note !== undefined && <div className="settings-item-meta" data-testid="marketplace-note">{props.note}</div>}
           {props.services !== undefined && props.services.provides.length > 0 && (
             <div className="settings-item-meta" data-testid="service-provides">
@@ -285,6 +294,21 @@ function PluginItem(props: {
             </>
           ) : (
             <>
+              {offAll !== undefined && (
+                <label className="settings-inline-switch" htmlFor={offId}>
+                  <Switch
+                    id={offId}
+                    checked={offAll}
+                    disabled={busy !== null}
+                    aria-label={`Off in all projects: ${plugin.name}`}
+                    onChange={(e) => {
+                      const off = e.target.checked
+                      void run(`off ${plugin.id}`, () => window.cockpit.invoke('settings.pluginBundledOff', { id: plugin.id, off })).then(reload)
+                    }}
+                  />
+                  Off in all projects
+                </label>
+              )}
               <button type="button" className="quiet" onClick={props.onOpenProject}>
                 Enable in This project
               </button>

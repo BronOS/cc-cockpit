@@ -69,6 +69,7 @@ function rig() {
       }
     },
     plugins: { list: () => plugins, get: (id) => plugins.find((p) => p.id === id) },
+    disabledBundled: () => undefined,
     checkSettings: () => settingsCheck.value,
     enabledChanged: async (id) => {
       calls.push(`enabledChanged ${id} [${record.enabledPlugins.join(',')}]`)

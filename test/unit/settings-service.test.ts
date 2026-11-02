@@ -43,6 +43,7 @@ interface Rig {
   appSettings: Map<string, unknown>
   picked: { path: string | undefined; before?: () => void }
   deps: SettingsDeps
+  bundledOff: { value: unknown }
 }
 
 function rig(): Rig {
@@ -64,6 +65,7 @@ function rig(): Rig {
     plugin('test.broken', { contributes: {} }, false)
   ]
   const appSettings = new Map<string, unknown>()
+  const bundledOff: { value: unknown } = { value: undefined }
   const picked: Rig['picked'] = { path: '/work/new' }
   const deps: SettingsDeps = {
     projects: {
@@ -124,13 +126,23 @@ function rig(): Rig {
         appSettings.set(id, value)
       }
     },
+    bundledOff: {
+      get: () => bundledOff.value,
+      set: (ids) => {
+        bundledOff.value = ids
+        calls.push(`bundledOff [${ids.join(',')}]`)
+      }
+    },
+    bundledOffChanged: async (id) => {
+      calls.push(`bundledOffChanged ${id}`)
+    },
     pluginSettingsChanged: async () => {
       calls.push('pluginSettingsChanged')
     },
     // Secret fields have their own tests (secret-settings.test.ts); none of these schemas has one.
     secrets: { hasSetting: () => false, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} }
   }
-  return { service: new SettingsService(deps), calls, projects, windowsOpen, plugins, appSettings, picked, deps }
+  return { service: new SettingsService(deps), calls, projects, windowsOpen, plugins, appSettings, picked, deps, bundledOff }
 }
 
 describe('projects', () => {
@@ -255,5 +267,54 @@ describe('plugins', () => {
     await expect(service.installPlugin(5, 'v1')).rejects.toThrow(/git URL/)
     await expect(service.updatePlugin('test.jira', undefined)).rejects.toThrow(/tag/)
     await expect(service.uninstallPlugin({})).rejects.toThrow(/plugin/)
+  })
+})
+
+describe('off in all projects (bundled plugins)', () => {
+  const BID = 'cockpit.editor'
+  function withBundled(): Rig {
+    const r = rig()
+    r.plugins.push({ ...plugin(BID, {}), source: { kind: 'bundled', path: '/app/plugins/editor' }, enabledByDefault: true })
+    return r
+  }
+
+  it('the view carries the switch for a bundled plugin only', () => {
+    const r = withBundled()
+    expect(r.service.plugins().find((p) => p.id === BID)?.offInAllProjects).toBe(false)
+    expect(r.service.plugins().find((p) => p.id === 'test.jira')).not.toHaveProperty('offInAllProjects')
+    r.bundledOff.value = [BID]
+    expect(r.service.plugins().find((p) => p.id === BID)?.offInAllProjects).toBe(true)
+  })
+
+  it('stores the list and restarts the affected hosts; the same value again does nothing', async () => {
+    const r = withBundled()
+    await r.service.setBundledOff(BID, true)
+    expect(r.calls).toEqual([`bundledOff [${BID}]`, `bundledOffChanged ${BID}`])
+    await r.service.setBundledOff(BID, true)
+    expect(r.calls).toHaveLength(2)
+    await r.service.setBundledOff(BID, false)
+    expect(r.calls.slice(2)).toEqual(['bundledOff []', `bundledOffChanged ${BID}`])
+    await r.service.setBundledOff(BID, false)
+    expect(r.calls).toHaveLength(4)
+  })
+
+  it('keeps the other ids and drops what a hand-edited app.json put there that is not a string', async () => {
+    const r = withBundled()
+    r.bundledOff.value = ['cockpit.browser', 7, 'cockpit.browser', null]
+    await r.service.setBundledOff(BID, true)
+    expect(r.bundledOff.value).toEqual(['cockpit.browser', BID])
+    r.bundledOff.value = 'damaged'
+    await r.service.setBundledOff(BID, true)
+    expect(r.bundledOff.value).toEqual([BID])
+  })
+
+  it('refuses a plugin that is not bundled, an unknown one and bad input, storing nothing', async () => {
+    const r = withBundled()
+    await expect(r.service.setBundledOff('test.jira', true)).rejects.toThrow(/not built in/)
+    await expect(r.service.setBundledOff('nope.gone', true)).rejects.toThrow(/unknown plugin/)
+    await expect(r.service.setBundledOff(BID, 'yes')).rejects.toThrow(/on or off/)
+    await expect(r.service.setBundledOff(5, true)).rejects.toThrow(/on or off/)
+    expect(r.calls).toEqual([])
+    expect(r.bundledOff.value).toBeUndefined()
   })
 })

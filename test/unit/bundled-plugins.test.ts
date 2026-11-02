@@ -6,12 +6,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BUNDLED_PLUGINS, bundledPluginSpecs, bundledRoot, type BundledPluginSpec } from '../../src/main/plugins/bundled'
-import { enabledPluginIds, pluginEnabledIn } from '../../src/main/plugins/enablement'
+import { enabledPluginIds, offAppWide, pluginEnabledIn, pluginOnInRecord, type EnablementPlugin } from '../../src/main/plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from '../../src/main/plugins/installer'
 import { PluginIndex } from '../../src/main/plugins/plugin-index'
 import { ProjectSettingsService, type ProjectSettingsDeps } from '../../src/main/settings/project-settings-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
 import { defaultLayout } from '../../src/shared/layout'
+import { BUILTIN_VIEWER, OPEN_FILE_PICK, openFileStatus, selectOpenFile, selectProvider, serviceStatus, type OpenFilePlugin, type ServicePlugin } from '../../src/shared/services'
 import type { ProjectRecord, ProjectView } from '../../src/shared/types'
 
 const FIXTURES = join(__dirname, '..', 'fixtures', 'plugins')
@@ -368,8 +369,11 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
     }
   }
 
-  /** A project record kept as JSON between calls, the way registry.json keeps it across a restart. */
-  function rig(stored?: string) {
+  /**
+   * A project record kept as JSON between calls, the way registry.json keeps it across a restart.
+   * `appOff`: app.json's `disabledBundled`.
+   */
+  function rig(stored?: string, appOff?: unknown) {
     let json =
       stored ??
       JSON.stringify({
@@ -395,6 +399,7 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
         }
       },
       plugins: { list: () => [bundledPlugin()], get: (id) => (id === BID ? bundledPlugin() : undefined) },
+      disabledBundled: () => appOff,
       checkSettings: () => ({ ok: true }),
       enabledChanged: async () => {
         restarts.push('restart')
@@ -431,5 +436,104 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
     // Switching a default-on plugin off twice changes nothing and does not restart the host again.
     await c.service.setEnabled(P, BID, true)
     expect(c.restarts).toHaveLength(0)
+  })
+
+  it('off in all projects: the view says so, turning it on here is refused and stores nothing', async () => {
+    const r = rig(undefined, [BID])
+    expect(r.service.view(P).plugins[0]).toMatchObject({ id: BID, enabled: false, offInAllProjects: true })
+    const before = r.json()
+    await expect(r.service.setEnabled(P, BID, true)).rejects.toThrow(/off in all projects/)
+    // Off here is already the answer: no write, no restart.
+    await r.service.setEnabled(P, BID, false)
+    expect(r.json()).toBe(before)
+    expect(r.restarts).toEqual([])
+  })
+
+  it("the project's own choice comes back when the app-wide switch is undone", async () => {
+    const a = rig()
+    await a.service.setEnabled(P, BID, false)
+    // Off here, then off everywhere, then back on everywhere: still off here.
+    expect(rig(a.json(), [BID]).service.view(P).plugins[0]!.enabled).toBe(false)
+    expect(rig(a.json(), []).service.view(P).plugins[0]!.enabled).toBe(false)
+    // A project that never switched it: on again.
+    expect(rig(undefined, []).service.view(P).plugins[0]).toMatchObject({ enabled: true })
+    expect(rig(undefined, []).service.view(P).plugins[0]).not.toHaveProperty('offInAllProjects')
+  })
+})
+
+describe('off in all projects (disabledBundled)', () => {
+  const bundled = { id: BID, enabledByDefault: true, source: { kind: 'bundled' } }
+  const linked = { id: 'test.jira', source: { kind: 'linked' } }
+
+  it('wins over every project record, for a bundled plugin only', () => {
+    expect(pluginEnabledIn({ enabledPlugins: [] }, bundled, [BID])).toBe(false)
+    // Even listed as on in the record.
+    expect(pluginEnabledIn({ enabledPlugins: [BID] }, bundled, [BID])).toBe(false)
+    expect(enabledPluginIds({ enabledPlugins: [BID, 'test.jira'] }, [bundled, linked], [BID])).toEqual(['test.jira'])
+    // app.json is user-writable: a third-party id in the list does nothing.
+    expect(pluginEnabledIn({ enabledPlugins: ['test.jira'] }, linked, ['test.jira'])).toBe(true)
+    expect(offAppWide(linked, ['test.jira'])).toBe(false)
+    expect(enabledPluginIds({ enabledPlugins: ['test.jira'] }, [bundled, linked], ['test.jira'])).toEqual(['test.jira', BID])
+  })
+
+  it('a damaged or absent list counts as empty', () => {
+    for (const bad of [undefined, null, 'x', 7, { [BID]: true }]) {
+      expect(pluginEnabledIn({ enabledPlugins: [] }, bundled, bad)).toBe(true)
+      expect(enabledPluginIds({ enabledPlugins: [] }, [bundled], bad)).toEqual([BID])
+    }
+  })
+
+  it("pluginOnInRecord is the record's answer without the app-wide switch", () => {
+    expect(pluginOnInRecord({ enabledPlugins: [] }, bundled)).toBe(true)
+    expect(pluginOnInRecord({ enabledPlugins: [], disabledPlugins: [BID] }, bundled)).toBe(false)
+    expect(pluginOnInRecord(undefined, bundled)).toBe(false)
+  })
+})
+
+describe('replacing a bundled plugin through the picks', () => {
+  // As the real manifests declare them: the bundled editor provides `editor` v1, the bundled reviewer
+  // opens files; a third-party plugin does the same under its own id.
+  const EDITOR = 'cockpit.editor'
+  const REVIEWER = 'cockpit.reviewer'
+  const installed: (ServicePlugin & OpenFilePlugin & EnablementPlugin)[] = [
+    { id: EDITOR, enabledByDefault: true, source: { kind: 'bundled' }, services: { provides: { editor: 1 } } },
+    { id: REVIEWER, enabledByDefault: true, source: { kind: 'bundled' }, openFile: { title: 'Reviewer' }, services: { provides: { reviewer: 1 }, uses: { editor: 1 } } },
+    { id: 'acme.vim', source: { kind: 'linked' }, services: { provides: { editor: 1 } } },
+    { id: 'acme.diff', source: { kind: 'linked' }, openFile: { title: 'Acme diff' } }
+  ]
+  /** What a project's host runs (enabledIds -> hostPlugins), as the service rule sees it. */
+  const running = (record: { enabledPlugins: string[]; disabledPlugins?: string[] }, appOff?: string[]) => {
+    const ids = enabledPluginIds(record, installed, appOff)
+    return installed.filter((p) => ids.includes(p.id))
+  }
+  const both = { enabledPlugins: ['acme.vim', 'acme.diff'] }
+
+  it('with both on, the bundled one has no priority: both are candidates and nothing is chosen without a pick', () => {
+    const plugins = running(both)
+    expect(selectProvider('editor', plugins, {})).toEqual({ ok: false, problem: { kind: 'ambiguous', service: 'editor', candidates: [EDITOR, 'acme.vim'] } })
+    expect(serviceStatus(plugins, {}).services.find((s) => s.service === 'editor')).toMatchObject({ candidates: [EDITOR, 'acme.vim'], selected: null })
+    expect(selectProvider('editor', plugins, { editor: 'acme.vim' })).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
+    expect(openFileStatus(plugins, {})).toEqual({
+      candidates: [{ id: REVIEWER, title: 'Reviewer' }, { id: 'acme.diff', title: 'Acme diff' }],
+      selected: null
+    })
+    // No pick: the click opens the built-in viewer, not the bundled reviewer.
+    expect(selectOpenFile(plugins, {})).toBeNull()
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'acme.diff' })).toBe('acme.diff')
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: BUILTIN_VIEWER })).toBeNull()
+  })
+
+  it('with the bundled one off in the project, the other is used without a pick', () => {
+    const plugins = running({ ...both, disabledPlugins: [EDITOR, REVIEWER] })
+    expect(selectProvider('editor', plugins, {})).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
+    expect(selectOpenFile(plugins, {})).toBe('acme.diff')
+  })
+
+  it('with the bundled one off in all projects, the other is used even where the record lists it on', () => {
+    const plugins = running({ enabledPlugins: [EDITOR, REVIEWER, 'acme.vim', 'acme.diff'] }, [EDITOR, REVIEWER])
+    expect(plugins.map((p) => p.id)).toEqual(['acme.vim', 'acme.diff'])
+    expect(selectProvider('editor', plugins, { editor: EDITOR })).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
+    // A pick of the bundled reviewer is stale now and counts as none: the only candidate answers.
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: REVIEWER })).toBe('acme.diff')
   })
 })

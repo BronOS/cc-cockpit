@@ -790,6 +790,7 @@ describe('registerSettingsHandlers', () => {
       linkPlugin: async (...args) => rec('linkPlugin', true)(...args),
       updatePlugin: async (...args) => rec('updatePlugin', {} as never)(...args),
       uninstallPlugin: async (...args) => rec('uninstallPlugin', undefined)(...args),
+      setBundledOff: async (...args) => rec('setBundledOff', undefined)(...args),
       savePluginSettings: async (...args) => rec('savePluginSettings', { ok: true as const, values: {} })(...args),
       marketplace: rec('marketplace', { indexes: [], entries: [], warnings: [] }),
       installMarketplace: async (...args) => rec('installMarketplace', {} as never)(...args),
@@ -804,7 +805,7 @@ describe('registerSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(15)
+    expect(channels).toHaveLength(16)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {
@@ -831,6 +832,7 @@ describe('registerSettingsHandlers', () => {
     // A secret field's edit travels beside the values, never inside them.
     await ipc.invoke('settings.pluginSettingsSave', 11, [{ id: 'a.b', values: {}, secrets: { token: 'new', old: null } }])
     await ipc.invoke('settings.pluginUninstall', 11, [{ id: 'a.b', extra: 1 }])
+    await ipc.invoke('settings.pluginBundledOff', 11, [{ id: 'cockpit.editor', off: true, projectId: 'other' }])
     // The marketplace calls name a listing only; a repo, tag or commit in the payload is dropped.
     await ipc.invoke('settings.marketplaceInstall', 11, [{ indexUrl: 'https://i/x.json', id: 'a.b', expect: { repo: 'r', commit: 'c' }, tag: 'v9' }])
     await ipc.invoke('settings.marketplaceUpdate', 11, [{ indexUrl: 'https://i/x.json', id: 'a.b', expect: { repo: 'r', commit: 'c' }, tag: 'v9' }])
@@ -841,6 +843,7 @@ describe('registerSettingsHandlers', () => {
       ['savePluginSettings', 'a.b', { k: 1 }, undefined],
       ['savePluginSettings', 'a.b', {}, { token: 'new', old: null }],
       ['uninstallPlugin', 'a.b'],
+      ['setBundledOff', 'cockpit.editor', true],
       ['installMarketplace', 'https://i/x.json', 'a.b', { repo: 'r', commit: 'c' }],
       ['updateMarketplace', 'https://i/x.json', 'a.b', { repo: 'r', commit: 'c' }],
       ['setMarketplaceUrls', ['https://i/x.json']]
@@ -851,6 +854,7 @@ describe('registerSettingsHandlers', () => {
     const { ipc } = settingsSetup()
     await expect(ipc.invoke('settings.pluginInstall', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('settings.pluginSettingsSave', 11, [])).rejects.toThrow(/bad payload/)
+    await expect(ipc.invoke('settings.pluginBundledOff', 11, ['cockpit.editor'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('settings.projectRelink', 11, [{ id: 5 }])).rejects.toThrow(/id must be a string/)
     await expect(ipc.invoke('settings.marketplaceInstall', 11, [])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('settings.marketplaceInstall', 11, [{ indexUrl: 'u', id: 'a.b' }])).rejects.toThrow(/bad payload/)
