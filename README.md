@@ -34,7 +34,7 @@ You need `claude` (Claude Code) on your PATH, and git for installing plugins.
 The app is not notarised, so macOS may refuse to open it the first time. The first-launch step is:
 
 > TODO: fill this in after the first real run on a Mac (Post-Completion in
-> `docs/plans/20261102-distribution.md`). Not tested yet, so no step is stated here.
+> `docs/plans/completed/20261102-distribution.md`). Not tested yet, so no step is stated here.
 
 Then install with Homebrew:
 

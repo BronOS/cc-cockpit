@@ -1,6 +1,6 @@
 # Typecheck, lint and unit tests on both systems we ship for. Also called by release.yml, so a tag runs
 # exactly these checks. The e2e suite stays out: its window tests depend on a window manager, so it is a
-# manual step before tagging (docs/plans/20261102-distribution.md).
+# manual step before tagging (docs/plans/completed/20261102-distribution.md).
 # Never `pull_request_target`, which would hand a write token to a run next to fork content.
 name: ci
 on:
