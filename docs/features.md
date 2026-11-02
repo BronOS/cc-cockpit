@@ -95,7 +95,7 @@ behind it are in [design.md](design.md).
 
 - **Update notice.** Once at launch and then every 24 hours the app asks `api.github.com` for the latest release. If it
   is newer, each project window shows a dismissible bar with the new version. On a Mac it says to run
-  `brew upgrade --cask cc-cockpit`; elsewhere it links to the release page. Both say to quit cc-cockpit before
+  `brew update && brew upgrade --cask cc-cockpit`; elsewhere it links to the release page. Both say to quit cc-cockpit before
   upgrading, or restart it afterwards. Dismissing hides that version; a newer one shows again. The app never downloads
   or installs anything, because replacing it under running Claude sessions would restart them. Failures (offline, a
   private repo answering 404) are silent. Only a plain `vX.Y.Z` tag is accepted.
@@ -106,10 +106,11 @@ behind it are in [design.md](design.md).
   stays clean for `--json`) and still runs. Hooks never print it. An old app sends no version, and then nothing is
   printed.
 - **Packaged builds.** Linux x64: the AppImage was built and launched with a temporary data folder (via
-  `--appimage-extract-and-run`); the app started, bound its socket, and tokenless `ccc open`, `ccc sessions` and
+  `--appimage-extract-and-run --no-sandbox`; a plain FUSE launch with the Chromium sandbox and Ubuntu are untested); the app started, bound its socket, and tokenless `ccc open`, `ccc sessions` and
   `ccc overlay --project` worked. The `.deb` was built and unpacked but not launched. A second build with a higher
   version started on the first one's data folder and kept the open project. macOS: the packaged path is untested until
-  the manual runs listed in the plan's Post-Completion. Test hooks are off in packaged apps.
+  the manual runs listed in the plan's Post-Completion. Test hooks are off in packaged apps by design (`isTestRun`,
+  `main/test-run.ts`); a packaged build was not checked for that.
 
 ## Marketplace
 
@@ -169,6 +170,8 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 
 ## Known limitations
 
+- Distribution: the Mac build is ad-hoc signed and not notarised, Intel Macs are not supported, there is no auto-updater
+  (the app only shows a notice), and the update check cannot see a private repo, which answers 404.
 - The web view (browser plugin) cannot stop a hostile page from navigating its top level to an
   http(s) URL with data in the query (CSP does not cover that), so a folder shown with `ccc browser
   open` should hold only what the page may see.

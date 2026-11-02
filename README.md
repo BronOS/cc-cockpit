@@ -51,9 +51,19 @@ Download the `.AppImage` or the `.deb` from the
 [releases page](https://github.com/BronOS/cc-cockpit/releases) once a release is published there. Until the repo is
 public, there is nothing to download.
 
+```sh
+sudo apt install ./cc-cockpit-X.Y.Z-linux-x64.deb
+# or
+chmod +x cc-cockpit-X.Y.Z-linux-x64.AppImage && ./cc-cockpit-X.Y.Z-linux-x64.AppImage
+```
+
+Neither has been tried on Ubuntu yet. Ubuntu 24.04 and later restrict the unprivileged user namespaces Chromium's sandbox
+uses, so the AppImage may fail to start there. Prefer the `.deb`, which installs its own sandbox helper.
+
 ### Upgrading
 
-On a Mac run `brew upgrade --cask cc-cockpit`. On Linux download the new file. Quit cc-cockpit before upgrading, or
+On a Mac run `brew update && brew upgrade --cask cc-cockpit` (Homebrew may not have seen the new version yet without the
+`brew update`). On Linux download the new file. Quit cc-cockpit before upgrading, or
 restart it afterwards. A running app keeps its old code, and `ccc` prints a warning when its version differs from the
 running app's.
 

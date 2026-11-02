@@ -803,16 +803,28 @@ returns a result.
 A `v*` tag runs `.github/workflows/release.yml`: it checks the tag equals `v` + the `package.json` version
 (`scripts/check-release-tag.mjs`), runs `ci.yml`, builds the arm64 dmg on macOS and the AppImage and deb on Linux, then
 creates a draft GitHub Release with a `SHA256SUMS` file. Only the last job has a write token and it checks out no code.
-Publishing the draft by hand runs `publish-cask.yml`, which verifies the dmg against `SHA256SUMS`, renders the cask
-(`scripts/render-cask.mjs`) and pushes it to `BronOS/homebrew-tap` with the `TAP_TOKEN` secret. Prereleases skip it.
+Publishing the draft by hand runs `publish-cask.yml`, which takes the newest published stable release (not the one that
+triggered it: GitHub drops a pending run when a newer one queues, so a late older release could otherwise cost the newest
+its update), verifies its dmg against `SHA256SUMS`, renders the cask (`scripts/render-cask.mjs`) and pushes it to
+`BronOS/homebrew-tap` with the `TAP_TOKEN` secret. A prerelease never reaches the tap.
 electron-builder never publishes (`publish: null`, guarded by `packaging-config.test.ts`). There is no auto-updater: the app
 checks `releases/latest` (`main/updates/update-check.ts`) and shows a notice, since replacing the app under running
 sessions would restart them. Builds are unsigned (Mac: ad-hoc). The `ccc` reply carries `appVersion` so the CLI can warn on a
 mismatch.
 
 To cut a release: run `npm test` and `npm run test:e2e` (CI does not run e2e; on Linux only `window-bounds.spec.ts:40`
-and `:62` may fail), bump the version in `package.json`, commit, tag `vX.Y.Z` and push the tag, try the draft's files on a
-Mac and a Linux machine, then publish the draft. On a failed run, delete the draft and the tag and tag again.
+and `:62` may fail), check that the `TAP_TOKEN` secret is still valid and that the tap has a `main` branch, bump the version
+in `package.json`, commit, tag `vX.Y.Z` and push the tag, try the draft's files on a Mac and a Linux machine, then publish
+the draft. On a failed run, delete the draft and the tag and tag again.
+
+After publishing, confirm that `publish-cask` went green and that `brew update && brew info BronOS/tap/cc-cockpit` shows the
+version. It runs once the release is public, so if it fails the update notice is already out while the cask stays on the
+old version; re-running it picks up the newest release. An older release published late changes nothing there, and the run
+never moves the cask to an older version than the tap has.
+
+Before the first public release, replace the TODO in the README and the first-launch text in the cask caveats
+(`scripts/render-cask.mjs`) with the step the real run on a Mac found. Tagging can't check this, because that run needs the
+draft's dmg.
 
 ## 8. Open points for the plan
 
@@ -846,7 +858,7 @@ All decided in phase 1:
 - The web view is also reachable at `cc-preview://<token>/…` only on its own partition session; a
   hostile page can still navigate the top level to http(s) with data in the URL (the CSP cannot
   stop that), so a preview folder should hold only what the page may see.
-- Linux targets (AppImage, deb) are x64 only; mac builds arm64 and x64.
+- Linux targets (AppImage, deb) are x64 only; mac builds arm64 only.
 - The "Install ccc command" button only creates the `~/.local/bin/ccc` symlink; nothing in the
   app removes it again (`src/main/hooks/ccc-install.ts`).
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z (they would be eaten from the terminal).
