@@ -27,6 +27,15 @@ export const CLI_CALL_TIMEOUT_MS = 30_000
  */
 export const CLI_REPLY_TIMEOUT_MS = CLI_CALL_TIMEOUT_MS + 5_000
 
+/**
+ * The CLI's hard deadline for a plugin command's call, connect to printed reply: a backstop that
+ * holds even if the reply timer above never fires (a socket that neither answers, closes nor
+ * errors in a way the round trip sees). Past it `ccc` exits CLI_TIMEOUT_CODE with a message. A
+ * plugin command that hung with no output for over 120 s, sent right after its plugin reloaded,
+ * is what this is for (friction round 1, Task 2).
+ */
+export const CLI_CLIENT_DEADLINE_MS = CLI_REPLY_TIMEOUT_MS + 5_000
+
 /** Exit code main answers with when the handler did not finish in CLI_CALL_TIMEOUT_MS. */
 export const CLI_TIMEOUT_CODE = 124
 

@@ -27,7 +27,9 @@ import {
   type Request
 } from '../shared/protocol'
 import {
+  CLI_CLIENT_DEADLINE_MS,
   CLI_REPLY_TIMEOUT_MS,
+  CLI_TIMEOUT_CODE,
   encodedBytes,
   MAX_CLI_IO_BYTES,
   normalizeCliResult,
@@ -480,6 +482,26 @@ async function ask(env: Env, request: Request, timeoutMs: number): Promise<Round
   }
 }
 
+/**
+ * `ask` under a hard deadline of its own (CLI_CLIENT_DEADLINE_MS for a plugin command): whatever
+ * the round trip does or fails to do, this settles by `deadlineMs`. The timer is separate from
+ * the reply timer on purpose, a backstop for the case nothing else catches; `ask`'s own finally
+ * destroys the socket once it settles, and the process exits right after anyway.
+ */
+async function askWithin(env: Env, request: Request, timeoutMs: number, deadlineMs: number): Promise<RoundTrip | { absent: true } | { deadline: true }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      ask(env, request, timeoutMs),
+      new Promise<{ deadline: true }>((resolve) => {
+        timer = setTimeout(() => resolve({ deadline: true }), deadlineMs)
+      })
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** The reply's result, or the exit code after the reason went to stderr (see runCommand). */
 function resultOf(trip: RoundTrip, out: Output): { result: unknown } | { code: number } {
   if ('closed' in trip) {
@@ -535,8 +557,9 @@ function isTTY(stream: Readable): boolean {
  * before anything is sent (exit 1), so the request line stays under the socket's limit.
  *
  * The call waits CLI_REPLY_TIMEOUT_MS: main gives the plugin 30 s and answers exit 124 itself, so
- * the CLI's own 10 s would cut a legitimate call short. Ctrl+C kills this process, whose socket
- * closing tells main to cancel the call and free its slot.
+ * the CLI's own 10 s would cut a legitimate call short. No reply by then is exit 124 here too, and
+ * CLI_CLIENT_DEADLINE_MS is a hard backstop over the whole call. Ctrl+C kills this process, whose
+ * socket closing tells main to cancel the call and free its slot.
  */
 export async function runPlugin(
   command: PluginCommand,
@@ -585,9 +608,17 @@ export async function runPlugin(
 
   const args: Record<string, unknown> = { name: command.name, argv: command.argv, cwd }
   if (spec.stdin === true) args.stdin = input
-  const runTrip = await ask(env, request(2, 'plugin.cli', args), CLI_REPLY_TIMEOUT_MS)
+  const runTrip = await askWithin(env, request(2, 'plugin.cli', args), CLI_REPLY_TIMEOUT_MS, CLI_CLIENT_DEADLINE_MS)
   // The app went away between the two requests: the same silent exit 0 as not running at all.
   if ('absent' in runTrip) return 0
+  // No reply in time, by the reply timer or the backstop: exit 124 like main's own timeout answer
+  // (and `timeout(1)`), never a hang and never the generic exit 1, so a script can tell "too slow,
+  // try again" (a plugin that was reloading) from a refusal.
+  if ('deadline' in runTrip || 'timedOut' in runTrip) {
+    const seconds = Math.round(('deadline' in runTrip ? CLI_CLIENT_DEADLINE_MS : CLI_REPLY_TIMEOUT_MS) / 1000)
+    out.stderr(`ccc: ${command.name}: no answer from the app within ${seconds} s\n`)
+    return CLI_TIMEOUT_CODE
+  }
   const runResult = resultOf(runTrip, out)
   if ('code' in runResult) return runResult.code
   const result = normalizeCliResult(runResult.result)

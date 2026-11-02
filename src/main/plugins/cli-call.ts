@@ -18,6 +18,11 @@ export interface CliCallOptions {
   /** Names this call in the host's `cli.cancel` event. */
   callId: number
   timeoutMs: number
+  /**
+   * The whole limit, for the timeout message, when `timeoutMs` is only what is left of it
+   * (HostManager.runCli first waits for a plugin that is reloading). Default: `timeoutMs`.
+   */
+  limitMs?: number
   /** Aborts when the `ccc` caller went away (Ctrl+C closed its socket). */
   peerGone?: AbortSignal
 }
@@ -34,6 +39,7 @@ export interface CliCallOptions {
  */
 export async function callCli(rpc: CliRpc, params: Record<string, unknown>, options: CliCallOptions): Promise<PluginCliResult> {
   const { name, callId, timeoutMs, peerGone } = options
+  const limitMs = options.limitMs ?? timeoutMs
   if (peerGone?.aborted) throw new Error(`${name}: the caller went away`)
   let timer: ReturnType<typeof setTimeout> | undefined
   let onGone: (() => void) | undefined
@@ -42,7 +48,7 @@ export async function callCli(rpc: CliRpc, params: Record<string, unknown>, opti
     return await new Promise<PluginCliResult>((resolve, reject) => {
       timer = setTimeout(() => {
         rpc.emit('cli.cancel', { callId })
-        resolve({ stdout: '', stderr: `ccc ${name}: no answer within ${Math.round(timeoutMs / 1000)} s\n`, code: CLI_TIMEOUT_CODE })
+        resolve({ stdout: '', stderr: `ccc ${name}: no answer within ${Math.round(limitMs / 1000)} s\n`, code: CLI_TIMEOUT_CODE })
       }, timeoutMs)
       onGone = () => {
         rpc.emit('cli.cancel', { callId })

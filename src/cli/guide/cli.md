@@ -32,8 +32,9 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   project adds. `ccc help` inside a tab lists them; `ccc <plugin command> --help` (a leading `--help` or `-h`; the plugin never receives it) prints its usage
   without running it. Main answers an unknown command, a plugin that is not enabled here or not
   running with exit 1 and the reason; otherwise the plugin's stdout, stderr and exit code are
-  passed through (124: it did not answer within 30 s). Its stdin is read only when the plugin
-  declares it (at most 256 KiB).
+  passed through (124: it did not answer within 30 s). A plugin that is reloading or still
+  starting is waited for within the same 30 s, then the command runs in its new copy (124 if it
+  is not active by then). Its stdin is read only when the plugin declares it (at most 256 KiB).
 - `ccc plugin new <dir> [--id <id>] [--panel] [--cli <name>] [--skill]` scaffolds a plain-JS plugin
   into an empty folder (no app needed). `ccc plugin link [--project <path>] <dir>` links it and
   enables it in this project after a person confirms in the app window (waits for the answer;

@@ -30,7 +30,9 @@ already installed is refused before any dialog, with the reason. Outside the app
 terminal of your own) add `--project <path>` after `link`.
 
 A linked folder is watched: after you change a file the plugin host reloads that plugin by itself
-(no restart). A manifest problem then shows as the plugin's state in `ccc plugin list`.
+(no restart). A manifest problem then shows as the plugin's state in `ccc plugin list`. A plugin
+command run right after an edit waits for the reloaded copy (within its 30 s limit, else exit
+124) and runs there; one already running in the old copy when the reload starts ends with exit 1.
 
 ## 3. Inspect
 

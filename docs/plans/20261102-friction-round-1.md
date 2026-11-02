@@ -137,11 +137,11 @@ External review: auto
 - Modify: wherever the cause is: `src/main/socket/handlers.ts` (the `plugin.cli` path), `src/main/plugins/host-manager.ts` (`runCli`, `rec.reloads` / `rec.ran` / `rec.proc`, `rec.rpc` read while the old copy is torn down), `src/main/plugins/cli-call.ts`, `src/cli/client.ts`, `src/host/loader.ts`, `src/host/index.ts`
 - Modify: matching unit tests; e2e `test/e2e/plugin-cli.spec.ts` or `plugin-dev-reload.spec.ts`
 
-- [ ] reproduce: send a plugin CLI command right after a linked plugin's files change (and right after app start). `callCli` already has a 30 s timer, so a >120 s hang means the wait is before it starts or outside it: check the suspects above (FRICTION.md has timings)
-- [ ] add a client-side hard deadline in `src/cli/client.ts` (the limit plus a margin) as a backstop, exiting 124 with a message
-- [ ] fix so the call is served by the new copy once it is active, or exits 124 after the limit; never hangs
-- [ ] write a unit test that fails before the fix, going through the socket handler and HostManager with a fake host (call issued during reload), not only `callCli`; and an e2e for the dev-loop case
-- [ ] run tests - must pass before next task
+- [x] reproduce: send a plugin CLI command right after a linked plugin's files change (and right after app start). `callCli` already has a 30 s timer, so a >120 s hang means the wait is before it starts or outside it: check the suspects above (FRICTION.md has timings)
+- [x] add a client-side hard deadline in `src/cli/client.ts` (the limit plus a margin) as a backstop, exiting 124 with a message
+- [x] fix so the call is served by the new copy once it is active, or exits 124 after the limit; never hangs
+- [x] write a unit test that fails before the fix, going through the socket handler and HostManager with a fake host (call issued during reload), not only `callCli`; and an e2e for the dev-loop case
+- [x] run tests - must pass before next task
 
 ### Task 3: Plugin panel icons follow the theme [model: sonnet]
 
