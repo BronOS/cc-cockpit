@@ -216,14 +216,14 @@ Version and hash are validated before they are written into Ruby.
 - Create: `.github/workflows/publish-cask.yml`
 - Create: `test/unit/render-cask.test.ts`
 
-- [ ] `render-cask.mjs` as described under Technical Details, refusing an invalid version or hash
-- [ ] `publish-cask.yml` on `release: published`, skipped when `release.prerelease` is set, with `tag_name` passed through `env`: download the dmg from that release, check it against `SHA256SUMS`, render the cask,
+- [x] `render-cask.mjs` as described under Technical Details, refusing an invalid version or hash
+- [x] `publish-cask.yml` on `release: published`, skipped when `release.prerelease` is set, with `tag_name` passed through `env`: download the dmg from that release, check it against `SHA256SUMS`, render the cask,
       push to `BronOS/homebrew-tap` with `TAP_TOKEN`
-- [ ] the token appears only in the push step; a missing token fails the run with a clear message
-- [ ] write tests: exact output for a known input; refusals for a bad version, a bad hash and Ruby-breaking input
-- [ ] write tests for what the workflow declares: trigger, permissions, where the token is used
-- [ ] if `ruby` is on PATH, run `ruby -c` on the output in the test; skip it otherwise
-- [ ] run tests - must pass before next task
+- [x] the token appears only in the push step; a missing token fails the run with a clear message
+- [x] write tests: exact output for a known input; refusals for a bad version, a bad hash and Ruby-breaking input
+- [x] write tests for what the workflow declares: trigger, permissions, where the token is used
+- [x] if `ruby` is on PATH, run `ruby -c` on the output in the test; skip it otherwise
+- [x] run tests - must pass before next task
 
 ### Task 8: Verify acceptance criteria [model: sonnet]
 - [ ] verify all requirements from Overview are implemented
@@ -256,6 +256,7 @@ Version and hash are validated before they are written into Ruby.
 **External system updates**:
 - Create the public repo `BronOS/homebrew-tap` and a fine-grained token limited to it (`Contents: read and write`), stored as the
   `TAP_TOKEN` secret on `BronOS/cc-cockpit`. Creating the repo may need the maintainer, because of the permission check.
+  Give the tap an initial commit (a README) on `main`; the workflow pushes `HEAD:refs/heads/main`.
 - macOS runners count heavily against the free Actions minutes on a private repo. That stops mattering once it is public.
 
 **While the repo is still private**:

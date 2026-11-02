@@ -1,0 +1,72 @@
+# Publishing a release (the maintainer's click on a draft) writes the Homebrew cask to BronOS/homebrew-tap.
+# Skipped for prereleases. The tap token appears in the last step only; the earlier steps run with a
+# read-only GITHUB_TOKEN. `tag_name` reaches shell through env, never interpolated into `run`.
+name: publish-cask
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+# Two releases close together (or a re-run) would race on the tap and the loser's push is rejected.
+concurrency:
+  group: publish-cask
+jobs:
+  cask:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.8.1
+      - name: Download the dmg and check it against SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir assets
+          version="${TAG#v}"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern "cc-cockpit-$version-mac-arm64.dmg" --pattern SHA256SUMS
+          cd assets
+          grep -F -- "cc-cockpit-$version-mac-arm64.dmg" SHA256SUMS > dmg.sha256 \
+            || { echo "publish-cask: no dmg line in SHA256SUMS" >&2; exit 1; }
+          test "$(wc -l < dmg.sha256)" -eq 1 || { echo "publish-cask: expected one dmg line in SHA256SUMS" >&2; exit 1; }
+          sha256sum --check dmg.sha256
+      - name: Render the cask
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#v}"
+          sha="$(sha256sum "assets/cc-cockpit-$version-mac-arm64.dmg" | cut -d' ' -f1)"
+          mkdir -p tap/Casks
+          node scripts/render-cask.mjs "$version" "$sha" > tap/Casks/cc-cockpit.rb
+      - name: Push to the tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "publish-cask: the TAP_TOKEN secret is not set; create a token with write access to BronOS/homebrew-tap" >&2
+            exit 1
+          fi
+          # The token goes in a request header, not the clone URL: a URL would land in repo/.git/config
+          # and in the argv of git and git-remote-https. Masked first so the base64 form never prints.
+          auth="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git_auth=(-c "http.extraheader=Authorization: Basic $auth")
+          git "${git_auth[@]}" clone --depth 1 https://github.com/BronOS/homebrew-tap.git repo
+          mkdir -p repo/Casks
+          cp tap/Casks/cc-cockpit.rb repo/Casks/cc-cockpit.rb
+          cd repo
+          git config user.name "cc-cockpit release"
+          git config user.email "noreply@cc-cockpit.invalid"
+          git add Casks/cc-cockpit.rb
+          git diff --cached --quiet && { echo "publish-cask: the cask is already up to date"; exit 0; }
+          git commit -m "cc-cockpit $TAG"
+          # Explicit branch: a clone of an empty tap names its branch from init.defaultBranch (master on a
+          # runner), which would not be the repo's default branch.
+          git "${git_auth[@]}" push origin HEAD:refs/heads/main
