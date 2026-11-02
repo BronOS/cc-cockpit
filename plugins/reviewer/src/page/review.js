@@ -401,7 +401,10 @@ function edit() {
 }
 
 function finish(action) {
+  // Flush the pending draft before any check below can return: cancelling the debounce and then
+  // refusing (no tab chosen) dropped the save, and a following Esc or ✕ lost the text.
   clearTimeout(draftTimer)
+  ccPanel.post({ type: 'draft', draft: state.draft })
   const empty = !state.draft.global.trim() && state.draft.notes.every((n) => !n.text.trim())
   if (action !== 'close' && empty) {
     $('status').textContent = 'Nothing to send yet: write a comment or a note.'
@@ -412,7 +415,6 @@ function finish(action) {
     $('target').focus()
     return
   }
-  ccPanel.post({ type: 'draft', draft: state.draft })
   ccPanel.post({ result: { action, tabId: state.tabId, draft: state.draft } })
 }
 

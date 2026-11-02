@@ -17,6 +17,9 @@ const OVERLAY_FILE = 'overlay/review.html'
 const LAST_PROMPT_MAX = 80
 const LAYOUT_KEY = 'layout' // ctx.appStorage: the person's last diff layout, the same in every project
 const LAYOUTS = ['split', 'unified']
+// OverlayHandle.post refuses a message over 1,040,384 chars of JSON (`ccc guide api`); a little
+// under it leaves room for the transport's own wrapping.
+const MAX_INIT_CHARS = 1000000
 
 let disposers = []
 
@@ -76,9 +79,23 @@ exports.activate = (ctx) => {
       open.get(sides.path).focus()
       return { done: Promise.resolve() }
     }
+    // Measured before the overlay starts: MAX_SIDE_BYTES bounds the raw bytes, but JSON escaping (a
+    // newline or a quote is two chars) and a saved draft can push the message past what post takes.
+    // Throwing here hands a click to the built-in viewer; a post that threw after start would leave
+    // a blank overlay cached in `open`, so that file never reopened.
+    const init = { type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: ctx.services.available('editor') }
+    if (JSON.stringify(init).length > MAX_INIT_CHARS) {
+      throw new files.ReviewError(`${sides.path} is too large to review (with escaping and its saved draft)`, { fallback: true })
+    }
     const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: `Review: ${sides.path}`, size: 'large' })
     open.set(sides.path, handle)
-    handle.post({ type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: ctx.services.available('editor') })
+    try {
+      handle.post(init)
+    } catch (e) {
+      open.delete(sides.path)
+      handle.close()
+      throw e
+    }
 
     // Drafts arrive on every change (debounced in the page): Esc closes the overlay without
     // asking the page, so the last posted draft is what Close keeps.

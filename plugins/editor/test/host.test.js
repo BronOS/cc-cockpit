@@ -53,3 +53,16 @@ test('ccc edit resolves against ctx.projectDir', async () => {
   assert.equal(r.stdout, 'editing src/a.ts\n')
   assert.deepEqual(f.started[0].argv.slice(-2), ['src/a.ts', '+7'])
 })
+
+test('a refused overlay fails editor.open and ccc edit instead of reporting success', async () => {
+  // start() returns a handle even when main refuses the overlay (3 open, 10 a minute, a failed
+  // spawn); the refusal only rejects `result`. The reviewer closed itself on a false success.
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.overlay.start = (spec) => (f.started.push(spec), { result: Promise.reject(new Error('overlay: at most 3 open')) })
+  host.activate(f.ctx)
+  await assert.rejects(f.provided.editor.open('a.txt'), /editor: the editor overlay did not open: overlay: at most 3 open/)
+  const r = await f.cli.edit(['a.txt'], { cwd: '/proj' })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /did not open/)
+})

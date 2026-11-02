@@ -15,6 +15,10 @@ const INSTALL_HINT =
   '`sudo pacman -S micro` (Arch) or `sudo apt install micro` (Debian, Ubuntu), or see https://micro-editor.github.io. ' +
   'If it is installed elsewhere, set its path in Settings > Plugins > Editor (micro), setting "microPath".'
 
+// How long open() waits for the overlay to be refused before it counts it as shown. A refusal comes
+// back in one host-to-main round trip, far under this.
+const OPEN_SETTLE_MS = 500
+
 /** A project-relative path, or a thrown Error: no absolute path, no `..`, no NUL. */
 function relativePath(p) {
   if (typeof p !== 'string' || !p.trim() || p.includes('\0')) throw new Error('path must be a non-empty string')
@@ -65,6 +69,20 @@ exports.activate = (ctx) => {
     await ensureMicro(a.microPath || 'micro')
     // The terminal's cwd defaults to the project folder, so the relative path resolves there.
     const handle = ctx.overlay.start({ kind: 'terminal', argv: microArgv(a, rel, line), title: `Edit: ${rel}`, size: 'large' })
+    // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a failed spawn)
+    // rejects `result` at once, while one that opened settles only when the person closes it. So
+    // wait briefly for a rejection: without this, the reviewer closed itself for an editor that never
+    // appeared and `ccc edit` reported success.
+    let timer
+    const refused = await Promise.race([
+      handle.result.then(
+        () => null,
+        (e) => e,
+      ),
+      new Promise((resolve) => (timer = setTimeout(() => resolve(null), OPEN_SETTLE_MS))),
+    ])
+    clearTimeout(timer)
+    if (refused) throw new Error(`the editor overlay did not open: ${refused.message}`)
     handle.result.catch((e) => ctx.log.warn(`editor overlay: ${e.message}`))
     return rel
   }

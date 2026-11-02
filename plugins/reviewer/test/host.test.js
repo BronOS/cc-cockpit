@@ -80,3 +80,21 @@ test('two concurrent opens of the same file still make one overlay', async () =>
   assert.equal(f.handles[0].focused, 1)
   host.deactivate()
 })
+
+test('a file too large for one init message is refused before an overlay starts, and stays openable', async () => {
+  // 300 KiB of quotes is under MAX_SIDE_BYTES per side, but JSON doubles every quote: both sides
+  // together pass the overlay message limit. Posting it after start left a blank overlay cached.
+  const f = setup({ editorAvailable: true })
+  const quotes = '"'.repeat(300 * 1024)
+  const git = (...a) => execFileSync('git', a, { cwd: f.ctx.projectDir, stdio: 'pipe' })
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'big.txt'), quotes)
+  git('add', 'big.txt')
+  git('commit', '-qm', 'big')
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'big.txt'), quotes + 'x')
+  host.activate(f.ctx)
+  for (let i = 0; i < 2; i++) {
+    await assert.rejects(f.provided.reviewer.open('big.txt'), /too large to review/)
+  }
+  assert.equal(f.handles.length, 0)
+  host.deactivate()
+})
