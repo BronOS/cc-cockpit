@@ -313,13 +313,13 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - [x] `npm run package:dir` and launch it with a temp `CC_COCKPIT_DATA_DIR`: the reviewer and editor are listed as built in (smoke launch ran 15 s without crash; the built-in listing is asserted by e2e bundled-plugins.spec.ts, and release/linux-unpacked/resources/plugins holds browser, editor, reviewer)
 
 ### Task 9: [Final] Update documentation [model: sonnet]
-- [ ] `docs/design.md`: bundled set (browser, reviewer, editor), reserved ids, app-wide off, replacing through
+- [x] `docs/design.md`: bundled set (browser, reviewer, editor), reserved ids, app-wide off, replacing through
       picks, overlay close on reload, the new ctx members; the reviewer's design summarised or linked from `plugins/reviewer/docs/design.md`
-- [ ] `docs/features.md`: reviewer and editor as features; micro as an optional dependency (how to install it on
+- [x] `docs/features.md`: reviewer and editor as features; micro as an optional dependency (how to install it on
       Mac and Linux, and that Edit shows how to install it when it is missing); known limitations (outside-project files)
-- [ ] `README.md`: the reviewer and editor in the feature list, micro under requirements as optional
-- [ ] `CLAUDE.md`: `build:reviewer`, `test:plugins`, the reserved-id rule, and that bundled plugins use only the public API
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `README.md`: the reviewer and editor in the feature list, micro under requirements as optional
+- [x] `CLAUDE.md`: `build:reviewer`, `test:plugins`, the reserved-id rule, and that bundled plugins use only the public API
+- [x] move this plan to `docs/plans/completed/` (skipped - the harness moves it)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

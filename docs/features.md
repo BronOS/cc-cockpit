@@ -118,6 +118,22 @@ behind it are in [design.md](design.md).
   `ccc browser url`, `ccc browser reload`. Local files are served read-only through a
   `cc-preview` scheme. Webview panels are a core primitive (`"kind": "webview"`, `ctx.webview`).
   A full browser (tabs, history, devtools) is not built.
+- A built-in reviewer plugin (`cockpit.reviewer`, on by default, ships with the app): click a file a session changed
+  to see its diff (side by side or unified; the choice is remembered), select text to attach notes, write one comment
+  for the file, then send the review to Claude with Discuss (the session you came from) or New session, or open the file
+  in the editor with Edit. A draft is kept when you close it, and a second click on a file under review brings it to the
+  front. Edit appears only when a plugin provides the `editor` service.
+- A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
+  [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour
+  scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it
+  with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install micro` (Linux). Without it, Edit shows
+  that command and the `microPath` setting instead of failing silently.
+- Bundled plugins (browser, reviewer, editor) can be switched off for the whole app (Settings > Plugins, "Off in all
+  projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
+  the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for
+  plugins that ship with the app; the template plugins are `example.hello` and `example.plugin`. If you linked your own
+  copy of `cockpit.reviewer` or `cockpit.editor` earlier, unlink it (`ccc plugin unlink`): the app drops such a linked
+  record at start with a log line and uses the bundled plugin (settings and per-project switches carry over).
 - Plugin dev loop from a tab: `ccc plugin new|link|unlink|list|logs`. `link` asks you to confirm
   in a native dialog, since a linked plugin runs with full access. A linked folder is watched and reloads on edits,
   except a nested folder with its own `plugin.json`, which is another plugin; `plugin new` also writes into a folder
@@ -211,6 +227,8 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 
 - Distribution: the Mac build is ad-hoc signed and not notarised, Intel Macs are not supported, there is no auto-updater
   (the app only shows a notice), and the update check cannot see a private repo, which answers 404.
+- The reviewer and editor handle files inside the project only. A file a session edits outside its project keeps
+  opening in the built-in viewer, because plugins only receive project-relative paths.
 - The web view (browser plugin) cannot stop a hostile page from navigating its top level to an
   http(s) URL with data in the query (CSP does not cover that), so a folder shown with `ccc browser
   open` should hold only what the page may see.

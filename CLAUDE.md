@@ -72,6 +72,11 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
   never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
 - Plugin `ccc` commands and their stdin are always bounded (30 s plugin limit, 40 s client deadline and stdin read, exit 124
   `CLI_TIMEOUT_CODE`): a new wait in `src/cli/client.ts` needs a deadline, never an unbounded await.
+- Bundled plugins (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `BUNDLED_PLUGINS` in `main/plugins/bundled.ts`) use only
+  the public plugin API: no privilege for `cockpit.*` beyond being shipped, so a gap goes into the API or the guide, never a
+  special case. Ids starting with `cockpit.` are reserved (`isReservedPluginId`): they load only from the bundled root (checked
+  at load by realpath) and every install path and the marketplace tools refuse them; templates use `example.hello` and
+  `example.plugin`. A bundled plugin can be off app-wide (`disabledBundled`) and is replaced through the picks, with no priority.
 - Plugin settings schemas may not use regexes (ReDoS in main). `"format": "secret"` goes only on a
   top-level string property, with no `default` and no keyword but type/format/title/description/
   `$comment`, and a schema with one has no `$ref`/`$anchor`/`$id` or other reference keyword

@@ -39,7 +39,8 @@ In: projects and windows, zones and panel moving, terminal tabs, Claude status (
 strip, Sessions panel, notes/steps), overlay stack, plugin host and API, plugin secrets and
 sign-in helpers (`ctx.secrets`, secret settings field, `ctx.oauth`), settings, themes, commands
 and keybindings, CLI, the `hello` reference plugin.
-Until an editor exists, clicking a changed file opens `git diff` in a terminal overlay.
+Clicking a changed file opens the bundled reviewer (`cockpit.reviewer`, §5 "Bundled plugins"); with it off, `git diff` in a
+terminal overlay.
 
 Out (later, each real plugin in its own design session): every real data plugin, editor and
 file tree, drag-and-drop of panels, a plugin registry server (the marketplace is a static index, see §5), binary
@@ -567,10 +568,12 @@ that project.
 | oauth | `ctx.oauth.authorize(spec)` / `refresh(spec, token)` → loopback + PKCE sign-in, optional helper |
 | data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir`; `ctx.appStorage` (the same KV, app-wide, with an atomic `increment`), `ctx.appDataDir` |
 | work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
-| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close}` (two-way html overlay, §4) |
+| project | `ctx.projectDir` (the project folder's real path, read-only) |
+| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
 | files | `ctx.files.onOpen(({path, tabId}) => …)` → disposer (needs `contributes.openFile`) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
+| services | `ctx.services.available(name)` (host-local, same `serviceStatus` rule as a call, never cached, false for an unknown name) |
 | sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt})` |
 | commands | `ctx.commands.register(id, fn)` |
 | services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)`, `caller()` → the calling plugin's id or `undefined` |
@@ -693,12 +696,38 @@ other views' tokens. Chords with
 Cmd/Ctrl/Alt typed into a view are forwarded to the app.
 
 **Bundled plugins**: `PluginSource` has a third kind, `bundled`, for plugins shipped in the app
-resources (`plugins/browser`, `extraResources`). They are indexed from an allowlist at every
-start, never copied, cannot be uninstalled (only disabled per project) and update with the app.
+resources (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `extraResources`). They are indexed from an allowlist
+(`BUNDLED_PLUGINS`) at every start, never copied, cannot be uninstalled (only disabled) and update with the app.
+They use only the public plugin API, with no privilege beyond being shipped; a third party can build the same under its own id.
+`build:browser` and `build:reviewer` (deterministic, a unit test rebuilds and compares bytes) produce the committed
+output; the plugins' own `node:test` tests run with `npm run test:plugins`.
+
+*Reserved ids*: an id starting with `cockpit.` (case-insensitive, `isReservedPluginId`) is accepted only for a plugin
+loaded from the bundled root: the load path checks that the id is a `BUNDLED_PLUGINS` entry and the folder's realpath is
+`<bundledRoot>/<dir>`, so a symlink into it, a linked folder or a hand-edited `plugins.json` entry is refused at load
+(shown as refused in Settings > Plugins). Link, folder/git install, marketplace install and the marketplace index tools
+refuse it up front. Bundling happens through app releases. The template ids are `example.hello` (`plugins/hello`) and
+`example.plugin` (`examples/plugin`). A user's old linked `cockpit.reviewer` / `cockpit.editor` record is dropped at start
+with a log line; the bundled copy wins and project enablement and settings keyed by the id carry over.
+
+*App-wide off*: each bundled plugin has "Off in all projects" (app setting `disabledBundled`). Off app-wide wins over the
+project record, and main refuses enabling it per project meanwhile. Third-party plugins are per project only.
+
+*Replacing*: no new mechanism. Another plugin providing `editor` / `reviewer` appears in the services provider pick, and
+another `openFile` plugin in "Plugin used to open files". A bundled plugin has no priority in `selectProvider`; turning it
+off (project or app-wide) leaves the other as the only provider.
 The index entry (not the manifest) may set `enabledByDefault`; the project record keeps
 `disabledPlugins` so a default-on plugin can be switched off. The built-in browser
 (`cockpit.browser`) has a webview panel, an app setting `home`, `ccc browser open|url|reload`
-and a skill.
+and a skill. The reviewer (`cockpit.reviewer`) opens a changed file as a diff in a two-way html overlay (CodeMirror 6 with
+`@codemirror/merge`), takes notes on selections and one comment per file, and hands the review to Claude (Discuss, New
+session) or to the `editor` service (Edit); its design is in `plugins/reviewer/docs/design.md`. The editor
+(`cockpit.editor`) provides `editor` v1: micro in a terminal overlay, with app settings `autosaveSeconds`, `colorscheme`
+and `microPath` and `ccc edit`; it needs micro installed and says how to install it when it is missing. Files a session
+edits outside its project stay in the built-in viewer: plugins only receive project-relative paths.
+
+*Overlays and reloads*: when a plugin reloads, is disabled, updated, uninstalled or its host stops, main closes that
+plugin's open overlays and `result` resolves as dismissed in the old copy; the new copy starts clean.
 
 **Lifecycle**: install = clone the git URL at a tag into `<data>/plugins/<id>@<version>/`,
 validate manifest and `api` → enable per project → activate on window open, deactivate on close
@@ -1019,9 +1048,9 @@ All decided in phase 1:
   `cc-overlay://<overlayId>/` scheme; there is no one-shot protocol.
 - A plugin's html overlay is served the same way (no port to the page yet).
 - The settings screen is a renderer-drawn overlay below the overlay stack, not part of it.
-- The hello plugin is not bundled in the packaged app: plugins are linked or installed from a
+- The hello plugin (`example.hello`) is not bundled in the packaged app: plugins are linked or installed from a
   folder, and hello is a template to link in dev (`electron-builder.yml`). Only the built-in
-  browser (`plugins/browser`) ships, as a bundled plugin.
+  browser, reviewer and editor (`plugins/browser`, `plugins/reviewer`, `plugins/editor`) ship, as bundled plugins.
 - `ctx.cli.register` is host-local (no call to main); main routes by manifest. Plugin commands are
   listed by `ccc help` only inside a tab.
 - The web view is also reachable at `cc-preview://<token>/…` only on its own partition session; a
