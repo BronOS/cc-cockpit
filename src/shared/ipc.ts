@@ -13,6 +13,7 @@ import type { TerminalFont } from './terminal-font'
 import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
+import type { ServicesStatus } from './services'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -656,6 +657,16 @@ export interface IpcInvokeMap {
   'settings.pluginLink': { req: void; res: boolean }
   'settings.pluginUpdate': { req: { id: string; tag: string }; res: PluginView }
   'settings.pluginUninstall': { req: { id: string }; res: void }
+  /**
+   * Plugin services in the asking window's project: per plugin what it provides and uses and the
+   * problems, per service the providers and the one calls reach (over the plugins its host runs).
+   */
+  'settings.pluginServices': { req: void; res: ServicesStatus }
+  /**
+   * Pick which plugin answers a service several plugins provide in this project, or clear the pick
+   * with null. Main checks both names against the project's set; a change restarts its host.
+   */
+  'settings.pluginServiceProvider': { req: { service: string; pluginId: string | null }; res: void }
   /** The marketplace listings of every configured index, with status. A plain query. */
   'settings.marketplace': { req: void; res: MarketplaceView }
   /**
@@ -929,6 +940,8 @@ export const INVOKE_CHANNELS = [
   'settings.pluginLink',
   'settings.pluginUpdate',
   'settings.pluginUninstall',
+  'settings.pluginServices',
+  'settings.pluginServiceProvider',
   'settings.marketplace',
   'settings.marketplaceInstall',
   'settings.marketplaceUpdate',

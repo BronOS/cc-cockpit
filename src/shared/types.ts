@@ -107,6 +107,13 @@ export interface ProjectRecord {
    * when it loads the record (projectColorOf).
    */
   color?: ProjectColor
+  /**
+   * Plugin services: `{ [service]: pluginId }`, which plugin answers a service that several enabled
+   * plugins provide (Settings > Plugins). Absent in older records = no picks. A pick whose plugin is
+   * no longer a provider in the project counts as no pick (shared/services.ts selectProvider) and is
+   * never cleaned up. The file is user-writable: the registry drops a damaged value when it loads.
+   */
+  serviceProviders?: Record<string, string>
   /** Epoch ms of the last `openPath`. */
   lastOpenedAt: number
 }

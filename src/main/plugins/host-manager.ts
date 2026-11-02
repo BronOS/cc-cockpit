@@ -701,6 +701,24 @@ export class HostManager {
     return { running: rec.proc !== undefined, stopped: rec.gaveUp, plugins: [...rec.status.values()] }
   }
 
+  /**
+   * The plugins a launch of this project's host would hand specs to, with their `services`: the
+   * enabled plugins with host code whose settings validate and whose folder is the listed one
+   * (buildSpec's checks, without its side effects). A plugin dropped for invalid settings is in
+   * neither this set nor the host's, so the Plugins page's warnings and a call's error agree.
+   */
+  async servicePlugins(projectId: string): Promise<{ id: string; services?: HostPlugin['services'] }[]> {
+    const plugins = await this.deps.plugins(projectId)
+    return plugins
+      .filter((p) => typeof p.main === 'string' && p.main !== '')
+      .filter((p) => {
+        const current = this.deps.pluginSource ? this.deps.pluginSource(projectId, p.id) : p
+        if (current?.dir !== p.dir || current.commit !== p.commit) return false
+        return this.settingsOf(projectId, p.id).ok
+      })
+      .map((p) => (p.services !== undefined ? { id: p.id, services: p.services } : { id: p.id }))
+  }
+
   // -------------------------------------------------------------------------------------------
 
   private async launch(rec: HostRecord): Promise<void> {

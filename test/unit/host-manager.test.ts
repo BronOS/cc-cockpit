@@ -1010,6 +1010,31 @@ describe('HostManager', () => {
       expect(params?.plugins[1]).not.toHaveProperty('services')
     })
 
+    it('servicePlugins lists the set a launch would run: host code, valid settings, the listed folder', async () => {
+      const services = { provides: { triage: 1 } }
+      const manager = new HostManager({
+        factory,
+        plugins: () => [
+          { ...plugin('a.one'), services },
+          { ...plugin('a.bad'), services },
+          { ...plugin('a.moved'), services },
+          { ...plugin('a.static', { main: undefined }), services },
+          plugin('a.plain')
+        ],
+        env: () => ({}),
+        projectPath: () => '/p',
+        layouts,
+        pluginDataDir: () => '/d',
+        settings: (_p, id) => (id === 'a.bad' ? { ok: false, reason: 'invalid' } : { ok: true, project: {}, app: {} }),
+        pluginSource: (_p, id) => {
+          const p = plugin(id)
+          return id === 'a.moved' ? { dir: '/elsewhere' } : { dir: p.dir }
+        },
+        log
+      })
+      expect(await manager.servicePlugins('p1')).toEqual([{ id: 'a.one', services }, { id: 'a.plain' }])
+    })
+
     it('names the webview panels of each plugin (only those kind: webview drive ctx.webview)', async () => {
       enabled.p1 = [plugin('a.one', { panels: [panel('main'), { ...panel('view'), kind: 'webview' }, { ...panel('page'), kind: 'html' }] })]
       let params: { plugins: { panels: string[]; webviewPanels: string[] }[] } | undefined

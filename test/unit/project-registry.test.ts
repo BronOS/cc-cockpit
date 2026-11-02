@@ -482,6 +482,41 @@ describe('colour', () => {
   })
 })
 
+describe('service providers', () => {
+  it('has none on a new record; a pick is saved, read back after a reload, and cleared with null', () => {
+    const reg = registry()
+    const id = reg.openPath(folder('a')).id
+    expect(reg.serviceProviders(id)).toEqual({})
+    expect(reg.get(id)).not.toHaveProperty('serviceProviders')
+    expect(reg.setServiceProvider(id, 'triage', 'a.one')).toBe(true)
+    // The same value again is no change (the caller restarts the host only on a change).
+    expect(reg.setServiceProvider(id, 'triage', 'a.one')).toBe(false)
+    expect(reg.setServiceProvider(id, 'mail', 'a.two')).toBe(true)
+    reg.flushAll()
+    expect(JSON.parse(readFileSync(projectFile(dataDir, id), 'utf8')).serviceProviders).toEqual({ triage: 'a.one', mail: 'a.two' })
+    const fresh = registry()
+    expect(fresh.serviceProviders(id)).toEqual({ triage: 'a.one', mail: 'a.two' })
+    expect(fresh.setServiceProvider(id, 'triage', null)).toBe(true)
+    expect(fresh.setServiceProvider(id, 'triage', null)).toBe(false)
+    expect(fresh.setServiceProvider(id, 'mail', null)).toBe(true)
+    expect(fresh.get(id)).not.toHaveProperty('serviceProviders')
+  })
+
+  it('reads a damaged stored value as no picks, keeping only valid string pairs', () => {
+    const reg = registry()
+    const ids = ['a', 'b', 'c', 'd'].map((name) => reg.openPath(folder(name)).id)
+    const stored: unknown[] = ['triage', ['a.one'], { triage: 5, 'Bad Name': 'a.one', mail: '' }, { triage: 'a.one', x: null }]
+    ids.forEach((id, i) => reg.update(id, (r) => void (r.serviceProviders = stored[i] as never)))
+    reg.flushAll()
+    const fresh = registry()
+    expect(ids.map((id) => fresh.serviceProviders(id))).toEqual([{}, {}, {}, { triage: 'a.one' }])
+    expect(fresh.get(ids[2]!)).not.toHaveProperty('serviceProviders')
+    // An unknown project has none and cannot be written.
+    expect(fresh.serviceProviders('0123456789abcdef')).toEqual({})
+    expect(() => fresh.setServiceProvider('0123456789abcdef', 'triage', 'a.one')).toThrow(/unknown project/)
+  })
+})
+
 describe('data dir containment', () => {
   it('writes only under the temp data dir', () => {
     const reg = registry()

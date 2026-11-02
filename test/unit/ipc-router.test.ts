@@ -11,6 +11,7 @@ import {
   registerProjectSettingsHandlers,
   registerSessionHandlers,
   registerSettingsHandlers,
+  registerServiceHandlers,
   registerTabHandlers,
   webUrlOf,
   type ProjectSettingsHandlerDeps,
@@ -22,6 +23,8 @@ import {
 } from '../../src/main/ipc/router'
 import type { SenderContext } from '../../src/main/windows/window-manager'
 import { BUILTIN_THEMES } from '../../src/main/themes/theme-service'
+import { ServiceChoices } from '../../src/main/plugins/service-choices'
+import type { ServicePlugin, ServicesStatus } from '../../src/shared/services'
 import { defaultLayout } from '../../src/shared/layout'
 import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
 import type { ProjectView } from '../../src/shared/types'
@@ -858,6 +861,106 @@ describe('registerSettingsHandlers', () => {
     await ipc.invoke('settings.marketplace', 11)
     await ipc.invoke('settings.marketplaceRefresh', 11)
     expect(calls).toEqual([['marketplace'], ['refreshMarketplace']])
+  })
+})
+
+describe('registerServiceHandlers (with ServiceChoices)', () => {
+  /** Project A runs two triage providers and a consumer; project B runs its own provider. */
+  function servicesSetup(): {
+    ipc: FakeIpcMain
+    sets: Record<string, ServicePlugin[]>
+    picks: Record<string, Record<string, string>>
+    restarts: string[]
+  } {
+    const { ipc, router } = setup()
+    const sets: Record<string, ServicePlugin[]> = {
+      [PROJECT_A]: [
+        { id: 'a.one', services: { provides: { triage: 1 } } },
+        { id: 'a.two', services: { provides: { triage: 1 } } },
+        { id: 'a.user', services: { uses: { triage: 1, mail: 1 } } }
+      ],
+      [PROJECT_B]: [{ id: 'b.other', services: { provides: { triage: 1 } } }]
+    }
+    const picks: Record<string, Record<string, string>> = { [PROJECT_A]: {}, [PROJECT_B]: {} }
+    const restarts: string[] = []
+    const choices = new ServiceChoices({
+      plugins: async (projectId) => sets[projectId] ?? [],
+      choices: (projectId) => ({ ...picks[projectId] }),
+      setChoice: (projectId, service, pluginId) => {
+        const current = picks[projectId]!
+        if ((current[service] ?? null) === pluginId) return false
+        if (pluginId === null) delete current[service]
+        else current[service] = pluginId
+        return true
+      },
+      restart: async (projectId) => void restarts.push(projectId)
+    })
+    registerServiceHandlers(router, choices)
+    return { ipc, sets, picks, restarts }
+  }
+
+  it('reports the status of the asking window\'s project; the picker is refused', async () => {
+    const { ipc } = servicesSetup()
+    const a = (await ipc.invoke('settings.pluginServices', 11, [{ projectId: PROJECT_B }])) as ServicesStatus
+    expect(a.services).toEqual([
+      { service: 'mail', candidates: [], selected: null },
+      { service: 'triage', candidates: ['a.one', 'a.two'], selected: null }
+    ])
+    const b = (await ipc.invoke('settings.pluginServices', 12)) as ServicesStatus
+    expect(b.services).toEqual([{ service: 'triage', candidates: ['b.other'], selected: 'b.other' }])
+    await expect(ipc.invoke('settings.pluginServices', 13)).rejects.toThrow(/not a project window/)
+    await expect(ipc.invoke('settings.pluginServiceProvider', 13, [{ service: 'triage', pluginId: 'a.one' }])).rejects.toThrow(
+      /not a project window/
+    )
+  })
+
+  it('refuses a bad or unknown service, a non-provider and another project\'s plugin', async () => {
+    const { ipc, picks, restarts } = servicesSetup()
+    const set = (payload: unknown): Promise<unknown> => ipc.invoke('settings.pluginServiceProvider', 11, [payload])
+    await expect(set({ service: 'Bad Name', pluginId: 'a.one' })).rejects.toThrow(/bad service name/)
+    await expect(set({ service: 5, pluginId: 'a.one' })).rejects.toThrow(/bad service name/)
+    await expect(set({ service: 'calendar', pluginId: 'a.one' })).rejects.toThrow(/provides or uses service "calendar"/)
+    await expect(set({ service: 'triage', pluginId: 'a.user' })).rejects.toThrow(/a.user does not provide/)
+    await expect(set({ service: 'triage', pluginId: 'b.other' })).rejects.toThrow(/b.other does not provide/)
+    await expect(set({ service: 'triage', pluginId: 7 })).rejects.toThrow(/string or null/)
+    await expect(set({ service: 'triage' })).rejects.toThrow(/string or null/)
+    await expect(ipc.invoke('settings.pluginServiceProvider', 11, [])).rejects.toThrow(/bad payload/)
+    expect(picks[PROJECT_A]).toEqual({})
+    expect(restarts).toEqual([])
+  })
+
+  it('saves a pick for the sender\'s project and restarts its host, only on a change; null clears', async () => {
+    const { ipc, picks, restarts } = servicesSetup()
+    const set = (payload: unknown): Promise<unknown> => ipc.invoke('settings.pluginServiceProvider', 11, [payload])
+    // A project id in the payload is ignored: the pick lands in A, the sender's project.
+    await set({ service: 'triage', pluginId: 'a.two', projectId: PROJECT_B })
+    expect(picks).toEqual({ [PROJECT_A]: { triage: 'a.two' }, [PROJECT_B]: {} })
+    expect(restarts).toEqual([PROJECT_A])
+    await set({ service: 'triage', pluginId: 'a.two' })
+    expect(restarts).toEqual([PROJECT_A])
+    const status = (await ipc.invoke('settings.pluginServices', 11)) as ServicesStatus
+    expect(status.services.find((s) => s.service === 'triage')?.selected).toBe('a.two')
+    await set({ service: 'triage', pluginId: null })
+    expect(picks[PROJECT_A]).toEqual({})
+    expect(restarts).toEqual([PROJECT_A, PROJECT_A])
+    // Clearing what is not set changes nothing.
+    await set({ service: 'triage', pluginId: null })
+    expect(restarts).toEqual([PROJECT_A, PROJECT_A])
+  })
+
+  it('a pick whose plugin left the set (disabled) reads as no choice, not an error', async () => {
+    const { ipc, sets, picks } = servicesSetup()
+    picks[PROJECT_A] = { triage: 'a.two' }
+    sets[PROJECT_A] = sets[PROJECT_A]!.filter((p) => p.id !== 'a.two')
+    const status = (await ipc.invoke('settings.pluginServices', 11)) as ServicesStatus
+    // One provider left: it answers, the stale pick is simply not used.
+    expect(status.services.find((s) => s.service === 'triage')).toEqual({ service: 'triage', candidates: ['a.one'], selected: 'a.one' })
+    expect(status.plugins.find((p) => p.id === 'a.user')?.problems).toEqual([{ kind: 'missing', service: 'mail' }])
+    // With a third provider back, the stale pick still names no one: ambiguous, the page asks again.
+    sets[PROJECT_A] = [...sets[PROJECT_A]!, { id: 'a.three', services: { provides: { triage: 1 } } }]
+    const again = (await ipc.invoke('settings.pluginServices', 11)) as ServicesStatus
+    expect(again.services.find((s) => s.service === 'triage')?.selected).toBeNull()
+    expect(picks[PROJECT_A]).toEqual({ triage: 'a.two' })
   })
 })
 

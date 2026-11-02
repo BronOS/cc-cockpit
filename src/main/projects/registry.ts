@@ -11,6 +11,7 @@ import { JsonFile, type FsOps } from '../store/json-file'
 import { isPlainObject } from '../../shared/guards'
 import { defaultLayout, normalizeLayout, type LayoutState } from '../../shared/layout'
 import { projectColorOf } from '../../shared/project-color'
+import { SERVICE_NAME_PATTERN } from '../../shared/manifest'
 import type { AppSettings, ProjectRecord, ProjectView } from '../../shared/types'
 
 /** How many entries `recentProjects` keeps; the picker never shows more than this. */
@@ -303,6 +304,31 @@ export class ProjectRegistry {
     })
   }
 
+  /** The project's service provider picks (a copy); none for an unknown project. */
+  serviceProviders(id: string): Record<string, string> {
+    return { ...(this.load(id)?.data.serviceProviders ?? {}) }
+  }
+
+  /**
+   * Set (or with null clear) the pick for one service. Returns whether the record changed, so the
+   * caller restarts the host only for a real change. The caller has checked the names.
+   */
+  setServiceProvider(id: string, service: string, pluginId: string | null): boolean {
+    const file = this.load(id)
+    if (!file) throw new Error(`unknown project: ${id}`)
+    const current = file.data.serviceProviders ?? {}
+    const before = Object.hasOwn(current, service) ? current[service] : undefined
+    if ((before ?? null) === pluginId) return false
+    file.update((r) => {
+      // A fresh object built from entries: a key is only ever set as an own data property.
+      const entries = Object.entries(r.serviceProviders ?? {}).filter(([k]) => k !== service)
+      if (pluginId !== null) entries.push([service, pluginId])
+      if (entries.length === 0) delete r.serviceProviders
+      else r.serviceProviders = Object.fromEntries(entries)
+    })
+    return true
+  }
+
   /** Write everything pending now (call on quit). */
   flushAll(): void {
     for (const file of this.files.values()) file.flush()
@@ -403,6 +429,11 @@ export class ProjectRegistry {
       const color = projectColorOf(file.data.color)
       if (color === undefined) delete file.data.color
       else file.data.color = color
+      // Service picks: only `{ name: pluginId }` string pairs with a valid service name survive; a
+      // value that is not a plain object reads as no picks (repaired in memory, like the colour).
+      const picks = serviceProvidersOf(file.data.serviceProviders)
+      if (picks === undefined) delete file.data.serviceProviders
+      else file.data.serviceProviders = picks
       this.files.set(id, file)
     }
     // An unusable file loads as defaults with an empty path: not a project.
@@ -458,6 +489,15 @@ export function realPathOf(path: string): string {
       cur = parent
     }
   }
+}
+
+/** A user-writable picks map: string pairs with a valid service name, or undefined for none. */
+function serviceProvidersOf(value: unknown): Record<string, string> | undefined {
+  if (!isPlainObject(value)) return undefined
+  const entries = Object.entries(value).filter(
+    (e): e is [string, string] => SERVICE_NAME_PATTERN.test(e[0]) && typeof e[1] === 'string' && e[1] !== ''
+  )
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
 /** A user-writable list as `string[]`: anything not an array is empty, non-string entries go. */

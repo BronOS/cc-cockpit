@@ -47,6 +47,7 @@ import {
   registerProjectSettingsHandlers,
   registerUpdateHandlers,
   registerSettingsHandlers,
+  registerServiceHandlers,
   registerTabHandlers,
   registerWebviewHandlers,
   summary
@@ -79,6 +80,7 @@ import { safeStorageSecretStore, selectSecretStore } from './secrets/secret-stor
 import { AppearanceService, claudeTabOnOpenOf, tabExitOf } from './settings/appearance-service'
 import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings'
 import { ProjectSettingsService } from './settings/project-settings-service'
+import { ServiceChoices } from './plugins/service-choices'
 import { SettingsService } from './settings/settings-service'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
@@ -631,8 +633,8 @@ function start(): void {
     settings: (projectId, pluginId) => hostSettingsOf(projectId, pluginId),
     // On hostPlugins' own terms: revoked, replaced or switched off during the wait, no.
     pluginSource: hostSourceOf,
-    // No provider picks yet (plan: plugin services, Task 5 backs this with the project record).
-    serviceProviders: () => ({}),
+    // The project record's picks, read at each activate (a stale pick counts as none there).
+    serviceProviders: (projectId) => registry.serviceProviders(projectId),
     // Every change goes to the project's window too: its key table and palette were read at
     // window open, before any plugin registered a command (`commands.updated`).
     commands: {
@@ -1101,7 +1103,15 @@ function start(): void {
     },
     secrets: pluginSecrets
   })
+  // Plugin services on the Plugins page: status over the set the project's host runs, and the pick.
+  const serviceChoices = new ServiceChoices({
+    plugins: (projectId) => hosts.servicePlugins(projectId),
+    choices: (projectId) => registry.serviceProviders(projectId),
+    setChoice: (projectId, service, pluginId) => registry.setServiceProvider(projectId, service, pluginId),
+    restart: (projectId) => hosts.restart(projectId)
+  })
   registerSettingsHandlers(router, settings)
+  registerServiceHandlers(router, serviceChoices)
 
   // "This project" and "Appearance and keys": per-project plugin set, project settings
   // and panel zones, then the app-wide theme and key overrides. The router hands each handler the

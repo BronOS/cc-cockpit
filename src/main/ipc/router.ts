@@ -30,6 +30,7 @@ import type {
 } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
 import type { Theme } from '../../shared/theme'
+import type { ServicesStatus } from '../../shared/services'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { SenderContext } from '../windows/window-manager'
@@ -429,6 +430,27 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
   router.handleProject('settings.pluginSettingsSave', (_ctx, payload) => {
     const p = fields('settings.pluginSettingsSave', payload)
     return deps.savePluginSettings(p.id, p.values, p.secrets)
+  })
+}
+
+/** Plugin services on the Plugins page (ServiceChoices, main/plugins/service-choices.ts). */
+export interface ServiceHandlerDeps {
+  /** Service status of the sender's project. */
+  status(projectId: string): Promise<ServicesStatus>
+  /** The names arrive unchecked (the service checks them); the project is the sender's. */
+  setProvider(projectId: string, service: unknown, pluginId: unknown): Promise<void>
+}
+
+/**
+ * The Plugins page's service channels. Project handlers like the rest of Settings: the project is
+ * the asking window's (ctx.projectId), never one from the payload, so a window reads and picks
+ * providers only for itself.
+ */
+export function registerServiceHandlers(router: IpcRouter, deps: ServiceHandlerDeps): void {
+  router.handleProject('settings.pluginServices', (ctx) => deps.status(ctx.projectId))
+  router.handleProject('settings.pluginServiceProvider', (ctx, payload) => {
+    const p = fields('settings.pluginServiceProvider', payload)
+    return deps.setProvider(ctx.projectId, p.service, p.pluginId)
   })
 }
 

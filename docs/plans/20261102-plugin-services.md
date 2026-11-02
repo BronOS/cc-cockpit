@@ -212,11 +212,11 @@ External review: auto
 - Modify: `src/main/index.ts` and/or `src/main/plugins/host-manager.ts`
 - Modify: matching unit tests (registry, router)
 
-- [ ] project record gains optional `serviceProviders: Record<string, string>` (absent in older records = no choices); back Task 4's `serviceProviders(projectId)` dependency with it
-- [ ] IPC `settings.pluginServices` (status for the asking window's project, via `serviceStatus` over the specs main built for that project's host) and `settings.pluginServiceProvider { service, pluginId | null }`, matching the page's existing `settings.plugin*` channels. Find how the existing project-scoped `settings.*` handlers learn the asking window's project (Settings is a layer inside the project window) and do the same; never take a project id from the renderer. Main checks that the service is known and that the plugin is a provider of it in that project; a change restarts that project's host
-- [ ] the restart paths listed in Technical Details recompute the choices; a stale choice (picked provider disabled or uninstalled) counts as no choice, no cleanup needed
-- [ ] write tests for the registry field, the IPC validation (unknown service, non-provider, another project's plugin), the restart on change, and that disabling the picked provider gives "no choice" status (not an error)
-- [ ] run tests - must pass before next task
+- [x] project record gains optional `serviceProviders: Record<string, string>` (absent in older records = no choices); back Task 4's `serviceProviders(projectId)` dependency with it
+- [x] IPC `settings.pluginServices` (status for the asking window's project, via `serviceStatus` over the specs main built for that project's host) and `settings.pluginServiceProvider { service, pluginId | null }`, matching the page's existing `settings.plugin*` channels. Find how the existing project-scoped `settings.*` handlers learn the asking window's project (Settings is a layer inside the project window) and do the same; never take a project id from the renderer. Main checks that the service is known and that the plugin is a provider of it in that project; a change restarts that project's host
+- [x] the restart paths listed in Technical Details recompute the choices; a stale choice (picked provider disabled or uninstalled) counts as no choice, no cleanup needed
+- [x] write tests for the registry field, the IPC validation (unknown service, non-provider, another project's plugin), the restart on change, and that disabling the picked provider gives "no choice" status (not an error)
+- [x] run tests - must pass before next task
 
 ### Task 6: Plugins page shows services, warnings and the provider pick [model: sonnet]
 
