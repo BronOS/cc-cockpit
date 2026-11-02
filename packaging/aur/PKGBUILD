@@ -1,0 +1,40 @@
+# Maintainer: Oleg Bronzov <oleg.bronzov@gmail.com>
+#
+# Repackages the released .deb, so Arch runs the same build as everyone else.
+pkgname=cc-cockpit-bin
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Desktop cockpit for Claude Code: terminal tabs, session status and plugin panels'
+arch=('x86_64')
+url='https://github.com/BronOS/cc-cockpit'
+license=('MIT')
+depends=('alsa-lib' 'at-spi2-core' 'gtk3' 'libnotify' 'libsecret' 'libxss' 'libxtst' 'nss' 'util-linux-libs' 'xdg-utils')
+optdepends=('git: install plugins'
+            'libappindicator-gtk3: tray support')
+options=('!strip' '!debug')
+source=("cc-cockpit-${pkgver}.deb::${url}/releases/download/v${pkgver}/cc-cockpit-${pkgver}-linux-x64.deb"
+        "LICENSE-${pkgver}::https://raw.githubusercontent.com/BronOS/cc-cockpit/v${pkgver}/LICENSE")
+noextract=("cc-cockpit-${pkgver}.deb")
+sha256sums=('ea17f99676287da2a40b76f6d85d067f77998176a586b8e6dfd64f3b957df2d0'
+            'SKIP')
+
+prepare() {
+  mkdir -p deb
+  bsdtar -xf "cc-cockpit-${pkgver}.deb" -C deb
+  mkdir -p root
+  bsdtar -xf deb/data.tar.* -C root
+}
+
+package() {
+  cp -a root/opt root/usr "${pkgdir}/"
+
+  # Older debs had world-writable files; nothing under /opt should be. Executable bits stay as they are
+  # for anyone, write only for the owner. chrome-sandbox stays non-setuid: Arch has user namespaces.
+  chmod -R u+rwX,go+rX,go-w "${pkgdir}/opt"
+  chmod 0755 "${pkgdir}/opt/cc-cockpit/chrome-sandbox"
+
+  install -d "${pkgdir}/usr/bin"
+  ln -s /opt/cc-cockpit/cc-cockpit "${pkgdir}/usr/bin/cc-cockpit"
+  rm -rf "${pkgdir}/usr/share/doc"
+  install -Dm644 "LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
