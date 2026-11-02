@@ -46,8 +46,9 @@ import { errorText } from '../../shared/error-text'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
-import type { CliContribution, PluginManifest } from '../../shared/manifest'
+import type { CliContribution, OpenFileContribution, PluginManifest } from '../../shared/manifest'
 import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
+import { OPEN_FILE_PICK } from '../../shared/services'
 import { capText } from '../../shared/text'
 import type { PluginCommandDef } from '../commands/command-registry'
 import type { Env } from '../env/login-env'
@@ -71,6 +72,12 @@ export const RESTART_BASE_MS = 1_000
 export const RESTART_MAX_MS = 30_000
 export const CRASH_WINDOW_MS = 2 * 60_000
 export const MAX_CRASHES = 5
+/**
+ * How long a Sessions panel file click waits for the chosen plugin's host to take it (openFile)
+ * before the built-in viewer opens instead. Short: the person clicked and is looking at the screen.
+ * The host itself waits at most 1 s on a listener (src/host/ctx/files.ts), so this leaves margin.
+ */
+export const OPEN_FILE_ACK_MS = 2_000
 /** How often runCli looks again while a plugin is on its way in (see runCli). */
 export const CLI_READY_POLL_MS = 50
 /** What a given-up host's panels show; PluginPanel offers Restart for exactly this text. */
@@ -184,6 +191,8 @@ export interface HostPlugin {
   cli?: CliContribution[]
   /** The manifest's `services` (validated): what the plugin provides to and uses from others. */
   services?: PluginManifest['services']
+  /** The manifest's `contributes.openFile`: the plugin can take a Sessions panel file click. */
+  openFile?: OpenFileContribution
 }
 
 /**
@@ -733,6 +742,29 @@ export class HostManager {
   }
 
   /**
+   * Hand a Sessions panel file click to `pluginId` in the project's host (`ctx.files.onOpen`). True
+   * only when the host answered that a listener took it, within OPEN_FILE_ACK_MS; false at once
+   * when the plugin is not one this host's last launch got with `contributes.openFile`, or it is not
+   * active right now (starting, reloading, failed, host stopped or gone); false too for a refusal,
+   * a timeout or the host exiting. The caller opens its built-in viewer on false. Nothing waits for
+   * a plugin on its way in: the person is looking at the screen, and the viewer is the answer then.
+   * `req` is main's own (open-file.ts checked the tab and made the path project-relative).
+   */
+  async openFile(projectId: string, pluginId: string, req: { path: string; tabId: string }): Promise<boolean> {
+    const rec = this.hosts.get(projectId)
+    const rpc = rec?.rpc
+    if (!rec || !rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return false
+    if (rec.plugins.find((p) => p.id === pluginId)?.openFile === undefined) return false
+    try {
+      const answer = await rpc.call('files.open', { pluginId, path: req.path, tabId: req.tabId }, { timeoutMs: OPEN_FILE_ACK_MS })
+      return answer === true
+    } catch (err) {
+      this.log(`plugin ${pluginId} (${projectId}): opening a file failed, the built-in viewer opens instead: ${errorText(err)}`)
+      return false
+    }
+  }
+
+  /**
    * The panel ids `pluginId` declares when it runs in the project's host right now (activated;
    * a scheduled job failing since does not stop it), else undefined: no host, a plugin that is
    * starting, failed to activate the last time it was told, was disabled or given up on, or one
@@ -783,7 +815,7 @@ export class HostManager {
    * (buildSpec's checks, without its side effects). A plugin dropped for invalid settings is in
    * neither this set nor the host's, so the Plugins page's warnings and a call's error agree.
    */
-  async servicePlugins(projectId: string): Promise<{ id: string; services?: HostPlugin['services'] }[]> {
+  async servicePlugins(projectId: string): Promise<{ id: string; services?: HostPlugin['services']; openFile?: OpenFileContribution }[]> {
     const plugins = await this.deps.plugins(projectId)
     return plugins
       .filter((p) => typeof p.main === 'string' && p.main !== '')
@@ -792,7 +824,13 @@ export class HostManager {
         if (current?.dir !== p.dir || current.commit !== p.commit) return false
         return this.settingsOf(projectId, p.id).ok
       })
-      .map((p) => (p.services !== undefined ? { id: p.id, services: p.services } : { id: p.id }))
+      // `openFile` rides along: the open-file pick (selectOpenFile) is chosen over this same set, so the
+      // Plugins page and a click agree on the candidates.
+      .map((p) => ({
+        id: p.id,
+        ...(p.services !== undefined ? { services: p.services } : {}),
+        ...(p.openFile !== undefined ? { openFile: p.openFile } : {})
+      }))
   }
 
   // -------------------------------------------------------------------------------------------
@@ -987,6 +1025,7 @@ export class HostManager {
       webviewPanels: p.panels.filter((panel) => panel.kind === 'webview').map((panel) => panel.id),
       cli: (p.cli ?? []).map((c) => c.name),
       ...(p.services !== undefined ? { services: p.services } : {}),
+      ...(p.openFile !== undefined ? { openFile: true } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']
@@ -997,7 +1036,10 @@ export class HostManager {
   /** The project's provider picks; a throwing dependency means none (logged), not a failed launch. */
   private serviceProvidersOf(projectId: string): Record<string, string> {
     try {
-      return { ...(this.deps.serviceProviders?.(projectId) ?? {}) }
+      // The open-file pick shares the record's map but is main's alone (a click is routed here, not
+      // in the host), so the host gets only the service picks.
+      const picks = Object.entries(this.deps.serviceProviders?.(projectId) ?? {}).filter(([k]) => k !== OPEN_FILE_PICK)
+      return Object.fromEntries(picks)
     } catch (err) {
       this.log(`plugin host ${projectId}: reading service providers failed: ${errorText(err)}`)
       return {}

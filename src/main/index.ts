@@ -89,6 +89,7 @@ import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-diff'
+import { routeOpenFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
@@ -101,6 +102,7 @@ import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from 
 import { TabManager } from './tabs/tab-manager'
 import { isTestRun } from './test-run'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
+import { selectOpenFile } from '../shared/services'
 import { createIndexFetcher, type IndexFetcher } from './marketplace/fetch-index'
 import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-service'
 import { revocationNotice } from './marketplace/marketplace-view'
@@ -590,6 +592,7 @@ function start(): void {
         })),
         cli: plugin.manifest.contributes?.cli ?? [],
         ...(plugin.manifest.services !== undefined ? { services: plugin.manifest.services } : {}),
+        ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -1470,6 +1473,17 @@ function start(): void {
     open: openOverlay,
     shown: new Set()
   }
+  // A file click goes to the plugin the project uses to open files, if any (contributes.openFile),
+  // else to the diff above. The candidates are the set the project's host runs (the Plugins page
+  // shows the same set), the pick the project record's; HostManager.openFile bounds the wait.
+  const openFileRoute: OpenFileRouteDeps = {
+    tab: (id) => sessions.get(id),
+    projectPath: (projectId) => registry.get(projectId)?.path,
+    handler: async (projectId) => selectOpenFile(await hosts.servicePlugins(projectId), registry.serviceProviders(projectId)),
+    deliver: (projectId, pluginId, req) => hosts.openFile(projectId, pluginId, req),
+    builtin: (caller, tabId, file) => openDiff(diffOptions, caller, tabId, file),
+    delivering: new Set()
+  }
   registerSessionHandlers(router, {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
@@ -1482,7 +1496,7 @@ function start(): void {
       sendToProject(entry.projectId, 'tabs.select', { tabId })
       return true
     },
-    openFile: (caller, tabId, file) => openDiff(diffOptions, caller, tabId, file)
+    openFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

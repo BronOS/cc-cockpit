@@ -158,7 +158,10 @@ var MANIFEST_SCHEMA = {
               stdin: { type: "boolean" }
             }
           }
-        }
+        },
+        // An object, not `true`: the title is what the person reads when picking the plugin that
+        // opens files, and a later field (file kinds, say) has room here.
+        openFile: { type: "object", required: ["title"], properties: { title } }
       }
     }
   }

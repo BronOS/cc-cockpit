@@ -86,6 +86,11 @@ behind it are in [design.md](design.md).
   `structuredClone`). With two providers of one service, Settings > Plugins > "Plugin used for <service>" picks
   one for the project (it restarts the project's plugin host). A missing provider does not block enabling a
   plugin: the consumer runs, its calls throw, and the Plugins page warns (also for a version mismatch).
+- Open-file hook: a plugin with `contributes.openFile` takes a click on a changed file in the Sessions panel
+  through `ctx.files.onOpen({ path, tabId })` (path relative to the project; main checks the tab and the path).
+  With several such plugins, or to keep the built-in viewer, Settings > Plugins > "Plugin used to open files"
+  picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
+  fails, or it does not answer within 2 s, and for a file outside the project.
 - Themes, commands, a command palette and editable keybindings, a Settings screen.
 - The `ccc` command line tool, the `hello` reference plugin and an example plugin to copy.
 - Operable by Claude: inside a tab, `ccc guide [topic]` prints bundled docs (CLI, plugin API,

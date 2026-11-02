@@ -215,6 +215,17 @@ export interface WebviewPage {
   readonly error?: string
 }
 
+/**
+ * A click on a changed file in core's Sessions panel, handed to this plugin (`ctx.files.onOpen`).
+ * Both fields come from the app: the click happened in its own UI.
+ */
+export interface OpenFileRequest {
+  /** The file, relative to the project folder (`src/app.ts`); never outside it. */
+  readonly path: string
+  /** The Claude tab whose list of changed files was clicked (an id `ctx.sessions` knows). */
+  readonly tabId: string
+}
+
 export type CliHandler = (argv: string[], call: CliCall) => CliResult | void | Promise<CliResult | void>
 
 export interface PluginLogger {
@@ -351,6 +362,19 @@ export interface PluginContext {
      * calls of this plugin run at once.
      */
     register(name: string, handler: CliHandler): Disposer
+  }
+
+  // files
+  readonly files: {
+    /**
+     * Take over a click on a changed file in the Sessions panel. Needs `contributes.openFile` in
+     * the manifest (throws otherwise). Clicks come only when the project uses this plugin to open
+     * files: it is the only enabled one declaring `openFile`, or the one picked in Settings >
+     * Plugins. Every listener is called; the app's built-in viewer opens instead when none is
+     * registered, or each one throws or rejects within 1 s (a promise still pending then counts
+     * as handled). The app waits at most 2 s for this host.
+     */
+    onOpen(listener: (req: OpenFileRequest) => unknown): Disposer
   }
 
   /**

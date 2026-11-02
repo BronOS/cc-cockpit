@@ -281,11 +281,12 @@ Added by the user during the run for the planned reviewer plugin (`~/Projects/cc
 - Modify: `src/shared/manifest.ts`, `src/main/plugins/validate.ts`, `src/shared/services.ts` (reuse), the sessions panel file-click path (renderer and main), `src/main/plugins/host-manager.ts`, `src/main/plugins/host-api.ts` (event to host + ack), `src/host/ctx/index.ts`, `src/renderer/settings/PluginsPage.tsx`, `src/sdk/types.ts` (+ copy to `examples/plugin/sdk/types.ts`), `src/cli/guide/api.md`, `src/cli/guide/plugins.md`
 - Create/Modify: fixture plugin, unit tests, an e2e (`test/e2e/sessions-panel.spec.ts`)
 
-- [ ] manifest field and validation; `ctx.files.onOpen`; main routes the click to the chosen plugin's host with path and tab id, waits for an ack within the bound, else opens the pager
-- [ ] provider pick reuses the services selection and UI with the reserved key; "Built-in viewer" choice
-- [ ] guide and types in the same change
-- [ ] write tests: no handler → pager; one handler gets `{ path, tabId }`; two handlers + pick; handler throws / not active / no listener → pager; tab id of another window never reaches a plugin
-- [ ] run tests - must pass before next task
+- [x] manifest field and validation; `ctx.files.onOpen`; main routes the click to the chosen plugin's host with path and tab id, waits for an ack within the bound, else opens the pager
+- [x] provider pick reuses the services selection and UI with the reserved key; "Built-in viewer" choice
+- [x] guide and types in the same change
+- [x] write tests: no handler → pager; one handler gets `{ path, tabId }`; two handlers + pick; handler throws / not active / no listener → pager; tab id of another window never reaches a plugin
+- ➕ the host acks when a listener returns, resolves, or is still pending after 1 s (it may await an overlay); a throw or rejection before then is a failure. Main's routing is `src/main/sessions/open-file.ts` (`routeOpenFile`), the main → host call `HostManager.openFile` (`files.open`, 2 s), the rule `selectOpenFile`/`openFileStatus` in `src/shared/services.ts` (keys `@open-file`, value `@builtin`); a file outside the project goes to the pager, never to the plugin. The open-file pick needs no host restart and is not sent to the host. `examples/plugin/sdk/types.ts` was copied (the drift test requires it); the public repo push is still pending; `marketplace/tools/dist` rebuilt (it bundles `shared/manifest.ts`)
+- [x] run tests - must pass before next task
 
 ### Task 13: ➕ Two-way messaging with an open html overlay [model: opus]
 

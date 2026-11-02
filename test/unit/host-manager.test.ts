@@ -1319,6 +1319,99 @@ describe('HostManager', () => {
     expect(manager.status('p1')?.plugins[0]).toEqual({ id: 'a.one', state: 'active' })
   })
 
+  describe('openFile (Sessions panel click, friction round 1 Task 12)', () => {
+    const req = { path: 'src/a.ts', tabId: 't1' }
+
+    it('sends files.open to the plugin that declares openFile and answers what the host acked', async () => {
+      enabled.p1 = [plugin('a.one', { openFile: { title: 'Review' } }), plugin('a.two')]
+      const seen: unknown[] = []
+      let answer: unknown = true
+      factory.handlers = () => ({
+        ...okHandlers(),
+        'files.open': (p) => {
+          seen.push(p)
+          return answer
+        }
+      })
+      await manager.open('p1', 1)
+      await expect(manager.openFile('p1', 'a.one', req)).resolves.toBe(true)
+      expect(seen).toEqual([{ pluginId: 'a.one', path: 'src/a.ts', tabId: 't1' }])
+      answer = false
+      await expect(manager.openFile('p1', 'a.one', req)).resolves.toBe(false)
+      // Not a candidate (no openFile), not in this host, or another project: false without asking.
+      await expect(manager.openFile('p1', 'a.two', req)).resolves.toBe(false)
+      await expect(manager.openFile('p1', 'x.gone', req)).resolves.toBe(false)
+      await expect(manager.openFile('p2', 'a.one', req)).resolves.toBe(false)
+      expect(seen).toHaveLength(2)
+    })
+
+    it('is false when the host throws, does not answer within the bound, or the plugin is not active', async () => {
+      enabled.p1 = [plugin('a.one', { openFile: { title: 'Review' } })]
+      let mode: 'throw' | 'hang' = 'throw'
+      factory.handlers = () => ({
+        ...okHandlers(),
+        'files.open': () => {
+          if (mode === 'throw') throw new Error('listener blew up')
+          return new Promise(() => {})
+        }
+      })
+      await manager.open('p1', 1)
+      await expect(manager.openFile('p1', 'a.one', req)).resolves.toBe(false)
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('listener blew up'))
+
+      mode = 'hang'
+      const pending = manager.openFile('p1', 'a.one', req)
+      await vi.advanceTimersByTimeAsync(1_999)
+      let settled = false
+      void pending.then(() => (settled = true))
+      await flush()
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await expect(pending).resolves.toBe(false)
+
+      // An errored activate: the plugin never ran in this process.
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: () => [{ id: 'a.one', state: 'errored', error: 'boom' }],
+        'files.open': () => true
+      })
+      await manager.restart('p1')
+      await expect(manager.openFile('p1', 'a.one', req)).resolves.toBe(false)
+      expect(factory.last.calls).not.toContain('files.open')
+    })
+
+    it('marks the spec openFile and keeps the open-file pick out of the picks sent to the host', async () => {
+      enabled.p1 = [plugin('a.one', { openFile: { title: 'Review' } }), plugin('a.two')]
+      let activateParams: unknown
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) => {
+          activateParams = p
+          return okHandlers().activate!(p)
+        }
+      })
+      const withPicks = new HostManager({
+        factory,
+        plugins: async (projectId) => enabled[projectId] ?? [],
+        env: async () => ({}),
+        projectPath: (projectId) => `/projects/${projectId}`,
+        layouts,
+        pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/_app/${pluginId}`,
+        serviceProviders: () => ({ greet: 'a.two', '@open-file': 'a.one' })
+      })
+      await withPicks.open('p1', 1)
+      const params = activateParams as { plugins: { id: string; openFile?: boolean }[]; serviceProviders: Record<string, string> }
+      expect(params.plugins.map((p) => [p.id, p.openFile])).toEqual([
+        ['a.one', true],
+        ['a.two', undefined]
+      ])
+      expect(params.serviceProviders).toEqual({ greet: 'a.two' })
+      await expect(withPicks.servicePlugins('p1')).resolves.toEqual([{ id: 'a.one', openFile: { title: 'Review' } }, { id: 'a.two' }])
+      withPicks.disposeAll()
+    })
+  })
+
   describe('panel ports', () => {
     it('hands a panel port to the running plugin only, tagged with the ids main gave it', async () => {
       enabled.p1 = [plugin('a.one', { panels: [panel('board'), panel('side')] }), plugin('a.two')]

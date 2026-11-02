@@ -13,7 +13,7 @@ import type { TerminalFont } from './terminal-font'
 import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
-import type { ServicesStatus } from './services'
+import type { PluginServicesView } from './services'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -663,7 +663,7 @@ export interface IpcInvokeMap {
    * Plugin services in the asking window's project: per plugin what it provides and uses and the
    * problems, per service the providers and the one calls reach (over the plugins its host runs).
    */
-  'settings.pluginServices': { req: void; res: ServicesStatus }
+  'settings.pluginServices': { req: void; res: PluginServicesView }
   /**
    * Pick which plugin answers a service several plugins provide in this project, or clear the pick
    * with null. Main checks both names against the project's set; a change restarts its host.

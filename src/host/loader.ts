@@ -61,6 +61,11 @@ export interface HostPluginSpec {
    */
   services?: PluginManifest['services']
   /**
+   * The manifest declares `contributes.openFile`: `ctx.files.onOpen` accepts a listener, and main
+   * may send this plugin `files.open`. Absent is false.
+   */
+  openFile?: boolean
+  /**
    * Set by `parsePluginSpecs`, never sent by main: why this plugin's spec cannot run (a malformed
    * `services` field). The loader marks only this plugin errored; the rest of the batch activates.
    */
@@ -74,7 +79,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, services, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, services, openFile, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -104,6 +109,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     // a bad one errors that plugin alone: the batch is validated before anything activates, and a
     // throw here would keep every plugin of the project from running.
     const parsed = services === undefined ? undefined : parseServicesField(services)
+    if (openFile !== undefined && typeof openFile !== 'boolean') throw new Error(`activate: plugin ${i} openFile must be a boolean`)
     const { project, app } = (settings ?? {}) as Record<string, unknown>
     if (!isSettingsRecord(project) || !isSettingsRecord(app)) {
       throw new Error(`activate: plugin ${i} settings must have project and app objects`)
@@ -122,6 +128,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       cli: (cli as string[] | undefined) ?? [],
       ...(parsed?.services !== undefined ? { services: parsed.services } : {}),
       ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),
+      ...(openFile === true ? { openFile: true } : {}),
       settings: { project, app }
     }
   })

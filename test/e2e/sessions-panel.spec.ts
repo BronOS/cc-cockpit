@@ -2,7 +2,7 @@
 // (a PostToolUse hook); the panel lists it, and a click opens a terminal overlay that shows the
 // diff (inside a git repository) or the file itself (outside any).
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { OverlayInfo } from '../../src/shared/ipc'
@@ -198,4 +198,65 @@ test('main refuses a diff for a file it did not record or a tab of another proje
   } finally {
     rmSync(outside, { recursive: true, force: true })
   }
+})
+
+// Friction round 1, Task 12: a plugin that declares `contributes.openFile` takes the click through
+// ctx.files.onOpen (the fixture records `{ path, tabId }` in $HOME/open-file.json); the built-in
+// viewer opens when its listener throws, and when the project picks "Built-in viewer" in Settings.
+test('a plugin that opens files takes the click; the built-in viewer opens when it fails or is not picked', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const seenFile = join(cockpit.root, 'home', 'open-file.json')
+  const seen = (): Array<{ path: string; tabId: string }> => JSON.parse(readFileSync(seenFile, 'utf8')) as Array<{ path: string; tabId: string }>
+  await cockpit.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', 'open-file'))
+  await cockpit.hook('enablePlugin', projectDir, 'test.openfile')
+  await expect.poll(() => existsSync(seenFile), { timeout: 15_000 }).toBe(true)
+
+  mkdirSync(join(projectDir, 'src'))
+  const mine = join(projectDir, 'src', 'notes.txt')
+  const failing = join(projectDir, 'fail.txt')
+  writeFileSync(mine, lines('mine'))
+  writeFileSync(failing, lines('failing'))
+  await openPanel(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
+  await cockpit.typeLine(`/edit ${mine}`)
+  await cockpit.typeLine(`/edit ${failing}`)
+  await expect(page.locator('.session-file')).toHaveCount(2)
+  const [session] = await cockpit.hook<Array<{ tabId: string }>>('sessions', projectDir)
+
+  // The plugin gets the path relative to the project and the tab the list belongs to; no overlay.
+  await page.getByRole('button', { name: mine }).click()
+  await expect.poll(seen, { timeout: 10_000 }).toEqual([{ path: 'src/notes.txt', tabId: session!.tabId }])
+  await page.waitForTimeout(500)
+  expect(await stack(cockpit)).toEqual([])
+
+  // Its listener throws for this one: the built-in viewer shows the file instead.
+  const overlay = page.locator('.overlay[data-kind="terminal"]')
+  await page.getByRole('button', { name: failing }).click()
+  await expect(overlay).toBeVisible()
+  await expect(overlay.locator('.xterm-rows')).toContainText('failing line 0')
+  await overlay.getByRole('button', { name: 'Close overlay' }).click()
+  await expect(overlay).toHaveCount(0)
+
+  // Settings > Plugins: the pick offers the plugin (by its title) and the built-in viewer.
+  const settings = page.getByRole('dialog', { name: 'Settings' })
+  await page.keyboard.press('ControlOrMeta+,')
+  await expect(settings).toBeVisible()
+  await settings.getByRole('navigation').getByRole('button', { name: 'Plugins', exact: true }).click()
+  const select = settings.getByLabel('Plugin used to open files')
+  await expect(select).toHaveValue('test.openfile')
+  await expect(select.locator('option')).toHaveText(['Review (Open File Fixture)', 'Built-in viewer'])
+  await select.selectOption('@builtin')
+  await expect(select).toHaveValue('@builtin')
+  await page.screenshot({ path: process.env.OPEN_FILE_SHOT ?? join(cockpit.root, 'open-file-pick.png') })
+  await page.keyboard.press('Escape')
+  await expect(settings).toBeHidden()
+
+  // Picked "Built-in viewer": the click opens the viewer and the plugin hears nothing.
+  await page.getByRole('button', { name: mine }).click()
+  await expect(overlay).toBeVisible()
+  await expect(overlay.locator('.xterm-rows')).toContainText('mine line 0')
+  expect(seen()).toHaveLength(1)
+  await overlay.getByRole('button', { name: 'Close overlay' }).click()
+  await expect(overlay).toHaveCount(0)
 })

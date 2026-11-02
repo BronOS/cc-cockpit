@@ -14,6 +14,8 @@
 //   plugin.unload { pluginId }              -> null               deactivate one plugin, keep the rest
 //   cli.run    { pluginId, name, argv, stdin, cwd, callId } -> { stdout, stderr, code }
 //                                                                  run a ctx.cli.register handler (`ccc <name>`)
+//   files.open { pluginId, path, tabId }    -> boolean            a Sessions panel file click for
+//                                                                  ctx.files.onOpen (true: taken)
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
@@ -119,6 +121,7 @@ function start(): void {
       },
       'command.run': (params) => contexts.runCommand(params),
       'cli.run': (params) => contexts.runCli(params),
+      'files.open': (params) => contexts.openFile(params),
       'plugin.reload': (params) => {
         const [spec] = parsePluginSpecs({ plugins: [(params as { plugin?: unknown } | null)?.plugin] })
         if (!spec) throw new Error('plugin.reload: no plugin')

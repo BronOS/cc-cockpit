@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, services, log and notify; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, log and notify; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -18,6 +18,7 @@ import {
   type ExecResult,
   type JsonValue,
   type OAuthSpec,
+  type OpenFileRequest,
   type OAuthTokens,
   type PluginContext,
   type PluginLogger,
@@ -31,6 +32,7 @@ import type { HostPluginSpec } from '../loader'
 import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
 import { createAppStorageApi } from './app-storage'
+import { createFilesApi, parseOpenFile, runOpenListeners } from './files'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { SettingsHolder } from './settings'
@@ -94,6 +96,8 @@ interface Runtime {
   commands: Map<string, () => unknown>
   /** `ctx.cli.register` handlers by command name. */
   cli: Map<string, CliHandler>
+  /** `ctx.files.onOpen` listeners (main's `files.open`). */
+  openListeners: Set<(req: OpenFileRequest) => unknown>
   /** This ctx's `ccc <name>` calls still running: aborted (and answered) at dispose. */
   cliCalls: Set<CliRun>
   children: Set<ChildProcess>
@@ -156,6 +160,7 @@ export class HostContexts {
       }),
       commands: new Map(),
       cli: new Map(),
+      openListeners: new Set(),
       cliCalls: new Set(),
       children: new Set(),
       oauthCalls: new Set(),
@@ -357,6 +362,7 @@ export class HostContexts {
       sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions }),
       commands: Object.freeze({ register }),
       cli: Object.freeze({ register: registerCli }),
+      files: createFilesApi({ declared: spec.openFile === true, alive, listeners: rt.openListeners }),
       services: Object.freeze({
         provide: (name: string, impl: Record<string, (...args: never[]) => unknown>) => {
           alive()
@@ -413,6 +419,7 @@ export class HostContexts {
     for (const run of [...rt.cliCalls]) run.cancel('the plugin is deactivated')
     rt.cliCalls.clear()
     rt.cli.clear()
+    rt.openListeners.clear()
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
@@ -554,6 +561,18 @@ export class HostContexts {
         .then((value) => normalizeCliResult(value))
         .then(finish, (err: unknown) => finish(failed(err)))
     })
+  }
+
+  /**
+   * Main hands a plugin a click on a changed file (`files.open { pluginId, path, tabId }`): true
+   * when one of its `ctx.files.onOpen` listeners took it (files.ts), false when the plugin does not
+   * run here, has no listener, or every listener failed. Main opens its built-in viewer on false.
+   */
+  async openFile(params: unknown): Promise<boolean> {
+    const req = parseOpenFile(params)
+    const rt = this.runtimes.get(req.pluginId)
+    if (!rt || rt.disposed) return false
+    return runOpenListeners(rt.openListeners, req, (m) => this.deps.log(req.pluginId, 'error', m))
   }
 
   /** Main asks to run a command a plugin registered: `{ pluginId, id }`. */

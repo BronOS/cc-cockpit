@@ -107,6 +107,21 @@ with full Node access.
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
 - `ctx.sessions.open({ cwd, prompt })`: a new Claude tab; the prompt is an argument, never typed.
 
+## Files
+
+- `ctx.files.onOpen(listener)`: take over a click on a changed file in the Sessions panel; returns
+  a disposer. Needs `"contributes": { "openFile": { "title": "Review" } }` (`plugins` topic), else
+  it throws. `listener({ path, tabId })` gets the file relative to the project folder (`src/a.ts`,
+  `/` separators, never outside the project) and the Claude tab whose list was clicked; both come
+  from the app. Clicks reach the plugin only when the project uses it to open files: it is the
+  only enabled plugin declaring `openFile`, or the one picked in Settings > Plugins ("Plugin used
+  to open files", where "Built-in viewer" is also a choice). The built-in viewer (a diff or the
+  file in a pager) opens instead when the plugin is not active, has no listener, or every listener
+  throws or rejects within 1 s; a listener still running after 1 s counts as handled, so one that
+  awaits an overlay is fine. The app waits at most 2 s for the host. A file outside the project
+  always opens in the built-in viewer. Only this click goes through the hook: other plugins that
+  want to open a file call a service of yours.
+
 ## Commands and misc
 
 - `ctx.commands.register(id, run)`: `id` must be declared in `contributes.commands`.

@@ -112,6 +112,8 @@ export interface ProjectRecord {
    * plugins provide (Settings > Plugins). Absent in older records = no picks. A pick whose plugin is
    * no longer a provider in the project counts as no pick (shared/services.ts selectProvider) and is
    * never cleaned up. The file is user-writable: the registry drops a damaged value when it loads.
+   * The reserved key `@open-file` holds the plugin a Sessions panel file click goes to, or
+   * `@builtin` for the built-in viewer (shared/services.ts OPEN_FILE_PICK).
    */
   serviceProviders?: Record<string, string>
   /** Epoch ms of the last `openPath`. */

@@ -17,6 +17,7 @@ import { projectFile, projectId } from '../../src/main/paths'
 import { MAX_RECENT_PROJECTS, ProjectRegistry } from '../../src/main/projects/registry'
 import type { FsOps } from '../../src/main/store/json-file'
 import { defaultLayout, hidePanel, movePanel, reconcile } from '../../src/shared/layout'
+import { BUILTIN_VIEWER, OPEN_FILE_PICK } from '../../src/shared/services'
 
 let root: string
 let dataDir: string
@@ -514,6 +515,15 @@ describe('service providers', () => {
     // An unknown project has none and cannot be written.
     expect(fresh.serviceProviders('0123456789abcdef')).toEqual({})
     expect(() => fresh.setServiceProvider('0123456789abcdef', 'triage', 'a.one')).toThrow(/unknown project/)
+  })
+
+  it('keeps the reserved open-file pick across a reload; another non-service key still goes', () => {
+    const reg = registry()
+    const id = reg.openPath(folder('a')).id
+    expect(reg.setServiceProvider(id, OPEN_FILE_PICK, BUILTIN_VIEWER)).toBe(true)
+    reg.update(id, (r) => void (r.serviceProviders = { ...r.serviceProviders, '@other': 'a.one' }))
+    reg.flushAll()
+    expect(registry().serviceProviders(id)).toEqual({ [OPEN_FILE_PICK]: BUILTIN_VIEWER })
   })
 })
 

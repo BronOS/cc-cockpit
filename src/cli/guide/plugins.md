@@ -21,7 +21,8 @@ so a person chooses to install or link it.
     "commands": [{ "id": "say-hello", "title": "Hello: Say hello", "key": "Cmd+Shift+H" }],
     "themes": [{ "id": "dusk", "file": "themes/dusk.json" }],
     "cli": [{ "name": "hello", "summary": "Say hello", "usage": "hello [name]" }],
-    "skills": [{ "id": "hello", "dir": "skills/hello" }]
+    "skills": [{ "id": "hello", "dir": "skills/hello" }],
+    "openFile": { "title": "Hello viewer" }
   },
   "services": { "provides": { "greetings": 1 }, "uses": { "triage": 1 } }
 }
@@ -40,12 +41,16 @@ so a person chooses to install or link it.
   `services` rejects them.
 - Fields per contribution: panel `id`, `title`, `kind`, `icon`, `entry`, `defaultZone`; command
   `id`, `title`, `key`; theme `id`, `file`; skill `id`, `dir`; cli `name`, `summary`, `usage`,
-  `stdin`. There is no `description` field on a command or a cli entry: a command is one palette
+  `stdin`; openFile `title`. There is no `description` field on a command or a cli entry: a command is one palette
   line (`title`), a cli entry is a `summary` (200 chars) and a `usage` (500 chars).
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
   not provide and use the same name. No other key inside `services` (unlike the top level, an
   unknown one is an error). Only declared names work with `ctx.services` (`api` topic).
+- `openFile` (an object, not a list; needs `main`): the plugin can take over a click on a changed
+  file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
+  names the choice in Settings > Plugins, where a project with several such plugins picks one (or
+  the built-in viewer); with one, it gets the clicks unless the project picks the built-in viewer.
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
   `description: <one line, at most 1024 chars>`; any other key, a multi-line value, a `name`

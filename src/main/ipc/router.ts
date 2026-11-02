@@ -30,7 +30,7 @@ import type {
 } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
 import type { Theme } from '../../shared/theme'
-import type { ServicesStatus } from '../../shared/services'
+import type { PluginServicesView } from '../../shared/services'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { SenderContext } from '../windows/window-manager'
@@ -435,8 +435,8 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
 
 /** Plugin services on the Plugins page (ServiceChoices, main/plugins/service-choices.ts). */
 export interface ServiceHandlerDeps {
-  /** Service status of the sender's project. */
-  status(projectId: string): Promise<ServicesStatus>
+  /** Service status (and the open-file pick) of the sender's project. */
+  status(projectId: string): Promise<PluginServicesView>
   /** The names arrive unchecked (the service checks them); the project is the sender's. */
   setProvider(projectId: string, service: unknown, pluginId: unknown): Promise<void>
 }

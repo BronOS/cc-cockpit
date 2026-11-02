@@ -3,12 +3,26 @@
 // window), never from the renderer; the service and plugin names in a payload are checked against
 // the set the project's host runs, so a renderer cannot pick a plugin of another project or one
 // that does not provide the service.
+//
+// The open-file pick (friction round 1, Task 12) lives here too: same page, same record map, same
+// selection rule, under the reserved key OPEN_FILE_PICK. Its value is a plugin of the set that
+// declares `contributes.openFile`, or BUILTIN_VIEWER. It needs no host restart: main routes each
+// click itself (sessions/open-file.ts) and reads the pick then.
 import { SERVICE_NAME_PATTERN } from '../../shared/manifest'
-import { providersOf, serviceStatus, type ServicePlugin, type ServicesStatus } from '../../shared/services'
+import {
+  BUILTIN_VIEWER,
+  OPEN_FILE_PICK,
+  openFileStatus,
+  providersOf,
+  serviceStatus,
+  type OpenFilePlugin,
+  type PluginServicesView,
+  type ServicePlugin
+} from '../../shared/services'
 
 export interface ServiceChoicesDeps {
-  /** The plugins the project's host runs, with their `services` (HostManager.servicePlugins). */
-  plugins(projectId: string): Promise<ServicePlugin[]>
+  /** The plugins the project's host runs, with their `services` and `openFile` (HostManager.servicePlugins). */
+  plugins(projectId: string): Promise<(ServicePlugin & OpenFilePlugin)[]>
   /** The project record's picks (ProjectRegistry.serviceProviders). */
   choices(projectId: string): Record<string, string>
   /** Save one pick, or clear it with null; true when the record changed. */
@@ -20,9 +34,11 @@ export interface ServiceChoicesDeps {
 export class ServiceChoices {
   constructor(private readonly deps: ServiceChoicesDeps) {}
 
-  /** `serviceStatus` over the host's set and the stored picks (a stale pick reads as none). */
-  async status(projectId: string): Promise<ServicesStatus> {
-    return serviceStatus(await this.deps.plugins(projectId), this.deps.choices(projectId))
+  /** `serviceStatus` and `openFileStatus` over the host's set and the stored picks (a stale pick reads as none). */
+  async status(projectId: string): Promise<PluginServicesView> {
+    const plugins = await this.deps.plugins(projectId)
+    const choices = this.deps.choices(projectId)
+    return { ...serviceStatus(plugins, choices), openFile: openFileStatus(plugins, choices) }
   }
 
   /**
@@ -31,6 +47,7 @@ export class ServiceChoices {
    * its providers there. Restarts the host only when the stored value changed.
    */
   async setProvider(projectId: string, service: unknown, pluginId: unknown): Promise<void> {
+    if (service === OPEN_FILE_PICK) return this.setOpenFile(projectId, pluginId)
     if (typeof service !== 'string' || !SERVICE_NAME_PATTERN.test(service)) throw new Error('bad service name')
     if (pluginId !== null && typeof pluginId !== 'string') throw new Error('pluginId must be a string or null')
     const plugins = await this.deps.plugins(projectId)
@@ -42,5 +59,20 @@ export class ServiceChoices {
       throw new Error(`${pluginId} does not provide service "${service}" in this project`)
     }
     if (this.deps.setChoice(projectId, service, pluginId)) await this.deps.restart(projectId)
+  }
+
+  /**
+   * The plugin that takes a Sessions panel file click in this project: one of the project's plugins
+   * that declare `contributes.openFile`, BUILTIN_VIEWER, or null to clear the pick. No restart.
+   */
+  private async setOpenFile(projectId: string, pluginId: unknown): Promise<void> {
+    if (pluginId !== null && typeof pluginId !== 'string') throw new Error('pluginId must be a string or null')
+    if (pluginId !== null && pluginId !== BUILTIN_VIEWER) {
+      const plugins = await this.deps.plugins(projectId)
+      if (!plugins.some((p) => p.id === pluginId && p.openFile !== undefined)) {
+        throw new Error(`${pluginId} does not open files in this project`)
+      }
+    }
+    this.deps.setChoice(projectId, OPEN_FILE_PICK, pluginId)
   }
 }

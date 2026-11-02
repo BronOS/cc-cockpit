@@ -12,6 +12,7 @@ import { isPlainObject } from '../../shared/guards'
 import { defaultLayout, normalizeLayout, type LayoutState } from '../../shared/layout'
 import { projectColorOf } from '../../shared/project-color'
 import { SERVICE_NAME_PATTERN } from '../../shared/manifest'
+import { OPEN_FILE_PICK } from '../../shared/services'
 import type { AppSettings, ProjectRecord, ProjectView } from '../../shared/types'
 
 /** How many entries `recentProjects` keeps; the picker never shows more than this. */
@@ -492,11 +493,15 @@ export function realPathOf(path: string): string {
   }
 }
 
-/** A user-writable picks map: string pairs with a valid service name, or undefined for none. */
+/**
+ * A user-writable picks map: string pairs with a valid service name (or the reserved open-file key,
+ * which no service name can equal), or undefined for none.
+ */
 function serviceProvidersOf(value: unknown): Record<string, string> | undefined {
   if (!isPlainObject(value)) return undefined
   const entries = Object.entries(value).filter(
-    (e): e is [string, string] => SERVICE_NAME_PATTERN.test(e[0]) && typeof e[1] === 'string' && e[1] !== ''
+    (e): e is [string, string] =>
+      (SERVICE_NAME_PATTERN.test(e[0]) || e[0] === OPEN_FILE_PICK) && typeof e[1] === 'string' && e[1] !== ''
   )
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
