@@ -605,9 +605,11 @@ a plugin id or `@builtin` for core's viewer, and changing it needs no host resta
 With one candidate it gets the clicks; with several and no valid pick (a stale pick counts as none) or with
 `@builtin`, the built-in viewer opens. Main is the authority for what the plugin receives: the tab must
 belong to the asking window's project and the file must be one main recorded for that tab (the checks
-`openDiff` makes), the path is made relative to the project folder by main (lexically, then through real
-paths) and a file outside the project is never sent (the built-in viewer shows it), the `tabId` is the one
-just checked, and a repeated click on the same file while the first is pending is dropped. The plugin's
+`openDiff` makes), the path is made relative to the project folder by main and a file outside the project
+is never sent (the built-in viewer shows it): the real path decides, so a symlink out of the project is
+outside and one in (macOS `/var` -> `/private/var`) is inside, and a deleted file resolves through its
+nearest existing folder. The `tabId` is the one just checked, and checked again (tab, file, the project's
+window) right before the delivery, since choosing the plugin awaits the host; a repeated click on the same file while the first is pending is dropped. The plugin's
 `onOpen({ path, tabId })` listener is awaited for 1 s (a listener still running then counts as handled, so
 one that awaits an overlay is fine); a throw or rejection of every listener, no listener, an inactive
 plugin, or no ack from the host within 2 s falls back to the built-in viewer, so a click always shows

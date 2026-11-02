@@ -1485,6 +1485,7 @@ function start(): void {
   const openFileRoute: OpenFileRouteDeps = {
     tab: (id) => sessions.get(id),
     projectPath: (projectId) => registry.get(projectId)?.path,
+    windowOf: (projectId) => windows.windowIdOf(projectId),
     handler: async (projectId) => selectOpenFile(await hosts.servicePlugins(projectId), registry.serviceProviders(projectId)),
     deliver: (projectId, pluginId, req) => hosts.openFile(projectId, pluginId, req),
     builtin: (caller, tabId, file) => openDiff(diffOptions, caller, tabId, file),

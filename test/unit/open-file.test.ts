@@ -82,6 +82,30 @@ describe('projectRelativePath', () => {
     expect(projectRelativePath('/private/var/p', '/private/var/p', '/var/p/gone.ts', missing)).toBe('gone.ts')
     expect(projectRelativePath('/private/var/p', '/private/var/p', '/var/q/a.ts', real)).toBeNull()
   })
+
+  it('refuses a lexically internal path whose real path leaves the project (a symlink out)', () => {
+    // /work/p/link -> /etc; /work/p/inner -> /work/p/src stays inside.
+    const links = (p: string): string => {
+      if (p.includes('gone')) throw new Error('ENOENT')
+      return p.replace(/^\/work\/p\/link(?=\/|$)/, '/etc').replace(/^\/work\/p\/inner(?=\/|$)/, '/work/p/src')
+    }
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/link/secret.txt', links)).toBeNull()
+    expect(projectRelativePath('/work/p', '/work/p/link', 'secret.txt', links)).toBeNull()
+    // A deleted file behind the link is checked through its nearest existing ancestor: still outside.
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/link/gone.txt', links)).toBeNull()
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/link/gone/deeper/a.txt', links)).toBeNull()
+    // Inside links and deleted files or folders in the project still work, as the path the user saw.
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/inner/a.ts', links)).toBe('inner/a.ts')
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/src/gone.ts', links)).toBe('src/gone.ts')
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/gone/dir/a.ts', links)).toBe('gone/dir/a.ts')
+  })
+
+  it('nothing resolves: null, even for a lexically internal path', () => {
+    const none = (): string => {
+      throw new Error('EACCES')
+    }
+    expect(projectRelativePath('/work/p', '/work/p', '/work/p/a.ts', none)).toBeNull()
+  })
 })
 
 describe('routeOpenFile', () => {
@@ -95,6 +119,7 @@ describe('routeOpenFile', () => {
     const deps: OpenFileRouteDeps = {
       tab: (id) => (options.tabs ?? { t1: tab(), t2: tab({ projectId: OTHER }) })[id],
       projectPath: () => '/work/p',
+      windowOf: () => 7,
       handler: async () => (options.handler === undefined ? 'a.rev' : options.handler),
       deliver:
         options.deliver ??
@@ -166,6 +191,33 @@ describe('routeOpenFile', () => {
     await expect(routeOpenFile(deps, caller, 't1', '/etc/hosts')).resolves.toBe(true)
     expect(delivered).toEqual([])
     expect(builtin).toEqual([{ tabId: 't1', file: '/etc/hosts' }])
+  })
+
+  it('a tab that closes (or a window that goes) while the plugin is chosen reaches no plugin', async () => {
+    const tabs: Record<string, DiffTab> = { t1: tab() }
+    const closing = setup({ tabs })
+    closing.deps.handler = async () => {
+      delete tabs.t1
+      return 'a.rev'
+    }
+    await expect(routeOpenFile(closing.deps, caller, 't1', '/work/p/src/a.ts')).resolves.toBe(false)
+    expect(closing.delivered).toEqual([])
+    expect(closing.builtin).toEqual([])
+
+    let windowId: number | undefined = 7
+    const gone = setup()
+    gone.deps.windowOf = () => windowId
+    gone.deps.handler = async () => {
+      windowId = undefined
+      return 'a.rev'
+    }
+    await expect(routeOpenFile(gone.deps, caller, 't1', '/work/p/src/a.ts')).resolves.toBe(false)
+    expect(gone.delivered).toEqual([])
+    // A caller that is not the project's window is refused from the start.
+    const other = setup()
+    other.deps.windowOf = () => 8
+    await expect(routeOpenFile(other.deps, caller, 't1', '/work/p/src/a.ts')).resolves.toBe(false)
+    expect(other.delivered).toEqual([])
   })
 
   it('a second click while the first waits for its ack calls the plugin once', async () => {
