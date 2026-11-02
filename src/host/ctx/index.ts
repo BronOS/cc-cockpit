@@ -37,7 +37,7 @@ import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { SettingsHolder } from './settings'
 import { createStorage, type StorageHandle } from './storage'
-import { createUiApi, PanelPorts, type PanelPort } from './ui'
+import { createUiApi, OverlayLinks, PanelPorts, type PanelPort } from './ui'
 import { createWebviewApi, WebviewHub } from './webview'
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -122,11 +122,13 @@ export class HostContexts {
   private readonly cliById = new Map<number, CliRun>()
   private readonly sessions: SessionsHub
   private readonly ports: PanelPorts
+  private readonly overlays: OverlayLinks
   private readonly webviews: WebviewHub
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
   }
 
@@ -302,6 +304,7 @@ export class HostContexts {
       alive,
       guardAsync,
       ports: this.ports,
+      overlays: this.overlays,
       logError: (m) => logAs('error', m)
     })
 
@@ -422,6 +425,7 @@ export class HostContexts {
     rt.openListeners.clear()
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
+    this.overlays.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
     for (const child of rt.children) killChild(child)
     rt.children.clear()
@@ -491,6 +495,11 @@ export class HostContexts {
     }
     if (event === 'sessions') {
       this.sessions.handleEvent(params)
+      return
+    }
+    if (event === 'overlay.message') {
+      // Keyed by plugin and handle; a handle of a disposed copy was dropped with it.
+      this.overlays.handleEvent(params)
       return
     }
     if (event === 'webview.navigated') {

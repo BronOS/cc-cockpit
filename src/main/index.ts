@@ -59,7 +59,7 @@ import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager } from './webview/webview-manager'
-import { chordOfInput, OverlayManager, type OverlayResult } from './overlays/overlay-manager'
+import { chordOfInput, OverlayManager, type OverlayChannel, type OverlayResult } from './overlays/overlay-manager'
 import { handleOverlayScheme, handlePluginScheme, registerAppSchemes } from './overlays/overlay-protocol'
 import { dataPaths, fallbackSocketDir, pluginAppDataDir, pluginDataDir, resolveDataDir, socketPath } from './paths'
 import { createFolderWatcher, DevWatcher } from './plugins/dev-watch'
@@ -473,10 +473,11 @@ function start(): void {
     windowId: number,
     spec: unknown,
     opener: string,
-    peerGone?: AbortSignal
+    peerGone?: AbortSignal,
+    channel?: OverlayChannel
   ): Promise<OverlayResult> => {
     await loginEnvReady
-    return overlays.open(windowId, spec, opener, peerGone)
+    return overlays.open(windowId, spec, opener, peerGone, channel)
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
@@ -700,6 +701,8 @@ function start(): void {
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey),
       openOverlay,
+      postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
+      closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
       secrets: pluginSecrets,
       oauth: pluginOAuth,
       appStorage,
@@ -1458,7 +1461,9 @@ function start(): void {
     resize: (windowId, overlayId, cols, rows) => overlays.resize(windowId, overlayId, cols, rows),
     ack: (windowId, overlayId, count) => overlays.ack(windowId, overlayId, count),
     setBounds: (windowId, overlayId, bounds) => overlays.setBounds(windowId, overlayId, bounds),
-    result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value)
+    result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value),
+    message: (windowId, overlayId, text) => overlays.pageMessage(windowId, overlayId, text),
+    ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.

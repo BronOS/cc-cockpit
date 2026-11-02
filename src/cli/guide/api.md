@@ -97,6 +97,15 @@ with full Node access.
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
   the result. At most 3 open and 10 per minute.
+- `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close }`
+  (`open(spec)` is `start(spec).result`), so an `html` page and the plugin talk while it is open.
+  `post(message)` sends JSON to the page (`ccPanel.onMessage`), queued until the page has loaded;
+  `onMessage(fn)` hears what the page posts without a `result` key and returns a disposer;
+  `close()` dismisses it. `post`/`onMessage` throw for a terminal or url overlay. A message is at
+  most 1,040,384 chars of JSON (1 MiB less 8 KiB for the transport); a larger one throws. Once the
+  overlay ended, `post` and `close` do nothing and the listeners are dropped. Esc, the close button
+  and Cmd+Shift+W resolve `result` as `{ kind: 'dismissed' }` without asking the page, so a page
+  that keeps a draft should post it as it goes (each change, or debounced), not only on submit.
 
 ## Sessions
 

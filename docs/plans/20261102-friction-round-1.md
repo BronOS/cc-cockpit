@@ -308,10 +308,11 @@ Reviewer design item 2. Today the page can only answer once (`ccPanel.post({ res
 - Modify: the overlay code in main (`src/main/overlays/`), the overlay protocol/page SDK (the `ccPanel` script), `src/main/plugins/host-api.ts`, `src/host/ctx/ui.ts` (or wherever `ctx.overlay` lives), `src/sdk/types.ts` (+ example copy), `src/cli/guide/api.md`, `src/cli/guide/panels.md`
 - Modify/Create: unit tests, a fixture html overlay, `test/e2e/overlays.spec.ts`
 
-- [ ] handle API and page messaging per the API above; ownership checks in main (overlay id → plugin and window)
-- [ ] guide and types in the same change; say that Esc (core closes the top overlay) resolves `{ kind: 'dismissed' }` without asking the page, so a page that keeps drafts should save them as it goes
-- [ ] write tests: host→page before and after load, page→host without closing, final result still resolves, post after end is a no-op, another plugin's overlay unreachable, size limit
-- [ ] run tests - must pass before next task
+- [x] handle API and page messaging per the API above; ownership checks in main (overlay id → plugin and window)
+- [x] guide and types in the same change; say that Esc (core closes the top overlay) resolves `{ kind: 'dismissed' }` without asking the page, so a page that keeps drafts should save them as it goes
+- [x] write tests: host→page before and after load, page→host without closing, final result still resolves, post after end is a no-op, another plugin's overlay unreachable, size limit
+- [x] run tests - must pass before next task
+- ➕ the cap is 1 MiB less 8 KiB (1,040,384 chars of JSON, `src/shared/overlay-message.ts`), not a full 1 MiB: overlay messages cross the host RPC inside one capped message with their envelope, the same reserve as `ctx.appStorage`. The handle is a host-made UUID that main keys as `<pluginId>/<handle>` per HostApi (so per host process and window); the overlay id never leaves main. `close()` works for every kind, `post`/`onMessage` throw for terminal and url. Page messages over the cap are dropped with a console warning (the page SDK is shared with panels and does not know the overlay cap). The constant must not live in `src/sdk/panel-core.ts`: main importing it put panel-core in a shared chunk and `panel.js` broke (`require` in a page)
 
 ### Task 14: ➕ Overlay size option [model: sonnet]
 

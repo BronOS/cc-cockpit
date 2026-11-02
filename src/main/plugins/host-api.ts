@@ -9,7 +9,11 @@
 //   sessions.open   { pluginId, cwd?, prompt? }-> { tabId }      a new Claude tab in this project
 //   badge           { pluginId, panelId, value}-> null           a panel the plugin itself declares
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
-//   overlay.open    { pluginId, spec }         -> OverlayResult  on this project's window
+//   overlay.open    { pluginId, spec, handle? } -> OverlayResult on this project's window; `handle`
+//                                                                (ctx.overlay.start) names the overlay
+//                                                                in the two calls below
+//   overlay.post    { pluginId, handle, message } -> boolean     to that html overlay's page
+//   overlay.close   { pluginId, handle }       -> boolean        dismiss it (false: it already ended)
 //   secrets.get     { pluginId, key }          -> string | null  the plugin's app-wide secret store
 //   secrets.set     { pluginId, key, value }   -> null           (plugin-secrets.ts: limits, the
 //   secrets.delete  { pluginId, key }          -> null            reserved `setting:` prefix,
@@ -29,6 +33,7 @@
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
+//   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
 // and one event the host sends (host-manager routes it to contextDisposed):
 //   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls
 //                                                                and its webviews go
@@ -46,6 +51,13 @@
 // One cut main does make: `secrets.get` of a `setting:project:<id>:*` key (a project's secret
 // settings field) is refused unless <id> is this host's project; app-wide `setting:app:*` and
 // this project's keys stay readable, as ctx.settings hands this host their plaintext anyway.
+//
+// Overlay handles: the host picks a random `handle` per ctx.overlay.start and main keys it by
+// `<pluginId>/<handle>` in THIS HostApi, so a post or close only finds an overlay this host process
+// opened, in its own window, under the plugin id that opened it; the overlay id never leaves main.
+// A page's messages go to the channel registered here at open, so to this host and that plugin
+// only. Posts made before the overlay exists (the open is still checking the file) wait in the
+// handle's queue and go out, in order, once the manager created it.
 //
 // Flood limits: a plugin is code the user installed, but a bug (a send in a loop, an overlay per
 // tick, a secret set in a loop, a sign-in per tick opening browser tabs) must not bury the user's
@@ -74,7 +86,12 @@ import type { RpcHandler } from '../../host/rpc'
 import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, SessionInfo } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge } from '../../shared/ipc'
-import type { OverlayResult } from '../overlays/overlay-manager'
+import {
+  MAX_OVERLAY_MESSAGE_LENGTH,
+  OverlayOutbox,
+  type OverlayChannel,
+  type OverlayResult
+} from '../overlays/overlay-manager'
 import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
 import type { SessionEntry } from '../sessions/status-reducer'
@@ -149,8 +166,18 @@ export interface HostApiDeps {
    * project does not have. Without it the request is refused.
    */
   showPanel?(projectId: string, panelKey: string): boolean
-  /** OverlayManager.open (after the login env); `peerGone` dismisses it. */
-  openOverlay(windowId: number, spec: unknown, opener: string, peerGone?: AbortSignal): Promise<OverlayResult>
+  /** OverlayManager.open (after the login env); `peerGone` dismisses it, `channel` talks with its page. */
+  openOverlay(
+    windowId: number,
+    spec: unknown,
+    opener: string,
+    peerGone?: AbortSignal,
+    channel?: OverlayChannel
+  ): Promise<OverlayResult>
+  /** OverlayManager.post. Without it (and closeOverlay) ctx.overlay.start's post/close are refused. */
+  postOverlay?(windowId: number, overlayId: string, text: string): boolean
+  /** OverlayManager.close. */
+  closeOverlay?(windowId: number, overlayId: string): boolean
   /** ctx.secrets (PluginSecrets). */
   secrets: PluginSecretsApi
   /** ctx.oauth (PluginOAuth). */
@@ -182,6 +209,19 @@ export interface HostScope {
   /** The project folder (absolute): the default cwd of a terminal overlay. */
   projectDir: string
   plugins: readonly HostApiPlugin[]
+}
+
+/** A host-chosen overlay handle: a UUID in practice; short and plain so it cannot bloat a key. */
+const HANDLE_RE = /^[A-Za-z0-9-]{1,64}$/
+
+/** One ctx.overlay.start of this host: its overlay once created, and what waits for that. */
+interface OverlayLink {
+  /** Set by the manager's onCreated; undefined while the open is still checking the spec. */
+  overlayId?: string
+  /** Posts made before the overlay existed. */
+  pending: OverlayOutbox
+  /** close() came before the overlay existed: it is dismissed as soon as it does. */
+  closing: boolean
 }
 
 /** A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. */
@@ -296,6 +336,8 @@ export class HostApi {
   private readonly refreshes = new Map<string, Set<AbortController>>()
   /** pluginId -> overlays it has open now. */
   private readonly openOverlays = new Map<string, number>()
+  /** `<pluginId>/<handle>` -> its overlay (ctx.overlay.start), while the open is pending. */
+  private readonly overlayLinks = new Map<string, OverlayLink>()
   /** Panel keys this host badged: cleared when it goes, so a dead plugin leaves no stale count. */
   private readonly badged = new Set<string>()
   /** Aborted at dispose: every overlay this host opened is dismissed (its opener is gone). */
@@ -328,6 +370,8 @@ export class HostApi {
       badge: (params) => this.badge(params),
       'panels.show': (params) => this.showPanel(params),
       'overlay.open': (params) => this.overlay(params),
+      'overlay.post': (params) => this.overlayPost(params),
+      'overlay.close': (params) => this.overlayClose(params),
       'secrets.get': (params) => this.secretsGet(params),
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
@@ -565,13 +609,43 @@ export class HostApi {
 
   private async overlay(params: unknown): Promise<PluginOverlayResult> {
     this.alive()
-    const { pluginId, spec } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, spec, handle } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'overlay.open')
+    if (handle !== undefined && (typeof handle !== 'string' || !HANDLE_RE.test(handle))) {
+      throw new Error('overlay: handle must be 1 to 64 letters, digits or dashes')
+    }
+    const linkKey = handle === undefined ? undefined : `${plugin.id}/${handle}`
+    if (linkKey !== undefined && this.overlayLinks.has(linkKey)) throw new Error('overlay: that handle is already in use')
     const open = this.openOverlays.get(plugin.id) ?? 0
     if (open >= MAX_OPEN_OVERLAYS) throw new Error(`overlay: ${plugin.id} already has ${MAX_OPEN_OVERLAYS} overlays open`)
     // The slot is taken before the first await, so calls racing through the file read below
     // cannot get past the cap together.
     this.openOverlays.set(plugin.id, open + 1)
+    // Registered before the first await too: the host sends its first posts right behind this
+    // request, and they must find the handle (and wait in it) while the file is being checked.
+    let channel: OverlayChannel | undefined
+    if (linkKey !== undefined) {
+      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false }
+      this.overlayLinks.set(linkKey, link)
+      const pid = plugin.id
+      channel = {
+        onCreated: (overlayId) => {
+          link.overlayId = overlayId
+          for (const text of link.pending.drain()) {
+            try {
+              this.deps.postOverlay?.(this.scope.windowId, overlayId, text)
+            } catch (err) {
+              this.log(`plugin ${pid}: a queued overlay post failed: ${errorText(err)}`)
+            }
+          }
+          if (link.closing) this.deps.closeOverlay?.(this.scope.windowId, overlayId)
+        },
+        // A dying host (revoked) gets nothing more; the overlay is dismissed when it is gone.
+        onMessage: (message) => {
+          if (!this.revoked) this.emit('overlay.message', { pluginId: pid, handle, message })
+        }
+      }
+    }
     try {
       // Built (and the html file checked) before the budget is spent, so a bad spec costs nothing.
       const managerSpec = await this.managerSpec(plugin, spec)
@@ -581,7 +655,13 @@ export class HostApi {
       }
       let result: OverlayResult
       try {
-        result = await this.deps.openOverlay(this.scope.windowId, managerSpec, `plugin ${plugin.id}`, this.gone.signal)
+        result = await this.deps.openOverlay(
+          this.scope.windowId,
+          managerSpec,
+          `plugin ${plugin.id}`,
+          this.gone.signal,
+          channel
+        )
       } catch (err) {
         // The manager rejects only before it creates anything (a bad argv or url, a program that
         // cannot start, a closed window); a shown overlay always resolves. Nothing was shown.
@@ -594,7 +674,59 @@ export class HostApi {
       const left = (this.openOverlays.get(plugin.id) ?? 1) - 1
       if (left > 0) this.openOverlays.set(plugin.id, left)
       else this.openOverlays.delete(plugin.id)
+      // The overlay ended (or never opened): its handle names nothing from here on.
+      if (linkKey !== undefined) this.overlayLinks.delete(linkKey)
     }
+  }
+
+  /**
+   * The overlay a handle names: only one this host opened under that same plugin id (the key holds
+   * both), and only while it is open. The window is this host's (the manager checks it again).
+   */
+  private overlayLink(params: unknown, what: string): { link: OverlayLink | undefined; rest: Record<string, unknown> } {
+    this.alive()
+    const rest = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(rest.pluginId, what)
+    if (typeof rest.handle !== 'string' || !HANDLE_RE.test(rest.handle)) throw new Error(`${what}: bad handle`)
+    return { link: this.overlayLinks.get(`${plugin.id}/${rest.handle}`), rest }
+  }
+
+  /**
+   * ctx.overlay.start's post: to the html page of that overlay (queued until it exists and its page
+   * has loaded). False, not an error, for an overlay that ended or that this plugin did not open:
+   * a post racing the end is normal and the host makes it a no-op.
+   */
+  private overlayPost(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.post')
+    let text: string | undefined
+    try {
+      text = JSON.stringify(rest.message)
+    } catch {
+      text = undefined
+    }
+    if (text === undefined) throw new Error('overlay.post: the message is not JSON')
+    if (text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
+      throw new Error(`overlay.post: message of ${text.length} chars exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`)
+    }
+    if (!link) return false
+    if (!this.deps.postOverlay) throw new Error('overlay.post: overlay messages are not available')
+    if (link.overlayId === undefined) {
+      link.pending.push(text)
+      return true
+    }
+    return this.deps.postOverlay(this.scope.windowId, link.overlayId, text)
+  }
+
+  /** ctx.overlay.start's close: dismiss it (its result resolves as dismissed). */
+  private overlayClose(params: unknown): boolean {
+    const { link } = this.overlayLink(params, 'overlay.close')
+    if (!link) return false
+    if (!this.deps.closeOverlay) throw new Error('overlay.close: not available')
+    if (link.overlayId === undefined) {
+      link.closing = true
+      return true
+    }
+    return this.deps.closeOverlay(this.scope.windowId, link.overlayId)
   }
 
   /**

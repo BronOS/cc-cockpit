@@ -8,7 +8,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LayoutService } from '../../src/main/layout/layout-service'
-import { OverlayManager, type OverlayResult, type UrlView } from '../../src/main/overlays/overlay-manager'
+import {
+  MAX_OVERLAY_MESSAGE_LENGTH,
+  MAX_QUEUED_OVERLAY_MESSAGES,
+  OverlayManager,
+  type OverlayResult,
+  type UrlView
+} from '../../src/main/overlays/overlay-manager'
 import {
   HostApi,
   MAX_OPEN_OVERLAYS,
@@ -45,6 +51,8 @@ let registry: SessionRegistry
 let tabs: TabManager
 let layouts: LayoutService
 let overlays: OverlayManager
+/** What the overlay manager sent to each window's renderer. */
+let emitted: { windowId: number; channel: string; payload: unknown }[]
 /** What main told each window about tabs it did not ask for (`tabs.added`). */
 let announced: { projectId: string; tab: TabInfo; windowId: number }[]
 let deps: HostApiDeps
@@ -99,12 +107,15 @@ beforeEach(() => {
   layouts.setPluginPanels(A, 'a.two', [{ id: 'inbox', title: 'Inbox', defaultZone: 'left' }])
   layouts.setPluginPanels(B, 'b.one', [{ id: 'board', title: 'Board', defaultZone: 'left' }])
   const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
+  emitted = []
   overlays = new OverlayManager({
     backend: overlayBackend,
     views: { create: () => view, focusWindow: () => {} },
     isWindowOpen: (id) => id === WIN_A || id === WIN_B,
     env: () => ({ PATH: '/usr/bin' }),
-    emit: () => {},
+    emit: (windowId, channel, payload) => {
+      emitted.push({ windowId, channel, payload })
+    },
     commandForChord: () => undefined,
     log: () => {}
   })
@@ -119,7 +130,9 @@ beforeEach(() => {
       return tab
     },
     setBadge: (projectId, key, badge) => layouts.setBadge(projectId, key, badge),
-    openOverlay: async (windowId, spec, opener, peerGone) => overlays.open(windowId, spec, opener, peerGone),
+    openOverlay: async (windowId, spec, opener, peerGone, channel) => overlays.open(windowId, spec, opener, peerGone, channel),
+    postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
+    closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
     secrets: unusedSecrets,
     oauth: unusedOAuth,
     log: () => {}
@@ -558,6 +571,118 @@ describe('overlay.open', () => {
       expect(t.results).toEqual([{ kind: 'dismissed' }])
     }
     expect(overlays.infos(WIN_A)).toEqual([])
+  })
+})
+
+describe('overlay messages (ctx.overlay.start)', () => {
+  const H = '0f6c2c4e-1111-4222-8333-944455556666'
+  const messagesTo = (windowId: number): unknown[] =>
+    emitted.filter((e) => e.windowId === windowId && e.channel === 'overlays.message').map((e) => e.payload)
+  const openHtml = async (
+    call: (method: string, params?: unknown) => Promise<unknown>,
+    handle = H
+  ): Promise<{ result: Promise<unknown>; id: () => string }> => {
+    const result = call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html' }, handle })
+    return { result, id: () => overlays.infos(WIN_A).at(-1)!.id }
+  }
+
+  it('queues posts until the overlay exists and its page loaded; page messages reach this host only', async () => {
+    const events: { event: string; params: unknown }[] = []
+    const call = hostA(events)
+    const { result, id } = await openHtml(call)
+    // Sent right behind the open, while main still checks the file: held by the handle.
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: { n: 1 } })).resolves.toBe(true)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: { n: 2 } })).resolves.toBe(true)
+    // The page has not loaded: nothing reached the renderer yet.
+    expect(messagesTo(WIN_A)).toEqual([])
+    overlays.pageReady(WIN_A, id())
+    expect(messagesTo(WIN_A)).toEqual([
+      { overlayId: id(), message: '{"n":1}' },
+      { overlayId: id(), message: '{"n":2}' }
+    ])
+    await call('overlay.post', { pluginId: 'a.one', handle: H, message: 'after load' })
+    expect(messagesTo(WIN_A).at(-1)).toEqual({ overlayId: id(), message: '"after load"' })
+
+    // The page posts without `result`: the overlay stays, the opener's host hears it with the handle.
+    expect(overlays.pageMessage(WIN_A, id(), '{"draft":"hi"}')).toBe(true)
+    expect(events).toContainEqual({ event: 'overlay.message', params: { pluginId: 'a.one', handle: H, message: { draft: 'hi' } } })
+    expect(overlays.infos(WIN_A)).toHaveLength(1)
+    // From another window's renderer the id is unknown; junk and oversize text are dropped.
+    expect(overlays.pageMessage(WIN_B, id(), '{"x":1}')).toBe(false)
+    expect(overlays.pageMessage(WIN_A, id(), 'not json')).toBe(false)
+    expect(overlays.pageMessage(WIN_A, id(), JSON.stringify('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH)))).toBe(false)
+    expect(events.filter((e) => e.event === 'overlay.message')).toHaveLength(1)
+
+    // The final answer still closes it and resolves the open.
+    const overlayId = id()
+    expect(overlays.result(WIN_A, overlayId, { done: true })).toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'value', value: { done: true } })
+    // Ended: the handle names nothing; post and close answer false (the host makes them no-ops).
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 1 })).resolves.toBe(false)
+    await expect(call('overlay.close', { pluginId: 'a.one', handle: H })).resolves.toBe(false)
+    expect(overlays.post(WIN_A, overlayId, '1')).toBe(false)
+  })
+
+  it("another plugin, another window's host or a renderer never reach an overlay they did not open", async () => {
+    const call = hostA()
+    const { result, id } = await openHtml(call)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    overlays.pageReady(WIN_A, id())
+    // a.two shares the host but not the handle key.
+    await expect(call('overlay.post', { pluginId: 'a.two', handle: H, message: 'x' })).resolves.toBe(false)
+    await expect(call('overlay.close', { pluginId: 'a.two', handle: H })).resolves.toBe(false)
+    // A plugin this host does not run is refused outright.
+    await expect(call('overlay.post', { pluginId: 'b.one', handle: H, message: 'x' })).rejects.toThrow('unknown plugin')
+    // The host of another window, even under the same plugin id and handle.
+    const other = hostFor({ ...scopeA(), projectId: B, windowId: WIN_B, projectDir: projB })
+    await expect(other('overlay.post', { pluginId: 'a.one', handle: H, message: 'x' })).resolves.toBe(false)
+    await expect(other('overlay.close', { pluginId: 'a.one', handle: H })).resolves.toBe(false)
+    // The manager itself scopes every id to the window asking.
+    expect(overlays.post(WIN_B, id(), '"x"')).toBe(false)
+    expect(messagesTo(WIN_A)).toEqual([])
+    expect(messagesTo(WIN_B)).toEqual([])
+    // The owner closes it: dismissed.
+    await expect(call('overlay.close', { pluginId: 'a.one', handle: H })).resolves.toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'dismissed' })
+  })
+
+  it('close before the overlay exists dismisses it once it does; Esc dismisses it like any overlay', async () => {
+    const call = hostA()
+    const early = await openHtml(call)
+    await expect(call('overlay.close', { pluginId: 'a.one', handle: H })).resolves.toBe(true)
+    await expect(early.result).resolves.toEqual({ kind: 'dismissed' })
+    expect(overlays.infos(WIN_A)).toEqual([])
+
+    const later = await openHtml(call, 'second-handle')
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    expect(overlays.pop(WIN_A)).toBe(true)
+    await expect(later.result).resolves.toEqual({ kind: 'dismissed' })
+  })
+
+  it('refuses a bad handle, a reused one, an oversize message and a full queue', async () => {
+    const call = hostA()
+    const bad = (handle: unknown): Promise<void> =>
+      expect(call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html' }, handle })).rejects.toThrow('handle')
+    await bad('')
+    await bad('x'.repeat(65))
+    await bad('a/b')
+    await bad(5)
+    const { result } = await openHtml(call)
+    await expect(call('overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com' }, handle: H })).rejects.toThrow(
+      'already in use'
+    )
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 'x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH) })).rejects.toThrow(
+      `exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`
+    )
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    // The page never loads: the queue is bounded.
+    for (let i = 0; i < MAX_QUEUED_OVERLAY_MESSAGES; i++) await call('overlay.post', { pluginId: 'a.one', handle: H, message: i })
+    await expect(call('overlay.post', { pluginId: 'a.one', handle: H, message: 'one more' })).rejects.toThrow('queue is full')
+    overlays.closeTop(WIN_A)
+    await expect(result).resolves.toEqual({ kind: 'dismissed' })
+    // The rate limits are as before: a refused open (bad handle) cost nothing.
+    expect(messagesTo(WIN_A)).toEqual([])
   })
 })
 

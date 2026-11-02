@@ -72,6 +72,10 @@ behind it are in [design.md](design.md).
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
+- Two-way html overlays: `ctx.overlay.start(spec)` returns `{ result, post, onMessage, close }`; the page's
+  `ccPanel.post(message)` without a `result` key reaches `onMessage` and keeps the overlay open, `ccPanel.post({ result })`
+  still closes it, and the host's posts wait until the page has loaded. Messages up to 1 MiB less 8 KiB, routed by main
+  only between the overlay and the plugin and window that opened it. Esc dismisses without asking the page.
 - Plugin system: install from git, from the Marketplace, or link a folder, per-project enable, a sandboxed panel
   per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify...).
 - Plugin secrets and sign-ins: core has no accounts. A plugin brings its own sign-in: a token in a

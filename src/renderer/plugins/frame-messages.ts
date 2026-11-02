@@ -1,6 +1,7 @@
 // What the shell says to a plugin page's iframe, and how it reads a plugin overlay's answer.
 // DOM-free so unit tests load it; the frame side is src/sdk/panel-core.ts.
 import { MAX_PANEL_MESSAGE_LENGTH, PORT_MESSAGE, THEME_MESSAGE } from '../../sdk/panel-core'
+import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import type { Theme } from '../../shared/theme'
 
 /** A page of a plugin (a panel, or an html overlay a plugin opened), not an inline overlay page. */
@@ -32,4 +33,20 @@ export function overlayResultOf(data: unknown): { value: unknown } | undefined {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
   if (!Object.prototype.hasOwnProperty.call(parsed, 'result')) return undefined
   return { value: (parsed as { result: unknown }).result }
+}
+
+/**
+ * A plugin overlay page's message for its opener (ctx.overlay.start): what it posted when that is
+ * not an answer (overlayResultOf comes first), as the JSON text to relay, or undefined when it is
+ * not a string or is over the overlay limit (main checks both again). Parsed once here only to
+ * tell JSON from junk; main parses its own copy.
+ */
+export function overlayMessageOf(data: unknown): string | undefined {
+  if (typeof data !== 'string' || data.length > MAX_OVERLAY_MESSAGE_LENGTH) return undefined
+  try {
+    JSON.parse(data)
+  } catch {
+    return undefined
+  }
+  return data
 }

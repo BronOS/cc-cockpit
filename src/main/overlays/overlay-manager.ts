@@ -7,6 +7,13 @@
 //                                        pages; a plugin's page posts `{ result }` with panel.js)
 //   any       { kind: 'dismissed' }     ✕, Esc, Cmd+Shift+W, the window closed, the app quit
 //
+// Messages (ctx.overlay.start, friction round 1 Task 13): an opener that passes an OverlayChannel
+// talks to an html overlay's page while it is open. `post` goes to the page (queued here until the
+// renderer says the page's port is up: `pageReady`), and what the page posts without a `result`
+// key comes back through `pageMessage` to that channel only. The channel is the opener's own
+// callback, kept on the overlay record: nothing a renderer sends can name another receiver, and a
+// page can only reach the record through an id of its own window's stack.
+//
 // No Electron import: terminal overlays run on a PtyBackend (its own PtyService, separate from
 // the tabs'), url overlays go through a UrlViewFactory (the WebContentsView adapter is
 // electron-url-view.ts), and renderer events leave through `emit`. Unit tests pass fakes.
@@ -21,6 +28,7 @@ import { isAbsolute } from 'node:path'
 import { toError } from '../../shared/error-text'
 import type { EventChannel, IpcEventMap, OverlayInfo, OverlayKind } from '../../shared/ipc'
 import { chordFromEvent } from '../../shared/keys'
+import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { PLUGIN_SCHEME } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
@@ -112,6 +120,58 @@ export const MAX_ARGV_ENTRIES = 1000
 export const MAX_ARGV_CHARS = 128 * 1024
 /** Largest html result value (as JSON); the CLI prints it, a plugin gets it over RPC. */
 export const MAX_RESULT_BYTES = 1024 * 1024
+/** Largest message either way between an html overlay's page and its opener, as JSON text. */
+export { MAX_OVERLAY_MESSAGE_LENGTH }
+/**
+ * Messages an opener may post before the page can take them (it is loading, or the overlay is not
+ * created yet: HostApi holds those). A page loads in well under a second; more is a loop.
+ */
+export const MAX_QUEUED_OVERLAY_MESSAGES = 100
+/** ...and their JSON text together, so a queue of 100 one-MiB messages never sits in main. */
+export const MAX_QUEUED_OVERLAY_LENGTH = 8 * 1024 * 1024
+
+/**
+ * The bounded queue of messages for a page that cannot take them yet. `push` throws, with the
+ * limit in the message, when it is full: the opener hears it (its post fails) instead of the
+ * message silently going nowhere.
+ */
+export class OverlayOutbox {
+  private texts: string[] = []
+  private length = 0
+
+  push(text: string): void {
+    if (this.texts.length >= MAX_QUEUED_OVERLAY_MESSAGES || this.length + text.length > MAX_QUEUED_OVERLAY_LENGTH) {
+      throw new Error(
+        `overlay: the page has not loaded yet and its queue is full (${MAX_QUEUED_OVERLAY_MESSAGES} messages or ${MAX_QUEUED_OVERLAY_LENGTH} chars)`
+      )
+    }
+    this.texts.push(text)
+    this.length += text.length
+  }
+
+  /** Everything queued, oldest first; the queue is empty after. */
+  drain(): string[] {
+    const out = this.texts
+    this.texts = []
+    this.length = 0
+    return out
+  }
+}
+
+/**
+ * The opener's side of an html overlay's messages (HostApi for ctx.overlay.start). Called by the
+ * manager only, never with anything a renderer chose but the page's own (checked) message.
+ */
+export interface OverlayChannel {
+  /**
+   * The overlay exists, with this id: called inside `start`, after the overlay is on its stack and
+   * before `start` returns (so before any page could post). Called for every kind; the other
+   * members matter for html overlays only.
+   */
+  onCreated?(overlayId: string): void
+  /** The page posted a message without a `result` key: plain JSON data, parsed from its text. */
+  onMessage(message: unknown): void
+}
 
 /** Re-exported: a dismissed terminal overlay's program gets SIGKILL after this (PtyService.terminate). */
 export { KILL_GRACE_MS } from '../pty/pty-service'
@@ -161,6 +221,15 @@ interface Overlay {
    * overlay Node warns MaxListenersExceededWarning (task 27 review).
    */
   unlinkPeer?: () => void
+  /** An html overlay's opener that talks with its page (ctx.overlay.start); absent for the CLI's. */
+  channel?: OverlayChannel
+  /**
+   * The renderer reported the page's port up (`pageReady`): posts go straight out. Until then they
+   * wait in `outbox`. Cleared again when the window's renderer reloads (`list`), since the page
+   * reloads with it and posts sent meanwhile would reach no port.
+   */
+  pageReady: boolean
+  outbox: OverlayOutbox
 }
 
 export class OverlayManager {
@@ -202,10 +271,11 @@ export class OverlayManager {
     windowId: number,
     spec: unknown,
     opener: string,
-    peerGone?: AbortSignal
+    peerGone?: AbortSignal,
+    channel?: OverlayChannel
   ): Promise<OverlayResult> {
     try {
-      return this.start(windowId, spec, opener, peerGone)
+      return this.start(windowId, spec, opener, peerGone, channel)
     } catch (err) {
       return Promise.reject(toError(err))
     }
@@ -221,7 +291,8 @@ export class OverlayManager {
     windowId: number,
     spec: unknown,
     opener: string,
-    peerGone?: AbortSignal
+    peerGone?: AbortSignal,
+    channel?: OverlayChannel
   ): Promise<OverlayResult> {
     const parsed = parseOverlaySpec(spec)
     // Before anything is created: no program, no view, no stack for a window that is gone.
@@ -231,8 +302,18 @@ export class OverlayManager {
     const promise = new Promise<OverlayResult>((resolve) => {
       settle = resolve
     })
-    const overlay: Overlay = { id, windowId, info: infoOf(id, parsed), opener, settle }
+    const overlay: Overlay = {
+      id,
+      windowId,
+      info: infoOf(id, parsed),
+      opener,
+      settle,
+      pageReady: false,
+      outbox: new OverlayOutbox()
+    }
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
+    // Only an html page has anyone to talk to; a terminal or url overlay ignores the messaging part.
+    if (parsed.kind === 'html' && channel) overlay.channel = channel
     // A failed spawn or view throws out of here (open turns it into a rejection), before the
     // overlay is anywhere: nothing to undo.
     if (parsed.kind === 'terminal') {
@@ -263,6 +344,13 @@ export class OverlayManager {
     stack.push(overlay)
     this.stacks.set(windowId, stack)
     this.changed(windowId)
+    // Before the peerGone check below may end it: an opener that queued posts or a close before the
+    // overlay existed learns its id here, and a finish() right after makes those posts no-ops.
+    try {
+      channel?.onCreated?.(id)
+    } catch (err) {
+      this.log(`overlay ${id}: the opener's onCreated failed: ${String(err)}`)
+    }
     // The opener (a `ccc overlay` that was killed or timed out) is gone: nobody waits for the
     // result, so do not leave the overlay (and a terminal one's program) behind. finish() is a
     // no-op when the overlay is already settled.
@@ -297,6 +385,8 @@ export class OverlayManager {
     const stack = this.stacks.get(windowId) ?? []
     // The old page never acked what it was sent; a paused PTY would otherwise stay paused.
     for (const o of stack) if (o.info.kind === 'terminal') this.pty.resetFlow(o.id)
+    // Its html pages reload with it: an opener's posts wait again until each one's port is up.
+    for (const o of stack) o.pageReady = false
     return this.infos(windowId)
   }
 
@@ -415,6 +505,62 @@ export class OverlayManager {
     return true
   }
 
+  /**
+   * The opener sends `text` (one JSON text, as the page's port carries it) to its html overlay's
+   * page. True when it went out or was queued until the page has loaded; false for an overlay that
+   * is gone, of another window, or opened without a channel (only the opener holds the id, and
+   * HostApi looks it up by its own plugin and handle). Throws for a message over the limit or a
+   * full queue.
+   */
+  post(windowId: number, overlayId: string, text: string): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay?.channel) return false
+    if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
+      throw new RangeError(`overlay post: message exceeds ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
+    }
+    if (overlay.pageReady) this.options.emit(windowId, 'overlays.message', { overlayId, message: text })
+    else overlay.outbox.push(text)
+    return true
+  }
+
+  /**
+   * The renderer handed an html overlay's page its port (on every page load): what the opener
+   * posted before goes out now, in order. A no-op for an overlay without a channel.
+   */
+  pageReady(windowId: number, overlayId: string): void {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay?.channel) return
+    overlay.pageReady = true
+    for (const message of overlay.outbox.drain()) this.options.emit(windowId, 'overlays.message', { overlayId, message })
+  }
+
+  /**
+   * An html overlay's page posted a message that is not a result (relayed by the renderer of the
+   * window it is in). Only to the channel of the overlay's own opener; false (dropped, logged) for
+   * an overlay of another window, one without a channel, or text that is not JSON within the limit.
+   */
+  pageMessage(windowId: number, overlayId: string, text: unknown): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay?.channel) return false
+    if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
+      this.log(`overlay ${overlay.id}: dropped a page message: not a JSON string of at most ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
+      return false
+    }
+    let message: unknown
+    try {
+      message = JSON.parse(text)
+    } catch {
+      this.log(`overlay ${overlay.id}: dropped a page message: not JSON`)
+      return false
+    }
+    try {
+      overlay.channel.onMessage(message)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: delivering a page message failed: ${String(err)}`)
+    }
+    return true
+  }
+
   /** The window closed: every overlay it had is dismissed. */
   closeWindow(windowId: number): void {
     for (const overlay of [...(this.stacks.get(windowId) ?? [])].reverse()) {
@@ -445,6 +591,9 @@ export class OverlayManager {
     this.byId.delete(overlay.id)
     overlay.unlinkPeer?.()
     overlay.unlinkPeer = undefined
+    // Posts still waiting for a page that never loaded go nowhere; the opener hears the result.
+    overlay.outbox.drain()
+    overlay.channel = undefined
     const stack = this.stacks.get(overlay.windowId)
     if (stack) {
       const i = stack.indexOf(overlay)

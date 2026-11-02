@@ -771,6 +771,10 @@ export interface OverlayHandlerDeps {
     bounds: { x: number; y: number; width: number; height: number }
   ): void
   result(windowId: number, overlayId: string, value: unknown): boolean
+  /** A plugin overlay page's message (OverlayManager.pageMessage checks text and size). */
+  message(windowId: number, overlayId: string, text: string): boolean
+  /** The page's port is up (OverlayManager.pageReady). */
+  ready(windowId: number, overlayId: string): void
 }
 
 /**
@@ -826,6 +830,17 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
       fields('overlays.result', payload).value
     )
   )
+
+  // Only to the opener of an overlay of the SENDER's window (the manager looks the id up there).
+  router.handleProject('overlays.message', (ctx, payload) => {
+    const message = fields('overlays.message', payload).message
+    if (typeof message !== 'string') throw new Error('overlays.message: message must be a string')
+    return deps.message(ctx.windowId, overlayIdOf('overlays.message', payload), message)
+  })
+
+  router.handleProject('overlays.ready', (ctx, payload) => {
+    deps.ready(ctx.windowId, overlayIdOf('overlays.ready', payload))
+  })
 }
 
 /** A webview panel of a project, as main's layout knows it (LayoutService.webviewPanel). */

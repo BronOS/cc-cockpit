@@ -152,7 +152,8 @@ export type OverlaySpec =
   /**
    * One of the plugin's own pages (plugin-relative path), loaded like a panel: the plugin's CSP,
    * the app theme and the panel SDK. The page answers with `ccPanel.post({ result: value })`,
-   * which closes the overlay and resolves `open` with `{ kind: 'value', value }`.
+   * which closes the overlay and resolves `open` with `{ kind: 'value', value }`. With
+   * `overlay.start`, anything else it posts (no `result` key) goes to the handle's `onMessage`.
    */
   | { kind: 'html'; file: string; title?: string }
 
@@ -160,6 +161,25 @@ export type OverlayResult =
   | { kind: 'exit'; code: number }
   | { kind: 'value'; value: JsonValue }
   | { kind: 'dismissed' }
+
+/** An overlay opened with `ctx.overlay.start`, while it is open. */
+export interface OverlayHandle {
+  /** What `ctx.overlay.open` resolves with: the page's result, an exit code, or dismissed. */
+  readonly result: Promise<OverlayResult>
+  /**
+   * html only (throws for another kind): send JSON to the page, where `ccPanel.onMessage` hears
+   * it. Queued until the page has loaded. At most 1,040,384 chars of JSON (1 MiB less 8 KiB for
+   * the transport); a larger one throws a RangeError. A no-op once the overlay ended.
+   */
+  post(message: JsonValue): void
+  /**
+   * html only (throws for another kind): hear what the page posts without a `result` key (the
+   * overlay stays open). Listeners are dropped when the overlay ends.
+   */
+  onMessage(listener: (message: JsonValue) => void): Disposer
+  /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
+  close(): void
+}
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
 
@@ -328,6 +348,12 @@ export interface PluginContext {
      * folder and must stay inside it; a url must be http or https.
      */
     open(spec: OverlaySpec): Promise<OverlayResult>
+    /**
+     * The same overlay as a handle (`open(spec)` is `start(spec).result`): an html page and the
+     * plugin exchange messages while it is open. Esc, the close button and Cmd+Shift+W dismiss it
+     * without asking the page, so a page that keeps a draft should post it as it goes.
+     */
+    start(spec: OverlaySpec): OverlayHandle
   }
 
   // sessions

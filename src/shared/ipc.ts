@@ -783,6 +783,13 @@ export interface IpcInvokeMap {
   }
   /** An html overlay's page posted its result; it closes with `{ kind: 'value', value }`. */
   'overlays.result': { req: { overlayId: string; value: unknown }; res: boolean }
+  /**
+   * A plugin's html overlay page posted a message without a `result` key (one JSON text, as its
+   * port carried it): main hands it to the opener of that overlay only. False when dropped.
+   */
+  'overlays.message': { req: { overlayId: string; message: string }; res: boolean }
+  /** That page has its port now (every page load): main sends the opener's queued posts. */
+  'overlays.ready': { req: { overlayId: string }; res: void }
 
   // Webview panels (PanelInfo.kind 'webview'). The panel key must name a webview panel of a
   // plugin of the sender's project; the view is the one in the sender's window.
@@ -878,6 +885,8 @@ export interface IpcEventMap {
   'overlays.updated': OverlayInfo[]
   /** Batched output of a terminal overlay. Ack it with `overlays.ack`. */
   'overlays.data': { overlayId: string; data: string }
+  /** The opener of a plugin's html overlay posted to its page: one JSON text for the page's port. */
+  'overlays.message': { overlayId: string; message: string }
   /** The project's commands changed (a plugin registered or dropped one): replace the key table. */
   'commands.updated': CommandsView
   /**
@@ -984,6 +993,8 @@ export const INVOKE_CHANNELS = [
   'overlays.ack',
   'overlays.bounds',
   'overlays.result',
+  'overlays.message',
+  'overlays.ready',
   'webviews.placement',
   'webviews.step',
   'webviews.current',
@@ -1015,6 +1026,7 @@ export const EVENT_CHANNELS = [
   'layout.updated',
   'overlays.updated',
   'overlays.data',
+  'overlays.message',
   'commands.updated',
   'panels.reload',
   'webviews.navigated',

@@ -66,6 +66,26 @@ An html overlay (`ctx.overlay.open({ kind: 'html', file })`) is a plugin page lo
 It answers with `ccPanel.post({ result: value })`, which closes the overlay and resolves `open`
 with `{ kind: 'value', value }`.
 
+Opened with `ctx.overlay.start(spec)` instead, the page and the plugin also talk while it is open:
+`ccPanel.post(message)` without a `result` key leaves the overlay open and reaches the handle's
+`onMessage`; `ccPanel.onMessage(fn)` hears the handle's `post` (sent once the page has loaded). A
+message is at most 1,040,384 chars of JSON (1 MiB less 8 KiB); a larger page message is dropped
+with a console warning. Only the plugin that opened the overlay hears its page. Esc (or ✕,
+Cmd+Shift+W) closes the overlay as `{ kind: 'dismissed' }` without asking the page: a page with a
+draft should post it as it changes, so nothing is lost when the user presses Esc.
+
+```js
+// host
+const chat = ctx.overlay.start({ kind: 'html', file: 'chat.html', title: 'Chat' })
+chat.post({ history })                       // queued until the page has loaded
+chat.onMessage((m) => saveDraft(m.draft))    // the page posts { draft } on every change
+const result = await chat.result             // { kind: 'value', value } or { kind: 'dismissed' }
+// page
+ccPanel.onMessage((m) => render(m.history))
+input.addEventListener('input', () => ccPanel.post({ draft: input.value }))
+send.addEventListener('click', () => ccPanel.post({ result: input.value }))
+```
+
 ## Badges
 
 `ctx.badge(panelId, n | 'dot' | null)` shows a count or a dot on the panel's icon.

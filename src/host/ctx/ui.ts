@@ -4,6 +4,8 @@
 //                                      (src/main/plugins/host-api.ts) against the host's scope
 //   overlay.open(spec)                 terminal (argv only), url (http/https), html (a file of the
 //                                      plugin's own folder, read by main); resolves when it closes
+//   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close };
+//                                      open(spec) is start(spec).result
 //   panels.post / panels.onMessage     over the panel's MessagePort
 //
 // Panel ports: main creates one channel per panel instance and hands the host its end, tagged with
@@ -14,7 +16,23 @@
 // a length check and nothing but plain data crosses. A post while the panel has no port (it is
 // not shown, or its iframe is reloading) is dropped: the panel asks for what it needs when it
 // connects, the plugin does not have to track whether it is open.
-import type { BadgeValue, Disposer, JsonValue, OverlayResult, OverlaySpec, PluginContext } from '../../sdk/types'
+//
+// Overlay messages take another road than panels': main relays them (the page's port ends in the
+// shell renderer, see src/renderer/overlays/HtmlOverlay.tsx), over the host RPC. Each start picks a
+// random handle that main keys by plugin id (src/main/plugins/host-api.ts); main's
+// `overlay.message` events come back with it and OverlayLinks hands them to that handle's
+// listeners. Once the overlay ended, post/close do nothing and the listeners are dropped.
+import { randomUUID } from 'node:crypto'
+import type {
+  BadgeValue,
+  Disposer,
+  JsonValue,
+  OverlayHandle,
+  OverlayResult,
+  OverlaySpec,
+  PluginContext
+} from '../../sdk/types'
+import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { errorText } from '../../shared/error-text'
 
 /** Longest panel message, as JSON text (the RPC cap). */
@@ -199,6 +217,74 @@ export class PanelPorts {
   }
 }
 
+/** One ctx.overlay.start handle of this host, while its overlay is open. */
+interface OverlayLink {
+  readonly pluginId: string
+  readonly handle: string
+  readonly listeners: Set<MessageListener>
+  ended: boolean
+}
+
+/**
+ * The open overlay handles of every plugin of one host, keyed `<pluginId>/<handle>`, and the
+ * routing of main's `overlay.message { pluginId, handle, message }` to their listeners.
+ */
+export class OverlayLinks {
+  private readonly links = new Map<string, OverlayLink>()
+
+  constructor(private readonly log: (pluginId: string, message: string) => void) {}
+
+  open(pluginId: string): OverlayLink {
+    const link: OverlayLink = { pluginId, handle: randomUUID(), listeners: new Set(), ended: false }
+    this.links.set(`${pluginId}/${link.handle}`, link)
+    return link
+  }
+
+  /** The overlay ended: post/close become no-ops and its listeners are dropped. */
+  end(link: OverlayLink): void {
+    link.ended = true
+    link.listeners.clear()
+    const key = `${link.pluginId}/${link.handle}`
+    if (this.links.get(key) === link) this.links.delete(key)
+  }
+
+  /** The plugin's ctx ended: its handles end with it (the overlays close when main says so). */
+  removePlugin(pluginId: string): void {
+    for (const link of [...this.links.values()]) if (link.pluginId === pluginId) this.end(link)
+  }
+
+  /** main's `overlay.message`; anything malformed or for an ended handle is dropped. */
+  handleEvent(params: unknown): void {
+    const { pluginId, handle, message } = (params ?? {}) as Record<string, unknown>
+    if (typeof pluginId !== 'string' || typeof handle !== 'string') return
+    const link = this.links.get(`${pluginId}/${handle}`)
+    if (!link || link.ended) return
+    for (const listener of [...link.listeners]) {
+      try {
+        // Each listener its own copy, as for panels: one cannot change what the next one sees.
+        listener(structuredClone(message as JsonValue))
+      } catch (err) {
+        this.log(pluginId, `an overlay onMessage listener threw: ${errorText(err)}`)
+      }
+    }
+  }
+}
+
+/** A message's JSON text, checked against the overlay limit (throws with the limit named). */
+function overlayMessageText(message: unknown): string {
+  let text: string | undefined
+  try {
+    text = JSON.stringify(message)
+  } catch (err) {
+    throw new TypeError(`overlay post: the message is not JSON: ${errorText(err)}`, { cause: err })
+  }
+  if (text === undefined) throw new TypeError('overlay post: the message is not JSON')
+  if (text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
+    throw new RangeError(`overlay post: message of ${text.length} chars exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`)
+  }
+  return text
+}
+
 export interface UiApiDeps {
   pluginId: string
   /** Panel ids the manifest declares (main sent them in the spec). */
@@ -209,6 +295,8 @@ export interface UiApiDeps {
   alive(): void
   guardAsync<T>(body: () => Promise<T>): Promise<T>
   ports: PanelPorts
+  /** The host's overlay handles (ctx.overlay.start). */
+  overlays: OverlayLinks
   /** Where a failed fire-and-forget request (badge) is reported. */
   logError(message: string): void
 }
@@ -239,7 +327,64 @@ function checkBadge(value: unknown): BadgeValue {
 export function createUiApi(
   deps: UiApiDeps
 ): Pick<PluginContext, 'panels' | 'badge' | 'overlay'> {
-  const { pluginId, ports } = deps
+  const { pluginId, ports, overlays } = deps
+
+  const start = (spec: OverlaySpec): OverlayHandle => {
+    const html = typeof spec === 'object' && spec !== null && (spec as { kind?: unknown }).kind === 'html'
+    /** Made when the request goes out (below); stays undefined when the call is refused first. */
+    let link: OverlayLink | undefined
+    const result = deps.guardAsync(async () => {
+      if (typeof spec !== 'object' || spec === null) throw new TypeError('overlay.open needs a spec object')
+      link = overlays.open(pluginId)
+      try {
+        // No timeout: the overlay is open until the user (or its program) ends it. A host that
+        // stops rejects it (the RPC closes) and main dismisses the overlay. The request goes out
+        // synchronously, inside start(), so a post right after start() reaches main behind it.
+        return (await deps.call(
+          'overlay.open',
+          { pluginId, spec, handle: link.handle },
+          { timeoutMs: Infinity }
+        )) as OverlayResult
+      } finally {
+        overlays.end(link)
+      }
+    })
+    const htmlOnly = (what: string): void => {
+      if (!html) throw new TypeError(`overlay ${what}: only an html overlay has a page to message`)
+    }
+    /** Fire and forget: a refusal (a full queue) is logged; false (it just ended) is ignored. */
+    const send = (method: string, params: Record<string, unknown>): void => {
+      void deps.call(method, params).catch((err: unknown) => deps.logError(`${method}: ${errorText(err)}`))
+    }
+    return Object.freeze({
+      result,
+      post: (message: JsonValue): void => {
+        htmlOnly('post')
+        if (!link || link.ended) return
+        deps.alive()
+        overlayMessageText(message)
+        send('overlay.post', { pluginId, handle: link.handle, message })
+      },
+      onMessage: (listener: MessageListener): Disposer => {
+        htmlOnly('onMessage')
+        if (typeof listener !== 'function') throw new TypeError('overlay onMessage needs a function')
+        const current = link
+        if (!current || current.ended) return () => {}
+        deps.alive()
+        const entry: MessageListener = (m) => listener(m)
+        current.listeners.add(entry)
+        return () => {
+          current.listeners.delete(entry)
+        }
+      },
+      close: (): void => {
+        if (!link || link.ended) return
+        deps.alive()
+        send('overlay.close', { pluginId, handle: link.handle })
+      }
+    })
+  }
+
   return {
     panels: Object.freeze({
       post: (panelId: string, message: JsonValue): void => {
@@ -272,13 +417,8 @@ export function createUiApi(
       })
     },
     overlay: Object.freeze({
-      open: (spec: OverlaySpec): Promise<OverlayResult> =>
-        deps.guardAsync(async () => {
-          if (typeof spec !== 'object' || spec === null) throw new TypeError('overlay.open needs a spec object')
-          // No timeout: the overlay is open until the user (or its program) ends it. A host that
-          // stops rejects it (the RPC closes) and main dismisses the overlay.
-          return (await deps.call('overlay.open', { pluginId, spec }, { timeoutMs: Infinity })) as OverlayResult
-        })
+      open: (spec: OverlaySpec): Promise<OverlayResult> => start(spec).result,
+      start
     })
   }
 }

@@ -11,7 +11,8 @@ import {
   type PortLike,
   type ThemeRoot
 } from '../../src/sdk/panel-core'
-import { isPluginPage, overlayResultOf, portMessage, themeMessage } from '../../src/renderer/plugins/frame-messages'
+import { isPluginPage, overlayMessageOf, overlayResultOf, portMessage, themeMessage } from '../../src/renderer/plugins/frame-messages'
+import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
 import type { Theme } from '../../src/shared/theme'
 
 class FakePort implements PortLike {
@@ -204,5 +205,15 @@ describe('frame messages (the shell side)', () => {
     expect(overlayResultOf({ result: 1 })).toBeUndefined()
     expect(overlayResultOf('not json')).toBeUndefined()
     expect(overlayResultOf(`{"result":"${'x'.repeat(MAX_PANEL_MESSAGE_LENGTH)}"}`)).toBeUndefined()
+  })
+
+  it("relays a plugin overlay page's other messages as their JSON text, within the overlay limit", () => {
+    expect(overlayMessageOf('{"draft":"a"}')).toBe('{"draft":"a"}')
+    expect(overlayMessageOf('3')).toBe('3')
+    expect(overlayMessageOf('not json')).toBeUndefined()
+    expect(overlayMessageOf({ draft: 'a' })).toBeUndefined()
+    // Over the overlay limit (below the panel one): the host transport could not carry it.
+    expect(overlayMessageOf(JSON.stringify('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH - 1)))).toBeUndefined()
+    expect(overlayMessageOf(JSON.stringify('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH - 2)))).toHaveLength(MAX_OVERLAY_MESSAGE_LENGTH)
   })
 })

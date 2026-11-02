@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ctx'
 import type { PanelPort } from '../../src/host/ctx/ui'
+import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
 import type { PluginContext } from '../../src/sdk/types'
 import { hostSpec } from '../fakes/host-spec'
 import { memoryPortPair, type MemoryPort } from '../fakes/memory-port'
@@ -133,9 +134,108 @@ describe('ctx.overlay', () => {
     const { ctx, calls } = setup(() => ({ kind: 'value', value: 42 }))
     await expect(ctx.overlay.open({ kind: 'html', file: 'pick.html' })).resolves.toEqual({ kind: 'value', value: 42 })
     expect(calls).toEqual([
-      { method: 'overlay.open', params: { pluginId: 'a.one', spec: { kind: 'html', file: 'pick.html' } }, options: { timeoutMs: Infinity } }
+      {
+        method: 'overlay.open',
+        params: { pluginId: 'a.one', spec: { kind: 'html', file: 'pick.html' }, handle: expect.any(String) },
+        options: { timeoutMs: Infinity }
+      }
     ])
     await expect(ctx.overlay.open(null as never)).rejects.toThrow('needs a spec object')
+  })
+})
+
+describe('ctx.overlay.start', () => {
+  /** main's overlay.open stays pending until `end` is called; every other call answers true. */
+  function pending(): ReturnType<typeof setup> & { end: (result: unknown) => void } {
+    let end!: (result: unknown) => void
+    const opened = new Promise((resolve) => {
+      end = resolve
+    })
+    return { ...setup((c) => (c.method === 'overlay.open' ? opened : true)), end }
+  }
+  const handleOf = (calls: Call[]): string => (calls[0]?.params as { handle: string }).handle
+
+  it('opens with a handle; posts go out behind the open, page messages reach onMessage, result resolves', async () => {
+    const { contexts, ctx, calls, end } = pending()
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'chat.html' })
+    // Posted before main even created the overlay: sent right behind the open request (main queues it).
+    overlay.post({ hello: 1 })
+    const handle = handleOf(calls)
+    expect(handle).toMatch(/^[0-9a-f-]{36}$/)
+    expect(calls.map((c) => c.method)).toEqual(['overlay.open', 'overlay.post'])
+    expect(calls[1]?.params).toEqual({ pluginId: 'a.one', handle, message: { hello: 1 } })
+
+    const heard: unknown[] = []
+    const off = overlay.onMessage((m) => heard.push(m))
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 1 } })
+    // Another plugin's id with the same handle names nothing; nor does an unknown handle.
+    contexts.handleEvent('overlay.message', { pluginId: 'a.two', handle, message: { n: 'x' } })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle: 'nope', message: { n: 'y' } })
+    expect(heard).toEqual([{ n: 1 }])
+    off()
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 2 } })
+    expect(heard).toEqual([{ n: 1 }])
+
+    overlay.onMessage((m) => heard.push(m))
+    end({ kind: 'value', value: { done: true } })
+    await expect(overlay.result).resolves.toEqual({ kind: 'value', value: { done: true } })
+
+    // Ended: post and close are no-ops (nothing sent), listeners are gone, onMessage is inert.
+    const before = calls.length
+    overlay.post({ late: true })
+    overlay.close()
+    expect(calls.length).toBe(before)
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 3 } })
+    expect(heard).toEqual([{ n: 1 }])
+    expect(typeof overlay.onMessage(() => {})).toBe('function')
+  })
+
+  it('close asks main to dismiss it, for any kind; post and onMessage are for html only', async () => {
+    const { ctx, calls, end } = pending()
+    const term = ctx.overlay.start({ kind: 'terminal', argv: ['lazygit'] })
+    expect(() => term.post({ a: 1 })).toThrow(TypeError)
+    expect(() => term.onMessage(() => {})).toThrow('only an html overlay')
+    term.close()
+    expect(calls[1]).toMatchObject({ method: 'overlay.close', params: { pluginId: 'a.one', handle: handleOf(calls) } })
+    end({ kind: 'dismissed' })
+    await expect(term.result).resolves.toEqual({ kind: 'dismissed' })
+  })
+
+  it('refuses a message over the limit or not JSON, naming the limit', () => {
+    const { ctx, calls } = pending()
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'chat.html' })
+    expect(() => overlay.post('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH))).toThrow(
+      new RangeError(`overlay post: message of ${MAX_OVERLAY_MESSAGE_LENGTH + 2} chars exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`)
+    )
+    expect(() => overlay.post(10n as never)).toThrow(TypeError)
+    // The largest that fits goes out.
+    overlay.post('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH - 2))
+    expect(calls.map((c) => c.method)).toEqual(['overlay.open', 'overlay.post'])
+  })
+
+  it('a refused open rejects result and leaves an inert handle', async () => {
+    const { ctx, calls } = setup((c) => {
+      if (c.method === 'overlay.open') throw new Error('overlay: a.one already has 3 overlays open')
+      return true
+    })
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'chat.html' })
+    await expect(overlay.result).rejects.toThrow('already has 3 overlays open')
+    overlay.post({ a: 1 })
+    expect(calls.map((c) => c.method)).toEqual(['overlay.open'])
+    const bad = ctx.overlay.start(null as never)
+    await expect(bad.result).rejects.toThrow('needs a spec object')
+  })
+
+  it('a disposed plugin drops its handles: page messages no longer reach its listeners', async () => {
+    const { contexts, ctx, calls } = pending()
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'chat.html' })
+    const heard: unknown[] = []
+    overlay.onMessage((m) => heard.push(m))
+    contexts.dispose('a.one')
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle: handleOf(calls), message: 1 })
+    expect(heard).toEqual([])
+    overlay.post({ a: 1 })
+    expect(calls.map((c) => c.method)).toEqual(['overlay.open'])
   })
 })
 
