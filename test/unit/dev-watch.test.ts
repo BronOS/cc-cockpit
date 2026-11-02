@@ -16,6 +16,20 @@ import {
   type LinkedPlugin
 } from '../../src/main/plugins/dev-watch'
 
+// Lets one test make the native watch refuse to start on any OS (macOS refuses a missing folder,
+// Linux accepts it, so the fallback could not otherwise be exercised on Linux).
+const watchFails = vi.hoisted(() => ({ on: false }))
+vi.mock('node:fs', async (orig) => {
+  const actual = await orig<typeof import('node:fs')>()
+  return {
+    ...actual,
+    watch: ((...args: Parameters<typeof actual.watch>) => {
+      if (watchFails.on) throw new Error('watch refused')
+      return actual.watch(...args)
+    }) as typeof actual.watch
+  }
+})
+
 interface FakeWatch extends FolderWatch {
   dir: string
   closed: boolean
@@ -400,13 +414,19 @@ describe('real folder watchers', () => {
     } finally {
       linux.close()
     }
-    // A folder fs.watch refuses (it does not exist): reported once, then polled.
-    const gone = join(root, 'missing')
+    // A folder fs.watch refuses: reported once, then polled. The refusal is injected so the
+    // check runs on every OS.
     const errs: Error[] = []
-    const w = createFolderWatcher('darwin', POLL_MS)(gone, () => {}, (e) => void errs.push(e))
+    const polled: unknown[] = []
+    watchFails.on = true
+    const w = createFolderWatcher('darwin', POLL_MS)(root, () => void polled.push(1), (e) => void errs.push(e))
     try {
-      await until(() => errs.length >= 1)
+      watchFails.on = false
+      expect(errs).toHaveLength(1)
+      expect(errs[0]!.message).toBe('watch refused')
+      await touchUntil(join(root, 'host.js'), () => polled.length >= 1)
     } finally {
+      watchFails.on = false
       w.close()
     }
   })

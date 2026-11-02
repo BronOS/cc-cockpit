@@ -111,10 +111,10 @@ Version and hash are validated before they are written into Ruby.
 - Modify: `test/unit/dev-watch.test.ts`
 - Modify: `test/e2e/plugin-ctx.spec.ts`
 
-- [ ] find why `test/unit/dev-watch.test.ts:394` fails on Linux and fix the test so it passes on both systems. If the cause is a
+- [x] find why `test/unit/dev-watch.test.ts:394` fails on Linux and fix the test so it passes on both systems. If the cause is a
       real bug in the watcher, fix the code instead and say so in the commit
-- [ ] fix the key-order assumption in `test/e2e/plugin-ctx.spec.ts:12`
-- [ ] run `npm test` and the plugin-ctx spec; both pass on Linux
+- [x] fix the key-order assumption in `test/e2e/plugin-ctx.spec.ts:12`
+- [x] run `npm test` and the plugin-ctx spec; both pass on Linux
 
 ### Task 2: Packaging config for the agreed targets [model: sonnet]
 

@@ -50,10 +50,11 @@ test('a plugin uses settings, storage, exec, notify, log and a command through i
   await expect.poll(() => existsSync(logFile)).toBe(true)
   expect(readFileSync(logFile, 'utf8')).toMatch(/ info \[[0-9a-f]{16}\] fixture log line\n/)
 
-  // Only the registered command appears, with the manifest's key, and it runs in the host.
+  // Only the registered command appears, with the manifest's key (meta becomes ctrl off macOS, and the
+  // modifiers come out in main's own order), and it runs in the host.
   const listed = await cockpit.hook<CommandInfo[]>('pluginCommands', cockpit.projectDir)
   expect(listed).toEqual([{ id: 'test.hostctx/ping', title: 'Ctx: Ping', key: 'shift+meta+9', source: 'plugin' }].map((c) =>
-    process.platform === 'darwin' ? c : { ...c, key: 'shift+ctrl+9' }
+    process.platform === 'darwin' ? c : { ...c, key: 'ctrl+shift+9' }
   ))
   await cockpit.hook('runPluginCommand', cockpit.projectDir, 'test.hostctx/ping')
   expect(readFileSync(join(seen.dataDir, 'ping.txt'), 'utf8')).toBe('pong')
