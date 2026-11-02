@@ -27,12 +27,15 @@ import {
   type Request
 } from '../shared/protocol'
 import {
+  CLI_CLIENT_DEADLINE_MS,
   CLI_REPLY_TIMEOUT_MS,
+  CLI_TIMEOUT_CODE,
   encodedBytes,
   MAX_CLI_IO_BYTES,
   normalizeCliResult,
   type PluginCliSpec
 } from '../shared/plugin-cli'
+import { formatPluginConfig, formatPluginConfigSet, type PluginConfigSetResult, type PluginConfigView } from '../shared/plugin-config'
 import { formatUsageEntry, parseArgs, USAGE, usageFor, type Command } from './args'
 import { guideText, topicList } from './guide'
 import { runPluginLogs } from './plugin-logs'
@@ -365,6 +368,21 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       cmd = 'plugin.list'
       routing = callerOf(env, command.project, cwd, 'plugin list')
       break
+    case 'panel-show':
+      cmd = 'panel.show'
+      args = { plugin: command.plugin, panel: command.panel }
+      routing = callerOf(env, command.project, cwd, 'panel show')
+      break
+    case 'plugin-config':
+      // No project in args: main takes the project from the routing (token or --project).
+      cmd = 'plugin.config'
+      args = { id: command.id }
+      if (command.set.length > 0) {
+        args.set = command.set
+        if (command.scope !== undefined) args.scope = command.scope
+      }
+      routing = callerOf(env, command.project, cwd, 'plugin config')
+      break
   }
   if ('error' in routing) return routing
   return { v: PROTOCOL_VERSION, id: 1, cmd, args, ...routing }
@@ -430,8 +448,15 @@ export async function runCommand(
     // waits its turn in the installer's serial queue (behind a clone of up to two minutes) and for
     // the hosts to reload: cut off at 10 s it printed "did not answer" and exit 1 while the unlink
     // still went through, and the retry then failed with "is not installed" (review finding).
+    // `plugin config` with values to set likewise: it waits in the plugin's settings save queue
+    // (behind a form save that may be at a keychain prompt) and for a host restarted by the change.
     const waits =
-      command.kind === 'overlay' || command.kind === 'plugin-link' || command.kind === 'plugin-unlink' ? undefined : REPLY_TIMEOUT_MS
+      command.kind === 'overlay' ||
+      command.kind === 'plugin-link' ||
+      command.kind === 'plugin-unlink' ||
+      (command.kind === 'plugin-config' && command.set.length > 0)
+        ? undefined
+        : REPLY_TIMEOUT_MS
     const trip = await roundTrip(socket, encodeRequest(request), waits)
     warnOnVersionMismatch(trip, out)
     if ('closed' in trip) {
@@ -457,6 +482,13 @@ export async function runCommand(
   }
 }
 
+/**
+ * How long a `stdin: true` plugin command waits for its stdin to end (it is never read from a
+ * terminal). As long as the call's own hard deadline: a slow producer gets the same time a slow
+ * plugin does, and an open pipe that never closes ends in exit 124 instead of a hang.
+ */
+export const STDIN_READ_TIMEOUT_MS = CLI_CLIENT_DEADLINE_MS
+
 /** A plugin command as parseArgs returned it. */
 export type PluginCommand = Extract<Command, { kind: 'plugin' }>
 
@@ -477,6 +509,26 @@ async function ask(env: Env, request: Request, timeoutMs: number): Promise<Round
     return await roundTrip(socket, encodeRequest(request), timeoutMs)
   } finally {
     socket.destroy()
+  }
+}
+
+/**
+ * `ask` under a hard deadline of its own (CLI_CLIENT_DEADLINE_MS for a plugin command): whatever
+ * the round trip does or fails to do, this settles by `deadlineMs`. The timer is separate from
+ * the reply timer on purpose, a backstop for the case nothing else catches; `ask`'s own finally
+ * destroys the socket once it settles, and the process exits right after anyway.
+ */
+async function askWithin(env: Env, request: Request, timeoutMs: number, deadlineMs: number): Promise<RoundTrip | { absent: true } | { deadline: true }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      ask(env, request, timeoutMs),
+      new Promise<{ deadline: true }>((resolve) => {
+        timer = setTimeout(() => resolve({ deadline: true }), deadlineMs)
+      })
+    ])
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -530,13 +582,15 @@ function isTTY(stream: Readable): boolean {
  * is the plugin's.
  *
  * stdin is read only for a command that declares `stdin: true`, and only when it is not a
- * terminal: reading whenever it is not a TTY would hang a `ccc` started with an open but silent
- * pipe (a tool runner's usual setup). Over MAX_CLI_IO_BYTES once JSON-encoded it is refused here,
+ * terminal (nobody would type EOF): reading whenever it is not a TTY would hang a `ccc` started
+ * with an open but silent pipe (a tool runner's usual setup), and even then the read ends after
+ * STDIN_READ_TIMEOUT_MS with exit 124. Over MAX_CLI_IO_BYTES once JSON-encoded it is refused here,
  * before anything is sent (exit 1), so the request line stays under the socket's limit.
  *
  * The call waits CLI_REPLY_TIMEOUT_MS: main gives the plugin 30 s and answers exit 124 itself, so
- * the CLI's own 10 s would cut a legitimate call short. Ctrl+C kills this process, whose socket
- * closing tells main to cancel the call and free its slot.
+ * the CLI's own 10 s would cut a legitimate call short. No reply by then is exit 124 here too, and
+ * CLI_CLIENT_DEADLINE_MS is a hard backstop over the whole call. Ctrl+C kills this process, whose
+ * socket closing tells main to cancel the call and free its slot.
  */
 export async function runPlugin(
   command: PluginCommand,
@@ -570,7 +624,23 @@ export async function runPlugin(
   let input = ''
   if (spec.stdin === true && !isTTY(stdin)) {
     // One byte over the cap is enough to know: the encoded size is never below the raw one.
-    const read = await readStdinCapped(stdin, MAX_CLI_IO_BYTES)
+    // Bounded like the call itself: an open pipe nobody closes (a tool runner that leaves stdin
+    // attached, `sleep 999 | ccc …`) would otherwise keep `ccc` waiting forever with no output,
+    // the one unbounded wait left after friction round 1, Task 2. The timer goes once the read is
+    // over; on a timeout the process exits right after, so the abandoned read does not matter.
+    let stdinTimer: ReturnType<typeof setTimeout> | undefined
+    const read = await Promise.race([
+      readStdinCapped(stdin, MAX_CLI_IO_BYTES),
+      new Promise<undefined>((resolve) => {
+        stdinTimer = setTimeout(() => resolve(undefined), STDIN_READ_TIMEOUT_MS)
+      })
+    ]).finally(() => clearTimeout(stdinTimer))
+    if (read === undefined) {
+      out.stderr(
+        `ccc: ${command.name}: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`
+      )
+      return CLI_TIMEOUT_CODE
+    }
     // An EIO halfway through leaves a partial payload: the plugin is not run on it.
     if (read.error !== undefined) {
       out.stderr(`ccc: ${command.name}: reading stdin failed: ${read.error}\n`)
@@ -585,9 +655,17 @@ export async function runPlugin(
 
   const args: Record<string, unknown> = { name: command.name, argv: command.argv, cwd }
   if (spec.stdin === true) args.stdin = input
-  const runTrip = await ask(env, request(2, 'plugin.cli', args), CLI_REPLY_TIMEOUT_MS)
+  const runTrip = await askWithin(env, request(2, 'plugin.cli', args), CLI_REPLY_TIMEOUT_MS, CLI_CLIENT_DEADLINE_MS)
   // The app went away between the two requests: the same silent exit 0 as not running at all.
   if ('absent' in runTrip) return 0
+  // No reply in time, by the reply timer or the backstop: exit 124 like main's own timeout answer
+  // (and `timeout(1)`), never a hang and never the generic exit 1, so a script can tell "too slow,
+  // try again" (a plugin that was reloading) from a refusal.
+  if ('deadline' in runTrip || 'timedOut' in runTrip) {
+    const seconds = Math.round(('deadline' in runTrip ? CLI_CLIENT_DEADLINE_MS : CLI_REPLY_TIMEOUT_MS) / 1000)
+    out.stderr(`ccc: ${command.name}: no answer from the app within ${seconds} s\n`)
+    return CLI_TIMEOUT_CODE
+  }
   const runResult = resultOf(runTrip, out)
   if ('code' in runResult) return runResult.code
   const result = normalizeCliResult(runResult.result)
@@ -629,6 +707,13 @@ function formatResult(command: UserCommand, result: unknown): string {
     return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
   }
   if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
+  if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`
+  if (command.kind === 'plugin-config') {
+    if (command.json) return `${JSON.stringify(result)}\n`
+    return command.set.length > 0
+      ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
+      : formatPluginConfig(result as PluginConfigView, plainLine)
+  }
   if (command.kind === 'plugin-list') {
     const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
     if (command.json) return `${JSON.stringify(list)}\n`

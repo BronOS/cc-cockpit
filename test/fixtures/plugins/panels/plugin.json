@@ -5,7 +5,34 @@
   "api": 1,
   "main": "host.js",
   "contributes": {
-    "panels": [{ "id": "echo", "title": "Echo", "entry": "panel.html", "defaultZone": "left" }],
-    "commands": [{ "id": "pick", "title": "Panels: Pick", "key": "Cmd+Shift+8" }]
+    "panels": [
+      {
+        "id": "echo",
+        "title": "Echo",
+        "entry": "panel.html",
+        "defaultZone": "left"
+      },
+      {
+        "id": "pic",
+        "title": "Pic",
+        "entry": "panel.html",
+        "icon": "icons/pic.svg",
+        "defaultZone": "left"
+      },
+      {
+        "id": "broken",
+        "title": "Broken",
+        "entry": "panel.html",
+        "icon": "icons/broken.svg",
+        "defaultZone": "left"
+      }
+    ],
+    "commands": [
+      {
+        "id": "pick",
+        "title": "Panels: Pick",
+        "key": "Cmd+Shift+8"
+      }
+    ]
   }
 }

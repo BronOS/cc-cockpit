@@ -33,6 +33,7 @@
 // Plugin CLI commands (`ccc <name>`, plan B Task 5): runCli hands a call to the host serving the
 // project, only for a plugin of the last launch that declares the name and activated in the
 // current process, with a 30 s limit (exit 124) and at most MAX_CLI_IN_FLIGHT calls per plugin.
+// A plugin reloading or a host starting is waited for within that limit (runCli explains why).
 // Which plugin owns a name, and whether it is enabled, the socket handler decided from main's own
 // index first (socket/handlers.ts); this re-checks against what the host actually runs.
 // Main hands the host everything it needs at activation (HostPluginSpec: project folder, data dir,
@@ -45,12 +46,14 @@ import { errorText } from '../../shared/error-text'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
-import type { CliContribution, PluginManifest } from '../../shared/manifest'
-import { CLI_CALL_TIMEOUT_MS, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
+import type { CliContribution, OpenFileContribution, PluginManifest } from '../../shared/manifest'
+import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
+import { OPEN_FILE_PICK } from '../../shared/services'
 import { capText } from '../../shared/text'
 import type { PluginCommandDef } from '../commands/command-registry'
 import type { Env } from '../env/login-env'
 import type { LayoutService, PluginPanelDef } from '../layout/layout-service'
+import { STORAGE_FILE_NAME } from '../paths'
 import { callCli } from './cli-call'
 import { HostApi, type HostApiDeps } from './host-api'
 
@@ -69,6 +72,14 @@ export const RESTART_BASE_MS = 1_000
 export const RESTART_MAX_MS = 30_000
 export const CRASH_WINDOW_MS = 2 * 60_000
 export const MAX_CRASHES = 5
+/**
+ * How long a Sessions panel file click waits for the chosen plugin's host to take it (openFile)
+ * before the built-in viewer opens instead. Short: the person clicked and is looking at the screen.
+ * The host itself waits at most 1 s on a listener (src/host/ctx/files.ts), so this leaves margin.
+ */
+export const OPEN_FILE_ACK_MS = 2_000
+/** How often runCli looks again while a plugin is on its way in (see runCli). */
+export const CLI_READY_POLL_MS = 50
 /** What a given-up host's panels show; PluginPanel offers Restart for exactly this text. */
 export const STOPPED_TEXT = PLUGIN_STOPPED_TEXT
 const MAX_LOG_TEXT = 4000
@@ -88,8 +99,6 @@ export const MAX_LOG_LINES_PER_WINDOW = 100
 export const NOTIFY_WINDOW_MS = 60_000
 export const MAX_NOTIFICATIONS_PER_WINDOW = 10
 const MAX_NOTIFY_TEXT = 500
-/** The file name of a plugin's KV store inside its data dir (ctx.storage). */
-export const STORAGE_FILE_NAME = 'storage.json'
 
 /** How long main waits for a host to answer `activate` for `count` plugins before killing it. */
 export function activateBudgetMs(count: number, activateTimeoutMs = ACTIVATE_TIMEOUT_MS): number {
@@ -182,6 +191,8 @@ export interface HostPlugin {
   cli?: CliContribution[]
   /** The manifest's `services` (validated): what the plugin provides to and uses from others. */
   services?: PluginManifest['services']
+  /** The manifest's `contributes.openFile`: the plugin can take a Sessions panel file click. */
+  openFile?: OpenFileContribution
 }
 
 /**
@@ -271,6 +282,11 @@ export interface HostManagerDeps {
   /** `ctx.dataDir` for a plugin in a project (`<data>/plugin-data/<projectId>/<pluginId>/`). */
   pluginDataDir(projectId: string, pluginId: string): string
   /**
+   * `ctx.appDataDir` for a plugin, the same in every project (`<data>/plugin-data/_app/<pluginId>/`).
+   * Only a path: the host creates the folder on first read, main's app storage on first write.
+   */
+  pluginAppDataDir(pluginId: string): string
+  /**
    * The plugin's validated settings (defaults applied). A failure disables the plugin: it is not
    * started and its panels show the reason. Default: no settings. Synchronous on purpose: a
    * `settings` push and a spec build read it with no await between the read and the send, so no
@@ -350,6 +366,11 @@ interface HostRecord {
   reloading: Map<string, boolean>
   /** Plugins whose activate() succeeded in the current process (they can take panel ports). */
   ran: Set<string>
+  /**
+   * launch() and restart() calls under way (nested: a restart's own launch counts twice). While
+   * one runs, a plugin of this host is on its way in, not gone: runCli waits for it (see there).
+   */
+  starting: number
   /** Full ids (`<pluginId>/<id>`) of the commands the host registered, for `runCommand`. */
   registered: Set<string>
   /**
@@ -416,6 +437,7 @@ export class HostManager {
       reloads: Promise.resolve(),
       reloading: new Map(),
       ran: new Set(),
+      starting: 0,
       registered: new Set(),
       cliInFlight: new Map(),
       notifyWindows: new Map(),
@@ -475,6 +497,15 @@ export class HostManager {
   async restart(projectId: string): Promise<void> {
     const rec = this.hosts.get(projectId)
     if (!rec) return
+    rec.starting++
+    try {
+      await this.restartSteps(rec)
+    } finally {
+      rec.starting--
+    }
+  }
+
+  private async restartSteps(rec: HostRecord): Promise<void> {
     this.clearTimer(rec)
     rec.crashes = []
     rec.consecutive = 0
@@ -614,28 +645,34 @@ export class HostManager {
    * it, exit 1) for anything that keeps the call from starting: no such command here, the plugin
    * not running, MAX_CLI_IN_FLIGHT calls of it already running, the caller already gone.
    *
+   * A plugin on its way in is waited for, not refused (Task 2 of the friction round): a linked
+   * plugin reloading (its old copy is disposed, the new one not yet active), and the host
+   * launching or restarting (window open, app start, an enable or an update). The dev loop walks
+   * straight into that gap: edit, the app reloads by itself, run the command. The wait polls
+   * (CLI_READY_POLL_MS) rather than hooking each transition: "on its way in" is read from several
+   * fields (`starting`, `reloading`, `ran`) that change in many places, and a missed notification
+   * would be a hang. The wait and the call share ONE limit (CLI_CALL_TIMEOUT_MS from the request):
+   * a plugin that is still not active then is exit 124, like a handler that does not answer. A
+   * crashed host waiting out its restart backoff is not "on its way in": refused as not running.
+   *
    * Once started, the call (callCli, cli-call.ts) ends in one of four ways, and each frees its slot:
    *   - the host answers: the result, re-capped here (the host is not trusted to cap);
-   *   - CLI_CALL_TIMEOUT_MS passes: exit 124 with a message, and the host is told to cancel;
+   *   - the limit passes: exit 124 with a message, and the host is told to cancel;
    *   - `peerGone` aborts (Ctrl+C on `ccc`): rejected, and the host is told to cancel;
    *   - the host exits or the plugin's ctx is disposed: the endpoint's close, or the host's own
    *     answer for a disposed ctx (exit 1), settles it.
    * The `cli.cancel` event only aborts the handler's signal; a late answer is dropped. So
-   * MAX_CLI_IN_FLIGHT counts the calls main still waits for: a handler that ignores its signal
-   * can keep running after a timeout or Ctrl+C, and its slot is already free.
+   * MAX_CLI_IN_FLIGHT counts the calls main still waits for (a call waiting for the plugin to
+   * come up included): a handler that ignores its signal can keep running after a timeout or
+   * Ctrl+C, and its slot is already free.
    */
   async runCli(projectId: string, pluginId: string, call: HostCliCall, peerGone?: AbortSignal): Promise<PluginCliResult> {
+    const limitMs = this.deps.cliTimeoutMs ?? CLI_CALL_TIMEOUT_MS
+    const deadline = Date.now() + limitMs
     const rec = this.hosts.get(projectId)
-    const plugin = rec?.plugins.find((p) => p.id === pluginId)
-    if (!rec || !plugin || !(plugin.cli ?? []).some((c) => c.name === call.name)) {
+    if (!rec || (!this.declaresCli(rec, pluginId, call.name) && !this.cliComing(rec, pluginId))) {
       // Also what a plugin enabled after this host's last launch gets (it is not in rec.plugins yet).
-      throw new Error(`unknown command: ${call.name} (if its plugin was enabled just now, reload the project's plugins first)`)
-    }
-    // Read fresh, after the lookup, never cached across an await: only the host that serves the
-    // project now may answer.
-    const rpc = rec.rpc
-    if (!rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId)) {
-      throw new Error(`${call.name}: plugin ${pluginId} is not running in this window`)
+      throw unknownCli(call.name)
     }
     const busy = rec.cliInFlight.get(pluginId) ?? 0
     if (busy >= MAX_CLI_IN_FLIGHT) {
@@ -644,15 +681,86 @@ export class HostManager {
     if (peerGone?.aborted) throw new Error(`${call.name}: the caller went away`)
     rec.cliInFlight.set(pluginId, busy + 1)
     try {
+      if (!(await this.waitCliReady(rec, pluginId, call.name, deadline, peerGone))) {
+        return { stdout: '', stderr: `ccc ${call.name}: plugin ${pluginId} did not become active within ${Math.round(limitMs / 1000)} s\n`, code: CLI_TIMEOUT_CODE }
+      }
+      // After the wait the launch or reload may have changed what the plugin declares.
+      if (this.hosts.get(projectId) !== rec || !this.declaresCli(rec, pluginId, call.name)) throw unknownCli(call.name)
+      // Read fresh, after the wait, never cached across an await: only the host that serves the
+      // project now may answer.
+      const rpc = rec.rpc
+      if (!rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId)) {
+        throw new Error(`${call.name}: plugin ${pluginId} is not running in this window`)
+      }
       return await callCli(
         rpc,
         { pluginId, name: call.name, argv: call.argv, stdin: call.stdin, cwd: call.cwd },
-        { name: call.name, callId: this.nextCliCall++, timeoutMs: this.deps.cliTimeoutMs ?? CLI_CALL_TIMEOUT_MS, ...(peerGone ? { peerGone } : {}) }
+        {
+          name: call.name,
+          callId: this.nextCliCall++,
+          // What the wait left of the limit; at least 1 ms so a call that just made it still asks.
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          limitMs,
+          ...(peerGone ? { peerGone } : {})
+        }
       )
     } finally {
       const left = (rec.cliInFlight.get(pluginId) ?? 1) - 1
       if (left > 0) rec.cliInFlight.set(pluginId, left)
       else rec.cliInFlight.delete(pluginId)
+    }
+  }
+
+  /** The plugin of the host's last launch declares the command `name`. */
+  private declaresCli(rec: HostRecord, pluginId: string, name: string): boolean {
+    return (rec.plugins.find((p) => p.id === pluginId)?.cli ?? []).some((c) => c.name === name)
+  }
+
+  /**
+   * The plugin is not active yet but on its way in: a launch or restart of this host is under way
+   * (window open, app start, enable, update), or a dev reload swaps its copy (`reloading` is set
+   * from the moment reloadIn drops it from `ran` until the host answers `plugin.reload`).
+   */
+  private cliComing(rec: HostRecord, pluginId: string): boolean {
+    if (rec.closed || this.hosts.get(rec.projectId) !== rec) return false
+    return rec.starting > 0 || rec.reloading.has(pluginId)
+  }
+
+  /**
+   * Wait until the plugin runs in the host or is no longer on its way in. False when `deadline`
+   * passed first; rejects when the caller went away meanwhile. The caller re-checks what it needs.
+   */
+  private async waitCliReady(rec: HostRecord, pluginId: string, name: string, deadline: number, peerGone?: AbortSignal): Promise<boolean> {
+    for (;;) {
+      if (peerGone?.aborted) throw new Error(`${name}: the caller went away`)
+      const ready = rec.rpc !== undefined && rec.proc !== undefined && !rec.stopping && rec.ran.has(pluginId) && !rec.reloading.has(pluginId)
+      if (ready || !this.cliComing(rec, pluginId)) return true
+      const left = deadline - Date.now()
+      if (left <= 0) return false
+      await pause(Math.min(CLI_READY_POLL_MS, left), peerGone)
+    }
+  }
+
+  /**
+   * Hand a Sessions panel file click to `pluginId` in the project's host (`ctx.files.onOpen`). True
+   * only when the host answered that a listener took it, within OPEN_FILE_ACK_MS; false at once
+   * when the plugin is not one this host's last launch got with `contributes.openFile`, or it is not
+   * active right now (starting, reloading, failed, host stopped or gone); false too for a refusal,
+   * a timeout or the host exiting. The caller opens its built-in viewer on false. Nothing waits for
+   * a plugin on its way in: the person is looking at the screen, and the viewer is the answer then.
+   * `req` is main's own (open-file.ts checked the tab and made the path project-relative).
+   */
+  async openFile(projectId: string, pluginId: string, req: { path: string; tabId: string }): Promise<boolean> {
+    const rec = this.hosts.get(projectId)
+    const rpc = rec?.rpc
+    if (!rec || !rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return false
+    if (rec.plugins.find((p) => p.id === pluginId)?.openFile === undefined) return false
+    try {
+      const answer = await rpc.call('files.open', { pluginId, path: req.path, tabId: req.tabId }, { timeoutMs: OPEN_FILE_ACK_MS })
+      return answer === true
+    } catch (err) {
+      this.log(`plugin ${pluginId} (${projectId}): opening a file failed, the built-in viewer opens instead: ${errorText(err)}`)
+      return false
     }
   }
 
@@ -707,7 +815,7 @@ export class HostManager {
    * (buildSpec's checks, without its side effects). A plugin dropped for invalid settings is in
    * neither this set nor the host's, so the Plugins page's warnings and a call's error agree.
    */
-  async servicePlugins(projectId: string): Promise<{ id: string; services?: HostPlugin['services'] }[]> {
+  async servicePlugins(projectId: string): Promise<{ id: string; services?: HostPlugin['services']; openFile?: OpenFileContribution }[]> {
     const plugins = await this.deps.plugins(projectId)
     return plugins
       .filter((p) => typeof p.main === 'string' && p.main !== '')
@@ -716,12 +824,27 @@ export class HostManager {
         if (current?.dir !== p.dir || current.commit !== p.commit) return false
         return this.settingsOf(projectId, p.id).ok
       })
-      .map((p) => (p.services !== undefined ? { id: p.id, services: p.services } : { id: p.id }))
+      // `openFile` rides along: the open-file pick (selectOpenFile) is chosen over this same set, so the
+      // Plugins page and a click agree on the candidates.
+      .map((p) => ({
+        id: p.id,
+        ...(p.services !== undefined ? { services: p.services } : {}),
+        ...(p.openFile !== undefined ? { openFile: p.openFile } : {})
+      }))
   }
 
   // -------------------------------------------------------------------------------------------
 
   private async launch(rec: HostRecord): Promise<void> {
+    rec.starting++
+    try {
+      await this.launchSteps(rec)
+    } finally {
+      rec.starting--
+    }
+  }
+
+  private async launchSteps(rec: HostRecord): Promise<void> {
     const gen = ++rec.gen
     rec.restartTimer = undefined
     let plugins: HostPlugin[]
@@ -895,12 +1018,14 @@ export class HostManager {
       main: p.main as string,
       projectDir,
       dataDir,
+      appDataDir: this.deps.pluginAppDataDir(p.id),
       storageFile: join(dataDir, STORAGE_FILE_NAME),
       commands: (p.commands ?? []).map((c) => c.id),
       panels: p.panels.map((panel) => panel.id),
       webviewPanels: p.panels.filter((panel) => panel.kind === 'webview').map((panel) => panel.id),
       cli: (p.cli ?? []).map((c) => c.name),
       ...(p.services !== undefined ? { services: p.services } : {}),
+      ...(p.openFile !== undefined ? { openFile: true } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']
@@ -911,7 +1036,10 @@ export class HostManager {
   /** The project's provider picks; a throwing dependency means none (logged), not a failed launch. */
   private serviceProvidersOf(projectId: string): Record<string, string> {
     try {
-      return { ...(this.deps.serviceProviders?.(projectId) ?? {}) }
+      // The open-file pick shares the record's map but is main's alone (a click is routed here, not
+      // in the host), so the host gets only the service picks.
+      const picks = Object.entries(this.deps.serviceProviders?.(projectId) ?? {}).filter(([k]) => k !== OPEN_FILE_PICK)
+      return Object.fromEntries(picks)
     } catch (err) {
       this.log(`plugin host ${projectId}: reading service providers failed: ${errorText(err)}`)
       return {}
@@ -1386,4 +1514,21 @@ export class HostManager {
     if (rec.restartTimer !== undefined) clearTimeout(rec.restartTimer)
     rec.restartTimer = undefined
   }
+}
+
+function unknownCli(name: string): Error {
+  return new Error(`unknown command: ${name} (if its plugin was enabled just now, reload the project's plugins first)`)
+}
+
+/** Resolve after `ms`, or at once when `signal` aborts (the loop above then sees it). */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener('abort', done, { once: true })
+  })
 }

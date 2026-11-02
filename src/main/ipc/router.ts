@@ -30,7 +30,7 @@ import type {
 } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
 import type { Theme } from '../../shared/theme'
-import type { ServicesStatus } from '../../shared/services'
+import type { PluginServicesView } from '../../shared/services'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { SenderContext } from '../windows/window-manager'
@@ -435,8 +435,8 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
 
 /** Plugin services on the Plugins page (ServiceChoices, main/plugins/service-choices.ts). */
 export interface ServiceHandlerDeps {
-  /** Service status of the sender's project. */
-  status(projectId: string): Promise<ServicesStatus>
+  /** Service status (and the open-file pick) of the sender's project. */
+  status(projectId: string): Promise<PluginServicesView>
   /** The names arrive unchecked (the service checks them); the project is the sender's. */
   setProvider(projectId: string, service: unknown, pluginId: unknown): Promise<void>
 }
@@ -565,11 +565,20 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
 export interface CccCommandHandlerDeps {
   status(): CccCommandView | Promise<CccCommandView>
   install(): CccCommandView | Promise<CccCommandView>
+  setOffer(value: boolean): void
+  /** The start-up question (CccOffer.claim): a view when this window should ask, else null. */
+  offer(): CccCommandView | null | Promise<CccCommandView | null>
 }
 
 export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHandlerDeps): void {
   router.handleProject('settings.cccStatus', () => deps.status())
   router.handleProject('settings.cccInstall', () => deps.install())
+  router.handleProject('settings.cccOfferSet', (_ctx, payload) => {
+    const value = (payload as { value?: unknown } | undefined)?.value
+    if (typeof value !== 'boolean') throw new Error('settings.cccOfferSet: value must be a boolean')
+    deps.setOffer(value)
+  })
+  router.handleProject('ccc.offer', () => deps.offer())
 }
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */
@@ -762,6 +771,10 @@ export interface OverlayHandlerDeps {
     bounds: { x: number; y: number; width: number; height: number }
   ): void
   result(windowId: number, overlayId: string, value: unknown): boolean
+  /** A plugin overlay page's message (OverlayManager.pageMessage checks text and size). */
+  message(windowId: number, overlayId: string, text: string): boolean
+  /** The page's port is up (OverlayManager.pageReady). */
+  ready(windowId: number, overlayId: string): void
 }
 
 /**
@@ -817,6 +830,17 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
       fields('overlays.result', payload).value
     )
   )
+
+  // Only to the opener of an overlay of the SENDER's window (the manager looks the id up there).
+  router.handleProject('overlays.message', (ctx, payload) => {
+    const message = fields('overlays.message', payload).message
+    if (typeof message !== 'string') throw new Error('overlays.message: message must be a string')
+    return deps.message(ctx.windowId, overlayIdOf('overlays.message', payload), message)
+  })
+
+  router.handleProject('overlays.ready', (ctx, payload) => {
+    deps.ready(ctx.windowId, overlayIdOf('overlays.ready', payload))
+  })
 }
 
 /** A webview panel of a project, as main's layout knows it (LayoutService.webviewPanel). */

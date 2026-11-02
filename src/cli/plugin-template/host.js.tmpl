@@ -7,13 +7,13 @@ exports.activate = (ctx) => {
   // Lines go to <data>/logs/__ID__.log; read them with `ccc plugin logs __ID__`.
   ctx.log.info('activated')
 //#panel
-//#panel  // The panel page (panels/main.html) posts messages with ccPanel.post; answer them here.
-//#panel  ctx.panels.onMessage('main', (message) => {
-//#panel    ctx.panels.post('main', { echo: message })
-//#panel  })
+//#panel   // The panel page (panels/main.html) posts messages with ccPanel.post; answer them here.
+//#panel   ctx.panels.onMessage('main', (message) => {
+//#panel     ctx.panels.post('main', { echo: message })
+//#panel   })
 //#cli
-//#cli  // `ccc __CLI__ [words...]` runs this handler. It returns what to print and the exit code.
-//#cli  ctx.cli.register('__CLI__', (argv) => ({ stdout: `__CLI__: ${argv.join(' ')}\n` }))
+//#cli   // `ccc __CLI__ [words...]` runs this handler. It returns what to print and the exit code.
+//#cli   ctx.cli.register('__CLI__', (argv) => ({ stdout: `__CLI__: ${argv.join(' ')}\n` }))
 }
 
 exports.deactivate = () => {

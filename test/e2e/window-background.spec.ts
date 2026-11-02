@@ -207,7 +207,10 @@ test('a transparent background reaches project windows opened after the switch; 
     await expect(secondSettings).toHaveCount(0)
     await c.hook('openOverlay', other, { kind: 'terminal', argv: ['cat'], cwd: other })
     await second.locator('.overlay .xterm').waitFor()
-    expect(alphaOf(await background(second, '.overlay'))).toBe(1)
+    // The overlay is a dialog (.overlay-frame) over a dark scrim (.overlay): the dialog is what is
+    // read, so it stays solid; the scrim is fixed at 0.45 and never follows the glass slider.
+    expect(alphaOf(await background(second, '.overlay-frame'))).toBe(1)
+    expect(alphaOf(await background(second, '.overlay'))).toBeCloseTo(0.45, 2)
     expect(alphaOf(await background(second, '.overlay .xterm-scrollable-element'))).toBe(1)
   } finally {
     await close()

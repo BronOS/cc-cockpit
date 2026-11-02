@@ -6,7 +6,9 @@ except for the one confirmation a person gives.
 ## 1. Scaffold
 
 `ccc plugin new <dir> [--id <id>] [--panel] [--cli <name>] [--skill]` writes a working plugin
-into a new or empty folder (it refuses anything else). Works with the app closed.
+into a new folder, or one that already holds files (a nested plugin inside another plugin's
+folder, or a parent around a nested one): it refuses only when a file it would write already
+exists, and names those files. Works with the app closed.
 
 - default id is `local.<folder name>`; pass `--id acme.todo` for a real one
 - `--panel` adds a panel page (`panels/main.html`, `panels/main.js`) wired to the host
@@ -29,17 +31,45 @@ requests a minute. A manifest problem, a command name another plugin owns or a p
 already installed is refused before any dialog, with the reason. Outside the app's tabs (a
 terminal of your own) add `--project <path>` after `link`.
 
-A linked folder is watched: after you change a file the plugin host reloads that plugin by itself
-(no restart). A manifest problem then shows as the plugin's state in `ccc plugin list`.
+Linking (and unlinking) restarts the project's plugin host: every plugin enabled in the project
+gets `deactivate()` and then a fresh `activate()`, not only the new one, so a provider that keeps
+state in memory is re-activated when another plugin is linked (enabling or disabling a plugin in
+a project does the same; `api` topic, "The host process").
 
-## 3. Inspect
+A linked folder is watched: after you change a file the plugin host reloads that plugin by itself
+(no restart of the others). A manifest problem then shows as the plugin's state in `ccc plugin list`. A plugin
+command run right after an edit waits for the reloaded copy (within its 30 s limit, else exit
+124) and runs there; one already running in the old copy when the reload starts ends with exit 1.
+
+Nested plugins are fine: a folder inside a linked plugin that has its own `plugin.json` is another
+plugin, and the parent's watcher ignores it (as it does `node_modules` and `.git`). Edit it and
+only that plugin, if linked, reloads; edit the parent and only the parent reloads. A plugin
+folder's own files, including a `test/` folder without a `plugin.json`, still reload the parent.
+
+## 3. Configure
+
+A plugin with `contributes.settings` can be configured from the tab, no Settings screen needed:
+
+- `ccc plugin config <id>` prints its app and project settings (`app greeting = "hello"`); a
+  secret field shows only `set` or `not set`.
+- `ccc plugin config <id> limit=5 endpoint=https://example.com` sets top-level fields (a value
+  is JSON if it parses, else text) through the same save and validation as the Settings form, so
+  the running plugin gets `ctx.onSettingsChange`, and a plugin that was off because its settings
+  were invalid starts. A key declared in both scopes needs `--scope app` or `--scope project`.
+- **Secret fields cannot be set this way**: ask the person to enter them in Settings > Plugins
+  (app scope) or Settings > This project. Write the plugin so it starts without them and says
+  what is missing.
+
+## 4. Inspect
 
 - `ccc plugin list [--json]` lists every installed plugin: id, version, source (`git` or
   `linked`), enabled here, and `ok` or the reason it is unusable. `--json` gives an array of
   `{ id, name?, version, source, enabled, state }`.
 - `ccc plugin logs <id> [--follow]` prints the last 200 lines of `<data>/logs/<id>.log` (what
   `ctx.log.info/warn/error` wrote, and an uncaught error in the host); `--follow` keeps printing
-  new lines until Ctrl+C. It reads the file directly, so it works while the plugin is broken.
+  new lines until Ctrl+C. A line is `<ISO time, UTC> <level> [<projectId>] <text>`: the `[...]`
+  is the id of the project (window) whose host wrote it (16 hex digits, a hash of the folder's real path), there so one file can
+  serve every project the plugin runs in. Plugins do not see it. It reads the file directly, so it works while the plugin is broken.
   The log rotates at 5 MiB.
 - `ccc plugin unlink <id>` removes a linked plugin at once, with no dialog, and deletes that plugin's stored secrets
   (the folder stays untouched); unlink only what the person asked for. A plugin

@@ -63,22 +63,35 @@ behind it are in [design.md](design.md).
   (`$SHELL -l -i -c <command>`, so your aliases, functions and PATH work) in the project folder.
   The tab keeps its own copy of the command (editing the entry later does not change it). After a
   relaunch such tabs come back "not started" and run only when you click Restart. Set an entry to
-  "Overlay" instead of "Tab" and it opens over the tabs in a full-window terminal overlay (marked
+  "Overlay" instead of "Tab" and it opens over the tabs in a full-size terminal overlay (marked
   "overlay" in the menu): handy for `lazygit` or `yazi`. Esc goes to the program; the overlay
-  closes when the program exits, or with Cmd+Shift+W. Overlays are not restored.
+  closes when the program exits, or with Cmd+Shift+W. Overlays are not restored. Overlays are centered dialogs, 75 % of
+  the window by default; a plugin's spec can ask for `size: 'large'` (about 90 %) or `'full'` (the whole window below
+  the top bar).
 - Claude status from hooks: tab dots, a top strip across windows, a Sessions panel with notes,
   steps and changed files (click a file for `git diff` in a terminal overlay). A permission prompt,
   a question from Claude and a plan approval all show as needing you and sort first.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
+- Two-way html overlays: `ctx.overlay.start(spec)` returns `{ result, post, onMessage, close }`; the page's
+  `ccPanel.post(message)` without a `result` key reaches `onMessage` and keeps the overlay open, `ccPanel.post({ result })`
+  still closes it, and the host's posts wait until the page has loaded. Messages up to 1 MiB less 8 KiB, routed by main
+  only between the overlay and the plugin and window that opened it. Esc dismisses without asking the page.
 - Plugin system: install from git, from the Marketplace, or link a folder, per-project enable, a sandboxed panel
-  per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify...).
+  per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify...). A panel's icon is drawn in
+  the strip's text colour (only its shape counts), so it follows the theme, hover and open states.
+- Plugin storage: `ctx.storage` is per project; `ctx.appStorage` (with an atomic `increment`) and `ctx.appDataDir` are
+  shared by every project window, for state that must add up across windows. Both are kept when the plugin is
+  uninstalled (only secrets are deleted). App storage is written to disk about 300 ms after a change and at quit, so
+  a crash of the app can lose the last fraction of a second of it.
 - Plugin secrets and sign-ins: core has no accounts. A plugin brings its own sign-in: a token in a
   "secret" field of its settings form, `ctx.secrets` (a per-plugin store encrypted with the OS
   keychain), the optional `ctx.oauth` helper (system browser, loopback redirect, PKCE, refresh),
   or a CLI login in a terminal overlay (`ctx.overlay.open`, `ctx.exec`). Secret values never reach
-  a renderer. An `accounts.json` left in the data dir by an earlier build is unused and can be
+  a renderer. On Linux they need an unlocked Secret Service keyring or KWallet; the app picks the Secret Service
+  by itself on desktops Electron doesn't know (Hyprland, sway) when one is on the session bus, and otherwise the
+  error says what to start. An `accounts.json` left in the data dir by an earlier build is unused and can be
   deleted by hand.
 - Plugin services: a plugin declares `services.provides` / `uses` (a name and a whole-number major version) in
   `plugin.json` and calls other plugins of the same project with `ctx.services` (`provide`, `use`, `emit`; handle
@@ -86,6 +99,12 @@ behind it are in [design.md](design.md).
   `structuredClone`). With two providers of one service, Settings > Plugins > "Plugin used for <service>" picks
   one for the project (it restarts the project's plugin host). A missing provider does not block enabling a
   plugin: the consumer runs, its calls throw, and the Plugins page warns (also for a version mismatch).
+  Inside a provider's method, `ctx.services.caller()` is the id of the calling plugin, for per-caller counts or caps.
+- Open-file hook: a plugin with `contributes.openFile` takes a click on a changed file in the Sessions panel
+  through `ctx.files.onOpen({ path, tabId })` (path relative to the project; main checks the tab and the path).
+  With several such plugins, or to keep the built-in viewer, Settings > Plugins > "Plugin used to open files"
+  picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
+  fails, or it does not answer within 2 s, and for a file outside the project.
 - Themes, commands, a command palette and editable keybindings, a Settings screen.
 - The `ccc` command line tool, the `hello` reference plugin and an example plugin to copy.
 - Operable by Claude: inside a tab, `ccc guide [topic]` prints bundled docs (CLI, plugin API,
@@ -100,7 +119,11 @@ behind it are in [design.md](design.md).
   `cc-preview` scheme. Webview panels are a core primitive (`"kind": "webview"`, `ctx.webview`).
   A full browser (tabs, history, devtools) is not built.
 - Plugin dev loop from a tab: `ccc plugin new|link|unlink|list|logs`. `link` asks you to confirm
-  in a native dialog, since a linked plugin runs with full access.
+  in a native dialog, since a linked plugin runs with full access. A linked folder is watched and reloads on edits,
+  except a nested folder with its own `plugin.json`, which is another plugin; `plugin new` also writes into a folder
+  that holds other files, refusing only to overwrite one. `ccc plugin config <id> [key=value...]` reads and sets
+  a plugin's settings (never a secret field), `ccc panel show <plugin>/<panel>` reveals a panel, and `ccc guide types`
+  prints the SDK types.
 
 ## Updates and versions
 
@@ -157,7 +180,9 @@ confirmation that shows the repo and the commit. Things to know:
 
 Settings > Appearance and keys > Command line > "Install ccc command" symlinks
 `~/.local/bin/ccc` to the wrapper in the data dir (an existing different `ccc` is left alone;
-make sure `~/.local/bin` is on your PATH). Commands:
+make sure `~/.local/bin` is on your PATH). At start-up, when nothing is at that path, the first project window asks once per
+launch whether to install it (Yes / No, "Don't ask again"); the same Settings group has "Offer to install at start-up" to turn it
+back on. Not asked when it is installed, when something else is there, or in a test run. Commands:
 
 ```
 ccc open <path>                          open (or focus) a folder as a project
@@ -167,12 +192,15 @@ ccc overlay [--project <path>] --terminal -- <argv...> | --url <http(s) url> | -
 ccc sessions [--json]                    the Claude tabs of every window
 ccc notify <text>                        show a system notification
 ccc guide [topic]                        bundled docs for Claude and plugin authors (works offline)
+ccc guide types                          the plugin SDK types
 ccc plugin new|link|unlink|list|logs     the plugin dev loop (see `ccc guide dev-loop`)
+ccc plugin config <id> [key=value...]    show or set a plugin's settings (never a secret field)
+ccc panel show <plugin>/<panel>          reveal a plugin's panel in this project's window
 ccc <plugin command> ...                 commands plugins declare (`ccc help` lists them in a tab)
 ```
 
 `ccc overlay` prints the result as JSON. Exit codes: 2 for a usage error (message on stderr), 1 when
-the request is refused, 124 when a plugin command exceeds its 30 s limit (its output is capped at 256 KiB), the app closes the connection or never answers, 0 otherwise. Inside any cockpit tab (Claude, shell or
+the request is refused, 124 when a plugin command exceeds its 30 s limit (its output is capped at 256 KiB), the app closes the connection or never answers, or the command's stdin is not closed within 40 s (pipe the input or redirect `</dev/null`), 0 otherwise. A plugin that is reloading or still starting is waited for inside the 30 s, so a command right after an edit runs in the new copy (a call already running in the old copy ends with 1). Inside any cockpit tab (Claude, shell or
 command) or terminal overlay the window is known from the environment; outside the app, pass
 `--project`. Only a Claude tab is a Claude session: `session note`/`steps` are refused elsewhere. When the app is not running `ccc`
 exits 0 silently, so it can never fail a Claude hook. On Linux the wrapper of an AppImage build
@@ -208,6 +236,9 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   Claude Code and the shell use themselves (todos, delete-word, background, newline, transcript):
   the window takes them before the terminal sees them. Rebind them in Settings > Appearance and keys.
 - Plugin settings schemas may not use regexes (`pattern`, `patternProperties`).
+- On Linux the plugin secrets need a running, unlocked Secret Service keyring (gnome-keyring, KeePassXC) or KWallet; there
+  is no plaintext fallback by design. The automatic Secret Service choice is made at start-up from the session bus.
+- `ctx.services.caller()` and the service calls are not a security boundary: all plugins of a project share one process.
 - When a plugin update or dev reload removes a secret settings field or makes it a plain one, its
   encrypted value stays in `secrets.json` (no form or `ctx.settings` gets it) until the plugin is
   uninstalled or, for a project field, the project is forgotten.

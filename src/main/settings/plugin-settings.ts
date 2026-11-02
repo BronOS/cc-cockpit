@@ -77,7 +77,13 @@ export interface SettingsFormSave {
   projectId?: string
   /** The form's schema, from main's record of the manifest. */
   schema: JsonSchema
-  /** From the renderer: the plain values and the secret edits (checkFormSettings, checkSecretEdits). */
+  /**
+   * From the renderer: the plain values and the secret edits (checkFormSettings, checkSecretEdits).
+   * `values` may instead be a function main passes (no IPC payload can carry one), called when the
+   * save runs in the plugin's queue: `ccc plugin config` merges its edits into the values stored at
+   * that moment, so two overlapping sets of different keys both land (merged before the queue, the
+   * second save wrote back the first one's old value).
+   */
   values: unknown
   secrets: unknown
   /** A secret field's `setting:` key in this form's scope (appSettingKey, or projectSettingKey for the project). */
@@ -111,8 +117,11 @@ const saving = new Map<string, Promise<unknown>>()
  */
 export async function saveSettingsForm(form: SettingsFormSave): Promise<PluginSettingsSaveResult> {
   const edits = checkSecretEdits(form.schema, form.secrets)
-  const checked = checkFormSettings(form.schema, form.values)
-  if (!checked.ok) return { ok: false, errors: checked.errors }
+  // Plain values are checked now (a schema failure returns at once, before the queue); values still
+  // to be computed are checked when they are, in the queue below.
+  const valuesAtRun = typeof form.values === 'function' ? (form.values as () => unknown) : undefined
+  const early = valuesAtRun === undefined ? checkFormSettings(form.schema, form.values) : undefined
+  if (early !== undefined && !early.ok) return { ok: false, errors: early.errors }
   const changes = new Map([...edits].map(([field, value]) => [form.keyOf(field), value]))
   // Now, not when the save leaves the queue: an uninstall or project forget that runs while an
   // earlier save waits on its encrypt must refuse this one too, not take it for a later request.
@@ -126,6 +135,10 @@ export async function saveSettingsForm(form: SettingsFormSave): Promise<PluginSe
     } catch (err) {
       return { ok: false, errors: [`the settings were not stored: ${errorText(err)}`] }
     }
+    // Synchronous, so nothing runs between this read of the stored values and the write below
+    // except writeSettings' own await, which this plugin's queue keeps every other save out of.
+    const checked = early ?? checkFormSettings(form.schema, (valuesAtRun as () => unknown)())
+    if (!checked.ok) return { ok: false, errors: checked.errors }
     try {
       await form.store.writeSettings(form.pluginId, changes, guard)
     } catch (err) {

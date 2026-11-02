@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, secrets, oauth, schedule, exec, commands, cli, services, log and notify; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, log and notify; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -18,6 +18,7 @@ import {
   type ExecResult,
   type JsonValue,
   type OAuthSpec,
+  type OpenFileRequest,
   type OAuthTokens,
   type PluginContext,
   type PluginLogger,
@@ -30,11 +31,13 @@ import { capText } from '../../shared/text'
 import type { HostPluginSpec } from '../loader'
 import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
+import { createAppStorageApi } from './app-storage'
+import { createFilesApi, parseOpenFile, runOpenListeners } from './files'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { SettingsHolder } from './settings'
 import { createStorage, type StorageHandle } from './storage'
-import { createUiApi, PanelPorts, type PanelPort } from './ui'
+import { createUiApi, OverlayLinks, PanelPorts, type PanelPort } from './ui'
 import { createWebviewApi, WebviewHub } from './webview'
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -44,7 +47,7 @@ export interface ContextDeps {
   log(pluginId: string, level: LogLevel, text: string): void
   /**
    * A request to main (`commands.register`, `notify`, `sessions.*`, `badge`, `overlay.open`,
-   * `secrets.*`, `oauth.*`).
+   * `secrets.*`, `oauth.*`, `appStorage.*`).
    * Default: rejects (no connection to main). `timeoutMs: Infinity` waits until main answers or the
    * connection closes (an overlay is open as long as the user wants).
    */
@@ -93,6 +96,8 @@ interface Runtime {
   commands: Map<string, () => unknown>
   /** `ctx.cli.register` handlers by command name. */
   cli: Map<string, CliHandler>
+  /** `ctx.files.onOpen` listeners (main's `files.open`). */
+  openListeners: Set<(req: OpenFileRequest) => unknown>
   /** This ctx's `ccc <name>` calls still running: aborted (and answered) at dispose. */
   cliCalls: Set<CliRun>
   children: Set<ChildProcess>
@@ -101,6 +106,7 @@ interface Runtime {
   /** This ctx called ctx.webview.navigate: main has views of it to close at dispose. */
   webviewUsed: boolean
   dataDirReady: boolean
+  appDataDirReady: boolean
   disposed: boolean
 }
 
@@ -116,11 +122,13 @@ export class HostContexts {
   private readonly cliById = new Map<number, CliRun>()
   private readonly sessions: SessionsHub
   private readonly ports: PanelPorts
+  private readonly overlays: OverlayLinks
   private readonly webviews: WebviewHub
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
   }
 
@@ -154,11 +162,13 @@ export class HostContexts {
       }),
       commands: new Map(),
       cli: new Map(),
+      openListeners: new Set(),
       cliCalls: new Set(),
       children: new Set(),
       oauthCalls: new Set(),
       webviewUsed: false,
       dataDirReady: false,
+      appDataDirReady: false,
       disposed: false
     }
     this.runtimes.set(spec.id, rt)
@@ -294,6 +304,7 @@ export class HostContexts {
       alive,
       guardAsync,
       ports: this.ports,
+      overlays: this.overlays,
       logError: (m) => logAs('error', m)
     })
 
@@ -310,6 +321,8 @@ export class HostContexts {
         return rt.settings.onChange(listener)
       },
       storage: Object.freeze(storage),
+      // An RPC like secrets: main owns the app-wide file, the one writer for every window's host.
+      appStorage: createAppStorageApi({ pluginId: spec.id, call, guardAsync }),
       secrets: Object.freeze(secrets),
       oauth: Object.freeze(oauth),
       get dataDir(): string {
@@ -319,6 +332,16 @@ export class HostContexts {
           rt.dataDirReady = true
         }
         return spec.dataDir
+      },
+      // The same in every project; made here on first read like dataDir (main makes it too, on
+      // the first appStorage write, for its storage.json inside).
+      get appDataDir(): string {
+        alive()
+        if (!rt.appDataDirReady) {
+          mkdirSync(spec.appDataDir, { recursive: true, mode: 0o700 })
+          rt.appDataDirReady = true
+        }
+        return spec.appDataDir
       },
       schedule: (seconds: number, fn: () => unknown) => {
         alive()
@@ -342,6 +365,7 @@ export class HostContexts {
       sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions }),
       commands: Object.freeze({ register }),
       cli: Object.freeze({ register: registerCli }),
+      files: createFilesApi({ declared: spec.openFile === true, alive, listeners: rt.openListeners }),
       services: Object.freeze({
         provide: (name: string, impl: Record<string, (...args: never[]) => unknown>) => {
           alive()
@@ -354,7 +378,12 @@ export class HostContexts {
         emit: (name: string, event: string, data?: unknown) => {
           alive()
           servicesOf().emit(spec.id, name, event, data)
-        }
+        },
+        // The registry answers from the call frame, keyed by the id bound here, so a plugin can only
+        // learn who is calling it. No alive() check, unlike the members above: a call already running
+        // when the plugin is released finishes on the old copy (see ServiceRegistry.release), and a
+        // read with no side effect must not break it.
+        caller: () => servicesOf().caller(spec.id)
       }),
       log: Object.freeze(logger),
       notify
@@ -393,8 +422,10 @@ export class HostContexts {
     for (const run of [...rt.cliCalls]) run.cancel('the plugin is deactivated')
     rt.cliCalls.clear()
     rt.cli.clear()
+    rt.openListeners.clear()
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
+    this.overlays.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
     for (const child of rt.children) killChild(child)
     rt.children.clear()
@@ -466,6 +497,11 @@ export class HostContexts {
       this.sessions.handleEvent(params)
       return
     }
+    if (event === 'overlay.message') {
+      // Keyed by plugin and handle; a handle of a disposed copy was dropped with it.
+      this.overlays.handleEvent(params)
+      return
+    }
     if (event === 'webview.navigated') {
       // Only a plugin that runs here (a late event for a disposed copy finds no listeners anyway).
       const pluginId = (params as { pluginId?: unknown } | null)?.pluginId
@@ -534,6 +570,18 @@ export class HostContexts {
         .then((value) => normalizeCliResult(value))
         .then(finish, (err: unknown) => finish(failed(err)))
     })
+  }
+
+  /**
+   * Main hands a plugin a click on a changed file (`files.open { pluginId, path, tabId }`): true
+   * when one of its `ctx.files.onOpen` listeners took it (files.ts), false when the plugin does not
+   * run here, has no listener, or every listener failed. Main opens its built-in viewer on false.
+   */
+  async openFile(params: unknown): Promise<boolean> {
+    const req = parseOpenFile(params)
+    const rt = this.runtimes.get(req.pluginId)
+    if (!rt || rt.disposed) return false
+    return runOpenListeners(rt.openListeners, req, (m) => this.deps.log(req.pluginId, 'error', m))
   }
 
   /** Main asks to run a command a plugin registered: `{ pluginId, id }`. */

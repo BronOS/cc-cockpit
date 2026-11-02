@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { isPluginPage, overlayResultOf } from '../plugins/frame-messages'
+import { MAX_QUEUED_MESSAGES } from '../../sdk/panel-core'
+import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
+import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
 import { PluginFrame } from '../plugins/PluginFrame'
 
 /** What the page posts on its port to answer: `port.postMessage({ type: 'result', value })`. */
@@ -39,8 +41,10 @@ function sendResult(overlayId: string, value: unknown, onRefused: () => void): v
  * - a plugin's page (`ctx.overlay.open({ kind: 'html', file })`) at its `cc-plugin://` URL, loaded
  *   like a panel (PluginFrame: the plugin's CSP, the app theme, the panel SDK). Its port ends here,
  *   in the shell: `ccPanel.post({ result: value })` closes the overlay with that value, and
- *   `ctx.overlay.open` resolves with it. Nothing else it posts goes anywhere (the plugin has no
- *   handle on the overlay to talk to it; data it needs goes in the page itself).
+ *   `ctx.overlay.open` resolves with it. Anything else it posts is relayed to main
+ *   (`overlays.message`), which hands it to the plugin that opened the overlay, if it opened it with
+ *   `ctx.overlay.start`; what that plugin posts comes back as the `overlays.message` event and goes
+ *   down the port. main holds those posts until this page's port is up (`overlays.ready`).
  * Either runs in a sandboxed iframe (`allow-scripts` only, never `allow-same-origin`), so in an
  * opaque origin with no access to this window, its storage or the preload bridge.
  *
@@ -61,6 +65,25 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
   const { overlayId } = props
   /** One answer per overlay, whatever pages it loads (a page may navigate itself). */
   const answered = useRef(false)
+  /** The current page's port, null between pages. */
+  const port = useRef<MessagePort | null>(null)
+  /**
+   * The opener's posts that arrived between two pages (the page navigated itself: main still counts
+   * it as loaded). Bounded like the page SDK's own queue.
+   */
+  const pending = useRef<string[]>([])
+
+  useEffect(
+    () =>
+      window.cockpit.on('overlays.message', ({ overlayId: id, message }) => {
+        if (id !== overlayId || typeof message !== 'string') return
+        if (port.current) port.current.postMessage(message)
+        else if (pending.current.length < MAX_QUEUED_MESSAGES) pending.current.push(message)
+        else console.warn('overlay message dropped: the page is not connected and the queue is full')
+      }),
+    [overlayId]
+  )
+
   return (
     <PluginFrame
       src={props.src}
@@ -69,15 +92,34 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
       connect={(deliver) => {
         const ch = new MessageChannel()
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
+          // Nothing more once the page answered: the overlay is closing with that answer.
+          if (answered.current) return
           const answer = overlayResultOf(event.data)
-          if (!answer || answered.current) return
-          answered.current = true
-          sendResult(overlayId, answer.value, () => {
-            answered.current = false
+          if (answer) {
+            answered.current = true
+            sendResult(overlayId, answer.value, () => {
+              answered.current = false
+            })
+            return
+          }
+          const text = overlayMessageOf(event.data)
+          if (text === undefined) {
+            console.warn(`overlay message dropped: not JSON, or over ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
+            return
+          }
+          window.cockpit.invoke('overlays.message', { overlayId, message: text }).catch((err: unknown) => {
+            console.warn('overlay message refused', err)
           })
         }
         deliver(ch.port2)
-        return () => ch.port1.close()
+        port.current = ch.port1
+        // Posts sent before this port was up (a page navigating itself), then main's queue.
+        for (const message of pending.current.splice(0)) ch.port1.postMessage(message)
+        window.cockpit.invoke('overlays.ready', { overlayId }).catch(() => {})
+        return () => {
+          if (port.current === ch.port1) port.current = null
+          ch.port1.close()
+        }
       }}
     />
   )

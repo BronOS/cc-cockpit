@@ -21,7 +21,8 @@ so a person chooses to install or link it.
     "commands": [{ "id": "say-hello", "title": "Hello: Say hello", "key": "Cmd+Shift+H" }],
     "themes": [{ "id": "dusk", "file": "themes/dusk.json" }],
     "cli": [{ "name": "hello", "summary": "Say hello", "usage": "hello [name]" }],
-    "skills": [{ "id": "hello", "dir": "skills/hello" }]
+    "skills": [{ "id": "hello", "dir": "skills/hello" }],
+    "openFile": { "title": "Hello viewer" }
   },
   "services": { "provides": { "greetings": 1 }, "uses": { "triage": 1 } }
 }
@@ -33,11 +34,23 @@ so a person chooses to install or link it.
 - `main`: path to the host entry, optional (a theme-only plugin has none).
 - All paths are plugin-relative, with `/` separators, no `..`, no absolute path. They must exist.
 - `contributes` ids (panel, command, theme) match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
-- Unknown manifest properties are tolerated; known ones are strict.
+- Known top-level keys: `id`, `name`, `version`, `api` (all four required), `main`, `contributes`,
+  `services`. Every other key (`description`, `author`, `license`, `homepage`, ...) is tolerated
+  and ignored: nothing in the app shows it (a marketplace entry has its own `description`). Known
+  keys are strict. Unknown keys inside `contributes` and its entries are ignored as well; only
+  `services` rejects them.
+- Fields per contribution: panel `id`, `title`, `kind`, `icon`, `entry`, `defaultZone`; command
+  `id`, `title`, `key`; theme `id`, `file`; skill `id`, `dir`; cli `name`, `summary`, `usage`,
+  `stdin`; openFile `title`. There is no `description` field on a command or a cli entry: a command is one palette
+  line (`title`), a cli entry is a `summary` (200 chars) and a `usage` (500 chars).
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
   not provide and use the same name. No other key inside `services` (unlike the top level, an
   unknown one is an error). Only declared names work with `ctx.services` (`api` topic).
+- `openFile` (an object, not a list; needs `main`): the plugin can take over a click on a changed
+  file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
+  names the choice in Settings > Plugins, where a project with several such plugins picks one (or
+  the built-in viewer); with one, it gets the clicks unless the project picks the built-in viewer.
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
   `description: <one line, at most 1024 chars>`; any other key, a multi-line value, a `name`
@@ -58,7 +71,7 @@ exports.deactivate = () => {}
 ```
 
 `activate(ctx)` has 10 s; its return value is ignored (share an API with `ctx.services`). `ctx` is scoped to one project window. See the `api` topic for every
-member. Types: `src/sdk/types.ts` in the cc-cockpit repo (`PluginContext`); a starting point to copy, with the
+member. Types: `ccc guide types` prints the SDK types (`PluginContext`; the file is `src/sdk/types.ts` in the cc-cockpit repo); a starting point to copy, with the
 types and a build: https://github.com/BronOS/cc-cockpit-plugin-example.
 
 ## CLI commands
@@ -71,7 +84,11 @@ needs `main`.
   `config`, `version` are reserved. A name another installed plugin already has is refused at
   install or link, naming the owner.
 - `summary` (one line, shown by `ccc help`) and `usage` (shown by `ccc <name> --help`, starts with
-  the name).
+  the name). Both are one line of plain text: a line break becomes a space. `ccc <name> --help`
+  (as the first word) is answered by the app from these two and never reaches your handler, so
+  for several subcommands (`jev usage|balance|ask`) put the synopsis in `usage`, e.g. `jev
+  usage|balance|ask [args]; jev help for details`, and handle `help` and `<sub> --help` in the
+  handler, which gets those words verbatim.
 - `stdin`: `true` to receive the caller's stdin; without it, stdin is never read.
 
 ## Walkthrough: a plugin in five files

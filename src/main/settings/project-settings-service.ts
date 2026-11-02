@@ -20,6 +20,7 @@
 //    project main resolved, never one from the payload); the renderer only learns whether each is set.
 import type {
   LayoutView,
+  PluginAppSettingsView,
   PluginSettingsSaveResult,
   ProjectPanelView,
   ProjectPluginView,
@@ -176,13 +177,29 @@ export class ProjectSettingsService {
       const check = this.deps.checkSettings(project.id, p.id)
       if (!check.ok) view.problem = check.reason
     }
-    const schema = manifest.contributes?.settings?.project
-    if (schema !== undefined) {
-      const stored: unknown = isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, p.id)
-        ? project.pluginSettings[p.id]
-        : undefined
-      view.projectSettings = settingsViewOf(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
-    }
+    const projectSettings = this.projectSettingsView(project, p)
+    if (projectSettings !== undefined) view.projectSettings = projectSettings
     return view
+  }
+
+  /**
+   * The plugin's settings for this project as the This project page shows them (stored values with
+   * defaults, secret fields as set or not); undefined when it declares none. `ccc plugin config`
+   * reads this (main/settings/plugin-config.ts), so both show the same thing.
+   */
+  pluginProjectSettings(projectId: string, pluginId: unknown): PluginAppSettingsView | undefined {
+    const project = this.project(projectId)
+    const plugin = typeof pluginId === 'string' ? this.deps.plugins.get(pluginId) : undefined
+    if (!plugin?.manifest) throw new Error(`unknown plugin: ${String(pluginId)}`)
+    return this.projectSettingsView(project, plugin)
+  }
+
+  private projectSettingsView(project: ProjectView, p: InstalledPlugin): PluginAppSettingsView | undefined {
+    const schema = p.manifest?.contributes?.settings?.project
+    if (schema === undefined) return undefined
+    const stored: unknown = isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, p.id)
+      ? project.pluginSettings[p.id]
+      : undefined
+    return settingsViewOf(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
   }
 }

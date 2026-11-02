@@ -1132,11 +1132,13 @@ describe('registerProjectSettingsHandlers', () => {
 describe('registerCccCommandHandlers', () => {
   it('is for project windows only and passes no payload on', async () => {
     const { ipc, router } = setup()
-    const view = { state: 'missing' as const, linkPath: '/h/.local/bin/ccc', target: '/d/bin/ccc', binDir: '/h/.local/bin', onPath: false }
+    const view = { state: 'missing' as const, linkPath: '/h/.local/bin/ccc', target: '/d/bin/ccc', binDir: '/h/.local/bin', onPath: false, offerAtStart: true }
     const calls: string[] = []
     registerCccCommandHandlers(router, {
       status: () => (calls.push('status'), view),
-      install: async () => (calls.push('install'), { ...view, state: 'installed' })
+      install: async () => (calls.push('install'), { ...view, state: 'installed' }),
+      setOffer: (v) => void calls.push(`offer ${v}`),
+      offer: () => null
     })
     await expect(ipc.invoke('settings.cccInstall', 13, [{}])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
@@ -1208,6 +1210,13 @@ describe('registerOverlayHandlers', () => {
       result: (windowId, overlayId, value) => {
         calls.push(['result', windowId, overlayId, value])
         return true
+      },
+      message: (windowId, overlayId, text) => {
+        calls.push(['message', windowId, overlayId, text])
+        return true
+      },
+      ready: (windowId, overlayId) => {
+        calls.push(['ready', windowId, overlayId])
       }
     })
     return { ipc, calls }
@@ -1222,6 +1231,8 @@ describe('registerOverlayHandlers', () => {
     await ipc.invoke('overlays.ack', 11, [{ overlayId: 'o1', count: 3 }])
     await ipc.invoke('overlays.bounds', 12, [{ overlayId: 'o2', x: 0, y: 30, width: 10, height: 20 }])
     await ipc.invoke('overlays.result', 12, [{ overlayId: 'o2', value: { a: 1 } }])
+    await ipc.invoke('overlays.message', 12, [{ overlayId: 'o2', message: '{"n":1}', windowId: 1 }])
+    await ipc.invoke('overlays.ready', 11, [{ overlayId: 'o1', windowId: 2 }])
     expect(calls).toEqual([
       ['list', 1],
       ['close', 2, 'o1'],
@@ -1229,7 +1240,9 @@ describe('registerOverlayHandlers', () => {
       ['resize', 1, 'o1', 80, 24],
       ['ack', 1, 'o1', 3],
       ['bounds', 2, 'o2', { x: 0, y: 30, width: 10, height: 20 }],
-      ['result', 2, 'o2', { a: 1 }]
+      ['result', 2, 'o2', { a: 1 }],
+      ['message', 2, 'o2', '{"n":1}'],
+      ['ready', 1, 'o1']
     ])
   })
 
@@ -1246,7 +1259,10 @@ describe('registerOverlayHandlers', () => {
       ['overlays.resize', [{ overlayId: 'o', cols: '80', rows: 24 }]],
       ['overlays.ack', [{ overlayId: 'o', count: '3' }]],
       ['overlays.bounds', [{ overlayId: 'o', x: 0, y: 0, width: '1', height: 1 }]],
-      ['overlays.result', [{ value: 1 }]]
+      ['overlays.result', [{ value: 1 }]],
+      ['overlays.message', [{ overlayId: 'o', message: { n: 1 } }]],
+      ['overlays.message', [{ message: '{}' }]],
+      ['overlays.ready', [{ overlayId: 7 }]]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()

@@ -170,7 +170,8 @@ describe('commandOverlaySpec', () => {
       kind: 'terminal',
       argv: ['/bin/zsh', '-l', '-i', '-c', 'lazygit -p .'],
       cwd: '/p',
-      title: 'Git'
+      title: 'Git',
+      size: 'full'
     })
   })
 })

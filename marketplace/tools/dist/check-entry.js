@@ -98,7 +98,7 @@ var CONTRIBUTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 var SKILL_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 var MAX_SKILLS = 10;
 var CLI_NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
-var CORE_CLI_COMMANDS = ["open", "hook", "session", "overlay", "sessions", "notify", "guide", "plugin", "help"];
+var CORE_CLI_COMMANDS = ["open", "hook", "session", "overlay", "sessions", "notify", "guide", "plugin", "panel", "help"];
 var RESERVED_CLI_NAMES = [...CORE_CLI_COMMANDS, "app", "config", "version"];
 var MAX_CLI_COMMANDS = 10;
 var SERVICE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -200,7 +200,10 @@ var MANIFEST_SCHEMA = {
               stdin: { type: "boolean" }
             }
           }
-        }
+        },
+        // An object, not `true`: the title is what the person reads when picking the plugin that
+        // opens files, and a later field (file kinds, say) has room here.
+        openFile: { type: "object", required: ["title"], properties: { title } }
       }
     }
   }

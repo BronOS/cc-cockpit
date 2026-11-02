@@ -9,6 +9,14 @@
 //  - On Linux, `safeStorage` reports itself available with the `basic_text` backend (no keyring
 //    found, or `--password-store=basic`): that "encryption" uses a key hard-coded in Chromium, so
 //    anyone who can read the secrets file can decrypt it. That counts as unavailable here.
+//  - On Linux the backend name and the availability flag are not enough: with `--password-store`
+//    forcing libsecret (or KWallet) and no working keyring, Electron 45 reports encryption available
+//    and the forced backend, then encrypts with the same hard-coded key (checked by hand on a private
+//    bus without a Secret Service). Only the ciphertext's version tag shows it: Chromium tags data
+//    under its hard-coded POSIX key `v10`, and under a key from the keyring `v11`. So the store
+//    encrypts a probe and accepts only `v11` (and checks the tag of every value it returns too):
+//    anything else is refused, never guessed at. Linux only: on macOS and Windows `v10` is the
+//    keychain / DPAPI key.
 //  - Electron 45 deprecates the synchronous `encryptString` / `decryptString` /
 //    `isEncryptionAvailable`; the async ones are used (they also keep a keychain prompt from
 //    blocking main). The async encryptor initializes lazily after `ready`, so availability is
@@ -59,11 +67,28 @@ export const FAKE_SECRETS_ENV = 'CC_COCKPIT_FAKE_SECRETS'
 
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
 
+/** The version tag Chromium puts on Linux ciphertext made with a key from the keyring (Secret Service or KWallet). */
+export const LINUX_KEYRING_TAG = 'v11'
+
+/** Encrypted on Linux to learn which key safeStorage really uses; never stored. */
+const PROBE = 'cc-cockpit keyring check'
+
+const LINUX_FIX =
+  'Start a Secret Service keyring (gnome-keyring, or the Secret Service of KeePassXC) and unlock it, ' +
+  'or start the app with --password-store=gnome-libsecret (or kwallet6)'
+
+/** Whether `buf` is Linux ciphertext under a keyring key (its version tag). */
+function keyringTagged(buf: Buffer): boolean {
+  return buf.subarray(0, LINUX_KEYRING_TAG.length).toString('latin1') === LINUX_KEYRING_TAG
+}
+
 /**
  * The OS keychain through Electron's `safeStorage`. `platform` decides whether the Linux backend
- * is consulted (`basic_text` is refused, `unknown` means "before ready").
+ * is consulted (`basic_text` is refused, `unknown` means "before ready") and the ciphertext's tag
+ * checked (only `v11`, a keyring key, is accepted).
  */
 export function safeStorageSecretStore(api: SafeStorageApi, platform: string = process.platform): SecretStore {
+  const BUILT_IN_KEY = `no OS keyring was found, and the fallback would store secrets with a built-in key (not encrypted). ${LINUX_FIX}`
   const unavailableReason = async (): Promise<string | null> => {
     let available: boolean
     try {
@@ -72,9 +97,7 @@ export function safeStorageSecretStore(api: SafeStorageApi, platform: string = p
       available = false
     }
     if (!available) {
-      return platform === 'linux'
-        ? 'the OS keyring is not available (install and unlock gnome-keyring or KWallet)'
-        : 'the OS keychain is not available'
+      return platform === 'linux' ? `no OS keyring is available. ${LINUX_FIX}` : 'the OS keychain is not available'
     }
     if (platform === 'linux') {
       let backend = 'unknown'
@@ -83,10 +106,17 @@ export function safeStorageSecretStore(api: SafeStorageApi, platform: string = p
       } catch {
         /* reported as unknown below */
       }
-      if (backend === 'basic_text') {
-        return 'no OS keyring was found, and the fallback would store secrets with a built-in key (not encrypted)'
-      }
+      if (backend === 'basic_text') return BUILT_IN_KEY
       if (backend === 'unknown') return 'the OS keyring is not ready yet'
+      // The named backend may still have failed to start (no keyring behind a forced switch): ask
+      // the encryptor which key it really uses.
+      let probe: Buffer
+      try {
+        probe = await api.encryptStringAsync(PROBE)
+      } catch {
+        return 'the OS keyring refused to encrypt. ' + LINUX_FIX
+      }
+      if (!keyringTagged(probe)) return BUILT_IN_KEY
     }
     return null
   }
@@ -105,6 +135,8 @@ export function safeStorageSecretStore(api: SafeStorageApi, platform: string = p
         // Electron's message is not ours to forward: it could in principle echo its input.
         throw new SecretStoreError('cannot store secrets: the OS keychain refused to encrypt')
       }
+      // The probe above passed, but the keyring can go away in between: this value is checked too.
+      if (platform === 'linux' && !keyringTagged(buf)) throw new SecretStoreError(`cannot store secrets: ${BUILT_IN_KEY}`)
       return buf.toString('base64')
     },
     decrypt: async (stored: string): Promise<string> => {

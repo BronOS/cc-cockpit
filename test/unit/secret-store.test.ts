@@ -12,14 +12,29 @@ import {
 
 const SECRET = 'tok-very-secret-123'
 
-/** A stand-in for Electron's safeStorage: reversible, and `available` switchable. */
-function stubSafeStorage(state: { available: boolean; backend?: string; failDecrypt?: boolean }): SafeStorageApi {
+/**
+ * A stand-in for Electron's safeStorage: reversible, and `available` switchable. Ciphertext starts
+ * with Chromium's version tag, `v11` (a keyring key) unless `tag` says otherwise; `tagAfter` swaps
+ * the tag after that many encryptions (a keyring that goes away between the probe and the value).
+ */
+function stubSafeStorage(state: {
+  available: boolean
+  backend?: string
+  failDecrypt?: boolean
+  tag?: string
+  tagAfter?: { count: number; tag: string }
+}): SafeStorageApi {
+  let encryptions = 0
   return {
     isAsyncEncryptionAvailable: async () => state.available,
-    encryptStringAsync: async (plain) => Buffer.from(`enc(${plain})`, 'utf8').map((b) => b ^ 0x33) as Buffer,
+    encryptStringAsync: async (plain) => {
+      encryptions++
+      const tag = state.tagAfter !== undefined && encryptions > state.tagAfter.count ? state.tagAfter.tag : (state.tag ?? 'v11')
+      return Buffer.concat([Buffer.from(tag, 'latin1'), Buffer.from(`enc(${plain})`, 'utf8').map((b) => b ^ 0x33)])
+    },
     decryptStringAsync: async (buf) => {
       if (state.failDecrypt) throw new Error(`could not decrypt ${buf.toString('base64')}`)
-      const text = Buffer.from(buf.map((b) => b ^ 0x33)).toString('utf8')
+      const text = Buffer.from(buf.subarray(3).map((b) => b ^ 0x33)).toString('utf8')
       return { result: text.slice(4, -1), shouldReEncrypt: false }
     },
     getSelectedStorageBackend: () => state.backend ?? 'gnome_libsecret'
@@ -34,6 +49,13 @@ describe('secret store', () => {
     await expect(s.encrypt(SECRET)).rejects.not.toThrow(SECRET)
   })
 
+  it('safeStorage on Linux: the error names the cause and the fix', async () => {
+    for (const state of [{ available: false }, { available: true, backend: 'basic_text' }]) {
+      const s = safeStorageSecretStore(stubSafeStorage(state), 'linux')
+      await expect(s.encrypt(SECRET)).rejects.toThrow(/Secret Service keyring.*--password-store=gnome-libsecret/)
+    }
+  })
+
   it('safeStorage on Linux: the basic_text backend (built-in key) counts as unavailable', async () => {
     const s = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'basic_text' }), 'linux')
     expect(await s.unavailableReason()).toContain('built-in key')
@@ -42,6 +64,36 @@ describe('secret store', () => {
     await expect(before.encrypt(SECRET)).rejects.toThrow('not ready yet')
     const ok = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'kwallet6' }), 'linux')
     expect(await ok.unavailableReason()).toBeNull()
+  })
+
+  it('safeStorage on Linux: a forced backend that fell back to the built-in key (tag v10) is refused', async () => {
+    // What Electron 45 does with --password-store=gnome-libsecret and no keyring behind it: available,
+    // the forced backend reported, ciphertext under Chromium's hard-coded key.
+    const fallback = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'gnome_libsecret', tag: 'v10' }), 'linux')
+    expect(await fallback.unavailableReason()).toContain('built-in key')
+    await expect(fallback.encrypt(SECRET)).rejects.toThrow(/cannot store secrets: .*built-in key.*--password-store=gnome-libsecret/)
+    const good = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'gnome_libsecret' }), 'linux')
+    expect(await good.decrypt(await good.encrypt(SECRET))).toBe(SECRET)
+    await expect(fallback.decrypt(await good.encrypt(SECRET))).rejects.toThrow('cannot read secrets')
+    // An unknown tag is refused too, never guessed at.
+    const other = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'kwallet6', tag: 'v99' }), 'linux')
+    await expect(other.encrypt(SECRET)).rejects.toThrow('built-in key')
+    // The keyring goes away after the probe: the value itself is checked as well.
+    const late = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'gnome_libsecret', tagAfter: { count: 1, tag: 'v10' } }), 'linux')
+    await expect(late.encrypt(SECRET)).rejects.toThrow('built-in key')
+    // macOS and Windows tag their keychain / DPAPI ciphertext v10: not refused there.
+    const mac = safeStorageSecretStore(stubSafeStorage({ available: true, tag: 'v10' }), 'darwin')
+    expect(await mac.decrypt(await mac.encrypt(SECRET))).toBe(SECRET)
+  })
+
+  it('safeStorage on Linux: an encryptor that throws on the probe is unavailable, with the fix', async () => {
+    const api = stubSafeStorage({ available: true, backend: 'gnome_libsecret' })
+    api.encryptStringAsync = async () => {
+      throw new Error('dbus says no')
+    }
+    const s = safeStorageSecretStore(api, 'linux')
+    expect(await s.unavailableReason()).toMatch(/refused to encrypt.*Secret Service keyring/)
+    await expect(s.encrypt(SECRET)).rejects.not.toThrow('dbus says no')
   })
 
   it('safeStorage: round trip through base64; refuses fake values; errors never carry the value', async () => {

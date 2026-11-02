@@ -6,6 +6,9 @@ import type { EventChannel, IpcEventMap, OverlayInfo } from '../../src/shared/ip
 import {
   chordOfInput,
   KILL_GRACE_MS,
+  MAX_OVERLAY_MESSAGE_LENGTH,
+  MAX_QUEUED_OVERLAY_LENGTH,
+  MAX_QUEUED_OVERLAY_MESSAGES,
   MAX_RESULT_BYTES,
   OverlayManager,
   overlayUrlOf,
@@ -400,7 +403,7 @@ describe('results per kind', () => {
     expect(m.infos(W1)).toEqual([])
     // A good one is on the stack at once; its result comes when the program exits.
     const r = track(m.start(W1, { ...terminal(['lazygit']), title: 'Git' }, 'test'))
-    expect(m.infos(W1)).toEqual([{ id: expect.any(String), kind: 'terminal', title: 'Git' }])
+    expect(m.infos(W1)).toEqual([{ id: expect.any(String), kind: 'terminal', title: 'Git', size: 'default' }])
     backend.last.exit(3)
     await flush()
     expect(r.results).toEqual([{ kind: 'exit', code: 3 }])
@@ -668,6 +671,19 @@ describe('spec validation', () => {
     for (const spec of bad) expect(() => parseOverlaySpec(spec), JSON.stringify(spec)?.slice(0, 80)).toThrow()
   })
 
+  it('accepts the named sizes on every kind and refuses anything else', () => {
+    for (const size of ['default', 'large', 'full']) {
+      expect(parseOverlaySpec({ kind: 'url', url: 'https://example.com/', size })).toMatchObject({ size })
+      expect(parseOverlaySpec({ kind: 'html', html: '<p>x</p>', size })).toMatchObject({ size })
+      expect(parseOverlaySpec({ kind: 'terminal', argv: ['ls'], cwd: dir, size })).toMatchObject({ size })
+    }
+    expect('size' in parseOverlaySpec({ kind: 'html', html: '<p>x</p>' })).toBe(false)
+    for (const size of ['huge', 'LARGE', '', 90, null, {}]) {
+      expect(() => parseOverlaySpec({ kind: 'html', html: '<p>x</p>', size })).toThrow(/size/)
+      expect(() => parseOverlaySpec({ kind: 'terminal', argv: ['ls'], cwd: dir, size })).toThrow(/size/)
+    }
+  })
+
   it('keeps only the known fields', () => {
     expect(
       parseOverlaySpec({ kind: 'terminal', argv: ['ls', '-la'], cwd: dir, title: 'T', extra: 1 })
@@ -700,7 +716,7 @@ describe('html page', () => {
     const m = manager()
     const result = m.open(W1, { kind: 'html', src: 'cc-plugin://a.one/pick.html', title: 'Pick' }, 'plugin a.one')
     const [page] = m.infos(W1)
-    expect(page).toEqual({ id: page!.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/pick.html' })
+    expect(page).toEqual({ id: page!.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/pick.html', size: 'default' })
     expect(m.pageHtml(`cc-overlay://${page!.id}/`)).toBeUndefined()
     expect(m.result(W1, page!.id, { picked: 'b' })).toBe(true)
     await expect(result).resolves.toEqual({ kind: 'value', value: { picked: 'b' } })
@@ -728,6 +744,98 @@ describe('html page', () => {
     m.closeWindow(W1)
     expect(m.pageHtml(`cc-overlay://${one!.id}/`)).toBeUndefined()
     expect(m.pageHtml(`cc-overlay://${two!.id}/`)).toBeUndefined()
+  })
+})
+
+describe('html page messages (an opener with a channel)', () => {
+  const page = { kind: 'html', src: 'cc-plugin://a.one/chat.html' }
+  const sent = (windowId: number): unknown[] =>
+    events.filter((e) => e.windowId === windowId && e.channel === 'overlays.message').map((e) => e.payload)
+  function chat(m: OverlayManager): { result: Promise<OverlayResult>; id: string; heard: unknown[]; created: string[] } {
+    const heard: unknown[] = []
+    const created: string[] = []
+    const result = m.open(W1, page, 'plugin a.one', undefined, {
+      onCreated: (id) => created.push(id),
+      onMessage: (message) => heard.push(message)
+    })
+    return { result, id: m.infos(W1).at(-1)!.id, heard, created }
+  }
+
+  it('tells the opener the id at once, holds posts until the page is ready, then sends them in order', () => {
+    const m = manager()
+    const { id, created } = chat(m)
+    expect(created).toEqual([id])
+    expect(m.post(W1, id, '{"n":1}')).toBe(true)
+    expect(m.post(W1, id, '{"n":2}')).toBe(true)
+    expect(sent(W1)).toEqual([])
+    m.pageReady(W1, id)
+    expect(sent(W1)).toEqual([
+      { overlayId: id, message: '{"n":1}' },
+      { overlayId: id, message: '{"n":2}' }
+    ])
+    // Loaded: straight out. A renderer reload (list) holds them again until the page is back.
+    m.post(W1, id, '3')
+    expect(sent(W1)).toHaveLength(3)
+    m.list(W1)
+    m.post(W1, id, '4')
+    expect(sent(W1)).toHaveLength(3)
+    m.pageReady(W1, id)
+    expect(sent(W1).at(-1)).toEqual({ overlayId: id, message: '4' })
+  })
+
+  it("passes the page's messages to the opener only, parsed; the overlay stays until its result", async () => {
+    const m = manager()
+    const { result, id, heard } = chat(m)
+    expect(m.pageMessage(W1, id, '{"draft":"a"}')).toBe(true)
+    expect(m.pageMessage(W1, id, '[1,2]')).toBe(true)
+    expect(heard).toEqual([{ draft: 'a' }, [1, 2]])
+    expect(m.infos(W1)).toHaveLength(1)
+    // Another window's renderer, junk, a non-string and oversize text go nowhere.
+    expect(m.pageMessage(W2, id, '{}')).toBe(false)
+    expect(m.pageMessage(W1, id, '{oops')).toBe(false)
+    expect(m.pageMessage(W1, id, 5)).toBe(false)
+    expect(m.pageMessage(W1, id, JSON.stringify('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH)))).toBe(false)
+    expect(heard).toHaveLength(2)
+    expect(m.result(W1, id, { sent: true })).toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'value', value: { sent: true } })
+    // Ended: posting, a late page message and ready are all no-ops.
+    expect(m.post(W1, id, '1')).toBe(false)
+    expect(m.pageMessage(W1, id, '1')).toBe(false)
+    m.pageReady(W1, id)
+    expect(sent(W1)).toEqual([])
+  })
+
+  it('a message over the limit throws, naming it; the queue is bounded in count and size', () => {
+    const m = manager()
+    const { id } = chat(m)
+    expect(() => m.post(W1, id, 'x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH + 1))).toThrow(`exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`)
+    expect(m.post(W1, id, 'x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH))).toBe(true)
+    const big = 'y'.repeat(MAX_OVERLAY_MESSAGE_LENGTH)
+    const fit = Math.floor(MAX_QUEUED_OVERLAY_LENGTH / MAX_OVERLAY_MESSAGE_LENGTH) - 1
+    for (let i = 0; i < fit; i++) m.post(W1, id, big)
+    expect(() => m.post(W1, id, big)).toThrow('queue is full')
+
+    const other = chat(m)
+    for (let i = 0; i < MAX_QUEUED_OVERLAY_MESSAGES; i++) m.post(W1, other.id, String(i))
+    expect(() => m.post(W1, other.id, 'more')).toThrow('queue is full')
+    // Esc dismisses it without asking the page; its queue goes with it.
+    m.pop(W1)
+    m.pageReady(W1, other.id)
+    expect(sent(W1)).toEqual([])
+  })
+
+  it('an overlay opened without a channel (the CLI, inline html) takes no posts or page messages', () => {
+    const m = manager()
+    void m.open(W1, html(), 'cli')
+    const [inline] = m.infos(W1)
+    expect(m.post(W1, inline!.id, '1')).toBe(false)
+    expect(m.pageMessage(W1, inline!.id, '1')).toBe(false)
+    // A terminal opener with a channel learns the id (for close) but has no page to message.
+    const created: string[] = []
+    void m.open(W1, terminal(['sleep', '9']), 'plugin a.one', undefined, { onCreated: (id) => created.push(id), onMessage: () => {} })
+    const term = m.infos(W1).at(-1)!
+    expect(created).toEqual([term.id])
+    expect(m.post(W1, term.id, '1')).toBe(false)
   })
 })
 

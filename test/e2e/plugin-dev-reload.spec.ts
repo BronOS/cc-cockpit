@@ -66,3 +66,58 @@ test('editing a linked plugin reloads it in the running host; an invalid manifes
     .toEqual({ id: 'test.devreload', state: 'active' })
   expect(lines().at(-1)).toBe(`v2 dep2 ${pid}`)
 })
+
+// Friction round 1, Task 2: the dev loop is "edit, the app reloads by itself, run the command".
+// A `ccc` command sent in the gap of a reload (old copy deactivated, new one not active yet) is
+// served by the new copy once it is active, never refused or left hanging. The plugin takes half a
+// second to deactivate and half a second to activate, so calls sent every 100 ms after the edit
+// are sure to land in the gap; the shell tab runs the real `ccc`, as Claude's Bash tool would.
+test('a plugin command sent right after an edit is served by the new copy, not refused and not hung', async ({ cockpit }) => {
+  const folder = join(cockpit.root, 'cliplugin')
+  mkdirSync(folder)
+  writeFileSync(
+    join(folder, 'plugin.json'),
+    JSON.stringify({ id: 'test.reloadcli', name: 'Reload CLI', version: '1.0.0', api: 1, main: 'host.js', contributes: { cli: [{ name: 'rl', summary: 'Echo' }] } })
+  )
+  const slowHost = (tag: string): string => `
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+exports.activate = async (ctx) => {
+  await wait(500)
+  ctx.cli.register('rl', (argv) => ({ stdout: '${tag} ' + argv.join(' ') + '\\n' }))
+}
+exports.deactivate = () => wait(500)
+`
+  writeFileSync(join(folder, 'host.js'), slowHost('v1'))
+  await cockpit.hook('linkPlugin', folder)
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.reloadcli')
+  await expect
+    .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
+    .toMatchObject({ running: true, plugins: [{ id: 'test.reloadcli', state: 'active' }] })
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+
+  // The edit, then 30 calls 100 ms apart, each with its exit code, time and output.
+  const log = join(cockpit.root, 'calls.log')
+  writeFileSync(join(folder, 'host.js'), slowHost('v2'))
+  await cockpit.typeLine(
+    `for i in $(seq 1 30); do s=$(date +%s%N); out=$(ccc rl x 2>&1 </dev/null); rc=$?; ms=$(( ($(date +%s%N) - s) / 1000000 )); echo "rc=$rc ms=$ms out=$out" >> '${log}'; sleep 0.1; done; echo DONE >> '${log}'`
+  )
+  const read = (): string => {
+    try {
+      return readFileSync(log, 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  // 30 calls of ~50 ms plus the sleeps, one of them waiting about a second: well under this.
+  await expect.poll(read, { timeout: 30_000 }).toContain('DONE')
+  const calls = read().trim().split('\n').slice(0, -1).map((line) => /^rc=(\d+) ms=(\d+) out=(.*)$/.exec(line))
+  expect(calls).toHaveLength(30)
+  for (const c of calls) {
+    expect(c?.[1], c?.[0]).toBe('0')
+    expect(c?.[3]).toMatch(/^v[12] x$/)
+  }
+  // The new copy took over, and at least one call landed in the gap and waited for it.
+  expect(calls.at(-1)?.[3]).toBe('v2 x')
+  expect(Math.max(...calls.map((c) => Number(c?.[2])))).toBeGreaterThan(300)
+})

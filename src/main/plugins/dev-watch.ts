@@ -20,7 +20,7 @@
 // services (installer, host manager, the OS watcher) are injected, so tests drive time with fake
 // timers and a fake watcher.
 import { createHash } from 'node:crypto'
-import { watch as fsWatch, statSync, promises as fs, type FSWatcher } from 'node:fs'
+import { existsSync, watch as fsWatch, statSync, promises as fs, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { errorText, toError } from '../../shared/error-text'
 
@@ -42,6 +42,23 @@ const IGNORED_DIRS = new Set(['node_modules', '.git'])
  */
 export function isIgnoredPath(rel: string): boolean {
   return rel.split(/[\\/]+/).some((segment) => IGNORED_DIRS.has(segment))
+}
+
+/**
+ * True when `rel` lies inside a nested folder (below the plugin root) that has its own
+ * `plugin.json`: that is another plugin, with its own link and watcher, and its edits must not
+ * reload this one (a parent around `jev-demo/` reloaded with every demo edit). The root's own
+ * plugin.json is not a nested one: only the directories above the file count.
+ */
+export function isInNestedPlugin(root: string, rel: string): boolean {
+  const parts = rel.split(/[\\/]+/).filter((p) => p !== '')
+  let dir = root
+  for (const part of parts.slice(0, -1)) {
+    dir = join(dir, part)
+    if (existsSync(join(dir, 'plugin.json'))) return true
+  }
+  // The event for the nested folder itself (created or removed with its manifest inside).
+  return parts.length > 0 && existsSync(join(dir, parts[parts.length - 1] as string, 'plugin.json'))
 }
 
 export interface FolderWatch {
@@ -136,7 +153,7 @@ export class DevWatcher {
       watch = this.deps.watch(
         dir,
         (rel) => {
-          if (rel !== undefined && isIgnoredPath(rel)) return
+          if (rel !== undefined && (isIgnoredPath(rel) || isInNestedPlugin(dir, rel))) return
           this.changed(id)
         },
         (err) => this.log(`dev watch ${id}: ${errorText(err)}`)
@@ -350,6 +367,8 @@ async function folderSignature(root: string, maxEntries: number): Promise<{ sign
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     for (const e of entries) {
       if (IGNORED_DIRS.has(e.name)) continue
+      // A nested plugin folder is another plugin's: see isInNestedPlugin.
+      if (e.isDirectory() && existsSync(join(dir, e.name, 'plugin.json'))) continue
       if (++count > maxEntries) {
         truncated = true
         return

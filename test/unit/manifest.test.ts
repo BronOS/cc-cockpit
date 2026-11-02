@@ -319,6 +319,28 @@ describe('contributes.cli', () => {
   })
 })
 
+describe('contributes.openFile', () => {
+  const withOpenFile = (openFile: unknown): Record<string, unknown> => manifest({ contributes: { openFile } })
+
+  it('accepts a title (an unknown key inside is ignored, as in other contributions)', async () => {
+    const r = await validateManifest(withOpenFile({ title: 'Review', later: true }), dir)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.manifest.contributes?.openFile).toMatchObject({ title: 'Review' })
+  })
+
+  it.each([true, 'Review', [], {}, { title: '' }, { title: 5 }, { title: 'x'.repeat(101) }])('refuses %j', async (openFile) => {
+    expect((await errorsOf(withOpenFile(openFile))).join()).toMatch(/openFile/)
+  })
+
+  it('needs main: the click is handled in the plugin host', async () => {
+    const raw = withOpenFile({ title: 'Review' })
+    delete raw.main
+    expect(await errorsOf(raw)).toContain(
+      'contributes.openFile needs "main": the click is handled by ctx.files.onOpen in the plugin\'s host'
+    )
+  })
+})
+
 describe('contributes.skills', () => {
   const skillMd = (id: string, extra = ''): string => `---\nname: ${id}\ndescription: Does the ${id} thing.\n${extra}---\n\nBody\n`
   beforeEach(() => {

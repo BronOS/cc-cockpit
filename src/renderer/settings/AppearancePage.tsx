@@ -231,6 +231,21 @@ export function AppearancePage(): React.JSX.Element {
                     Install <code>ccc</code> command
                   </button>
                 </Row>
+                <Row
+                  label="Offer to install at start-up"
+                  htmlFor={`${id}-ccc-offer`}
+                  help={<>Ask once at launch whether to install <code>ccc</code> when it is missing.</>}
+                >
+                  <Switch
+                    id={`${id}-ccc-offer`}
+                    checked={ccc.data.offerAtStart}
+                    disabled={busy !== null}
+                    onChange={(e) => {
+                      const value = e.target.checked
+                      void run('ccc', () => window.cockpit.invoke('settings.cccOfferSet', { value })).then(ccc.reload)
+                    }}
+                  />
+                </Row>
               </div>
             )}
           </Group>

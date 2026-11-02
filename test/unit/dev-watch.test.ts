@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createFolderWatcher,
+  isInNestedPlugin,
   DEBOUNCE_MS,
   DevWatcher,
   isIgnoredPath,
@@ -269,6 +270,76 @@ describe('DevWatcher', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     expect(order).toEqual([])
     expect(watches).toHaveLength(1)
+  })
+})
+
+describe('nested plugin folders', () => {
+  let root: string
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-devwatch-nested-')))
+    writeFileSync(join(root, 'plugin.json'), '{}')
+    mkdirSync(join(root, 'inner', 'dist'), { recursive: true })
+    writeFileSync(join(root, 'inner', 'plugin.json'), '{}')
+    mkdirSync(join(root, 'test'))
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('isInNestedPlugin: inside a folder with its own plugin.json only', () => {
+    expect(isInNestedPlugin(root, 'inner/dist/host.js')).toBe(true)
+    expect(isInNestedPlugin(root, 'inner/plugin.json')).toBe(true)
+    expect(isInNestedPlugin(root, 'inner')).toBe(true)
+    expect(isInNestedPlugin(root, 'plugin.json')).toBe(false)
+    expect(isInNestedPlugin(root, 'test/a.js')).toBe(false)
+  })
+
+  it('the parent reloads for its own change, not for a nested plugin change', async () => {
+    vi.useFakeTimers()
+    try {
+      const fire: { f?: (rel?: string) => void } = {}
+      const reload = vi.fn(async () => {})
+      const w = new DevWatcher({
+        linked: () => [{ id: 'a.dev', dir: root }],
+        revalidate: async () => ({ ok: true }),
+        reload,
+        watch: (_dir, onChange) => {
+          fire.f = onChange
+          return { close() {} }
+        },
+        log: () => {}
+      })
+      w.sync()
+      fire.f?.('inner/dist/host.js')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(reload).not.toHaveBeenCalled()
+      fire.f?.('test/a.js')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(reload).toHaveBeenCalledTimes(1)
+      w.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the polling signature does not change for a nested plugin file, and does for the parent', async () => {
+    const changes: unknown[] = []
+    const w = pollFolder(root, () => void changes.push(1), () => {}, 30)
+    try {
+      await new Promise((r) => setTimeout(r, 150))
+      writeFileSync(join(root, 'inner', 'dist', 'host.js'), 'x')
+      await new Promise((r) => setTimeout(r, 250))
+      expect(changes).toEqual([])
+      let n = 0
+      const start = Date.now()
+      while (changes.length === 0 && Date.now() - start < 3000) {
+        writeFileSync(join(root, 'test', 'a.js'), 'y'.repeat(++n))
+        await new Promise((r) => setTimeout(r, 40))
+      }
+      expect(changes.length).toBeGreaterThan(0)
+    } finally {
+      w.close()
+    }
   })
 })
 

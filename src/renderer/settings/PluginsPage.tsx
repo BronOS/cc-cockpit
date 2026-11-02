@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
-import { serviceProblemMessage, type PluginServiceStatus, type ServicesStatus } from '../../shared/services'
+import { BUILTIN_VIEWER, OPEN_FILE_PICK, serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { Empty, Group, PageHeader, Row, Select } from './ui'
@@ -12,7 +12,7 @@ const loadPlugins = (): Promise<PluginView[]> => window.cockpit.invoke('settings
 const loadMarketplace = (): Promise<MarketplaceView | null> => window.cockpit.invoke('settings.marketplace').catch(() => null)
 
 // Services are this project's: main answers for the window's project and only over the plugins its host runs.
-const loadServices = (): Promise<ServicesStatus | null> => window.cockpit.invoke('settings.pluginServices').catch(() => null)
+const loadServices = (): Promise<PluginServicesView | null> => window.cockpit.invoke('settings.pluginServices').catch(() => null)
 
 /**
  * What the Marketplace says about an installed plugin, for its row: a newer version, a safe version to
@@ -53,6 +53,10 @@ export function PluginsPage(props: {
   }
   const nameOf = (id: string): string => data?.find((p) => p.id === id)?.name ?? id
   const shared = (services.data?.services ?? []).filter((s) => s.candidates.length >= 2)
+  // The open-file pick sits with the service picks (same rule, same record): shown as soon as one
+  // plugin offers to open files, since the built-in viewer is always the other choice.
+  const openFile = services.data?.openFile
+  const showOpenFile = openFile !== undefined && openFile.candidates.length > 0
   const pickProvider = (service: string, pluginId: string | null): void => {
     void run('provider', () => window.cockpit.invoke('settings.pluginServiceProvider', { service, pluginId })).then(reload)
   }
@@ -125,9 +129,32 @@ export function PluginsPage(props: {
           </div>
         </form>
       </Group>
-      {shared.length > 0 && (
-        <Group title="Services" description="Several enabled plugins provide these in this project; calls go to the one picked.">
+      {(shared.length > 0 || showOpenFile) && (
+        <Group title="Services" description="Where this project has a choice of plugin, the one picked answers.">
           <div className="settings-card" data-testid="service-picks">
+            {showOpenFile && (
+              <Row
+                label="Plugin used to open files"
+                help="A click on a changed file in the Sessions panel."
+                htmlFor="open-file-pick"
+              >
+                <Select
+                  id="open-file-pick"
+                  wide
+                  disabled={busy !== null}
+                  value={openFile.selected ?? ''}
+                  onChange={(e) => pickProvider(OPEN_FILE_PICK, e.target.value === '' ? null : e.target.value)}
+                >
+                  {openFile.selected === null && <option value="">Pick one (built-in viewer until then)</option>}
+                  {openFile.candidates.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {`${c.title} (${nameOf(c.id)})`}
+                    </option>
+                  ))}
+                  <option value={BUILTIN_VIEWER}>Built-in viewer</option>
+                </Select>
+              </Row>
+            )}
             {shared.map((svc) => (
               <Row key={svc.service} label={`Plugin used for ${svc.service}`} htmlFor={`service-pick-${svc.service}`}>
                 <Select

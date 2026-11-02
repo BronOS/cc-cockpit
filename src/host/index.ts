@@ -14,15 +14,18 @@
 //   plugin.unload { pluginId }              -> null               deactivate one plugin, keep the rest
 //   cli.run    { pluginId, name, argv, stdin, cwd, callId } -> { stdout, stderr, code }
 //                                                                  run a ctx.cli.register handler (`ccc <name>`)
+//   files.open { pluginId, path, tabId }    -> boolean            a Sessions panel file click for
+//                                                                  ctx.files.onOpen (true: taken)
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
+//   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text }
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
-//   badge { pluginId, panelId, value }, overlay.open { pluginId, spec } (no timeout; see
-//   src/main/plugins/host-api.ts)
+//   badge { pluginId, panelId, value }, overlay.open { pluginId, spec, handle } (no timeout; see
+//   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle }
 // Events to main:
 //   log        { pluginId, level, text }      a ctx.log line
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)
@@ -119,6 +122,7 @@ function start(): void {
       },
       'command.run': (params) => contexts.runCommand(params),
       'cli.run': (params) => contexts.runCli(params),
+      'files.open': (params) => contexts.openFile(params),
       'plugin.reload': (params) => {
         const [spec] = parsePluginSpecs({ plugins: [(params as { plugin?: unknown } | null)?.plugin] })
         if (!spec) throw new Error('plugin.reload: no plugin')

@@ -56,7 +56,7 @@ export const CLI_NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/
  * not handled there, is a type error), and the manifest check reserves the same names, so the two
  * cannot drift. Shared because main must not import the CLI.
  */
-export const CORE_CLI_COMMANDS = ['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'guide', 'plugin', 'help'] as const
+export const CORE_CLI_COMMANDS = ['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'guide', 'plugin', 'panel', 'help'] as const
 export type CoreCliCommand = (typeof CORE_CLI_COMMANDS)[number]
 
 export function isCoreCliCommand(name: string): name is CoreCliCommand {
@@ -144,6 +144,15 @@ export const SERVICE_VERSION_MAX = 9999
 /** At most this many entries in each of `provides` and `uses`. */
 export const MAX_SERVICES = 32
 
+/**
+ * The plugin can take over a click on a changed file in core's Sessions panel (friction round 1,
+ * Task 12): main sends it `{ path, tabId }` through `ctx.files.onOpen`. `title` labels the plugin in
+ * Settings > Plugins when the project has to pick between several (and the built-in viewer).
+ */
+export interface OpenFileContribution {
+  title: string
+}
+
 /** A JSON Schema as plugins write it; compiled and limited in `validate.ts`. */
 export type JsonSchema = Record<string, unknown>
 
@@ -161,6 +170,7 @@ export interface PluginManifest {
     themes?: ThemeContribution[]
     skills?: SkillContribution[]
     cli?: CliContribution[]
+    openFile?: OpenFileContribution
   }
   /**
    * Named APIs this plugin offers (`provides`) and calls (`uses`), each with a major version. A
@@ -276,7 +286,10 @@ export const MANIFEST_SCHEMA = {
               stdin: { type: 'boolean' }
             }
           }
-        }
+        },
+        // An object, not `true`: the title is what the person reads when picking the plugin that
+        // opens files, and a later field (file kinds, say) has room here.
+        openFile: { type: 'object', required: ['title'], properties: { title } }
       }
     }
   }

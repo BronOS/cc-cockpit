@@ -34,6 +34,27 @@ export interface PluginStorage {
 }
 
 /**
+ * Per plugin, APP-WIDE key-value store: the hosts of every project window see the same keys (an
+ * app-wide quota, a cache shared by all projects). Main owns it and applies one call at a time, so
+ * `increment` is atomic across windows; a `get` then `set` is not (another window can write in
+ * between). Keys are non-empty strings of at most 200 characters; a value is at most 1 MiB less 8
+ * KiB as JSON (it travels in one message to main); 16 MiB per plugin in total. Kept when the
+ * plugin is uninstalled.
+ */
+export interface PluginAppStorage {
+  get<T extends JsonValue = JsonValue>(key: string): Promise<T | undefined>
+  set(key: string, value: JsonValue): Promise<void>
+  delete(key: string): Promise<void>
+  keys(): Promise<string[]>
+  /**
+   * Adds `by` (default 1; a finite number, negative to subtract) to the number stored under `key`
+   * (absent counts as 0), stores it and resolves the new value. Rejects when the stored value is
+   * not a number.
+   */
+  increment(key: string, by?: number): Promise<number>
+}
+
+/**
  * This plugin's secrets (tokens, passwords), encrypted by main with the OS keychain. APP-WIDE per
  * plugin, unlike `storage`: every project sees the same keys, so a plugin with per-project
  * sign-ins names its keys itself (`google:work`) and lets a project setting pick one. Keys match
@@ -125,20 +146,47 @@ export interface ExecResult {
 
 export type BadgeValue = number | 'dot' | null
 
+/**
+ * How big an overlay is drawn: `default` a centered dialog (75 % of the window), `large` about 90 %,
+ * `full` the whole window below the top bar with a small margin. Every size keeps the title bar and
+ * the close button. A terminal overlay's program is resized to fit.
+ */
+export type OverlaySize = 'default' | 'large' | 'full'
+
 export type OverlaySpec =
-  | { kind: 'terminal'; argv: string[]; cwd?: string; title?: string }
-  | { kind: 'url'; url: string; title?: string }
+  | { kind: 'terminal'; argv: string[]; cwd?: string; title?: string; size?: OverlaySize }
+  | { kind: 'url'; url: string; title?: string; size?: OverlaySize }
   /**
    * One of the plugin's own pages (plugin-relative path), loaded like a panel: the plugin's CSP,
    * the app theme and the panel SDK. The page answers with `ccPanel.post({ result: value })`,
-   * which closes the overlay and resolves `open` with `{ kind: 'value', value }`.
+   * which closes the overlay and resolves `open` with `{ kind: 'value', value }`. With
+   * `overlay.start`, anything else it posts (no `result` key) goes to the handle's `onMessage`.
    */
-  | { kind: 'html'; file: string; title?: string }
+  | { kind: 'html'; file: string; title?: string; size?: OverlaySize }
 
 export type OverlayResult =
   | { kind: 'exit'; code: number }
   | { kind: 'value'; value: JsonValue }
   | { kind: 'dismissed' }
+
+/** An overlay opened with `ctx.overlay.start`, while it is open. */
+export interface OverlayHandle {
+  /** What `ctx.overlay.open` resolves with: the page's result, an exit code, or dismissed. */
+  readonly result: Promise<OverlayResult>
+  /**
+   * html only (throws for another kind): send JSON to the page, where `ccPanel.onMessage` hears
+   * it. Queued until the page has loaded. At most 1,040,384 chars of JSON (1 MiB less 8 KiB for
+   * the transport); a larger one throws a RangeError. A no-op once the overlay ended.
+   */
+  post(message: JsonValue): void
+  /**
+   * html only (throws for another kind): hear what the page posts without a `result` key (the
+   * overlay stays open). Listeners are dropped when the overlay ends.
+   */
+  onMessage(listener: (message: JsonValue) => void): Disposer
+  /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
+  close(): void
+}
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
 
@@ -194,6 +242,17 @@ export interface WebviewPage {
   readonly error?: string
 }
 
+/**
+ * A click on a changed file in core's Sessions panel, handed to this plugin (`ctx.files.onOpen`).
+ * Both fields come from the app: the click happened in its own UI.
+ */
+export interface OpenFileRequest {
+  /** The file, relative to the project folder (`src/app.ts`); never outside it. */
+  readonly path: string
+  /** The Claude tab whose list of changed files was clicked (an id `ctx.sessions` knows). */
+  readonly tabId: string
+}
+
 export type CliHandler = (argv: string[], call: CliCall) => CliResult | void | Promise<CliResult | void>
 
 export interface PluginLogger {
@@ -216,6 +275,10 @@ export interface PluginContext {
   readonly storage: PluginStorage
   /** `<data>/plugin-data/<projectId>/<pluginId>/`, created the first time it is read. */
   readonly dataDir: string
+  /** App-wide per plugin, held by main (see PluginAppStorage). */
+  readonly appStorage: PluginAppStorage
+  /** `<data>/plugin-data/_app/<pluginId>/`, the same in every project, created the first time it is read. */
+  readonly appDataDir: string
   /** Encrypted, app-wide per plugin (see PluginSecrets). */
   readonly secrets: PluginSecrets
   /** An optional sign-in helper: browser, loopback redirect, PKCE, code exchange, refresh. */
@@ -292,6 +355,12 @@ export interface PluginContext {
      * folder and must stay inside it; a url must be http or https.
      */
     open(spec: OverlaySpec): Promise<OverlayResult>
+    /**
+     * The same overlay as a handle (`open(spec)` is `start(spec).result`): an html page and the
+     * plugin exchange messages while it is open. Esc, the close button and Cmd+Shift+W dismiss it
+     * without asking the page, so a page that keeps a draft should post it as it goes.
+     */
+    start(spec: OverlaySpec): OverlayHandle
   }
 
   // sessions
@@ -326,6 +395,19 @@ export interface PluginContext {
      * calls of this plugin run at once.
      */
     register(name: string, handler: CliHandler): Disposer
+  }
+
+  // files
+  readonly files: {
+    /**
+     * Take over a click on a changed file in the Sessions panel. Needs `contributes.openFile` in
+     * the manifest (throws otherwise). Clicks come only when the project uses this plugin to open
+     * files: it is the only enabled one declaring `openFile`, or the one picked in Settings >
+     * Plugins. Every listener is called; the app's built-in viewer opens instead when none is
+     * registered, or each one throws or rejects within 1 s (a promise still pending then counts
+     * as handled). The app waits at most 2 s for this host.
+     */
+    onOpen(listener: (req: OpenFileRequest) => unknown): Disposer
   }
 
   /**
@@ -376,6 +458,15 @@ export interface ServicesApi {
    * the project selected; otherwise dropped (one log line). A function or symbol in `data` throws.
    */
   emit(name: string, event: string, data?: unknown): void
+  /**
+   * The id of the plugin whose call this plugin is serving: inside one of its provided methods, and
+   * in code that method awaits or timers it starts while the call is still running. With nested
+   * calls it is the innermost caller (for A -> B -> C, C sees B). `undefined` in `activate`, in
+   * event listeners, outside any call, and once the call has returned (a late timer). Set from the
+   * caller's own `ctx`, never from arguments; for per-caller usage counts or caps. Not a security
+   * boundary: all plugins of a project share one JS realm.
+   */
+  caller(): string | undefined
 }
 
 /** What a plugin's `main` module exports. */

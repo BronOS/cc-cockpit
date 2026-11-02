@@ -5,10 +5,11 @@
 // plugin command run from the palette opens the plugin's own html page as an overlay whose
 // `{ result }` resolves ctx.overlay.open.
 import type { Frame, Page } from '@playwright/test'
+import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { OverlayInfo } from '../../src/shared/ipc'
-import { expect, test } from './fixtures'
+import { expect, test, type Cockpit } from './fixtures'
 
 const FIXTURE = join(__dirname, '..', 'fixtures', 'plugins', 'panels')
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
@@ -161,4 +162,90 @@ test("a panel page cannot open windows, reach another plugin's files or navigate
   await pluginFrame(page, 'panel.html')!.evaluate(`location.href = 'https://example.com/'`)
   await page.waitForTimeout(1000)
   expect(page.frames().map((f) => f.url()).filter((u) => /^https?:/.test(u))).toEqual([])
+})
+
+test('plugin panel icons are masks in the strip colour; an undecodable icon falls back to the letter', async ({
+  cockpit
+}) => {
+  const { page } = cockpit
+  await cockpit.hook('linkPlugin', FIXTURE)
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.panels')
+  const strip = page.locator('.zone-left')
+  const pic = strip.getByRole('button', { name: /^Pic/ })
+  const mask = pic.locator('.panel-icon-img')
+  await expect(mask).toHaveCSS('mask-image', 'url("cc-plugin://test.panels/icons/pic.svg")')
+  // Same colour as the button text (the strip's), not the file's black, and it follows hover.
+  const colours = (): Promise<[string, string]> =>
+    pic.evaluate((b) => {
+      const el = b.querySelector('.panel-icon-img')
+      return [getComputedStyle(el as Element).backgroundColor, getComputedStyle(b).color] as [string, string]
+    })
+  const [bg, fg] = await colours()
+  expect(bg).toBe(fg)
+  await pic.hover()
+  await expect.poll(async () => (await colours())[0]).not.toBe(bg)
+  const [hbg, hfg] = await colours()
+  expect(hbg).toBe(hfg)
+  await page.mouse.move(0, 0)
+  await expect(pic).toHaveAttribute('aria-label', 'Pic')
+  await expect(mask).toHaveAttribute('aria-hidden', 'true')
+
+  // The broken icon: the probe fails, so the letter shows and no mask is left.
+  const broken = strip.getByRole('button', { name: /^Broken/ })
+  await expect(broken.locator('.panel-icon-letter')).toHaveText('B')
+  await expect(broken.locator('.panel-icon-img')).toHaveCount(0)
+})
+
+/** The generated `<data>/bin/ccc` as a terminal outside the app runs it (no tab token): see plugin-config.spec.ts. */
+function ccc(c: Cockpit, args: string[]): Promise<{ status: number | null; out: string; err: string }> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined || k.startsWith('CC_COCKPIT_') || k.startsWith('APP_TAB_') || k.startsWith('ELECTRON_')) continue
+    env[k] = v
+  }
+  env.HOME = c.dataDir
+  return new Promise((resolve, reject) => {
+    const child = spawn(join(c.dataDir, 'bin', 'ccc'), args, { env })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.stderr.on('data', (d: Buffer) => (err += d.toString()))
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`ccc ${args.join(' ')} timed out; out=${out} err=${err}`))
+    }, 20_000)
+    child.on('close', (status) => {
+      clearTimeout(timer)
+      resolve({ status, out, err })
+    })
+  })
+}
+
+// Friction round 1, Task 7: `ccc panel show <plugin>/<panel>` does what ctx.panels.show does.
+test('ccc panel show opens a plugin panel in the project window; unknown plugin, panel and a disabled plugin are refused', async ({ cockpit }) => {
+  const { page } = cockpit
+  const show = (key: string): ReturnType<typeof ccc> => ccc(cockpit, ['panel', 'show', '--project', cockpit.projectDir, key])
+  await cockpit.hook('linkPlugin', FIXTURE)
+  // Linked but not enabled here yet.
+  const off = await show('test.panels/echo')
+  expect(off).toEqual({ status: 1, out: '', err: 'ccc: plugin test.panels is not enabled in this project\n' })
+
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.panels')
+  await expect
+    .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
+    .toMatchObject({ running: true, plugins: [{ id: 'test.panels', state: 'active' }] })
+  const panel = page.locator('section.panel[data-panel="test.panels/echo"]')
+  await expect(panel).toHaveCount(0)
+
+  expect(await show('test.panels/echo')).toEqual({ status: 0, out: 'showing test.panels/echo\n', err: '' })
+  await expect(panel).toBeVisible()
+
+  expect(await show('test.panels/nosuch')).toEqual({
+    status: 1,
+    out: '',
+    err: 'ccc: plugin test.panels has no panel "nosuch" in this project\n'
+  })
+  expect(await show('test.nosuch/echo')).toEqual({ status: 1, out: '', err: 'ccc: unknown plugin: test.nosuch\n' })
+  // A usage error is exit 2, before anything reaches the app.
+  expect((await ccc(cockpit, ['panel', 'show', 'echo'])).status).toBe(2)
 })

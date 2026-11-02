@@ -13,7 +13,7 @@ import type { TerminalFont } from './terminal-font'
 import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
-import type { ServicesStatus } from './services'
+import type { PluginServicesView } from './services'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -515,6 +515,8 @@ export interface CccCommandView {
   binDir: string
   /** Whether `binDir` is on the login shell's PATH. */
   onPath: boolean
+  /** AppSettings.cccOffer with the default applied: whether start-up offers the install. */
+  offerAtStart: boolean
 }
 
 /** The zone layout of the sender's project together with the panels it may place. */
@@ -532,10 +534,14 @@ export type OverlayKind = 'terminal' | 'url' | 'html'
  * served by main at `src` (`cc-overlay://<id>/` for inline html, `cc-plugin://<id>/<file>` for a
  * plugin's own page) and shown in a sandboxed iframe.
  */
-export type OverlayInfo =
+export type OverlaySize = 'default' | 'large' | 'full'
+export const OVERLAY_SIZES: readonly OverlaySize[] = ['default', 'large', 'full']
+
+export type OverlayInfoBody =
   | { id: string; kind: 'terminal'; title: string }
   | { id: string; kind: 'url'; title: string; url: string }
   | { id: string; kind: 'html'; title: string; src: string }
+export type OverlayInfo = OverlayInfoBody & { size: OverlaySize }
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
 export interface IpcInvokeMap {
@@ -661,7 +667,7 @@ export interface IpcInvokeMap {
    * Plugin services in the asking window's project: per plugin what it provides and uses and the
    * problems, per service the providers and the one calls reach (over the plugins its host runs).
    */
-  'settings.pluginServices': { req: void; res: ServicesStatus }
+  'settings.pluginServices': { req: void; res: PluginServicesView }
   /**
    * Pick which plugin answers a service several plugins provide in this project, or clear the pick
    * with null. Main checks both names against the project's set; a change restarts its host.
@@ -753,6 +759,13 @@ export interface IpcInvokeMap {
   'settings.cccStatus': { req: void; res: CccCommandView }
   /** Link `~/.local/bin/ccc` to the app's wrapper; refused when something else is there. */
   'settings.cccInstall': { req: void; res: CccCommandView }
+  /** Turn the start-up offer to install `ccc` on or off (Settings and the offer's "Don't ask again"). */
+  'settings.cccOfferSet': { req: { value: boolean }; res: void }
+  /**
+   * The start-up question: the link's view when this window should ask whether to install `ccc`,
+   * else null. Main decides once per app launch, so only the first window to ask can get an answer.
+   */
+  'ccc.offer': { req: void; res: CccCommandView | null }
 
   // Overlays. Every id is looked up in the sender window's own stack only.
   /**
@@ -774,6 +787,13 @@ export interface IpcInvokeMap {
   }
   /** An html overlay's page posted its result; it closes with `{ kind: 'value', value }`. */
   'overlays.result': { req: { overlayId: string; value: unknown }; res: boolean }
+  /**
+   * A plugin's html overlay page posted a message without a `result` key (one JSON text, as its
+   * port carried it): main hands it to the opener of that overlay only. False when dropped.
+   */
+  'overlays.message': { req: { overlayId: string; message: string }; res: boolean }
+  /** That page has its port now (every page load): main sends the opener's queued posts. */
+  'overlays.ready': { req: { overlayId: string }; res: void }
 
   // Webview panels (PanelInfo.kind 'webview'). The panel key must name a webview panel of a
   // plugin of the sender's project; the view is the one in the sender's window.
@@ -869,6 +889,8 @@ export interface IpcEventMap {
   'overlays.updated': OverlayInfo[]
   /** Batched output of a terminal overlay. Ack it with `overlays.ack`. */
   'overlays.data': { overlayId: string; data: string }
+  /** The opener of a plugin's html overlay posted to its page: one JSON text for the page's port. */
+  'overlays.message': { overlayId: string; message: string }
   /** The project's commands changed (a plugin registered or dropped one): replace the key table. */
   'commands.updated': CommandsView
   /**
@@ -966,6 +988,8 @@ export const INVOKE_CHANNELS = [
   'settings.tabCommandsSet',
   'settings.cccStatus',
   'settings.cccInstall',
+  'settings.cccOfferSet',
+  'ccc.offer',
   'overlays.list',
   'overlays.close',
   'overlays.input',
@@ -973,6 +997,8 @@ export const INVOKE_CHANNELS = [
   'overlays.ack',
   'overlays.bounds',
   'overlays.result',
+  'overlays.message',
+  'overlays.ready',
   'webviews.placement',
   'webviews.step',
   'webviews.current',
@@ -1004,6 +1030,7 @@ export const EVENT_CHANNELS = [
   'layout.updated',
   'overlays.updated',
   'overlays.data',
+  'overlays.message',
   'commands.updated',
   'panels.reload',
   'webviews.navigated',

@@ -14,11 +14,16 @@ import panels from './guide/panels.md?raw'
 import plugins from './guide/plugins.md?raw'
 import settingsSecrets from './guide/settings-secrets.md?raw'
 import webview from './guide/webview.md?raw'
+// The SDK types are the one topic that is source code, not markdown: `ccc guide types` prints the
+// file itself (verbatim, so a copy is byte for byte what the app ships). Bundled like the others.
+import sdkTypes from '../sdk/types.ts?raw'
 
 export interface GuideTopic {
   name: string
   summary: string
   text: string
+  /** Printed exactly as is (no trimming, no added newline): source code, not a document. */
+  verbatim?: boolean
 }
 
 /** Order is the order of the topic list. `overview` is the default and is not listed as a topic. */
@@ -30,7 +35,8 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
   { name: 'panels', summary: 'panel pages and the ccPanel SDK', text: panels },
   { name: 'settings-secrets', summary: 'settings forms, secret fields, ctx.secrets, OAuth', text: settingsSecrets },
   { name: 'dev-loop', summary: 'linking, rebuilding and debugging a plugin', text: devLoop },
-  { name: 'webview', summary: 'webview panels: showing web pages and local files', text: webview }
+  { name: 'webview', summary: 'webview panels: showing web pages and local files', text: webview },
+  { name: 'types', summary: 'the SDK types (PluginContext and friends), as TypeScript', text: sdkTypes, verbatim: true }
 ]
 
 export function topicList(): string {
@@ -48,5 +54,6 @@ export function guideText(topic?: string): string | undefined {
     return `${first.text.trimEnd()}\n\nTopics (ccc guide <topic>):\n${topicList()}\n`
   }
   const found = GUIDE_TOPICS.find((t) => t.name === topic)
-  return found === undefined ? undefined : `${found.text.trimEnd()}\n`
+  if (found === undefined) return undefined
+  return found.verbatim === true ? found.text : `${found.text.trimEnd()}\n`
 }

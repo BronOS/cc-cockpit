@@ -84,6 +84,12 @@ export function dataPaths(dataDir: string): DataPaths {
   }
 }
 
+/**
+ * What a project id looks like (ProjectRegistry refuses every other id). Lower-case hex only, so
+ * `APP_DATA_FOLDER` (with its `_`) can never be a project's folder under `plugin-data/`.
+ */
+export const PROJECT_ID_PATTERN = /^[0-9a-f]{16}$/
+
 /** `projectId` = first 16 hex chars of sha256 of the real (resolved) folder path. */
 export function projectId(realPath: string): string {
   return createHash('sha256').update(realPath).digest('hex').slice(0, 16)
@@ -102,9 +108,23 @@ export function pluginInstallDir(dataDir: string, pluginId: string, version: str
   return join(dataDir, 'plugins', `${pluginId}@${version}`)
 }
 
+/** The file name of a plugin's KV store inside its data dir (ctx.storage) and its app data dir (ctx.appStorage). */
+export const STORAGE_FILE_NAME = 'storage.json'
+
 /** `<data>/plugin-data/<projectId>/<pluginId>/` (ctx.dataDir; storage.json lives inside). */
 export function pluginDataDir(dataDir: string, id: string, pluginId: string): string {
   return join(dataDir, 'plugin-data', id, pluginId)
+}
+
+/**
+ * The app-wide folder beside the project folders of `plugin-data/`. Never a project id: those match
+ * PROJECT_ID_PATTERN (16 lower-case hex characters), and `_` is not hex.
+ */
+export const APP_DATA_FOLDER = '_app'
+
+/** `<data>/plugin-data/_app/<pluginId>/` (ctx.appDataDir; main's app storage.json lives inside). */
+export function pluginAppDataDir(dataDir: string, pluginId: string): string {
+  return join(dataDir, 'plugin-data', APP_DATA_FOLDER, pluginId)
 }
 
 /**

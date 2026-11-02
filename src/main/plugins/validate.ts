@@ -250,6 +250,11 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
   if ((c.cli ?? []).length > 0 && manifest.main === undefined) {
     errors.push('contributes.cli needs "main": a plugin\'s commands run in its host')
   }
+  // Same reason: the click reaches the plugin as a `ctx.files.onOpen` call in its host. Without
+  // `main` it would be offered in Settings and every click would fall back to the built-in viewer.
+  if (c.openFile !== undefined && manifest.main === undefined) {
+    errors.push('contributes.openFile needs "main": the click is handled by ctx.files.onOpen in the plugin\'s host')
+  }
   for (const cmd of c.commands ?? []) {
     if (cmd.key !== undefined && normalizeChord(cmd.key, 'darwin') === null) {
       errors.push(`command "${cmd.id}": "${cmd.key}" is not a valid key chord`)

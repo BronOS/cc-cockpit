@@ -212,8 +212,10 @@ describe('scaffoldPlugin', () => {
     const full = join(root, 'full')
     mkdirSync(full)
     writeFileSync(join(full, 'keep.txt'), 'mine')
-    expect(() => scaffoldPlugin({ dir: full, panel: false, skill: false })).toThrow(/not empty/)
-    expect(readdirSync(full)).toEqual(['keep.txt'])
+    // A foreign file does not block: the scaffold goes beside it.
+    scaffoldPlugin({ dir: full, panel: false, skill: false })
+    expect(readFileSync(join(full, 'keep.txt'), 'utf8')).toBe('mine')
+    expect(() => scaffoldPlugin({ dir: full, panel: false, skill: false })).toThrow(/plugin\.json, dist\/host\.js, README\.md/)
 
     const file = join(root, 'file')
     writeFileSync(file, 'x')
@@ -273,12 +275,47 @@ describe('ccc plugin new through the client', () => {
     expect(c.o()).toBe('')
   })
 
-  it('a non-empty folder is exit 1 with the reason', async () => {
+  it('a folder holding a file the scaffold writes is exit 1 naming the files', async () => {
     mkdirSync(join(root, 'busy'))
-    writeFileSync(join(root, 'busy', 'f'), '')
+    writeFileSync(join(root, 'busy', 'plugin.json'), '')
+    writeFileSync(join(root, 'busy', 'README.md'), '')
     const c = capture()
     expect(await run(['plugin', 'new', 'busy'], {}, Readable.from([]), c.out, root)).toBe(1)
-    expect(c.e()).toContain('not empty')
+    expect(c.e()).toContain('plugin.json, README.md')
     expect(c.o()).toBe('')
+  })
+})
+
+describe('scaffold layout', () => {
+  it('indents every generated file with multiples of two spaces, whatever the flags', () => {
+    const dir = join(root, 'indent')
+    const made = scaffoldPlugin({ dir, panel: true, cli: 'tool', skill: true })
+    for (const rel of made.files) {
+      for (const line of readFileSync(join(dir, rel), 'utf8').split('\n')) {
+        if (rel.endsWith('.md')) continue // markdown lists and code fences have their own rules
+        const indent = /^ */.exec(line)?.[0].length ?? 0
+        expect(indent % 2, `${rel}: ${JSON.stringify(line)}`).toBe(0)
+      }
+    }
+  })
+
+  it('makes a nested plugin inside a plugin, and a parent around a nested one', () => {
+    const a = join(root, 'a')
+    scaffoldPlugin({ dir: a, panel: false, skill: false })
+    expect(scaffoldPlugin({ dir: join(a, 'inner'), panel: false, skill: false }).id).toBe('local.inner')
+
+    const b = join(root, 'b')
+    scaffoldPlugin({ dir: join(b, 'inner'), panel: false, skill: false })
+    expect(scaffoldPlugin({ dir: b, panel: false, skill: false }).id).toBe('local.b')
+    expect(existsSync(join(b, 'inner', 'plugin.json'))).toBe(true)
+  })
+
+  it('refuses naming the files, and writes nothing', () => {
+    const d = join(root, 'c')
+    mkdirSync(join(d, 'dist'), { recursive: true })
+    writeFileSync(join(d, 'dist', 'host.js'), 'mine')
+    expect(() => scaffoldPlugin({ dir: d, panel: false, skill: false })).toThrow(/dist\/host\.js/)
+    expect(existsSync(join(d, 'plugin.json'))).toBe(false)
+    expect(readFileSync(join(d, 'dist', 'host.js'), 'utf8')).toBe('mine')
   })
 })

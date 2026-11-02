@@ -3,6 +3,8 @@
 // got: { kind: 'exit', code }, { kind: 'value', value } or { kind: 'dismissed' }.
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { join } from 'node:path'
+import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { OverlayInfo } from '../../src/shared/ipc'
 import { expect, test, type Cockpit } from './fixtures'
 
@@ -459,3 +461,113 @@ test.describe('overlay security', () => {
     })
   })
 })
+
+// Friction round 1 Task 13: ctx.overlay.start. The fixture's host posts a hello before the page
+// has loaded, then page and host trade { n } / { ack } three times with the overlay open; Done's
+// { result } resolves it. A second run is dismissed with Esc, which does not ask the page.
+test.describe('html overlay messages (ctx.overlay.start)', () => {
+  const PLUGIN = 'test.overlaychat'
+  const FIXTURE = join(__dirname, '..', 'fixtures', 'plugins', 'overlay-chat')
+  const log = (c: Cockpit) => c.page.frameLocator('iframe[title="Chat"]').locator('#log li')
+  const notes = (c: Cockpit): Promise<string[]> => c.hook<string[]>('notifications')
+
+  test('page and host exchange messages while it stays open; the final post resolves it; Esc dismisses', async ({
+    cockpit
+  }) => {
+    await cockpit.hook('linkPlugin', FIXTURE)
+    await cockpit.hook('enablePlugin', cockpit.projectDir, PLUGIN)
+    await expect
+      .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
+      .toMatchObject({ running: true, plugins: [{ id: PLUGIN, state: 'active' }] })
+
+    await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/chat`)
+    // The hello was posted before the page loaded and still arrived, first; three round trips followed.
+    await expect(log(cockpit)).toHaveText(['{"hello":"from host"}', '{"ack":1}', '{"ack":2}', '{"ack":3}'], { timeout: 15_000 })
+    expect(await stack(cockpit)).toHaveLength(1)
+    const heard = (await notes(cockpit)).filter((n) => n.startsWith('heard '))
+    expect(heard).toEqual(['heard {"n":1}', 'heard {"n":2}', 'heard {"n":3}'])
+
+    await cockpit.page.frameLocator('iframe[title="Chat"]').getByRole('button', { name: 'Done' }).click()
+    await expect.poll(() => notes(cockpit)).toContain(`chat ${JSON.stringify({ kind: 'value', value: { exchanged: 3 } })}`)
+    await expect.poll(() => stack(cockpit)).toEqual([])
+    // The post after the end was a no-op: nothing failed.
+    expect((await notes(cockpit)).filter((n) => n.startsWith('chat failed'))).toEqual([])
+
+    // Again, and Esc: dismissed without the page having a say.
+    await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/chat`)
+    await expect(log(cockpit)).toHaveCount(4, { timeout: 15_000 })
+    await cockpit.page.keyboard.press('Escape')
+    await expect.poll(() => notes(cockpit)).toContain(`chat ${JSON.stringify({ kind: 'dismissed' })}`)
+    await expect.poll(() => stack(cockpit)).toEqual([])
+  })
+})
+
+test("large and full overlays are bigger than the default, and a terminal overlay refits", async ({
+  cockpit,
+}) => {
+  const { page } = cockpit;
+  const frame = page.locator(".overlay").last().locator(".overlay-frame");
+  const sizes: Record<string, { width: number; height: number }> = {};
+  const cols: Record<string, number> = {};
+  for (const size of ["default", "large", "full"]) {
+    const h = await open(cockpit, { kind: "html", html: "<p>sized</p>", size });
+    await expect(page.locator('.overlay[data-kind="html"]')).toHaveAttribute(
+      "data-size",
+      size,
+    );
+    sizes[size] = (await frame.boundingBox())!;
+    await page.keyboard.press("Escape");
+    await outcome(cockpit, h);
+
+    // The program prints its own size on every SIGWINCH and once at the start.
+    const t = await open(cockpit, {
+      kind: "terminal",
+      argv: [
+        "sh",
+        "-c",
+        `size() { stty size | cut -d' ' -f2; }; trap 'echo C-$(size)-E' WINCH; echo C-$(size)-E; while :; do sleep 0.1; done`,
+      ],
+      cwd: cockpit.projectDir,
+      size,
+    });
+    const rows = page.locator('.overlay[data-kind="terminal"] .xterm-rows');
+    await expect
+      .poll(async () => (await rows.innerText()).includes("C-"))
+      .toBe(true);
+    await expect
+      .poll(async () => {
+        const all = [
+          ...(await rows.innerText())
+            .replaceAll("\n", "")
+            .matchAll(/C-(\d+)-E/g),
+        ];
+        cols[size] = Number(all.at(-1)?.[1]);
+        return cols[size];
+      })
+      .not.toBe(80);
+    await page.keyboard.press(`${MOD}+Shift+W`);
+    await outcome(cockpit, t);
+  }
+  expect(sizes.large!.width).toBeGreaterThan(sizes.default!.width);
+  expect(sizes.large!.height).toBeGreaterThan(sizes.default!.height);
+  expect(sizes.full!.width).toBeGreaterThan(sizes.large!.width);
+  expect(sizes.full!.height).toBeGreaterThan(sizes.large!.height);
+  expect(cols.large!).toBeGreaterThan(cols.default!);
+  expect(cols.full!).toBeGreaterThanOrEqual(cols.large!);
+
+  const shot = await open(cockpit, {
+    kind: "html",
+    html: "<h1>large</h1>",
+    size: "large",
+    title: "Large overlay",
+  });
+  await expect(
+    page.getByRole("dialog", { name: "Large overlay" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path:
+      process.env.OVERLAY_SIZE_SHOT ?? join(cockpit.root, "overlay-large.png"),
+  });
+  await page.keyboard.press("Escape");
+  await outcome(cockpit, shot);
+});

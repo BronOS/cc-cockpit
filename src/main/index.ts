@@ -33,6 +33,7 @@ import { CommandRegistry } from './commands/command-registry'
 import { loadLoginEnv, type Env } from './env/login-env'
 import { buildPtyEnv } from './env/pty-env'
 import { CccCommandInstaller } from './hooks/ccc-install'
+import { CccOffer } from './hooks/ccc-offer'
 import { resolveWrapperTargets, writeCccWrapper } from './hooks/ccc-wrapper'
 import { writeHooksFile } from './hooks/hooks-file'
 import {
@@ -58,10 +59,11 @@ import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager } from './webview/webview-manager'
-import { chordOfInput, OverlayManager, type OverlayResult } from './overlays/overlay-manager'
+import { chordOfInput, OverlayManager, type OverlayChannel, type OverlayResult } from './overlays/overlay-manager'
 import { handleOverlayScheme, handlePluginScheme, registerAppSchemes } from './overlays/overlay-protocol'
-import { dataPaths, fallbackSocketDir, pluginDataDir, resolveDataDir, socketPath } from './paths'
+import { dataPaths, fallbackSocketDir, pluginAppDataDir, pluginDataDir, resolveDataDir, socketPath } from './paths'
 import { createFolderWatcher, DevWatcher } from './plugins/dev-watch'
+import { AppStorage } from './plugins/app-storage'
 import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, type HostSettings } from './plugins/host-manager'
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
@@ -76,6 +78,7 @@ import { ProjectRegistry, realPathOf } from './projects/registry'
 import { buildRestorePlan, forgetMissing, planLaunch, relinkMissing, TabRestorer } from './restore'
 import { PluginOAuth } from './oauth/plugin-oauth'
 import { PluginSecrets } from './secrets/plugin-secrets'
+import { choosePasswordStore, execRunner } from './secrets/password-store'
 import { safeStorageSecretStore, selectSecretStore } from './secrets/secret-store'
 import { AppearanceService, claudeTabOnOpenOf, tabExitOf } from './settings/appearance-service'
 import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings'
@@ -86,8 +89,10 @@ import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-diff'
+import { routeOpenFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerPluginCliHandlers, registerPluginDevHandlers } from './socket/handlers'
+import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
 import { ThemeService } from './themes/theme-service'
@@ -97,6 +102,7 @@ import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from 
 import { TabManager } from './tabs/tab-manager'
 import { isTestRun } from './test-run'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
+import { selectOpenFile } from '../shared/services'
 import { createIndexFetcher, type IndexFetcher } from './marketplace/fetch-index'
 import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-service'
 import { revocationNotice } from './marketplace/marketplace-view'
@@ -149,6 +155,19 @@ function start(): void {
   // plugin panel files (cc-plugin:) and webview panels' local files (cc-preview:), in the one call
   // Electron allows.
   registerAppSchemes()
+  // Linux desktops Electron does not recognise (Hyprland, sway ...): safeStorage falls back to
+  // `basic_text` and secrets are refused although a Secret Service keyring is running. Chromium reads
+  // this switch at `ready`, so it goes before selectSecretStore and app.whenReady
+  // (secrets/password-store.ts decides: only on an unrecognised desktop with a confirmed Secret
+  // Service owner, never over an explicit --password-store).
+  const passwordStore = choosePasswordStore({
+    platform: process.platform,
+    argv: process.argv,
+    env: process.env,
+    isPackaged: app.isPackaged,
+    run: execRunner
+  })
+  if (passwordStore !== null) app.commandLine.appendSwitch('password-store', passwordStore)
   // ctx.secrets (plugin-secrets.ts, `<data>/secrets.json`): encrypted through the OS keychain
   // (safeStorage), or the marked fake store in an unpackaged test run only (secret-store.ts).
   // Built before `ready` on purpose: availability is asked at each use, never here. First, because
@@ -455,10 +474,11 @@ function start(): void {
     windowId: number,
     spec: unknown,
     opener: string,
-    peerGone?: AbortSignal
+    peerGone?: AbortSignal,
+    channel?: OverlayChannel
   ): Promise<OverlayResult> => {
     await loginEnvReady
-    return overlays.open(windowId, spec, opener, peerGone)
+    return overlays.open(windowId, spec, opener, peerGone, channel)
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
@@ -574,6 +594,7 @@ function start(): void {
         })),
         cli: plugin.manifest.contributes?.cli ?? [],
         ...(plugin.manifest.services !== undefined ? { services: plugin.manifest.services } : {}),
+        ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -616,6 +637,9 @@ function start(): void {
     else if (Notification.isSupported()) new Notification({ title, body: text }).show()
   }
   const pluginLogs = new PluginLogWriter({ dir: paths.logsDir, log: (m) => console.warn(m) })
+  // ctx.appStorage (app-storage.ts): one store for the whole app, so the hosts of every window
+  // share it and main applies their calls one at a time. Flushed on quit (will-quit).
+  const appStorage = new AppStorage({ dataDir, log: (m) => console.warn(m) })
   // One plugin host (utilityProcess) per project window.
   const hosts = new HostManager({
     factory: new ElectronHostProcessFactory(),
@@ -628,6 +652,7 @@ function start(): void {
     projectName: (projectId) => registry.get(projectId)?.name,
     layouts,
     pluginDataDir: (projectId, pluginId) => pluginDataDir(dataDir, projectId, pluginId),
+    pluginAppDataDir: (pluginId) => pluginAppDataDir(dataDir, pluginId),
     // The stored values (app.json, the project's record) against the manifest's schemas; a failure
     // disables the plugin for this launch (host-manager.ts).
     settings: (projectId, pluginId) => hostSettingsOf(projectId, pluginId),
@@ -658,8 +683,8 @@ function start(): void {
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
     notify: (text, source) => showNotification(text, `cc-cockpit: ${source.pluginId}`),
     pluginLog: (entry) => pluginLogs.write(entry),
-    // ctx.sessions, ctx.badge, ctx.overlay, ctx.secrets, ctx.oauth (host-api.ts). Functions, not objects: `sessions` and
-    // `tabs` are defined below; these only run once a host exists.
+    // ctx.sessions, ctx.badge, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage (host-api.ts).
+    // Functions, not objects: `sessions` and `tabs` are defined below; these only run once a host exists.
     api: {
       listSessions: (projectId) => sessions.listByProject(projectId),
       session: (tabId) => sessions.get(tabId),
@@ -677,8 +702,11 @@ function start(): void {
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey),
       openOverlay,
+      postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
+      closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
       secrets: pluginSecrets,
       oauth: pluginOAuth,
+      appStorage,
       webview: webviews
     }
   })
@@ -949,6 +977,27 @@ function start(): void {
         state: p.state.ok ? 'ok' : p.state.reason
       }))
     }
+  })
+
+  // `ccc panel show` (friction round 1, Task 7): LayoutService.show, what ctx.panels.show calls.
+  registerPanelShowHandler(socket, {
+    pluginKnown: (pluginId) => validPlugins().some((p) => p.id === pluginId),
+    enabledIn: (projectId, pluginId) => enabledIds(projectId).includes(pluginId),
+    windowIdOf: (projectId) => windows.windowIdOf(projectId),
+    showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey)
+  })
+
+  // `ccc plugin config` (friction round 1, Task 6): the Settings pages' own views and saves (both
+  // services are built below; a socket request is only handled once start() has run to its end).
+  const pluginConfigDeps: PluginConfigDeps = {
+    appSettings: (pluginId) => settings.pluginAppSettings(pluginId),
+    projectSettings: (projectId, pluginId) => projectSettings.pluginProjectSettings(projectId, pluginId),
+    saveApp: (pluginId, values) => settings.savePluginSettings(pluginId, values),
+    saveProject: (projectId, pluginId, values) => projectSettings.saveSettings(projectId, pluginId, values)
+  }
+  registerPluginConfigHandler(socket, {
+    view: (projectId, pluginId) => pluginConfigView(pluginConfigDeps, projectId, pluginId),
+    set: (projectId, pluginId, edits, scope) => setPluginConfig(pluginConfigDeps, projectId, pluginId, edits, scope)
   })
 
   /** Open a folder named on a command line; false when the argv names none (or it failed). */
@@ -1251,7 +1300,14 @@ function start(): void {
   const cccCommand = new CccCommandInstaller({
     home: homedir(),
     wrapperPath: paths.cccWrapper,
-    loginPath: () => loginEnv.PATH
+    loginPath: () => loginEnv.PATH,
+    offerAtStart: () => registry.app.data.cccOffer !== false
+  })
+  const cccOffer = new CccOffer({
+    testRun,
+    forcedByTest: process.env.CC_COCKPIT_CCC_OFFER === '1',
+    enabled: () => registry.app.data.cccOffer !== false,
+    state: () => cccCommand.state()
   })
   registerCccCommandHandlers(router, {
     status: async () => {
@@ -1261,6 +1317,18 @@ function start(): void {
     install: async () => {
       await loginEnvReady
       return cccCommand.install()
+    },
+    setOffer: (value) => {
+      registry.app.update((a) => {
+        // Stored only as false: an absent key is the default (on), so the file stays as it was.
+        if (value) delete a.cccOffer
+        else a.cccOffer = false
+      })
+    },
+    offer: async () => {
+      if (!cccOffer.claim()) return null
+      await loginEnvReady
+      return cccCommand.view()
     }
   })
   registerUpdateHandlers(router, {
@@ -1394,7 +1462,9 @@ function start(): void {
     resize: (windowId, overlayId, cols, rows) => overlays.resize(windowId, overlayId, cols, rows),
     ack: (windowId, overlayId, count) => overlays.ack(windowId, overlayId, count),
     setBounds: (windowId, overlayId, bounds) => overlays.setBounds(windowId, overlayId, bounds),
-    result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value)
+    result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value),
+    message: (windowId, overlayId, text) => overlays.pageMessage(windowId, overlayId, text),
+    ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.
@@ -1409,6 +1479,18 @@ function start(): void {
     open: openOverlay,
     shown: new Set()
   }
+  // A file click goes to the plugin the project uses to open files, if any (contributes.openFile),
+  // else to the diff above. The candidates are the set the project's host runs (the Plugins page
+  // shows the same set), the pick the project record's; HostManager.openFile bounds the wait.
+  const openFileRoute: OpenFileRouteDeps = {
+    tab: (id) => sessions.get(id),
+    projectPath: (projectId) => registry.get(projectId)?.path,
+    windowOf: (projectId) => windows.windowIdOf(projectId),
+    handler: async (projectId) => selectOpenFile(await hosts.servicePlugins(projectId), registry.serviceProviders(projectId)),
+    deliver: (projectId, pluginId, req) => hosts.openFile(projectId, pluginId, req),
+    builtin: (caller, tabId, file) => openDiff(diffOptions, caller, tabId, file),
+    delivering: new Set()
+  }
   registerSessionHandlers(router, {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
@@ -1421,7 +1503,7 @@ function start(): void {
       sendToProject(entry.projectId, 'tabs.select', { tabId })
       return true
     },
-    openFile: (caller, tabId, file) => openDiff(diffOptions, caller, tabId, file)
+    openFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.
@@ -1606,6 +1688,8 @@ function start(): void {
     registry.flushAll()
     pluginIndex.flush()
     pluginSecrets.flush()
+    // After hosts.disposeAll(): no host is left to write after this.
+    appStorage.flush()
   })
   app.on('activate', () => windows.activate())
   // The menu's accelerator is the focused project's (AppMenu). A blur passes the window that is

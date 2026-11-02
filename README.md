@@ -141,6 +141,8 @@ ccc sessions [--json]                    the Claude tabs of every window
 ccc notify <text>                        show a system notification
 ccc guide [topic]                        bundled docs (works offline)
 ccc plugin new|link|unlink|list|logs     the plugin dev loop
+ccc plugin config <id> [key=value...]    show or set a plugin's settings
+ccc panel show <plugin>/<panel>          reveal a plugin's panel
 ccc help                                 everything else, in a tab
 ```
 

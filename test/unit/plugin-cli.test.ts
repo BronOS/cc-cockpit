@@ -12,7 +12,7 @@ import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { parseArgs, USAGE } from '../../src/cli/args'
-import { pluginHelp, REPLY_TIMEOUT_MS, run, type Output } from '../../src/cli/client'
+import { pluginHelp, REPLY_TIMEOUT_MS, run, STDIN_READ_TIMEOUT_MS, type Output } from '../../src/cli/client'
 import { HostContexts } from '../../src/host/ctx'
 import type { HostPluginSpec } from '../../src/host/loader'
 import { RpcEndpoint } from '../../src/host/rpc'
@@ -24,6 +24,7 @@ import type { CliContribution } from '../../src/shared/manifest'
 import {
   capEncoded,
   CLI_CALL_TIMEOUT_MS,
+  CLI_CLIENT_DEADLINE_MS,
   CLI_REPLY_TIMEOUT_MS,
   CLI_TIMEOUT_CODE,
   CLI_TRUNCATED_MARKER,
@@ -102,6 +103,8 @@ describe('shared caps', () => {
 
   it('the CLI waits past main\'s own timeout, so main\'s exit 124 arrives first', () => {
     expect(CLI_REPLY_TIMEOUT_MS).toBeGreaterThan(CLI_CALL_TIMEOUT_MS)
+    // The hard backstop comes last: it never cuts a reply the timers before it would let through.
+    expect(CLI_CLIENT_DEADLINE_MS).toBeGreaterThan(CLI_REPLY_TIMEOUT_MS)
     expect(CLI_CALL_TIMEOUT_MS).toBe(30_000)
     expect(REPLY_TIMEOUT_MS).toBeLessThan(CLI_CALL_TIMEOUT_MS)
   })
@@ -144,7 +147,7 @@ describe('parseArgs: plugin commands', () => {
     })
     expect(parseArgs(['--project', '/p', 'plugin', 'list'])).toEqual({
       kind: 'usage',
-      message: 'plugin takes --project after its name: ccc plugin link|unlink|list --project <path> ...'
+      message: 'plugin takes --project after its name: ccc plugin link|unlink|list|config --project <path> ...'
     })
     expect(parseArgs(['--project', '/p', 'sessions'])).toEqual({
       kind: 'usage',
@@ -295,6 +298,33 @@ describe.skipIf(!POSIX)('the CLI client', () => {
     expect(received.map((r) => r.cmd)).toEqual(['plugin.cli.spec'])
   })
 
+  it('a stdin: true command whose stdin never ends: exit 124 naming stdin, the call not made', async () => {
+    app(spec({ stdin: true }), { stdout: 'ok' })
+    const open = new PassThrough() // a pipe nobody writes to or closes
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const turn = (): Promise<void> => new Promise((r) => setImmediate(r))
+    try {
+      const o = out()
+      const running = run(['demo'], env(), open, o.io, CWD)
+      for (let i = 0; i < 500 && received.length < 1; i++) await turn()
+      await turn()
+      vi.advanceTimersByTime(STDIN_READ_TIMEOUT_MS)
+      expect(await running).toBe(CLI_TIMEOUT_CODE)
+      expect(o.e).toBe(`ccc: demo: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`)
+      expect(received.map((r) => r.cmd)).toEqual(['plugin.cli.spec'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a stdin: true command with a terminal that never ends sends empty stdin at once', async () => {
+    app(spec({ stdin: true }), { stdout: 'ok' })
+    // A PassThrough never ends: reading it would hang the test, not just slow it.
+    const tty = Object.assign(new PassThrough(), { isTTY: true })
+    expect(await run(['demo'], env(), tty, out().io, CWD)).toBe(0)
+    expect(received[1]?.args).toMatchObject({ stdin: '' })
+  })
+
   it('a stdin: true command does not read a terminal', async () => {
     app(spec({ stdin: true }), { stdout: 'ok' })
     const tty = Object.assign(new PassThrough(), { isTTY: true })
@@ -342,6 +372,27 @@ describe.skipIf(!POSIX)('the CLI client', () => {
       ['plugin.cli.spec', '/work/dir/proj', undefined],
       ['plugin.cli', '/work/dir/proj', undefined]
     ])
+  })
+
+  it('no reply to the call is exit 124 with a message, never a hang (friction round 1, Task 2)', async () => {
+    // The spec is answered, the call never is: main stuck, or a reply lost on the way.
+    answer = (r) => (r.cmd === 'plugin.cli.spec' ? { ok: true, result: spec() } : undefined)
+    // Only the timers are faked: the sockets stay real.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const turn = (): Promise<void> => new Promise((r) => setImmediate(r))
+    try {
+      const o = out()
+      const running = run(['demo'], env(), Readable.from([]), o.io, CWD)
+      for (let i = 0; i < 500 && received.length < 2; i++) await turn()
+      expect(received.map((r) => r.cmd)).toEqual(['plugin.cli.spec', 'plugin.cli'])
+      vi.advanceTimersByTime(CLI_REPLY_TIMEOUT_MS - 1)
+      await turn()
+      vi.advanceTimersByTime(1)
+      expect(await running).toBe(CLI_TIMEOUT_CODE)
+      expect(o.e).toBe(`ccc: demo: no answer from the app within ${CLI_REPLY_TIMEOUT_MS / 1000} s\n`)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('exits 0 silently when the app is not running', async () => {
@@ -585,6 +636,7 @@ describe('HostManager.runCli with a real host context', () => {
       projectPath: () => '/projects/p1',
       layouts: { setPluginPanels: () => {}, setError: () => true },
       pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+      pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
       cliTimeoutMs: 200,
       log: () => {}
     })
@@ -766,6 +818,90 @@ describe('HostManager.runCli with a real host context', () => {
     expect(signal?.aborted).toBe(true)
   })
 
+  // Friction round 1, Task 2: a `ccc` command sent while its linked plugin reloads (edit, the app
+  // reloads by itself, run the command) or while the window's host starts. Through the socket
+  // handler as `ccc` reaches it, with the reload and the launch run by HostManager itself.
+  describe('a call while the plugin is on its way in', () => {
+    const tab: Caller = { kind: 'session', tabId: 't1', projectId: 'p1' }
+    const viaSocket = async (): Promise<unknown> =>
+      await pluginCliHandler({
+        cliContributions: () => plugins.flatMap((p) => (p.cli ?? []).map((c) => ({ pluginId: p.id, cli: c }))),
+        enabledIn: () => true,
+        windowIdOf: () => 1,
+        runCli: (projectId, pluginId, c, gone) => manager.runCli(projectId, pluginId, c, gone)
+      })({ name: 'demo', argv: ['x'], cwd: '/w' }, tab)
+    const later = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+    /** `plugin.reload` as the host does it: the old ctx goes at once, the new copy comes after `ready`. */
+    const reloadAfter = (ready: Promise<void>, version: string): ((params: unknown) => Promise<unknown>) => async (params) => {
+      const spec = (params as { plugin: HostPluginSpec }).plugin
+      host.contexts.dispose(spec.id)
+      await ready
+      host.contexts.create(spec).cli.register('demo', (argv) => ({ stdout: `${version} ${argv.join(' ')}\n` }))
+      return { id: spec.id, state: 'active' }
+    }
+
+    it('during a dev reload: served by the new copy once it is active', async () => {
+      activators['a.cli'] = (ctx) => ctx.cli.register('demo', () => ({ stdout: 'old\n' }))
+      let reloadSent = false
+      const ready = later(80)
+      overrides['plugin.reload'] = (params) => {
+        reloadSent = true
+        return reloadAfter(ready, 'new')(params)
+      }
+      await manager.open('p1', 1)
+      const reload = manager.devReload('a.cli')
+      await waitFor(() => (reloadSent ? true : undefined))
+      // The old copy is gone and the new one not active yet: the call waits for it.
+      expect(await viaSocket()).toEqual({ stdout: 'new x\n', stderr: '', code: 0 })
+      await reload
+    })
+
+    it('during a reload that does not finish within the limit: exit 124, not a hang', async () => {
+      activators['a.cli'] = (ctx) => ctx.cli.register('demo', () => ({ stdout: 'old\n' }))
+      let reloadSent = false
+      overrides['plugin.reload'] = (params) => {
+        reloadSent = true
+        return reloadAfter(new Promise(() => {}), 'never')(params)
+      }
+      await manager.open('p1', 1)
+      void manager.devReload('a.cli')
+      await waitFor(() => (reloadSent ? true : undefined))
+      const started = Date.now()
+      const result = (await viaSocket()) as PluginCliResult
+      expect(result.code).toBe(CLI_TIMEOUT_CODE)
+      expect(result.stderr).toBe('ccc demo: plugin a.cli did not become active within 0 s\n')
+      // The one limit (cliTimeoutMs: 200 here), not the limit and then the call's own on top.
+      expect(Date.now() - started).toBeLessThan(400)
+    })
+
+    it('while the window\'s host is still activating (window open, app start): served once active', async () => {
+      overrides.activate = async (p) => {
+        await later(80)
+        return (p as { plugins: HostPluginSpec[] }).plugins.map((spec) => {
+          host.contexts.create(spec).cli.register('demo', (argv) => ({ stdout: `started ${argv.join(' ')}\n` }))
+          return { id: spec.id, state: 'active' }
+        })
+      }
+      const opening = manager.open('p1', 1)
+      await flush()
+      expect(await viaSocket()).toEqual({ stdout: 'started x\n', stderr: '', code: 0 })
+      await opening
+    })
+
+    it('a plugin whose new copy failed to activate: refused at once with the reason, not a wait', async () => {
+      activators['a.cli'] = (ctx) => ctx.cli.register('demo', () => ({ stdout: 'old\n' }))
+      overrides['plugin.reload'] = async (params) => {
+        const spec = (params as { plugin: HostPluginSpec }).plugin
+        host.contexts.dispose(spec.id)
+        return { id: spec.id, state: 'errored', error: 'activate() failed: boom' }
+      }
+      await manager.open('p1', 1)
+      await manager.devReload('a.cli')
+      await expect(viaSocket()).rejects.toThrow('plugin a.cli is not running in this window')
+    })
+  })
+
   it('the host exiting mid-call rejects it', async () => {
     activators['a.cli'] = (ctx) => ctx.cli.register('demo', () => new Promise(() => {}))
     await manager.open('p1', 1)
@@ -783,6 +919,7 @@ describe('ctx.cli.register', () => {
     main: 'host.js',
     projectDir: '/p',
     dataDir: '/p/.data',
+    appDataDir: '/p/.app-data',
     storageFile: '/p/.data/storage.json',
     commands: [],
     panels: [],

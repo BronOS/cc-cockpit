@@ -3,18 +3,63 @@
 `activate(ctx)` receives `ctx`, scoped to ONE project window. Nothing in it takes a project id;
 ids it does take (a tab, a panel) are looked up inside that project only.
 
+## The host process
+
+All plugins enabled in a project window share one Node process (a utility process of the app),
+with full Node access.
+
+- Node: the one built into the app's Electron (Node 24 in this build; `process.versions.node`
+  says). The standard globals are there: `fetch`, `Headers`, `Request`, `URL`, `AbortController`,
+  `structuredClone`, `TextDecoder`, `WebSocket`, `crypto`, `Blob`, `FormData`. Network access is
+  plain Node: the app adds no proxy, allow-list or limit (the panel CSP does not apply here).
+- `main` is loaded with Node's own `require`, relative to its folder, so `require('./lib/x')`, a
+  `.json` file and a `node_modules` folder in or above the plugin folder all work. One bundled file
+  is not required. A git install runs no `npm install`: commit what you `require`. On a dev reload
+  every module under the plugin folder is read again; a dependency outside the folder keeps its
+  cached copy until the host restarts.
+- The host restarts, and with it every plugin of the project (each gets `deactivate()`, then a
+  fresh process and `activate()`; in-memory state is gone), when: a plugin is enabled or disabled
+  in the project; a plugin the project runs or has enabled is linked, unlinked, installed,
+  updated or uninstalled (so `ccc plugin link` of a second plugin re-activates the first); the
+  host crashed (with backoff). It does not restart for a settings save, and a dev edit of a
+  linked plugin reloads only that plugin. Keep state worth keeping in `ctx.storage`, not in
+  memory.
+
 ## Identity and settings
 
 - `ctx.api`: the API major (1). `ctx.pluginId`: your manifest id.
-- `ctx.settings.project` and `ctx.settings.app`: validated values with schema defaults applied.
-- `ctx.onSettingsChange(listener)`: called with the new settings when the user saves; returns a
-  disposer.
+- `ctx.settings`: a frozen snapshot `{ project, app }` of the validated values with schema
+  defaults applied. A save replaces the whole snapshot: read `ctx.settings` again instead of
+  keeping `ctx.settings.app` in a variable. A secret field is in it as plaintext when set and
+  absent when not (`settings-secrets` topic).
+- `ctx.onSettingsChange(listener)`: after a save of this plugin's app or project settings
+  (Settings > Plugins or `ccc plugin config`) `listener(settings)` is called with the new whole
+  `{ project, app }`, both scopes whichever one changed; `ctx.settings` already holds it. It is
+  not called at start (read `ctx.settings` in `activate`). Returns a disposer; a listener that
+  throws is logged and the others still run.
 
 ## Data
 
 - `ctx.storage.get(key)`, `set(key, value)`, `delete(key)`, `keys()`: per plugin per project
   key-value store, JSON values.
 - `ctx.dataDir`: `<data>/plugin-data/<projectId>/<pluginId>/`, created on first read.
+- `ctx.appStorage.get(key)`, `set(key, value)`, `delete(key)`, `keys()`, `increment(key, by = 1)`:
+  the same store, but app-wide: every project window sees the same keys. `increment` adds `by`
+  (a finite number; absent key counts as 0) and resolves the new value; it rejects when the
+  stored value is not a number. Values at most 1 MiB less 8 KiB as JSON; other limits as
+  `ctx.storage`.
+- `ctx.appDataDir`: `<data>/plugin-data/_app/<pluginId>/`, the same in every project, created on
+  first read. Use these two paths; don't derive others from the layout. Leave `storage.json` in
+  either folder alone: it is the store's own file.
+- Which store: per-project state (a project's board, its last sync) goes in `ctx.storage`;
+  state that must add up across windows (a monthly usage cap, a cache all projects share) goes
+  in `ctx.appStorage`. Each window runs its own host, so two windows can act at the same time.
+  `ctx.storage` has one writer (the project's host). `ctx.appStorage` lives in main, which
+  applies calls one at a time: each call is atomic, and `increment` is the safe counter across
+  windows. A `get` followed by a `set` is not atomic (another window can write in between);
+  there are no locks. Files you write in `ctx.appDataDir` yourself have no such guarantee.
+- Both stores and both folders are kept when the plugin is uninstalled (only `ctx.secrets` is
+  deleted), and a reinstall finds them again. Forgetting a project keeps its `ctx.storage` too.
 - `ctx.secrets.get(key)`, `set(key, value)`, `delete(key)`, `keys()`: encrypted with the OS
   keychain, app-wide per plugin. Keys `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, values at most 64
   KiB, at most 100 keys. The `setting:` prefix is reserved.
@@ -34,7 +79,12 @@ ids it does take (a tab, a panel) are looked up inside that project only.
 
 - `ctx.panels.post(panelId, message)` and `ctx.panels.onMessage(panelId, listener)`: JSON
   messages (at most 1 MiB) to and from your own html panels. `panelId` must be declared; a
-  `webview` panel throws (it has no page of yours).
+  `webview` panel throws (it has no page of yours). `onMessage` returns a disposer; its listeners
+  stay across panel reloads, so register once in `activate`. `post` returns nothing and is
+  fire-and-forget: when the panel has no page connected (never opened, closed, or reloading) the
+  message is dropped silently, not queued, and nothing throws; it throws only for a message that
+  is not JSON or over 1 MiB. So do not push state at the panel from `activate`: have the page
+  send a first message when it loads (`ccPanel.post({ hello: 1 })`) and answer that.
 - `ctx.panels.show(panelId)`: bring one of your own panels into sight (either kind): a hidden
   panel comes back, a closed one opens and its zone expands. Use it when a command should make
   the panel visible (`ccc browser open`). Throws for an undeclared id; a refusal is logged.
@@ -46,7 +96,19 @@ ids it does take (a tab, a panel) are looked up inside that project only.
   60 navigations a minute.
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
-  the result. At most 3 open and 10 per minute.
+  the result. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
+  a centered dialog at 75 % of the window, about 90 %, or the whole window below the top bar with a
+  small margin; the title bar and close button stay, a terminal program is resized to fit. Any other
+  value is refused.
+- `ctx.overlay.start(spec)`: the same overlay as a handle `{ result, post, onMessage, close }`
+  (`open(spec)` is `start(spec).result`), so an `html` page and the plugin talk while it is open.
+  `post(message)` sends JSON to the page (`ccPanel.onMessage`), queued until the page has loaded;
+  `onMessage(fn)` hears what the page posts without a `result` key and returns a disposer;
+  `close()` dismisses it. `post`/`onMessage` throw for a terminal or url overlay. A message is at
+  most 1,040,384 chars of JSON (1 MiB less 8 KiB for the transport); a larger one throws. Once the
+  overlay ended, `post` and `close` do nothing and the listeners are dropped. Esc, the close button
+  and Cmd+Shift+W resolve `result` as `{ kind: 'dismissed' }` without asking the page, so a page
+  that keeps a draft should post it as it goes (each change, or debounced), not only on submit.
 
 ## Sessions
 
@@ -56,6 +118,21 @@ ids it does take (a tab, a panel) are looked up inside that project only.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
 - `ctx.sessions.open({ cwd, prompt })`: a new Claude tab; the prompt is an argument, never typed.
+
+## Files
+
+- `ctx.files.onOpen(listener)`: take over a click on a changed file in the Sessions panel; returns
+  a disposer. Needs `"contributes": { "openFile": { "title": "Review" } }` (`plugins` topic), else
+  it throws. `listener({ path, tabId })` gets the file relative to the project folder (`src/a.ts`,
+  `/` separators, never outside the project) and the Claude tab whose list was clicked; both come
+  from the app. Clicks reach the plugin only when the project uses it to open files: it is the
+  only enabled plugin declaring `openFile`, or the one picked in Settings > Plugins ("Plugin used
+  to open files", where "Built-in viewer" is also a choice). The built-in viewer (a diff or the
+  file in a pager) opens instead when the plugin is not active, has no listener, or every listener
+  throws or rejects within 1 s; a listener still running after 1 s counts as handled, so one that
+  awaits an overlay is fine. The app waits at most 2 s for the host. A file outside the project
+  always opens in the built-in viewer. Only this click goes through the hook: other plugins that
+  want to open a file call a service of yours.
 
 ## Commands and misc
 
@@ -78,6 +155,18 @@ ids it does take (a tab, a panel) are looked up inside that project only.
   - `ctx.services.emit(name, event, data)`: only the provider the project selected reaches
     consumers (others are dropped, logged once); `handle.on(event, listener)` subscribes and
     returns the unsubscriber. Listeners run later, never inside `emit`.
+  - `ctx.services.caller()`: in a provider, the id of the plugin whose call it is serving, for
+    per-caller usage counts or caps. It holds inside the provided method and in what that method
+    awaits or starts (timers, promise callbacks) while the call is still running; with nested calls
+    it is the innermost caller (A calls B, B's method calls C: C sees B). `undefined` in `activate`,
+    in event listeners, outside any call, and after the call returned (a late timer), and it never
+    answers another plugin's call (only calls into your own plugin). The registry takes it from the
+    caller's own `ctx`, so it cannot be set or faked through arguments, unlike a `label` argument.
+    It is not a security boundary: all plugins of a project share one JS realm, so it guards
+    against honest mistakes, not against a hostile plugin.
+  - No limits: a service call is a plain call inside the host process, it never reaches main, so
+    there is no rate, concurrency, argument or result size cap and no timeout. A provider that
+    must protect itself counts and caps its own callers (`caller()` says who).
   - Plain data only: arguments, results and event data are copied (structured clone). A function
     or symbol throws `<what> must be plain data (no functions or symbols): ...`; shared memory (a
     SharedArrayBuffer, a typed array or DataView over one, a shared WebAssembly.Memory), nested too,
@@ -112,8 +201,11 @@ ids it does take (a tab, a panel) are looked up inside that project only.
     Consumer manifest `"services": { "uses": { "greetings": 1 } }`, host code:
     `const g = ctx.services.use('greetings'); g.on('ready', () => ctx.log.info('up')); ctx.commands.register('hi', async () => ctx.log.info(await g.hello('Ann')))`.
   - `activate`'s return value is ignored; `ctx.services` is the only way to share an API.
-- `ctx.log.info(...)`, `warn`, `error`: lines go to `<data>/logs/<pluginId>.log`.
+- `ctx.log.info(...)`, `warn`, `error`: lines go to `<data>/logs/<pluginId>.log` (`ccc plugin logs`
+  reads it): `<ISO time> <level> [<projectId>] <text>`, at most 4000 chars and 100 lines per 10 s,
+  line breaks written as `\n`.
 - `ctx.notify(text)`: a system notification, at most 10 a minute.
 
-Every call that can be abused is rate limited by main; a rejected promise carries the reason.
-Types: `PluginContext` in `src/sdk/types.ts`.
+Calls that reach main (`exec`, `overlay`, `notify`, `webview`, ...) are limited there and
+a rejected promise carries the reason; `ctx.services` calls never reach main, see above.
+Types: `PluginContext` in the SDK types; `ccc guide types` prints the file.

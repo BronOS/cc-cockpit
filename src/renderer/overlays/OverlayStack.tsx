@@ -156,7 +156,9 @@ export function OverlayStack(props: {
             aria-modal="true"
             aria-label={overlay.title}
             data-kind={overlay.kind}
+            data-size={overlay.size}
           >
+            <div className="overlay-frame">
             {/* The ✕ follows the tabs' close-side setting, so it sits where the user's hand already
                 goes for a tab's ✕. Moved in the DOM (not CSS order) so focus order matches. */}
             <header className="overlay-header" data-close-side={tabCloseSide}>
@@ -172,6 +174,7 @@ export function OverlayStack(props: {
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
               )}
               {overlay.kind === 'url' && <UrlBody overlayId={overlay.id} url={overlay.url} />}
+            </div>
             </div>
           </div>
         )

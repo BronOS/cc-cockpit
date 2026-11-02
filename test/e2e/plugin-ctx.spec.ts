@@ -1,15 +1,15 @@
 // Task 26: the host ctx in the real plugin host (utilityProcess): settings with defaults applied by
-// main, storage and dataDir on disk, exec without a shell, notify, ctx.log into
+// main, storage and dataDir on disk, appStorage and appDataDir through main, exec without a shell, notify, ctx.log into
 // <data>/logs/<pluginId>.log, and a manifest command that main lists and runs in the host.
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { CommandInfo } from '../../src/shared/ipc'
 import { expect, test } from './fixtures'
 
 const FIXTURE = join(__dirname, '..', 'fixtures', 'plugins', 'host-ctx')
 
-test('a plugin uses settings, storage, exec, notify, log and a command through its ctx', async ({ cockpit }) => {
+test('a plugin uses settings, storage, app storage, exec, notify, log and a command through its ctx', async ({ cockpit }) => {
   await cockpit.hook('linkPlugin', FIXTURE)
   await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.hostctx')
   await expect
@@ -22,6 +22,10 @@ test('a plugin uses settings, storage, exec, notify, log and a command through i
     settings: { project: Record<string, unknown>; app: Record<string, unknown> }
     stored: unknown
     dataDir: string
+    appStored: unknown
+    counted: number[]
+    incrementError: string
+    appDataDir: string
     exec: { code: number; stdout: string; stderr: string }
     undeclaredError: string
     error?: string
@@ -34,6 +38,12 @@ test('a plugin uses settings, storage, exec, notify, log and a command through i
   expect(seen.dataDir.startsWith(join(cockpit.dataDir, 'plugin-data'))).toBe(true)
   expect(seen.dataDir.endsWith(join('', 'test.hostctx'))).toBe(true)
   expect(readFileSync(join(seen.dataDir, 'hello.txt'), 'utf8')).toBe('written in dataDir')
+  // App-wide: main's store and the folder beside the project folders, <data>/plugin-data/_app/<pluginId>.
+  expect(seen.appStored).toEqual({ shared: true })
+  expect(seen.counted).toEqual([1, 3])
+  expect(seen.incrementError).toContain('not a number')
+  expect(seen.appDataDir).toBe(join(cockpit.dataDir, 'plugin-data', '_app', 'test.hostctx'))
+  expect(readFileSync(join(seen.appDataDir, 'hello.txt'), 'utf8')).toBe('written in appDataDir')
   // stdin arrived and the argument stayed literal.
   expect(seen.exec).toEqual({ code: 0, stdout: 'in:$(echo pwned)', stderr: '' })
   expect(seen.undeclaredError).toContain('not declared')
@@ -42,7 +52,14 @@ test('a plugin uses settings, storage, exec, notify, log and a command through i
   const storageFile = join(seen.dataDir, 'storage.json')
   await expect.poll(() => existsSync(storageFile)).toBe(true)
   expect(JSON.parse(readFileSync(storageFile, 'utf8')).values).toEqual({ answer: { n: 42 } })
-  expect(readdirSync(join(cockpit.dataDir, 'plugin-data'))).toHaveLength(1)
+  // The project's folder and the app-wide `_app` (never a project id: those are 16 hex characters).
+  const projectFolder = basename(dirname(seen.dataDir))
+  expect(projectFolder).toMatch(/^[0-9a-f]{16}$/)
+  expect(readdirSync(join(cockpit.dataDir, 'plugin-data')).sort()).toEqual(['_app', projectFolder].sort())
+  // main's app storage file lands within its debounce too.
+  const appStorageFile = join(seen.appDataDir, 'storage.json')
+  await expect.poll(() => existsSync(appStorageFile)).toBe(true)
+  expect(JSON.parse(readFileSync(appStorageFile, 'utf8')).values).toEqual({ app: { shared: true }, runs: 3 })
 
   expect(await cockpit.hook<string[]>('notifications')).toContain('hello from the fixture plugin')
 

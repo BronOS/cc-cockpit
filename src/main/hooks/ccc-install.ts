@@ -24,6 +24,8 @@ export interface CccInstallDeps {
   wrapperPath: string
   /** The login-shell PATH, when main has captured it. */
   loginPath: () => string | undefined
+  /** AppSettings.cccOffer with the default applied; the view carries it for the Settings checkbox. */
+  offerAtStart?: () => boolean
 }
 
 export class CccCommandInstaller {
@@ -45,6 +47,7 @@ export class CccCommandInstaller {
       target: this.deps.wrapperPath,
       binDir,
       // An empty PATH entry means "cwd", not ~/.local/bin, but resolve('') would say cwd: skip it.
+      offerAtStart: this.deps.offerAtStart?.() ?? true,
       onPath: (this.deps.loginPath() ?? '').split(delimiter).some((entry) => entry !== '' && resolve(entry) === binDir)
     }
   }
@@ -73,7 +76,8 @@ export class CccCommandInstaller {
     return this.view()
   }
 
-  private state(): CccCommandState {
+  /** What is at the link path (throws when it cannot be inspected). */
+  state(): CccCommandState {
     try {
       // lstat: a dangling or foreign symlink is "something there" too; stat would follow it.
       if (!lstatSync(this.linkPath).isSymbolicLink()) return 'foreign'

@@ -29,10 +29,8 @@ async function enableHello(c: Cockpit): Promise<void> {
 /** Open the panel from its icon in the left strip and return its page. */
 async function openPanel(c: Cockpit): Promise<FrameLocator> {
   const icon = c.page.locator('.zone-left').getByRole('button', { name: /^Hello/ })
-  // The manifest's icon file, loaded from cc-plugin:// (the shell CSP allows it) and rendered.
-  const img = icon.locator('img.panel-icon-img')
-  await expect(img).toHaveAttribute('src', `cc-plugin://${ID}/icons/hello.svg`)
-  await expect.poll(() => img.evaluate((el) => (el as unknown as { naturalWidth: number }).naturalWidth)).toBeGreaterThan(0)
+  // The manifest's icon file, loaded from cc-plugin:// (the shell CSP allows it) and drawn as a mask.
+  await expect(icon.locator('.panel-icon-img')).toHaveCSS('mask-image', `url("cc-plugin://${ID}/icons/hello.svg")`)
   await icon.click()
   await expect(c.page.locator('section.panel[aria-label="Hello"] iframe')).toHaveAttribute(
     'src',

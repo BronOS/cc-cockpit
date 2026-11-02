@@ -113,6 +113,6 @@ export function commandOverlaySpec(
   shell: string,
   entry: { label: string; command: string },
   projectDir: string
-): { kind: 'terminal'; argv: string[]; cwd: string; title: string } {
-  return { kind: 'terminal', argv: commandArgv(shell, entry.command), cwd: projectDir, title: entry.label }
+): { kind: 'terminal'; argv: string[]; cwd: string; title: string; size: 'full' } {
+  return { kind: 'terminal', argv: commandArgv(shell, entry.command), cwd: projectDir, title: entry.label, size: 'full' }
 }

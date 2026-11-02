@@ -1026,17 +1026,20 @@ iframe:focus-visible {
   letter-spacing: 1px;
 }
 
-/* A plugin's own image cannot take currentColor: it steps back at rest instead. */
+/* A plugin's icon is a single-colour mask over currentColor (IconStrip.tsx), so it follows the
+   strip's colour, hover and open states like the core icons. */
 .panel-icon-img {
   display: block;
   width: 18px;
   height: 18px;
   pointer-events: none;
-  opacity: 0.75;
-}
-.panel-icon:hover .panel-icon-img,
-.panel-icon.open .panel-icon-img {
-  opacity: 1;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
 }
 
 .panel-badge {
@@ -1524,9 +1527,30 @@ iframe:focus-visible {
   position: fixed;
   inset: 0;
   display: flex;
-  flex-direction: column;
-  background: var(--cc-bg);
+  align-items: center;
+  justify-content: center;
+  /* A backdrop: the frame below is a sized dialog (data-size), not the whole window. */
+  background: rgb(0 0 0 / 0.45);
   color: var(--cc-fg);
+}
+.overlay-frame {
+  display: flex;
+  flex-direction: column;
+  width: 75%;
+  height: 75%;
+  overflow: hidden;
+  background: var(--cc-bg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.4);
+}
+.overlay[data-size='large'] .overlay-frame {
+  width: 90%;
+  height: 90%;
+}
+.overlay[data-size='full'] .overlay-frame {
+  width: calc(100% - 16px);
+  height: calc(100% - 16px);
 }
 /* macOS: full-window layers start under the in-page title bar, which stays the window's (it
    drags it, and the traffic lights sit on it); the bar is inert under them like the zones. */

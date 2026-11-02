@@ -37,6 +37,11 @@ export interface HostPluginSpec {
   projectDir: string
   /** `ctx.dataDir`: `<data>/plugin-data/<projectId>/<pluginId>/` (created on first use). */
   dataDir: string
+  /**
+   * `ctx.appDataDir`: `<data>/plugin-data/_app/<pluginId>/`, the same in every project (created on
+   * first use). Its `ctx.appStorage` file inside is main's, reached by RPC, never opened here.
+   */
+  appDataDir: string
   /** The plugin's KV file (`ctx.storage`), inside `dataDir`. */
   storageFile: string
   /** Command ids the manifest declares; `ctx.commands.register` accepts only these. */
@@ -56,6 +61,11 @@ export interface HostPluginSpec {
    */
   services?: PluginManifest['services']
   /**
+   * The manifest declares `contributes.openFile`: `ctx.files.onOpen` accepts a listener, and main
+   * may send this plugin `files.open`. Absent is false.
+   */
+  openFile?: boolean
+  /**
    * Set by `parsePluginSpecs`, never sent by main: why this plugin's spec cannot run (a malformed
    * `services` field). The loader marks only this plugin errored; the rest of the batch activates.
    */
@@ -69,15 +79,15 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, storageFile, commands, panels, webviewPanels, cli, services, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, services, openFile, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
     if (typeof id !== 'string' || typeof dir !== 'string' || typeof main !== 'string') {
       throw new Error(`activate: plugin ${i} must have string id, dir and main`)
     }
-    if (typeof projectDir !== 'string' || typeof dataDir !== 'string' || typeof storageFile !== 'string') {
-      throw new Error(`activate: plugin ${i} must have string projectDir, dataDir and storageFile`)
+    if (typeof projectDir !== 'string' || typeof dataDir !== 'string' || typeof appDataDir !== 'string' || typeof storageFile !== 'string') {
+      throw new Error(`activate: plugin ${i} must have string projectDir, dataDir, appDataDir and storageFile`)
     }
     if (!Array.isArray(commands) || commands.some((c) => typeof c !== 'string')) {
       throw new Error(`activate: plugin ${i} commands must be an array of strings`)
@@ -99,6 +109,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     // a bad one errors that plugin alone: the batch is validated before anything activates, and a
     // throw here would keep every plugin of the project from running.
     const parsed = services === undefined ? undefined : parseServicesField(services)
+    if (openFile !== undefined && typeof openFile !== 'boolean') throw new Error(`activate: plugin ${i} openFile must be a boolean`)
     const { project, app } = (settings ?? {}) as Record<string, unknown>
     if (!isSettingsRecord(project) || !isSettingsRecord(app)) {
       throw new Error(`activate: plugin ${i} settings must have project and app objects`)
@@ -109,6 +120,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       main,
       projectDir,
       dataDir,
+      appDataDir,
       storageFile,
       commands: commands as string[],
       panels: (panels as string[] | undefined) ?? [],
@@ -116,6 +128,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       cli: (cli as string[] | undefined) ?? [],
       ...(parsed?.services !== undefined ? { services: parsed.services } : {}),
       ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),
+      ...(openFile === true ? { openFile: true } : {}),
       settings: { project, app }
     }
   })

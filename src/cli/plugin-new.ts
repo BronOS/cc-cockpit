@@ -7,7 +7,7 @@
 // Pure CLI, no socket: it needs nothing from the app, so it works with the app closed. The
 // template files are bundled into the CLI with `?raw` (like the guide topics), because the CLI
 // runs from the app bundle with no source tree next to it.
-import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { skillNameProblem } from '../main/plugins/skill-files'
 import { CLI_NAME_PATTERN, PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, RESERVED_CLI_NAMES, SKILL_ID_PATTERN } from '../shared/manifest'
@@ -18,7 +18,7 @@ import readmeTemplate from './plugin-template/readme.md.tmpl?raw'
 import skillTemplate from './plugin-template/skill.md.tmpl?raw'
 
 export interface PluginNewOptions {
-  /** Absolute folder to create the plugin in: missing, or empty. */
+  /** Absolute folder to create the plugin in: missing, or holding none of the files the scaffold writes. */
   dir: string
   /** Default: `local.<folder name>`. */
   id?: string
@@ -94,6 +94,8 @@ function applyFlags(text: string, flags: Record<string, boolean>): string {
   return text
     .split('\n')
     .flatMap((line) => {
+      // Exactly one space after the flag is the separator: the rest is the line's own indentation
+      // (a bare marker and a one-space strip once made the generated dist/host.js mix indents).
       const m = /^\/\/#(\w+) ?/.exec(line)
       if (!m) return [line]
       return flags[m[1] as string] ? [line.slice(m[0].length)] : []
@@ -106,7 +108,7 @@ function fill(text: string, values: Record<string, string>): string {
 }
 
 /**
- * Create the plugin. Refuses (PluginNewError) a folder that is not empty or not a folder, a bad id
+ * Create the plugin. Refuses (PluginNewError) a file the scaffold would overwrite, a path that is not a folder, a bad id
  * or command name; nothing is written before every check passed, and files are created with
  * `wx` so a file that appeared meanwhile is never overwritten.
  */
@@ -122,6 +124,8 @@ export function scaffoldPlugin(options: PluginNewOptions): PluginNewResult {
   if (cli !== undefined && (RESERVED_CLI_NAMES.includes(cli) || !CLI_NAME_PATTERN.test(cli))) {
     throw new PluginNewError(`${cli} is not a usable command name`)
   }
+  // The folder may exist, be empty or hold anything (a parent plugin around a nested one, or a
+  // nested plugin inside a plugin); the refusal is per file, after the manifest is built below.
   let st: ReturnType<typeof statSync> | undefined
   try {
     st = statSync(options.dir)
@@ -131,12 +135,7 @@ export function scaffoldPlugin(options: PluginNewOptions): PluginNewResult {
     if (code !== 'ENOENT') throw fsProblem('look at', options.dir, false, err)
     st = undefined
   }
-  if (st !== undefined) {
-    if (!st.isDirectory()) throw new PluginNewError(`${options.dir} exists and is not a folder`)
-    if (fsStep('list', options.dir, false, () => readdirSync(options.dir)).length > 0) {
-      throw new PluginNewError(`${options.dir} is not empty; pick an empty or new folder`)
-    }
-  }
+  if (st !== undefined && !st.isDirectory()) throw new PluginNewError(`${options.dir} exists and is not a folder`)
 
   const name = displayName(id)
   const skillId = scaffoldSkillId(id, cli)
@@ -177,6 +176,12 @@ export function scaffoldPlugin(options: PluginNewOptions): PluginNewResult {
   if (options.skill) out.push([`skills/${skillId}/SKILL.md`, fill(skillTemplate, values)])
   // No double blank line where __EXTRA__ was empty.
   out.push(['README.md', fill(readmeTemplate, values).replace(/\n{3,}/g, '\n\n')])
+
+  // Refuse only what would be overwritten, naming every such file, before writing anything.
+  const clash = out.map(([rel]) => rel).filter((rel) => existsSync(join(options.dir, rel)))
+  if (clash.length > 0) {
+    throw new PluginNewError(`${options.dir} already has ${clash.join(', ')}; the scaffold would overwrite ${clash.length === 1 ? 'it' : 'them'}`)
+  }
 
   let written = 0
   for (const [rel, text] of out) {

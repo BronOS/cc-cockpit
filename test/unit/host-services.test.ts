@@ -1154,3 +1154,114 @@ describe('ServiceRegistry events', () => {
     expect(got).toEqual(['old:1', 'new:2'])
   })
 })
+
+describe('ServiceRegistry caller()', () => {
+  /** A gate a test opens by hand, to hold a method mid-call. */
+  const gate = (): { wait: Promise<void>; open: () => void } => {
+    let open!: () => void
+    const wait = new Promise<void>((r) => (open = r))
+    return { wait, open }
+  }
+
+  it('two consumers each see their own id, taken from the handle, not the arguments', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c1', { s: 1 }))
+    reg.setSpec(consumer('c2', { s: 1 }))
+    reg.provide('p', 's', { who: () => reg.caller('p') })
+    await expect(call(reg.use('c1', 's'), 'who')).resolves.toBe('c1')
+    await expect(call(reg.use('c2', 's'), 'who')).resolves.toBe('c2')
+    // An argument naming someone else changes nothing.
+    await expect(call(reg.use('c1', 's'), 'who', { caller: 'c2' })).resolves.toBe('c1')
+  })
+
+  it('nested A -> B -> C: C sees B; B sees A before and after its await of C', async () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('a', { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sc: 1 }))
+    reg.setSpec(provider('c', { sc: 1 }))
+    reg.provide('c', 'sc', { who: async () => {
+      await flush()
+      return reg.caller('c')
+    } })
+    const bToC = reg.use('b', 'sc')
+    reg.provide('b', 'sb', { who: async () => {
+      const before = reg.caller('b')
+      const inC = await bToC.who!()
+      return { before, inC, after: reg.caller('b') }
+    } })
+    await expect(call(reg.use('a', 'sb'), 'who')).resolves.toEqual({ before: 'a', inC: 'b', after: 'a' })
+  })
+
+  it('concurrent calls from two consumers do not mix ids', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c1', { s: 1 }))
+    reg.setSpec(consumer('c2', { s: 1 }))
+    const g1 = gate()
+    const g2 = gate()
+    const gates: Record<string, Promise<void>> = { one: g1.wait, two: g2.wait }
+    reg.provide('p', 's', { who: async (name: string) => {
+      const start = reg.caller('p')
+      await gates[name]
+      return [start, reg.caller('p')]
+    } })
+    const p1 = call(reg.use('c1', 's'), 'who', 'one')
+    const p2 = call(reg.use('c2', 's'), 'who', 'two')
+    await flush()
+    // Both are mid-call; release them in the opposite order of their start.
+    g2.open()
+    g1.open()
+    await expect(p1).resolves.toEqual(['c1', 'c1'])
+    await expect(p2).resolves.toEqual(['c2', 'c2'])
+  })
+
+  it('undefined outside any call, in activate, in an event listener and for a plugin not serving the call', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    expect(reg.caller('p')).toBeUndefined()
+    const frame = reg.beginActivate('p')
+    expect(frame.run(() => reg.caller('p'))).toBeUndefined()
+    frame.end()
+    let inListener: unknown = 'unset'
+    reg.use('c', 's').on('ev', () => {
+      inListener = [reg.caller('c'), reg.caller('p')]
+    })
+    reg.provide('p', 's', { go: () => {
+      // Emitted inside c's call: the listener still runs outside it.
+      reg.emit('p', 's', 'ev')
+      // Another plugin's code running in p's frame (one realm) is not serving this call.
+      return reg.caller('c')
+    } })
+    await expect(call(reg.use('c', 's'), 'go')).resolves.toBeUndefined()
+    await flush()
+    expect(inListener).toEqual([undefined, undefined])
+    expect(reg.caller('p')).toBeUndefined()
+  })
+
+  it('a timer started during a call sees the id while the call runs and undefined after it returned', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const seen: Record<string, unknown> = {}
+    const timerFired = gate()
+    const late = gate()
+    let finish!: () => void
+    reg.provide('p', 's', { work: async () => {
+      setTimeout(() => {
+        seen.during = reg.caller('p')
+        timerFired.open()
+      }, 0)
+      // Started now, fires once the test says so, after the call returned.
+      void late.wait.then(() => setTimeout(() => (seen.after = reg.caller('p'), finish()), 0))
+      await timerFired.wait
+      return 'done'
+    } })
+    await expect(call(reg.use('c', 's'), 'work')).resolves.toBe('done')
+    const afterDone = new Promise<void>((r) => (finish = r))
+    late.open()
+    await afterDone
+    expect(seen).toEqual({ during: 'c', after: undefined })
+  })
+})

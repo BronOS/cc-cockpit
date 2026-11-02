@@ -9,6 +9,7 @@ export function hostSpec(
   return {
     projectDir: fields.dir,
     dataDir,
+    appDataDir: join(fields.dir, '.app-data'),
     storageFile: join(dataDir, 'storage.json'),
     commands: [],
     panels: [],

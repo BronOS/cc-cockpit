@@ -112,6 +112,8 @@ export interface ProjectRecord {
    * plugins provide (Settings > Plugins). Absent in older records = no picks. A pick whose plugin is
    * no longer a provider in the project counts as no pick (shared/services.ts selectProvider) and is
    * never cleaned up. The file is user-writable: the registry drops a damaged value when it loads.
+   * The reserved key `@open-file` holds the plugin a Sessions panel file click goes to, or
+   * `@builtin` for the built-in viewer (shared/services.ts OPEN_FILE_PICK).
    */
   serviceProviders?: Record<string, string>
   /** Epoch ms of the last `openPath`. */
@@ -177,6 +179,11 @@ export interface AppSettings {
   marketplaces?: string[]
   /** Look for a newer release once a day (main/updates). Absent or anything but `false` (the file is user-writable) reads as on. */
   updateCheck?: boolean
+  /**
+   * Offer to install the `ccc` command at start-up when it is missing (main/hooks/ccc-offer.ts).
+   * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").
+   */
+  cccOffer?: boolean
   /** The newest version the user dismissed in the update notice; a newer release shows again. */
   updateDismissed?: string
   /** Plugin id to the git URL it was last installed from; outlives an uninstall (repo-change warning). */

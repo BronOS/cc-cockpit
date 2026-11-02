@@ -140,3 +140,64 @@ export function serviceStatus(plugins: readonly ServicePlugin[], choices: Servic
   })
   return { plugins: statuses, services }
 }
+
+// ---------------------------------------------------------------------------------------------
+// "Open file" (friction round 1, Task 12): which plugin takes a click on a changed file in core's
+// Sessions panel. Not a service, but the same question ("which of several plugins answers here"),
+// so it goes through selectProvider with the plugins that declare `contributes.openFile` standing
+// in as providers of one reserved name. The pick is stored next to the service picks
+// (`serviceProviders`), under a key no service can have, and the Plugins page shows it with them.
+
+/** The key of the open-file pick in `serviceProviders`: `@` never starts a service name. */
+export const OPEN_FILE_PICK = '@open-file'
+/** The pick value that means core's own viewer (the pager): `@` never starts a plugin id. */
+export const BUILTIN_VIEWER = '@builtin'
+
+/** What the rule needs from a plugin: its id and the manifest's `contributes.openFile`. */
+export interface OpenFilePlugin {
+  id: string
+  openFile?: { title: string }
+}
+
+export interface OpenFileStatus {
+  /** The plugins that declare `contributes.openFile`, in plugin order, with the title they gave. */
+  candidates: { id: string; title: string }[]
+  /**
+   * Where a click goes: a candidate's id, BUILTIN_VIEWER (picked, or no candidate at all), or null
+   * (several candidates and no valid pick; the click opens the built-in viewer until one is picked).
+   */
+  selected: string | null
+}
+
+/** The Plugins page's view of the project's picks: the services and the open-file pick. */
+export interface PluginServicesView extends ServicesStatus {
+  openFile: OpenFileStatus
+}
+
+/** The open-file selection in selectProvider's terms (a candidate provides OPEN_FILE_PICK v1). */
+function openFileSelection(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): ProviderSelection {
+  const asProviders = plugins.map((p): ServicePlugin => (p.openFile !== undefined ? { id: p.id, services: { provides: { [OPEN_FILE_PICK]: 1 } } } : { id: p.id }))
+  return selectProvider(OPEN_FILE_PICK, asProviders, choices)
+}
+
+const pickedBuiltin = (choices: ServiceChoices): boolean =>
+  Object.hasOwn(choices, OPEN_FILE_PICK) && choices[OPEN_FILE_PICK] === BUILTIN_VIEWER
+
+/**
+ * The plugin a click on a changed file goes to, or null for the built-in viewer: no plugin declares
+ * `openFile`, the project picked the built-in viewer, or several do and none (valid) is picked. A
+ * stale pick (a plugin since disabled or no longer declaring it) counts as none, as for services.
+ */
+export function selectOpenFile(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): string | null {
+  if (pickedBuiltin(choices)) return null
+  const sel = openFileSelection(plugins, choices)
+  return sel.ok ? sel.provider : null
+}
+
+/** The candidates and the current selection, for the Plugins page (plain data, sent over IPC). */
+export function openFileStatus(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): OpenFileStatus {
+  const candidates = plugins.flatMap((p) => (p.openFile !== undefined ? [{ id: p.id, title: p.openFile.title }] : []))
+  if (candidates.length === 0 || pickedBuiltin(choices)) return { candidates, selected: BUILTIN_VIEWER }
+  const sel = openFileSelection(plugins, choices)
+  return { candidates, selected: sel.ok ? sel.provider : null }
+}

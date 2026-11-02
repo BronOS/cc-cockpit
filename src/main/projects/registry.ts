@@ -6,12 +6,13 @@
 // renderers and plugins never pass a path or id that is trusted without going through here.
 import * as nodeFs from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
-import { dataPaths, projectFile, projectId } from '../paths'
+import { dataPaths, PROJECT_ID_PATTERN, projectFile, projectId } from '../paths'
 import { JsonFile, type FsOps } from '../store/json-file'
 import { isPlainObject } from '../../shared/guards'
 import { defaultLayout, normalizeLayout, type LayoutState } from '../../shared/layout'
 import { projectColorOf } from '../../shared/project-color'
 import { SERVICE_NAME_PATTERN } from '../../shared/manifest'
+import { OPEN_FILE_PICK } from '../../shared/services'
 import type { AppSettings, ProjectRecord, ProjectView } from '../../shared/types'
 
 /** How many entries `recentProjects` keeps; the picker never shows more than this. */
@@ -19,7 +20,8 @@ export const MAX_RECENT_PROJECTS = 20
 
 /** The only file names that count as project records in `projects/` (ignores .tmp, .corrupt-*). */
 const RECORD_FILE = /^([0-9a-f]{16})\.json$/
-const ID_PATTERN = /^[0-9a-f]{16}$/
+// One pattern for every id check (paths.ts): it is also what keeps `plugin-data/_app` apart.
+const ID_PATTERN = PROJECT_ID_PATTERN
 
 export interface RegistryOptions {
   dataDir: string
@@ -491,11 +493,15 @@ export function realPathOf(path: string): string {
   }
 }
 
-/** A user-writable picks map: string pairs with a valid service name, or undefined for none. */
+/**
+ * A user-writable picks map: string pairs with a valid service name (or the reserved open-file key,
+ * which no service name can equal), or undefined for none.
+ */
 function serviceProvidersOf(value: unknown): Record<string, string> | undefined {
   if (!isPlainObject(value)) return undefined
   const entries = Object.entries(value).filter(
-    (e): e is [string, string] => SERVICE_NAME_PATTERN.test(e[0]) && typeof e[1] === 'string' && e[1] !== ''
+    (e): e is [string, string] =>
+      (SERVICE_NAME_PATTERN.test(e[0]) || e[0] === OPEN_FILE_PICK) && typeof e[1] === 'string' && e[1] !== ''
   )
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }

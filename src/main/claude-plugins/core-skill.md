@@ -19,6 +19,7 @@ when the app is closed. Read the topic that matches the task before acting:
 | Settings forms, secret fields, `ctx.secrets`, OAuth | `ccc guide settings-secrets` |
 | Linking, rebuilding and debugging a plugin | `ccc guide dev-loop` |
 | Webview panels: web pages and local files in a panel | `ccc guide webview` |
+| The exact TypeScript types of the plugin API | `ccc guide types` |
 
 `ccc help` also lists the commands this project's plugins add, while the app is running.
 

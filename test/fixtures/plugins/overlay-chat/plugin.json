@@ -1,0 +1,10 @@
+{
+  "id": "test.overlaychat",
+  "name": "Overlay chat",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "chat", "title": "Overlay chat: Chat" }]
+  }
+}
