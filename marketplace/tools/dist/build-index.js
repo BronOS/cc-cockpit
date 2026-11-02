@@ -84,7 +84,10 @@ var MANIFEST_SCHEMA = {
     version: { type: "string", maxLength: 64, pattern: PLUGIN_VERSION_PATTERN.source },
     api: { type: "integer" },
     main: relativePath,
-    services: { type: "object", properties: { provides: serviceMap, uses: serviceMap } },
+    // Strict inside, unlike the top level: a key the app does not know here (`description`, a
+    // misspelt `provide`) is a declaration that silently does nothing, and the plugin host reads
+    // only these two.
+    services: { type: "object", additionalProperties: false, properties: { provides: serviceMap, uses: serviceMap } },
     contributes: {
       type: "object",
       properties: {

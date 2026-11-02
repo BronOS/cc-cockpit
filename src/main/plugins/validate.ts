@@ -62,11 +62,18 @@ const refuseRegExp = Object.assign(
   { code: 'refused' }
 )
 
-/** Ajv's own wording, one line per error; the synthetic `if` error of if/then adds only noise. */
+/**
+ * Ajv's own wording, one line per error; the synthetic `if` error of if/then adds only noise. An
+ * unknown key names itself (ajv's "must NOT have additional properties" alone does not say which).
+ */
 function formatAjvErrors(errors: readonly ErrorObject[] | null | undefined): string[] {
   return (errors ?? [])
     .filter((e) => e.keyword !== 'if')
-    .map((e) => `${e.instancePath === '' ? '/' : e.instancePath} ${e.message ?? 'is invalid'}`.trim())
+    .map((e) => {
+      const extra = e.keyword === 'additionalProperties' ? (e.params as { additionalProperty?: unknown }).additionalProperty : undefined
+      const named = typeof extra === 'string' ? ` ("${extra}")` : ''
+      return `${e.instancePath === '' ? '/' : e.instancePath} ${e.message ?? 'is invalid'}${named}`.trim()
+    })
 }
 
 // The manifest schema is ours and trusted, so one shared instance is fine. `strict` stays on: a

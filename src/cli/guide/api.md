@@ -78,7 +78,9 @@ ids it does take (a tab, a panel) are looked up inside that project only.
     consumers (others are dropped, logged once); `handle.on(event, listener)` subscribes and
     returns the unsubscriber. Listeners run later, never inside `emit`.
   - Plain data only: arguments, results and event data are copied (structured clone). A function
-    or symbol throws `<what> must be plain data (no functions or symbols): ...`; a class instance
+    or symbol throws `<what> must be plain data (no functions or symbols): ...`; shared memory (a
+    SharedArrayBuffer, a typed array or DataView over one, a shared WebAssembly.Memory), nested too,
+    throws `<what> must be plain data (no shared memory): ...`, as a clone would share it; a class instance
     arrives as a plain object (prototype and methods gone). `provide` takes a plain object, not a
     class instance (`service "x": the implementation must be a plain object (not a class instance)`).
   - Errors a consumer can get (a call rejects, `use`/`on` throw): `plugin <id> does not declare
@@ -88,15 +90,18 @@ ids it does take (a tab, a panel) are looked up inside that project only.
     <reason>`; `P declares service "x" but did not provide it`; `service "x" (plugin P) has no
     method "m"`; and the provider's own throw (a fresh Error with its message only). No timeout:
     race your own.
-  - Cycles: two plugins that call each other while both are in `activate` would wait forever; the
-    call closing the cycle fails at once with `A -> B -> A: services called in a cycle during
-    activate`. Call from timers or commands to avoid it.
+  - Cycles: plugins that call each other while one is in `activate` would wait forever: two (or
+    more) both in `activate`, or A's `activate` calling an active B whose method calls back into A.
+    The call closing the cycle fails at once with `A -> B -> A: services called in a cycle during
+    activate`. Calls started during `activate` (timers, unawaited calls) count while it runs. Call
+    from commands, or after `activate` returned, to avoid it.
   - Events: `emit` only reaches consumers when the caller is the selected provider (with several
     providers, the one picked in Settings > Plugins); a consumer whose `uses` major differs gets no
     events; an `emit` with no subscriber is a silent no-op; the event name and data are checked
-    even then (plain data, else it throws). A handle from before the consumer's reload can no longer
-    subscribe (`... belongs to a released copy of plugin C; it can no longer subscribe`): call
-    `use` again in `activate`.
+    even then (plain data, else it throws). A handle from before the consumer's reload (or
+    deactivate, or failed `activate`) can no longer call or subscribe (`service "x": this handle
+    belongs to a previous copy of plugin C; call ctx.services.use again`); a call already running in
+    the provider finishes. Call `use` again in `activate`.
   - Provider pick: when several enabled plugins provide a service, the Plugins page shows "Plugin
     used for <service>" in its Services group, stored per project. A pick naming a plugin that is
     disabled or gone counts as no pick. Each plugin row shows Provides/Uses lines and warnings

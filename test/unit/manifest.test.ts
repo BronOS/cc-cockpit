@@ -417,8 +417,14 @@ describe('services', () => {
     expect((await validateManifest(withServices({}), dir)).ok).toBe(true)
   })
 
-  it('tolerates unknown top-level and services keys', async () => {
-    expect((await validateManifest(manifest({ future: 1, services: { later: true } }), dir)).ok).toBe(true)
+  it('tolerates unknown top-level keys but refuses unknown keys inside services, naming them', async () => {
+    expect((await validateManifest(manifest({ future: 1, services: { provides: { triage: 1 } } }), dir)).ok).toBe(true)
+    // The plugin host reads only provides and uses; a key beside them is a declaration that does
+    // nothing (and once made the host refuse the whole project's plugins).
+    expect(await errorsOf(withServices({ provides: { triage: 1 }, description: 'API' }))).toEqual([
+      '/services must NOT have additional properties ("description")'
+    ])
+    expect((await errorsOf(withServices({ provide: { triage: 1 } }))).join()).toContain('("provide")')
   })
 
   it.each(['Triage', '1abc', 'has space', 'dot.ted', 'a'.repeat(65), ''])('refuses the service name %j', async (name) => {

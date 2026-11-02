@@ -263,6 +263,91 @@ describe('ServiceRegistry data copying', () => {
     await expect(call(h, 'fn')).rejects.toThrow('service "s" fn(): the result must be plain data')
     await expect(call(h, 'sym')).rejects.toThrow('service "s" sym(): the result must be plain data')
   })
+
+  it('shared memory is refused, nested too: structuredClone would share it, not copy it', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const kept = new SharedArrayBuffer(8)
+    let calls = 0
+    reg.provide('p', 's', {
+      echo(v: unknown) {
+        calls++
+        return v
+      },
+      shared() {
+        return { deep: [kept] }
+      }
+    })
+    const h = reg.use('c', 's')
+    const sab = new SharedArrayBuffer(8)
+    const sharedArgs: [unknown, string][] = [
+      [sab, 'a SharedArrayBuffer'],
+      [{ a: [{ b: sab }] }, 'a SharedArrayBuffer'],
+      [new Int32Array(sab), 'a Int32Array over a SharedArrayBuffer'],
+      [new DataView(sab), 'a DataView over a SharedArrayBuffer'],
+      [new Map([['k', new Set([new Uint8Array(sab)])]]), 'a Uint8Array over a SharedArrayBuffer'],
+      [new Error('e', { cause: sab }), 'a SharedArrayBuffer'],
+      [new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }), 'a WebAssembly.Memory']
+    ]
+    for (const [arg, what] of sharedArgs) {
+      await expect(call(h, 'echo', arg)).rejects.toThrow(
+        `service "s" echo(): arguments must be plain data (no shared memory): ${what} would be shared between the plugins, not copied`
+      )
+    }
+    expect(calls).toBe(0)
+    await expect(call(h, 'shared')).rejects.toThrow('service "s" shared(): the result must be plain data (no shared memory)')
+    // Event data too, at emit.
+    expect(() => reg.emit('p', 's', 'e', { buf: new Float64Array(new SharedArrayBuffer(8)) })).toThrow(
+      'service "s" event "e": the data must be plain data (no shared memory)'
+    )
+    // Ordinary buffers, a sparse array and a cycle are copied as before.
+    const cyclic: Record<string, unknown> = { bytes: new Uint8Array([1, 2]) }
+    cyclic.self = cyclic
+    const sparse: unknown[] = []
+    sparse[1_000_000] = new ArrayBuffer(4)
+    const back = (await call(h, 'echo', [cyclic, sparse])) as [Record<string, unknown>, unknown[]]
+    expect(back[0].bytes).toEqual(new Uint8Array([1, 2]))
+    expect(back[0].self).toBe(back[0])
+    expect(back[1][1_000_000]).toBeInstanceOf(ArrayBuffer)
+  })
+
+  it('a throwing getter is reported as text only: the thrown object is never attached', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    const secret = { token: 'provider-owned' }
+    const thrown = Object.assign(new Error('getter broke'), { secret })
+    const nasty = {
+      toString() {
+        throw new Error('toString broke too')
+      }
+    }
+    reg.provide('p', 's', {
+      bad() {
+        return {
+          get x() {
+            throw thrown
+          }
+        }
+      },
+      worse() {
+        return {
+          get x() {
+            throw nasty
+          }
+        }
+      }
+    })
+    const h = reg.use('c', 's')
+    const err = (await call(h, 'bad').catch((e: unknown) => e)) as Error
+    expect(err.message).toBe('service "s" bad(): the result must be plain data (no functions or symbols): getter broke')
+    expect(err.cause).toBeUndefined()
+    expect(Object.values(err)).not.toContain(secret)
+    const err2 = (await call(h, 'worse').catch((e: unknown) => e)) as Error
+    expect(err2.message).toBe('service "s" worse(): the result must be plain data (no functions or symbols): a value threw while being copied')
+    expect(err2.cause).toBeUndefined()
+  })
 })
 
 describe('ServiceRegistry errors', () => {
@@ -605,6 +690,205 @@ describe('ServiceRegistry cycles during activate', () => {
   })
 })
 
+describe('ServiceRegistry cycles through active providers (call chain)', () => {
+  /** a's activate (in its frame) calls `service`; returns the call and the frame. */
+  const fromActivate = (reg: ServiceRegistry, id: string, service: string): { p: Promise<unknown>; end: () => void } => {
+    const frame = reg.beginActivate(id)
+    return { p: frame.run(() => call(reg.use(id, service), 'hi')), end: () => frame.end() }
+  }
+
+  it('A (activating) calls B (active), whose method calls A: fails at once, not after the timeout', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sa: 1 }))
+    acts.finish('b')
+    acts.start('a')
+    reg.provide('a', 'sa', { hi: () => 'from a' })
+    const bToA = reg.use('b', 'sa')
+    reg.provide('b', 'sb', { hi: () => bToA.hi!() })
+    const { p, end } = fromActivate(reg, 'a', 'sb')
+    // Before the chain was tracked this stayed pending until a's activate timed out: b is not
+    // activating, so no edge a -> b was ever recorded and b's call simply waited on a.
+    expect(await outcome(p)).toMatchObject({ error: { message: 'a -> b -> a: services called in a cycle during activate' } })
+    end()
+    acts.finish('a')
+  })
+
+  it('a longer chain through two active providers names every plugin', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sc: 1 }))
+    reg.setSpec(provider('c', { sc: 1 }, { sa: 1 }))
+    acts.finish('b')
+    acts.finish('c')
+    acts.start('a')
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    const bToC = reg.use('b', 'sc')
+    const cToA = reg.use('c', 'sa')
+    reg.provide('b', 'sb', { hi: () => bToC.hi!() })
+    reg.provide('c', 'sc', { hi: async () => cToA.hi!() })
+    const { p } = fromActivate(reg, 'a', 'sb')
+    expect(await outcome(p)).toMatchObject({ error: { message: 'a -> b -> c -> a: services called in a cycle during activate' } })
+  })
+
+  it('a wait through an active provider is an edge: the activation that closes the cycle fails, listing the path', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sc: 1 }))
+    reg.setSpec(provider('c', { sc: 1 }, { sa: 1 }))
+    acts.finish('b')
+    acts.start('a')
+    acts.start('c')
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    reg.provide('c', 'sc', { hi: () => 'c' })
+    const bToC = reg.use('b', 'sc')
+    reg.provide('b', 'sb', { hi: () => bToC.hi!() })
+    // a's activate -> b (active) -> waits on c's activation: the edge a -> c, through b.
+    const { p: aCall } = fromActivate(reg, 'a', 'sb')
+    expect(await outcome(aCall)).toBe('pending')
+    // c's activate (no frame here: the plain mid-activate rule) calls a.
+    const cCall = call(reg.use('c', 'sa'), 'hi')
+    expect(await outcome(cCall)).toMatchObject({ error: { message: 'c -> a -> b -> c: services called in a cycle during activate' } })
+    acts.finish('c')
+    await expect(aCall).resolves.toBe('c')
+  })
+
+  it('a call chain without a cycle still works: A (activating) -> B (active) -> C (active)', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sc: 1 }))
+    reg.setSpec(provider('c', { sc: 1 }))
+    acts.finish('b')
+    acts.finish('c')
+    acts.start('a')
+    reg.provide('c', 'sc', { hi: () => 'c' })
+    const bToC = reg.use('b', 'sc')
+    reg.provide('b', 'sb', { hi: async () => `b+${String(await bToC.hi!())}` })
+    await expect(fromActivate(reg, 'a', 'sb').p).resolves.toBe('b+c')
+  })
+
+  it('a timer started in activate counts while the activate runs and is unrelated once it ended', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sa: 1 }))
+    acts.finish('b')
+    acts.start('a')
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    const bToA = reg.use('b', 'sa')
+    reg.provide('b', 'sb', { hi: () => bToA.hi!() })
+    const frame = reg.beginActivate('a')
+    // A real timer started inside the frame: AsyncLocalStorage carries the chain into it. Resolves
+    // once the timer fired, with the call it made (wrapped, so the call's own outcome stays open).
+    const fire = (): Promise<{ p: Promise<unknown> }> =>
+      frame.run(() => new Promise((r) => setTimeout(() => r({ p: call(reg.use('a', 'sb'), 'hi') }), 0)))
+    // While the activate runs: blocking, like any call it makes (documented over-approximation).
+    await expect((await fire()).p).rejects.toThrow('a -> b -> a: services called in a cycle')
+    // The activate ended (here: timed out) while a is still activating as far as the loader says
+    // (say a reload started). The timer's chain is dead: its call just waits for a.
+    frame.end()
+    const late = (await fire()).p
+    expect(await outcome(late)).toBe('pending')
+    acts.finish('a')
+    await expect(late).resolves.toBe('a')
+  })
+
+  it('a method that finished cuts the chain: work it left running is not part of the caller', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('a', { sa: 1 }, { sb: 1 }))
+    reg.setSpec(provider('b', { sb: 1 }, { sa: 1 }))
+    acts.finish('b')
+    acts.start('a')
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    const bToA = reg.use('b', 'sa')
+    let open!: () => void
+    let later!: Promise<unknown>
+    reg.provide('b', 'sb', {
+      hi: () => {
+        // A continuation registered inside b's method (so it carries the chain a -> b), run after
+        // the method returned: a cache refresh, a timer.
+        later = new Promise<void>((r) => (open = r)).then(() => bToA.hi!())
+        return 'b'
+      }
+    })
+    const frame = reg.beginActivate('a')
+    await expect(frame.run(() => call(reg.use('a', 'sb'), 'hi'))).resolves.toBe('b')
+    // a's activate is still running, but b's method is done: not a cycle, b's call waits for a.
+    open()
+    expect(await outcome(later)).toBe('pending')
+    frame.end()
+    acts.finish('a')
+    await expect(later).resolves.toBe('a')
+  })
+
+  it('event listeners run outside the emitter\'s chain: a listener calling the activating emitter waits', async () => {
+    const { reg, acts, logs } = setup()
+    reg.setSpec(provider('a', { sa: 1 }))
+    reg.setSpec(consumer('l', { sa: 1 }))
+    acts.finish('l')
+    acts.start('a')
+    reg.provide('a', 'sa', { hi: () => 'a' })
+    let fromListener: Promise<unknown> | undefined
+    reg.use('l', 'sa').on('ready', () => {
+      fromListener = call(reg.use('l', 'sa'), 'hi')
+    })
+    const frame = reg.beginActivate('a')
+    frame.run(() => reg.emit('a', 'sa', 'ready'))
+    await flush()
+    expect(fromListener).toBeDefined()
+    expect(await outcome(fromListener!)).toBe('pending')
+    frame.end()
+    acts.finish('a')
+    await expect(fromListener).resolves.toBe('a')
+    expect(logs).toEqual([])
+  })
+})
+
+describe('ServiceRegistry stale handles', () => {
+  it('a handle from before the consumer\'s release cannot call; a new one can', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    let calls = 0
+    reg.provide('p', 's', { v: () => ++calls })
+    const old = reg.use('c', 's')
+    await expect(call(old, 'v')).resolves.toBe(1)
+    reg.release('c')
+    await expect(call(old, 'v')).rejects.toThrow(
+      'service "s": this handle belongs to a previous copy of plugin c; call ctx.services.use again'
+    )
+    expect(calls).toBe(1)
+    await expect(call(reg.use('c', 's'), 'v')).resolves.toBe(2)
+  })
+
+  it('a call waiting for the provider\'s activation is refused if the consumer is released meanwhile', async () => {
+    const { reg, acts } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    acts.start('p')
+    let calls = 0
+    reg.provide('p', 's', { v: () => ++calls })
+    const waiting = call(reg.use('c', 's'), 'v')
+    expect(await outcome(waiting)).toBe('pending')
+    reg.release('c')
+    acts.finish('p')
+    await expect(waiting).rejects.toThrow('this handle belongs to a previous copy of plugin c')
+    expect(calls).toBe(0)
+  })
+
+  it('a call already running in the provider finishes after the consumer\'s release', async () => {
+    const { reg } = setup()
+    reg.setSpec(provider('p', { s: 1 }))
+    reg.setSpec(consumer('c', { s: 1 }))
+    let finish!: (v: string) => void
+    reg.provide('p', 's', { m: () => new Promise<string>((r) => (finish = r)) })
+    const p = call(reg.use('c', 's'), 'm')
+    await flush()
+    reg.release('c')
+    finish('done')
+    await expect(p).resolves.toBe('done')
+  })
+})
+
 describe('ServiceRegistry events', () => {
   it('delivers to several consumers, asynchronously and in subscription order', async () => {
     const { reg } = setup()
@@ -775,7 +1059,7 @@ describe('ServiceRegistry events', () => {
     // The old copy's disposer is harmless; its handle may not subscribe again (a leftover timer
     // would otherwise listen beside the new copy).
     expect(() => off()).not.toThrow()
-    expect(() => old.on('e', () => {})).toThrow('this handle belongs to a released copy of plugin c')
+    expect(() => old.on('e', () => {})).toThrow('this handle belongs to a previous copy of plugin c; call ctx.services.use again')
     // The new copy subscribes through a new handle.
     reg.use('c', 's').on('e', (d) => got.push(`new c:${String(d)}`))
     reg.emit('p', 's', 'e', 3)

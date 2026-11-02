@@ -16,8 +16,11 @@
 // release and re-provide (dev reload, restart of its activate) and a swap to another provider; the
 // provider is resolved on every emit, as it is on every call.
 //
-// The loader owns the registry: it calls `setSpec`/`removeSpec`/`release` and backs the injected
-// `activationOf`/`isActivating` with its own activation promises; ctx.services binds the plugin id.
+// The loader owns the registry: it calls `setSpec`/`removeSpec`/`release`, runs every activate()
+// in a `beginActivate` frame (the root of the call chain cycle detection follows) and backs the
+// injected `activationOf`/`isActivating` with its own activation promises; ctx.services binds the
+// plugin id.
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { errorText } from '../shared/error-text'
 import { selectProvider, serviceProblemMessage, type ServiceChoices, type ServicePlugin } from '../shared/services'
 
@@ -77,17 +80,79 @@ function checkEventName(service: string, event: unknown): asserts event is strin
   }
 }
 
-/** Copy `value` for the other side; a non-cloneable part becomes a clear plain-data error. */
+/**
+ * Copy `value` for the other side; a non-cloneable part becomes a clear plain-data error, and so
+ * does shared memory, which structuredClone does not copy (see sharedMemoryIn).
+ */
 export function cloneData<T>(value: T, what: string): T {
+  let copy: T
   try {
-    return structuredClone(value)
+    copy = structuredClone(value)
   } catch (err) {
     // DataCloneError (a function, a symbol, a DOM-only object) above all; a throwing getter lands
     // here too, and the same advice applies. The original text names the offending value.
-    // The cause is structuredClone's own DOMException, not an object of either plugin's, so it is
-    // safe to attach (unlike a provider's throw, see rethrown()).
-    throw new Error(`${what} must be plain data (no functions or symbols): ${errorText(err)}`, { cause: err })
+    // Text only, never `cause: err`: a getter's throw is the plugin's own object (anything at all),
+    // and attaching it would hand it to the other side, which is what copying is there to prevent.
+    // eslint-disable-next-line preserve-caught-error -- the cause is left out on purpose (above)
+    throw new Error(`${what} must be plain data (no functions or symbols): ${cloneFailureText(err)}`)
   }
+  const shared = sharedMemoryIn(copy)
+  if (shared !== undefined) {
+    throw new Error(`${what} must be plain data (no shared memory): ${shared} would be shared between the plugins, not copied`)
+  }
+  return copy
+}
+
+/**
+ * The text of structuredClone's failure as a plain string. Its own DataCloneError is a
+ * DOMException; a getter's throw can be any value, whose `message` may be a getter or a non-string
+ * and whose `toString` may throw again, so every read is guarded and only a string comes out.
+ */
+function cloneFailureText(err: unknown): string {
+  const fallback = 'a value threw while being copied'
+  try {
+    const text = errorText(err)
+    return typeof text === 'string' ? text : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * The first shared-memory object in a structuredClone result, described, or undefined.
+ * structuredClone keeps a SharedArrayBuffer (alone, nested, or under a typed array or DataView) and
+ * a shared WebAssembly.Memory pointing at the same memory, so provider and consumer (or two
+ * listeners) would write into each other's data. Walked on the COPY, never the original: the copy
+ * holds only data properties, so no plugin getter runs here. Typed arrays and buffers are not
+ * descended into (their bytes are not objects; an index walk of a large one would be slow).
+ */
+function sharedMemoryIn(value: unknown): string | undefined {
+  const isShared = (v: unknown): boolean => typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer
+  const seen = new Set<object>()
+  const stack: unknown[] = [value]
+  while (stack.length > 0) {
+    const v = stack.pop()
+    if (typeof v !== 'object' || v === null || seen.has(v)) continue
+    seen.add(v)
+    if (isShared(v)) return 'a SharedArrayBuffer'
+    if (ArrayBuffer.isView(v)) {
+      if (isShared(v.buffer)) return `a ${v.constructor.name} over a SharedArrayBuffer`
+      continue
+    }
+    if (v instanceof WebAssembly.Memory) return 'a WebAssembly.Memory'
+    if (v instanceof Map) {
+      for (const [k, x] of v) stack.push(k, x)
+    } else if (v instanceof Set) {
+      for (const x of v) stack.push(x)
+    } else if (v instanceof Error) {
+      // The clone keeps an Error's `cause` (an own, non-enumerable property).
+      stack.push(Object.getOwnPropertyDescriptor(v, 'cause')?.value)
+    } else if (Array.isArray(v) || Object.getPrototypeOf(v) === Object.prototype) {
+      // Object.keys, not an index loop: a sparse array stays sparse in the copy.
+      for (const key of Object.keys(v)) stack.push((v as Record<string, unknown>)[key])
+    }
+  }
+  return undefined
 }
 
 /** The fresh error a consumer gets for a provider's throw: same message and name, never the object. */
@@ -113,10 +178,47 @@ interface Implementation {
   methods: Map<string, (...args: unknown[]) => unknown>
 }
 
-/** One waiting call: `from` (mid-activate) waits on `to`'s activation. */
+/**
+ * One step of the work a piece of code is doing on someone's behalf, kept in the async context
+ * (`ServiceRegistry.chain`). An `activate` frame is a plugin's activate() (always the root: the
+ * host starts activations, plugin code never does); a `call` frame is a provider method running for
+ * the frame before it. `live` goes false when that activate settles (the loader ends it, timeout
+ * included) or that method's promise settles: from then on, nothing waits on the work under it.
+ */
+interface Frame {
+  plugin: string
+  kind: 'activate' | 'call'
+  live: boolean
+}
+
+/** What the loader runs each activate() in (see `ServiceRegistry.beginActivate`). */
+export interface ActivateFrame {
+  /** Run `fn` with this frame as the root of the call chain. */
+  run<T>(fn: () => T): T
+  /** The activate settled (or timed out): the frame no longer holds anything back. */
+  end(): void
+}
+
+/**
+ * A plugin activation the current code may be holding back: `plugin`'s activate is (as far as the
+ * registry can tell) waiting on this code. `path` is the chain from that plugin to the caller,
+ * for the cycle message.
+ */
+interface Blocker {
+  plugin: string
+  live: () => boolean
+  path: string[]
+}
+
+/**
+ * One waiting call: `from`'s activation (mid-activate) waits, through the plugins in `hops`
+ * (`from` first, the caller last), on `to`'s activation. Counts only while `live()`.
+ */
 interface WaitEdge {
   from: string
   to: string
+  hops: string[]
+  live: () => boolean
 }
 
 /** One `handle.on` call. Each is its own subscription, even for the same listener twice. */
@@ -150,8 +252,31 @@ export class ServiceRegistry {
    * or the old code would keep receiving events beside the new copy until the next release.
    */
   private readonly releases = new Map<string, number>()
+  /**
+   * The call chain of the running code (frames, root first), for cycle detection through providers
+   * that are already active (step 3a). Node's AsyncLocalStorage, so it follows awaits, timers and
+   * promise callbacks started inside an activate or a provider method; see `liveChain` for why a
+   * frame carried into a timer is harmless once its activate or method is done.
+   */
+  private readonly chain = new AsyncLocalStorage<readonly Frame[]>()
 
   constructor(private readonly deps: ServiceRegistryDeps) {}
+
+  /**
+   * The frame the loader runs a plugin's activate() in, and ends when the activation settles. A
+   * fresh chain, never the current one: the host's RPC handler starts activations, so whatever
+   * context it happens to run in is not work the activate does for anyone.
+   */
+  beginActivate(pluginId: string): ActivateFrame {
+    const frame: Frame = { plugin: pluginId, kind: 'activate', live: true }
+    const chain: readonly Frame[] = [frame]
+    return {
+      run: (fn) => this.chain.run(chain, fn),
+      end: () => {
+        frame.live = false
+      }
+    }
+  }
 
   /**
    * Add or replace a plugin's declarations (Task 4: on activate and on `plugin.reload`, since a dev
@@ -227,7 +352,9 @@ export class ServiceRegistry {
       // The snapshot is plain data already, so these copies cannot fail.
       const copy = first ? snapshot : structuredClone(snapshot)
       first = false
-      queueMicrotask(() => this.deliver(sub, copy))
+      // Outside the emitter's call chain: nobody awaits a listener, so a call it makes is not work
+      // the emitter's activate (or caller) waits on, and must not count toward a cycle.
+      queueMicrotask(() => this.chain.exit(() => this.deliver(sub, copy)))
     }
   }
 
@@ -322,7 +449,7 @@ export class ServiceRegistry {
         if (typeof prop === 'symbol') return undefined
         if (prop === 'then') return undefined
         if (prop === 'on') return this.onFor(pluginId, service, releasesAtUse)
-        return (...args: unknown[]) => this.call(pluginId, service, prop, args)
+        return (...args: unknown[]) => this.call(pluginId, service, prop, args, releasesAtUse)
       },
       set: () => false,
       defineProperty: () => false,
@@ -341,9 +468,7 @@ export class ServiceRegistry {
       if (this.declared(consumer, 'uses', service) === undefined) {
         throw new Error(`plugin ${consumer} does not declare service "${service}" in services.uses`)
       }
-      if (this.releaseCount(consumer) !== releasesAtUse) {
-        throw new Error(`service "${service}": this handle belongs to a released copy of plugin ${consumer}; it can no longer subscribe`)
-      }
+      this.checkFresh(consumer, service, releasesAtUse)
       checkEventName(service, event)
       if (typeof listener !== 'function') {
         throw new Error(`service "${service}": the listener for "${event}" must be a function`)
@@ -360,8 +485,24 @@ export class ServiceRegistry {
     }
   }
 
-  /** Call flow (plan, Technical Details) steps 1-6. */
-  private async call(consumer: string, service: string, method: string, args: unknown[]): Promise<unknown> {
+  /**
+   * A handle of a released copy of the consumer (a timer or listener the old code left running
+   * after a reload, a deactivate or a failed activate) may neither subscribe nor call: the old code
+   * would go on acting beside the new copy, against providers that never expect it.
+   */
+  private checkFresh(consumer: string, service: string, releasesAtUse: number): void {
+    if (this.releaseCount(consumer) !== releasesAtUse) {
+      throw new Error(`service "${service}": this handle belongs to a previous copy of plugin ${consumer}; call ctx.services.use again`)
+    }
+  }
+
+  /**
+   * Call flow (plan, Technical Details) steps 1-6. A stale handle is refused at the start and again
+   * after any activation wait (the consumer can be released meanwhile); a call already running in
+   * the provider when the consumer is released finishes.
+   */
+  private async call(consumer: string, service: string, method: string, args: unknown[], releasesAtUse: number): Promise<unknown> {
+    this.checkFresh(consumer, service, releasesAtUse)
     // Resolve, and if the provider is still activating, wait and resolve again: the wait can span
     // a reload that changed the declarations, so the provider after it may be another one.
     let provider: string
@@ -379,6 +520,7 @@ export class ServiceRegistry {
       }
       await this.waitFor(consumer, provider, activation)
     }
+    this.checkFresh(consumer, service, releasesAtUse)
     // Step 4: the implementation and the method, looked up after any wait (a release meanwhile
     // means the provider is gone, and the consumer must hear that rather than reach a stale copy).
     const impl = this.impls.get(provider)?.get(service)
@@ -388,13 +530,55 @@ export class ServiceRegistry {
     // Step 5: copy in, call, copy out. Both copies happen here in the host, so neither side ever
     // holds an object the other can mutate. No timeout (step 6): a consumer races its own.
     const input = cloneData(args, `service "${service}" ${method}(): arguments`)
+    // The method runs as a frame of the caller's chain, so a call it makes back into an activation
+    // that is waiting on this one is seen as the cycle it is (step 3a, through an active provider).
+    const frame: Frame = { plugin: provider, kind: 'call', live: true }
+    const chain = [...this.liveChain(), frame]
     let result: unknown
     try {
-      result = await fn.apply(impl.target, input)
+      result = await this.chain.run(chain, () => fn.apply(impl.target, input))
     } catch (err) {
       throw rethrown(err, service, provider)
+    } finally {
+      frame.live = false
     }
     return cloneData(result, `service "${service}" ${method}(): the result`)
+  }
+
+  /**
+   * The current chain cut to its live tail. Each frame is work the one before it started; it holds
+   * that one back only while every frame after it is still running. So the walk goes from the end
+   * and stops at the first finished frame: a timer an activate or a provider method started carries
+   * its chain (AsyncLocalStorage follows timers), but once that activate or method is done the
+   * timer's calls hold nothing back and are treated like any unrelated call. While it is still
+   * running they count as blocking it: the registry cannot tell a call the activate awaits from one
+   * it merely started (the same over-approximation as in `waitFor`).
+   */
+  private liveChain(): Frame[] {
+    const frames = this.chain.getStore() ?? []
+    let start = frames.length
+    while (start > 0 && frames[start - 1]!.live) start--
+    return frames.slice(start)
+  }
+
+  /**
+   * The activations a call from `consumer` in the current context may be holding back: each live
+   * `activate` frame of the chain (through the provider methods after it), and the consumer itself
+   * when it is mid-activate without a frame here (a call from its activate seen without the chain,
+   * kept as the plain rule step 3a started with).
+   */
+  private blockers(consumer: string): Blocker[] {
+    const live = this.liveChain()
+    const names = live.map((f) => f.plugin)
+    if (names[names.length - 1] !== consumer) names.push(consumer)
+    const out: Blocker[] = []
+    live.forEach((f, i) => {
+      if (f.kind === 'activate') out.push({ plugin: f.plugin, live: () => f.live, path: names.slice(i) })
+    })
+    if (this.deps.isActivating(consumer) && !out.some((b) => b.plugin === consumer)) {
+      out.push({ plugin: consumer, live: () => this.deps.isActivating(consumer), path: [consumer] })
+    }
+    return out
   }
 
   /** Steps 1-2: the selected provider for this consumer, or the problem as an error. */
@@ -415,36 +599,44 @@ export class ServiceRegistry {
   }
 
   /**
-   * Step 3a. A call from a plugin that is itself mid-activate, waiting on another activation, is a
-   * "waiting on" edge. If the provider already waits (directly or through others) on the caller,
-   * this wait would close a cycle in which every activate awaits the next: all would hang until
-   * their 10 s timeouts and end errored. Fail this call at once instead, so the activate that made
-   * it can go on (or fail) and the others unblock.
+   * Step 3a. A call made on behalf of a plugin that is mid-activate (see `blockers`), waiting on
+   * another activation, is a "waiting on" edge from each such plugin. The wait would close a cycle
+   * in which every activate awaits the next, and all would hang until their 10 s timeouts and end
+   * errored, when either
+   * - the provider is itself one of those plugins: its activate called an active provider whose
+   *   method calls back into it (`A -> B -> A`, B active: no edge is ever recorded for that, as
+   *   nothing waits on B, so only the call chain shows it), or
+   * - the provider already waits, directly or through others, on one of them (the edges).
+   * Fail this call at once instead, so the activate that made it can go on (or fail) and the others
+   * unblock.
    *
    * Known over-approximation: the registry cannot tell a call awaited by `activate` from one the
    * plugin merely started during it (a fire-and-forget call, a timer). Both count as blocking.
    */
   private async waitFor(caller: string, provider: string, activation: Promise<ActivationState>): Promise<void> {
-    if (!this.deps.isActivating(caller)) {
+    const blockers = this.blockers(caller)
+    if (blockers.length === 0) {
       await activation
       return
     }
-    const path = this.pathFrom(provider, caller)
-    if (path) throw new Error(`${[caller, ...path].join(' -> ')}: services called in a cycle during activate`)
-    const edge: WaitEdge = { from: caller, to: provider }
-    this.waits.add(edge)
+    for (const b of blockers) {
+      const path = b.plugin === provider ? [provider] : this.pathFrom(provider, b.plugin)
+      if (path) throw new Error(`${[...b.path, ...path].join(' -> ')}: services called in a cycle during activate`)
+    }
+    const edges: WaitEdge[] = blockers.map((b) => ({ from: b.plugin, to: provider, hops: b.path, live: b.live }))
+    for (const e of edges) this.waits.add(e)
     try {
       await activation
     } finally {
-      this.waits.delete(edge)
+      for (const e of edges) this.waits.delete(e)
     }
   }
 
   /**
-   * A path of waiting edges from `start` to `goal`, as the list of plugins after `start`'s caller
-   * (`[start, ..., goal]`), or undefined. Edges from a plugin that is no longer activating are
-   * skipped: its activate timed out or ended while a call it started still waits, so that call no
-   * longer holds an activation back.
+   * A path of waiting edges from `start` to `goal`, as the plugins it passes through, `start` first
+   * and `goal` last (with the provider methods between, from each edge's `hops`), or undefined.
+   * An edge that is no longer live is skipped: the activate it came from timed out or ended while a
+   * call it started still waits, so that call no longer holds an activation back.
    */
   private pathFrom(start: string, goal: string): string[] | undefined {
     const seen = new Set<string>()
@@ -452,11 +644,10 @@ export class ServiceRegistry {
       if (node === goal) return [node]
       if (seen.has(node)) return undefined
       seen.add(node)
-      if (!this.deps.isActivating(node)) return undefined
       for (const e of this.waits) {
-        if (e.from !== node) continue
+        if (e.from !== node || !e.live()) continue
         const rest = walk(e.to)
-        if (rest) return [node, ...rest]
+        if (rest) return [...e.hops, ...rest]
       }
       return undefined
     }

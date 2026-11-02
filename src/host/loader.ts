@@ -55,6 +55,11 @@ export interface HostPluginSpec {
    * Absent is none.
    */
   services?: PluginManifest['services']
+  /**
+   * Set by `parsePluginSpecs`, never sent by main: why this plugin's spec cannot run (a malformed
+   * `services` field). The loader marks only this plugin errored; the rest of the batch activates.
+   */
+  invalid?: string
   /** The validated settings with defaults applied (main checked them against the schemas). */
   settings: { project: Record<string, JsonValue>; app: Record<string, JsonValue> }
 }
@@ -89,10 +94,11 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       throw new Error(`activate: plugin ${i} cli must be an array of strings`)
     }
     // Absent is none (a plugin without services, or a spec from before the field existed). Main
-    // validated the manifest; this only keeps a malformed spec from reaching the registry.
-    if (services !== undefined && !isServicesField(services)) {
-      throw new Error(`activate: plugin ${i} services must be an object of provides/uses maps`)
-    }
+    // validated the manifest; this only keeps a malformed spec from reaching the registry. Unlike
+    // the fields above (main builds those itself), this one is the plugin's own manifest content, so
+    // a bad one errors that plugin alone: the batch is validated before anything activates, and a
+    // throw here would keep every plugin of the project from running.
+    const parsed = services === undefined ? undefined : parseServicesField(services)
     const { project, app } = (settings ?? {}) as Record<string, unknown>
     if (!isSettingsRecord(project) || !isSettingsRecord(app)) {
       throw new Error(`activate: plugin ${i} settings must have project and app objects`)
@@ -108,7 +114,8 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       panels: (panels as string[] | undefined) ?? [],
       webviewPanels: (webviewPanels as string[] | undefined) ?? [],
       cli: (cli as string[] | undefined) ?? [],
-      ...(services !== undefined ? { services } : {}),
+      ...(parsed?.services !== undefined ? { services: parsed.services } : {}),
+      ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),
       settings: { project, app }
     }
   })
@@ -127,15 +134,25 @@ export function parseServiceProviders(params: unknown): Record<string, string> {
   return { ...(raw as Record<string, string>) }
 }
 
-/** `{ provides?: {name: int}, uses?: {name: int} }`: the shape only; main checked names and ranges. */
-function isServicesField(v: unknown): v is NonNullable<PluginManifest['services']> {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
-  for (const [key, map] of Object.entries(v)) {
-    if (key !== 'provides' && key !== 'uses') return false
-    if (typeof map !== 'object' || map === null || Array.isArray(map)) return false
-    if (Object.values(map).some((n) => !Number.isInteger(n))) return false
+/**
+ * `{ provides?: {name: int}, uses?: {name: int} }`: the shape only; main checked names and ranges.
+ * Other keys are ignored, not refused (main refuses them in the manifest; one that still arrives,
+ * from an older main or a later field, must not stop the plugin). A malformed provides or uses
+ * gives `invalid` instead of services.
+ */
+function parseServicesField(v: unknown): { services?: NonNullable<PluginManifest['services']>; invalid?: string } {
+  const invalid = { invalid: 'invalid spec: services must be an object of provides/uses maps of integers' }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return invalid
+  const out: NonNullable<PluginManifest['services']> = {}
+  for (const key of ['provides', 'uses'] as const) {
+    if (!Object.hasOwn(v, key)) continue
+    const map: unknown = (v as Record<string, unknown>)[key]
+    if (map === undefined) continue
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) return invalid
+    if (Object.values(map).some((n) => !Number.isInteger(n))) return invalid
+    out[key] = map as Record<string, number>
   }
-  return true
+  return { services: out }
 }
 
 export type PluginRunState = { id: string; state: 'active' } | { id: string; state: 'errored'; error: string }
@@ -389,6 +406,7 @@ export class PluginLoader {
     if (!isAbsolute(spec.dir) || typeof spec.main !== 'string' || spec.main === '') {
       return fail('bad plugin location')
     }
+    if (spec.invalid !== undefined) return fail(spec.invalid)
     let loadedModule: PluginModule | undefined
     try {
       loadedModule = asPluginModule(this.requireModule(resolve(spec.dir, spec.main)))
@@ -405,11 +423,14 @@ export class PluginLoader {
       return fail(`cannot create its context: ${errorText(err)}`)
     }
     const seconds = Math.round(this.activateTimeoutMs / 1000)
+    // The root of the service call chain: a call this activate makes (or a provider method makes
+    // for it) back into this still-activating plugin is a cycle, failed at once, not a 10 s hang.
+    const frame = this.services.beginActivate(spec.id)
     try {
       // Through a then: a synchronous throw in activate becomes a rejection like an async one.
       // What activate returns is ignored: a plugin offers an API to others with ctx.services.
       await withTimeout(
-        Promise.resolve().then(() => mod.activate(ctx)),
+        Promise.resolve().then(() => frame.run(() => mod.activate(ctx))),
         this.activateTimeoutMs,
         `activate() did not finish within ${seconds} s`
       )
@@ -418,6 +439,9 @@ export class PluginLoader {
       // A late-settling activate is left to finish on its own; the plugin stays errored and its
       // eventual return value is ignored like any other.
       return fail(`activate() failed: ${errorText(err)}`)
+    } finally {
+      // Settled or timed out: nothing waits on this activate any more, whatever it left running.
+      frame.end()
     }
   }
 

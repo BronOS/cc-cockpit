@@ -36,7 +36,8 @@ so a person chooses to install or link it.
 - Unknown manifest properties are tolerated; known ones are strict.
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
-  not provide and use the same name. Only declared names work with `ctx.services` (`api` topic).
+  not provide and use the same name. No other key inside `services` (unlike the top level, an
+  unknown one is an error). Only declared names work with `ctx.services` (`api` topic).
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
   `description: <one line, at most 1024 chars>`; any other key, a multi-line value, a `name`

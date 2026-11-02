@@ -501,7 +501,9 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
 - `skills[]`: see Skills below.
 - `services`: top level (a dependency between plugins, not something the app shows). Names `^[a-z][a-z0-9-]{0,63}$`,
   versions integers 1..9999, at most 32 entries in each of `provides` and `uses`; a plugin may not provide and use
-  the same name. Absent means none. See Plugin services below.
+  the same name; no other key inside `services` (strict, unlike the top level). Absent means none. The host ignores
+  an unknown key that still arrives and errors only that plugin for a malformed field, never the project's batch.
+  See Plugin services below.
 
 **Host API**: `activate(ctx)` is called once per project window; `ctx` is already scoped to
 that project.
@@ -535,9 +537,14 @@ dispatched inside the host with no round trip to main.
 - Resolved on every call, never cached in the handle: a host restart, dev reload or provider error
   replaces or removes providers, and a handle keeps working across them. A call made while the
   provider activates (or reloads) waits for that activation; two plugins awaiting each other during
-  `activate` fail at once with a cycle error instead of both timing out.
+  `activate`, or an `activate` reaching itself again through active providers' methods, fail at once
+  with a cycle error instead of timing out. The host follows the call chain with AsyncLocalStorage
+  (an activate frame, then a frame per provider method); a frame counts only while its activate or
+  method runs, and event listeners run outside the emitter's chain. A handle of a released copy of
+  the consumer can no longer call or subscribe.
 - Arguments, results and event data are copied with `structuredClone` in the host: plain data only (a
-  function or symbol throws; a class instance arrives as a plain object). A provider's throw reaches the
+  function or symbol throws, and so does shared memory, which a clone would share; a class instance arrives as a
+  plain object). A provider's throw reaches the
   consumer as a new `Error` with the same message and name. No core timeout on calls.
 - Which provider: the only one, or the project's pick (`serviceProviders` in the project record, set on
   the Plugins page; a change restarts the project's host). Zero providers, several with no valid pick

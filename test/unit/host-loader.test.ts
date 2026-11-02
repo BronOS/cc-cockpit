@@ -282,6 +282,34 @@ describe('PluginLoader services', () => {
     await loader.unload('a.provider')
     await expect(handle.hi()).rejects.toThrow('no enabled plugin in this project provides service "greet"')
   })
+
+  it('fails a cycle through an already active provider at once, not after the activate timeout', async () => {
+    svc()
+    // b is active; a's activate calls b, whose method calls back into a, still activating. Before
+    // the call chain was tracked, nothing recorded a -> b (b was not activating), so a hung until
+    // its activate timeout.
+    write(
+      join(root, 'b'),
+      "exports.activate = (ctx) => { const sa = ctx.services.use('sa'); ctx.services.provide('sb', { hi: () => sa.hi() }) }"
+    )
+    write(
+      join(root, 'a'),
+      "exports.activate = async (ctx) => { ctx.services.provide('sa', { hi: () => 'a' }); " +
+        "try { await ctx.services.use('sb').hi() } catch (e) { __svc.error = e.message } }"
+    )
+    const loader: PluginLoader = new PluginLoader({
+      makeContext: (spec) => createContext(spec, { log: () => {}, services: () => loader.services }),
+      log: () => {},
+      activateTimeoutMs: 2_000
+    })
+    const a = hostSpec({ id: 'p.a', dir: join(root, 'a'), main: 'host.js', services: { provides: { sa: 1 }, uses: { sb: 1 } } })
+    const b = hostSpec({ id: 'p.b', dir: join(root, 'b'), main: 'host.js', services: { provides: { sb: 1 }, uses: { sa: 1 } } })
+    await loader.activateAll([b])
+    const started = Date.now()
+    expect(await loader.activateAll([a])).toEqual([{ id: 'p.a', state: 'active' }])
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(svc().error).toBe('p.a -> p.b -> p.a: services called in a cycle during activate')
+  })
 })
 
 describe('PluginLoader timeouts', () => {
@@ -438,8 +466,37 @@ describe('parsePluginSpecs', () => {
     expect(parsePluginSpecs({ plugins: [good] })[0]?.services).toBeUndefined()
     const services = { provides: { triage: 1 }, uses: { mail: 2 } }
     expect(parsePluginSpecs({ plugins: [{ ...good, services }] })[0]?.services).toEqual(services)
-    expect(() => parsePluginSpecs({ plugins: [{ ...good, services: { provides: { triage: '1' } } }] })).toThrow('services must be')
-    expect(() => parsePluginSpecs({ plugins: [{ ...good, services: { other: {} } }] })).toThrow('services must be')
-    expect(() => parsePluginSpecs({ plugins: [{ ...good, services: [] }] })).toThrow('services must be')
+  })
+
+  it('never lets one plugin\'s services field stop the batch: unknown keys are ignored, a malformed one errors that plugin', () => {
+    const good = hostSpec({ id: 'a.b', dir: '/d', main: 'm.js' })
+    const other = hostSpec({ id: 'a.c', dir: '/e', main: 'm.js' })
+    // The finding: main used to accept `description` inside services, and the host threw for the
+    // whole batch, so no plugin of the project activated.
+    const [withExtra] = parsePluginSpecs({ plugins: [{ ...good, services: { provides: { triage: 1 }, description: 'API' } }] })
+    expect(withExtra?.services).toEqual({ provides: { triage: 1 } })
+    expect(withExtra?.invalid).toBeUndefined()
+    for (const bad of [{ provides: { triage: '1' } }, { uses: [] }, [], 'x']) {
+      const specs = parsePluginSpecs({ plugins: [{ ...good, services: bad }, other] })
+      expect(specs.map((s) => s.id)).toEqual(['a.b', 'a.c'])
+      expect(specs[0]?.services).toBeUndefined()
+      expect(specs[0]?.invalid).toMatch(/^invalid spec: services must be/)
+      expect(specs[1]?.invalid).toBeUndefined()
+    }
+  })
+
+  it('activates the rest of the batch when one spec is invalid', async () => {
+    const modules: Record<string, unknown> = { '/p/a/host.js': { activate() {} }, '/p/b/host.js': { activate() {} } }
+    const loader = new PluginLoader({ makeContext: fakeCtx, requireModule: (p) => modules[p], log: () => {} })
+    const specs = parsePluginSpecs({
+      plugins: [
+        { ...hostSpec({ id: 'p.a', dir: '/p/a', main: 'host.js' }), services: { provides: { s: 'one' } } },
+        hostSpec({ id: 'p.b', dir: '/p/b', main: 'host.js' })
+      ]
+    })
+    expect(await loader.activateAll(specs)).toEqual([
+      { id: 'p.a', state: 'errored', error: 'invalid spec: services must be an object of provides/uses maps of integers' },
+      { id: 'p.b', state: 'active' }
+    ])
   })
 })
