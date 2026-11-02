@@ -25,6 +25,7 @@ import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
 import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
 import { CloseTabDialog } from './CloseTabDialog'
+import { UpdateNotice } from '../updates/UpdateNotice'
 import { TabBar } from './TabBar'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { TerminalView } from './TerminalView'
@@ -446,6 +447,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
         entries={otherWindowsEntries(snapshot.strip, [...own.values()])} onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null} />
+      <UpdateNotice />
       <Zones inert={settingsOpen || covered || confirm !== null}>
         <TabBar
           tabs={state.tabs}

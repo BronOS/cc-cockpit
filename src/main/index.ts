@@ -25,7 +25,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
-import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo } from '../shared/ipc'
+import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type UpdateState } from '../shared/ipc'
 import { liveChildren } from './child-registry'
 import { ClaudePlugins, ClaudePluginsBuilds, type SkillSource } from './claude-plugins/claude-plugins'
 import { CommandRegistry } from './commands/command-registry'
@@ -44,6 +44,7 @@ import {
   registerSessionHandlers,
   registerCccCommandHandlers,
   registerProjectSettingsHandlers,
+  registerUpdateHandlers,
   registerSettingsHandlers,
   registerTabHandlers,
   registerWebviewHandlers,
@@ -796,10 +797,28 @@ function start(): void {
   // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
   // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
   // Notice-only update check (updates/update-check.ts). A test run never reaches the real network:
-  // its fetcher always fails, so nothing is announced (the e2e hook for a fake result arrives with the UI).
-  const updateChecker = new UpdateChecker({
-    current: app.isPackaged ? app.getVersion() : BUILD_VERSION,
-    fetchRelease: testRun ? () => Promise.reject(new Error('no network in a test run')) : createReleaseFetcher(),
+  // its fetcher answers only what the `fakeRelease` test hook set, and fails otherwise.
+  const appVersion = app.isPackaged ? app.getVersion() : BUILD_VERSION
+  let fakeReleaseTag: string | undefined
+  const updateState = (): UpdateState => {
+    const a = updateChecker.available()
+    return { current: appVersion, enabled: registry.app.data.updateCheck !== false, available: a ? { version: a.version } : null }
+  }
+  // Every window shows the bar, so every window hears (the picker ignores it).
+  const broadcastUpdateState = (): void => {
+    const state = updateState()
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('updates.changed', state)
+    }
+  }
+  const updateChecker: UpdateChecker = new UpdateChecker({
+    current: appVersion,
+    fetchRelease: testRun
+      ? () =>
+          fakeReleaseTag === undefined
+            ? Promise.reject(new Error('no network in a test run'))
+            : Promise.resolve(JSON.stringify({ tag_name: fakeReleaseTag }))
+      : createReleaseFetcher(),
     enabled: () => registry.app.data.updateCheck !== false,
     dismissed: () => registry.app.data.updateDismissed,
     setDismissed: (version) => {
@@ -807,6 +826,7 @@ function start(): void {
         a.updateDismissed = version
       })
     },
+    onChange: broadcastUpdateState,
     log: (message) => console.warn(message)
   })
   const socket = new SocketServer({
@@ -1225,6 +1245,23 @@ function start(): void {
       return cccCommand.install()
     }
   })
+  registerUpdateHandlers(router, {
+    state: updateState,
+    setEnabled: (value) => {
+      registry.app.update((a) => {
+        a.updateCheck = value
+      })
+      updateChecker.settingChanged()
+      // Off clears the notice through onChange only when one was showing (a second, identical
+      // event is harmless); the other windows' toggles follow this event either way.
+      broadcastUpdateState()
+    },
+    dismiss: () => updateChecker.dismiss(),
+    openRelease: () => {
+      const a = updateChecker.available()
+      if (a) return shell.openExternal(a.url)
+    }
+  })
   registerProjectSettingsHandlers(router, {
     projectView: (projectId) => projectSettings.view(projectId),
     setPluginEnabled: (projectId, pluginId, enabled) => projectSettings.setEnabled(projectId, pluginId, enabled),
@@ -1386,6 +1423,11 @@ function start(): void {
       .then(({ installTestHooks }) =>
         installTestHooks({
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
+          // What the update check's fake fetcher answers (a tag such as 'v99.0.0'), then one check.
+          fakeRelease: async (tag: string) => {
+            fakeReleaseTag = tag
+            await updateChecker.check()
+          },
           // A second project window, for "every open window" assertions.
           openProject: (path: string) => {
             windows.openPath(path)

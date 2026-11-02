@@ -7,6 +7,7 @@ import {
   registerOverlayHandlers,
   registerPanelHandlers,
   registerCccCommandHandlers,
+  registerUpdateHandlers,
   registerProjectSettingsHandlers,
   registerSessionHandlers,
   registerSettingsHandlers,
@@ -1039,6 +1040,38 @@ describe('registerCccCommandHandlers', () => {
     expect(await ipc.invoke('settings.cccStatus', 11)).toEqual(view)
     expect(await ipc.invoke('settings.cccInstall', 11, [{ path: '/etc/passwd' }])).toMatchObject({ state: 'installed' })
     expect(calls).toEqual(['status', 'install'])
+  })
+})
+
+describe('registerUpdateHandlers', () => {
+  function updateSetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerUpdateHandlers(router, {
+      state: () => (calls.push(['state']), { current: '1.0.0', enabled: true, available: null }),
+      setEnabled: (value) => void calls.push(['setEnabled', value]),
+      dismiss: (...args) => void calls.push(['dismiss', ...args]),
+      openRelease: (...args) => void calls.push(['openRelease', ...args])
+    })
+    return { ipc, calls }
+  }
+
+  it('accepts only a boolean for setEnabled, and the picker is refused', async () => {
+    const { ipc, calls } = updateSetup()
+    await expect(ipc.invoke('updates.setEnabled', 13, [{ value: true }])).rejects.toThrow(/not a project window/)
+    for (const bad of [undefined, {}, { value: 'false' }, { value: 0 }, { value: null }]) {
+      await expect(ipc.invoke('updates.setEnabled', 11, bad === undefined ? [] : [bad])).rejects.toThrow(/boolean/)
+    }
+    expect(calls).toEqual([])
+    await ipc.invoke('updates.setEnabled', 11, [{ value: false }])
+    expect(calls).toEqual([['setEnabled', false]])
+  })
+
+  it('ignores any payload on dismiss and openRelease', async () => {
+    const { ipc, calls } = updateSetup()
+    await ipc.invoke('updates.dismiss', 11, [{ version: '9.9.9' }])
+    await ipc.invoke('updates.openRelease', 11, [{ url: 'https://evil.example' }])
+    expect(calls).toEqual([['dismiss'], ['openRelease']])
   })
 })
 

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { AppearanceView, CccCommandView, KeyBindingRow } from '../../shared/ipc'
+import type { AppearanceView, CccCommandView, KeyBindingRow, UpdateState } from '../../shared/ipc'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
 import { chordFromEvent } from '../../shared/keys'
 import { captureKeys, displayChord, fuzzyFilter } from '../commands/keybindings'
@@ -14,6 +14,8 @@ import { useLoaded } from './use-loaded'
 const loadAppearance = (): Promise<AppearanceView> => window.cockpit.invoke('settings.appearance')
 
 const loadCcc = (): Promise<CccCommandView> => window.cockpit.invoke('settings.cccStatus')
+
+const loadUpdates = (): Promise<UpdateState> => window.cockpit.invoke('updates.state')
 
 const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
 
@@ -31,6 +33,10 @@ export function AppearancePage(): React.JSX.Element {
   const { data, error: loadError, reload } = useLoaded(loadAppearance)
   const { busy, error, run, setError } = useAction()
   const ccc = useLoaded(loadCcc)
+  const updates = useLoaded(loadUpdates)
+  // A toggle flipped in another window arrives as an event; re-read instead of showing it stale.
+  const reloadUpdates = updates.reload
+  useEffect(() => window.cockpit.on('updates.changed', () => void reloadUpdates()), [reloadUpdates])
   const [filter, setFilter] = useState('')
   const [recording, setRecording] = useState<string | null>(null)
   const id = useId()
@@ -228,6 +234,28 @@ export function AppearancePage(): React.JSX.Element {
               </div>
             )}
           </Group>
+
+          {updates.data && (
+            <Group title="Updates">
+              <div className="settings-card">
+                <Row
+                  label="Check for new versions"
+                  htmlFor={`${id}-updates`}
+                  help={`You have cc-cockpit ${updates.data.current}. Once a day the app asks GitHub whether a newer release exists; it never downloads or installs anything.`}
+                >
+                  <Switch
+                    id={`${id}-updates`}
+                    checked={updates.data.enabled}
+                    disabled={busy !== null}
+                    onChange={(e) => {
+                      const value = e.target.checked
+                      void run('updates', () => window.cockpit.invoke('updates.setEnabled', { value })).then(updates.reload)
+                    }}
+                  />
+                </Row>
+              </div>
+            </Group>
+          )}
 
           <Group
             title="Keybindings"

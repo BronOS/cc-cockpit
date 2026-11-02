@@ -564,6 +564,34 @@ iframe:focus-visible {
   white-space: nowrap;
 }
 
+.update-notice {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 14px;
+  font-size: var(--cc-text-sm);
+  background: var(--cc-bg-bar);
+  border-bottom: 1px solid var(--cc-border);
+}
+.update-notice-note {
+  color: var(--cc-fg-muted);
+}
+.update-notice-link,
+.update-notice-dismiss {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.update-notice-dismiss {
+  flex: none;
+}
+
 .tabs-error {
   flex: none;
   margin: 0;

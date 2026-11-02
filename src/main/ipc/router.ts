@@ -14,6 +14,7 @@ import type {
   IpcInvokeMap,
   LayoutView,
   MarketplaceView,
+  UpdateState,
   OverlayInfo,
   PluginSettingsSaveResult,
   PluginView,
@@ -510,6 +511,27 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
     const p = fields('settings.tabCommandsSet', payload)
     return deps.setTabCommands(ctx.projectId, p.level, p.entries)
   })
+}
+
+/** The update notice and its Settings toggle (UpdateChecker, main/updates/update-check.ts). */
+export interface UpdateHandlerDeps {
+  state(): UpdateState
+  setEnabled(value: boolean): void
+  dismiss(): void
+  /** Opens the release page of the available version, which main built; nothing from a renderer. */
+  openRelease(): void | Promise<void>
+}
+
+export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDeps): void {
+  router.handleWindow('updates.state', () => deps.state())
+  router.handleProject('updates.setEnabled', (_ctx, payload) => {
+    const value = (payload as { value?: unknown } | undefined)?.value
+    if (typeof value !== 'boolean') throw new Error('updates.setEnabled: value must be a boolean')
+    deps.setEnabled(value)
+  })
+  router.handleWindow('updates.dismiss', () => deps.dismiss())
+  // No payload is read: the URL is main's own.
+  router.handleWindow('updates.openRelease', () => deps.openRelease())
 }
 
 /** The "Install ccc command" row of Appearance and keys (CccCommandInstaller, main/hooks/ccc-install.ts). */

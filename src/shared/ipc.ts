@@ -454,6 +454,20 @@ export interface ShellPrefs {
   seeThroughArea: SeeThroughArea
 }
 
+/**
+ * What the update notice and the Settings toggle show (main/updates/update-check.ts). `available`
+ * carries a version main validated (`x.y.z`) and nothing else: the release link is never sent, the
+ * renderer asks main to open it (`updates.openRelease`).
+ */
+export interface UpdateState {
+  /** The running app's version. */
+  current: string
+  /** AppSettings.updateCheck with the default applied. */
+  enabled: boolean
+  /** A newer, not dismissed release; null = nothing to show. */
+  available: { version: string } | null
+}
+
 /** Everything the "Appearance and keys" page shows (main/settings/appearance-service.ts). */
 export interface AppearanceView {
   themes: ThemeChoice[]
@@ -559,6 +573,14 @@ export interface IpcInvokeMap {
    * and https only; the renderer never calls `window.open` (the window open handler denies it).
    */
   'app.openExternal': { req: { url: string }; res: void }
+  /** The update notice's state (see UpdateState). Changes arrive as `updates.changed`. */
+  'updates.state': { req: void; res: UpdateState }
+  /** The Settings toggle "Check for new versions". Off clears the notice and stops asking. */
+  'updates.setEnabled': { req: { value: boolean }; res: void }
+  /** Dismiss the notice for the version it shows; a newer release shows again. */
+  'updates.dismiss': { req: void; res: void }
+  /** Open the release page main built for the available version. Takes no URL: main opens its own. */
+  'updates.openRelease': { req: void; res: void }
   /** The active theme (app-wide). The renderer applies it on :root and to every terminal. */
   'theme.get': { req: void; res: Theme }
   /** The app settings the shell page applies itself (ShellPrefs). Changes arrive as `prefs.changed`. */
@@ -802,6 +824,8 @@ export interface IpcEventMap {
    * closes such tabs. Sent instead of `tabs.exit`; the tab is gone in main, as after `tabs.close`.
    */
   'tabs.removed': { tabId: string; gen: number }
+  /** The update notice's state changed (a check found a release, a dismissal, the setting). Every window. */
+  'updates.changed': UpdateState
   /** The active theme changed (a pick, the OS appearance, a plugin theme added or removed). */
   'theme.changed': Theme
   /** An app setting the shell page applies itself changed (Settings › Appearance and keys). */
@@ -880,6 +904,10 @@ export const INVOKE_CHANNELS = [
   'projects.relink',
   'projects.forget',
   'app.openExternal',
+  'updates.state',
+  'updates.setEnabled',
+  'updates.dismiss',
+  'updates.openRelease',
   'theme.get',
   'prefs.get',
   'sessions.list',
@@ -952,6 +980,7 @@ export const EVENT_CHANNELS = [
   'tabs.exit',
   'tabs.removed',
   'theme.changed',
+  'updates.changed',
   'prefs.changed',
   'sessions.snapshot',
   'project.updated',

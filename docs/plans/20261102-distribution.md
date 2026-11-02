@@ -181,13 +181,13 @@ Version and hash are validated before they are written into Ruby.
 - Modify: the Settings page that holds app-wide options
 - Create: `test/e2e/update-notice.spec.ts`
 
-- [ ] the bar: version, action per platform, the quit-first note, Dismiss. All text through React, none from the response
-- [ ] the link uses the argument-less `updates.openRelease`; the renderer never passes a URL
-- [ ] Settings: "Check for new versions" toggle, showing the current version
-- [ ] write unit tests for the view model per platform
-- [ ] write the e2e test with a test-hook fake result: shown, dismissed, stays dismissed after a relaunch, shows again for a newer
+- [x] the bar: version, action per platform, the quit-first note, Dismiss. All text through React, none from the response
+- [x] the link uses the argument-less `updates.openRelease`; the renderer never passes a URL
+- [x] Settings: "Check for new versions" toggle, showing the current version
+- [x] write unit tests for the view model per platform
+- [x] write the e2e test with a test-hook fake result: shown, dismissed, stays dismissed after a relaunch, shows again for a newer
       version, and absent with the setting off
-- [ ] run tests and e2e - must pass before next task
+- [x] run tests and e2e - must pass before next task
 
 ### Task 6: Release workflow from tag to draft [model: opus]
 
