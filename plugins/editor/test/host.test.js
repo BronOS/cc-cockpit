@@ -66,3 +66,21 @@ test('a refused overlay fails editor.open and ccc edit instead of reporting succ
   assert.equal(r.code, 1)
   assert.match(r.stderr, /did not open/)
 })
+
+test('a backslash stays part of the file name off Windows', { skip: require('node:path').sep === '\\' }, () => {
+  // `a\b.js` is one valid file name on macOS and Linux; turning it into `a/b.js` opened another file.
+  assert.equal(relativePath('a\\b.js'), 'a\\b.js')
+})
+
+test('a long path is cut from the left to fit the overlay title limit', async () => {
+  // main refuses a title over 200 chars, so a path over 194 chars could never be edited.
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  host.activate(f.ctx)
+  const long = 'd/'.repeat(150) + 'file.js'
+  await f.provided.editor.open(long)
+  const t = f.started[0].title
+  assert.equal(t.length, 200)
+  assert.ok(t.startsWith('Edit: …') && t.endsWith('/file.js'))
+  assert.equal(host.overlayTitle('Edit: ', 'a.js'), 'Edit: a.js')
+})

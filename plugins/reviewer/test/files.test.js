@@ -99,3 +99,22 @@ test('readSides: no git, and a project inside a bigger repo', async () => {
   assert.equal(t.old, 'one\ntwo\n')
   assert.equal(t.new, 'changed\n')
 })
+
+test('a FIFO is refused without reading it', { skip: process.platform === 'win32' }, async () => {
+  // readFileSync on a FIFO blocks until a writer appears, and with it the whole plugin host.
+  const { root, exec } = repo()
+  execFileSync('mkfifo', [path.join(root, 'pipe')])
+  await assert.rejects(files.readSides(exec, root, 'pipe'), (e) => e.fallback && /not a regular file/.test(e.message))
+})
+
+test('a backslash stays part of the file name off Windows', { skip: path.sep === '\\' }, async () => {
+  // `a\b.js` is one valid file name on macOS and Linux; reading it as `a/b.js` reviewed another file.
+  assert.equal(files.normalizeRelative('a\\b.js'), 'a\\b.js')
+  const { root, exec } = repo()
+  fs.mkdirSync(path.join(root, 'a'))
+  fs.writeFileSync(path.join(root, 'a', 'b.js'), 'wrong file\n')
+  fs.writeFileSync(path.join(root, 'a\\b.js'), 'right file\n')
+  const s = await files.readSides(exec, root, 'a\\b.js')
+  assert.equal(s.path, 'a\\b.js')
+  assert.equal(s.new, 'right file\n')
+})

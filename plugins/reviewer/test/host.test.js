@@ -98,3 +98,36 @@ test('a file too large for one init message is refused before an overlay starts,
   assert.equal(f.handles.length, 0)
   host.deactivate()
 })
+
+test('a refused overlay fails the open, so a click falls back and the service and ccc review report it', async () => {
+  // start() returns a handle even when main refuses the overlay (3 open, 10 a minute); the refusal
+  // only rejects `result`. That rejection was swallowed by `done`, so a click counted as handled.
+  const f = setup({ editorAvailable: false })
+  let onOpen
+  let review
+  f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
+  f.ctx.cli.register = (n, fn) => (review = fn)
+  f.ctx.overlay.start = () => {
+    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
+    f.handles.push(h)
+    return h
+  }
+  host.activate(f.ctx)
+  await assert.rejects(onOpen({ path: 'a.js' }), /review overlay did not open: overlay: at most 3 open/)
+  await assert.rejects(f.provided.reviewer.open('a.js'), /reviewer: the review overlay did not open/)
+  const r = await review(['a.js'], { cwd: f.ctx.projectDir })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /did not open/)
+  // Not cached as open: each try started its own overlay instead of focusing a dead one.
+  assert.equal(f.handles.length, 3)
+  host.deactivate()
+})
+
+test('a long path is cut from the left to fit the overlay title limit', async () => {
+  // main refuses a title over 200 chars, so a path over 192 chars could never be reviewed.
+  assert.equal(host.overlayTitle('Review: ', 'a.js'), 'Review: a.js')
+  const long = 'd/'.repeat(150) + 'file.js'
+  const t = host.overlayTitle('Review: ', long)
+  assert.equal(t.length, 200)
+  assert.ok(t.startsWith('Review: …') && t.endsWith('/file.js'))
+})

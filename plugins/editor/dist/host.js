@@ -18,12 +18,25 @@ const INSTALL_HINT =
 // How long open() waits for the overlay to be refused before it counts it as shown. A refusal comes
 // back in one host-to-main round trip, far under this.
 const OPEN_SETTLE_MS = 500
+// main refuses an overlay title over 200 chars (overlay.start); a long path keeps its tail, the file name.
+const MAX_TITLE_CHARS = 200
 
-/** A project-relative path, or a thrown Error: no absolute path, no `..`, no NUL. */
+/** `prefix` + `p`, cut from the left with a leading … so it fits main's title limit. */
+function overlayTitle(prefix, p) {
+  const full = prefix + p
+  if (full.length <= MAX_TITLE_CHARS) return full
+  return prefix + '…' + p.slice(p.length - (MAX_TITLE_CHARS - prefix.length - 1))
+}
+
+/**
+ * A project-relative path, or a thrown Error: no absolute path, no `..`, no NUL. A backslash is a
+ * separator only where the OS says so (Windows): on macOS and Linux `a\b.js` is one valid file name,
+ * and turning it into `a/b.js` opened a different file.
+ */
 function relativePath(p) {
   if (typeof p !== 'string' || !p.trim() || p.includes('\0')) throw new Error('path must be a non-empty string')
   if (path.isAbsolute(p)) throw new Error(`path must be relative to the project folder: ${p}`)
-  const norm = path.posix.normalize(p.replace(/\\/g, '/'))
+  const norm = path.posix.normalize(path.sep === '\\' ? p.replace(/\\/g, '/') : p)
   if (norm === '..' || norm.startsWith('../') || norm === '.') throw new Error(`path leaves the project folder: ${p}`)
   return norm.replace(/^\.\//, '')
 }
@@ -43,6 +56,7 @@ function microArgv(app, rel, line) {
 
 exports.microArgv = microArgv
 exports.relativePath = relativePath
+exports.overlayTitle = overlayTitle
 exports.INSTALL_HINT = INSTALL_HINT
 
 exports.activate = (ctx) => {
@@ -68,7 +82,7 @@ exports.activate = (ctx) => {
     const a = app()
     await ensureMicro(a.microPath || 'micro')
     // The terminal's cwd defaults to the project folder, so the relative path resolves there.
-    const handle = ctx.overlay.start({ kind: 'terminal', argv: microArgv(a, rel, line), title: `Edit: ${rel}`, size: 'large' })
+    const handle = ctx.overlay.start({ kind: 'terminal', argv: microArgv(a, rel, line), title: overlayTitle('Edit: ', rel), size: 'large' })
     // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a failed spawn)
     // rejects `result` at once, while one that opened settles only when the person closes it. So
     // wait briefly for a rejection: without this, the reviewer closed itself for an editor that never

@@ -20,6 +20,19 @@ const LAYOUTS = ['split', 'unified']
 // OverlayHandle.post refuses a message over 1,040,384 chars of JSON (`ccc guide api`); a little
 // under it leaves room for the transport's own wrapping.
 const MAX_INIT_CHARS = 1000000
+// main refuses an overlay title over 200 chars (overlay.start); a long path keeps its tail, the file name.
+const MAX_TITLE_CHARS = 200
+// How long openReview waits for the overlay to be refused before it counts it as shown. A refusal
+// comes back in one host-to-main round trip, far under this (the editor waits the same).
+const OPEN_SETTLE_MS = 500
+
+/** `prefix` + `p`, cut from the left with a leading … so it fits main's title limit. Exported for tests. */
+function overlayTitle(prefix, p) {
+  const full = prefix + p
+  if (full.length <= MAX_TITLE_CHARS) return full
+  return prefix + '…' + p.slice(p.length - (MAX_TITLE_CHARS - prefix.length - 1))
+}
+exports.overlayTitle = overlayTitle
 
 let disposers = []
 
@@ -87,7 +100,7 @@ exports.activate = (ctx) => {
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
       throw new files.ReviewError(`${sides.path} is too large to review (with escaping and its saved draft)`, { fallback: true })
     }
-    const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: `Review: ${sides.path}`, size: 'large' })
+    const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: overlayTitle('Review: ', sides.path), size: 'large' })
     open.set(sides.path, handle)
     try {
       handle.post(init)
@@ -95,6 +108,25 @@ exports.activate = (ctx) => {
       open.delete(sides.path)
       handle.close()
       throw e
+    }
+    // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a closed window)
+    // rejects `result` at once, while one that opened settles only when the person closes it. Wait
+    // briefly for a rejection and throw it: a click then goes to the built-in viewer, and the service
+    // and `ccc review` report the failure. Before this, the rejection reached only the `done` catch
+    // below, so the click counted as handled with nothing on screen. A second open of the same file
+    // during the wait finds the handle in `open` and focuses it, as for a shown overlay.
+    let timer
+    const refused = await Promise.race([
+      handle.result.then(
+        () => null,
+        (e) => e,
+      ),
+      new Promise((resolve) => (timer = setTimeout(() => resolve(null), OPEN_SETTLE_MS))),
+    ])
+    clearTimeout(timer)
+    if (refused) {
+      if (open.get(sides.path) === handle) open.delete(sides.path)
+      throw new files.ReviewError(`the review overlay did not open: ${refused.message}`, { fallback: true })
     }
 
     // Drafts arrive on every change (debounced in the page): Esc closes the overlay without

@@ -24,12 +24,16 @@ class ReviewError extends Error {
   }
 }
 
-/** A project-relative path, normalised to `/` separators, or a ReviewError. */
+/**
+ * A project-relative path, normalised to `/` separators, or a ReviewError. A backslash is a
+ * separator only where the OS says so (Windows): on macOS and Linux `a\b.js` is one valid file name,
+ * and turning it into `a/b.js` reviewed a different file.
+ */
 function normalizeRelative(p) {
   if (typeof p !== 'string' || !p.trim()) throw new ReviewError('path must be a non-empty string')
   if (p.includes('\0')) throw new ReviewError('path contains a NUL byte')
   if (path.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p)) throw new ReviewError(`path must be relative to the project folder: ${p}`)
-  const norm = path.posix.normalize(p.replace(/\\/g, '/'))
+  const norm = path.posix.normalize(path.sep === '\\' ? p.replace(/\\/g, '/') : p)
   if (norm === '.' || norm === '..' || norm.startsWith('../')) throw new ReviewError(`path leaves the project folder: ${p}`)
   return norm.replace(/^\.\//, '')
 }
@@ -76,6 +80,9 @@ async function readSides(exec, root, rel) {
   try {
     const st = fs.statSync(abs)
     if (st.isDirectory()) throw new ReviewError(`${rel} is a folder`, { fallback: true })
+    // A FIFO (or a socket, a device) would block readFileSync, and with it every plugin of this
+    // project host, until something writes to it: only a regular file is read.
+    if (!st.isFile()) throw new ReviewError(`${rel} is not a regular file`, { fallback: true })
     if (st.size > MAX_SIDE_BYTES) throw new ReviewError(`${rel} is larger than ${MAX_SIDE_BYTES / 1024} KiB`, { fallback: true })
     const buf = fs.readFileSync(abs)
     if (isBinary(buf)) throw new ReviewError(`${rel} is a binary file`, { fallback: true })
