@@ -361,6 +361,21 @@ describe('setPluginConfig', () => {
     expect(calls).toEqual([`project settings announced ${P} test.settingsui`])
   })
 
+  it('overlapping sets of different keys both land (the merge reads the store inside the save queue)', async () => {
+    const { deps, appSettings, projects } = rig()
+    appSettings.set('test.settingsui', { greeting: 'yo', limit: 3 })
+    await Promise.all([
+      setPluginConfig(deps, P, 'test.settingsui', [['greeting', 'hi']]),
+      setPluginConfig(deps, P, 'test.settingsui', [['limit', 7]])
+    ])
+    expect(appSettings.get('test.settingsui')).toEqual({ greeting: 'hi', limit: 7 })
+    await Promise.all([
+      setPluginConfig(deps, P, 'test.settingsui', [['board', 'dev']]),
+      setPluginConfig(deps, P, 'test.settingsui', [['pageSize', 50]])
+    ])
+    expect(projects.get(P)?.pluginSettings['test.settingsui']).toEqual({ board: 'dev', pageSize: 50 })
+  })
+
   it('refuses a value the schema rejects with its reasons, and stores nothing', async () => {
     const { deps, calls, appSettings } = rig()
     await expect(setPluginConfig(deps, P, 'test.settingsui', [['limit', 0]])).rejects.toThrow(

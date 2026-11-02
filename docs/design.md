@@ -921,7 +921,8 @@ timer of 35 s (`CLI_REPLY_TIMEOUT_MS`) and a hard deadline of 40 s over the whol
 only for a command declared `stdin: true` and only when it is not a terminal; if it is not closed within 40 s
 (`STDIN_READ_TIMEOUT_MS`, an open pipe a tool runner leaves attached) the command prints the reason and exits 124.
 `plugin config` with values, like `overlay` and `plugin link`, has no 10 s reply timer: it waits behind the plugin's settings-save
-queue (a form save may sit at a keychain prompt) and for a host the change restarts.
+queue (a form save may sit at a keychain prompt) and for a host the change restarts. Its edits are merged into
+the stored values inside that queue, so overlapping calls setting different keys both land.
 
 Inside a tab of any kind or a terminal overlay, the token (`APP_TAB_TOKEN` and `CC_COCKPIT_SOCK`,
 the same variables for both kinds; tabs also get `APP_TAB_ID`) selects that window; outside,

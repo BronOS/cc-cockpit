@@ -12,7 +12,8 @@
 //
 // Decisions:
 //  - A set merges the edits into the scope's current values (what the page shows: stored, with
-//    defaults) and saves the whole object, as the form does. Only declared top-level fields: a key
+//    defaults) and saves the whole object, as the form does. The merge runs inside the save queue,
+//    so two overlapping calls setting different keys both land. Only declared top-level fields: a key
 //    the schema does not name is refused, even where the schema would allow it.
 //  - Scope: the one that declares the key. A key both scopes declare needs `--scope`; all keys of
 //    one call must land in one scope (one save, so one validation decides for all of them).
@@ -31,10 +32,14 @@ export interface PluginConfigDeps {
   appSettings(pluginId: string): PluginAppSettingsView | undefined
   /** ProjectSettingsService.pluginProjectSettings, likewise for the project's settings. */
   projectSettings(projectId: string, pluginId: string): PluginAppSettingsView | undefined
-  /** SettingsService.savePluginSettings (no secrets argument: they stay as they are). */
-  saveApp(pluginId: string, values: Record<string, unknown>): Promise<PluginSettingsSaveResult>
+  /**
+   * SettingsService.savePluginSettings (no secrets argument: they stay as they are). `values` is a
+   * function saveSettingsForm calls in the plugin's save queue, so the merge reads what is stored
+   * then, not before an earlier save in the queue has written.
+   */
+  saveApp(pluginId: string, values: () => Record<string, unknown>): Promise<PluginSettingsSaveResult>
   /** ProjectSettingsService.saveSettings, likewise. */
-  saveProject(projectId: string, pluginId: string, values: Record<string, unknown>): Promise<PluginSettingsSaveResult>
+  saveProject(projectId: string, pluginId: string, values: () => Record<string, unknown>): Promise<PluginSettingsSaveResult>
 }
 
 /** Keys that would reach an object's prototype when assigned; never a settings field here. */
@@ -142,10 +147,17 @@ export async function setPluginConfig(
     if (first === '') first = key
   }
   if (scope === undefined) throw new Error('plugin config needs at least one key=value to set')
-  const current = v[scope] as PluginAppSettingsView
-  // A spread copy, then plain assignment of keys the schema declares (reserved ones refused above).
-  const values: Record<string, unknown> = { ...current.values }
-  for (const [key, value] of edits) values[key] = value
+  const target = scope
+  // Read when the save runs in the plugin's queue, not now: a save queued ahead may still change what
+  // is stored, and merging into this read would write its old values back (lost update).
+  const values = (): Record<string, unknown> => {
+    const current = target === 'app' ? deps.appSettings(pluginId) : deps.projectSettings(projectId, pluginId)
+    if (current === undefined) throw new Error(`${pluginId} no longer declares ${target} settings`)
+    // A spread copy, then plain assignment of keys the schema declares (reserved ones refused above).
+    const merged: Record<string, unknown> = { ...current.values }
+    for (const [key, value] of edits) merged[key] = value
+    return merged
+  }
   const saved = scope === 'app' ? await deps.saveApp(pluginId, values) : await deps.saveProject(projectId, pluginId, values)
   if (!saved.ok) throw new Error(`${pluginId}: nothing was stored, the ${scope} settings fail the schema: ${saved.errors.join('; ')}`)
   const keys = new Set(edits.map(([key]) => key))
