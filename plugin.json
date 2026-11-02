@@ -1,0 +1,18 @@
+{
+  "id": "cockpit.reviewer",
+  "name": "Reviewer",
+  "version": "0.1.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "contributes": {
+    "openFile": { "title": "Reviewer (diff and notes)" },
+    "cli": [
+      {
+        "name": "review",
+        "summary": "Review a file: diff against the last commit, notes, send to Claude",
+        "usage": "review <file>"
+      }
+    ]
+  },
+  "services": { "provides": { "reviewer": 1 } }
+}
