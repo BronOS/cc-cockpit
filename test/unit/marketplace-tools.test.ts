@@ -98,6 +98,8 @@ describe('parseSourceEntry', () => {
     expect(problem({ commit: 'abc' })).toMatch(/"commit" must be the full/)
     expect(problem({ repo: 'git@github.com:a/b.git' })).toMatch(/"repo": an ssh repo/)
     expect(problem({ name: ' ' })).toMatch(/"name"/)
+    // Reserved for the plugins that ship with the app, in any letter case the id rule could let through.
+    expect(problem({ id: 'cockpit.tool' })).toBe('"id": ids starting with cockpit. are reserved for plugins that ship with the app')
   })
 
   it('refuses text that is not an object, or absurdly long', () => {
@@ -136,6 +138,14 @@ describe('buildIndex', () => {
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatch(/bad\.tool\.json.*"commit".*not listed/)
     expect(JSON.parse(text)).toMatchObject({ plugins: [{ id: 'acme.tool' }], revoked: [revocation] })
+  })
+
+  it('refuses a reserved cockpit. id: a problem, not listed', () => {
+    const root = indexRepo(tmp, [sourceEntry(), sourceEntry({ id: 'cockpit.tool' })], [])
+    const { text, problems } = buildIndex(root)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/cockpit\.tool\.json.*reserved for plugins that ship with the app.*not listed/)
+    expect(JSON.parse(text)).toMatchObject({ plugins: [{ id: 'acme.tool' }] })
   })
 
   it('a bad entry keeps its published listing, neither unlisted nor changed', () => {
@@ -444,6 +454,15 @@ describe('check-entry', () => {
     await expect(checkMain(['--entry', file, '--index-url', FILE_INDEX], { env: GIT_ENV })).resolves.toBeUndefined()
     await expect(checkMain([])).rejects.toThrow(/usage/)
     await expect(checkMain(['--nope', 'x'])).rejects.toThrow(/usage/)
+  })
+
+  it('--entry refuses a reserved cockpit. id without cloning anything', async () => {
+    const file = join(tmp, 'entry.json')
+    // The repo does not exist: a clone would report that instead.
+    writeFileSync(file, JSON.stringify({ ...entryAt('good'), id: 'cockpit.tool', repo: pathToFileURL(join(tmp, 'nowhere.git')).href, owners: [OWNER] }))
+    await expect(checkMain(['--entry', file, '--index-url', FILE_INDEX], { env: GIT_ENV })).rejects.toThrow(
+      /check-entry: "id": ids starting with cockpit\. are reserved/
+    )
   })
 
   it('the committed bundle works as a command, and fails with exit 1 and no stack', () => {

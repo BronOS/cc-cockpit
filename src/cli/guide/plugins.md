@@ -29,7 +29,12 @@ so a person chooses to install or link it.
 ```
 
 - `id`: lower case, reverse-DNS-like, at least two dot-separated labels, the last one starting
-  with a letter (`acme.hello`). It becomes a folder name and a URL host.
+  with a letter (`acme.hello`). It becomes a folder name and a URL host. Ids starting with
+  `cockpit.` (any letter case) are reserved for the plugins that ship with the app (`cockpit.browser`,
+  `cockpit.reviewer`, `cockpit.editor`): `ccc plugin new`, link, install, the Marketplace and its index
+  refuse one, and the app loads one only from its own bundled folder. A plugin becomes built in only
+  through an app release, never by asking; under your own id a plugin can do everything a built-in
+  one does (they use the same public API).
 - `version`: semver (`1.2.3`). `api`: the plugin API major, currently `1`; others are refused.
 - `main`: path to the host entry, optional (a theme-only plugin has none).
 - All paths are plugin-relative, with `/` separators, no `..`, no absolute path. They must exist.

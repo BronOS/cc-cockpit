@@ -74,6 +74,10 @@ A plugin with `contributes.settings` can be configured from the tab, no Settings
 - `ccc plugin unlink <id>` removes a linked plugin at once, with no dialog, and deletes that plugin's stored secrets
   (the folder stays untouched); unlink only what the person asked for. A plugin
   installed from git is managed in Settings > Plugins.
+- A plugin that now ships with the app (its `cockpit.` id, e.g. `cockpit.reviewer` or `cockpit.editor`
+  developed as a linked folder before it was built in) cannot stay linked: `ccc plugin unlink <id>` the old copy
+  before installing the app version that ships it. If it is still linked, the app drops the linked record at
+  its next start (logged) and runs the built-in copy; project enablement and settings carry over, same id.
 
 ## Checklist when a plugin does not show up
 

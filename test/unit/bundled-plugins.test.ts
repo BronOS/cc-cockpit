@@ -1,7 +1,7 @@
 // Bundled plugins (Claude-operable foundation, Task 9): indexed at every start from a fixed
 // allowlist, validated like any plugin, never copied or uninstalled, default-on per project with a
 // stored opt-out, first in the CLI name-clash order. Real installer over temp dirs; no Electron.
-import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -174,15 +174,72 @@ describe('indexing', () => {
     expect(index.get(BID)).toBeDefined()
   })
 
-  it('does not take an id a person installed another way', async () => {
+})
+
+/** plugins.json as an older app (or a hand edit) left it. */
+function writeIndex(plugins: unknown[]): void {
+  writeFileSync(join(dataDir, 'plugins.json'), JSON.stringify({ schemaVersion: 1, plugins }))
+}
+
+describe('reserved cockpit.* ids load only from the bundled root', () => {
+  const RESERVED = /ids starting with cockpit\. are reserved for plugins that ship with the app/
+
+  it('an old linked copy of a now-bundled plugin is dropped at start: the bundled one runs, same id', async () => {
+    // A user who linked the reviewer from its own repo before it shipped.
     const mine = linkedFolder(BID, [])
-    const first = newInstaller(undefined)
-    await first.installer.load()
-    await first.installer.link(mine)
+    writeIndex([{ id: BID, version: '0.9.0', source: { kind: 'linked', path: mine }, state: { ok: true } }])
     const dir = bundledFolder()
-    const { index } = await restart([spec(dir)])
-    expect(index.get(BID)?.source).toEqual({ kind: 'linked', path: mine })
-    expect(logs.join('\n')).toMatch(/already installed from a linked source/)
+    const { installer, index } = await restart([spec(dir)])
+    expect(index.get(BID)).toMatchObject({ source: { kind: 'bundled', path: dir }, state: { ok: true }, enabledByDefault: true })
+    expect(installer.get(BID)?.dir).toBe(dir)
+    expect(logs.join('\n')).toContain(`plugin ${BID} linked from ${mine} dropped: the app ships it; the built-in copy is used`)
+    // The folder is the developer's: never touched.
+    expect(readFileSync(join(mine, 'plugin.json'), 'utf8')).toContain(BID)
+    // Project enablement is keyed by the id, so it carries over unchanged.
+    expect(pluginEnabledIn({ enabledPlugins: [BID] }, { id: BID, enabledByDefault: index.get(BID)?.enabledByDefault })).toBe(true)
+    expect(pluginEnabledIn({ enabledPlugins: [], disabledPlugins: [BID] }, { id: BID, enabledByDefault: true })).toBe(false)
+  })
+
+  it('a git record of a bundled id is dropped with its folder', async () => {
+    const folder = join(dataDir, 'plugins', `${BID}@0.9.0`)
+    cpSync(bundledFolder(BID, [], '0.9.0'), folder, { recursive: true })
+    writeIndex([{ id: BID, version: '0.9.0', source: { kind: 'git', url: 'https://x.invalid/b.git', tag: 'v0.9.0' }, state: { ok: true } }])
+    const { index } = await restart([spec(bundledFolder())])
+    expect(index.get(BID)?.source.kind).toBe('bundled')
+    expect(() => readFileSync(join(folder, 'plugin.json'))).toThrow()
+    expect(logs.join('\n')).toMatch(/installed from https:\/\/x\.invalid\/b\.git dropped/)
+  })
+
+  it('a hand-edited linked record under a reserved id the app does not ship is refused at load, with the reason', async () => {
+    const other = linkedFolder('cockpit.other', [])
+    writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'linked', path: other }, state: { ok: true } }])
+    const { installer, index } = await restart([spec(bundledFolder())])
+    const got = installer.get('cockpit.other')
+    expect(got?.state.ok === false && got.state.reason).toMatch(RESERVED)
+    expect(got?.manifest).toBeUndefined()
+    // Stays listed (Settings > Plugins shows it refused, like any invalid plugin) and is not dropped.
+    expect(index.get('cockpit.other')?.source).toEqual({ kind: 'linked', path: other })
+    expect(logs.join('\n')).toMatch(/plugin cockpit\.other disabled: ids starting with cockpit\./)
+    // The bundled one next to it is unaffected.
+    expect(installer.get(BID)?.state).toEqual({ ok: true })
+  })
+
+  it('a linked symlink into the bundled root is refused: only the bundled entry may use the folder', async () => {
+    // The app ships cockpit.other in its bundled root, but this run's allowlist has only BID: a linked
+    // record pointing at that folder through a symlink must not borrow the reserved id.
+    const shipped = bundledFolder('cockpit.other')
+    const link = join(dataDir, 'via-link')
+    symlinkSync(shipped, link)
+    writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'linked', path: link }, state: { ok: true } }])
+    const { installer } = await restart([spec(bundledFolder())])
+    const state = installer.get('cockpit.other')?.state
+    expect(state?.ok === false && state.reason).toMatch(RESERVED)
+  })
+
+  it('link refuses a copy of a bundled plugin with the reason, not "uninstall it first"', async () => {
+    const { installer, index } = await restart([spec(bundledFolder())])
+    await expect(installer.link(linkedFolder(BID, []))).rejects.toThrow(RESERVED)
+    expect(index.get(BID)?.source.kind).toBe('bundled')
   })
 })
 
@@ -214,14 +271,15 @@ describe('enabledByDefault', () => {
     expect(index.get(BID)?.enabledByDefault).toBeUndefined()
   })
 
-  it('a linked entry holding a bundled id gets no default-on', async () => {
-    const first = newInstaller(undefined)
-    await first.installer.load()
-    await first.installer.link(linkedFolder(BID, []))
-    const { index } = await restart([spec(bundledFolder())])
+  it('a linked entry holding a bundled id gets no default-on, and does not run', async () => {
+    // As a run with no bundled plugins (the test switch) would see an old linked record.
+    const mine = linkedFolder(BID, [])
+    writeIndex([{ id: BID, version: '1.0.0', source: { kind: 'linked', path: mine }, state: { ok: true }, enabledByDefault: true }])
+    const { installer, index } = await restart([])
     const entry = index.get(BID)
     expect(entry?.enabledByDefault).toBeUndefined()
     expect(pluginEnabledIn({ enabledPlugins: [] }, { id: BID, enabledByDefault: entry?.enabledByDefault })).toBe(false)
+    expect(installer.get(BID)?.state.ok).toBe(false)
   })
 
   it('on for a record that never heard of it, off once listed in disabledPlugins, on again when enabled', () => {

@@ -1,5 +1,5 @@
 {
-  "id": "cockpit.hello",
+  "id": "example.hello",
   "name": "Hello",
   "version": "1.0.0",
   "api": 1,

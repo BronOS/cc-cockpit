@@ -103,6 +103,14 @@ describe('parseMarketplaceIndex', () => {
     expect(r.ok && r.skippedRevocations).toBe(3)
   })
 
+  it('drops and counts a listing under a reserved cockpit. id: the app ships those itself', () => {
+    const r = parseMarketplaceIndex(index([entry(), entry({ id: 'cockpit.jira' })]), { indexUrl: HTTPS })
+    expect(r.ok && r.index.plugins.map((e) => e.id)).toEqual(['acme.jira'])
+    expect(r.ok && r.skippedEntries).toBe(1)
+    const one = parseEntry(entry({ id: 'cockpit.jira' }), HTTPS)
+    expect(one.ok ? null : one.problem).toMatch(/^"id": ids starting with cockpit\. are reserved/)
+  })
+
   it('drops every entry sharing a duplicate id', () => {
     const r = parseMarketplaceIndex(
       index([entry(), entry({ commit: C2 }), entry({ id: 'acme.other' })]),

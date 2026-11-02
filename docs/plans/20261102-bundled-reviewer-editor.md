@@ -185,26 +185,30 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
   the link path, `src/main/marketplace/*`, `marketplace/tools/src/*` (+ rebuilt `marketplace/tools/dist`)
 - Modify: `src/cli/guide/plugins.md`, `src/cli/guide/dev-loop.md`
 
-- [ ] one shared rule `isReservedPluginId(id)`: the `cockpit.` prefix compared case-insensitively (check what the
+- [x] one shared rule `isReservedPluginId(id)`: the `cockpit.` prefix compared case-insensitively (check what the
       manifest id regex allows: uppercase, Unicode, surrounding spaces; the rule must hold for every id the regex
       accepts)
-- [ ] the authority is the **load** path, not only install: a plugin with a reserved id loads only when it is one of
+- [x] the authority is the **load** path, not only install: a plugin with a reserved id loads only when it is one of
       `BUNDLED_PLUGINS` and its folder's realpath equals the realpath of `<bundledRoot>/<dir>`. A symlink into the
       bundled root, a linked folder elsewhere, or a hand-edited `plugins.json` entry with a reserved id is refused at
       load with a log line (and shown in Settings > Plugins as refused, like other invalid plugins)
-- [ ] link, folder/git install and marketplace install also refuse a reserved id up front (realpath of the source,
+- [x] link, folder/git install and marketplace install also refuse a reserved id up front (realpath of the source,
       before copying anything) with "ids starting with cockpit. are reserved for plugins that ship with the app"
-- [ ] the marketplace index tools (`check-entry`, `build-index`) refuse reserved ids; run `npm run build:marketplace-tools`
+- [x] the marketplace index tools (`check-entry`, `build-index`) refuse reserved ids; run `npm run build:marketplace-tools`
       and keep the byte test green
-- [ ] an existing user's linked `cockpit.reviewer` / `cockpit.editor` record (in `plugins.json`): the bundled entry
+- [x] an existing user's linked `cockpit.reviewer` / `cockpit.editor` record (in `plugins.json`): the bundled entry
       wins, the linked record is dropped at start with a log line; project enablement and settings keyed by the same
       id carry over unchanged (same id). No extra notice UI; the guide and release notes say to unlink
-- [ ] guide: plugins topic states the reservation and that bundling happens through app releases; dev-loop says to
+- [x] guide: plugins topic states the reservation and that bundling happens through app releases; dev-loop says to
       unlink an old linked copy of a now-bundled plugin; drift tests pass
-- [ ] unit tests for each path (link, folder install, git install, marketplace install, index tools, load-time refusal
+- [x] unit tests for each path (link, folder install, git install, marketplace install, index tools, load-time refusal
       of a hand-edited `plugins.json` entry and of a symlink into the bundled root, `Cockpit.Foo` casing, the start-up
       drop of an old linked record) and that bundled loading still accepts them
-- [ ] run `npm test`, typecheck, lint, `npm run build:marketplace-tools` byte test - must pass
+- [x] run `npm test`, typecheck, lint, `npm run build:marketplace-tools` byte test - must pass
+- [x] ➕ `plugins/hello` (`cockpit.hello`) and `examples/plugin` (`cockpit.example`) used reserved ids and could no
+      longer be linked: renamed to `example.hello` and `example.plugin` (manifests, e2e and unit tests); `ccc plugin new
+      --id cockpit.x` is refused too. The app's index parser drops a reserved listing (counted as skipped), so the
+      Marketplace page never offers one
 
 ### Task 4: App-wide off for bundled plugins, and replacing them through the picks [model: opus]
 
@@ -310,5 +314,6 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 **External**
 - Archive or delete `~/Projects/cc-cockpit-reviewer` and `~/Projects/cc-cockpit-editor` once the move is merged
   (nothing was pushed from them).
-- Push the example repo's `sdk/types.ts` (new ctx members) after the merge.
+- Push the example repo's `sdk/types.ts` (new ctx members) and its renamed id (`example.plugin`, was `cockpit.example`)
+  after the merge; if the public index lists `cockpit.example`, replace that listing (the app now drops it).
 - Release when the user asks.

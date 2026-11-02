@@ -10,7 +10,15 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { skillNameProblem } from '../main/plugins/skill-files'
-import { CLI_NAME_PATTERN, PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, RESERVED_CLI_NAMES, SKILL_ID_PATTERN } from '../shared/manifest'
+import {
+  CLI_NAME_PATTERN,
+  PLUGIN_ID_MAX_LENGTH,
+  PLUGIN_ID_PATTERN,
+  RESERVED_CLI_NAMES,
+  RESERVED_PLUGIN_ID_MESSAGE,
+  SKILL_ID_PATTERN,
+  isReservedPluginId
+} from '../shared/manifest'
 import hostTemplate from './plugin-template/host.js.tmpl?raw'
 import panelHtmlTemplate from './plugin-template/panel.html.tmpl?raw'
 import panelJsTemplate from './plugin-template/panel.js.tmpl?raw'
@@ -120,6 +128,8 @@ export function scaffoldPlugin(options: PluginNewOptions): PluginNewResult {
   if (id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id)) {
     throw new PluginNewError(`not a plugin id: ${id} (lowercase, dot-separated, like acme.todo)`)
   }
+  // The scaffold could never be linked: refused here rather than at `ccc plugin link`.
+  if (isReservedPluginId(id)) throw new PluginNewError(`${id}: ${RESERVED_PLUGIN_ID_MESSAGE}`)
   const { cli } = options
   if (cli !== undefined && (RESERVED_CLI_NAMES.includes(cli) || !CLI_NAME_PATTERN.test(cli))) {
     throw new PluginNewError(`${cli} is not a usable command name`)
