@@ -4,6 +4,10 @@ declare module '*.md?raw' {
   const text: string
   export default text
 }
+declare module '*.ts?raw' {
+  const text: string
+  export default text
+}
 declare module '*.tmpl?raw' {
   const text: string
   export default text

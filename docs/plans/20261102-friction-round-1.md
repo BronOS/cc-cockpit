@@ -215,9 +215,9 @@ External review: auto
 - Modify: `src/cli/guide.ts` (and `src/cli/raw.d.ts` if needed), `src/cli/guide/overview.md` or `plugins.md` (mention it)
 - Modify: `test/unit/cli-guide.test.ts`
 
-- [ ] bundle `src/sdk/types.ts` and print it for `ccc guide types`; listed in the guide's topic list (this task comes after Tasks 4 and 5 on purpose: they change the types the drift test compares)
-- [ ] write tests: output equals the source file byte for byte; topic listed
-- [ ] run tests - must pass before next task
+- [x] bundle `src/sdk/types.ts` and print it for `ccc guide types`; listed in the guide's topic list (this task comes after Tasks 4 and 5 on purpose: they change the types the drift test compares)
+- [x] write tests: output equals the source file byte for byte; topic listed
+- [x] run tests - must pass before next task
 
 ### Task 9: Guide pass over the FRICTION questions [model: sonnet]
 

@@ -142,4 +142,4 @@ ids it does take (a tab, a panel) are looked up inside that project only.
 - `ctx.notify(text)`: a system notification, at most 10 a minute.
 
 Every call that can be abused is rate limited by main; a rejected promise carries the reason.
-Types: `PluginContext` in `src/sdk/types.ts`.
+Types: `PluginContext` in the SDK types; `ccc guide types` prints the file.

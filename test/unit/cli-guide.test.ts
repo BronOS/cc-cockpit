@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { parseArgs, USAGE, usageFor } from '../../src/cli/args'
@@ -25,15 +26,25 @@ describe('ccc guide', () => {
       'panels',
       'settings-secrets',
       'dev-loop',
-      'webview'
+      'webview',
+      'types'
     ])
   })
 
-  it.each(GUIDE_TOPICS.map((t) => t.name))('renders the %s topic', (name) => {
+  it.each(GUIDE_TOPICS.filter((t) => t.name !== 'types').map((t) => t.name))('renders the %s topic', (name) => {
     const text = guideText(name)
     expect(text).toBeDefined()
     expect((text as string).length).toBeGreaterThan(200)
     expect(text).toMatch(/^# /)
+  })
+
+  it('prints the SDK types byte for byte, lists the topic, and keeps the example copy equal', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'sdk', 'types.ts'), 'utf8')
+    expect(guideText('types')).toBe(source)
+    expect(guideText()).toContain('  types')
+    expect(source).toContain('PluginContext')
+    expect(readFileSync(join(__dirname, '..', '..', 'examples', 'plugin', 'sdk', 'types.ts'), 'utf8')).toBe(source)
+    expect(topic('plugins')).toContain('ccc guide types')
   })
 
   it('without a topic prints the overview and the topic list', () => {

@@ -58,7 +58,7 @@ exports.deactivate = () => {}
 ```
 
 `activate(ctx)` has 10 s; its return value is ignored (share an API with `ctx.services`). `ctx` is scoped to one project window. See the `api` topic for every
-member. Types: `src/sdk/types.ts` in the cc-cockpit repo (`PluginContext`); a starting point to copy, with the
+member. Types: `ccc guide types` prints the SDK types (`PluginContext`; the file is `src/sdk/types.ts` in the cc-cockpit repo); a starting point to copy, with the
 types and a build: https://github.com/BronOS/cc-cockpit-plugin-example.
 
 ## CLI commands
