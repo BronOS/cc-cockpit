@@ -140,9 +140,9 @@ describe('ci.yml', () => {
     expect(ci.on).toEqual({ pull_request: null, push: { branches: ['master'] }, workflow_call: null })
   })
 
-  it('runs typecheck, lint and unit tests on Mac and Linux, and no e2e', () => {
+  it('runs typecheck, lint, unit tests and the bundled plugin tests on Mac and Linux, and no e2e', () => {
     expect(ci.jobs.checks!.strategy!.matrix.os).toEqual(['macos-15', 'ubuntu-latest'])
-    expect(runBlocks(ci)).toEqual(['npm ci', 'npm run typecheck', 'npm run lint', 'npm test'])
+    expect(runBlocks(ci)).toEqual(['npm ci', 'npm run typecheck', 'npm run lint', 'npm test', 'npm run test:plugins'])
   })
 })
 

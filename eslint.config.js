@@ -6,7 +6,7 @@ const tseslint = require('typescript-eslint')
 const reactHooks = require('eslint-plugin-react-hooks')
 
 module.exports = tseslint.config(
-  { ignores: ['node_modules/**', 'out/**', 'dist/**', 'plugins/hello/dist/**', 'plugins/browser/dist/**', 'examples/plugin/dist/**', 'marketplace/tools/dist/**', 'release/**', '.vite/**', 'coverage/**'] },
+  { ignores: ['node_modules/**', 'out/**', 'dist/**', 'plugins/hello/dist/**', 'plugins/browser/dist/**', 'plugins/reviewer/dist/**', 'plugins/editor/dist/**', 'plugins/reviewer/overlay/*.bundle.js', 'plugins/reviewer/src/**', 'plugins/*/test/**', 'examples/plugin/dist/**', 'marketplace/tools/dist/**', 'release/**', '.vite/**', 'coverage/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

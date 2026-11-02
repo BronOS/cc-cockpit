@@ -15,8 +15,8 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright; the OAuth spec needs `openssl` on PATH).
 - `npm run typecheck`, `npm run lint`.
-- `npm run build` (runs `build:hello` and `build:browser` first), `npm run build:hello` (rebuild after editing
-  `plugins/hello`; the dist is committed), `npm run build:browser` (same for `plugins/browser`; its
+- `npm run build` (runs `build:hello`, `build:browser` and `build:reviewer` first), `npm run build:hello` (rebuild after editing
+  `plugins/hello`; the dist is committed), `npm run build:reviewer` (bundles the overlay page of `plugins/reviewer` into the committed `overlay/review.bundle.js`; the reviewer and editor hosts are plain JS, with no build), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
   master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
   pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after

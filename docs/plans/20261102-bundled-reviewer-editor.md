@@ -138,27 +138,27 @@ rebuilds into a temp dir and compares bytes. The host stays plain JS (no build).
 - Modify: `package.json`, `package-lock.json`, `.github/workflows/ci.yml`, `eslint.config.*` / tsconfig excludes if
   needed, `CLAUDE.md` (Commands)
 
-- [ ] `git subtree add --prefix plugins/reviewer ~/Projects/cc-cockpit-reviewer master` and the same for
+- [x] `git subtree add --prefix plugins/reviewer ~/Projects/cc-cockpit-reviewer master` and the same for
       `plugins/editor` (history kept; if subtree is unavailable or messy, one commit per plugin naming the source
       repo and its HEAD). Remove each plugin's `node_modules`, `package.json`, `package-lock.json` from the moved
       tree; keep `README.md`, `docs/`, `FRICTION.md`, `test/`
-- [ ] `.gitignore` ignores `dist/` and whitelists only `!plugins/browser/dist/`: add `!plugins/reviewer/dist/` and
+- [x] `.gitignore` ignores `dist/` and whitelists only `!plugins/browser/dist/`: add `!plugins/reviewer/dist/` and
       `!plugins/editor/dist/`, check the subtrees' own `.gitignore` files don't hide `dist/` or `overlay/`, and
       confirm with `git ls-files plugins/reviewer plugins/editor` that `dist/**`, `overlay/review.bundle.js` and
       `plugin.json` are tracked
-- [ ] add the reviewer's CodeMirror/lezer packages as app devDependencies pinned exactly to its lockfile versions;
+- [x] add the reviewer's CodeMirror/lezer packages as app devDependencies pinned exactly to its lockfile versions;
       `scripts/build-reviewer.mjs` (deterministic, see Technical Details; `legalComments: 'none'` unless a licence
       notice must ship, in which case decide where it goes and commit it) and `npm run build:reviewer`; add it to the
       `build` chain; rebuild the committed bundle and check the page still loads the same (size within a few %)
-- [ ] `npm run test:plugins` = `node --test plugins/*/test/`; fix any path assumptions in the moved tests; add a CI
+- [x] `npm run test:plugins` = `node --test plugins/*/test/`; fix any path assumptions in the moved tests; add a CI
       step running it in `ci.yml` and extend the `describe('ci.yml')` block in `test/unit/release-workflow.test.ts`
       for it (first-party actions only); check `vitest.config` doesn't pick up `plugins/*/test/*.test.js`
-- [ ] `eslint.config.js` ignores only `plugins/browser/dist/**`: add `plugins/{reviewer,editor}/dist/**`,
+- [x] `eslint.config.js` ignores only `plugins/browser/dist/**`: add `plugins/{reviewer,editor}/dist/**`,
       `plugins/reviewer/overlay/*.bundle.js` and the plugins' `test/`, `scripts/` and `src/page` JS (or lint them
       with a plain-JS config if that is easy); typecheck needs no change (tsconfig.node covers only `plugins/hello/src`)
-- [ ] write `test/unit/reviewer-plugin.test.ts`: rebuild into a temp dir equals the committed bundle; the manifests
+- [x] write `test/unit/reviewer-plugin.test.ts`: rebuild into a temp dir equals the committed bundle; the manifests
       validate with `validateManifest`
-- [ ] run `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint` - must pass before next task
+- [x] run `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint` - must pass before next task
 
 ### Task 2: Ship them as bundled plugins [model: sonnet]
 
