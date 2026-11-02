@@ -12,7 +12,7 @@ import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { parseArgs, USAGE } from '../../src/cli/args'
-import { pluginHelp, REPLY_TIMEOUT_MS, run, type Output } from '../../src/cli/client'
+import { pluginHelp, REPLY_TIMEOUT_MS, run, STDIN_READ_TIMEOUT_MS, type Output } from '../../src/cli/client'
 import { HostContexts } from '../../src/host/ctx'
 import type { HostPluginSpec } from '../../src/host/loader'
 import { RpcEndpoint } from '../../src/host/rpc'
@@ -296,6 +296,33 @@ describe.skipIf(!POSIX)('the CLI client', () => {
     expect(o.e).toBe('ccc: demo: reading stdin failed: EIO: i/o error, read\n')
     expect(o.o).toBe('')
     expect(received.map((r) => r.cmd)).toEqual(['plugin.cli.spec'])
+  })
+
+  it('a stdin: true command whose stdin never ends: exit 124 naming stdin, the call not made', async () => {
+    app(spec({ stdin: true }), { stdout: 'ok' })
+    const open = new PassThrough() // a pipe nobody writes to or closes
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const turn = (): Promise<void> => new Promise((r) => setImmediate(r))
+    try {
+      const o = out()
+      const running = run(['demo'], env(), open, o.io, CWD)
+      for (let i = 0; i < 500 && received.length < 1; i++) await turn()
+      await turn()
+      vi.advanceTimersByTime(STDIN_READ_TIMEOUT_MS)
+      expect(await running).toBe(CLI_TIMEOUT_CODE)
+      expect(o.e).toBe(`ccc: demo: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`)
+      expect(received.map((r) => r.cmd)).toEqual(['plugin.cli.spec'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a stdin: true command with a terminal that never ends sends empty stdin at once', async () => {
+    app(spec({ stdin: true }), { stdout: 'ok' })
+    // A PassThrough never ends: reading it would hang the test, not just slow it.
+    const tty = Object.assign(new PassThrough(), { isTTY: true })
+    expect(await run(['demo'], env(), tty, out().io, CWD)).toBe(0)
+    expect(received[1]?.args).toMatchObject({ stdin: '' })
   })
 
   it('a stdin: true command does not read a terminal', async () => {

@@ -459,6 +459,13 @@ export async function runCommand(
   }
 }
 
+/**
+ * How long a `stdin: true` plugin command waits for its stdin to end (it is never read from a
+ * terminal). As long as the call's own hard deadline: a slow producer gets the same time a slow
+ * plugin does, and an open pipe that never closes ends in exit 124 instead of a hang.
+ */
+export const STDIN_READ_TIMEOUT_MS = CLI_CLIENT_DEADLINE_MS
+
 /** A plugin command as parseArgs returned it. */
 export type PluginCommand = Extract<Command, { kind: 'plugin' }>
 
@@ -552,8 +559,9 @@ function isTTY(stream: Readable): boolean {
  * is the plugin's.
  *
  * stdin is read only for a command that declares `stdin: true`, and only when it is not a
- * terminal: reading whenever it is not a TTY would hang a `ccc` started with an open but silent
- * pipe (a tool runner's usual setup). Over MAX_CLI_IO_BYTES once JSON-encoded it is refused here,
+ * terminal (nobody would type EOF): reading whenever it is not a TTY would hang a `ccc` started
+ * with an open but silent pipe (a tool runner's usual setup), and even then the read ends after
+ * STDIN_READ_TIMEOUT_MS with exit 124. Over MAX_CLI_IO_BYTES once JSON-encoded it is refused here,
  * before anything is sent (exit 1), so the request line stays under the socket's limit.
  *
  * The call waits CLI_REPLY_TIMEOUT_MS: main gives the plugin 30 s and answers exit 124 itself, so
@@ -593,7 +601,23 @@ export async function runPlugin(
   let input = ''
   if (spec.stdin === true && !isTTY(stdin)) {
     // One byte over the cap is enough to know: the encoded size is never below the raw one.
-    const read = await readStdinCapped(stdin, MAX_CLI_IO_BYTES)
+    // Bounded like the call itself: an open pipe nobody closes (a tool runner that leaves stdin
+    // attached, `sleep 999 | ccc …`) would otherwise keep `ccc` waiting forever with no output,
+    // the one unbounded wait left after friction round 1, Task 2. The timer goes once the read is
+    // over; on a timeout the process exits right after, so the abandoned read does not matter.
+    let stdinTimer: ReturnType<typeof setTimeout> | undefined
+    const read = await Promise.race([
+      readStdinCapped(stdin, MAX_CLI_IO_BYTES),
+      new Promise<undefined>((resolve) => {
+        stdinTimer = setTimeout(() => resolve(undefined), STDIN_READ_TIMEOUT_MS)
+      })
+    ]).finally(() => clearTimeout(stdinTimer))
+    if (read === undefined) {
+      out.stderr(
+        `ccc: ${command.name}: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`
+      )
+      return CLI_TIMEOUT_CODE
+    }
     // An EIO halfway through leaves a partial payload: the plugin is not run on it.
     if (read.error !== undefined) {
       out.stderr(`ccc: ${command.name}: reading stdin failed: ${read.error}\n`)
