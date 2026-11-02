@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+import { STABLE } from './stable-version.mjs'
 
 function problem(tag, version) {
   if (typeof tag !== 'string' || !tag) return 'no tag given'

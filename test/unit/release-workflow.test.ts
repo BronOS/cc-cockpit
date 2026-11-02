@@ -1,43 +1,47 @@
 // Distribution plan Task 6: workflows can't run locally, so this checks the release tag script and what the
-// workflow files declare. Text checks in the style of packaging-config.test.ts, with comments stripped so
-// a comment naming a forbidden thing can't fail (or satisfy) a check. Their first real run is on GitHub.
+// workflow files declare. Parsed, so a reformat can't fail a check and a comment can't fail or satisfy one.
+// Their first real run is on GitHub.
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 
+// js-yaml ships no types and this one call needs none.
+const { load: parseYaml } = createRequire(__filename)('js-yaml') as { load(text: string): unknown }
+
 const root = join(__dirname, '..', '..')
 const workflowsDir = join(root, '.github', 'workflows')
 
-function workflow(name: string): string {
-  return readFileSync(join(workflowsDir, name), 'utf8').replace(/^\s*#.*\n/gm, '')
+interface Step {
+  name?: string
+  uses?: string
+  run?: string
+  with?: Record<string, unknown>
+  env?: Record<string, string>
+}
+interface Job {
+  needs?: string | string[]
+  uses?: string
+  permissions?: Record<string, string>
+  strategy?: { matrix: { os?: string[]; include?: Array<{ os: string; files: string }> } }
+  steps?: Step[]
+}
+interface Workflow {
+  on: Record<string, { branches?: string[]; tags?: string[] } | null>
+  permissions?: Record<string, string>
+  jobs: Record<string, Job>
 }
 
-/** A job's text: from its two-space key to the next one. Throws on a missing job so a rename fails loudly. */
-function job(text: string, name: string): string {
-  const start = text.indexOf(`\n  ${name}:\n`)
-  if (start < 0) throw new Error(`no job ${name}`)
-  const next = text.slice(start + 1).search(/\n {2}[\w-]+:\n/)
-  return next < 0 ? text.slice(start) : text.slice(start, start + 1 + next)
+function workflow(name: string): Workflow {
+  return parseYaml(readFileSync(join(workflowsDir, name), 'utf8')) as Workflow
 }
 
-/** The shell of every `run:`, single-line or block. */
-function runBlocks(text: string): string[] {
-  const lines = text.split('\n')
-  const blocks: string[] = []
-  lines.forEach((line, i) => {
-    const m = /^(\s*)(?:- )?run: ?(.*)$/.exec(line)
-    if (!m) return
-    const indent = m[1]!.length
-    let block = m[2]!
-    for (let j = i + 1; j < lines.length && (lines[j]!.trim() === '' || lines[j]!.search(/\S/) > indent); j++) {
-      block += `\n${lines[j]}`
-    }
-    blocks.push(block.trim())
-  })
-  return blocks
-}
+const stepsOf = (w: Workflow | Job): Step[] => ('jobs' in w ? Object.values(w.jobs).flatMap((j) => j.steps ?? []) : (w.steps ?? []))
+
+/** The shell of every `run:`. */
+const runBlocks = (w: Workflow | Job): string[] => stepsOf(w).flatMap((s) => (s.run === undefined ? [] : [s.run.trim()]))
 
 describe('check-release-tag.mjs', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'cc-release-tag-'))
@@ -98,31 +102,34 @@ describe('check-release-tag.mjs', () => {
 
 // Every workflow, so a file added later (publish-cask.yml) comes under the same rules by itself.
 describe.each(readdirSync(workflowsDir))('%s', (file) => {
-  const text = workflow(file)
+  const w = workflow(file)
+  const text = JSON.stringify(w)
 
   it('reads by default and never runs on pull_request_target', () => {
-    expect(text).toMatch(/^permissions:\n {2}contents: read$/m)
-    expect(text).not.toContain('pull_request_target')
+    expect(w.permissions).toEqual({ contents: 'read' })
+    expect(Object.keys(w.on)).not.toContain('pull_request_target')
     expect(text).not.toMatch(/write-all/)
   })
 
-  it('uses first-party actions only, or its own workflows', () => {
-    const uses = [...text.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map((m) => m[1]!)
+  it('uses first-party actions pinned to a commit, or its own workflows', () => {
+    const uses = [...Object.values(w.jobs).map((j) => j.uses), ...stepsOf(w).map((s) => s.uses)].filter((u) => u !== undefined)
     expect(uses.length).toBeGreaterThan(0)
-    for (const action of uses) expect(action).toMatch(/^(actions\/[\w-]+@v\d+|\.\/\.github\/workflows\/[\w-]+\.yml)$/)
+    for (const action of uses) expect(action).toMatch(/^(actions\/[\w-]+@[0-9a-f]{40}|\.\/\.github\/workflows\/[\w-]+\.yml)$/)
   })
 
   it('checks out without keeping credentials, and pins Node with no npm cache', () => {
-    const checkouts = text.match(/uses: actions\/checkout@/g) ?? []
-    expect(text.match(/persist-credentials: false/g)?.length ?? 0).toBe(checkouts.length)
-    const nodes = text.match(/uses: actions\/setup-node@/g) ?? []
-    expect(text.match(/node-version: \d+\.\d+\.\d+$/gm)?.length ?? 0).toBe(nodes.length)
-    expect(text).not.toMatch(/^\s*cache(-dependency-path)?:/m)
-    expect(text).not.toContain('actions/cache')
+    for (const step of stepsOf(w)) {
+      if (step.uses?.startsWith('actions/checkout@')) expect(step.with?.['persist-credentials']).toBe(false)
+      if (step.uses?.startsWith('actions/setup-node@')) {
+        expect(step.with?.['node-version']).toMatch(/^\d+\.\d+\.\d+$/)
+        expect(step.with).not.toHaveProperty('cache')
+      }
+      expect(step.uses ?? '').not.toContain('actions/cache')
+    }
   })
 
   it('never interpolates into a shell: values reach it through env', () => {
-    for (const block of runBlocks(text)) expect(block).not.toContain('${{')
+    for (const block of runBlocks(w)) expect(block).not.toContain('${{')
   })
 })
 
@@ -130,31 +137,32 @@ describe('ci.yml', () => {
   const ci = workflow('ci.yml')
 
   it('runs on PRs, master and when release.yml calls it', () => {
-    expect(ci).toMatch(/^ {2}pull_request:$/m)
-    expect(ci).toMatch(/^ {2}push:\n {4}branches: \[master\]$/m)
-    expect(ci).toMatch(/^ {2}workflow_call:$/m)
+    expect(ci.on).toEqual({ pull_request: null, push: { branches: ['master'] }, workflow_call: null })
   })
 
   it('runs typecheck, lint and unit tests on Mac and Linux, and no e2e', () => {
-    expect(ci).toContain('os: [macos-14, ubuntu-latest]')
+    expect(ci.jobs.checks!.strategy!.matrix.os).toEqual(['macos-15', 'ubuntu-latest'])
     expect(runBlocks(ci)).toEqual(['npm ci', 'npm run typecheck', 'npm run lint', 'npm test'])
   })
 })
 
 describe('release.yml', () => {
   const release = workflow('release.yml')
+  const { tag, checks, build, release: last } = release.jobs as Record<'tag' | 'checks' | 'build' | 'release', Job>
 
   it('runs on v tags only', () => {
-    expect(release).toMatch(/^on:\n {2}push:\n {4}tags: \['v\*'\]\npermissions:/m)
+    expect(release.on).toEqual({ push: { tags: ['v*'] } })
   })
 
   it('checks the tag first, with the value in env, then the same checks as CI, then builds, then releases', () => {
-    const tag = job(release, 'tag')
-    expect(tag).toContain('TAG: ${{ github.ref_name }}')
-    expect(tag).toContain('node scripts/check-release-tag.mjs "$TAG"')
-    expect(job(release, 'checks')).toMatch(/needs: tag\n\s+uses: \.\/\.github\/workflows\/ci\.yml/)
-    expect(job(release, 'build')).toContain('needs: checks')
-    expect(job(release, 'release')).toContain('needs: [tag, build]')
+    const check = stepsOf(tag).find((s) => s.run?.includes('check-release-tag'))!
+    expect(check.env?.TAG).toBe('${{ github.ref_name }}')
+    expect(check.run).toBe('node scripts/check-release-tag.mjs "$TAG"')
+    expect(tag.needs).toBeUndefined()
+    expect(checks.needs).toBe('tag')
+    expect(checks.uses).toBe('./.github/workflows/ci.yml')
+    expect(build.needs).toBe('checks')
+    expect(last.needs).toEqual(['tag', 'build'])
   })
 
   it('creates a draft, and nothing can make it anything else', () => {
@@ -167,39 +175,40 @@ describe('release.yml', () => {
   })
 
   it('grants write on the release job only, which runs nothing from the repo', () => {
-    expect(release.match(/contents: write/g)).toHaveLength(1)
-    const last = job(release, 'release')
-    expect(last).toContain('contents: write')
-    expect(last).not.toContain('actions/checkout')
-    expect(last).not.toMatch(/\bnpm\b|\bnode\b/)
+    expect(last.permissions).toEqual({ contents: 'write' })
+    for (const job of [tag, checks, build]) expect(job.permissions).toBeUndefined()
+    expect(stepsOf(last).map((s) => s.uses ?? '').join()).not.toContain('actions/checkout')
+    for (const block of runBlocks(last)) expect(block).not.toMatch(/\bnpm\b|\bnode\b/)
   })
 
   it('has one token, in the step that creates the draft, and no secrets', () => {
-    expect(release.match(/GH_TOKEN/g)).toHaveLength(1)
-    expect(release).not.toContain('secrets.')
-    const step = job(release, 'release').slice(job(release, 'release').indexOf('- name: Create the draft'))
-    expect(step).toContain('GH_TOKEN: ${{ github.token }}')
+    const withToken = stepsOf(release).filter((s) => s.env?.GH_TOKEN !== undefined)
+    expect(withToken.map((s) => s.name)).toEqual(['Create the draft'])
+    expect(withToken[0]!.env!.GH_TOKEN).toBe('${{ github.token }}')
+    expect(JSON.stringify(release).match(/GH_TOKEN/g)).toHaveLength(1)
+    expect(JSON.stringify(release)).not.toContain('secrets.')
   })
 
   it('builds without a token or a publish flag', () => {
-    const build = job(release, 'build')
-    expect(build).toContain('npm run package')
-    expect(build).not.toMatch(/token|--publish|-p always|secrets\.|permissions:/i)
-    expect(build).toMatch(/os: macos-14[\s\S]*os: ubuntu-22.04/)
+    expect(runBlocks(build)).toContain('npm run package')
+    expect(JSON.stringify(build)).not.toMatch(/token|--publish|-p always|secrets\.|permissions/i)
+    expect(build.strategy!.matrix.include!.map((i) => i.os)).toEqual(['macos-15', 'ubuntu-22.04'])
   })
 
   it('uploads the dmg, deb, AppImage and SHA256SUMS, with the names electron-builder.yml gives them', () => {
     const yml = readFileSync(join(root, 'electron-builder.yml'), 'utf8')
     expect(yml).toContain('artifactName: cc-cockpit-${version}-mac-arm64.${ext}')
     expect(yml).toContain('artifactName: cc-cockpit-${version}-linux-x64.${ext}')
-    const build = job(release, 'build')
+    const files = build.strategy!.matrix.include!.map((i) => i.files).join('\n')
     for (const glob of ['cc-cockpit-*-mac-arm64.dmg', 'cc-cockpit-*-linux-x64.AppImage', 'cc-cockpit-*-linux-x64.deb']) {
-      expect(build).toContain(`release/${glob}`)
+      expect(files).toContain(`release/${glob}`)
     }
-    expect(build).toContain('if-no-files-found: error')
-    const last = job(release, 'release')
-    for (const name of ['mac-arm64.dmg', 'linux-x64.AppImage', 'linux-x64.deb']) expect(last).toContain(`cc-cockpit-$version-${name}`)
-    expect(last).toContain('sha256sum -- * > SHA256SUMS')
-    expect(last).toContain('assets/*')
+    const upload = stepsOf(build).find((s) => s.uses?.startsWith('actions/upload-artifact@'))!
+    expect(upload.with?.path).toBe('${{ matrix.files }}')
+    expect(upload.with?.['if-no-files-found']).toBe('error')
+    const shell = runBlocks(last).join('\n')
+    for (const name of ['mac-arm64.dmg', 'linux-x64.AppImage', 'linux-x64.deb']) expect(shell).toContain(`cc-cockpit-$version-${name}`)
+    expect(shell).toContain('sha256sum -- * > SHA256SUMS')
+    expect(shell).toContain('assets/*')
   })
 })

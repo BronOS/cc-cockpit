@@ -4,7 +4,7 @@
 // one line on stderr on bad input.
 import { pathToFileURL } from 'node:url'
 
-const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+import { STABLE } from './stable-version.mjs'
 const SHA256 = /^[0-9a-f]{64}$/
 
 export function renderCask(version, sha256) {
@@ -14,7 +14,9 @@ export function renderCask(version, sha256) {
   if (typeof sha256 !== 'string' || !SHA256.test(sha256)) {
     throw new Error(`invalid sha256 ${JSON.stringify(sha256)}, expected 64 lowercase hex digits`)
   }
-  // The url and file name follow electron-builder.yml `mac.artifactName`.
+  // The url and file name follow electron-builder.yml `mac.artifactName`. The macOS floor is Electron's
+  // own (node_modules/electron/README.md); raise it when an Electron upgrade does. The caveats' first-launch
+  // step is unverified until the Mac run in docs/design.md "To cut a release"; replace it with the result.
   return `cask "cc-cockpit" do
   version "${version}"
   sha256 "${sha256}"
@@ -25,6 +27,7 @@ export function renderCask(version, sha256) {
   homepage "https://github.com/BronOS/cc-cockpit"
 
   depends_on arch: :arm64
+  depends_on macos: ">= :ventura"
 
   app "cc-cockpit.app"
 
@@ -37,8 +40,9 @@ export function renderCask(version, sha256) {
   ]
 
   caveats <<~EOS
-    The app is not notarised. On first launch, open System Settings > Privacy & Security and
-    choose "Open Anyway", or run: xattr -cr /Applications/cc-cockpit.app
+    The app is not notarised, so macOS may refuse to open it the first time. The exact step has not
+    been tested on a Mac yet. Usually it is System Settings > Privacy & Security > "Open Anyway", or:
+    xattr -cr /Applications/cc-cockpit.app
 
     Quit cc-cockpit before upgrading, or restart it afterwards.
   EOS
@@ -48,7 +52,9 @@ end
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    process.stdout.write(renderCask(process.argv[2], process.argv[3]))
+    const args = process.argv.slice(2)
+    if (args.length !== 2) throw new Error('usage: render-cask.mjs <version> <sha256>')
+    process.stdout.write(renderCask(args[0], args[1]))
   } catch (err) {
     console.error(`render-cask: ${err.message}`)
     process.exit(1)

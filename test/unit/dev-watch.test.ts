@@ -422,6 +422,7 @@ describe('real folder watchers', () => {
     const w = createFolderWatcher('darwin', POLL_MS)(root, () => void polled.push(1), (e) => void errs.push(e))
     try {
       watchFails.on = false
+      await until(() => errs.length >= 1)
       expect(errs).toHaveLength(1)
       expect(errs[0]!.message).toBe('watch refused')
       await touchUntil(join(root, 'host.js'), () => polled.length >= 1)

@@ -1,31 +1,61 @@
 # Publishing a release (the maintainer's click on a draft) writes the Homebrew cask to BronOS/homebrew-tap.
-# Skipped for prereleases. The tap token appears in the last step only; the earlier steps run with a
-# read-only GITHUB_TOKEN. `tag_name` reaches shell through env, never interpolated into `run`.
+# The tap token appears in the last step only; the earlier steps run with a read-only GITHUB_TOKEN. The tag
+# reaches shell through env, never interpolated into `run`.
 name: publish-cask
 on:
   release:
     types: [published]
 permissions:
   contents: read
-# Two releases close together (or a re-run) would race on the tap and the loser's push is rejected.
+# Two releases close together (or a re-run) would race on the tap and the loser's push is rejected, so runs go
+# one at a time. A group holds one running and one pending run, and a newer pending run cancels the older one:
+# with 1.0.0 running and 1.2.0 pending, publishing a late 1.1.0 drops the 1.2.0 run (review finding). So no run
+# acts on its event's release. Each reads the newest published release when it starts: the run left pending is
+# always the last one queued, it starts after every release that queued a run, and it brings the tap up to the
+# newest of them whichever release triggered it. For the same reason a prerelease is not skipped with a job `if`:
+# the group is taken before a job's `if` is looked at, so its run can replace a pending one as well. It picks the
+# newest stable release like any other run, which leaves the tap as it is.
 concurrency:
   group: publish-cask
 jobs:
+  newest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - name: Find the newest published stable release
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Assigned on its own line: the default shell has no pipefail, and an API failure read as "no
+          # releases" would end the run green with the tap behind.
+          tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name')"
+          # The tag rule of scripts/stable-version.mjs. Anything else was never a release.yml build.
+          newest="$(printf '%s\n' "$tags" | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | sort -V | tail -n 1)"
+          echo "publish-cask: newest stable release: ${newest:-none}"
+          echo "tag=$newest" >> "$GITHUB_OUTPUT"
   cask:
-    if: ${{ !github.event.release.prerelease }}
+    needs: newest
+    # No stable release yet: only prereleases so far, and nothing for the tap.
+    if: ${{ needs.newest.outputs.tag != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # The renderer of the release being written, not of a backport that happened to trigger this run.
+          ref: refs/tags/${{ needs.newest.outputs.tag }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 26.8.1
       - name: Download the dmg and check it against SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ needs.newest.outputs.tag }}
         run: |
           mkdir assets
           version="${TAG#v}"
@@ -38,7 +68,7 @@ jobs:
           sha256sum --check dmg.sha256
       - name: Render the cask
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ needs.newest.outputs.tag }}
         run: |
           version="${TAG#v}"
           sha="$(sha256sum "assets/cc-cockpit-$version-mac-arm64.dmg" | cut -d' ' -f1)"
@@ -47,18 +77,27 @@ jobs:
       - name: Push to the tap
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ needs.newest.outputs.tag }}
         run: |
           if [ -z "$TAP_TOKEN" ]; then
             echo "publish-cask: the TAP_TOKEN secret is not set; create a token with write access to BronOS/homebrew-tap" >&2
             exit 1
           fi
-          # The token goes in a request header, not the clone URL: a URL would land in repo/.git/config
-          # and in the argv of git and git-remote-https. Masked first so the base64 form never prints.
+          # The token goes in a request header set through git's environment: a clone URL would land in
+          # repo/.git/config, and `git -c` would put it in argv, where any process can read it. Masked
+          # first so the base64 form never prints.
           auth="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          git_auth=(-c "http.extraheader=Authorization: Basic $auth")
-          git "${git_auth[@]}" clone --depth 1 https://github.com/BronOS/homebrew-tap.git repo
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic $auth"
+          git clone --depth 1 https://github.com/BronOS/homebrew-tap.git repo
+          # Never move every `brew upgrade` back: the newest published release can be older than the cask
+          # when the release behind the cask was withdrawn, and then the tap's owner decides.
+          version="${TAG#v}"
+          current="$(sed -n 's/^  version "\(.*\)"$/\1/p' repo/Casks/cc-cockpit.rb 2>/dev/null || true)"
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+            echo "publish-cask: the tap already has $current, newer than $version; leaving it"
+            exit 0
+          fi
           mkdir -p repo/Casks
           cp tap/Casks/cc-cockpit.rb repo/Casks/cc-cockpit.rb
           cd repo
@@ -69,4 +108,4 @@ jobs:
           git commit -m "cc-cockpit $TAG"
           # Explicit branch: a clone of an empty tap names its branch from init.defaultBranch (master on a
           # runner), which would not be the repo's default branch.
-          git "${git_auth[@]}" push origin HEAD:refs/heads/main
+          git push origin HEAD:refs/heads/main

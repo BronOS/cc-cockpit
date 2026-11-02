@@ -30,7 +30,8 @@
 #    `--publish never` in the npm scripts is a second guard.
 #  - Layout expectations (checked by test/unit/packaging-config.test.ts): app.asar holds out/cli,
 #    out/host, out/sdk and out/preload; node-pty (pty.node, spawn-helper) is unpacked. Linux
-#    AppImage/deb have not been launched. In an AppImage, execPath and
+#    AppImage launched only via `--appimage-extract-and-run --no-sandbox` (a plain run and Ubuntu
+#    are untested); the deb was built and unpacked but never launched. In an AppImage, execPath and
 #    resourcesPath sit under a per-launch /tmp/.mount_* path, so the `ccc` wrapper works only while
 #    the app runs and exits 0 silently otherwise, as it does for any missing app.
 appId: dev.cc-cockpit.app

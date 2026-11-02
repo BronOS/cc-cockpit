@@ -55,7 +55,7 @@ External review: auto
 
 ## Solution Overview
 
-**One source of builds.** A `v*` tag runs `release.yml`: tests, then builds on `macos-14` (arm64) and `ubuntu-latest` (x64), then
+**One source of builds.** A `v*` tag runs `release.yml`: tests, then builds on `macos-15` (arm64) and `ubuntu-latest` (x64), then
 `gh release create --draft`. A draft is invisible to users and to the update check, because `releases/latest` never returns a
 draft or prerelease. Publishing by hand runs `publish-cask.yml`, which writes the cask to `BronOS/homebrew-tap`.
 
