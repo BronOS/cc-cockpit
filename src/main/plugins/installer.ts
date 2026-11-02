@@ -799,7 +799,7 @@ export class PluginInstaller {
         if (e.source.kind === 'bundled' && !wanted.has(e.id)) this.options.index.remove(e.id)
       }
       for (const spec of specs) {
-        let existing = this.options.index.get(spec.id)
+        const existing = this.options.index.get(spec.id)
         // Checked before a non-bundled record is dropped: with the bundled folder missing (a broken
         // package) nothing would replace the user's working copy.
         if (!(await exists(spec.dir))) {
@@ -812,19 +812,20 @@ export class PluginInstaller {
           this.options.index.remove(spec.id)
           this.log(`plugin ${spec.id} ${from} dropped: the app ships it; the built-in copy is used`)
           if (existing.source.kind === 'git') await this.removeInstallDir(spec.id, existing.version)
-          existing = undefined
         }
+        // The dropped non-bundled record's state and version must not carry into the bundled entry.
+        const prior = existing?.source.kind === 'bundled' ? existing : undefined
         const result = await loadManifest(spec.dir)
         const entry: PluginEntry = {
           id: spec.id,
           // A manifest that does not load has no version; keep the last one so the entry stays valid.
-          version: result.ok ? result.manifest.version : (existing?.version ?? '0.0.0'),
+          version: result.ok ? result.manifest.version : (prior?.version ?? '0.0.0'),
           source: { kind: 'bundled', path: spec.dir },
-          state: existing?.state ?? { ok: true },
+          state: prior?.state ?? { ok: true },
           ...(spec.enabledByDefault ? { enabledByDefault: true } : {})
         }
         // Every start runs this: an unchanged entry is not worth a write.
-        if (existing && JSON.stringify(existing) === JSON.stringify(entry)) continue
+        if (prior && JSON.stringify(prior) === JSON.stringify(entry)) continue
         this.options.index.put(entry)
       }
     } catch (err) {

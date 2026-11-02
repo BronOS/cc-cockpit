@@ -42,9 +42,8 @@ export function pluginEnabledIn(
   plugin: EnablementPlugin,
   disabledBundled?: unknown
 ): boolean {
-  if (record === undefined) return false
   if (offAppWide(plugin, disabledBundled)) return false
-  return onInRecord(record, plugin)
+  return pluginOnInRecord(record, plugin)
 }
 
 /**

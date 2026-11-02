@@ -41,7 +41,7 @@ function normalizeRelative(p) {
 function relativeFromCwd(root, cwd, arg) {
   const abs = path.resolve(cwd || root, arg)
   const rel = path.relative(root, abs)
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new ReviewError(`not inside the project folder: ${arg}`)
+  if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) throw new ReviewError(`not inside the project folder: ${arg}`)
   return rel.split(path.sep).join('/')
 }
 

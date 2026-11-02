@@ -37,6 +37,8 @@ test('normalizeRelative refuses escapes', () => {
 test('relativeFromCwd', () => {
   assert.equal(files.relativeFromCwd('/p', '/p/src', 'a.js'), 'src/a.js')
   assert.throws(() => files.relativeFromCwd('/p', '/p', '../q/a.js'), /not inside/)
+  // A name that merely begins with two dots is inside the project.
+  assert.equal(files.relativeFromCwd('/p', '/p', '..hidden/x'), '..hidden/x')
 })
 
 test('readSides: changed, new, deleted, unchanged', async () => {
