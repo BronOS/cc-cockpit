@@ -136,7 +136,12 @@ Line numbers refer to the version named in parentheses. The quote travels with e
 Claude may already have changed the file by the time it reads the review. The whole message is
 capped (about 20,000 characters); past that, quotes are shortened first, and a review still too long
 goes out cut, with its full draft kept. Note inputs take 4,000 characters, the comment 20,000 (shown
-near the limit), the same caps the host applies to a draft.
+near the limit), and a review 200 notes ("Add note" turns off there, with a hint), the same caps the
+host applies to a draft; a draft over 400,000 characters as JSON is not saved, and the page says so.
+A draft the store refuses is shown in the review as "Draft not saved" (the last saved one stays),
+Edit then keeps the review open, and closing it with the failure unresolved ends in a notice. A
+review queued in a busy tab keeps its draft until the tab's next prompt is that review; when the
+tab ends first, a notice says it may not have reached Claude.
 
 ## Technology
 

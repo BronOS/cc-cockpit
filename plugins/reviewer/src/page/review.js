@@ -4,9 +4,12 @@
 //
 // The host owns everything that leaves the page: it saves drafts and formats and sends the review.
 // The page shows the two sides, collects notes and the global comment, and posts
-//   { type: 'draft', draft }                          on every change (debounced);
+//   { type: 'draft', draft }                          on every change;
 //   { result: { action: 'discuss'|'new'|'close', tabId?, draft } }   from the buttons.
-// Esc closes the overlay without asking the page, so drafts are posted as they change.
+// Esc closes the overlay without asking the page, so drafts are posted as they change, at once (a
+// debounce here lost the last keystrokes to an Esc pressed within it; the host coalesces writes).
+// The host answers { type: 'draft-error', message } when a draft could not be stored and
+// { type: 'draft-saved' } once a later one was: the page shows the failure while it is open.
 
 import { EditorState, StateField, StateEffect, RangeSetBuilder, Compartment } from '@codemirror/state'
 import { EditorView, Decoration, lineNumbers, highlightActiveLine, keymap, drawSelection } from '@codemirror/view'
@@ -41,8 +44,13 @@ const QUOTE_MAX = 500
 // showed the shortened draft as if that were all the person wrote.
 const NOTE_MAX = 4000
 const GLOBAL_MAX = 20000
+// The host's MAX_NOTES and MAX_DRAFT_JSON (same test). Past MAX_NOTES the host dropped the later
+// notes silently, so "Add note" stops there and says why. A draft past DRAFT_JSON_MAX would not fit
+// the store or a page message (core drops a big one with only a console warning): the page does not
+// post it, shows why, and the host keeps the last draft that fit.
+const NOTES_MAX = 200
+const DRAFT_JSON_MAX = 400000
 const LIMIT_HINT_AT = 0.9 // show "n / max" once the text reaches this share of its cap
-const DRAFT_DEBOUNCE_MS = 300
 
 // ---- language by file name ----
 
@@ -165,7 +173,6 @@ function el(tag, cls, text) {
   return e
 }
 
-let draftTimer = null
 /** Sets maxlength on a textarea and keeps `hint` showing "n / max" near the cap. */
 function limitInput(input, hint, max) {
   input.maxLength = max
@@ -178,9 +185,23 @@ function limitInput(input, hint, max) {
   update()
 }
 
+// Why the draft is not saved: `tooLarge` from the page's own check, `hostError` from the host.
+const saveState = { tooLarge: '', hostError: '' }
+function showSaveState() {
+  const msg = saveState.tooLarge || saveState.hostError
+  $('draft-error').textContent = msg
+  $('draft-error').hidden = !msg
+}
+
+/** Posts the draft, unless it is too large to store: then it says so and posts nothing. True when posted. */
 function postDraft() {
-  clearTimeout(draftTimer)
-  draftTimer = setTimeout(() => ccPanel.post({ type: 'draft', draft: state.draft }), DRAFT_DEBOUNCE_MS)
+  const size = JSON.stringify(state.draft).length
+  saveState.tooLarge =
+    size > DRAFT_JSON_MAX ? `Draft not saved: it is too large (${size} of ${DRAFT_JSON_MAX} characters). Shorten or delete a note; the last saved draft is kept.` : ''
+  showSaveState()
+  if (saveState.tooLarge) return false
+  ccPanel.post({ type: 'draft', draft: state.draft })
+  return true
 }
 
 function refreshHighlights() {
@@ -309,12 +330,16 @@ function currentSelectionSide() {
   return ['new', 'old'].find((s) => selectionOf(s)) || null
 }
 
+const atNoteLimit = () => state.draft.notes.length >= NOTES_MAX
+
 function updateAddButton() {
-  $('add-note').disabled = !currentSelectionSide()
+  $('add-note').disabled = atNoteLimit() || !currentSelectionSide()
+  $('notes-limit').hidden = !atNoteLimit()
 }
 
 let noteSeq = 0
 function addNote(sideHint) {
+  if (atNoteLimit()) return updateAddButton() // the hint says why
   const side = sideHint && selectionOf(sideHint) ? sideHint : currentSelectionSide()
   if (!side) return
   const sel = selectionOf(side)
@@ -323,6 +348,7 @@ function addNote(sideHint) {
   state.draft.notes.push(note)
   renderNotes(note.id)
   refreshHighlights()
+  updateAddButton()
   postDraft()
 }
 
@@ -352,6 +378,7 @@ function renderNotes(focusId) {
       state.draft.notes = state.draft.notes.filter((x) => x.id !== n.id)
       renderNotes()
       refreshHighlights()
+      updateAddButton()
       postDraft()
     })
     head.append(where, del)
@@ -414,19 +441,31 @@ function edit() {
   if (state.sides.newMissing) return
   const v = state.views.new
   const line = v ? v.state.doc.lineAt(v.state.selection.main.head).number : 1
-  clearTimeout(draftTimer)
-  ccPanel.post({ type: 'draft', draft: state.draft })
+  // Edit closes the review: not while the draft is unsaved, or the unsaved part is gone.
+  if (!postDraft()) {
+    $('status').textContent = 'Not opening the editor: the draft is not saved.'
+    return
+  }
   $('status').textContent = 'Opening the editor…'
   ccPanel.post({ type: 'edit', line })
 }
 
 function finish(action) {
-  // Flush the pending draft before any check below can return: cancelling the debounce and then
-  // refusing (no tab chosen) dropped the save, and a following Esc or ✕ lost the text.
-  clearTimeout(draftTimer)
-  ccPanel.post({ type: 'draft', draft: state.draft })
+  // Post the draft before any check below can return: a refusal (no tab chosen) that skipped the
+  // save let a following Esc or ✕ lose the text.
+  const posted = postDraft()
+  if (action === 'close') {
+    // No draft in the result: the host has the last one that fit, and a draft too large for a
+    // message would be dropped with the result, leaving Close doing nothing.
+    ccPanel.post({ result: { action } })
+    return
+  }
+  if (!posted) {
+    $('status').textContent = 'Not sent: the draft is too large. Shorten or delete a note first.'
+    return
+  }
   const empty = !state.draft.global.trim() && state.draft.notes.every((n) => !n.text.trim())
-  if (action !== 'close' && empty) {
+  if (empty) {
     $('status').textContent = 'Nothing to send yet: write a comment or a note.'
     return
   }
@@ -490,6 +529,13 @@ ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return
   if (m.type === 'init') init(m)
   else if (m.type === 'error') $('status').textContent = m.message
+  else if (m.type === 'draft-error') {
+    saveState.hostError = typeof m.message === 'string' ? m.message : 'Draft not saved.'
+    showSaveState()
+  } else if (m.type === 'draft-saved') {
+    saveState.hostError = ''
+    showSaveState()
+  }
   else if (m.type === 'tabs') {
     state.tabs = m.tabs || []
     renderTabs()

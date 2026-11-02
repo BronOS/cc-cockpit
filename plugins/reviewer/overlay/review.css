@@ -13,6 +13,7 @@ footer { border-top: 1px solid var(--cc-border); }
 .tools { display: flex; gap: 6px; }
 .spacer { flex: 1; }
 .banner { padding: 6px 12px; background: var(--cc-bg-banner); color: var(--cc-fg-muted); border-bottom: 1px solid var(--cc-border); }
+.banner.error { background: var(--cc-bg-error); color: var(--cc-fg); }
 #global {
   margin: 8px 12px; padding: 6px 8px; resize: vertical; min-height: 34px;
   font: inherit; color: inherit; background: var(--cc-surface-1); border: 1px solid var(--cc-border); border-radius: 4px;
@@ -29,6 +30,7 @@ aside h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-s
 .quote { margin: 0 0 6px; padding: 4px 6px; max-height: 6em; overflow: hidden; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.4 ui-monospace, monospace; color: var(--cc-fg-muted); background: var(--cc-bg); border-radius: 3px; }
 .limit { margin: -4px 12px 6px; font-size: 11px; color: var(--cc-fg-muted); text-align: right; }
 .note .limit { margin: 2px 0 0; }
+aside > .limit { margin: 0 0 8px; text-align: left; }
 .note-text { width: 100%; resize: vertical; font: inherit; color: inherit; background: var(--cc-bg); border: 1px solid var(--cc-border); border-radius: 3px; padding: 4px 6px; }
 button, select {
   font: inherit; color: inherit; background: var(--cc-surface-1);

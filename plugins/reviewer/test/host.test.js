@@ -217,3 +217,202 @@ test('a long path is cut from the left to fit the overlay title limit', async ()
   assert.equal(t.length, 200)
   assert.ok(t.startsWith('Review: …') && t.endsWith('/file.js'))
 })
+
+// A handle whose page we drive: `say` posts as the page, `end` settles result.
+function pageHandle(f) {
+  let end
+  const h = {
+    listeners: [],
+    posts: [],
+    closed: 0,
+    onMessage: (l) => (h.listeners.push(l), () => {}),
+    post: (m) => h.posts.push(m),
+    say: (m) => h.listeners.forEach((l) => l(m)),
+    focus() {},
+    close: () => h.closed++,
+    result: new Promise((r) => (end = r)),
+    end: (r) => end(r),
+  }
+  f.handles.push(h)
+  return h
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const SAVE_WAIT = 400 // past the host's draft write coalescing
+
+function storeFake(f, { failSet } = {}) {
+  const store = new Map()
+  const notices = []
+  f.ctx.storage = {
+    get: async (k) => store.get(k) ?? null,
+    set: async (k, v) => {
+      if (failSet && failSet(v)) throw new RangeError('storage: the store is full')
+      store.set(k, structuredClone(v))
+    },
+    delete: async (k) => store.delete(k),
+  }
+  f.ctx.notify = (m) => notices.push(m)
+  return { store, notices }
+}
+
+const note = (text, i = 0) => ({ id: `n${i}`, side: 'new', from: 1, to: 1, quote: 'two', text })
+
+test('a failed draft write is shown in the page, cleared by a later write, and reported at close', async () => {
+  const f = setup({ editorAvailable: true })
+  let full = true
+  const { store, notices } = storeFake(f, { failSet: () => full })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: 'first', notes: [] } })
+  await wait(SAVE_WAIT)
+  const err = h.posts.find((m) => m.type === 'draft-error')
+  assert.ok(err, 'the page hears about the failed write')
+  assert.match(err.message, /Draft not saved: storage: the store is full/)
+
+  full = false
+  h.say({ type: 'draft', draft: { global: 'second', notes: [] } })
+  await wait(SAVE_WAIT)
+  assert.ok(h.posts.some((m) => m.type === 'draft-saved'))
+  assert.equal(store.get('draft:a.js').global, 'second')
+
+  // Fails again, then Esc: the person is told, and the stored draft is the last good one.
+  full = true
+  h.say({ type: 'draft', draft: { global: 'third', notes: [] } })
+  h.end({ kind: 'dismissed' })
+  await wait(50)
+  assert.equal(store.get('draft:a.js').global, 'second')
+  assert.ok(notices.some((m) => /review draft of a\.js was not saved: storage: the store is full/.test(m)))
+  host.deactivate()
+})
+
+test('Esc right after a change still stores it: the coalesced write is flushed at close', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store, notices } = storeFake(f)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: 'typed just now', notes: [] } })
+  h.end({ kind: 'dismissed' })
+  await wait(50)
+  assert.equal(store.get('draft:a.js').global, 'typed just now')
+  assert.equal(notices.length, 0)
+  host.deactivate()
+})
+
+test('Edit does not close the review while the draft is unsaved', async () => {
+  const f = setup({ editorAvailable: true })
+  storeFake(f, { failSet: () => true })
+  const opened = []
+  f.ctx.services.use = () => ({ open: async (p) => opened.push(p) })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: 'unsaved', notes: [] } })
+  h.say({ type: 'edit', line: 1 })
+  await wait(50)
+  assert.equal(opened.length, 0)
+  assert.equal(h.closed, 0)
+  assert.ok(h.posts.some((m) => m.type === 'error' && /draft is not saved/.test(m.message)))
+  host.deactivate()
+})
+
+test('a draft cleanDraft would cut is neither stored nor sent; the last good draft stays', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store, notices } = storeFake(f)
+  const sent = []
+  f.ctx.sessions.open = async (o) => sent.push(o.prompt)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: '', notes: [note('kept')] } })
+  await wait(SAVE_WAIT)
+  // 201 notes: cleanDraft keeps 200, and a send would then delete the draft with one note unsent.
+  const tooMany = { global: '', notes: Array.from({ length: 201 }, (_, i) => note(`n${i}`, i)) }
+  h.say({ type: 'draft', draft: tooMany })
+  await wait(SAVE_WAIT)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['kept'])
+  assert.ok(h.posts.some((m) => m.type === 'draft-error' && /more than 200 notes/.test(m.message)))
+  h.end({ kind: 'value', value: { action: 'new', draft: tooMany } })
+  await wait(50)
+  assert.equal(sent.length, 0)
+  assert.ok(store.has('draft:a.js'))
+  assert.ok(notices.some((m) => /not sent: there are more than 200 notes/.test(m)))
+  host.deactivate()
+})
+
+test('a send that fails with the store failing too says the draft was not saved', async () => {
+  const f = setup({ editorAvailable: false })
+  const { notices } = storeFake(f, { failSet: () => true })
+  f.ctx.sessions.open = async () => {
+    throw new Error('sessions: too many tabs')
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  f.handles[0].end({ kind: 'value', value: { action: 'new', draft: { global: 'g', notes: [] } } })
+  await wait(50)
+  assert.equal(notices.length, 1)
+  assert.match(notices[0], /not sent: sessions: too many tabs\. The draft could not be saved: storage: the store is full/)
+  assert.doesNotMatch(notices[0], /draft is kept/)
+  host.deactivate()
+})
+
+test('a queued review keeps its draft until the tab takes it, and says so when the tab ends first', async () => {
+  for (const outcome of ['delivered', 'ended']) {
+    const f = setup({ editorAvailable: false })
+    const { store, notices } = storeFake(f)
+    let tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+    const changes = []
+    let sentText
+    f.ctx.sessions.list = async () => [tab]
+    f.ctx.sessions.onChange = (l) => (changes.push(l), () => changes.splice(changes.indexOf(l), 1))
+    f.ctx.sessions.send = async (id, text) => ((sentText = text), { queued: true, itemId: 'q1' })
+    f.ctx.overlay.start = () => pageHandle(f)
+    host.activate(f.ctx)
+    await f.provided.reviewer.open('a.js')
+    f.handles[0].end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft: { global: 'please check', notes: [] } } })
+    await wait(50)
+    assert.equal(store.get('draft:a.js').global, 'please check', 'kept while queued')
+    assert.ok(notices.some((m) => /queued.*kept until Claude gets it/.test(m)))
+    assert.equal(changes.length, 1)
+
+    // Another prompt first (not ours): still queued.
+    tab = { ...tab, lastPrompt: 'something else' }
+    changes[0]([tab])
+    await wait(20)
+    assert.ok(store.has('draft:a.js'))
+
+    if (outcome === 'delivered') {
+      tab = { ...tab, lastPrompt: sentText.replace(/\n/g, '\r\n').slice(0, 2048) }
+      changes[0]([tab])
+      await wait(20)
+      assert.equal(store.has('draft:a.js'), false)
+    } else {
+      changes[0]([{ ...tab, status: 'ended' }])
+      await wait(20)
+      assert.ok(store.has('draft:a.js'))
+      assert.ok(notices.some((m) => /may not have reached Claude: its tab ended/.test(m)))
+    }
+    assert.equal(changes.length, 0, 'the watch stops')
+    host.deactivate()
+  }
+})
+
+test('a review delivered at once clears its draft', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  store.set('draft:a.js', { global: 'old', notes: [] })
+  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: '' }]
+  f.ctx.sessions.send = async () => ({ delivered: true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  f.handles[0].end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft: { global: 'go', notes: [] } } })
+  await wait(50)
+  assert.equal(store.has('draft:a.js'), false)
+  host.deactivate()
+})

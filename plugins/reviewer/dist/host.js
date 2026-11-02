@@ -25,6 +25,11 @@ const MAX_TITLE_CHARS = 200
 // How long openReview waits for the overlay to be refused before it counts it as shown. A refusal
 // comes back in one host-to-main round trip, far under this (the editor waits the same).
 const OPEN_SETTLE_MS = 500
+// The page posts its draft on every change, so Esc (which closes without asking the page) loses
+// no keystroke; storage writes are coalesced to one per this many ms, and flushed when it closes.
+const DRAFT_SAVE_MS = 300
+// How much of a queued review's start must match the tab's next prompt to count as delivered.
+const MATCH_CHARS = 120
 
 /** `prefix` + `p`, cut from the left with a leading … so it fits main's title limit. Exported for tests. */
 function overlayTitle(prefix, p) {
@@ -49,7 +54,18 @@ async function earlyEnd(result) {
   }
 }
 
+/** A prompt's start with control characters and runs of whitespace made one space (the send gate strips controls). */
+const promptStart = (s) =>
+  String(s || '')
+    .replace(/[\x00-\x1f\x7f\s]+/g, ' ')
+    .trim()
+    .slice(0, MATCH_CHARS)
+
 let disposers = []
+// Ended on deactivate: the watches of queued reviews (their drafts stay kept), and the draft
+// writers of open reviews (flushed, best effort, so a reload loses no pending write).
+const watches = new Set()
+const flushers = new Set()
 
 exports.activate = (ctx) => {
   const root = async () => ctx.projectDir
@@ -85,6 +101,42 @@ exports.activate = (ctx) => {
         status: s.status,
         lastPrompt: (s.lastPrompt || '').replace(/\s+/g, ' ').slice(0, LAST_PROMPT_MAX),
       }))
+  }
+
+  /**
+   * A review queued in a busy tab is not delivered yet: main drops the queue when the tab ends
+   * (logged only), so deleting the draft at send time lost the whole review then. The draft stays
+   * stored until the tab's next prompt starts like the review (it reached Claude: the draft is
+   * deleted, unless it changed since), or the tab ends first (the person is told; the draft stays).
+   * `prevPrompt` is the tab's prompt before the send: the same review sent twice is not mistaken
+   * for this one's delivery. No plugin API reports a queued item's fate, hence the prompt match.
+   */
+  function watchQueued({ path, draftKey, tabId, text, sentDraft, prevPrompt, kept }) {
+    const want = promptStart(text)
+    let over = false
+    const end = () => {
+      over = true
+      stop()
+      watches.delete(stop)
+    }
+    const check = async (list) => {
+      if (over) return
+      const s = list.find((x) => x.tabId === tabId)
+      if (s && s.lastPrompt !== prevPrompt && promptStart(s.lastPrompt) === want) {
+        end()
+        // A review reopened since may have changed the draft: only the one that was sent goes.
+        const now = await ctx.storage.get(draftKey)
+        if (JSON.stringify(now) === JSON.stringify(sentDraft)) await ctx.storage.delete(draftKey)
+      } else if (!s || s.status === 'ended') {
+        end()
+        ctx.notify(`Review of ${path} may not have reached Claude: its tab ended while the review was queued. ${kept ? 'The draft is kept.' : 'Its draft could not be saved.'}`)
+      }
+    }
+    const run = (list) => check(list).catch((e) => ctx.log.warn(`queued review of ${path}: ${e.message}`))
+    const stop = ctx.sessions.onChange(run)
+    watches.add(stop)
+    // Delivery may have happened before the watch started (the tab stopped right after the send).
+    ctx.sessions.list().then(run, () => {})
   }
 
   /**
@@ -125,28 +177,86 @@ exports.activate = (ctx) => {
     opening.catch(() => {}) // observed by focusExisting only when a second open comes in the wait
     const entry = { handle, opening }
     open.set(sides.path, entry)
-    // Registered before init is posted: the page posts drafts and Edit as soon as it has loaded.
-    // Drafts arrive on every change (debounced in the page): Esc closes the overlay without
-    // asking the page, so the last posted draft is what Close keeps.
+    // Drafts arrive on every change: Esc closes the overlay without asking the page, so the last
+    // posted draft is what Close keeps. Writes are coalesced: `pending` is the newest draft not
+    // written yet, and flush() queues it behind the writes before it. A failed write is shown in
+    // the page while it is open (draft-error, cleared by draft-saved once a later write works) and
+    // in a notice when the overlay closes with it unresolved: the failure used to be only logged,
+    // so Esc or Edit threw the unsaved text away without a word. Storage keeps the last good draft.
+    let pending = null
+    let saveTimer = null
     let saving = Promise.resolve()
+    let saveError = null // why the newest text is not stored; null while it is
+    let failed = null // the draft whose write failed (retried once at close); null for a draftProblem
+    const post = (msg) => {
+      try {
+        handle.post(msg)
+      } catch (e) {
+        ctx.log.warn(`post to the review page: ${e.message}`) // never break the save chain
+      }
+    }
+    const showSaveError = (why) => {
+      saveError = why
+      post({ type: 'draft-error', message: `Draft not saved: ${why}. The last saved draft is kept.` })
+    }
+    const write = (value) => (review.isEmpty(value) ? ctx.storage.delete(draftKey) : ctx.storage.set(draftKey, value))
+    function flush() {
+      clearTimeout(saveTimer)
+      saveTimer = null
+      if (pending) {
+        const value = pending
+        pending = null
+        saving = saving.then(() =>
+          write(value).then(
+            () => {
+              failed = null
+              if (saveError) post({ type: 'draft-saved' })
+              saveError = null
+            },
+            (e) => {
+              ctx.log.error(`draft save: ${e.message}`)
+              failed = value
+              showSaveError(e.message)
+            },
+          ),
+        )
+      }
+      return saving
+    }
+    flushers.add(flush)
+
+    // Registered before init is posted: the page posts drafts and Edit as soon as it has loaded.
     handle.onMessage((m) => {
       if (!m || typeof m !== 'object') return
       if (m.type === 'draft') {
+        // A draft cleanDraft would cut is not stored (storing it, or sending it and deleting the
+        // draft, dropped the rest): the last good one stays, and the page says why.
+        const problem = review.draftProblem(m.draft)
+        if (problem) {
+          flush()
+          saving = saving.then(() => {
+            failed = null
+            showSaveError(problem)
+          })
+          return
+        }
         draft = review.cleanDraft(m.draft)
-        const value = review.isEmpty(draft) ? null : draft
-        saving = saving
-          .then(() => (value ? ctx.storage.set(draftKey, value) : ctx.storage.delete(draftKey)))
-          .catch((e) => ctx.log.error(`draft save: ${e.message}`))
+        pending = draft
+        clearTimeout(saveTimer)
+        saveTimer = setTimeout(flush, DRAFT_SAVE_MS)
       } else if (m.type === 'layout' && LAYOUTS.includes(m.layout)) {
         ctx.appStorage.set(LAYOUT_KEY, m.layout).catch((e) => ctx.log.error(`layout save: ${e.message}`))
       } else if (m.type === 'edit') {
         // Open the editor first and close the review only when that worked, so a missing editor
-        // leaves the person where they were, with the reason. The draft is already saved.
+        // leaves the person where they were, with the reason. Not while the newest draft is
+        // unsaved: closing then would lose it, so the review stays open and says so.
         const line = Number.isInteger(m.line) && m.line >= 1 ? m.line : undefined
-        editor
-          .open(sides.path, { line })
-          .then(() => handle.close())
-          .catch((e) => handle.post({ type: 'error', message: e.message.replace(/^editor: /, '') }))
+        flush()
+          .then(() => {
+            if (saveError) return post({ type: 'error', message: `The editor is not opened while the draft is not saved (${saveError}).` })
+            return editor.open(sides.path, { line }).then(() => handle.close())
+          })
+          .catch((e) => post({ type: 'error', message: e.message.replace(/^editor: /, '') }))
       } else if (m.type === 'tabs') {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
       }
@@ -156,6 +266,7 @@ exports.activate = (ctx) => {
       handle.post(init)
     } catch (e) {
       open.delete(sides.path)
+      flushers.delete(flush)
       settle.reject(e)
       handle.close()
       throw e
@@ -171,49 +282,96 @@ exports.activate = (ctx) => {
     const ended = await earlyEnd(handle.result)
     if (ended && ended.error) {
       if (open.get(sides.path) === entry) open.delete(sides.path)
+      flushers.delete(flush) // a refused overlay never loaded its page, so no draft is pending
       const err = new files.ReviewError(`the review overlay did not open: ${ended.error.message}`, { fallback: true })
       settle.reject(err)
       throw err
     }
     settle.resolve()
 
+    /** Closed without sending: tell the person when the newest draft never reached storage. */
+    async function closedUnsaved() {
+      if (!saveError) return
+      // One more try for a write that failed (a full store may have room again).
+      if (failed) {
+        try {
+          await ctx.storage.set(draftKey, failed)
+          return
+        } catch (e) {
+          saveError = e.message
+        }
+      }
+      ctx.notify(`The review draft of ${sides.path} was not saved: ${saveError}. The last saved draft is kept.`)
+    }
+
     const done = handle.result
       .then(async (res) => {
-        await saving
+        await flush()
+        const v = res && res.kind === 'value' && res.value && typeof res.value === 'object' ? res.value : null
         // Close, Esc, ✕: nothing is sent and the draft stays.
-        if (!res || res.kind !== 'value' || !res.value || typeof res.value !== 'object') return
-        const v = res.value
-        const finalDraft = review.cleanDraft(v.draft || draft)
-        if (review.isEmpty(finalDraft)) return
+        if (!v || (v.action !== 'discuss' && v.action !== 'new')) return closedUnsaved()
+        const raw = v.draft || draft
+        const problem = review.draftProblem(raw)
+        if (problem) {
+          ctx.notify(`Review of ${sides.path} not sent: ${problem}. The last saved draft is kept.`)
+          return
+        }
+        const finalDraft = review.cleanDraft(raw)
+        if (review.isEmpty(finalDraft)) return closedUnsaved()
         // A review past MAX_MESSAGE even without quotes goes out with its tail cut; the draft is
         // kept whole then (deleting it lost the unsent part), and the person is told.
         const { text, cut } = review.buildReview(finalDraft, sides)
-        if (v.action === 'discuss') {
-          const tabsNow = await tabsInfo()
-          if (!tabsNow.some((t) => t.tabId === v.tabId)) {
+        // Stores the full draft whenever Claude may not get all of it; says whether that worked
+        // (the send failing and the write failing too must not read "the draft is kept").
+        const keep = async (kept) => {
+          try {
             await ctx.storage.set(draftKey, finalDraft)
-            ctx.notify('Review not sent: that Claude tab is gone. The draft is kept.')
-            return
+            return kept
+          } catch (e) {
+            ctx.log.error(`draft save: ${e.message}`)
+            return `The draft could not be saved: ${e.message}.`
           }
-          const sent = await ctx.sessions.send(v.tabId, text)
-          if (sent && sent.queued) ctx.notify(`Review of ${sides.path} queued: it is sent when Claude is waiting for input.`)
-        } else if (v.action === 'new') {
-          await ctx.sessions.open({ prompt: text })
-        } else {
+        }
+        let queued = false
+        try {
+          if (v.action === 'discuss') {
+            const list = await ctx.sessions.list()
+            const tab = list.find((s) => s.tabId === v.tabId && s.status !== 'ended')
+            if (!tab) {
+              ctx.notify(`Review not sent: that Claude tab is gone. ${await keep('The draft is kept.')}`)
+              return
+            }
+            const sent = await ctx.sessions.send(v.tabId, text)
+            if (sent && sent.queued) {
+              queued = true
+              const KEPT = 'The draft is kept until Claude gets it.'
+              const kept = await keep(KEPT)
+              watchQueued({ path: sides.path, draftKey, tabId: v.tabId, text, sentDraft: finalDraft, prevPrompt: tab.lastPrompt, kept: kept === KEPT })
+              const cutNote = cut ? ` It was too long and was cut at ${review.MAX_MESSAGE} characters.` : ''
+              ctx.notify(`Review of ${sides.path} queued: it is sent when Claude is waiting for input.${cutNote} ${kept}`)
+            }
+          } else {
+            await ctx.sessions.open({ prompt: text })
+          }
+        } catch (e) {
+          ctx.log.error(`review of ${sides.path}: ${e.message}`)
+          ctx.notify(`Review of ${sides.path} not sent: ${e.message}. ${await keep('The draft is kept.')}`)
           return
         }
+        if (queued) return
         if (cut) {
-          await ctx.storage.set(draftKey, finalDraft)
-          ctx.notify(`Review of ${sides.path} was too long and was cut at ${review.MAX_MESSAGE} characters. The full draft is kept.`)
+          ctx.notify(`Review of ${sides.path} was too long and was cut at ${review.MAX_MESSAGE} characters. ${await keep('The full draft is kept.')}`)
           return
         }
-        await ctx.storage.delete(draftKey)
+        // All of it reached Claude: only now does the draft go. A failed delete only leaves it.
+        await ctx.storage.delete(draftKey).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
       })
       .catch((e) => {
         ctx.log.error(`review of ${sides.path}: ${e.message}`)
-        ctx.notify(`Review not sent: ${e.message}. The draft is kept.`)
+        ctx.notify(`Review of ${sides.path}: ${e.message}. The last saved draft is kept.`)
       })
       .finally(() => {
+        flushers.delete(flush)
         if (open.get(sides.path) === entry) open.delete(sides.path)
       })
     return { done }
@@ -260,6 +418,17 @@ exports.activate = (ctx) => {
 }
 
 exports.deactivate = () => {
+  // Pending draft writes go out now (best effort: the store may already refuse), and the queued
+  // review watches stop; their drafts stay stored.
+  for (const fn of [...flushers, ...watches]) {
+    try {
+      fn()
+    } catch {
+      // a host that is going away
+    }
+  }
+  flushers.clear()
+  watches.clear()
   for (const d of disposers) {
     try {
       if (typeof d === 'function') d()

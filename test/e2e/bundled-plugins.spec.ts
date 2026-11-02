@@ -70,6 +70,25 @@ test('the reviewer and editor load by default, show as built in, and a modified-
   await expect(page.locator('.session-file')).toHaveCount(1)
   await page.getByRole('button', { name: file }).click()
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Review: src/a.txt'])
+
+  // Esc right after typing keeps the text: the page posts every change at once (a 300 ms page
+  // debounce lost the last keystrokes), and the host flushes its pending write at close.
+  const review = page.frameLocator('iframe[title="Review: src/a.txt"]')
+  const comment = review.getByPlaceholder('Comment on the whole file (optional)')
+  await comment.fill('kept through Esc')
+  await expect(review.locator('#draft-error')).toBeHidden()
+  await expect(review.locator('#notes-limit')).toBeHidden()
+  // A native key press, as a person types it: main sees it before the page (overlays.spec.ts).
+  await cockpit.app.evaluate(({ BrowserWindow }) => {
+    const wc = BrowserWindow.getAllWindows()[0]!.webContents
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  })
+  await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
+  await page.getByRole('button', { name: file }).click()
+  await expect(page.frameLocator('iframe[title="Review: src/a.txt"]').getByPlaceholder('Comment on the whole file (optional)')).toHaveValue(
+    'kept through Esc'
+  )
 })
 
 const running = async (c: Cockpit, dir: string): Promise<string[]> =>

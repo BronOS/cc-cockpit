@@ -88,3 +88,36 @@ test('draftKey: plain prefix, hashed when the path would exceed the key limit', 
   assert.equal(k, draftKey(long))
   assert.notEqual(k, draftKey(long + 'x'))
 })
+
+test('draftProblem: names what cleanDraft would cut, null when it keeps everything', () => {
+  const { draftProblem, MAX_NOTES, MAX_QUOTE, MAX_DRAFT_JSON } = require('../dist/lib/review')
+  const note = (i) => ({ id: `n${i}`, from: 1, to: 1, quote: '', text: 't' })
+  assert.equal(draftProblem({ global: 'g', notes: [note(1)] }), null)
+  assert.equal(draftProblem(null), null)
+  assert.equal(draftProblem({ notes: Array.from({ length: MAX_NOTES }, (_, i) => note(i)) }), null)
+  assert.match(draftProblem({ notes: Array.from({ length: MAX_NOTES + 1 }, (_, i) => note(i)) }), /more than 200 notes/)
+  assert.match(draftProblem({ global: 'g'.repeat(MAX_GLOBAL + 1) }), /comment is over/)
+  assert.match(draftProblem({ notes: [{ ...note(1), text: 't'.repeat(MAX_NOTE_TEXT + 1) }] }), /note is over/)
+  assert.match(draftProblem({ notes: [{ ...note(1), quote: 'q'.repeat(MAX_QUOTE + 1) }] }), /quote is over/)
+  // A note with text but no line range was dropped whole; one without text holds nothing.
+  assert.match(draftProblem({ notes: [{ ...note(1), from: 0 }] }), /no valid line range/)
+  assert.equal(draftProblem({ notes: [{ ...note(1), from: 0, text: ' ' }] }), null)
+  // Every field within its cap, the whole still too large to store or post.
+  const big = Array.from({ length: 120 }, (_, i) => ({ ...note(i), text: '"'.repeat(MAX_NOTE_TEXT) }))
+  assert.ok(JSON.stringify({ notes: big }).length > MAX_DRAFT_JSON)
+  assert.match(draftProblem({ notes: big }), /too large/)
+})
+
+test('the page enforces the note count and draft size caps of the host', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const { MAX_NOTES, MAX_DRAFT_JSON } = require('../dist/lib/review')
+  const page = fs.readFileSync(path.join(__dirname, '../src/page/review.js'), 'utf8')
+  const html = fs.readFileSync(path.join(__dirname, '../overlay/review.html'), 'utf8')
+  assert.match(page, new RegExp(`const NOTES_MAX = ${MAX_NOTES}\\n`))
+  assert.match(page, new RegExp(`const DRAFT_JSON_MAX = ${MAX_DRAFT_JSON}\\n`))
+  assert.match(html, new RegExp(`id="notes-limit"[^>]*>${MAX_NOTES} notes`))
+  assert.match(html, /id="draft-error"/)
+  // Posted at once on every change: a page debounce lost the last keystrokes to a quick Esc.
+  assert.doesNotMatch(page, /setTimeout\(\(\) => ccPanel\.post\(\{ type: 'draft'/)
+})
