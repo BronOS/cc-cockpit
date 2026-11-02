@@ -123,6 +123,61 @@ test('a refused overlay fails the open, so a click falls back and the service an
   host.deactivate()
 })
 
+test('concurrent opens share a refusal: the second does not report success for a refused overlay', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => {
+    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
+    f.handles.push(h)
+    return h
+  }
+  host.activate(f.ctx)
+  const results = await Promise.allSettled([f.provided.reviewer.open('a.js'), f.provided.reviewer.open('a.js')])
+  assert.equal(f.handles.length, 1)
+  for (const r of results) {
+    assert.equal(r.status, 'rejected')
+    assert.match(r.reason.message, /review overlay did not open: overlay: at most 3 open/)
+  }
+  host.deactivate()
+})
+
+test('a review cut for length is sent but its full draft is kept, and the person is told', async () => {
+  const f = setup({ editorAvailable: false })
+  const store = new Map()
+  const notices = []
+  const sent = []
+  f.ctx.storage = { get: async (k) => store.get(k) ?? null, set: async (k, v) => store.set(k, v), delete: async (k) => store.delete(k) }
+  f.ctx.notify = (m) => notices.push(m)
+  f.ctx.sessions.open = async (o) => sent.push(o.prompt)
+  let finish
+  f.ctx.overlay.start = () => {
+    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, close() {}, result: new Promise((r) => (finish = r)) }
+    f.handles.push(h)
+    return h
+  }
+  let onOpen
+  f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
+  host.activate(f.ctx)
+  const notes = Array.from({ length: 10 }, (_, i) => ({ id: String(i), from: 1, to: 1, text: 'x'.repeat(4000), quote: '' }))
+  const clicked = onOpen({ path: 'a.js' })
+  await new Promise((r) => setTimeout(r, 600)) // past the open wait
+  finish({ kind: 'value', value: { action: 'new', draft: { global: '', notes } } })
+  await clicked
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /\(review cut: too long\)$/)
+  const kept = [...store.values()][0]
+  assert.equal(kept.notes.length, 10)
+  assert.equal(kept.notes[9].text.length, 4000)
+  assert.ok(notices.some((m) => /too long and was cut/.test(m)))
+
+  // A review that fits still clears the draft once sent.
+  const clicked2 = onOpen({ path: 'a.js' })
+  await new Promise((r) => setTimeout(r, 600))
+  finish({ kind: 'value', value: { action: 'new', draft: { global: 'short', notes: [] } } })
+  await clicked2
+  assert.equal(store.size, 0)
+  host.deactivate()
+})
+
 test('a page message sent right after init is handled, not lost to the open wait', async () => {
   // The listener was registered after the 500 ms "did it open" wait, so a draft or an Edit click
   // the page sent as soon as it loaded was dropped.

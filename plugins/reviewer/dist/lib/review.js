@@ -6,7 +6,7 @@
 
 const MAX_NOTES = 200
 const MAX_GLOBAL = 20000
-const MAX_NOTE_TEXT = 4000
+const MAX_NOTE_TEXT = 4000 // the page's note and comment inputs carry the same caps as maxlength
 const MAX_QUOTE = 500 // per note, as stored; the message may shorten it further
 const MAX_MESSAGE = 20000 // what one Discuss / New session sends; quotes are shortened first
 
@@ -47,12 +47,22 @@ function quoteBlock(quote, max) {
     .join('\n')
 }
 
+const CUT_MARK = '\n\n(review cut: too long)'
+
 /**
  * The text Claude receives. Plain text that never starts with `/`, `!`, `#` or `&` (the send gate
  * refuses those): it always opens with "Review of". Notes in file order, old side before new at the
  * same line. A note without text is left out (a selection the person never wrote anything for).
  */
 function formatReview(draft, sides) {
+  return buildReview(draft, sides).text
+}
+
+/**
+ * formatReview, plus `cut`: true when even with no quotes the text passed MAX_MESSAGE and its tail
+ * was dropped. The host keeps the draft then, since what Claude got is not the whole review.
+ */
+function buildReview(draft, sides) {
   const d = cleanDraft(draft)
   const commit = sides.head ? ` ${sides.head.slice(0, 12)}` : ''
   const unchanged = sides.mode === 'diff' && !sides.oldMissing && !sides.newMissing && sides.old === sides.new
@@ -80,9 +90,9 @@ function formatReview(draft, sides) {
   // point at, which Claude can read itself.
   for (const quoteMax of [MAX_QUOTE, 200, 80, 0]) {
     const text = build(quoteMax)
-    if (text.length <= MAX_MESSAGE) return text
+    if (text.length <= MAX_MESSAGE) return { text, cut: false }
   }
-  return build(0).slice(0, MAX_MESSAGE - 40) + '\n\n(review cut: too long)'
+  return { text: build(0).slice(0, MAX_MESSAGE - CUT_MARK.length) + CUT_MARK, cut: true }
 }
 
 const DRAFT_PREFIX = 'draft:'
@@ -95,4 +105,4 @@ function draftKey(path) {
   return `${DRAFT_PREFIX}#${require('node:crypto').createHash('sha256').update(path).digest('hex')}`
 }
 
-module.exports = { draftKey, cleanDraft, isEmpty, formatReview, MAX_MESSAGE }
+module.exports = { draftKey, cleanDraft, isEmpty, formatReview, buildReview, MAX_MESSAGE, MAX_NOTE_TEXT, MAX_GLOBAL }

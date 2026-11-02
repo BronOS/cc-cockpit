@@ -27,6 +27,8 @@ aside h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-s
 .note { border: 1px solid var(--cc-border); border-left: 3px solid var(--cc-status-needs-permission); border-radius: 4px; padding: 6px; margin-bottom: 8px; background: var(--cc-surface-1); }
 .note-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
 .quote { margin: 0 0 6px; padding: 4px 6px; max-height: 6em; overflow: hidden; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.4 ui-monospace, monospace; color: var(--cc-fg-muted); background: var(--cc-bg); border-radius: 3px; }
+.limit { margin: -4px 12px 6px; font-size: 11px; color: var(--cc-fg-muted); text-align: right; }
+.note .limit { margin: 2px 0 0; }
 .note-text { width: 100%; resize: vertical; font: inherit; color: inherit; background: var(--cc-bg); border: 1px solid var(--cc-border); border-radius: 3px; padding: 4px 6px; }
 button, select {
   font: inherit; color: inherit; background: var(--cc-surface-1);

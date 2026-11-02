@@ -134,7 +134,9 @@ Review of src/x.ts (changes since the last commit)
 
 Line numbers refer to the version named in parentheses. The quote travels with each note because
 Claude may already have changed the file by the time it reads the review. The whole message is
-capped (about 20,000 characters); past that, quotes are shortened first.
+capped (about 20,000 characters); past that, quotes are shortened first, and a review still too long
+goes out cut, with its full draft kept. Note inputs take 4,000 characters, the comment 20,000 (shown
+near the limit), the same caps the host applies to a draft.
 
 ## Technology
 

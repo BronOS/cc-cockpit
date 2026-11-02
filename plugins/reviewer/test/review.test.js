@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { cleanDraft, isEmpty, formatReview, MAX_MESSAGE } = require('../dist/lib/review')
+const { cleanDraft, isEmpty, formatReview, buildReview, MAX_MESSAGE, MAX_NOTE_TEXT, MAX_GLOBAL } = require('../dist/lib/review')
 
 const sides = { path: 'src/a.ts', mode: 'diff', head: '0123456789abcdef0123456789abcdef01234567', old: 'a', new: 'b' }
 
@@ -50,6 +50,28 @@ test('formatReview: plain mode has no sides; long reviews shorten quotes first',
   const long = formatReview({ notes }, sides)
   assert.ok(long.length <= MAX_MESSAGE)
   assert.match(long, /60\. Line 60/) // every note survives; quotes gave way
+})
+
+test('buildReview: cut only when the review is too long even without quotes', () => {
+  const fits = buildReview({ notes: [{ from: 1, to: 1, text: 'n', quote: 'code '.repeat(100) }] }, sides)
+  assert.equal(fits.cut, false)
+  const notes = Array.from({ length: 10 }, (_, i) => ({ from: i + 1, to: i + 1, text: 'x'.repeat(MAX_NOTE_TEXT), quote: '' }))
+  const over = buildReview({ notes }, sides)
+  assert.equal(over.cut, true)
+  assert.ok(over.text.length <= MAX_MESSAGE)
+  assert.match(over.text, /\(review cut: too long\)$/)
+})
+
+test('the page inputs carry the same caps as cleanDraft', () => {
+  // The page cannot require the host lib (it is a bundled browser script), so its copies are checked.
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const page = fs.readFileSync(path.join(__dirname, '../src/page/review.js'), 'utf8')
+  const html = fs.readFileSync(path.join(__dirname, '../overlay/review.html'), 'utf8')
+  assert.match(page, new RegExp(`const NOTE_MAX = ${MAX_NOTE_TEXT}\\n`))
+  assert.match(page, new RegExp(`const GLOBAL_MAX = ${MAX_GLOBAL}\\n`))
+  assert.match(html, new RegExp(`id="global"[^>]*maxlength="${MAX_GLOBAL}"`))
+  assert.equal(cleanDraft({ global: 'g'.repeat(MAX_GLOBAL + 1), notes: [{ from: 1, to: 1, text: 't'.repeat(MAX_NOTE_TEXT + 1) }] }).notes[0].text.length, MAX_NOTE_TEXT)
 })
 
 test('formatReview: an unchanged file says so and drops side labels', () => {

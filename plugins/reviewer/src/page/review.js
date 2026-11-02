@@ -36,6 +36,12 @@ import { lua } from '@codemirror/legacy-modes/mode/lua'
 /* global ccPanel */
 
 const QUOTE_MAX = 500
+// The host's cleanDraft caps (dist/lib/review.js MAX_NOTE_TEXT, MAX_GLOBAL; a test compares them).
+// The inputs carry them as maxlength: past them the host cut the text silently, and the next open
+// showed the shortened draft as if that were all the person wrote.
+const NOTE_MAX = 4000
+const GLOBAL_MAX = 20000
+const LIMIT_HINT_AT = 0.9 // show "n / max" once the text reaches this share of its cap
 const DRAFT_DEBOUNCE_MS = 300
 
 // ---- language by file name ----
@@ -160,6 +166,18 @@ function el(tag, cls, text) {
 }
 
 let draftTimer = null
+/** Sets maxlength on a textarea and keeps `hint` showing "n / max" near the cap. */
+function limitInput(input, hint, max) {
+  input.maxLength = max
+  const update = () => {
+    const n = input.value.length
+    hint.hidden = n < max * LIMIT_HINT_AT
+    hint.textContent = n >= max ? `${n} / ${max}: limit reached` : `${n} / ${max}`
+  }
+  input.addEventListener('input', update)
+  update()
+}
+
 function postDraft() {
   clearTimeout(draftTimer)
   draftTimer = setTimeout(() => ccPanel.post({ type: 'draft', draft: state.draft }), DRAFT_DEBOUNCE_MS)
@@ -346,7 +364,9 @@ function renderNotes(focusId) {
       n.text = text.value
       postDraft()
     })
-    box.append(head, quote, text)
+    const hint = el('div', 'limit')
+    limitInput(text, hint, NOTE_MAX)
+    box.append(head, quote, text, hint)
     list.append(box)
     if (n.id === focusId) setTimeout(() => text.focus(), 0)
   }
@@ -433,6 +453,7 @@ function init(m) {
   $('note').textContent = s.note || ''
   $('note').hidden = !s.note
   $('global').value = state.draft.global
+  limitInput($('global'), $('global-limit'), GLOBAL_MAX)
   $('edit').hidden = m.canEdit === false // no plugin provides the editor service
   $('edit').disabled = !!s.newMissing
   $('edit').title = s.newMissing ? 'The file is deleted: nothing to edit' : $('edit').title
