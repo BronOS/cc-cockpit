@@ -240,6 +240,11 @@ describe('runCommand against a fake app', () => {
     throw new Error('fake app never listened')
   }
   const tab = (): Record<string, string> => ({ APP_TAB_TOKEN: TOKEN, CC_COCKPIT_SOCK: sock })
+  /** A plausible `plugin.config` answer: the view without `set`, the set result with it. */
+  const configResult = (r: Request): unknown =>
+    r.args.set === undefined
+      ? { id: 'acme.x', app: { fields: ['limit'], values: { limit: 1 }, secrets: {} } }
+      : { id: 'acme.x', scope: 'app', values: { limit: 5 } }
 
   it('prints the overlay result as JSON on stdout and exits 0', async () => {
     const app = fakeApp(() => ({ ok: true, result: { kind: 'exit', code: 0 } }))
@@ -350,12 +355,17 @@ describe('runCommand against a fake app', () => {
       'plugin link': [['plugin', 'link', '--project', '/p', '/dev/plugin']],
       'plugin unlink': [['plugin', 'unlink', '--project', '/p', 'acme.x']],
       'plugin list': [['plugin', 'list', '--project', '/p'], ['plugin', 'list', '--project', '/p', '--json']],
+      'plugin config': [
+        ['plugin', 'config', '--project', '/p', 'acme.x'],
+        ['plugin', 'config', '--project', '/p', 'acme.x', '--json'],
+        ['plugin', 'config', '--project', '/p', 'acme.x', '--scope', 'app', 'limit=5']
+      ],
       // A plugin command: the spec lookup, then the call.
       '': [['--project', '/p', 'demo', 'x']]
     }
     // A new documented form must be added above.
     expect([...forms].sort()).toEqual(Object.keys(runs).sort())
-    const app = fakeApp((r) => ({ ok: true, result: r.cmd === 'plugin.cli' ? { stdout: '', stderr: '', code: 0 } : r.cmd === 'plugin.link' ? { id: 'acme.x', name: 'X' } : r.cmd === 'plugin.list' ? [] : {} }))
+    const app = fakeApp((r) => ({ ok: true, result: r.cmd === 'plugin.cli' ? { stdout: '', stderr: '', code: 0 } : r.cmd === 'plugin.link' ? { id: 'acme.x', name: 'X' } : r.cmd === 'plugin.list' ? [] : r.cmd === 'plugin.config' ? configResult(r) : {} }))
     await listening()
     // The tokenless commands with no --project form: open (its path is the project), notify, sessions.
     const argvs = [...Object.values(runs).flat(), ['open', '/p'], ['notify', 'hi'], ['sessions']]
@@ -364,7 +374,7 @@ describe('runCommand against a fake app', () => {
     }
     expect(err).toBe('')
     const sent = new Set(app.seen.map((r) => r.cmd))
-    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.cli.spec', 'plugin.cli', 'open', 'notify', 'sessions']) {
+    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'plugin.cli.spec', 'plugin.cli', 'open', 'notify', 'sessions']) {
       expect(sent.has(cmd), cmd).toBe(true)
     }
     for (const r of app.seen) {
@@ -378,13 +388,15 @@ describe('runCommand against a fake app', () => {
   // cannot tell and sends it the same way). Every window-level form run there WITHOUT --project
   // must send the token, and only requests main lets a window token make.
   it('in a tab, every window-level form goes out with the token and no project, and main lets a window token make each', async () => {
-    const app = fakeApp((r) => ({ ok: true, result: r.cmd === 'plugin.cli' ? { stdout: '', stderr: '', code: 0 } : r.cmd === 'plugin.link' ? { id: 'acme.x', name: 'X' } : r.cmd === 'plugin.list' || r.cmd === 'plugin.cli.list' ? [] : {} }))
+    const app = fakeApp((r) => ({ ok: true, result: r.cmd === 'plugin.cli' ? { stdout: '', stderr: '', code: 0 } : r.cmd === 'plugin.link' ? { id: 'acme.x', name: 'X' } : r.cmd === 'plugin.list' || r.cmd === 'plugin.cli.list' ? [] : r.cmd === 'plugin.config' ? configResult(r) : {} }))
     await listening()
     const argvs = [
       ['overlay', '--url', 'https://a/'],
       ['plugin', 'link', '/dev/plugin'],
       ['plugin', 'unlink', 'acme.x'],
       ['plugin', 'list'],
+      ['plugin', 'config', 'acme.x'],
+      ['plugin', 'config', 'acme.x', 'limit=5'],
       ['demo', 'x'],
       ['help'],
       ['open', '/p'],
@@ -396,7 +408,7 @@ describe('runCommand against a fake app', () => {
     }
     expect(err).toBe('')
     const sent = new Set(app.seen.map((r) => r.cmd))
-    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.cli.spec', 'plugin.cli', 'plugin.cli.list', 'open', 'notify', 'sessions']) {
+    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'plugin.cli.spec', 'plugin.cli', 'plugin.cli.list', 'open', 'notify', 'sessions']) {
       expect(sent.has(cmd), cmd).toBe(true)
     }
     for (const r of app.seen) {

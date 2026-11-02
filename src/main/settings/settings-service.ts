@@ -17,7 +17,7 @@
 //  - Secret fields (plugin-settings.ts) are stored encrypted under `setting:app:<field>` in the
 //    plugin's secret store, by main itself (no ctx.secrets rate limit or key cap); the renderer only
 //    ever learns whether each one is set.
-import type { MarketplaceView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
+import type { MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
 import { checkMarketplaceUrl } from '../marketplace/fetch-index'
 import type { MarketplaceService } from '../marketplace/marketplace-service'
@@ -313,6 +313,23 @@ export class SettingsService {
     })
   }
 
+  /**
+   * The plugin's app-wide settings as the Plugins page shows them (stored values with defaults,
+   * secret fields as set or not); undefined when it declares none. `ccc plugin config` reads this
+   * (main/settings/plugin-config.ts), so both show the same thing.
+   */
+  pluginAppSettings(id: unknown): PluginAppSettingsView | undefined {
+    const plugin = typeof id === 'string' ? this.deps.plugins.get(id) : undefined
+    if (!plugin?.manifest) throw new Error(`unknown plugin: ${String(id)}`)
+    return this.appSettingsView(plugin)
+  }
+
+  private appSettingsView(p: InstalledPlugin): PluginAppSettingsView | undefined {
+    const schema = p.manifest?.contributes?.settings?.app
+    if (schema === undefined) return undefined
+    return settingsViewOf(schema, this.deps.appPluginSettings.get(p.id), (f) => this.deps.secrets.hasSetting(p.id, appSettingKey(f)))
+  }
+
   private pluginView(p: InstalledPlugin): PluginView {
     const view: PluginView = {
       id: p.id,
@@ -326,12 +343,8 @@ export class SettingsService {
             : { kind: 'bundled' },
       state: p.state
     }
-    const schema = p.manifest?.contributes?.settings?.app
-    if (schema !== undefined) {
-      view.appSettings = settingsViewOf(schema, this.deps.appPluginSettings.get(p.id), (f) =>
-        this.deps.secrets.hasSetting(p.id, appSettingKey(f))
-      )
-    }
+    const appSettings = this.appSettingsView(p)
+    if (appSettings !== undefined) view.appSettings = appSettings
     return view
   }
 }

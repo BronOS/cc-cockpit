@@ -1,0 +1,22 @@
+{
+  "id": "test.hostconfig",
+  "name": "Host config",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "default": 10 },
+          "token": { "type": "string", "format": "secret" }
+        }
+      },
+      "project": {
+        "type": "object",
+        "properties": { "board": { "type": "string", "default": "main" } }
+      }
+    }
+  }
+}

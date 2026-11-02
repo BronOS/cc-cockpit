@@ -19,14 +19,23 @@
 //   - plugin.cli*: the caller's project (a tab's, or the one `--project` named). The owning plugin
 //     is looked up by name in main's index (the clash rules leave at most one valid owner), and
 //     must be enabled in that project; the host manager then checks it runs in the window.
+//   - plugin.config: project-scope settings are the caller's project's; `args` names only the
+//     plugin, the scope and the values.
 // Everything in `args` is untrusted JSON: each field's type is checked here, and text is passed on
 // as one value, never through a shell.
 //
 // No Electron import: main wires the Electron parts in as options, unit tests pass fakes.
 import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
-import type { CliContribution } from '../../shared/manifest'
+import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type CliContribution } from '../../shared/manifest'
 import { encodedBytes, MAX_CLI_IO_BYTES, type PluginCliResult, type PluginCliSpec } from '../../shared/plugin-cli'
+import {
+  MAX_PLUGIN_CONFIG_EDITS,
+  PLUGIN_CONFIG_SCOPES,
+  type PluginConfigScope,
+  type PluginConfigSetResult,
+  type PluginConfigView
+} from '../../shared/plugin-config'
 import type { HostCliCall } from '../plugins/host-manager'
 import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type LinkDialogInfo } from '../plugins/link-request'
 import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
@@ -442,6 +451,51 @@ export function registerPluginDevHandlers(
   server.handle('plugin.link', pluginLinkHandler(options, gate))
   server.handle('plugin.unlink', pluginUnlinkHandler(options))
   server.handle('plugin.list', pluginListHandler(options))
+}
+
+/** What `plugin.config` needs from main (index.ts binds main/settings/plugin-config.ts to the settings services). */
+export interface PluginConfigOptions {
+  view(projectId: string, pluginId: string): PluginConfigView
+  set(projectId: string, pluginId: string, edits: Array<[string, unknown]>, scope?: PluginConfigScope): Promise<PluginConfigSetResult>
+}
+
+/**
+ * `plugin.config { id, scope?, set? }` (friction round 1, Task 6): print a plugin's app and project
+ * settings, or set top-level fields through the Settings form's save. The project is the caller's
+ * (a token's, or the one `--project` named), never a field of `args`; it needs a record, like
+ * `plugin list`, but no open window (the record is saved, a host that is not running has nothing
+ * to tell). Every field is checked here; values are any JSON, the schema decides in main.
+ */
+export function pluginConfigHandler(options: PluginConfigOptions): Handler {
+  return async (args, caller) => {
+    const projectId = projectOf(caller, 'plugin config')
+    const { id, scope, set } = args
+    if (typeof id !== 'string' || id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id)) {
+      throw new Error('plugin config needs a plugin id')
+    }
+    if (scope !== undefined && !PLUGIN_CONFIG_SCOPES.includes(scope as PluginConfigScope)) {
+      throw new Error('plugin config: scope is app or project')
+    }
+    if (set === undefined) {
+      if (scope !== undefined) throw new Error('plugin config: scope goes with values to set')
+      return options.view(projectId, id)
+    }
+    if (!Array.isArray(set) || set.length === 0 || set.length > MAX_PLUGIN_CONFIG_EDITS) {
+      throw new Error(`plugin config: set takes 1 to ${MAX_PLUGIN_CONFIG_EDITS} key=value pairs`)
+    }
+    const edits: Array<[string, unknown]> = []
+    for (const pair of set as unknown[]) {
+      if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || pair[0] === '') {
+        throw new Error('plugin config: each edit is a [key, value] pair with a non-empty key')
+      }
+      edits.push([pair[0], pair[1] as unknown])
+    }
+    return options.set(projectId, id, edits, scope as PluginConfigScope | undefined)
+  }
+}
+
+export function registerPluginConfigHandler(server: { handle(cmd: string, handler: Handler): void }, options: PluginConfigOptions): void {
+  server.handle('plugin.config', pluginConfigHandler(options))
 }
 
 /** Register every user command on the server (a `handle(cmd, handler)` is all it needs). */

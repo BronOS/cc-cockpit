@@ -89,7 +89,8 @@ import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerPluginCliHandlers, registerPluginDevHandlers } from './socket/handlers'
+import { registerCliHandlers, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
 import { ThemeService } from './themes/theme-service'
@@ -968,6 +969,19 @@ function start(): void {
         state: p.state.ok ? 'ok' : p.state.reason
       }))
     }
+  })
+
+  // `ccc plugin config` (friction round 1, Task 6): the Settings pages' own views and saves (both
+  // services are built below; a socket request is only handled once start() has run to its end).
+  const pluginConfigDeps: PluginConfigDeps = {
+    appSettings: (pluginId) => settings.pluginAppSettings(pluginId),
+    projectSettings: (projectId, pluginId) => projectSettings.pluginProjectSettings(projectId, pluginId),
+    saveApp: (pluginId, values) => settings.savePluginSettings(pluginId, values),
+    saveProject: (projectId, pluginId, values) => projectSettings.saveSettings(projectId, pluginId, values)
+  }
+  registerPluginConfigHandler(socket, {
+    view: (projectId, pluginId) => pluginConfigView(pluginConfigDeps, projectId, pluginId),
+    set: (projectId, pluginId, edits, scope) => setPluginConfig(pluginConfigDeps, projectId, pluginId, edits, scope)
   })
 
   /** Open a folder named on a command line; false when the argv names none (or it failed). */

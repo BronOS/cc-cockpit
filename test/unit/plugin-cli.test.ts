@@ -147,7 +147,7 @@ describe('parseArgs: plugin commands', () => {
     })
     expect(parseArgs(['--project', '/p', 'plugin', 'list'])).toEqual({
       kind: 'usage',
-      message: 'plugin takes --project after its name: ccc plugin link|unlink|list --project <path> ...'
+      message: 'plugin takes --project after its name: ccc plugin link|unlink|list|config --project <path> ...'
     })
     expect(parseArgs(['--project', '/p', 'sessions'])).toEqual({
       kind: 'usage',

@@ -42,6 +42,20 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   Deny exits 1 "declined"). `ccc plugin unlink <id>` removes a linked plugin. `ccc plugin list
   [--json]` shows the installed plugins and whether each is enabled here. `ccc plugin logs <id>
   [--follow]` prints a plugin's log. See `ccc guide dev-loop`.
+- `ccc plugin config [--project <path>] <id> [--json]` prints a plugin's settings, one
+  `scope key = JSON` line per top-level field (`app` lines first, then `project` ones for this
+  project). A secret field reads `set` or `not set`, never its value; so does a plain field with
+  no value and no default. `--json` prints `{ id, app?, project? }`, each scope
+  `{ fields, values, secrets, problem? }` (`secrets` maps each secret field to whether it is set).
+- `ccc plugin config [--project <path>] <id> [--scope app|project] <key>=<value>...` sets
+  top-level fields and prints the stored `scope key = JSON` lines. A value is parsed as JSON, else
+  taken as text: `limit=5` is a number, `name=hi` the string `hi`, `name='"5"'` the string `5`. The
+  scope is the one whose schema declares the key; a key both scopes declare needs `--scope`, and one
+  call sets one scope. The save is the Settings form's: the same schema check (a refused value
+  exits 1 with the schema's reasons and stores nothing), then the plugin gets
+  `ctx.onSettingsChange`, or starts if it was off for invalid settings. Exit 1 also for an unknown
+  plugin or key, and for a secret field: those are set by a person in Settings > Plugins (app) or
+  Settings > This project, never through `ccc`.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 
 ## Things to know

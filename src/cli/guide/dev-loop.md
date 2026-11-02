@@ -34,7 +34,21 @@ A linked folder is watched: after you change a file the plugin host reloads that
 command run right after an edit waits for the reloaded copy (within its 30 s limit, else exit
 124) and runs there; one already running in the old copy when the reload starts ends with exit 1.
 
-## 3. Inspect
+## 3. Configure
+
+A plugin with `contributes.settings` can be configured from the tab, no Settings screen needed:
+
+- `ccc plugin config <id>` prints its app and project settings (`app greeting = "hello"`); a
+  secret field shows only `set` or `not set`.
+- `ccc plugin config <id> limit=5 endpoint=https://example.com` sets top-level fields (a value
+  is JSON if it parses, else text) through the same save and validation as the Settings form, so
+  the running plugin gets `ctx.onSettingsChange`, and a plugin that was off because its settings
+  were invalid starts. A key declared in both scopes needs `--scope app` or `--scope project`.
+- **Secret fields cannot be set this way**: ask the person to enter them in Settings > Plugins
+  (app scope) or Settings > This project. Write the plugin so it starts without them and says
+  what is missing.
+
+## 4. Inspect
 
 - `ccc plugin list [--json]` lists every installed plugin: id, version, source (`git` or
   `linked`), enabled here, and `ok` or the reason it is unusable. `--json` gives an array of

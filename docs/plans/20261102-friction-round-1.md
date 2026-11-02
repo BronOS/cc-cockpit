@@ -190,9 +190,11 @@ External review: auto
 - Modify: `src/cli/guide/cli.md`, `src/cli/guide/dev-loop.md`
 - Modify: matching unit tests; e2e `test/e2e/plugin-cli.spec.ts` or a new spec
 
-- [ ] print and set per Solution Overview; reuse `deps.savePluginSettings` (validation, saving, restarts) from the socket handler; the project comes from the socket `caller` (tab token or `--project`), never from the payload; secrets refused; exit codes consistent with the CLI's
-- [ ] write tests: print (secret shown as set/not set), set valid value, invalid value refused with the schema error, secret refused, unknown plugin/field, project vs app scope
-- [ ] run tests - must pass before next task
+- [x] print and set per Solution Overview; reuse `deps.savePluginSettings` (validation, saving, restarts) from the socket handler; the project comes from the socket `caller` (tab token or `--project`), never from the payload; secrets refused; exit codes consistent with the CLI's
+- [x] write tests: print (secret shown as set/not set), set valid value, invalid value refused with the schema error, secret refused, unknown plugin/field, project vs app scope
+- [x] run tests - must pass before next task
+- ➕ the scope flag is `--scope app|project`, not `--app|--project`: every `ccc plugin` subcommand already takes `--project <path>` for the folder, so a bare `--project` would be ambiguous. Default scope: the one whose schema declares the key; a key both declare needs `--scope`; one call sets one scope
+- ➕ `router.ts` needed no change: the save logic already lived in `SettingsService.savePluginSettings` / `ProjectSettingsService.saveSettings` (on `saveSettingsForm`), which the IPC handlers and now `src/main/settings/plugin-config.ts` both call; the services gained `pluginAppSettings` / `pluginProjectSettings` (the views the pages show) for printing. e2e: `test/e2e/plugin-config.spec.ts` with a new fixture `test/fixtures/plugins/host-config`
 
 ### Task 7: `ccc panel show` [model: sonnet]
 

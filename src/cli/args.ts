@@ -13,6 +13,7 @@
 // whole USAGE text and `ccc <command> --help` all come from it, and its keys are typed by
 // CORE_CLI_COMMANDS (src/shared/manifest.ts), the list main reserves against plugin command names.
 import { isHookEvent, type HookEvent } from '../shared/hooks'
+import { MAX_PLUGIN_CONFIG_EDITS, parseConfigValue, PLUGIN_CONFIG_SCOPES, type PluginConfigScope } from '../shared/plugin-config'
 import {
   CLI_NAME_PATTERN,
   type CoreCliCommand,
@@ -56,6 +57,12 @@ export type Command =
   | { kind: 'plugin-unlink'; id: string; project?: string }
   | { kind: 'plugin-list'; json: boolean; project?: string }
   | { kind: 'plugin-logs'; id: string; follow: boolean }
+  /**
+   * `ccc plugin config <id>` (friction round 1, Task 6): no `set` prints the plugin's settings;
+   * `set` holds the `key=value` arguments, each value parsed as JSON or kept as text
+   * (parseConfigValue). `scope` is `--scope app|project`, only with `set`.
+   */
+  | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; project?: string }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -169,6 +176,13 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       },
       { synopsis: ['plugin unlink [--project <path>] <id>'], text: ['unlink a linked plugin'] },
       { synopsis: ['plugin list [--project <path>] [--json]'], text: ['the installed plugins and whether they are enabled here'] },
+      {
+        synopsis: ['plugin config [--project <path>] <id> [--json]', 'plugin config [--project <path>] <id> [--scope app|project] <key>=<value>...'],
+        text: [
+          "print a plugin's app and project settings, or set top-level",
+          'fields (value: JSON, else text); secret fields only in Settings'
+        ]
+      },
       { synopsis: ['plugin logs <id> [--follow]'], text: ["print a plugin's log (the last lines; --follow keeps going)"] }
     ]
   },
@@ -216,7 +230,7 @@ export function parseArgs(argv: readonly string[]): Command {
 /** The core commands that take `--project`, and where (their USAGE synopses say the same). */
 const PROJECT_AFTER_NAME: Partial<Record<string, string>> = {
   overlay: 'ccc overlay --project <path> ...',
-  plugin: 'ccc plugin link|unlink|list --project <path> ...'
+  plugin: 'ccc plugin link|unlink|list|config --project <path> ...'
 }
 
 /**
@@ -258,7 +272,7 @@ function pluginIdProblem(id: string): string | undefined {
   return undefined
 }
 
-type PluginSub = 'new' | 'link' | 'unlink' | 'list' | 'logs'
+type PluginSub = 'new' | 'link' | 'unlink' | 'list' | 'config' | 'logs'
 
 /**
  * The options of each `ccc plugin` subcommand: `value` takes the next argument (the message is
@@ -269,6 +283,7 @@ const PLUGIN_OPTIONS: Record<PluginSub, Readonly<Record<string, { value: string 
   link: { '--project': { value: 'needs a value' } },
   unlink: { '--project': { value: 'needs a value' } },
   list: { '--project': { value: 'needs a value' }, '--json': 'flag' },
+  config: { '--project': { value: 'needs a value' }, '--json': 'flag', '--scope': { value: 'needs app or project' } },
   logs: { '--follow': 'flag' }
 }
 
@@ -279,7 +294,7 @@ function isPluginSub(sub: string): sub is PluginSub {
 /** `ccc plugin <sub> …`: the dev loop. A mistyped one is a usage error (exit 2), as for every user command. */
 function parsePluginDev(rest: readonly string[]): Command {
   const [sub, ...args] = rest
-  if (sub === undefined) return usage('plugin needs new, link, unlink, list or logs')
+  if (sub === undefined) return usage('plugin needs new, link, unlink, list, config or logs')
   if (!isPluginSub(sub)) return usage(`unknown plugin command: ${sub}`)
   if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'plugin' }
   const options = PLUGIN_OPTIONS[sub]
@@ -325,6 +340,10 @@ function parsePluginDev(rest: readonly string[]): Command {
       return target === undefined ? usage('plugin link takes one folder') : withProject({ kind: 'plugin-link', dir: target })
     case 'list':
       return positional.length > 0 ? usage('plugin list takes only --json') : withProject({ kind: 'plugin-list', json: flags.has('--json') })
+    case 'config': {
+      const config = parsePluginConfig(positional, values.get('--scope'), flags.has('--json'))
+      return config.kind === 'plugin-config' ? withProject(config) : config
+    }
     case 'unlink':
     case 'logs': {
       if (target === undefined) return usage(`plugin ${sub} takes one plugin id`)
@@ -337,6 +356,29 @@ function parsePluginDev(rest: readonly string[]): Command {
   }
 }
 
+/**
+ * `ccc plugin config <id> [key=value ...]`: the id, then the edits, split at the first `=` (a value
+ * may hold more). The scope flag is not `--app`/`--project`: `--project <path>` already names the
+ * project folder for every `ccc plugin` subcommand, so `--project` alone would be ambiguous.
+ */
+function parsePluginConfig(positional: readonly string[], scope: string | undefined, json: boolean): Command {
+  const [id, ...pairs] = positional
+  if (id === undefined || id === '') return usage('plugin config takes a plugin id, then key=value to set')
+  const problem = pluginIdProblem(id)
+  if (problem !== undefined) return usage(`plugin config: ${problem}`)
+  if (scope !== undefined && !PLUGIN_CONFIG_SCOPES.includes(scope as PluginConfigScope)) {
+    return usage(`plugin config: --scope is app or project, not ${scope}`)
+  }
+  if (pairs.length > MAX_PLUGIN_CONFIG_EDITS) return usage(`plugin config: at most ${MAX_PLUGIN_CONFIG_EDITS} key=value at once`)
+  const set: Array<[string, unknown]> = []
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=')
+    if (eq <= 0) return usage(`plugin config: expected key=value, got ${pair}`)
+    set.push([pair.slice(0, eq), parseConfigValue(pair.slice(eq + 1))])
+  }
+  if (scope !== undefined && set.length === 0) return usage('plugin config: --scope goes with key=value to set')
+  return { kind: 'plugin-config', id, json, ...(scope !== undefined ? { scope: scope as PluginConfigScope } : {}), set }
+}
 
 function parseSession(rest: readonly string[]): Command {
   const [sub, ...args] = rest

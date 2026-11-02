@@ -45,7 +45,11 @@ export const TOKENLESS_COMMANDS: readonly string[] = [
   // checks each request it sends is in this list.
   'plugin.link',
   'plugin.unlink',
-  'plugin.list'
+  'plugin.list',
+  // `ccc plugin config --project <path> <id> …` (friction round 1, Task 6): reads and sets that
+  // project's plugin settings (and the app-wide ones). Nothing beyond what writing app.json or the
+  // project record already lets any local process do; secret fields are refused.
+  'plugin.config'
 ]
 
 /**

@@ -35,6 +35,7 @@ import {
   normalizeCliResult,
   type PluginCliSpec
 } from '../shared/plugin-cli'
+import { formatPluginConfig, formatPluginConfigSet, type PluginConfigSetResult, type PluginConfigView } from '../shared/plugin-config'
 import { formatUsageEntry, parseArgs, USAGE, usageFor, type Command } from './args'
 import { guideText, topicList } from './guide'
 import { runPluginLogs } from './plugin-logs'
@@ -367,6 +368,16 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       cmd = 'plugin.list'
       routing = callerOf(env, command.project, cwd, 'plugin list')
       break
+    case 'plugin-config':
+      // No project in args: main takes the project from the routing (token or --project).
+      cmd = 'plugin.config'
+      args = { id: command.id }
+      if (command.set.length > 0) {
+        args.set = command.set
+        if (command.scope !== undefined) args.scope = command.scope
+      }
+      routing = callerOf(env, command.project, cwd, 'plugin config')
+      break
   }
   if ('error' in routing) return routing
   return { v: PROTOCOL_VERSION, id: 1, cmd, args, ...routing }
@@ -432,8 +443,15 @@ export async function runCommand(
     // waits its turn in the installer's serial queue (behind a clone of up to two minutes) and for
     // the hosts to reload: cut off at 10 s it printed "did not answer" and exit 1 while the unlink
     // still went through, and the retry then failed with "is not installed" (review finding).
+    // `plugin config` with values to set likewise: it waits in the plugin's settings save queue
+    // (behind a form save that may be at a keychain prompt) and for a host restarted by the change.
     const waits =
-      command.kind === 'overlay' || command.kind === 'plugin-link' || command.kind === 'plugin-unlink' ? undefined : REPLY_TIMEOUT_MS
+      command.kind === 'overlay' ||
+      command.kind === 'plugin-link' ||
+      command.kind === 'plugin-unlink' ||
+      (command.kind === 'plugin-config' && command.set.length > 0)
+        ? undefined
+        : REPLY_TIMEOUT_MS
     const trip = await roundTrip(socket, encodeRequest(request), waits)
     warnOnVersionMismatch(trip, out)
     if ('closed' in trip) {
@@ -684,6 +702,12 @@ function formatResult(command: UserCommand, result: unknown): string {
     return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
   }
   if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
+  if (command.kind === 'plugin-config') {
+    if (command.json) return `${JSON.stringify(result)}\n`
+    return command.set.length > 0
+      ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
+      : formatPluginConfig(result as PluginConfigView, plainLine)
+  }
   if (command.kind === 'plugin-list') {
     const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
     if (command.json) return `${JSON.stringify(list)}\n`
