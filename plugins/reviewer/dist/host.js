@@ -69,6 +69,13 @@ exports.activate = (ctx) => {
     // gives one it knows). An unknown id is dropped, and the page asks which tab.
     const target = tabs.some((t) => t.tabId === tabId) ? tabId : null
 
+    // Checked again after the awaits above: two quick clicks (or `ccc review` calls) on the same
+    // file both pass the first check, and the second must focus the first overlay, not open
+    // another. Nothing between here and open.set awaits, so the pair is atomic.
+    if (open.has(sides.path)) {
+      open.get(sides.path).focus()
+      return { done: Promise.resolve() }
+    }
     const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: `Review: ${sides.path}`, size: 'large' })
     open.set(sides.path, handle)
     handle.post({ type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: ctx.services.available('editor') })

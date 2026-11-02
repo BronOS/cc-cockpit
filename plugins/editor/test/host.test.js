@@ -43,7 +43,6 @@ test('a missing micro names the install commands and the microPath setting', asy
     return true
   })
   assert.equal(f.started.length, 0)
-  host.deactivate()
 })
 
 test('ccc edit resolves against ctx.projectDir', async () => {
@@ -53,5 +52,4 @@ test('ccc edit resolves against ctx.projectDir', async () => {
   const r = await f.cli.edit(['src/a.ts', '7'], { cwd: '/proj' })
   assert.equal(r.stdout, 'editing src/a.ts\n')
   assert.deepEqual(f.started[0].argv.slice(-2), ['src/a.ts', '+7'])
-  host.deactivate()
 })

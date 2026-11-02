@@ -15,8 +15,6 @@ const INSTALL_HINT =
   '`sudo pacman -S micro` (Arch) or `sudo apt install micro` (Debian, Ubuntu), or see https://micro-editor.github.io. ' +
   'If it is installed elsewhere, set its path in Settings > Plugins > Editor (micro), setting "microPath".'
 
-let disposers = []
-
 /** A project-relative path, or a thrown Error: no absolute path, no `..`, no NUL. */
 function relativePath(p) {
   if (typeof p !== 'string' || !p.trim() || p.includes('\0')) throw new Error('path must be a non-empty string')
@@ -47,9 +45,9 @@ exports.activate = (ctx) => {
   const app = () => ctx.settings.app || {}
 
   // micro's presence is checked once per binary path, not on every open.
-  const checked = new Map()
+  const checked = new Set()
   async function ensureMicro(bin) {
-    if (checked.get(bin) === true) return
+    if (checked.has(bin)) return
     let ok = false
     try {
       const r = await ctx.exec([bin, '-version'], { timeoutMs: 10000 })
@@ -58,7 +56,7 @@ exports.activate = (ctx) => {
       ok = false // not found: exec rejects when the program cannot be started
     }
     if (!ok) throw new Error(INSTALL_HINT)
-    checked.set(bin, true)
+    checked.add(bin)
   }
 
   async function openEditor(p, line) {
@@ -101,13 +99,5 @@ exports.activate = (ctx) => {
   ctx.log.info('activated')
 }
 
-exports.deactivate = () => {
-  for (const d of disposers) {
-    try {
-      if (typeof d === 'function') d()
-    } catch {
-      // nothing to clean up
-    }
-  }
-  disposers = []
-}
+// No deactivate: the editor registers nothing that outlives its ctx (the service, the CLI command
+// and its overlays all end with it), and the loader treats deactivate as optional.

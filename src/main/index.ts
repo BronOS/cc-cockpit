@@ -1666,6 +1666,13 @@ function start(): void {
             const project = projectAt(path)
             const windowId = project ? windows.windowIdOf(project.id) : undefined
             return windowId === undefined ? [] : overlays.infos(windowId)
+          },
+          // OverlayHandle.focus() for an overlay id read from `overlays`: brings it to the top of
+          // its window's stack. False when the folder has no window or the overlay is not open.
+          focusOverlay: (path: string, overlayId: string) => {
+            const project = projectAt(path)
+            const windowId = project ? windows.windowIdOf(project.id) : undefined
+            return windowId === undefined ? false : overlays.focus(windowId, overlayId)
           }
         })
       )

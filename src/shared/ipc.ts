@@ -390,9 +390,10 @@ export interface ProjectPluginView {
   enabled: boolean
   /**
    * A bundled plugin switched off in all projects (Settings > Plugins): `enabled` is false and the
-   * project's switch cannot turn it on until that is undone. Absent otherwise.
+   * project's switch cannot turn it on until that is undone. Absent otherwise (never `false` here;
+   * the same type as PluginView's, so one check reads both).
    */
-  offInAllProjects?: true
+  offInAllProjects?: boolean
   /** `ok: false` = the plugin itself is disabled (invalid manifest); it cannot be enabled. */
   state: { ok: true } | { ok: false; reason: string }
   /** Enabled, but the stored settings do not validate: why the plugin does not run here. */

@@ -285,7 +285,8 @@ export interface PluginContext {
   readonly pluginId: string
   /**
    * The project folder: absolute, its real path (symlinks resolved), read when the host started
-   * the plugin. The default cwd of `exec`.
+   * the plugin. The default cwd of `exec`. When the folder is missing at that moment (deleted or
+   * on an unmounted volume), its nearest existing parent is resolved and the rest appended as is.
    */
   readonly projectDir: string
 

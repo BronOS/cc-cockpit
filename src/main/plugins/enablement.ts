@@ -69,7 +69,7 @@ export function enabledPluginIds(
   const out = new Set<string>(Array.isArray(record.enabledPlugins) ? (record.enabledPlugins as string[]) : [])
   for (const p of installed) {
     if (offAppWide(p, disabledBundled)) out.delete(p.id)
-    else if (pluginEnabledIn(record, p)) out.add(p.id)
+    else if (onInRecord(record, p)) out.add(p.id)
   }
   return [...out]
 }

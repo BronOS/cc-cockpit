@@ -1085,8 +1085,8 @@ export class PluginInstaller {
     const revoked = entry.state.ok ? this.revocationOf(entry) : null
     // A reserved id outside the bundled set never gets as far as a host, whatever the index says
     // (refreshEntry records the refusal; this covers a record no refresh has seen yet).
-    const foreign = entry.state.ok && isReservedPluginId(entry.id) && (entry.source.kind !== 'bundled' || !this.options.bundled?.some((b) => b.id === entry.id))
-    const state: PluginState = revoked !== null ? revokedState(revoked) : foreign ? { ok: false, reason: RESERVED_PLUGIN_ID_MESSAGE } : entry.state
+    const foreign = entry.state.ok ? this.reservedProblem(entry) : null
+    const state: PluginState = revoked !== null ? revokedState(revoked) : foreign !== null ? { ok: false, reason: foreign } : entry.state
     let dir: string
     try {
       dir = this.dirOf(entry)

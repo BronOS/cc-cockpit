@@ -34,6 +34,8 @@ optional: the bundled editor plugin uses it (`brew install micro`, `sudo pacman 
 
 If you linked your own `cockpit.reviewer` or `cockpit.editor` before, unlink them (`ccc plugin unlink <id>`): those ids now
 belong to the bundled plugins and the app drops an old linked copy at start with a log line.
+The template plugins were renamed the same way: `cockpit.hello` is now `example.hello` and `cockpit.example` is
+`example.plugin`; a link under an old id no longer loads, so unlink it and link the folder again.
 
 ### macOS (Apple silicon)
 

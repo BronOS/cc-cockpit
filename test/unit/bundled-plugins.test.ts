@@ -246,6 +246,19 @@ describe('reserved cockpit.* ids load only from the bundled root', () => {
     expect(state?.ok === false && state.reason).toMatch(RESERVED)
   })
 
+  it('a bundled record under a reserved id outside the allowlist is refused before load and dropped by it', async () => {
+    // A plugin an older app shipped (or a hand-edited record): `kind: 'bundled'` alone is not enough.
+    const shipped = bundledFolder('cockpit.other')
+    writeIndex([{ id: 'cockpit.other', version: '1.0.0', source: { kind: 'bundled', path: shipped }, state: { ok: true } }])
+    const { installer, index } = newInstaller([spec(bundledFolder())])
+    // No refresh has seen it yet: view() alone keeps it from the hosts.
+    const got = installer.get('cockpit.other')
+    expect(got?.state.ok === false && got.state.reason).toMatch(RESERVED)
+    expect(got?.manifest).toBeUndefined()
+    await installer.load()
+    expect(index.get('cockpit.other')).toBeUndefined()
+  })
+
   it('link refuses a copy of a bundled plugin with the reason, not "uninstall it first"', async () => {
     const { installer, index } = await restart([spec(bundledFolder())])
     await expect(installer.link(linkedFolder(BID, []))).rejects.toThrow(RESERVED)

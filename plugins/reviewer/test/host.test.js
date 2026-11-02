@@ -70,3 +70,13 @@ test('a second open of the same file focuses the first overlay', async () => {
   assert.equal(f.handles[0].focused, 1)
   host.deactivate()
 })
+
+test('two concurrent opens of the same file still make one overlay', async () => {
+  // Both calls pass the first open.has check while the other is awaiting (git, storage, tabs).
+  const f = setup({ editorAvailable: true })
+  host.activate(f.ctx)
+  await Promise.all([f.provided.reviewer.open('a.js'), f.provided.reviewer.open('a.js')])
+  assert.equal(f.handles.length, 1)
+  assert.equal(f.handles[0].focused, 1)
+  host.deactivate()
+})

@@ -131,7 +131,9 @@ behind it are in [design.md](design.md).
 - Bundled plugins (browser, reviewer, editor) can be switched off for the whole app (Settings > Plugins, "Off in all
   projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
   the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for
-  plugins that ship with the app; the template plugins are `example.hello` and `example.plugin`. If you linked your own
+  plugins that ship with the app; the template plugins are `example.hello` and `example.plugin` (renamed from
+  `cockpit.hello` and `cockpit.example`: a link under an old id no longer loads, so unlink it and link the folder again;
+  its settings, switches and storage stay under the old id). If you linked your own
   copy of `cockpit.reviewer` or `cockpit.editor` earlier, unlink it (`ccc plugin unlink`): the app drops such a linked
   record at start with a log line and uses the bundled plugin (settings and per-project switches carry over).
 - Plugin dev loop from a tab: `ccc plugin new|link|unlink|list|logs`. `link` asks you to confirm
