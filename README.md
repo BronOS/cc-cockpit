@@ -56,6 +56,14 @@ chmod +x cc-cockpit-X.Y.Z-linux-x64.AppImage && ./cc-cockpit-X.Y.Z-linux-x64.App
 Neither has been tried on Ubuntu yet. Ubuntu 24.04 and later restrict the unprivileged user namespaces Chromium's sandbox
 uses, so the AppImage may fail to start there. Prefer the `.deb`, which installs its own sandbox helper.
 
+On Arch, a PKGBUILD in the repo turns the released `.deb` into a pacman package (it is not on the AUR yet):
+
+```sh
+git clone https://github.com/BronOS/cc-cockpit.git
+cd cc-cockpit/packaging/aur
+makepkg -si
+```
+
 ### Upgrading
 
 On a Mac run `brew update && brew upgrade --cask cc-cockpit` (Homebrew may not have seen the new version yet without the
@@ -72,7 +80,30 @@ running app's.
 | macOS x64 | Not supported yet |
 | Windows | Not supported |
 
-To run from source instead, see Development below.
+To build the installers yourself, see Build from source below.
+
+## Build from source
+
+You need [Node.js](https://nodejs.org) with npm (releases are built with Node 26.8.1) and git. On Linux, `npm install`
+also compiles a native terminal module, so you need Python, `make` and a C++ compiler too.
+
+```sh
+git clone https://github.com/BronOS/cc-cockpit.git
+cd cc-cockpit
+git checkout v0.1.1      # a released version; master may be ahead of it
+npm ci
+npm run package
+```
+
+The installers land in `release/`. You get the ones for the system you build on:
+
+- macOS (Apple silicon): `cc-cockpit-X.Y.Z-mac-arm64.dmg`. It is unsigned, but a build you made yourself is not
+  quarantined, so macOS opens it without asking.
+- Linux (x64): `cc-cockpit-X.Y.Z-linux-x64.AppImage` and `cc-cockpit-X.Y.Z-linux-x64.deb`. Install them as in Linux
+  above.
+
+`npm run package:dir` skips the installers and leaves the unpacked app in `release/`, which is quicker for trying a
+build. To run the app straight from the source tree, see Development below.
 
 ## Plugins
 
