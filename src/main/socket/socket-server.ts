@@ -279,12 +279,14 @@ export class SocketServer {
       reply = { id: err instanceof ProtocolError ? err.id : id, ok: false, error: errorText(err) }
     }
     const stamp = this.options.appVersion === undefined ? {} : { appVersion: this.options.appVersion }
+    // One place stamps both the reply and the fallback, so the fallback cannot forget the version.
+    const send = (r: Reply): string => encodeReply({ ...r, ...stamp })
     let text: string
     try {
-      text = encodeReply({ ...reply, ...stamp })
+      text = send(reply)
     } catch (err) {
       // A handler returned something JSON cannot carry (a cycle, a BigInt).
-      text = encodeReply({ id, ok: false, error: `unserializable result: ${errorText(err)}`, ...stamp })
+      text = send({ id, ok: false, error: `unserializable result: ${errorText(err)}` })
     }
     // The client may be gone: `ccc hook` is fire-and-forget and closes without reading.
     if (!socket.destroyed && socket.writable) socket.write(text)

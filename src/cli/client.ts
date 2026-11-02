@@ -276,7 +276,8 @@ function warnOnVersionMismatch(trip: RoundTrip, out: Output): void {
   try {
     out.stderr(`ccc: the app is running version ${plainLine(running)}, this ccc is version ${plainLine(BUILD_VERSION)}. Restart cc-cockpit.\n`)
   } catch {
-    // stderr closed: the warning must not change the command's result
+    // The warning must not change the command's result. This only covers a write that throws: on
+    // process.stderr a closed pipe fails later as an `error` event, handled in index.ts.
   }
 }
 

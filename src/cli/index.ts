@@ -53,6 +53,12 @@ const crashed = hook
 
 process.on('uncaughtException', crashed)
 process.on('unhandledRejection', crashed)
+// A failed write to stderr (EPIPE: the reader went away) arrives later as an `error` event, past any
+// try/catch around the write. With no listener it lands in `crashed`: the version warning alone, on a
+// plugin command waiting for stdin, ended in exit 1 before the plugin ran (review finding). What
+// stderr says is never the result, so losing it must not change the exit code. Not for a hook, which
+// writes nothing there.
+if (!hook) process.stderr.on('error', () => {})
 
 import('./client')
   .then((client) => {

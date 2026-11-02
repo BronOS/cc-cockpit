@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { createServer as createSocketServer, type AddressInfo } from 'node:net'
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -324,5 +324,46 @@ test('with the app not running every command exits 0 and prints nothing', async 
     }
   } finally {
     await close()
+  }
+})
+
+// The built entry on purpose: the stderr `error` listener is in src/cli/index.ts, which only runs as the
+// real process. The version warning fails only after the write returned, while stdin is being awaited.
+test('a stderr nobody reads does not stop a plugin command after the version warning', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccc-e2e-stderr-'))
+  const sock = join(dir, 's.sock')
+  const seen: string[] = []
+  const app = createSocketServer((socket) => {
+    let buffered = ''
+    socket.on('error', () => {})
+    socket.on('data', (chunk) => {
+      buffered += chunk.toString()
+      const lines = buffered.split('\n')
+      buffered = lines.pop() ?? ''
+      for (const line of lines) {
+        const r = JSON.parse(line) as { id: number; cmd: string; args: { stdin?: string } }
+        seen.push(r.cmd)
+        const result = r.cmd === 'plugin.cli.spec' ? { name: 'demo', usage: 'demo', stdin: true } : { stdout: `ran: ${r.args.stdin}\n`, stderr: 'plugin says\n', code: 3 }
+        socket.write(`${JSON.stringify({ id: r.id, ok: true, appVersion: '99.1.2', result })}\n`)
+      }
+    })
+  })
+  await new Promise<void>((resolve) => app.listen(sock, resolve))
+  try {
+    const child = spawn(process.execPath, [join(__dirname, '../../out/cli/index.js'), 'demo'], {
+      env: { PATH: process.env.PATH ?? '', HOME: dir, APP_TAB_TOKEN: 'token', CC_COCKPIT_SOCK: sock }
+    })
+    child.stderr.destroy()
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    const status = new Promise<number | null>((resolve) => child.on('close', resolve))
+    // stdin stays open long enough for the failed write to surface while the command waits on it.
+    setTimeout(() => child.stdin.end('hello'), 300)
+    expect(await status).toBe(3)
+    expect(out).toBe('ran: hello\n')
+    expect(seen).toEqual(['plugin.cli.spec', 'plugin.cli'])
+  } finally {
+    app.close()
+    rmSync(dir, { recursive: true, force: true })
   }
 })
