@@ -11,5 +11,6 @@ const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 const run = (args) => spawnSync(npx, args, { stdio: 'inherit' }).status ?? 1
 
 const build = run(['electron-builder', '--publish', 'never'])
-const restore = run(['electron-builder', 'install-app-deps'])
+// CI runners build for their own arch, so there is nothing to restore (and it would recompile node-pty).
+const restore = process.env.CI ? 0 : run(['electron-builder', 'install-app-deps'])
 process.exit(build !== 0 ? build : restore)

@@ -1,0 +1,33 @@
+# Typecheck, lint and unit tests on both systems we ship for. Also called by release.yml, so a tag runs
+# exactly these checks. The e2e suite stays out: its window tests depend on a window manager, so it is a
+# manual step before tagging (docs/plans/20261102-distribution.md).
+# Never `pull_request_target`, which would hand a write token to a run next to fork content.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  checks:
+    strategy:
+      # One system failing says nothing about the other: let both report.
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # No npm cache: a cache shared with PR runs could feed a release build.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.8.1
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test

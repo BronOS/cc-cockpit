@@ -197,17 +197,17 @@ Version and hash are validated before they are written into Ruby.
 - Create: `scripts/check-release-tag.mjs`
 - Create: `test/unit/release-workflow.test.ts`
 
-- [ ] `ci.yml` on PRs and pushes to `master`: typecheck, lint and unit tests on Mac and Linux. The e2e suite is not run in CI, because
+- [x] `ci.yml` on PRs and pushes to `master`: typecheck, lint and unit tests on Mac and Linux. The e2e suite is not run in CI, because
       window tests depend on a window manager; it stays a manual step before tagging
-- [ ] `release.yml` on `v*` tags: the same checks, then build per runner, then one job creating the draft
-- [ ] `check-release-tag.mjs`: the tag must equal `v` + `package.json` version, and it must be a stable `x.y.z`; the run fails otherwise
-- [ ] least permissions: read by default, `contents: write` on the release job only. First-party actions only, `persist-credentials:
+- [x] `release.yml` on `v*` tags: the same checks, then build per runner, then one job creating the draft
+- [x] `check-release-tag.mjs`: the tag must equal `v` + `package.json` version, and it must be a stable `x.y.z`; the run fails otherwise
+- [x] least permissions: read by default, `contents: write` on the release job only. First-party actions only, `persist-credentials:
       false`, a pinned Node version, no npm cache. Untrusted values reach shell through `env`, never interpolated into `run`
-- [ ] the build job must never set a publish flag, and must never see a token other than what it needs
-- [ ] uploads: the dmg, deb, AppImage and a `SHA256SUMS` file
-- [ ] write tests for the tag script (match, mismatch, prerelease, junk) and for what the workflow files declare: draft, permissions,
+- [x] the build job must never set a publish flag, and must never see a token other than what it needs
+- [x] uploads: the dmg, deb, AppImage and a `SHA256SUMS` file
+- [x] write tests for the tag script (match, mismatch, prerelease, junk) and for what the workflow files declare: draft, permissions,
       no `pull_request_target`, no third-party action
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 7: Cask generation and publishing [model: sonnet]
 

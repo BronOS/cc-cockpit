@@ -1,0 +1,88 @@
+# A `v*` tag becomes a draft GitHub Release. A draft is invisible to users and to the update check
+# (`releases/latest` never returns one); the maintainer tries it and publishes by hand, which runs
+# publish-cask.yml. Only the last job has a write token, and it runs no code from the repo: no checkout.
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.8.1
+      # Before anything expensive: a tag that isn't the package.json version would ship misnamed files.
+      - name: The tag is the package.json version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/check-release-tag.mjs "$TAG"
+  checks:
+    needs: tag
+    uses: ./.github/workflows/ci.yml
+  # No token of any kind here, and electron-builder.yml has `publish: null`: this job can only build.
+  build:
+    needs: checks
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            artifact: mac
+            files: release/cc-cockpit-*-mac-arm64.dmg
+          # Pinned: node-pty compiles here, so this runner's glibc is the floor for the Linux build.
+          - os: ubuntu-22.04
+            artifact: linux
+            files: |
+              release/cc-cockpit-*-linux-x64.AppImage
+              release/cc-cockpit-*-linux-x64.deb
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.8.1
+      - run: npm ci
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      # Exactly the agreed files: the cask and the README rely on these names (electron-builder.yml).
+      - name: Check the files and write SHA256SUMS
+        working-directory: assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          for file in "cc-cockpit-$version-mac-arm64.dmg" "cc-cockpit-$version-linux-x64.AppImage" "cc-cockpit-$version-linux-x64.deb"; do
+            test -f "$file" || { echo "release: missing $file" >&2; exit 1; }
+          done
+          test "$(ls | wc -l)" -eq 3 || { echo "release: unexpected files:" >&2; ls >&2; exit 1; }
+          sha256sum -- * > SHA256SUMS
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" assets/* --draft --verify-tag --generate-notes --title "$TAG" --repo "$GITHUB_REPOSITORY"
