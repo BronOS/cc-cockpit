@@ -1,0 +1,47 @@
+{
+  "id": "cockpit.editor",
+  "name": "Editor (micro)",
+  "version": "0.1.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "contributes": {
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "autosaveSeconds": {
+            "type": "integer",
+            "title": "Autosave (seconds)",
+            "description": "micro saves the file this often while you edit. 0 turns autosave off. micro asks before reloading a file that changed on disk (Claude may be writing it too).",
+            "minimum": 0,
+            "maximum": 3600,
+            "default": 5
+          },
+          "colorscheme": {
+            "type": "string",
+            "title": "Colour scheme",
+            "description": "A micro colorscheme name (e.g. dracula-tc, gruvbox-tc, solarized-tc, default); empty uses your micro settings.",
+            "maxLength": 64,
+            "default": ""
+          },
+          "microPath": {
+            "type": "string",
+            "title": "micro command",
+            "description": "The micro binary: a name looked up on your login-shell PATH, or an absolute path.",
+            "minLength": 1,
+            "maxLength": 512,
+            "default": "micro"
+          }
+        }
+      }
+    },
+    "cli": [
+      {
+        "name": "edit",
+        "summary": "Edit a file of this project in micro, in an overlay",
+        "usage": "edit <file> [line]"
+      }
+    ]
+  },
+  "services": { "provides": { "editor": 1 } }
+}
