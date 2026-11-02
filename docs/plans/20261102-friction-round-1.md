@@ -331,9 +331,40 @@ whole window below the top bar. Named sizes rather than percentages, so pages do
 - [x] run tests - must pass before next task
 
 ### Task 15: Verify acceptance criteria [model: sonnet]
-- [ ] verify every item of this plan and every FRICTION.md line is either fixed, answered in the guide, or listed in Post-Completion (not done in this round or outside the app)
-- [ ] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`
-- [ ] run e2e tests: `npm run test:e2e` (only the known host failures may fail)
+- [x] verify every item of this plan and every FRICTION.md line is either fixed, answered in the guide, or listed in Post-Completion (not done in this round or outside the app)
+- [x] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`
+- [x] run e2e tests: `npm run test:e2e` (only the known host failures may fail)
+- results: `npm test` 3163 passed, 5 skipped; typecheck and lint clean; `npm run test:coverage` thresholds hold (statements 86.03 %, branches 86.79 %, functions 76.74 %, lines 87.1 %). e2e: 151 passed, 2 skipped, 3 failed: `window-bounds.spec.ts:40,:62` (known host failures) and `window-background.spec.ts:68`, which was not the Wayland crash but a real gap from Task 14 (the overlay became a dialog over a 0.45 scrim, the spec still expected `.overlay` opaque); fixed in `90dbc38` (spec now checks `.overlay-frame` is solid and the scrim is 0.45), passes alone
+- FRICTION.md line to outcome (line numbers of that file):
+  - 8 `onSettingsChange` argument: guide, `api.md` (Task 9)
+  - 9 `panels.onMessage` disposer: guide, `api.md` ("`onMessage` returns a disposer")
+  - 10 `panels.post` on a closed panel: guide, `api.md` ("fire-and-forget: when the panel has no page connected ... ")
+  - 11 caller identity: fixed, `a22d108` `ctx.services.caller()`
+  - 12 service call limits: guide, `api.md` ("there is no rate, concurrency, argument or result size cap and no timeout")
+  - 13 app-wide data: fixed, `a737475` `ctx.appStorage` / `ctx.appDataDir`
+  - 14 concurrency: fixed, `a737475` (main serialises, `increment` atomic); guide `api.md`
+  - 15 theme variables: guide, `panels.md` (full `--cc-*` list)
+  - 16 inline `<style>`: guide, `panels.md` ("styles from its own files and inline")
+  - 17 known manifest keys: guide, `plugins.md` ("Known top-level keys: ...")
+  - 18 per-command description: guide, `plugins.md` ("There is no `description` field on a command or a cli entry")
+  - 19 settings form keywords: guide, `settings-secrets.md` (`enum` shows raw values, `oneOf` const/title for labels)
+  - 20 conditional fields: guide, `settings-secrets.md` ("No conditional fields")
+  - 21 unset secret at activate: guide, `settings-secrets.md` (key absent, `undefined`)
+  - 22 Node version and globals: guide, `api.md` (Node 24, `fetch` and friends)
+  - 23 sibling `require`: guide, `api.md` ("`main` is loaded with Node's own `require`, relative to its folder")
+  - 24 nested plugin folders reloading the parent: fixed, `5334508` (watcher ignores nested folders with their own `plugin.json`); guide `dev-loop.md` ("Nested plugins are fine")
+  - 25 headless test kit: deliberately out of scope ("Not in this round")
+  - 26 offline types: fixed, `2d0d42f` `ccc guide types`
+  - 28 whole-host restart on link: guide, `dev-loop.md` ("Linking (and unlinking) restarts the project's plugin host")
+  - 29 `ccc plugin config`: fixed, `fd5d661`
+  - 30 `ccc panel show`: fixed, `7441e07`
+  - 31 log prefix: guide, `dev-loop.md` (`[<projectId>]`, 16 hex digits)
+  - 33 keyring on Linux: fixed, `17814d0`; guide `settings-secrets.md` "When the OS keyring is unavailable"
+  - 35 `ccc` during reload hangs: fixed, `8ed32cb` and `6b11e4f`
+  - 37 black plugin icons: fixed, `bf12257`; guide `panels.md` (icon format and mask)
+  - 41 scaffold indentation, 42 nested scaffold order: fixed, `5334508`
+  - 46, 47 Jev / TypeSafe: outside the app (Post-Completion)
+  - no FRICTION line is left uncovered
 
 ### Task 16: [Final] Update documentation [model: sonnet]
 - [ ] `docs/design.md` (§5 ctx table: `ctx.appStorage`, `ctx.appDataDir`, `ctx.services.caller()`; §6 CLI: `ccc plugin config`, `ccc panel show`, `ccc guide types`; keyring note), `docs/features.md`, README `ccc` list if it names these commands
