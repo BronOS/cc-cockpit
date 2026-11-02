@@ -34,6 +34,13 @@ describe('secret store', () => {
     await expect(s.encrypt(SECRET)).rejects.not.toThrow(SECRET)
   })
 
+  it('safeStorage on Linux: the error names the cause and the fix', async () => {
+    for (const state of [{ available: false }, { available: true, backend: 'basic_text' }]) {
+      const s = safeStorageSecretStore(stubSafeStorage(state), 'linux')
+      await expect(s.encrypt(SECRET)).rejects.toThrow(/Secret Service keyring.*--password-store=gnome-libsecret/)
+    }
+  })
+
   it('safeStorage on Linux: the basic_text backend (built-in key) counts as unavailable', async () => {
     const s = safeStorageSecretStore(stubSafeStorage({ available: true, backend: 'basic_text' }), 'linux')
     expect(await s.unavailableReason()).toContain('built-in key')

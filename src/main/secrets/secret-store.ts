@@ -73,7 +73,7 @@ export function safeStorageSecretStore(api: SafeStorageApi, platform: string = p
     }
     if (!available) {
       return platform === 'linux'
-        ? 'the OS keyring is not available (install and unlock gnome-keyring or KWallet)'
+        ? 'no OS keyring is available. Start a Secret Service keyring (gnome-keyring, or the Secret Service of KeePassXC) and unlock it, or start the app with --password-store=gnome-libsecret (or kwallet6)'
         : 'the OS keychain is not available'
     }
     if (platform === 'linux') {
@@ -84,7 +84,11 @@ export function safeStorageSecretStore(api: SafeStorageApi, platform: string = p
         /* reported as unknown below */
       }
       if (backend === 'basic_text') {
-        return 'no OS keyring was found, and the fallback would store secrets with a built-in key (not encrypted)'
+        return (
+          'no OS keyring was found, and the fallback would store secrets with a built-in key (not encrypted). ' +
+          'Start a Secret Service keyring (gnome-keyring, or the Secret Service of KeePassXC) and unlock it, ' +
+          'or start the app with --password-store=gnome-libsecret (or kwallet6)'
+        )
       }
       if (backend === 'unknown') return 'the OS keyring is not ready yet'
     }

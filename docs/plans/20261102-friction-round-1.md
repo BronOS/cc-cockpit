@@ -125,11 +125,11 @@ External review: auto
 - Create: `test/unit/password-store.test.ts`
 - Modify: `src/cli/guide/settings-secrets.md`
 
-- [ ] pure decision function (platform, argv, env, injected bus check) per Technical Details; `main/index.ts` appends the switch before `ready` when it says so
-- [ ] the "cannot store secrets" error names the cause and the fix (running Secret Service keyring, or the `--password-store` switch)
-- [ ] guide: what an unavailable keyring means for a user and a plugin (no plaintext fallback by design)
-- [ ] write tests: Linux with owner → switch; no owner → none; check impossible + unrecognised desktop + bus address → switch; check impossible + recognised desktop → none; already has switch / not Linux / fake secrets → none
-- [ ] run tests - must pass before next task
+- [x] pure decision function (platform, argv, env, injected bus check) per Technical Details; `main/index.ts` appends the switch before `ready` when it says so
+- [x] the "cannot store secrets" error names the cause and the fix (running Secret Service keyring, or the `--password-store` switch)
+- [x] guide: what an unavailable keyring means for a user and a plugin (no plaintext fallback by design)
+- [x] write tests: Linux with owner → switch; no owner → none; check impossible + unrecognised desktop + bus address → switch; check impossible + recognised desktop → none; already has switch / not Linux / fake secrets → none
+- [x] run tests - must pass before next task
 
 ### Task 2: A plugin `ccc` command during a reload never hangs [model: opus]
 

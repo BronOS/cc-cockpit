@@ -30,7 +30,18 @@ A top-level string property with `"format": "secret"` is a password field:
 Encrypted key-value store, app-wide per plugin (every project sees the same keys). For
 per-project sign-ins name keys yourself (`google:work`) and let a project setting pick one. Keys
 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, values at most 64 KiB, at most 100 keys. `set` rejects when
-the OS cannot encrypt: plaintext is never stored. Uninstalling a plugin deletes its secrets.
+the OS cannot encrypt: plaintext is never stored, and there is no plaintext or key-file fallback
+by design, so do not build one. Uninstalling a plugin deletes its secrets.
+
+### When the OS keyring is unavailable
+
+On Linux the secrets need a running Secret Service keyring (gnome-keyring, or KeePassXC with its
+Secret Service integration) or KWallet, unlocked. Without one, `ctx.secrets.set` and a secret
+settings field reject with "cannot store secrets: ..." naming the fix. The app uses the Secret
+Service on its own when it is on the session bus, even under a desktop Electron does not know
+(Hyprland, sway); otherwise the user starts a keyring, or launches the app with
+`--password-store=gnome-libsecret` (`kwallet6` for KDE 6). A plugin should show that message and
+let the user retry after fixing it; it must not keep the secret in a file or in `ctx.storage`.
 
 ## Sign-in flows
 

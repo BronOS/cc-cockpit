@@ -76,6 +76,7 @@ import { ProjectRegistry, realPathOf } from './projects/registry'
 import { buildRestorePlan, forgetMissing, planLaunch, relinkMissing, TabRestorer } from './restore'
 import { PluginOAuth } from './oauth/plugin-oauth'
 import { PluginSecrets } from './secrets/plugin-secrets'
+import { choosePasswordStore, execRunner } from './secrets/password-store'
 import { safeStorageSecretStore, selectSecretStore } from './secrets/secret-store'
 import { AppearanceService, claudeTabOnOpenOf, tabExitOf } from './settings/appearance-service'
 import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings'
@@ -149,6 +150,18 @@ function start(): void {
   // plugin panel files (cc-plugin:) and webview panels' local files (cc-preview:), in the one call
   // Electron allows.
   registerAppSchemes()
+  // Linux desktops Electron does not recognise (Hyprland, sway ...): safeStorage falls back to
+  // `basic_text` and secrets are refused although a Secret Service keyring is running. Chromium reads
+  // this switch at `ready`, so it goes before selectSecretStore and app.whenReady
+  // (secrets/password-store.ts decides; it skips an explicit --password-store).
+  const passwordStore = choosePasswordStore({
+    platform: process.platform,
+    argv: process.argv,
+    env: process.env,
+    isPackaged: app.isPackaged,
+    run: execRunner
+  })
+  if (passwordStore !== null) app.commandLine.appendSwitch('password-store', passwordStore)
   // ctx.secrets (plugin-secrets.ts, `<data>/secrets.json`): encrypted through the OS keychain
   // (safeStorage), or the marked fake store in an unpackaged test run only (secret-store.ts).
   // Built before `ready` on purpose: availability is asked at each use, never here. First, because
