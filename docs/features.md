@@ -28,6 +28,13 @@ behind it are in [design.md](design.md).
   first, naming the tab and, for Claude, its status; Cancel is the default. "Don't ask again" in
   the question, or Settings > Appearance and keys > Tabs > "Ask before closing a tab that is still
   running" (on by default), turns it off. A tab whose process already ended closes at once.
+- Ctrl+Tab (Ctrl on every platform; Cmd+Tab is macOS's app switcher) goes back to the tab you were
+  in before. Hold Ctrl and press Tab again to walk further back through the tabs in recent order,
+  Shift+Tab or the arrow keys to step back; after a moment an overlay lists the tabs, and letting go
+  of Ctrl picks the highlighted one. Esc cancels, Enter picks. Move the mouse over the list and it
+  stays open after the release, for a click. Both chords can be rebound in Settings (Switch to
+  Recent Tab). Known limit: the chord is not seen while the keyboard is in a plugin's panel page
+  (a sandboxed frame keeps its keys); a web panel forwards it, and the overlay then waits for a click or Enter.
 - Drag a tab left or right to move it; a bar shows where it lands, Escape puts it back, and the
   new order is kept after a restart. The tab menu (right-click) has Move left / Move right too.
   The strip doesn't scroll by itself while you drag, so with more tabs than fit, move a tab out of

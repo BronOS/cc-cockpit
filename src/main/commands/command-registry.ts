@@ -34,6 +34,10 @@ export const CORE_COMMANDS: readonly CommandDef[] = [
   core('tab.newShell', 'New Shell Tab', 'Cmd+Shift+T'),
   core('tab.close', 'Close Tab', 'Cmd+W'),
   ...tabSelect,
+  // Ctrl, not Cmd, on every platform: Cmd+Tab is macOS's app switcher. Held, it walks the tabs in
+  // recent order with an overlay; released, it picks (tabs/tab-switcher.ts).
+  core('tab.switchNext', 'Switch to Recent Tab', 'Ctrl+Tab'),
+  core('tab.switchPrev', 'Switch to Recent Tab (Backward)', 'Ctrl+Shift+Tab'),
   core('zone.toggleLeft', 'Toggle Left Zone', 'Cmd+B'),
   core('zone.toggleBottom', 'Toggle Bottom Zone', 'Cmd+J'),
   core('zone.toggleRight', 'Toggle Right Zone', 'Cmd+Shift+B'),

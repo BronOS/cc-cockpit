@@ -5,6 +5,7 @@ import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { CommandPalette } from '../commands/CommandPalette'
 import { commandAllowed } from '../commands/command-gate'
 import {
+  chordOf,
   commandForEvent,
   pluginCommandHandlers,
   registerHandlers,
@@ -28,6 +29,18 @@ import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './
 import { CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
 import { TabBar } from './TabBar'
+import { TabSwitcher } from './TabSwitcher'
+import {
+  heldModifiers,
+  openSwitcher,
+  released,
+  SHOW_DELAY_MS,
+  step,
+  SWITCH_NEXT,
+  SWITCH_PREV,
+  touchRecent,
+  type SwitcherState
+} from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { TerminalView } from './TerminalView'
 
@@ -42,6 +55,9 @@ function attachTabs(): Promise<TabInfo[]> {
   attached ??= window.cockpit.invoke('tabs.list')
   return attached
 }
+
+/** KeyboardEvent.key of the modifiers: not "held keys" the switcher swallows after it ends. */
+const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta'])
 
 /**
  * macOS project windows draw their own title bar (main hides the native one there:
@@ -106,6 +122,26 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const confirmFor = useRef<string | null>(null)
   // The window's own Claude statuses, for the dialog's "Claude is working" (read when it opens).
   const ownRef = useRef(own)
+  // The Ctrl+Tab switcher (tab-switcher.ts): open while non-null, mirrored in a ref for the window
+  // key handlers, which are registered once. `recent` is the tab ids by last activation, the
+  // active one first; kept in a ref, it changes on every switch and nothing renders from it.
+  const [switcher, setSwitcherState] = useState<SwitcherState | null>(null)
+  const switcherRef = useRef<SwitcherState | null>(null)
+  const showTimer = useRef<number | undefined>(undefined)
+  const recent = useRef<string[]>([])
+  // Set while the window key handler runs a command: a switch chord typed here is held, so the
+  // release picks. From anywhere else (the palette, a web panel's page) there is no hold to wait
+  // for, and the switcher opens shown and waits for a click, Enter or Esc.
+  const fromKey = useRef(false)
+  // Non-modifier keys pressed while the switcher is open and not yet released (KeyboardEvent.code).
+  // When the switcher ends they move to `swallow`, whose keydowns (auto-repeats of a held Enter,
+  // Esc, or Tab after Ctrl went up first) are dropped until the key comes up: they would land in
+  // the terminal that just got the focus, where a repeated Enter could answer a Claude prompt.
+  const heldKeys = useRef(new Set<string>())
+  const swallow = useRef(new Set<string>())
+  useEffect(() => {
+    if (state.activeId) recent.current = touchRecent(recent.current, state.activeId)
+  }, [state.activeId])
 
   useEffect(() => {
     // Subscribe before asking for the list so no output or exit falls between the two. Output of
@@ -296,6 +332,70 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const id = stateRef.current.activeId
     if (id) sessions.get(id).focus()
   }, [sessions])
+  const setSwitcher = useCallback((next: SwitcherState | null): void => {
+    switcherRef.current = next
+    setSwitcherState(next)
+  }, [])
+  /** Close the switcher, selecting `pick` when given (a release, Enter, a click) or nothing (Esc, blur). */
+  const endSwitcher = useCallback(
+    (pick: string | undefined): void => {
+      window.clearTimeout(showTimer.current)
+      if (!switcherRef.current) return
+      swallow.current = new Set(heldKeys.current)
+      heldKeys.current.clear()
+      setSwitcher(null)
+      if (pick) dispatch({ type: 'selected', tabId: pick })
+      requestAnimationFrame(focusActive)
+    },
+    [focusActive, setSwitcher]
+  )
+  /**
+   * A switch chord: open the switcher one step from the current tab, or step it when it is open.
+   * `sticky` for a chord typed into a web panel's page, whose release this page may never see.
+   */
+  const switchTabs = useCallback(
+    (dir: 1 | -1, sticky: boolean): void => {
+      const open = switcherRef.current
+      if (open) {
+        setSwitcher({ ...open, index: step(open.index, open.order.length, dir) })
+        return
+      }
+      const s = stateRef.current
+      const order = s.activeId ? touchRecent(recent.current, s.activeId) : recent.current
+      const mods = heldModifiers(chordOf(dir === 1 ? SWITCH_NEXT : SWITCH_PREV))
+      const next = openSwitcher(s.tabs, order, dir, mods, sticky)
+      if (!next) return
+      setSwitcher(next)
+      if (!next.shown) {
+        showTimer.current = window.setTimeout(() => {
+          const cur = switcherRef.current
+          if (cur && !cur.shown) setSwitcher({ ...cur, shown: true })
+        }, SHOW_DELAY_MS)
+      }
+    },
+    [setSwitcher]
+  )
+  // A modal that came up on its own while switching (a close question whose setting read was still
+  // on the way, the ccc offer, the settings screen): the switcher goes, or its keys would answer
+  // the modal's buttons and a release would switch tabs behind it.
+  useEffect(() => {
+    if (confirm !== null || cccOffer !== null || settingsOpen) endSwitcher(undefined)
+  }, [confirm, cccOffer, settingsOpen, endSwitcher])
+  // A tab closed or added while the switcher is open: keep the list to the tabs that exist, the
+  // highlight on the same tab where it can be, and give up when nothing is left to switch to.
+  useEffect(() => {
+    const open = switcherRef.current
+    if (!open) return
+    const ids = new Set(state.tabs.map((t) => t.id))
+    const order = open.order.filter((id) => ids.has(id))
+    if (order.length === open.order.length) return
+    if (order.length < 2) {
+      endSwitcher(undefined)
+      return
+    }
+    const at = order.indexOf(open.order[open.index] ?? '')
+    setSwitcher({ ...open, order, index: at >= 0 ? at : Math.min(open.index, order.length - 1) })
+  }, [state.tabs, endSwitcher, setSwitcher])
   const closePalette = useCallback((): void => {
     setPaletteCommands(null)
     // The palette took the focus; give it back to the terminal the user was in.
@@ -323,13 +423,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // An overlay (opened by the CLI or a plugin) covers everything, the palette included: close
     // it rather than leave it under the overlay, where it would still hold Esc and the focus.
     if (count > 0) setPaletteCommands(null)
+    // And the tab switcher, which would otherwise pick a tab under the overlay on release.
+    if (count > 0) endSwitcher(undefined)
     // Likewise the close dialog: dismissed as a Cancel (the tab stays), never answered blind.
     if (count > 0) {
       confirmFor.current = null
       setConfirm(null)
     }
     setCovered(count > 0)
-  }, [])
+  }, [endSwitcher])
   const answerClose = useCallback(
     (tabId: string, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {
       const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain)
@@ -369,7 +471,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // Each of these is drawn by this page above the zones, where a webview panel's native view would
   // paint over it: the views hide while any is up (shell-layers.ts). An overlay main also hides
   // them for on its own (it knows the stack first); the palette and the dialogs only this page sees.
-  useShellLayer(settingsOpen || covered || confirm !== null || cccOffer !== null || paletteCommands !== null)
+  useShellLayer(
+    settingsOpen || covered || confirm !== null || cccOffer !== null || paletteCommands !== null || switcher?.shown === true
+  )
   // Cmd+Shift+W closes the top core overlay, and with only the settings screen open that is the
   // screen. An overlay opened over it claims the chord on top of this; the handler stack in
   // keybindings.ts gives it back here when that overlay goes.
@@ -387,6 +491,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     for (let n = 1; n <= 9; n++) selects[`tab.select.${n}`] = select(n)
     const off = registerHandlers({
       ...selects,
+      [SWITCH_NEXT]: () => switchTabs(1, !fromKey.current),
+      [SWITCH_PREV]: () => switchTabs(-1, !fromKey.current),
       'tab.newClaude': () => actions.current.create('claude'),
       'tab.newShell': () => actions.current.create('shell'),
       'tab.close': () => {
@@ -411,6 +517,27 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // Capture phase on window: a bound chord is taken before the focused element (xterm's hidden
     // textarea included) sees it; an unbound key is not touched and goes to the terminal as usual.
     const onKey = (e: KeyboardEvent): void => {
+      // While the switcher is open every key is its own: none may reach the terminal under it (an
+      // Enter meant to pick a tab must not answer a Claude prompt), nor fire another command.
+      if (swallow.current.has(e.code)) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      const open = switcherRef.current
+      if (open) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (!MODIFIER_KEYS.has(e.key)) heldKeys.current.add(e.code)
+        const id = commandForEvent(e)
+        if (id === SWITCH_NEXT || id === SWITCH_PREV) switchTabs(id === SWITCH_NEXT ? 1 : -1, false)
+        else if (e.key === 'Escape') endSwitcher(undefined)
+        else if (e.key === 'Enter') endSwitcher(open.order[open.index])
+        else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          setSwitcher({ ...open, index: step(open.index, open.order.length, e.key === 'ArrowDown' ? 1 : -1) })
+        }
+        return
+      }
       if (e.isComposing || e.defaultPrevented) return
       const id = commandForEvent(e)
       if (!id) return
@@ -419,12 +546,41 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if ((paletteOpen.current || confirmFor.current !== null || offerShown.current) && id === 'overlay.pop') return
       e.preventDefault()
       e.stopPropagation()
-      // Holding Cmd+T must not open a tab per repeat.
-      if (allowed(id) && !e.repeat) runCommand(id)
+      // Holding Cmd+T must not open a tab per repeat. A held Ctrl+Tab steps through the tabs, as
+      // in a browser.
+      if (allowed(id) && (!e.repeat || id === SWITCH_NEXT || id === SWITCH_PREV)) {
+        fromKey.current = true
+        try {
+          runCommand(id)
+        } finally {
+          fromKey.current = false
+        }
+        // The chord that opened the switcher is down too: its Tab may outlast the Ctrl.
+        if (switcherRef.current) heldKeys.current.add(e.code)
+      }
     }
     window.addEventListener('keydown', onKey, true)
+    // Letting go of the chord's modifier picks the highlighted tab (a keyup reports the state
+    // after the release). A switcher the user took to with the mouse waits for a click instead.
+    const onKeyUp = (e: KeyboardEvent): void => {
+      heldKeys.current.delete(e.code)
+      swallow.current.delete(e.code)
+      const open = switcherRef.current
+      if (open && !open.sticky && released(open.mods, e)) endSwitcher(open.order[open.index])
+    }
+    window.addEventListener('keyup', onKeyUp, true)
+    // The window lost the keyboard mid-switch (Alt+Tab to another app): the release will never
+    // come here, so nothing is picked.
+    const onBlur = (): void => {
+      endSwitcher(undefined)
+      // No keyup reaches a window without the keyboard: nothing is held any more.
+      swallow.current.clear()
+    }
+    window.addEventListener('blur', onBlur)
     // A chord typed into a webview panel's page, resolved by main (auto-repeats never come).
     const offTrigger = window.cockpit.on('commands.trigger', ({ id }) => {
+      // Not fromKey: a switch chord from a web panel's page opens the switcher sticky, since the
+      // modifier may be up before the chord got here.
       if (typeof id === 'string' && allowed(id)) runCommand(id)
     })
     // Plugin commands run in this window's plugin host, through main; they come and go with the
@@ -465,8 +621,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offUpdated()
       offPlugin()
       window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', onBlur)
+      window.clearTimeout(showTimer.current)
     }
-  }, [closeSettings, openSettings, toggleSettings])
+  }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher])
 
   return (
     // `in-page-title-bar`: full-window layers (overlays, the settings screen) start under the bar,
@@ -523,6 +682,20 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           mac={navigator.platform.toLowerCase().includes('mac')}
           onRun={(id) => runCommand(id)}
           onClose={closePalette}
+        />
+      )}
+      {switcher?.shown && (
+        <TabSwitcher
+          tabs={switcher.order.flatMap((id) => state.tabs.find((t) => t.id === id) ?? [])}
+          index={switcher.index}
+          sessions={own}
+          onPick={(tabId) => endSwitcher(tabId)}
+          onHover={(index) => {
+            const open = switcherRef.current
+            // Reaching for a row with the mouse: a release of Ctrl no longer picks, the click does.
+            if (open) setSwitcher({ ...open, index, sticky: true })
+          }}
+          onCancel={() => endSwitcher(undefined)}
         />
       )}
       {confirm && (

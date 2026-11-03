@@ -1200,7 +1200,8 @@ All decided in phase 1:
 - CLI binary name: `ccc`. Data dir: Electron's `userData`, overridable with `CC_COCKPIT_DATA_DIR`.
 - Keybindings: Cmd-based, mac-first (on Linux Cmd = Ctrl), e.g. Cmd+T new Claude tab,
   Cmd+Shift+T shell tab, Cmd+W close tab, Cmd+B / Cmd+J / Cmd+Shift+B toggle zones, Cmd+, settings,
-  Cmd+Shift+P palette, Cmd+Shift+W close the top overlay. All editable in Settings.
+  Cmd+Shift+P palette, Cmd+Shift+W close the top overlay, Ctrl+Tab / Ctrl+Shift+Tab switch tabs in
+  recent order (held: an overlay lists them; Ctrl on every platform). All editable in Settings.
 - Hooks: `PreToolUse` on every tool (`*`); `PostToolUse` only for `Edit|Write|MultiEdit|NotebookEdit` and the
   dialog tools `AskUserQuestion|ExitPlanMode` (§3 Status per tab).
   All hooks are synchronous, so arrival order equals event order. No hook fires when a permission

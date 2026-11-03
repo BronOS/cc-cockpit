@@ -767,6 +767,69 @@ iframe:focus-visible {
   cursor: default;
 }
 
+/* Ctrl+Tab tab switcher (TabSwitcher). Same layer as the palette (100): the two never show together
+   (the switch chords are refused while the palette is open, and keys are swallowed while switching). */
+.switcher-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 100;
+}
+.switcher {
+  width: min(520px, 90vw);
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  overflow: hidden;
+}
+.switcher-list {
+  list-style: none;
+  margin: 0;
+  padding: 5px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.switcher-list li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+  user-select: none;
+}
+.switcher-list li.selected {
+  background: var(--cc-accent-soft);
+}
+.switcher-mark {
+  display: inline-flex;
+  justify-content: center;
+  width: 14px;
+  flex: none;
+}
+.switcher-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.switcher-note {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+}
+
 /* "Close <tab>?" (CloseTabDialog). z-index 120: above the palette (100), which a Close Tab run from
    it has closed already; below the settings screen (150), which no close starts under; below the
    overlay stack (200+), and an overlay opening dismisses the dialog anyway. The backdrop dims the

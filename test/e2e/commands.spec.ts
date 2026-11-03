@@ -49,3 +49,81 @@ test('Escape closes the palette without opening anything', async ({ cockpit }) =
   await expect(palette).toHaveCount(0)
   await expect(cockpit.page.getByRole('tab')).toHaveCount(0)
 })
+
+test('Ctrl+Tab flips to the last tab; held, it walks the tabs in recent order with an overlay', async ({ cockpit }) => {
+  const page = cockpit.page
+  const tabs = page.getByRole('tab')
+  const selected = (i: number) => expect(tabs.nth(i)).toHaveAttribute('aria-selected', 'true')
+  await cockpit.newTab('shell')
+  await cockpit.newTab('shell')
+  await cockpit.newTab('shell')
+  await expect(tabs).toHaveCount(3)
+  // Visit order: 3, then 1 (the most recent), so the recent list is 1, 3, 2.
+  await page.keyboard.press(`${MOD}+1`)
+  await selected(0)
+  const switcher = page.getByRole('dialog', { name: 'Switch tab' })
+
+  // A quick press goes back to the tab before and never shows the overlay.
+  await page.keyboard.press('Control+Tab')
+  await selected(2)
+  await expect(switcher).toHaveCount(0)
+  await page.keyboard.press('Control+Tab')
+  await selected(0)
+
+  // Held: Tab twice walks to the third most recent (tab 2); the overlay lists all three.
+  await page.keyboard.down('Control')
+  await page.keyboard.press('Tab')
+  await page.keyboard.press('Tab')
+  await expect(switcher).toBeVisible()
+  await expect(switcher.getByRole('option')).toHaveCount(3)
+  await expect(switcher.getByRole('option', { selected: true })).toHaveCount(1)
+  // Shift+Tab steps back without picking.
+  await page.keyboard.press('Shift+Tab')
+  await page.keyboard.press('Tab')
+  await page.keyboard.up('Control')
+  await expect(switcher).toHaveCount(0)
+  await selected(1)
+
+  // Esc cancels: the tab stays.
+  await page.keyboard.down('Control')
+  await page.keyboard.press('Tab')
+  await expect(switcher).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.keyboard.up('Control')
+  await expect(switcher).toHaveCount(0)
+  await selected(1)
+
+  // The mouse: moving over a row keeps the overlay open past the release; a click picks it.
+  await page.keyboard.down('Control')
+  await page.keyboard.press('Tab')
+  await expect(switcher).toBeVisible()
+  const last = switcher.getByRole('option').nth(2)
+  const box = (await last.boundingBox())!
+  await page.mouse.move(box.x + 10, box.y + box.height / 2)
+  await page.mouse.move(box.x + 30, box.y + box.height / 2)
+  await page.keyboard.up('Control')
+  await expect(switcher).toBeVisible()
+  await last.click()
+  await expect(switcher).toHaveCount(0)
+  await selected(2)
+})
+
+test('Switch to Recent Tab from the palette opens the switcher and waits for a pick', async ({ cockpit }) => {
+  const page = cockpit.page
+  const tabs = page.getByRole('tab')
+  await cockpit.newTab('shell')
+  await cockpit.newTab('shell')
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press(`${MOD}+Shift+P`)
+  const palette = page.getByRole('dialog', { name: 'Command palette' })
+  await palette.getByRole('combobox').fill('switch to recent tab')
+  await palette.getByRole('option').first().click()
+  // No Ctrl is held, so nothing is released: the overlay shows and stays until Enter.
+  const switcher = page.getByRole('dialog', { name: 'Switch tab' })
+  await expect(switcher).toBeVisible()
+  await page.keyboard.press('a')
+  await expect(switcher).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(switcher).toHaveCount(0)
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true')
+})
