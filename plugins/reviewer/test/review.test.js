@@ -125,7 +125,11 @@ test('the page enforces the note count and draft size caps of the host', () => {
 test('annotateInput: checks and caps every field', () => {
   const { annotateInput, MAX_ANNOTATE_TITLE, MAX_ANNOTATE_TEXT, MAX_ANNOTATE_KEY } = require('../dist/lib/review')
   const ok = annotateInput({ title: '  PROJ-1:\n Fix\tlogin ', text: '', url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
-  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null })
+  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null, start: 'top' })
+  // start: where the main document opens; 'top' (default) or 'end'.
+  assert.equal(annotateInput({ title: 't', html: '<p>x</p>', start: 'end' }).start, 'end')
+  assert.equal(annotateInput({ title: 't', html: '<p>x</p>', start: null }).start, 'top')
+  assert.throws(() => annotateInput({ title: 't', html: '<p>x</p>', start: 'middle' }), /start must be 'top' or 'end'/)
   // Title: one line, 1-200 chars.
   assert.equal(annotateInput({ title: 't'.repeat(MAX_ANNOTATE_TITLE), text: '' }).title.length, MAX_ANNOTATE_TITLE)
   assert.throws(() => annotateInput({ title: 't'.repeat(MAX_ANNOTATE_TITLE + 1), text: '' }), /title is over 200/)

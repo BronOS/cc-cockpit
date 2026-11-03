@@ -675,9 +675,31 @@ function renderHtml(view, source) {
   showAssets(view.body)
   prepareLinks(view.body)
   placeOpenUrl() // after the text walk: the button holds no text, so the offsets would not move anyway
+  if (view === htmlView && state.sides && state.sides.start === 'end') stickToEnd(view)
   refreshHighlights() // finds the draft's notes first: the list says which were not found
   renderNotes()
   updateAddButton()
+}
+
+/**
+ * Opens `view` at its end (annotate's `start: 'end'`) and keeps it there while pictures above load
+ * and push the end down, until the person scrolls, clicks or types in it: from then on the place is
+ * theirs. Only the main document: a companion beside it opens at its top.
+ */
+function stickToEnd(view) {
+  const toEnd = () => {
+    view.scroller.scrollTop = view.scroller.scrollHeight
+  }
+  toEnd()
+  requestAnimationFrame(toEnd)
+  if (typeof ResizeObserver !== 'function') return
+  const keep = new ResizeObserver(toEnd)
+  keep.observe(view.body)
+  const release = () => {
+    keep.disconnect()
+    for (const t of ['wheel', 'pointerdown', 'keydown', 'touchstart']) view.scroller.removeEventListener(t, release)
+  }
+  for (const t of ['wheel', 'pointerdown', 'keydown', 'touchstart']) view.scroller.addEventListener(t, release, { passive: true })
 }
 
 /** The images under `root` (a document or a details block): loaded, failed, or left pending. */

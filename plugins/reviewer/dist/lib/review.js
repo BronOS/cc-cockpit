@@ -409,7 +409,7 @@ function checkCompanion(c, budget) {
  * checkCompanion's answer.
  */
 function annotateInput(o) {
-  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion? }')
+  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start? }')
   const title = checkTitle(o.title, 'title')
   // The main column's header bar, shown only beside a companion (the title cut, when not given).
   const label = checkLabel(o.label, 'label', MAX_ANNOTATE_LABEL) || shorten(title, MAX_ANNOTATE_LABEL)
@@ -443,7 +443,11 @@ function annotateInput(o) {
     key = o.key
   }
   if (given(o.tabId) && typeof o.tabId !== 'string') throw new ReviewError('tabId must be a string')
-  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion }
+  // Where the main document opens: 'top' (default) or 'end', for a conversation whose newest
+  // messages are last (a long Chat thread, a mail thread): the reader wants the end, not the start.
+  if (given(o.start) && o.start !== 'top' && o.start !== 'end') throw new ReviewError("start must be 'top' or 'end'")
+  const start = o.start === 'end' ? 'end' : 'top'
+  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start }
 }
 
 /**

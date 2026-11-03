@@ -13,6 +13,8 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     the two), rendered as a document; see "HTML mode" below.
   - `aside` (either form, optional): HTML of at most 100,000 characters for a details column at the right of the
     text, sanitized like `html` (see "HTML mode"); `dl.facts` is a vertical list there.
+  - `start` (HTML form only, optional, app 0.9.4+): `'top'` (default) or `'end'`, where the document opens; `'end'`
+    for a thread whose newest messages are last. It stays at the end while pictures load, until the person scrolls.
   - `companion` (HTML form only, optional, app 0.9.3+): `{ title, html, assets?, url?, facts?, label?, urlLabel? }`,
     a second document beside the first, with `label` / `urlLabel` for the main column's header; see "Companion" below.
   - `features()`: the optional annotate features this reviewer has (`['companion']`); an older reviewer has no such

@@ -230,6 +230,9 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
   host matches the page's href against your strings, entities decoded), through the reviewer's `ctx.openExternal`
   (3 per 10 s; a refusal shows in the overlay's status line). A `mailto:` link is named there, not opened. Each link
   shows its URL as a tooltip unless it has a `title`.
+- `start: 'top' | 'end'` (optional, HTML form, app 0.9.4+): where the document opens. `'end'` suits a conversation whose
+  newest messages are last (a chat or mail thread): the page opens at the bottom and stays there while pictures load,
+  until the person scrolls. An older reviewer ignores it.
 - `companion: { title, html, assets?, url?, facts? }` (optional, with `html` only; app 0.9.3+): a second document shown
   beside yours (the Jira issue a mail is about). Checked like the main one: `title` 1-200 characters, `html` at most
   2 MiB sanitized with the same allow-list, `facts` HTML of at most 100,000 characters, `url` http(s). Its `assets`

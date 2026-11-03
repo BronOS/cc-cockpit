@@ -151,6 +151,19 @@ describe('loopback server', () => {
 })
 
 describe('parseTokenResponse', () => {
+  it('passes the granted scopes on, split on white space; a bad scope answer is dropped, not an error', () => {
+    const base = { access_token: 'a', token_type: 'Bearer', expires_in: 10 }
+    expect(parseTokenResponse({ ...base, scope: 'openid  https://x/gmail.modify\temail' }).scope).toEqual([
+      'openid',
+      'https://x/gmail.modify',
+      'email'
+    ])
+    for (const scope of [42, '', '   ', 'x'.repeat(4097), Array.from({ length: 101 }, (_, i) => `s${i}`).join(' ')]) {
+      const r = parseTokenResponse({ ...base, scope })
+      expect(r).toEqual({ accessToken: 'a', expiresIn: 10 })
+    }
+  })
+
   it('validates shape, token_type and expires_in bounds', () => {
     expect(parseTokenResponse({ access_token: 'a', token_type: 'Bearer', expires_in: 10 })).toEqual({ accessToken: 'a', expiresIn: 10 })
     expect(parseTokenResponse({ access_token: 'a', token_type: 'bearer', expires_in: '3599', refresh_token: 'r' })).toEqual({

@@ -367,6 +367,14 @@ describe('PluginOAuth.refresh', () => {
     return oauthWith().authorize(spec(), new AbortController().signal)
   }
 
+  it('hands the granted scopes to the plugin when the provider sends them, and nothing when it does not', async () => {
+    expect(await signedIn()).not.toHaveProperty('scope')
+    server.scope = 'openid https://www.googleapis.com/auth/gmail.readonly'
+    const tokens = await signedIn()
+    expect(tokens.scope).toEqual(['openid', 'https://www.googleapis.com/auth/gmail.readonly'])
+    expect((await oauthWith().refresh(spec(), tokens.refreshToken!)).scope).toEqual(tokens.scope)
+  })
+
   it('gets a fresh access token; null refresh token when the provider does not rotate', async () => {
     const first = await signedIn()
     const now = vi.fn(() => 5_000)

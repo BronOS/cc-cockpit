@@ -220,7 +220,7 @@ exports.activate = (ctx) => {
       const parts = review.splitParts(a.html)
       // One asset namespace for both documents (annotateInput checked the ids and the shared budget).
       const assets = c ? [...a.assets, ...c.assets] : a.assets
-      sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: assets.map(({ id, name, mime }) => ({ id, name, mime })) }
+      sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), start: a.start }
       // The companion's html comes in parts of its own ({ doc: 'companion' }), after the main
       // document's, so the one the person reads first renders first.
       const cParts = c ? review.splitParts(c.html) : []

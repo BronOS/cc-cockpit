@@ -46,6 +46,8 @@ export class FakeOAuthServer {
   delayMs = 0
   expiresIn: number | string | undefined = 3600
   tokenType = 'Bearer'
+  /** The `scope` the /token answer carries (the granted scopes); undefined: none sent. */
+  scope: string | undefined = undefined
   /** Replace the /token answer altogether (status, body, extra headers such as Location). */
   override: { status: number; body: string; headers?: Record<string, string> } | undefined
 
@@ -161,7 +163,8 @@ export class FakeOAuthServer {
       access_token: `access-${++this.counter}`,
       token_type: this.tokenType,
       ...(this.expiresIn !== undefined ? { expires_in: this.expiresIn } : {}),
-      ...(refreshToken !== undefined ? { refresh_token: refreshToken } : {})
+      ...(refreshToken !== undefined ? { refresh_token: refreshToken } : {}),
+      ...(this.scope !== undefined ? { scope: this.scope } : {})
     }
   }
 

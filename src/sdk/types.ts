@@ -110,6 +110,11 @@ export interface OAuthTokens {
   refreshToken: string | null
   /** When the access token expires, ms since the epoch (counted from when the request was sent). */
   expiresAt: number
+  /**
+   * The scopes the provider says it granted (its `scope` answer, split on spaces); absent when it
+   * sent none. The person may untick a scope on the consent page, so check for one you need.
+   */
+  scope?: string[]
 }
 
 export interface PluginOAuth {

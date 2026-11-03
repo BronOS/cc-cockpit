@@ -753,6 +753,7 @@ test('annotate companion: the init names it, its parts and facts follow the main
   assert.deepEqual(init.sides.companion, { title: 'PROJ-1: Fix login', url: 'https://x.example/browse/PROJ-1', htmlParts: init.sides.companion.htmlParts, facts: true, label: 'Jira · PROJ-1', urlLabel: 'Jira' })
   assert.equal(init.sides.label, 'Mail')
   assert.equal(init.sides.urlLabel, 'Example Mail')
+  assert.equal(init.sides.start, 'top')
   assert.ok(init.sides.companion.htmlParts >= 2)
   assert.deepEqual(init.sides.assets, [{ id: 'm1', name: null, mime: 'image/png' }, { id: 'j1', name: 'j.png', mime: 'image/png' }])
   assert.equal(init.split, 0.5) // nothing stored yet

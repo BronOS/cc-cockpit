@@ -926,7 +926,9 @@ ignored and can be deleted by hand.) Core keeps only what main alone can do:
   until that form is saved again.
 - **`ctx.oauth`**: optional helper wrapping the loopback + PKCE code. `authorize(spec)` opens
   the system browser, catches the loopback redirect and exchanges the code; `refresh(spec,
-  refreshToken)` gets a fresh access token. `spec` is `{ authUrl, tokenUrl, clientId,
+  refreshToken)` gets a fresh access token. Both answer `{ accessToken, refreshToken, expiresAt,
+  scope? }`, `scope` being the granted scopes when the provider sends them (the person may untick
+  one on the consent page). `spec` is `{ authUrl, tokenUrl, clientId,
   clientSecret?, scopes }`; both URLs must be https. One `authorize` per plugin at a time (a new one cancels the pending one: a provider error page
   never redirects, so the user can retry at once) and 5 a
   minute, counted per plugin per project (the limit lives in the project's host API, not

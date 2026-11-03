@@ -208,7 +208,12 @@ export class PluginOAuth implements PluginOAuthApi {
     // request and its answer: count from the send, never later.
     const sentAt = this.now()
     const tokens = await this.post(url, body, signal)
-    return { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken ?? null, expiresAt: sentAt + tokens.expiresIn * 1000 }
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken ?? null,
+      expiresAt: sentAt + tokens.expiresIn * 1000,
+      ...(tokens.scope ? { scope: tokens.scope } : {})
+    }
   }
 
   /** POST to the token endpoint; the validated tokens or an OAuthError (with the provider's code). */

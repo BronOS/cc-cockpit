@@ -60,7 +60,13 @@ export interface TokenResponse {
   accessToken: string
   expiresIn: number
   refreshToken?: string
+  /** The granted scopes, when the provider said (RFC 6749 §5.1: it must when they differ from the asked ones). */
+  scope?: string[]
 }
+
+/** Bounds of the `scope` answer: it only informs the plugin, so a bad one is dropped, not an error. */
+const MAX_SCOPE_LENGTH = 4096
+const MAX_SCOPES = 100
 
 /** base64url of `bytes` random bytes (a PKCE verifier, an OAuth `state`). */
 export function randomToken(bytes = 32): string {
@@ -270,7 +276,7 @@ export async function readLimited(res: Response, limit: number): Promise<string>
 /** A validated successful token response (RFC 6749 §5.1). */
 export function parseTokenResponse(body: unknown): TokenResponse {
   if (!isPlainObject(body)) throw new OAuthError('the token endpoint sent an invalid response')
-  const { access_token: accessToken, token_type: tokenType, expires_in: rawExpires, refresh_token: refreshToken } = body
+  const { access_token: accessToken, token_type: tokenType, expires_in: rawExpires, refresh_token: refreshToken, scope: rawScope } = body
   if (typeof accessToken !== 'string' || accessToken === '' || accessToken.length > MAX_TOKEN_LENGTH) {
     throw new OAuthError('the token endpoint sent no usable access token')
   }
@@ -290,5 +296,19 @@ export function parseTokenResponse(body: unknown): TokenResponse {
   if (refreshToken !== undefined && (typeof refreshToken !== 'string' || refreshToken === '' || refreshToken.length > MAX_TOKEN_LENGTH)) {
     throw new OAuthError('the token endpoint sent an invalid refresh token')
   }
-  return { accessToken, expiresIn, ...(refreshToken !== undefined ? { refreshToken } : {}) }
+  const scope = parseScope(rawScope)
+  return { accessToken, expiresIn, ...(refreshToken !== undefined ? { refreshToken } : {}), ...(scope ? { scope } : {}) }
+}
+
+/**
+ * The granted scopes of a token response: space-separated (RFC 6749 §3.3). A plugin needs them to
+ * tell whether the person granted a scope it added later (the Gmail plugin's move from readonly to
+ * modify, 2026-11-03: Google lets the person untick a scope on the consent page). Absent, not a
+ * string, too long or too many: undefined, and the plugin finds out from the API's 403 as before.
+ */
+function parseScope(raw: unknown): string[] | undefined {
+  if (typeof raw !== 'string' || raw.length > MAX_SCOPE_LENGTH) return undefined
+  const scopes = raw.split(/[ \t\n]+/).filter((s) => s !== '')
+  if (scopes.length === 0 || scopes.length > MAX_SCOPES) return undefined
+  return scopes
 }
