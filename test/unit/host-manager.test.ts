@@ -1428,11 +1428,15 @@ describe('HostManager', () => {
       expect(seen).toEqual([{ pluginId: 'a.one', path: 'src/a.ts', tabId: 't1' }])
       answer = false
       await expect(manager.openFile('p1', 'a.one', req)).resolves.toBe(false)
+      // A ctx.files.open without a tab: no tabId key at all.
+      answer = true
+      await expect(manager.openFile('p1', 'a.one', { path: 'src/a.ts' })).resolves.toBe(true)
+      expect(seen[2]).toEqual({ pluginId: 'a.one', path: 'src/a.ts' })
       // Not a candidate (no openFile), not in this host, or another project: false without asking.
       await expect(manager.openFile('p1', 'a.two', req)).resolves.toBe(false)
       await expect(manager.openFile('p1', 'x.gone', req)).resolves.toBe(false)
       await expect(manager.openFile('p2', 'a.one', req)).resolves.toBe(false)
-      expect(seen).toHaveLength(2)
+      expect(seen).toHaveLength(3)
     })
 
     it('is false when the host throws, does not answer within the bound, or the plugin is not active', async () => {

@@ -14,7 +14,8 @@
 //   plugin.unload { pluginId }              -> null               deactivate one plugin, keep the rest
 //   cli.run    { pluginId, name, argv, stdin, cwd, callId } -> { stdout, stderr, code }
 //                                                                  run a ctx.cli.register handler (`ccc <name>`)
-//   files.open { pluginId, path, tabId }    -> boolean            a Sessions panel file click for
+//   files.open { pluginId, path, tabId? }   -> boolean            a Sessions panel file click (or a
+//                                                                  ctx.files.open main routed here) for
 //                                                                  ctx.files.onOpen (true: taken)
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
@@ -25,7 +26,8 @@
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text }
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
 //   badge { pluginId, panelId, value }, overlay.open { pluginId, spec, handle } (no timeout; see
-//   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle }
+//   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
+//   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click)
 // Events to main:
 //   log        { pluginId, level, text }      a ctx.log line
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)

@@ -16,7 +16,9 @@ import {
   type UrlView
 } from '../../src/main/overlays/overlay-manager'
 import {
+  FILE_OPEN_WINDOW_MS,
   HostApi,
+  MAX_FILE_OPENS_PER_WINDOW,
   MAX_OPEN_OVERLAYS,
   MAX_OPENS_PER_WINDOW,
   MAX_OVERLAYS_PER_WINDOW,
@@ -801,6 +803,62 @@ describe('accounts left core', () => {
     const api = new HostApi(deps, scopeA(), () => {})
     apis.push(api)
     expect(Object.keys(api.handlers).filter((m) => m.startsWith('account'))).toEqual([])
+  })
+})
+
+describe('files.open (ctx.files.open)', () => {
+  /** The route as main wires it (open-file.ts), faked: what it was asked, and its answer. */
+  function withRoute(answer: () => Promise<'plugin' | 'builtin'> = async () => 'plugin') {
+    const asked: Array<{ caller: unknown; path: string; tabId?: string }> = []
+    deps.openFile = (caller, path, tabId) => {
+      asked.push({ caller, path, ...(tabId !== undefined ? { tabId } : {}) })
+      return answer()
+    }
+    return asked
+  }
+
+  it("hands the route this host's own scope, never one from the request", async () => {
+    const asked = withRoute()
+    const call = hostA()
+    await expect(call('files.open', { pluginId: 'a.one', path: 'src/a.ts', projectId: B, windowId: WIN_B })).resolves.toEqual({
+      via: 'plugin'
+    })
+    await call('files.open', { pluginId: 'a.two', path: 'src/a.ts', tabId: 't1' })
+    expect(asked).toEqual([
+      { caller: { windowId: WIN_A, projectId: A }, path: 'src/a.ts' },
+      { caller: { windowId: WIN_A, projectId: A }, path: 'src/a.ts', tabId: 't1' }
+    ])
+  })
+
+  it('refuses an unknown plugin and bad shapes before the route, and prefixes the route’s refusal', async () => {
+    const asked = withRoute(async () => {
+      throw new Error('no such file: x')
+    })
+    const call = hostA()
+    await expect(call('files.open', { pluginId: 'b.one', path: 'a' })).rejects.toThrow('unknown plugin')
+    await expect(call('files.open', { pluginId: 'a.one', path: 5 })).rejects.toThrow('path must be a non-empty string')
+    await expect(call('files.open', { pluginId: 'a.one', path: 'a', tabId: 5 })).rejects.toThrow('tabId must be a string')
+    expect(asked).toEqual([])
+    await expect(call('files.open', { pluginId: 'a.one', path: 'x' })).rejects.toThrow('files.open: no such file: x')
+    apis[0]!.revoke()
+    await expect(call('files.open', { pluginId: 'a.one', path: 'x' })).rejects.toThrow('stopping')
+  })
+
+  it('is refused when main wires no route', async () => {
+    delete deps.openFile
+    await expect(hostA()('files.open', { pluginId: 'a.one', path: 'a' })).rejects.toThrow('not available')
+  })
+
+  it(`allows ${MAX_FILE_OPENS_PER_WINDOW} per plugin per ${FILE_OPEN_WINDOW_MS / 1000} s, each plugin its own budget`, async () => {
+    vi.useFakeTimers()
+    const asked = withRoute()
+    const call = hostA()
+    for (let i = 0; i < MAX_FILE_OPENS_PER_WINDOW; i++) await call('files.open', { pluginId: 'a.one', path: 'a' })
+    await expect(call('files.open', { pluginId: 'a.one', path: 'a' })).rejects.toThrow(`more than ${MAX_FILE_OPENS_PER_WINDOW} files`)
+    await expect(call('files.open', { pluginId: 'a.two', path: 'a' })).resolves.toEqual({ via: 'plugin' })
+    vi.advanceTimersByTime(FILE_OPEN_WINDOW_MS)
+    await expect(call('files.open', { pluginId: 'a.one', path: 'a' })).resolves.toEqual({ via: 'plugin' })
+    expect(asked).toHaveLength(MAX_FILE_OPENS_PER_WINDOW + 2)
   })
 })
 

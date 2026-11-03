@@ -46,7 +46,7 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 - `CC_COCKPIT_TEST=1` enables test hooks on `globalThis.__ccTest`; never active in packaged builds.
   `CC_COCKPIT_FAKE_SECRETS=1` swaps the keychain for an in-memory store; it needs
   `CC_COCKPIT_TEST=1` and is ignored when packaged.
-  `CC_COCKPIT_NO_BUNDLED=1` skips all bundled plugins (browser, reviewer, editor); it too needs `CC_COCKPIT_TEST=1`
+  `CC_COCKPIT_NO_BUNDLED=1` skips all bundled plugins (browser, reviewer, editor, files); it too needs `CC_COCKPIT_TEST=1`
   and is ignored when packaged (`isTestRun`, `main/test-run.ts`, checked in `main/plugins/bundled.ts`).
 - Electron takes one `registerSchemesAsPrivileged` call: `cc-overlay`, `cc-plugin` and `cc-preview`
   are registered together (`overlay-protocol.ts`, `plugin-protocol.ts`, `preview-protocol.ts`). A new scheme goes in that call.
@@ -72,7 +72,7 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
   never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
 - Plugin `ccc` commands and their stdin are always bounded (30 s plugin limit, 40 s client deadline and stdin read, exit 124
   `CLI_TIMEOUT_CODE`): a new wait in `src/cli/client.ts` needs a deadline, never an unbounded await.
-- Bundled plugins (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `BUNDLED_PLUGINS` in `main/plugins/bundled.ts`) use only
+- Bundled plugins (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`, `BUNDLED_PLUGINS` in `main/plugins/bundled.ts`) use only
   the public plugin API: no privilege for `cockpit.*` beyond being shipped, so a gap goes into the API or the guide, never a
   special case. Ids starting with `cockpit.` are reserved (`isReservedPluginId`): they load only from the bundled root (checked
   at load by realpath) and every install path and the marketplace tools refuse them; templates use `example.hello` and

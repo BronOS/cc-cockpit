@@ -88,8 +88,8 @@ import { SettingsService } from './settings/settings-service'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
-import { execLsFiles, openDiff, type OpenDiffOptions } from './sessions/open-diff'
-import { routeOpenFile, type OpenFileRouteDeps } from './sessions/open-file'
+import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
+import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
@@ -710,7 +710,9 @@ function start(): void {
       secrets: pluginSecrets,
       oauth: pluginOAuth,
       appStorage,
-      webview: webviews
+      webview: webviews,
+      // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
+      openFile: (caller, path, tabId) => routeProjectFile(openFileRoute, caller, path, tabId)
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin
@@ -1503,8 +1505,8 @@ function start(): void {
     open: openOverlay,
     shown: new Set()
   }
-  // A file click goes to the plugin the project uses to open files, if any (contributes.openFile),
-  // else to the diff above. The candidates are the set the project's host runs (the Plugins page
+  // A file click, or a plugin's ctx.files.open, goes to the plugin the project uses to open files, if
+  // any (contributes.openFile), else to the diff above. The candidates are the set the project's host runs (the Plugins page
   // shows the same set), the pick the project record's; HostManager.openFile bounds the wait.
   const openFileRoute: OpenFileRouteDeps = {
     tab: (id) => sessions.get(id),
@@ -1513,6 +1515,8 @@ function start(): void {
     handler: async (projectId) => selectOpenFile(await hosts.servicePlugins(projectId), registry.serviceProviders(projectId)),
     deliver: (projectId, pluginId, req) => hosts.openFile(projectId, pluginId, req),
     builtin: (caller, tabId, file) => openDiff(diffOptions, caller, tabId, file),
+    // ctx.files.open's fallback: the same viewer and the same `shown`, over the project folder.
+    builtinFile: (caller, projectDir, path) => openProjectFileDiff(diffOptions, caller, projectDir, path),
     delivering: new Set()
   }
   registerSessionHandlers(router, {

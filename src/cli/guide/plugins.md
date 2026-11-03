@@ -31,7 +31,7 @@ so a person chooses to install or link it.
 - `id`: lower case, reverse-DNS-like, at least two dot-separated labels, the last one starting
   with a letter (`acme.hello`). It becomes a folder name and a URL host. Ids starting with
   `cockpit.` (any letter case) are reserved for the plugins that ship with the app (`cockpit.browser`,
-  `cockpit.reviewer`, `cockpit.editor`): `ccc plugin new`, link, install, the Marketplace and its index
+  `cockpit.reviewer`, `cockpit.editor`, `cockpit.files`): `ccc plugin new`, link, install, the Marketplace and its index
   refuse one, and the app loads one only from its own bundled folder. A plugin becomes built in only
   through an app release, never by asking; under your own id a plugin can do everything a built-in
   one does (they use the same public API).
@@ -184,7 +184,7 @@ format for tokens, `ctx.secrets` for stored credentials and `ctx.oauth` for a PK
 
 ## Built-in plugins
 
-The app ships `cockpit.browser`, `cockpit.reviewer` and `cockpit.editor`. They are on in every project
+The app ships `cockpit.browser`, `cockpit.reviewer`, `cockpit.editor` and `cockpit.files`. They are on in every project
 until switched off: per project under This project, or for the whole app with "Off in all projects" on
 their row in Settings > Plugins. Off in all projects wins over every project's switch (which cannot turn
 it on meanwhile) and gives each project its own choice back when undone; only built-in plugins have it.

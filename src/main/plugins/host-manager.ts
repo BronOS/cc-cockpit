@@ -749,15 +749,21 @@ export class HostManager {
    * active right now (starting, reloading, failed, host stopped or gone); false too for a refusal,
    * a timeout or the host exiting. The caller opens its built-in viewer on false. Nothing waits for
    * a plugin on its way in: the person is looking at the screen, and the viewer is the answer then.
-   * `req` is main's own (open-file.ts checked the tab and made the path project-relative).
+   * `req` is main's own (open-file.ts checked the tab and made the path project-relative). The same
+   * delivery serves a plugin's ctx.files.open (routeProjectFile), where `tabId` is absent unless the
+   * caller passed one of this project's tabs; the params then carry no `tabId` at all.
    */
-  async openFile(projectId: string, pluginId: string, req: { path: string; tabId: string }): Promise<boolean> {
+  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string }): Promise<boolean> {
     const rec = this.hosts.get(projectId)
     const rpc = rec?.rpc
     if (!rec || !rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return false
     if (rec.plugins.find((p) => p.id === pluginId)?.openFile === undefined) return false
     try {
-      const answer = await rpc.call('files.open', { pluginId, path: req.path, tabId: req.tabId }, { timeoutMs: OPEN_FILE_ACK_MS })
+      const answer = await rpc.call(
+        'files.open',
+        { pluginId, path: req.path, ...(req.tabId !== undefined ? { tabId: req.tabId } : {}) },
+        { timeoutMs: OPEN_FILE_ACK_MS }
+      )
       return answer === true
     } catch (err) {
       this.log(`plugin ${pluginId} (${projectId}): opening a file failed, the built-in viewer opens instead: ${errorText(err)}`)

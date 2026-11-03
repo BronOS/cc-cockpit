@@ -128,7 +128,15 @@ behind it are in [design.md](design.md).
   scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it
   with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install micro` (Linux). Without it, Edit shows
   that command and the `microPath` setting instead of failing silently.
-- Bundled plugins (browser, reviewer, editor) can be switched off for the whole app (Settings > Plugins, "Off in all
+- A built-in file tree (`cockpit.files`, on by default, ships with the app): a Files panel (left zone) with the
+  whole project folder, so any file can be opened and discussed with Claude, changed or not. A click opens it through
+  "Plugin used to open files" (the reviewer by default: the diff for a changed file, the file itself otherwise, with
+  notes, Discuss and New session); Edit opens it in the editor. Hidden files and git-ignored files are shown (ignored
+  ones dimmed) unless the app settings "Hide hidden files" / "Hide ignored files" are on; `.git` is never shown.
+  Folders load when expanded and are watched (`fs.watch`) while open; git marks (M, A, ?, R, U, D) follow the work
+  tree and the index. The filter box searches git's tracked and untracked files (not ignored ones), or a bounded walk
+  outside git. No create, rename or delete, and no copy path (a panel cannot write the clipboard).
+- Bundled plugins (browser, reviewer, editor, files) can be switched off for the whole app (Settings > Plugins, "Off in all
   projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
   the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for
   plugins that ship with the app; the template plugins are `example.hello` and `example.plugin` (renamed from

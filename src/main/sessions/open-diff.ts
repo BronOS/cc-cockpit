@@ -78,6 +78,25 @@ export async function openDiff(
 }
 
 /**
+ * Core's viewer for a project file no tab recorded (`ctx.files.open`, open-file.ts routeProjectFile):
+ * openDiff over a synthetic tab `{ projectId, cwd: projectDir, files: [file] }` under the tab id ''.
+ * `file` must already be checked (relative to `projectDir`, a regular file inside it by its real
+ * path); nothing here checks it again. Main makes every real tab id and none is empty, so the
+ * `shown` key (`<window>\0\0<file>`) never meets a click's: a second call for the same file while
+ * its viewer is open in that window opens nothing new, a click on the same file from a tab still
+ * opens its own.
+ */
+export function openProjectFileDiff(
+  options: OpenDiffOptions,
+  caller: { windowId: number; projectId: string },
+  projectDir: string,
+  file: string
+): Promise<boolean> {
+  const synthetic: DiffTab = { projectId: caller.projectId, cwd: projectDir, files: [file] }
+  return openDiff({ ...options, tab: (id) => (id === '' ? synthetic : undefined) }, caller, '', file)
+}
+
+/**
  * Run the probe `git ls-files --error-unmatch` (argv, no shell, short timeout). A numeric exit
  * code is git's answer; a failure to run at all (no git, bad cwd, timeout kill, an argument Node
  * refuses such as one holding NUL) is `spawnFailed`. Never rejects.

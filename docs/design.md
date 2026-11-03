@@ -570,7 +570,7 @@ that project.
 | work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
 | UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
-| files | `ctx.files.onOpen(({path, tabId}) => …)` → disposer (needs `contributes.openFile`) |
+| files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | services | `ctx.services.available(name)` (host-local, same `serviceStatus` rule as a call, never cached, false for an unknown name) |
@@ -616,7 +616,12 @@ window) right before the delivery, since choosing the plugin awaits the host; a 
 `onOpen({ path, tabId })` listener is awaited for 1 s (a listener still running then counts as handled, so
 one that awaits an overlay is fine); a throw or rejection of every listener, no listener, an inactive
 plugin, or no ack from the host within 2 s falls back to the built-in viewer, so a click always shows
-something. Only this click goes through the hook; other file-opening goes through services.
+something. A plugin opens a project file the same way with `ctx.files.open(path, { tabId? })` (host API
+`files.open`, `routeProjectFile`): main checks the path against the host's own project folder (relative, no
+`..` segment, a regular file inside by its real path, else the call rejects), keeps `tabId` only when it is a
+tab of that project (else drops it, so the listener's `tabId` is absent), then uses the same pick, delivery
+and fallback as a click; the built-in viewer runs over the project folder (`openProjectFileDiff`), and the
+call resolves `{ via: 'plugin' | 'builtin' }`. No manifest declaration; 20 calls per 10 s per plugin and window.
 
 **Plugin services**: one plugin offers a named API, others in the same project call it and listen to
 its events (`src/host/services.ts`, `src/shared/services.ts`). All plugins of a project run in one
@@ -1050,7 +1055,7 @@ All decided in phase 1:
 - The settings screen is a renderer-drawn overlay below the overlay stack, not part of it.
 - The hello plugin (`example.hello`) is not bundled in the packaged app: plugins are linked or installed from a
   folder, and hello is a template to link in dev (`electron-builder.yml`). Only the built-in
-  browser, reviewer and editor (`plugins/browser`, `plugins/reviewer`, `plugins/editor`) ship, as bundled plugins.
+  browser, reviewer, editor and files (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`) ship, as bundled plugins.
 - `ctx.cli.register` is host-local (no call to main); main routes by manifest. Plugin commands are
   listed by `ccc help` only inside a tab.
 - The web view is also reachable at `cc-preview://<token>/…` only on its own partition session; a

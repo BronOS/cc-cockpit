@@ -22,6 +22,8 @@ tested).
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
+- **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with
+  Claude, changed or not.
 - **A built-in reviewer and editor.** Click a file Claude changed to review its diff, attach notes and send them back to
   Claude; Edit opens the file in micro (optional, see below). Both are bundled plugins you can turn off or replace.
 

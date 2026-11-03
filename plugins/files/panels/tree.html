@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Files</title>
+    <!-- CSP: scripts only from this plugin's own files, so all logic is in tree.js. -->
+    <script src="/__sdk/panel.js"></script>
+    <script src="tree.js" defer></script>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; display: flex; flex-direction: column; font: 12px/1.4 system-ui, sans-serif; background: var(--cc-bg); color: var(--cc-fg); }
+      header { display: flex; gap: 4px; padding: 6px; border-bottom: 1px solid var(--cc-border); }
+      #filter { flex: 1; min-width: 0; font: inherit; color: inherit; background: var(--cc-surface-1); border: 1px solid var(--cc-border); border-radius: 4px; padding: 3px 6px; }
+      #filter:focus { outline: 1px solid var(--cc-focus); border-color: var(--cc-focus); }
+      button { font: inherit; color: var(--cc-fg-muted); background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 1px 6px; cursor: pointer; }
+      button:hover { color: var(--cc-fg); background: var(--cc-surface-2); }
+      #error { display: none; margin: 6px; padding: 5px 8px; background: var(--cc-bg-error); border-left: 3px solid var(--cc-status-ended); border-radius: 3px; word-break: break-word; }
+      #error.on { display: block; }
+      #list { flex: 1; overflow: auto; padding: 2px 0 12px; outline: none; }
+      .row { display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 6px; white-space: nowrap; cursor: pointer; user-select: none; }
+      .row:hover { background: var(--cc-surface-1); }
+      .row.sel { background: var(--cc-accent-soft); }
+      #list:focus .row.sel { outline: 1px solid var(--cc-focus); outline-offset: -1px; }
+      .twisty { width: 12px; flex: none; text-align: center; color: var(--cc-fg-subtle); font-size: 9px; }
+      .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .dir > .name { color: var(--cc-fg); }
+      .ignored > .name, .ignored > .twisty { opacity: 0.5; }
+      .link > .name::after { content: ' ↗'; color: var(--cc-fg-subtle); }
+      .blocked { cursor: default; }
+      .path { color: var(--cc-fg-subtle); margin-left: 6px; }
+      .mark { flex: none; width: 12px; text-align: center; font: 10px/1 ui-monospace, monospace; }
+      .mark.M { color: var(--cc-status-needs-permission); }
+      .mark.A, .mark.q { color: var(--cc-status-waiting); }
+      .mark.D, .mark.U { color: var(--cc-status-ended); }
+      .mark.R { color: var(--cc-status-working); }
+      .mark.dot::before { content: '•'; color: var(--cc-fg-muted); }
+      .row .edit { display: none; padding: 0 5px; font-size: 11px; }
+      .row.file:hover .edit, .row.file.sel .edit { display: inline-block; }
+      .note { padding: 3px 8px 3px 24px; color: var(--cc-fg-subtle); font-style: italic; }
+      .empty { padding: 12px; color: var(--cc-fg-muted); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <input id="filter" type="search" placeholder="Filter files (/)" spellcheck="false" autocomplete="off" />
+      <button id="collapse" type="button" title="Collapse all">⊟</button>
+      <button id="refresh" type="button" title="Refresh">⟳</button>
+    </header>
+    <div id="error" role="alert"></div>
+    <div id="list" tabindex="0" role="tree" aria-label="Project files"></div>
+  </body>
+</html>

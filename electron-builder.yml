@@ -12,7 +12,7 @@
 #    (extraResources below: plugins/browser, plugins/reviewer, plugins/editor). main reaches the CLI, the plugin host
 #    entry, the SDK and the preload through __dirname, i.e. inside app.asar, which Electron (and
 #    Electron run as Node, for `ccc`) reads transparently. The `hello` reference plugin is NOT
-#    bundled (only browser, reviewer and editor are): plugins are installed or linked from a folder (design §5), and hello is a template
+#    bundled (only browser, reviewer, editor and files are): plugins are installed or linked from a folder (design §5), and hello is a template
 #    to link in dev (plugins/hello/README.md), not a feature of the app.
 #  - node-pty is a native module with a helper executable (spawn-helper): neither can be loaded or
 #    executed from inside an archive, so the whole package is unpacked (node-pty finds it under
@@ -75,6 +75,15 @@ extraResources:
       - plugin.json
       - README.md
       - dist/**
+      - '!**/*.map'
+  - from: plugins/files
+    to: plugins/files
+    filter:
+      - plugin.json
+      - README.md
+      - dist/**
+      - panels/**
+      - icons/**
       - '!**/*.map'
   # The bundled terminal fonts ship inside app.asar (Vite emits them with the renderer); their
   # licences must travel with them (SIL OFL 1.1 and Apache 2.0 both ask each copy to carry the

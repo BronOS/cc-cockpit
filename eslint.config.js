@@ -51,5 +51,10 @@ module.exports = tseslint.config(
     files: ['**/*.js', '**/*.cjs'],
     languageOptions: { globals: { ...globals.node }, sourceType: 'commonjs' },
     rules: { '@typescript-eslint/no-require-imports': 'off' }
+  },
+  {
+    // The files plugin's panel page: a classic script in a sandboxed frame, with the panel SDK's global.
+    files: ['plugins/files/panels/**/*.js'],
+    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly' }, sourceType: 'script' }
   }
 )
