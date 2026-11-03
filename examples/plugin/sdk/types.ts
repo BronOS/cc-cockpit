@@ -194,6 +194,37 @@ export type OverlayResult =
   | { kind: 'value'; value: JsonValue }
   | { kind: 'dismissed' }
 
+/** Options of `ctx.notify(text, options)`. Unknown keys are ignored. */
+export interface NotifyOptions {
+  /** Plain text, 1 to 80 characters (longer rejects). Default: `cc-cockpit: <pluginId>`. */
+  title?: string
+  /**
+   * A short sound from the project window (the same on every OS), unless the person turned off
+   * "Notification sounds" (Settings > Appearance and keys > Notifications). At most one chime per
+   * 5 s per window, however many plugins ask. The OS notification itself is then silent.
+   * - `true`: the app's sound, the one picked there under "Sound".
+   * - a string: the value of one of this plugin's `"format": "sound"` settings fields, as it is
+   *   (`""`, the field's "App default", is `true`). The app rings it only when it is one of its own
+   *   sounds now (a built-in, or a system sound file still listed); otherwise the app's sound, logged
+   *   once. A plugin never names a file. At most 1024 characters (longer rejects).
+   * - `false` or absent: no sound.
+   */
+  sound?: boolean | string
+  /**
+   * Make the notification clickable and wait for it: the call resolves `{ clicked: true }` when the
+   * person clicks it (or its button, shown with this label on macOS and Windows; 1 to 40
+   * characters), `{ clicked: false }` when it is dismissed, after 10 minutes (it is then closed),
+   * or when the plugin deactivates. On Linux and Windows it stays on screen until then. What a
+   * click does is up to the plugin (e.g. `ctx.openExternal(link)`, which has its own limit).
+   */
+  action?: { label: string }
+}
+
+/** What `ctx.notify` resolves with. Without an `action`, always `{ clicked: false }`, once shown. */
+export interface NotifyResult {
+  clicked: boolean
+}
+
 /** An overlay opened with `ctx.overlay.start`, while it is open. */
 export interface OverlayHandle {
   /** What `ctx.overlay.open` resolves with: the page's result, an exit code, or dismissed. */
@@ -508,9 +539,10 @@ export interface PluginContext {
   readonly log: PluginLogger
   /**
    * A system notification; text is cut at 500 characters, at most 10 per minute per plugin and
-   * window (more reject).
+   * window (more reject). Only while the project's window is open (the host runs only then).
+   * Without `options.action` it resolves once shown; with one it waits for a click (NotifyOptions).
    */
-  notify(text: string): Promise<void>
+  notify(text: string, options?: NotifyOptions): Promise<NotifyResult>
   /**
    * Open a web page in the person's default browser, outside the app. `url` must be an http or
    * https URL of at most 2048 characters with no user name or password in it (`user:pass@`);

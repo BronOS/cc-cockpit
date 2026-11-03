@@ -1016,12 +1016,18 @@ describe('registerProjectSettingsHandlers', () => {
         rec('saveProjectPluginSettings', { ok: true as const, values: {} })(...args),
       movePanel: rec('movePanel', undefined),
       setProjectColor: rec('setProjectColor', 'blue'),
-      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, sessionFilesShown: 10, zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
+      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, notificationSounds: true, notificationSound: 'builtin:chime', sessionFilesShown: 10, zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
       setTheme: rec('setTheme', undefined),
       setKey: rec('setKey', undefined),
       setTabExit: rec('setTabExit', undefined),
       setClaudeTabOnOpen: rec('setClaudeTabOnOpen', undefined),
       setSessionGist: rec('setSessionGist', undefined),
+      setNotificationSounds: rec('setNotificationSounds', undefined),
+      notificationSoundOptions: async (...args) =>
+        rec('notificationSoundOptions', [{ label: 'Built-in', sounds: [{ id: 'builtin:chime', name: 'Chime' }] }])(...args),
+      setNotificationSound: async (...args) => rec('setNotificationSound', undefined)(...args),
+      notificationSoundData: async (...args) =>
+        rec('notificationSoundData', { data: new Uint8Array([1, 2]), type: 'audio/wav' })(...args),
       confirmTabClose: rec('confirmTabClose', false),
       setConfirmTabClose: rec('setConfirmTabClose', undefined),
       setTabCloseSide: rec('setTabCloseSide', undefined),
@@ -1039,7 +1045,7 @@ describe('registerProjectSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = projectSettingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(20)
+    expect(channels).toHaveLength(24)
     for (const channel of channels) {
       await expect(ipc.invoke(channel, 13, [{}])).rejects.toThrow(/not a project window/)
     }
@@ -1128,6 +1134,37 @@ describe('registerProjectSettingsHandlers', () => {
     expect(calls).toEqual([
       ['setClaudeTabOnOpen', false],
       ['setClaudeTabOnOpen', 'no']
+    ])
+  })
+
+  it('passes a notification sounds change on as unknown for the service to check', async () => {
+    const { ipc, calls } = projectSettingsSetup()
+    await ipc.invoke('settings.notificationSoundsSet', 11, [{ value: false }])
+    await ipc.invoke('settings.notificationSoundsSet', 12, [{ value: 'no' }])
+    expect(calls).toEqual([
+      ['setNotificationSounds', false],
+      ['setNotificationSounds', 'no']
+    ])
+  })
+
+  it('lists the notification sounds, and passes a pick and a bytes request on as unknown for main to check', async () => {
+    const { ipc, calls } = projectSettingsSetup()
+    expect(await ipc.invoke('settings.notificationSoundOptions', 11)).toEqual([
+      { label: 'Built-in', sounds: [{ id: 'builtin:chime', name: 'Chime' }] }
+    ])
+    await ipc.invoke('settings.notificationSoundSet', 11, [{ value: 'system:0:freedesktop/stereo/bell.oga' }])
+    await ipc.invoke('settings.notificationSoundSet', 12, [{ value: 42 }])
+    // The id is all the page sends: never a path main would read as is.
+    expect(await ipc.invoke('notify.soundData', 11, [{ id: 'system:0:../../etc/passwd' }])).toEqual({
+      data: new Uint8Array([1, 2]),
+      type: 'audio/wav'
+    })
+    await expect(ipc.invoke('notify.soundData', 11, [null])).rejects.toThrow(/bad payload/)
+    expect(calls).toEqual([
+      ['notificationSoundOptions'],
+      ['setNotificationSound', 'system:0:freedesktop/stereo/bell.oga'],
+      ['setNotificationSound', 42],
+      ['notificationSoundData', 'system:0:../../etc/passwd']
     ])
   })
 

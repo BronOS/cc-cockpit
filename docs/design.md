@@ -635,7 +635,7 @@ that project.
 | sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt})` |
 | commands | `ctx.commands.register(id, fn)` |
 | services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)`, `caller()` → the calling plugin's id or `undefined` |
-| misc | `ctx.log`, `ctx.notify(text)`, `ctx.openExternal(url)` (system browser; below) |
+| misc | `ctx.log`, `ctx.notify(text, {title?, sound?, action?})` → `{clicked}` (below), `ctx.openExternal(url)` (system browser; below) |
 
 `activate`'s return value is ignored; a plugin offers an API to others with `ctx.services`.
 
@@ -708,6 +708,67 @@ Then at most 3 opens per 10 s per plugin and window, the webview's `window.open`
 is the hardest flood for the person to clean up. A refused URL spends no budget. The normalized `href` goes to
 `shell.openExternal` through a lambda (the e2e recorder replaces it). No manifest declaration. Pages (panels,
 overlays) still cannot open links themselves; they post to their host, which calls this with a URL it chose.
+
+**Notifications** (`ctx.notify(text, options?)`, host API `notify`; `src/shared/notify.ts`,
+`src/main/notifications/`). Text is cut at 500 characters; at most 10 per minute per plugin and window
+(`HostManager`), and only while the window is open (the host runs only then). One parse rule for the options
+serves both sides, like the panel header: the host throws a TypeError at the call site and main checks the
+request again: `title` plain text of 1 to 80 characters (control characters become spaces; default
+`cc-cockpit: <pluginId>`), `sound` a boolean or a sound id of at most 1024 characters (`""` is `true`),
+`action` `{ label }` of 1 to 40 characters; unknown keys are
+ignored. A refused call spends no budget. The window is main's record of the host's, never one the request
+names. Electron's `Notification` is only in `notifications/electron-notification.ts`; `notifier.ts` holds the
+logic (a test run swaps in a recording backend the e2e clicks through test hooks).
+- Sound: OS notification sounds are unreliable (most Linux daemons play none; macOS and Windows follow the
+  person's per-app settings), so `sound: true` rings the app's own sound: main sends `notify.chime` with
+  the picked sound's id to the project window and its renderer plays it (`renderer/notify/chime.ts`,
+  `sound-player.ts`). The OS notification is then `silent`, so there are never two sounds. Main
+  gates it (`ChimeGate`): the app setting "Notification sounds" (Settings › Appearance and keys ›
+  Notifications; `app.json` › `notificationSounds`, default on, only `false` turns it off; read at each
+  chime) and at most one chime per 5 s per window. Without `sound` the OS notification is made as before
+  (the platform's default sound, if any). The chime ignores the OS's do-not-disturb mode; the setting is the
+  way to silence it.
+- Which sound: the app setting "Sound" (`app.json` › `notificationSound`) for `sound: true`. A plugin may
+  instead pass a sound id the person picked in its own settings (a `"format": "sound"` field, §6), never a
+  file: main (`NotifySounds`, notifier.ts) rings that id only when the app offers it now (a built-in, or a
+  system id found in a fresh listing of the folders below, the same check as a pick in Settings), and
+  otherwise rings the app's sound and logs it once per plugin and id (a stale id never silences a
+  reminder, and a guessed path reaches nothing). The id is resolved before the gate, which then applies
+  as for any chime: "Notification sounds" off silences a plugin's own sound too, and two plugins' sounds
+  in one window within 5 s are one chime. The stored value is an id
+  (`src/shared/notify-sound.ts`), never a path: `builtin:<name>` is a tone the renderer makes with WebAudio
+  from a few sine or triangle partials with an exponential fade (`renderer/notify/tones.ts`: Chime, the
+  default, Bell, Ping, Soft pop, Two-tone, Marimba; each under 1 s, no file, nothing fetched);
+  `system:<root index>:<relative path>` is a file under one of main's fixed OS sound folders
+  (`main/notifications/system-sounds.ts`): Linux `/usr/share/sounds` (freedesktop's `stereo` files listed
+  first) and `~/.local/share/sounds`, macOS `/System/Library/Sounds` and `~/Library/Sounds`, Windows
+  `%WINDIR%\Media`. The listing takes regular files with an audio extension (`.oga .ogg .wav .aiff .aif .mp3
+  .flac`), non-empty and at most 2 MiB, at most four folder levels deep (a symlinked folder is not
+  entered), no dot files, at most 300 in all; a symlinked file counts only when its realpath stays inside
+  the root's, so a link to a private file is never readable. Names are the file stem, with the folder (and
+  then the extension) when two clash. A damaged or unknown stored id reads as the Chime. Main never trusts
+  the stored id or one a page sends: a pick (`settings.notificationSoundSet`) and every bytes request
+  (`notify.soundData`, project windows only) list the folders again and act only on an id in that fresh
+  listing; the read opens the listed realpath and checks it is still the same regular file (device,
+  inode, size cap). The page decodes the bytes (`decodeAudioData`; AIFF, which Chromium does not read, by
+  `renderer/notify/aiff.ts` for uncompressed AIFF and AIFF-C), and a file that is gone, refused or
+  undecodable rings the Chime instead, logged once per id. Settings lists Built-in, then a group per
+  folder, a "▶ Play" button that plays the picked sound at once (not throttled; a double click plays
+  once), both disabled while "Notification sounds" is off.
+- Action: with `action` the call waits. Main resolves `{ clicked: true }` on a click on the notification
+  or on its button (`click` or `action`: macOS and Windows show the button, Linux's libnotify path offers
+  only the click), `{ clicked: false }` on `close` or `failed`, after 10 minutes (main then closes it, so
+  a stale one cannot be clicked into nothing; bounded because Electron's `close` "is not guaranteed"), or
+  when the plugin's ctx or its host process ends. A notification with an action is `timeoutType: 'never'`
+  (Linux, Windows) so it stays up until answered: with the default the pop-up expires in seconds and the
+  OS reports that as closed. Main keeps the native object referenced while waiting (Electron drops a
+  collected Notification's click handler). The host waits for main's answer at most 30 s longer than
+  main's bound; its ctx's dispose resolves the call `{ clicked: false }` at once (not a rejection, so a
+  `void ctx.notify(...)` cannot become an unhandled rejection at a reload) and sends `plugin.disposed`, on
+  which main closes that plugin's waiting notifications (`NoticeWaits`, one per host process; a stop, a
+  crash or the window closing closes all of them). Main does not focus the window on a click; the plugin
+  decides what a click does (`ctx.openExternal`, with its own limit). Without an action the call resolves
+  `{ clicked: false }` once shown, as `ctx.notify(text)` always did.
 
 **Plugin services**: one plugin offers a named API, others in the same project call it and listen to
 its events (`src/host/services.ts`, `src/shared/services.ts`). All plugins of a project run in one
@@ -972,9 +1033,20 @@ name, not which plugin is asking; installed plugins are trusted code.
   Custom commands › Keys for entries).
 
 All plugin forms are rendered from the manifest's JSON Schema; no plugin-owned settings pages.
-Besides `"format": "secret"` (§6) the form knows one more format, `"multiline"`: a string drawn as
+Besides `"format": "secret"` (§6) the form knows two more formats. `"multiline"`: a string drawn as
 a growing text area, allowed anywhere in the schema. It is a hint to the form only (main's ajv does
-not validate formats), so it needs no check in main.
+not validate formats), so it needs no check in main. `"sound"`: a notification sound picker, the
+app's "Sound" dropdown (`renderer/settings/sound-options.tsx`, shared with Appearance and keys) with
+"App default" (stored as `""`) first and ▶ Play (which plays at once, even with "Notification sounds"
+off: it is a preview), so a plugin can let the person pick its own sound and pass the value to
+`ctx.notify(text, { sound })` (§5 Notifications). Allowed anywhere, but main checks the field
+(`soundFieldProblems`, `main/plugins/validate.ts`): exactly `"type": "string"`, no keyword but `type`,
+`format`, `title`, `description`, `default`, `$comment` (an `enum` or a `maxLength` would fight the
+picker), and a `default` of `""` or a built-in id (`builtin:chime`, `builtin:bell`, `builtin:ping`,
+`builtin:pop`, `builtin:two-tone`, `builtin:marimba`), never a system file, which differs per machine.
+A stored value is not checked against the app's sounds: main does that at every ring, so any string is
+harmless. The picker shows an id it does not list as "Missing sound file" (a system id) or "Unknown
+sound". An app without the format (0.9.4) draws a text input and ignores `ctx.notify`'s options.
 
 **Projects**: File › Open Folder or `<app> open <path>`; an already-open folder focuses its
 window. The project picker (recent projects + Open Folder…) appears by itself when no project

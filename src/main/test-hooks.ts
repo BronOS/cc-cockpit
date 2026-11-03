@@ -11,7 +11,8 @@
 // What exists follows what main has: the tab list, setTheme, openProject, windowLook, socket, the session
 // registry's entries, the send gate's send / cancelQueued, the zone layout (layout,
 // pluginPanels, panelStatus), the overlay stack (openOverlay, overlayResult, overlays, focusOverlay),
-// `ccc notify` texts (notifications) and the plugin hosts (linkPlugin, enablePlugin, hostStatus,
+// `ccc notify` and ctx.notify (notifications, notificationDetails, clickNotification,
+// dismissNotification, chimes, chimeSounds) and the plugin hosts (linkPlugin, enablePlugin, hostStatus,
 // savePluginProjectSettings, pluginCommands, runPluginCommand).
 
 /** Name of the global the hooks hang off; fixtures.ts reads it. */

@@ -152,6 +152,18 @@ export interface AppSettings {
    */
   sessionGist?: boolean
   /**
+   * Plugins' `ctx.notify(text, { sound: true })` ring a short chime in the project window (main's
+   * ChimeGate reads it at each ring). Absent or anything but `false` (the file is user-writable)
+   * reads as on. Off: no chime, and such notifications stay silent on the OS side too.
+   */
+  notificationSounds?: boolean
+  /**
+   * The one sound those notifications ring: `builtin:<name>` or `system:<root>:<path>`
+   * (shared/notify-sound.ts). An id, never a path; main checks a system id against a fresh listing
+   * of its fixed OS sound folders at every use. Absent or damaged reads as `builtin:chime`.
+   */
+  notificationSound?: string
+  /**
    * Ask before the user closes a tab whose process is still running (a Claude turn, a dev server).
    * Absent or anything but `false` (the file is user-writable) reads as on. Read by the renderer at
    * each close (`settings.confirmTabClose`); closes main or a plugin makes never ask.

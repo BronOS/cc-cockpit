@@ -251,7 +251,30 @@ with full Node access.
 - `ctx.log.info(...)`, `warn`, `error`: lines go to `<data>/logs/<pluginId>.log` (`ccc plugin logs`
   reads it): `<ISO time> <level> [<projectId>] <text>`, at most 4000 chars and 100 lines per 10 s,
   line breaks written as `\n`.
-- `ctx.notify(text)`: a system notification, at most 10 a minute.
+- `ctx.notify(text, options?)`: a system notification; text is cut at 500 characters, at most 10 a
+  minute per plugin and window, and only while the project's window is open. Resolves `{ clicked }`.
+  Options (unknown keys are ignored; a bad value rejects with a TypeError at the call site):
+  - `title`: plain text, 1 to 80 characters. Default `cc-cockpit: <pluginId>`.
+  - `sound: true`: a short sound from the project window, the same on every OS (OS notification
+    sounds are unreliable, most Linux daemons play none), and the OS notification is then silent.
+    It is the sound the person picked (Settings > Appearance and keys > Notifications > Sound: a
+    built-in tone or a system sound file). The person can turn every sound off there ("Notification
+    sounds"); at most one chime per 5 s per window, however many plugins ask.
+  - `sound: "<id>"`: the sound the person picked for this plugin, the value of a `"format": "sound"`
+    settings field (see `settings-secrets`), passed on as it is: `""` (the field's "App default")
+    is the same as `true`. A plugin never names a file: the app rings the id only when it is one of
+    its own sounds now (a built-in, or a system sound file still listed), and otherwise rings the
+    app's sound and logs it once. `false` or no `sound`: none. Older apps take a string here as no
+    sound (0.9.4 ignores every option).
+  - `action: { label }` (1 to 40 characters): the call waits for the person. It resolves
+    `{ clicked: true }` on a click on the notification or its button (macOS and Windows show the
+    label as a button; on Linux the click on the notification is the action), `{ clicked: false }`
+    when it is dismissed, after 10 minutes (it is then closed), or when the plugin deactivates. On
+    Linux and Windows it stays on screen until one of those. Without an action the call resolves
+    `{ clicked: false }` as soon as it is shown. What a click does is up to the plugin: a meeting
+    reminder does `const { clicked } = await ctx.notify('Standup in 2 min', { title: 'Calendar', sound: true, action: { label: 'Join' } }); if (clicked) await ctx.openExternal(meetUrl)`
+    (`openExternal` has its own limit, below). Do not await it inside a command or `ccc` handler
+    with a time limit; keep the promise and act when it settles.
 - `ctx.openExternal(url)`: open a web page in the person's default browser, outside the app.
   `url` is http or https, at most 2048 characters, with no `user:pass@` in it; anything else
   rejects, and so does a call past 3 per 10 s per plugin and window. The app opens the normalized

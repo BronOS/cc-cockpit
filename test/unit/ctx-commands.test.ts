@@ -1,6 +1,7 @@
 // ctx.commands, ctx.notify, ctx.openExternal, ctx.log and the clean-up on deactivate, against a fake main.
 import { describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
+import { MAX_NOTIFY_TITLE, NOTIFY_ACTION_WAIT_MS } from '../../src/shared/notify'
 import { hostSpec } from '../fakes/host-spec'
 
 function setup(commands = ['refresh', 'other']) {
@@ -90,6 +91,66 @@ describe('ctx.commands', () => {
   })
 })
 
+describe('ctx.notify with an action', () => {
+  function actionSetup() {
+    const events: [string, unknown][] = []
+    const calls: { method: string; params: unknown; timeoutMs?: number }[] = []
+    let answer: (value: unknown) => void = () => {}
+    const contexts = new HostContexts({
+      log: () => {},
+      emit: (event, params) => void events.push([event, params]),
+      call: (method, params, options) => {
+        calls.push({ method, params, ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) })
+        return new Promise((resolve) => (answer = resolve))
+      }
+    })
+    const ctx = contexts.create(hostSpec({ id: 'a.one', dir: '/d', main: 'm.js' }))
+    return { contexts, ctx, calls, events, answer: (value: unknown) => answer(value) }
+  }
+
+  it("waits for main's answer, bounded a little past main's own wait", async () => {
+    const { ctx, calls, answer } = actionSetup()
+    const result = ctx.notify('Standup in 2 min', { action: { label: 'Join' }, sound: true })
+    await Promise.resolve()
+    expect(calls).toEqual([
+      {
+        method: 'notify',
+        params: { pluginId: 'a.one', text: 'Standup in 2 min', options: { sound: true, action: { label: 'Join' } } },
+        timeoutMs: NOTIFY_ACTION_WAIT_MS + 30_000
+      }
+    ])
+    answer({ clicked: true })
+    await expect(result).resolves.toEqual({ clicked: true })
+    // Anything but an explicit click is not one.
+    const other = ctx.notify('again', { action: { label: 'Join' } })
+    await Promise.resolve()
+    answer({ clicked: 'yes' })
+    await expect(other).resolves.toEqual({ clicked: false })
+  })
+
+  it('resolves { clicked: false } at dispose, tells main, and ignores a later answer', async () => {
+    const { contexts, ctx, events, answer } = actionSetup()
+    const result = ctx.notify('Standup', { action: { label: 'Join' } })
+    await Promise.resolve()
+    contexts.dispose('a.one')
+    await expect(result).resolves.toEqual({ clicked: false })
+    expect(events).toContainEqual(['plugin.disposed', { pluginId: 'a.one' }])
+    answer({ clicked: true })
+    await expect(result).resolves.toEqual({ clicked: false })
+    await expect(ctx.notify('x', { action: { label: 'Join' } })).rejects.toThrow('deactivated')
+  })
+
+  it('does not tell main at dispose when nothing waits', async () => {
+    const { contexts, ctx, events, answer } = actionSetup()
+    const result = ctx.notify('Standup', { action: { label: 'Join' } })
+    await Promise.resolve()
+    answer({ clicked: false })
+    await result
+    contexts.dispose('a.one')
+    expect(events).toEqual([])
+  })
+})
+
 describe('ctx.notify and ctx.log', () => {
   it('asks main to notify with the plugin id, capping the text', async () => {
     const { ctx, calls } = setup()
@@ -106,6 +167,27 @@ describe('ctx.notify and ctx.log', () => {
     expect(calls).toEqual([])
     failCalls(new Error('too many notifications'))
     await expect(ctx.notify('x')).rejects.toThrow('too many notifications')
+  })
+
+  it('checks the options at the call site with main\'s rule, and sends them only when given', async () => {
+    const { ctx, calls } = setup()
+    for (const bad of [5, { title: '' }, { title: 'x'.repeat(MAX_NOTIFY_TITLE + 1) }, { sound: 1 }, { sound: 'x'.repeat(1025) }, { action: {} }]) {
+      await expect(ctx.notify('hi', bad as never)).rejects.toBeInstanceOf(TypeError)
+    }
+    expect(calls).toEqual([])
+    // Without an action: resolves once main showed it, never waiting for a click.
+    await expect(ctx.notify('hi', { title: 'Calendar', sound: true })).resolves.toEqual({ clicked: false })
+    await expect(ctx.notify('plain')).resolves.toEqual({ clicked: false })
+    // A sound id from a "format": "sound" setting goes to main as it is ("" is the app's sound):
+    // only main can tell whether the app offers it.
+    await ctx.notify('own', { sound: 'builtin:bell' })
+    await ctx.notify('default', { sound: '' })
+    expect(calls).toEqual([
+      ['notify', { pluginId: 'a.one', text: 'hi', options: { title: 'Calendar', sound: true } }],
+      ['notify', { pluginId: 'a.one', text: 'plain' }],
+      ['notify', { pluginId: 'a.one', text: 'own', options: { sound: 'builtin:bell' } }],
+      ['notify', { pluginId: 'a.one', text: 'default', options: { sound: true } }]
+    ])
   })
 
   it('rejects notify when there is no connection to main', async () => {

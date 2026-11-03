@@ -1,9 +1,10 @@
 // Electron main process entry.
 //
 // RULE: Electron-only or Electron-ABI modules (`node-pty`, `safeStorage`, `utilityProcess`,
-// `BrowserWindow`, `protocol`) are imported ONLY from thin adapter files (e.g.
-// `pty/node-pty-backend.ts`, `plugins/host-process.ts`, `windows/create-window.ts`; `safeStorage`
-// is used only through `secrets/secret-store.ts`), never from logic modules that unit tests load.
+// `BrowserWindow`, `protocol`, `Notification`) are imported ONLY from thin adapter files (e.g.
+// `pty/node-pty-backend.ts`, `plugins/host-process.ts`, `windows/create-window.ts`,
+// `notifications/electron-notification.ts`; `safeStorage` is used only through
+// `secrets/secret-store.ts`), never from logic modules that unit tests load.
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
 // Playwright e2e run exercises the real adapters.
@@ -14,7 +15,6 @@ import {
   ipcMain,
   MessageChannelMain,
   nativeTheme,
-  Notification,
   safeStorage,
   session,
   shell,
@@ -27,6 +27,7 @@ import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
 import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type UpdateState } from '../shared/ipc'
+import { notificationSoundOf } from '../shared/notify-sound'
 import { liveChildren } from './child-registry'
 import { ClaudePlugins, ClaudePluginsBuilds, type SkillSource } from './claude-plugins/claude-plugins'
 import { CommandRegistry } from './commands/command-registry'
@@ -55,6 +56,9 @@ import {
 } from './ipc/router'
 import { LayoutService, type PanelStatus, type PluginPanelDef } from './layout/layout-service'
 import { AppMenu, openFolderKey } from './menu'
+import { ElectronNoticeBackend } from './notifications/electron-notification'
+import { ChimeGate, Notifier, NotifySounds, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
+import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
@@ -80,7 +84,13 @@ import { PluginOAuth } from './oauth/plugin-oauth'
 import { PluginSecrets } from './secrets/plugin-secrets'
 import { choosePasswordStore, execRunner } from './secrets/password-store'
 import { safeStorageSecretStore, selectSecretStore } from './secrets/secret-store'
-import { AppearanceService, claudeTabOnOpenOf, sessionGistOf, tabExitOf } from './settings/appearance-service'
+import {
+  AppearanceService,
+  claudeTabOnOpenOf,
+  notificationSoundsOf,
+  sessionGistOf,
+  tabExitOf
+} from './settings/appearance-service'
 import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings'
 import { ProjectSettingsService } from './settings/project-settings-service'
 import { ServiceChoices } from './plugins/service-choices'
@@ -635,13 +645,33 @@ function start(): void {
     )
     return check.ok ? { ok: true, project: check.project, app: check.app } : check
   }
-  /** What `ccc notify` and `ctx.notify` asked for, in a test run only (see showNotification). */
-  const shownNotifications: string[] = []
-  const showNotification = (text: string, title = 'cc-cockpit'): void => {
-    // e2e: record instead of putting a real notification on the developer's screen.
-    if (testRun) shownNotifications.push(text)
-    else if (Notification.isSupported()) new Notification({ title, body: text }).show()
-  }
+  // `ccc notify`, ctx.notify and the revocation notice (notifications/notifier.ts). e2e: recorded
+  // instead of put on the developer's screen, and clicked through the test hooks.
+  const recordedNotices = testRun ? new RecordingNoticeBackend() : undefined
+  const notifier = new Notifier(recordedNotices ?? new ElectronNoticeBackend())
+  const showNotification = (text: string, title = 'cc-cockpit'): void => notifier.show({ title, body: text })
+  /** Windows a chime was sent to and the sound id it rang, oldest first, in a test run only. */
+  const chimesRung: { windowId: number; sound: string }[] = []
+  // The OS sound folders the "Sound" setting can pick from (system-sounds.ts): fixed per platform,
+  // listed again at every pick and every read of a system sound's bytes.
+  const systemSounds = new SystemSounds(systemSoundRoots(process.platform, process.env, homedir()))
+  // ctx.notify's `sound`: the window's renderer plays it (renderer/notify/chime.ts), gated by the
+  // app setting and to one per window per NOTIFY_CHIME_INTERVAL_MS. The window is the host's (main's
+  // record), never one a plugin named.
+  const chimeEnabled = (): boolean => notificationSoundsOf(registry.app.data.notificationSounds)
+  const chimes = new ChimeGate({
+    enabled: chimeEnabled,
+    ring: (windowId, sound) => {
+      if (testRun) chimesRung.push({ windowId, sound })
+      // A checked id (NotifySounds); a system one's bytes the page asks for (`notify.soundData`).
+      sendToWindow(windowId, 'notify.chime', { sound })
+    }
+  })
+  // Which sound: the picked one for `sound: true`, a plugin's own id only when the app offers it now.
+  const notifySounds = new NotifySounds({
+    appSound: () => notificationSoundOf(registry.app.data.notificationSound),
+    systemHas: (id) => systemSounds.has(id)
+  })
   const pluginLogs = new PluginLogWriter({ dir: paths.logsDir, log: (m) => console.warn(m) })
   // ctx.appStorage (app-storage.ts): one store for the whole app, so the hosts of every window
   // share it and main applies their calls one at a time. Flushed on quit (will-quit).
@@ -687,7 +717,16 @@ function start(): void {
     },
     // The plugins' panel pages reload and connect to the host that just started (panel-ports.ts).
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
-    notify: (text, source) => showNotification(text, `cc-cockpit: ${source.pluginId}`),
+    notify: (notice, source, signal) => {
+      // Sounds off: not even the folder listing a plugin's system id would cost. The gate reads
+      // the setting again at the ring.
+      if (notice.sound !== false && chimeEnabled()) {
+        void notifySounds.resolve(notice.sound, source.pluginId).then((sound) => chimes.ring(source.windowId, sound))
+      }
+      const spec = pluginNoticeSpec(notice, `cc-cockpit: ${source.pluginId}`)
+      if (!notice.action) notifier.show(spec)
+      else return notifier.wait(spec, signal)
+    },
     pluginLog: (entry) => pluginLogs.write(entry),
     // ctx.sessions, ctx.badge, ctx.panels.header, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage,
     // ctx.files.open, ctx.openExternal (host-api.ts).
@@ -1277,6 +1316,23 @@ function start(): void {
       }
     },
     sessionGistChanged: () => sessionGist.settingChanged(),
+    notificationSounds: {
+      get: () => registry.app.data.notificationSounds,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.notificationSounds = next
+        })
+      }
+    },
+    notificationSound: {
+      get: () => registry.app.data.notificationSound,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.notificationSound = next
+        })
+      },
+      systemHas: (id) => systemSounds.has(id)
+    },
     confirmTabClose: {
       get: () => registry.app.data.confirmTabClose,
       set: (next) => {
@@ -1443,6 +1499,10 @@ function start(): void {
     setTabExit: (value) => appearance.setTabExit(value),
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
     setSessionGist: (value) => appearance.setSessionGist(value),
+    setNotificationSounds: (value) => appearance.setNotificationSounds(value),
+    notificationSoundOptions: () => systemSounds.groups(),
+    setNotificationSound: (value) => appearance.setNotificationSound(value),
+    notificationSoundData: (id) => systemSounds.read(id),
     setSessionFilesShown: (value) => appearance.setSessionFilesShown(value),
     setZoneAutoHide: (value) => appearance.setZoneAutoHide(value),
     setMinTerminalWidth: (value) => appearance.setMinTerminalWidth(value),
@@ -1638,7 +1698,17 @@ function start(): void {
             return { transparent: windows.isTransparent(windowId), backgroundColor: win.getBackgroundColor() }
           },
           // The texts `ccc notify` was asked to show (test runs show no real notification).
-          notifications: () => [...shownNotifications],
+          notifications: () => recordedNotices?.records().map((n) => n.body) ?? [],
+          // The same with every field main gave the OS (title, silent, action label, still open).
+          notificationDetails: () => recordedNotices?.records() ?? [],
+          // Click or dismiss the index-th notification shown (what the person would do); false when
+          // there is none or it already ended.
+          clickNotification: (index: number) => recordedNotices?.click(index) ?? false,
+          dismissNotification: (index: number) => recordedNotices?.dismiss(index) ?? false,
+          // The windows `notify.chime` went to (ctx.notify sound, after the setting and the throttle).
+          chimes: () => chimesRung.map((c) => c.windowId),
+          // The sound ids those chimes rang, in the same order.
+          chimeSounds: () => chimesRung.map((c) => c.sound),
           // Where the CLI socket is and whether main is listening on it.
           socket: () => ({ path: sock, listening: socket.listening }),
           // The tabs main holds for a project folder, as the renderer would see them.

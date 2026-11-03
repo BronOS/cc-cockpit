@@ -102,6 +102,15 @@ behind it are in [design.md](design.md).
   per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify, opening a web page in the
   system browser with `ctx.openExternal`...). A panel's icon is drawn in
   the strip's text colour (only its shape counts), so it follows the theme, hover and open states.
+- Plugin notifications: `ctx.notify(text, { title, sound, action })`. `sound` rings a short sound from the window (the
+  same on every OS; Settings > Appearance and keys > Notifications > "Notification sounds" turns it off; at most one per
+  5 s per window). "Sound" there picks it, one for all notifications: a built-in tone made in the app (Chime, the
+  default, Bell, Ping, Soft pop, Two-tone, Marimba) or a sound file from the system's sound folders (Linux
+  `/usr/share/sounds` and `~/.local/share/sounds`, macOS `/System/Library/Sounds` and `~/Library/Sounds`, Windows
+  `%WINDIR%\Media`), with "▶ Play" to hear it. A plugin can offer the same picker in its settings (`"format": "sound"`,
+  first entry "App default") and ring the person's pick for its own notifications; it never names a file, and an id
+  the app no longer offers rings the app's sound. `action: { label }` makes the notification clickable (a button on macOS and Windows) and the call
+  resolves `{ clicked: true }`, so a calendar plugin can join the meeting on a click; it waits at most 10 minutes.
 - Panel headers: a plugin can put a short muted text ("3 open", "synced 2 min ago") after its panel's title and up to
   three icon buttons (refresh, add, search, filter, settings, open external, check, sort, or its own SVG) before the
   "…" menu (`ctx.panels.header`, clicks through `ctx.panels.onAction`). A busy button spins and ignores clicks. The
@@ -309,6 +318,13 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - Plugin settings schemas may not use regexes (`pattern`, `patternProperties`).
 - On Linux the plugin secrets need a running, unlocked Secret Service keyring (gnome-keyring, KeePassXC) or KWallet; there
   is no plaintext fallback by design. The automatic Secret Service choice is made at start-up from the session bus.
+- Plugin notifications: the chime plays even when the OS is in do-not-disturb mode (only the setting silences it), and
+  only from an open project window. On Linux there is no action button, only the click on the notification, and
+  whether a click or a dismissal reaches the app depends on the notification daemon; an unanswered one counts as not
+  clicked after 10 minutes. Windows (unsupported) is untested.
+- Notification sound picker: only the fixed system sound folders are listed (at most 300 files of up to 2 MiB, four
+  folder levels deep), no file chooser. A picked file that goes away or does not decode rings the Chime (logged once in
+  the window's console). Compressed AIFF-C files (macOS `ima4`, `ulaw`...) are not decoded; uncompressed AIFF is.
 - `ctx.services.caller()` and the service calls are not a security boundary: all plugins of a project share one process.
 - When a plugin update or dev reload removes a secret settings field or makes it a plain one, its
   encrypted value stays in `secrets.json` (no form or `ctx.settings` gets it) until the plugin is

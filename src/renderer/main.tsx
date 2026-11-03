@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { startChime } from './notify/chime'
 import { startPrefs } from './prefs/prefs-store'
 import { startTheme } from './theme/apply-theme'
 // The bundled terminal fonts' @font-face rules (shared/terminal-font.ts BUNDLED_TERMINAL_FONTS).
@@ -10,6 +11,9 @@ import './styles.css'
 // Scopes the themed scrollbars (styles.css) away from macOS, whose overlay scrollbars already fit;
 // the same platform test as the rest of the renderer (window-chrome.ts keys off the platform too).
 document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
+
+// ctx.notify's `sound`: main decides when (setting, throttle); the page plays it.
+startChime()
 
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root element in index.html')

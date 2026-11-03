@@ -24,7 +24,7 @@
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 //   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
 // Requests to main (checked there against this host's own project and plugins):
-//   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text }
+//   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text, options? } -> { clicked }
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },

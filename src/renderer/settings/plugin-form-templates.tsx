@@ -1,4 +1,4 @@
-// The settings form's own rjsf templates and the `multiline` widget (PluginSettingsForm.tsx).
+// The settings form's own rjsf templates and the `multiline` and `sound` widgets (PluginSettingsForm.tsx).
 // rjsf's core templates assume Bootstrap 3, which this app does not load: its array buttons are
 // glyphicon `<i>`s that drew as empty squares, its item rows lean on `col-xs-*` widths (so an
 // array item's fields got a narrower label column than the rest of the form) and its add button
@@ -9,6 +9,7 @@
 import SelectWidget from '@rjsf/core/lib/components/widgets/SelectWidget.js'
 import TextareaWidget from '@rjsf/core/lib/components/widgets/TextareaWidget.js'
 import {
+  ariaDescribedByIds,
   buttonId,
   descriptionId,
   getUiOptions,
@@ -23,6 +24,8 @@ import {
 } from '@rjsf/utils'
 import { createContext, useContext } from 'react'
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, TrashIcon } from './icons'
+import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
+import { useLoaded } from './use-loaded'
 
 /**
  * The id rjsf gives the root object's title (`titleId` of the default `idPrefix`, "root"). The root
@@ -243,6 +246,41 @@ function MultilineWidget(props: WidgetProps): React.JSX.Element {
   return <TextareaWidget {...props} options={{ ...props.options, rows: 4 }} />
 }
 
+/**
+ * The `sound` widget (`"format": "sound"`, design §6): the notification sound picker of Settings ›
+ * Appearance and keys with "App default" (stored as "") first, and ▶ Play. The value is an id from
+ * main's list, which the plugin passes to ctx.notify; main checks it again at every ring, so this
+ * list is a convenience, not the guard. Played at once, whatever the "Notification sounds" switch
+ * says: hearing a sound before picking it is the point of the button.
+ */
+function SoundWidget(props: WidgetProps): React.JSX.Element {
+  const groups = useLoaded(loadSoundGroups)
+  const play = usePlaySound()
+  const value = typeof props.value === 'string' ? props.value : ''
+  const disabled = props.disabled === true || props.readonly === true
+  const label = typeof props.label === 'string' && props.label !== '' ? props.label : props.name
+  return (
+    <div className="settings-sound">
+      <select
+        id={props.id}
+        className="form-control"
+        value={value}
+        disabled={disabled}
+        aria-describedby={ariaDescribedByIds(props.id)}
+        // "" is a value here (App default): handed on as it is, not as rjsf's empty value.
+        onChange={(e) => props.onChange(e.target.value)}
+        onBlur={(e) => props.onBlur(props.id, e.target.value)}
+        onFocus={(e) => props.onFocus(props.id, e.target.value)}
+      >
+        <SoundOptions value={value} groups={groups.data} appDefault />
+      </select>
+      <button type="button" className="quiet" aria-label={`Play ${label}`} disabled={disabled} onClick={() => play(value)}>
+        <span aria-hidden="true">▶</span> Play
+      </button>
+    </div>
+  )
+}
+
 export const formTemplates: Partial<Omit<TemplatesType, 'ButtonTemplates'>> & {
   ButtonTemplates: Partial<TemplatesType['ButtonTemplates']>
 } = {
@@ -262,6 +300,7 @@ export const formTemplates: Partial<Omit<TemplatesType, 'ButtonTemplates'>> & {
 /**
  * The widgets rjsf picks by a string property's `format` (a format with a registered widget of
  * the same name wins over the text input). `multiline` is ignored by main's validator (ajv with
- * `validateFormats: false`, validate.ts), so it is a form hint only and allowed anywhere.
+ * `validateFormats: false`, validate.ts), so it is a form hint only and allowed anywhere. `sound`
+ * is allowed anywhere too, but main checks its schema (validate.ts soundFieldProblems).
  */
-export const formatWidgets = { multiline: MultilineWidget }
+export const formatWidgets = { multiline: MultilineWidget, sound: SoundWidget }

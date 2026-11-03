@@ -1,8 +1,10 @@
 // Task 26: the host ctx in the real plugin host (utilityProcess): settings with defaults applied by
-// main, storage and dataDir on disk, appStorage and appDataDir through main, exec without a shell, notify, ctx.log into
+// main, storage and dataDir on disk, appStorage and appDataDir through main, exec without a shell, notify (options,
+// the chime, a click), ctx.log into
 // <data>/logs/<pluginId>.log, and a manifest command that main lists and runs in the host.
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import type { RecordedNotice } from '../../src/main/notifications/notifier'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { CommandInfo } from '../../src/shared/ipc'
 import { expect, test } from './fixtures'
@@ -28,6 +30,7 @@ test('a plugin uses settings, storage, app storage, exec, notify, log and a comm
     appDataDir: string
     exec: { code: number; stdout: string; stderr: string }
     undeclaredError: string
+    soundNotify: unknown
     error?: string
   }
   expect(seen.error).toBeUndefined()
@@ -62,6 +65,33 @@ test('a plugin uses settings, storage, app storage, exec, notify, log and a comm
   expect(JSON.parse(readFileSync(appStorageFile, 'utf8')).values).toEqual({ app: { shared: true }, runs: 3 })
 
   expect(await cockpit.hook<string[]>('notifications')).toContain('hello from the fixture plugin')
+  // The options as main gave them to the OS: the default title, a silent one with the app's chime
+  // instead, and the action as a button that keeps the notification up.
+  expect(seen.soundNotify).toEqual({ clicked: false })
+  const details = await cockpit.hook<RecordedNotice[]>('notificationDetails')
+  expect(details.find((n) => n.body === 'hello from the fixture plugin')).toEqual({
+    title: 'cc-cockpit: test.hostctx',
+    body: 'hello from the fixture plugin',
+    open: true
+  })
+  expect(details.find((n) => n.body === 'chime please')).toMatchObject({ title: 'Fixture reminder', silent: true })
+  // One chime, in this project's window (the setting is on by default), with the plugin's own
+  // sound: a built-in the app offers.
+  await expect.poll(() => cockpit.hook<number[]>('chimes')).toHaveLength(1)
+  expect(await cockpit.hook<string[]>('chimeSounds')).toEqual(['builtin:bell'])
+  await expect.poll(async () => (await cockpit.hook<RecordedNotice[]>('notificationDetails')).length).toBe(3)
+  const reminder = (await cockpit.hook<RecordedNotice[]>('notificationDetails')).findIndex((n) => n.body === 'Standup in 2 min')
+  expect((await cockpit.hook<RecordedNotice[]>('notificationDetails'))[reminder]).toMatchObject({
+    title: 'Calendar',
+    actionLabel: 'Join',
+    persistent: true,
+    open: true
+  })
+  const clickFile = join(cockpit.root, 'home', 'notify-click.json')
+  expect(existsSync(clickFile)).toBe(false)
+  expect(await cockpit.hook<boolean>('clickNotification', reminder)).toBe(true)
+  await expect.poll(() => existsSync(clickFile)).toBe(true)
+  expect(JSON.parse(readFileSync(clickFile, 'utf8'))).toEqual({ clicked: true })
 
   const logFile = join(cockpit.dataDir, 'logs', 'test.hostctx.log')
   await expect.poll(() => existsSync(logFile)).toBe(true)
@@ -75,4 +105,65 @@ test('a plugin uses settings, storage, app storage, exec, notify, log and a comm
   ))
   await cockpit.hook('runPluginCommand', cockpit.projectDir, 'test.hostctx/ping')
   expect(readFileSync(join(seen.dataDir, 'ping.txt'), 'utf8')).toBe('pong')
+})
+
+test('with Notification sounds off in Settings, a notification asking for a sound rings no chime and stays silent', async ({
+  cockpit
+}) => {
+  const { page } = cockpit
+  await page.keyboard.press('ControlOrMeta+,')
+  const settings = page.getByRole('dialog', { name: 'Settings' })
+  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  const box = settings.getByRole('checkbox', { name: 'Notification sounds' })
+  await expect(box).toBeChecked()
+  // A controlled box (see first-tab.spec.ts): click, then wait for main's stored state.
+  await box.click()
+  await expect(box).not.toBeChecked()
+  await expect
+    .poll(() => (JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { notificationSounds?: unknown }).notificationSounds)
+    .toBe(false)
+  await page.keyboard.press('Escape')
+
+  await cockpit.hook('linkPlugin', FIXTURE)
+  await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.hostctx')
+  await expect
+    .poll(async () => (await cockpit.hook<RecordedNotice[]>('notificationDetails')).map((n) => n.body), { timeout: 15_000 })
+    .toContain('chime please')
+  const details = await cockpit.hook<RecordedNotice[]>('notificationDetails')
+  expect(details.find((n) => n.body === 'chime please')).toMatchObject({ silent: true })
+  expect(await cockpit.hook<number[]>('chimes')).toEqual([])
+})
+
+test('Settings picks a built-in notification sound and plays it once, and the picker follows the on/off switch', async ({
+  cockpit
+}) => {
+  const { page } = cockpit
+  const errors: string[] = []
+  page.on('pageerror', (err) => errors.push(err.message))
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.text().includes('notification sound')) errors.push(msg.text())
+  })
+  await page.keyboard.press('ControlOrMeta+,')
+  const settings = page.getByRole('dialog', { name: 'Settings' })
+  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  const sound = settings.getByRole('combobox', { name: 'Sound' })
+  await expect(sound).toHaveValue('builtin:chime')
+  // The built-ins come first, in their own group; the OS folders (whatever this machine has) after.
+  const builtins = await sound.locator('optgroup[label="Built-in"] option').allTextContents()
+  expect(builtins).toEqual(['Chime', 'Bell', 'Ping', 'Soft pop', 'Two-tone', 'Marimba'])
+  await sound.selectOption('builtin:two-tone')
+  await expect
+    .poll(() => (JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { notificationSound?: unknown }).notificationSound)
+    .toBe('builtin:two-tone')
+  await expect(sound).toHaveValue('builtin:two-tone')
+  const play = settings.getByRole('button', { name: 'Play' })
+  await play.dblclick()
+  await play.click()
+  await expect(settings.getByRole('alert')).toHaveCount(0)
+
+  // Sounds off: nothing to pick or play.
+  await settings.getByRole('checkbox', { name: 'Notification sounds' }).click()
+  await expect(sound).toBeDisabled()
+  await expect(play).toBeDisabled()
+  expect(errors).toEqual([])
 })

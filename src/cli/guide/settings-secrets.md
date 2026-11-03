@@ -22,6 +22,15 @@ field per property of the root object):
   text area that grows with its text, for a profile, a prompt or a question's wording. It is a
   form hint only: main does not check formats, so the value is any string within `maxLength`
   (with an `enum` the drop-down stays).
+- `"format": "sound"` on a string property (anywhere) is the notification sound picker of the
+  app's own setting: "App default" (stored as `""`), then the built-in tones (`builtin:chime`,
+  `builtin:bell`, `builtin:ping`, `builtin:pop`, `builtin:two-tone`, `builtin:marimba`) and the
+  system's sound files, with ▶ Play. Pass the value to `ctx.notify(text, { sound: value })`
+  (`api` topic); main checks it there, so any stored string is harmless. The field has exactly
+  `"type": "string"`, no keyword but `type`, `format`, `title`, `description`, `default`,
+  `$comment`, and a `default` of `""` or a built-in id (never a system file: those differ per
+  machine). An app before 0.9.5 shows a text input and ignores the value in `ctx.notify`. For an
+  on/off switch, add a boolean beside it: the person's "Notification sounds" off silences all.
 - `enum` is a drop-down that shows the raw values: `enumNames` is ignored. For display labels write
   the choices as `"oneOf": [{ "const": "a", "title": "Alpha" }, { "const": "b", "title": "Beta" }]`
   on the property (with `"type": "string"`): the drop-down shows the titles and stores `a` / `b`.

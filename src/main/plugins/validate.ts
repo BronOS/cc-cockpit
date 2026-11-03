@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import Ajv, { type ErrorObject, type ValidateFunction } from 'ajv'
 import { isPlainObject, own } from '../../shared/guards'
 import { normalizeChord } from '../../shared/keys'
+import { DEFAULT_NOTIFY_SOUND, isSoundFieldDefault } from '../../shared/notify-sound'
 import {
   CONTRIBUTION_ID_PATTERN,
   MANIFEST_SCHEMA,
@@ -379,6 +380,7 @@ function schemaProblems(schema: unknown): string[] {
     if (keywords && own(node as Record<string, unknown>, 'format') === 'secret' && !secrets.nodes.has(node)) {
       problems.push(`${at}: "format": "secret" is allowed only on a top-level property of the settings object`)
     }
+    if (keywords && own(node as Record<string, unknown>, 'format') === 'sound') soundFieldProblems(node, at, problems)
     for (const [key, value] of Object.entries(node)) {
       const where = `${at}/${key}`
       // Object.entries sees an own `__proto__` key (JSON.parse creates one), so this catches it in
@@ -582,6 +584,33 @@ function secretSites(schema: object, problems: string[]): { nodes: Set<object>; 
 
 /** What a secret field's schema may hold: the shape and the form's labels, nothing to validate. */
 const SECRET_FIELD_KEYWORDS = new Set(['type', 'format', 'title', 'description', '$comment'])
+
+/**
+ * A `"format": "sound"` field (anywhere in the schema): the form draws the notification sound
+ * picker for it (plugin-form-templates.tsx SoundWidget) and the plugin passes the value to
+ * ctx.notify, where main checks the id against the app's own sounds at every ring (notifier.ts
+ * NotifySounds). So the schema only has to keep the picker honest: exactly `"type": "string"` (the
+ * picker stores one id), no keyword that would constrain a value the picker chooses (an `enum`, a
+ * `maxLength` the app's ids do not know about), and a `default` of "" (App default) or a built-in id,
+ * never a system file, which differs per machine. A stored value is not checked here: any string is
+ * harmless, as main resolves it at the ring.
+ */
+function soundFieldProblems(node: object, at: string, problems: string[]): void {
+  const field = node as Record<string, unknown>
+  const where = at === '' ? '/' : at
+  if (own(field, 'type') !== 'string') problems.push(`${where}: a "format": "sound" field must have "type": "string"`)
+  if (Object.hasOwn(field, 'default') && !isSoundFieldDefault(field.default)) {
+    problems.push(`${where}: a "format": "sound" field's "default" is "" (the app's sound) or a built-in id such as "${DEFAULT_NOTIFY_SOUND}"`)
+  }
+  for (const key of Object.keys(field)) {
+    if (!SOUND_FIELD_KEYWORDS.has(key)) {
+      problems.push(`${where}: a "format": "sound" field allows only "type", "format", "title", "description", "default" and "$comment", not "${key}"`)
+    }
+  }
+}
+
+/** What a sound field's schema may hold. */
+const SOUND_FIELD_KEYWORDS = new Set(['type', 'format', 'title', 'description', 'default', '$comment'])
 
 /**
  * The segments of a local `#/...` pointer as the settings form reads it: rjsf (findSchemaDefinition)

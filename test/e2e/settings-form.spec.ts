@@ -1,6 +1,6 @@
 // The plugin settings form's own templates (plugin-form-templates.tsx) on a schema shaped like a
-// real plugin's (the jev-triage one): an array of objects, an array of strings, a nested object and
-// `"format": "multiline"` strings. rjsf's default templates drew the array buttons as empty
+// real plugin's (the jev-triage one): an array of objects, an array of strings, a nested object,
+// `"format": "multiline"` strings and a `"format": "sound"` picker. rjsf's default templates drew the array buttons as empty
 // glyphicon squares, hid every title, gave array items a narrower field column, and listed a
 // save's refusal at the top of a long form, out of view, so Save looked like it did nothing.
 import { readFileSync } from 'node:fs'
@@ -41,6 +41,39 @@ test('settings: a plugin form with arrays, groups and multi-line fields', async 
   const text = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
   await profile.fill(text)
   await expect.poll(async () => (await profile.boundingBox())?.height ?? 0).toBeGreaterThan(before)
+
+  // "format": "sound" is the app's sound dropdown with "App default" first (stored as ""), then the
+  // built-ins in their own group, and a Play button for the pick ("" plays the app's sound).
+  const errors: string[] = []
+  page.on('pageerror', (err) => errors.push(err.message))
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.text().includes('notification sound')) errors.push(msg.text())
+  })
+  const alertSound = form.getByRole('combobox', { name: 'Alert sound' })
+  await expect(alertSound).toHaveValue('')
+  expect(await alertSound.locator('option').first().textContent()).toBe('App default')
+  expect(await alertSound.locator('optgroup[label="Built-in"] option').allTextContents()).toEqual([
+    'Chime',
+    'Bell',
+    'Ping',
+    'Soft pop',
+    'Two-tone',
+    'Marimba'
+  ])
+  const playAlert = form.getByRole('button', { name: 'Play Alert sound' })
+  await playAlert.click()
+  await alertSound.selectOption('builtin:ping')
+  await expect(alertSound).toHaveValue('builtin:ping')
+  await page.waitForTimeout(500)
+  await playAlert.click()
+  // Beside each other in the field column, like a secret field's buttons.
+  const selectBox = await alertSound.boundingBox()
+  const playBox = await playAlert.boundingBox()
+  expect(playBox?.x ?? 0).toBeGreaterThan((selectBox?.x ?? Infinity) + (selectBox?.width ?? 0) - 1)
+  // A long description stays in the label column, left of the control: a CSS specificity slip once
+  // spread every description over the full row, under the field's control (2026-11-03).
+  const descBox = await form.locator('.field-description', { hasText: 'a long description on purpose' }).boundingBox()
+  expect((descBox?.x ?? 0) + (descBox?.width ?? Infinity)).toBeLessThanOrEqual((selectBox?.x ?? 0) + 1)
 
   // The array buttons have names and text, not empty squares.
   const addRule = rules.getByRole('button', { name: 'Add to Rules' })
@@ -92,6 +125,8 @@ test('settings: a plugin form with arrays, groups and multi-line fields', async 
   await expect.poll(stored, { timeout: 5_000 }).toMatchObject({
     profile: text,
     rules: [{ field: 'from', contains: 'boss', priority: 'fyi' }],
-    criteria: { action: 'Someone asks me\nto do something' }
+    criteria: { action: 'Someone asks me\nto do something' },
+    alert: 'builtin:ping'
   })
+  expect(errors).toEqual([])
 })

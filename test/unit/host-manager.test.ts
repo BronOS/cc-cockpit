@@ -14,6 +14,7 @@ import {
   MAX_NOTIFICATIONS_PER_WINDOW,
   NOTIFY_WINDOW_MS,
   type HostCommandSink,
+  type HostNotifySource,
   type HostSettings,
   type PluginLogEntry,
   LOG_WINDOW_MS,
@@ -26,6 +27,9 @@ import {
   type HostSpawnOptions
 } from '../../src/main/plugins/host-manager'
 import type { PanelStatus, PluginPanelDef } from '../../src/main/layout/layout-service'
+import type { PluginNotice } from '../../src/main/notifications/notifier'
+import { MAX_NOTIFY_ACTION_LABEL, MAX_NOTIFY_TITLE } from '../../src/shared/notify'
+import { MAX_SOUND_ID_LENGTH } from '../../src/shared/notify-sound'
 import { memoryPortPair } from '../fakes/memory-port'
 import { unusedOAuth, unusedSecrets } from '../fakes/unused-host-services'
 
@@ -150,6 +154,10 @@ describe('HostManager', () => {
   let settingsFor: Record<string, HostSettings>
   let sink: { added: string[]; removed: string[]; cleared: string[] } & HostCommandSink
   let notified: { text: string; projectId: string; pluginId: string }[]
+  /** Every deps.notify call in full (notice, main's source, the abort signal). */
+  let noticeCalls: { notice: PluginNotice; source: HostNotifySource; signal: AbortSignal }[]
+  /** What deps.notify returns for a notice with an action (default: never settles). */
+  let notifyAnswer: (signal: AbortSignal) => Promise<boolean>
   let pluginLines: PluginLogEntry[]
   /** Launches that finished activating (onPluginsReady: their panel pages reload). */
   let ready: { projectId: string; pluginIds: string[] }[]
@@ -162,6 +170,8 @@ describe('HostManager', () => {
     listError = undefined
     settingsFor = {}
     notified = []
+    noticeCalls = []
+    notifyAnswer = () => new Promise(() => {})
     pluginLines = []
     ready = []
     sink = {
@@ -187,7 +197,11 @@ describe('HostManager', () => {
       pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
       settings: (projectId, pluginId) => settingsFor[`${projectId}:${pluginId}`] ?? { ok: true, project: {}, app: {} },
       commands: sink,
-      notify: (text, source) => void notified.push({ text, ...source }),
+      notify: (notice, source, signal) => {
+        notified.push({ text: notice.text, projectId: source.projectId, pluginId: source.pluginId })
+        noticeCalls.push({ notice, source, signal })
+        return notice.action ? notifyAnswer(signal) : undefined
+      },
       pluginLog: (entry) => void pluginLines.push(entry),
       onPluginsReady: (projectId, pluginIds) => void ready.push({ projectId, pluginIds }),
       log
@@ -912,7 +926,7 @@ describe('HostManager', () => {
         layouts,
         pluginDataDir: (projectId, pluginId) => `/data/plugin-data/${projectId}/${pluginId}`,
         pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
-        notify: (text) => notified.push(text),
+        notify: (notice) => void notified.push(notice.text),
         api: {
           listSessions: (projectId) => (projectId === 'p1' ? [p1Tab] : []),
           // A real p1 tab: without it `send` would fail as "unknown tab" and prove nothing.
@@ -1415,6 +1429,95 @@ describe('HostManager', () => {
       await expect(host.call('notify', { pluginId: 'a.one', text: 'too many' })).rejects.toThrow('notifications in 60 s')
       await host.call('notify', { pluginId: 'a.two', text: 'mine' })
       expect(notified.at(-1)).toEqual({ text: 'mine', projectId: 'p1', pluginId: 'a.two' })
+    })
+
+    it('checks ctx.notify options in main and passes them on with main\'s own window', async () => {
+      await manager.open('p1', 7)
+      const host = factory.last.host
+      const bad: [unknown, string][] = [
+        [5, 'options must be an object'],
+        [{ title: 5 }, 'title must be a string'],
+        [{ title: ' \n ' }, 'title must not be empty'],
+        [{ title: 'x'.repeat(MAX_NOTIFY_TITLE + 1) }, `title is over ${MAX_NOTIFY_TITLE} characters`],
+        [{ sound: 1 }, 'sound must be true, false or a sound id'],
+        [{ sound: 'x'.repeat(MAX_SOUND_ID_LENGTH + 1) }, `sound is over ${MAX_SOUND_ID_LENGTH} characters`],
+        [{ action: 'Join' }, 'action must be an object'],
+        [{ action: { label: '' } }, 'action.label must not be empty'],
+        [{ action: { label: 'x'.repeat(MAX_NOTIFY_ACTION_LABEL + 1) } }, `action.label is over ${MAX_NOTIFY_ACTION_LABEL} characters`]
+      ]
+      for (const [options, error] of bad) {
+        await expect(host.call('notify', { pluginId: 'a.one', text: 'hi', options })).rejects.toThrow(error)
+      }
+      // A refused call spends no budget, and shows nothing.
+      expect(noticeCalls).toEqual([])
+      await expect(
+        host.call('notify', {
+          pluginId: 'a.one',
+          text: 'Standup in 2 min',
+          // Control characters become spaces; an unknown key (a later release's) is ignored.
+          options: { title: 'Calendar\nreminder', sound: true, later: 1 },
+          // A project or window the host names is never used.
+          projectId: 'p2',
+          windowId: 99
+        })
+      ).resolves.toEqual({ clicked: false })
+      expect(noticeCalls[0]?.notice).toEqual({ text: 'Standup in 2 min', title: 'Calendar reminder', sound: true })
+      expect(noticeCalls[0]?.source).toEqual({ projectId: 'p1', pluginId: 'a.one', windowId: 7 })
+      // A plugin's own sound id travels as it is (main's notify resolves it, NotifySounds); "" is
+      // a "format": "sound" field left at App default, the app's sound.
+      await host.call('notify', { pluginId: 'a.one', text: 'own', options: { sound: 'builtin:bell' } })
+      await host.call('notify', { pluginId: 'a.one', text: 'default', options: { sound: '' } })
+      expect(noticeCalls.slice(1).map((c) => c.notice.sound)).toEqual(['builtin:bell', true])
+      for (let i = 3; i < MAX_NOTIFICATIONS_PER_WINDOW; i++) await host.call('notify', { pluginId: 'a.one', text: `n${i}` })
+      await expect(host.call('notify', { pluginId: 'a.one', text: 'one too many' })).rejects.toThrow('notifications in 60 s')
+    })
+
+    it('answers a ctx.notify with an action with the click main reports', async () => {
+      await manager.open('p1', 1)
+      const host = factory.last.host
+      notifyAnswer = async () => true
+      await expect(host.call('notify', { pluginId: 'a.one', text: 'Standup', options: { action: { label: 'Join' } } })).resolves.toEqual({
+        clicked: true
+      })
+      notifyAnswer = async () => false
+      await expect(host.call('notify', { pluginId: 'a.one', text: 'Standup', options: { action: { label: 'Join' } } })).resolves.toEqual({
+        clicked: false
+      })
+      expect(noticeCalls.map((c) => c.notice.action)).toEqual([{ label: 'Join' }, { label: 'Join' }])
+      // Settled: nothing of these calls is left to abort.
+      expect(noticeCalls.every((c) => !c.signal.aborted)).toBe(true)
+    })
+
+    it("ends a plugin's waiting notifications when its ctx is disposed, and every one when the window closes", async () => {
+      await manager.open('p1', 1)
+      const host = factory.last.host
+      // deps.notify answers false once aborted, as the Notifier does.
+      notifyAnswer = (signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve(false)))
+      const one = host.call('notify', { pluginId: 'a.one', text: 'one', options: { action: { label: 'Go' } } })
+      const two = host.call('notify', { pluginId: 'a.two', text: 'two', options: { action: { label: 'Go' } } })
+      await flush()
+      expect(noticeCalls).toHaveLength(2)
+      host.emit('plugin.disposed', { pluginId: 'a.one' })
+      await flush()
+      expect(noticeCalls[0]?.signal.aborted).toBe(true)
+      expect(noticeCalls[1]?.signal.aborted).toBe(false)
+      await expect(one).resolves.toEqual({ clicked: false })
+      const closing = manager.close('p1')
+      expect(noticeCalls[1]?.signal.aborted).toBe(true)
+      await vi.advanceTimersByTimeAsync(DEACTIVATE_GRACE_MS)
+      await closing
+      // The host is gone, so its call settles by the endpoint closing, never by hanging.
+      await two.catch(() => {})
+    })
+
+    it('ends the waiting notifications of a host that crashed', async () => {
+      await manager.open('p1', 1)
+      const proc = factory.last
+      void proc.host.call('notify', { pluginId: 'a.one', text: 'one', options: { action: { label: 'Go' } } }).catch(() => {})
+      await flush()
+      proc.exit(1)
+      await flush()
+      expect(noticeCalls[0]?.signal.aborted).toBe(true)
     })
 
     it('hands ctx.log lines to the plugin log writer, one line each', async () => {

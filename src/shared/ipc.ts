@@ -513,6 +513,25 @@ export interface UpdateState {
   available: { version: string } | null
 }
 
+/** One pick of the notification "Sound" dropdown: an id (shared/notify-sound.ts) and what the person reads. */
+export interface NotificationSoundChoice {
+  id: string
+  name: string
+}
+
+/** A group of the dropdown: "Built-in", then one per OS sound folder that has any sounds. */
+export interface NotificationSoundGroup {
+  label: string
+  sounds: NotificationSoundChoice[]
+}
+
+/** A system sound's bytes as main read them for a validated id (`notify.soundData`). */
+export interface NotificationSoundData {
+  data: Uint8Array
+  /** The media type from the file's extension (audio/ogg, audio/wav, audio/aiff...). */
+  type: string
+}
+
 /** Everything the "Appearance and keys" page shows (main/settings/appearance-service.ts). */
 export interface AppearanceView {
   themes: ThemeChoice[]
@@ -527,6 +546,14 @@ export interface AppearanceView {
   claudeTabOnOpen: boolean
   /** Haiku writes a one-line gist of each Claude session (AppSettings.sessionGist, default off). */
   sessionGist: boolean
+  /** A plugin's notification with `sound` rings a chime (AppSettings.notificationSounds, default on). */
+  notificationSounds: boolean
+  /**
+   * The sound it rings (AppSettings.notificationSound, a well-spelled id or `builtin:chime`). A
+   * system id may name a file that went away; the page shows it as missing (it is not among
+   * `settings.notificationSoundOptions`).
+   */
+  notificationSound: string
   /** Changed files each session lists before "Show all" (AppSettings.sessionFilesShown, default applied). */
   sessionFilesShown: number
   /** Auto-hide the side zones when the terminal gets narrow (AppSettings.zoneAutoHide, default on). */
@@ -796,6 +823,21 @@ export interface IpcInvokeMap {
   'settings.claudeTabOnOpenSet': { req: { value: boolean }; res: void }
   /** Turn the session gist on or off (AppSettings.sessionGist). Off cancels runs and removes every gist. */
   'settings.sessionGistSet': { req: { value: boolean }; res: void }
+  /** Let plugin notifications with `sound` chime, or never (AppSettings.notificationSounds). Read at each chime. */
+  'settings.notificationSoundsSet': { req: { value: boolean }; res: void }
+  /**
+   * The notification sounds to pick from: the built-in tones, then the OS sound folders' files as
+   * main lists them now (main/notifications/system-sounds.ts). Names only, never a path.
+   */
+  'settings.notificationSoundOptions': { req: void; res: NotificationSoundGroup[] }
+  /** Pick the notification sound (AppSettings.notificationSound): a built-in, or a system id in main's fresh listing. */
+  'settings.notificationSoundSet': { req: { value: string }; res: void }
+  /**
+   * A system sound's bytes, for the window to play. Main parses the id and lists the folders again,
+   * so only a file in that listing is read (never a path the page names); null for a built-in id,
+   * a file that is gone, or one that changed since it was listed. The page then plays the Chime.
+   */
+  'notify.soundData': { req: { id: string }; res: NotificationSoundData | null }
   /** How many changed files each session lists in the Sessions panel (AppSettings.sessionFilesShown). Every window follows. */
   'settings.sessionFilesShownSet': { req: { value: number }; res: void }
   /** Hide the side zones when the terminal gets narrow, or never (AppSettings.zoneAutoHide). Every window follows. */
@@ -945,6 +987,13 @@ export interface IpcEventMap {
   'theme.changed': Theme
   /** An app setting the shell page applies itself changed (Settings › Appearance and keys). */
   'prefs.changed': ShellPrefs
+  /**
+   * Play the notification sound once (a plugin's ctx.notify with `sound`). Main already applied the
+   * "Notification sounds" setting and the one-per-window throttle; `sound` is the picked id
+   * (AppSettings.notificationSound, default applied) or a plugin's own id that main found among the
+   * app's sounds (notifier.ts NotifySounds). A system id's bytes come from `notify.soundData`.
+   */
+  'notify.chime': { sound: string }
   /** This window's view of the Claude tabs (see SessionsSnapshot); throttled to 10 per second. */
   'sessions.snapshot': SessionsSnapshot
   /**
@@ -1067,6 +1116,10 @@ export const INVOKE_CHANNELS = [
   'settings.tabExitSet',
   'settings.claudeTabOnOpenSet',
   'settings.sessionGistSet',
+  'settings.notificationSoundsSet',
+  'settings.notificationSoundOptions',
+  'settings.notificationSoundSet',
+  'notify.soundData',
   'settings.sessionFilesShownSet',
   'settings.zoneAutoHideSet',
   'settings.minTerminalWidthSet',
@@ -1112,6 +1165,7 @@ export const EVENT_CHANNELS = [
   'theme.changed',
   'updates.changed',
   'prefs.changed',
+  'notify.chime',
   'sessions.snapshot',
   'project.updated',
   'projects.changed',

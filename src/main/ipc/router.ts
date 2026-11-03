@@ -14,6 +14,8 @@ import type {
   IpcInvokeMap,
   LayoutView,
   MarketplaceView,
+  NotificationSoundData,
+  NotificationSoundGroup,
   OverlayInfo,
   PluginSettingsSaveResult,
   PluginView,
@@ -475,6 +477,13 @@ export interface ProjectSettingsHandlerDeps {
   setTabExit(value: unknown): void
   setClaudeTabOnOpen(value: unknown): void
   setSessionGist(value: unknown): void
+  setNotificationSounds(value: unknown): void
+  /** The "Sound" dropdown: built-ins, then the OS sound folders as listed now (SystemSounds.groups). */
+  notificationSoundOptions(): Promise<NotificationSoundGroup[]>
+  /** AppearanceService.setNotificationSound checks the id (a system one against a fresh listing). */
+  setNotificationSound(value: unknown): Promise<void>
+  /** A system sound's bytes for an id main finds in a fresh listing (SystemSounds.read); null otherwise. */
+  notificationSoundData(id: unknown): Promise<NotificationSoundData | null>
   setSessionFilesShown(value: unknown): void
   setZoneAutoHide(value: unknown): void
   setMinTerminalWidth(value: unknown): void
@@ -524,6 +533,16 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   router.handleProject('settings.sessionGistSet', (_ctx, payload) => {
     deps.setSessionGist(fields('settings.sessionGistSet', payload).value)
   })
+  router.handleProject('settings.notificationSoundsSet', (_ctx, payload) => {
+    deps.setNotificationSounds(fields('settings.notificationSoundsSet', payload).value)
+  })
+  router.handleProject('settings.notificationSoundOptions', () => deps.notificationSoundOptions())
+  router.handleProject('settings.notificationSoundSet', (_ctx, payload) =>
+    deps.setNotificationSound(fields('settings.notificationSoundSet', payload).value)
+  )
+  // The page plays a picked system sound (a chime, the Play button) with these bytes. The id is
+  // only a claim: main finds it in a fresh listing of its own folders or answers null.
+  router.handleProject('notify.soundData', (_ctx, payload) => deps.notificationSoundData(fields('notify.soundData', payload).id))
   router.handleProject('settings.sessionFilesShownSet', (_ctx, payload) => {
     deps.setSessionFilesShown(fields('settings.sessionFilesShownSet', payload).value)
   })

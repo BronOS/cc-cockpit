@@ -3,7 +3,14 @@
 // values in plain variables.
 import { describe, expect, it } from 'vitest'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
-import { AppearanceService, claudeTabOnOpenOf, confirmTabCloseOf, sessionGistOf, tabCloseSideOf } from '../../src/main/settings/appearance-service'
+import {
+  AppearanceService,
+  claudeTabOnOpenOf,
+  confirmTabCloseOf,
+  notificationSoundsOf,
+  sessionGistOf,
+  tabCloseSideOf
+} from '../../src/main/settings/appearance-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
 import { sessionFilesShownOf } from '../../src/shared/session-files'
 import { minTerminalWidthOf, zoneAutoHideOf } from '../../src/shared/zone-auto-hide'
@@ -22,6 +29,10 @@ function rig(initialOverrides: unknown = {}) {
     claudeTabOnOpen: undefined as unknown,
     sessionGist: undefined as unknown,
     sessionGistChanged: 0,
+    notificationSounds: undefined as unknown,
+    notificationSound: undefined as unknown,
+    /** The system sound ids a fresh listing would hold now. */
+    systemSounds: new Set<string>(),
     confirmTabClose: undefined as unknown,
     tabCloseSide: undefined as unknown,
     sessionFilesShown: undefined as unknown,
@@ -73,6 +84,19 @@ function rig(initialOverrides: unknown = {}) {
     },
     sessionGistChanged: () => {
       state.sessionGistChanged++
+    },
+    notificationSounds: {
+      get: () => state.notificationSounds,
+      set: (next) => {
+        state.notificationSounds = next
+      }
+    },
+    notificationSound: {
+      get: () => state.notificationSound,
+      set: (next) => {
+        state.notificationSound = next
+      },
+      systemHas: async (id) => state.systemSounds.has(id)
     },
     confirmTabClose: {
       get: () => state.confirmTabClose,
@@ -395,6 +419,59 @@ describe('session gist', () => {
     expect(r.state.sessionGistChanged).toBe(2)
     expect(() => r.service.setSessionGist('true')).toThrow('give true or false')
     expect(r.state.sessionGistChanged).toBe(2)
+  })
+})
+
+describe('notification sounds', () => {
+  it('is on by default, and only an explicit false turns it off', () => {
+    const r = rig()
+    expect(r.service.view(P).notificationSounds).toBe(true)
+    // app.json is user-writable: a damaged value reads as on, the default a plugin author expects.
+    for (const damaged of ['false', 0, null, 'no']) expect(notificationSoundsOf(damaged)).toBe(true)
+    r.state.notificationSounds = false
+    expect(r.service.view(P).notificationSounds).toBe(false)
+    expect(notificationSoundsOf(undefined)).toBe(true)
+  })
+
+  it('stores true and false, and refuses anything else', () => {
+    const r = rig()
+    r.service.setNotificationSounds(false)
+    expect(r.state.notificationSounds).toBe(false)
+    r.service.setNotificationSounds(true)
+    expect(r.state.notificationSounds).toBe(true)
+    expect(() => r.service.setNotificationSounds('false')).toThrow('give true or false')
+    expect(() => r.service.setNotificationSounds(undefined)).toThrow('give true or false')
+    expect(r.state.notificationSounds).toBe(true)
+  })
+})
+
+describe('notification sound', () => {
+  it('is the Chime by default, and a damaged or unknown value reads as the Chime', () => {
+    const r = rig()
+    expect(r.service.view(P).notificationSound).toBe('builtin:chime')
+    for (const damaged of [42, null, '', 'builtin:siren', 'chime', '/usr/share/sounds/x.oga', 'system:x:a.oga', 'system:0:../a.oga']) {
+      r.state.notificationSound = damaged
+      expect(r.service.view(P).notificationSound).toBe('builtin:chime')
+    }
+    r.state.notificationSound = 'builtin:marimba'
+    expect(r.service.view(P).notificationSound).toBe('builtin:marimba')
+    // A system id is kept as stored, even when its file went away: Settings shows it as missing.
+    r.state.notificationSound = 'system:1:gone.wav'
+    expect(r.service.view(P).notificationSound).toBe('system:1:gone.wav')
+  })
+
+  it('stores a built-in or a system sound main lists now, and refuses anything else', async () => {
+    const r = rig()
+    await r.service.setNotificationSound('builtin:bell')
+    expect(r.state.notificationSound).toBe('builtin:bell')
+    r.state.systemSounds.add('system:0:freedesktop/stereo/bell.oga')
+    await r.service.setNotificationSound('system:0:freedesktop/stereo/bell.oga')
+    expect(r.state.notificationSound).toBe('system:0:freedesktop/stereo/bell.oga')
+    await expect(r.service.setNotificationSound('system:0:not-listed.oga')).rejects.toThrow('no longer there')
+    for (const bad of ['builtin:siren', '/etc/passwd', 'system:0:../../etc/passwd', 7, undefined]) {
+      await expect(r.service.setNotificationSound(bad)).rejects.toThrow('not a notification sound')
+    }
+    expect(r.state.notificationSound).toBe('system:0:freedesktop/stereo/bell.oga')
   })
 })
 

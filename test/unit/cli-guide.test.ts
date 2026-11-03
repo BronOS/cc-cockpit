@@ -9,6 +9,15 @@ import { MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_DESCRIPTION, MAX_SKILL_DIRS
 import { MAX_SKILLS } from '../../src/shared/manifest'
 import { MAX_APP_VALUE_LENGTH, MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/shared/plugin-storage'
 import { MAX_FILES } from '../../src/main/sessions/status-reducer'
+import { MAX_NOTIFICATIONS_PER_WINDOW, NOTIFY_WINDOW_MS } from '../../src/main/plugins/host-manager'
+import {
+  MAX_NOTIFY_ACTION_LABEL,
+  MAX_NOTIFY_TEXT,
+  MAX_NOTIFY_TITLE,
+  NOTIFY_ACTION_WAIT_MS,
+  NOTIFY_CHIME_INTERVAL_MS
+} from '../../src/shared/notify'
+import { BUILTIN_SOUNDS, MAX_SOUND_ID_LENGTH } from '../../src/shared/notify-sound'
 
 function capture(): { out: { stdout: (t: string) => void; stderr: (t: string) => void }; stdout: string[]; stderr: string[] } {
   const stdout: string[] = []
@@ -181,6 +190,41 @@ describe('guide drift guards', () => {
       expect(design, `design.md: ${limit}`).toContain(limit)
     }
     expect(plugins).toContain(`at most ${MAX_SKILLS} per plugin`)
+  })
+
+  it('states the ctx.notify limits of shared/notify.ts and host-manager.ts in the api topic and docs/design.md', () => {
+    const flat = (text: string): string => text.replace(/\s+/g, ' ')
+    const api = flat(topic('api'))
+    const design = flat(readFileSync(new URL('../../docs/design.md', import.meta.url), 'utf8'))
+    expect(NOTIFY_WINDOW_MS).toBe(60_000)
+    for (const text of [api, design]) {
+      expect(text).toContain(`cut at ${MAX_NOTIFY_TEXT} characters`)
+      expect(text).toContain(`1 to ${MAX_NOTIFY_TITLE} characters`)
+      expect(text).toContain(`1 to ${MAX_NOTIFY_ACTION_LABEL} characters`)
+      expect(text).toContain(`after ${NOTIFY_ACTION_WAIT_MS / 60_000} minutes`)
+      expect(text).toContain(`one chime per ${NOTIFY_CHIME_INTERVAL_MS / 1000} s per window`)
+    }
+    expect(api).toContain(`at most ${MAX_NOTIFICATIONS_PER_WINDOW} a minute`)
+    expect(design).toContain(`at most ${MAX_NOTIFICATIONS_PER_WINDOW} per minute`)
+  })
+
+  it('documents the "format": "sound" field with every built-in id, in the settings topic and docs/design.md', () => {
+    const flat = (text: string): string => text.replace(/\s+/g, ' ')
+    const settings = flat(topic('settings-secrets'))
+    const design = flat(readFileSync(new URL('../../docs/design.md', import.meta.url), 'utf8'))
+    for (const text of [settings, design]) {
+      expect(text).toContain('"format": "sound"')
+      expect(text).toContain('"App default"')
+      // The ids a plugin may give as the field's default (validate.ts isSoundFieldDefault).
+      for (const s of BUILTIN_SOUNDS) expect(text).toContain(`\`builtin:${s.name}\``)
+    }
+    // ctx.notify's sound id, in the api topic and the SDK types.
+    const api = flat(topic('api'))
+    expect(api).toContain('`sound: "<id>"`')
+    expect(flat(readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8'))).toContain(
+      `At most ${MAX_SOUND_ID_LENGTH} characters`
+    )
+    expect(design).toContain(`a sound id of at most ${MAX_SOUND_ID_LENGTH} characters`)
   })
 
   it('documents the panel SDK members', () => {

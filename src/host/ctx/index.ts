@@ -28,6 +28,7 @@ import {
 import { errorText, toError } from '../../shared/error-text'
 import { normalizeCliResult, type PluginCliResult } from '../../shared/plugin-cli'
 import { capText } from '../../shared/text'
+import { MAX_NOTIFY_TEXT, NOTIFY_ACTION_WAIT_MS, notifyOutcomeOf, parseNotifyOptions, type NotifyOutcome } from '../../shared/notify'
 import type { HostPluginSpec } from '../loader'
 import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
@@ -69,8 +70,11 @@ export interface ContextDeps {
 }
 
 const MAX_LOG_LINE = 4000
-/** Notification text as main shows it; longer text is cut in main too, this saves the round trip. */
-const MAX_NOTIFY_LENGTH = 500
+/**
+ * How much longer than main's own bound (NOTIFY_ACTION_WAIT_MS) the host waits for its answer to a
+ * notify with an action: main always answers by then, this only covers a main that never does.
+ */
+const NOTIFY_RPC_MARGIN_MS = 30_000
 
 /** One log line from console-style arguments; capped so one call cannot flood main's log. */
 export function formatLogArgs(args: readonly unknown[]): string {
@@ -104,6 +108,8 @@ interface Runtime {
   children: Set<ChildProcess>
   /** Settles each of this ctx's ctx.oauth calls still waiting on main (rejected at dispose). */
   oauthCalls: Set<(err: Error) => void>
+  /** Settles each of this ctx's ctx.notify calls waiting for a click (`{ clicked: false }` at dispose). */
+  notifyCalls: Set<() => void>
   /** This ctx called ctx.webview.navigate: main has views of it to close at dispose. */
   webviewUsed: boolean
   /** This ctx called ctx.panels.header: main has a header of it to clear at dispose. */
@@ -171,6 +177,7 @@ export class HostContexts {
       cliCalls: new Set(),
       children: new Set(),
       oauthCalls: new Set(),
+      notifyCalls: new Set(),
       webviewUsed: false,
       headerUsed: false,
       dataDirReady: false,
@@ -296,10 +303,36 @@ export class HostContexts {
       }
     }
 
-    const notify = (text: string): Promise<void> =>
+    // ctx.notify: main shows it (and rings the chime for `sound`). The options are checked here with
+    // main's own rule (shared/notify.ts) so a mistake is a TypeError at the call site; main checks
+    // them again. Without an action the call resolves once main showed it, as before options
+    // existed: an `await ctx.notify(...)` in a command or a `ccc` handler must not start waiting for
+    // a click nobody can give. With one it waits for main's answer: a click, or the notification's
+    // end (main's bound is NOTIFY_ACTION_WAIT_MS). Bound to this ctx like oauth: dispose resolves it
+    // `{ clicked: false }` at once (not a rejection: `void ctx.notify(...)` must not turn into an
+    // unhandled rejection when the plugin reloads) and tells main, which closes the notification;
+    // a click main reports after that reaches nobody.
+    const notify = (text: string, options?: unknown): Promise<NotifyOutcome> =>
       guardAsync(async () => {
         if (typeof text !== 'string' || text === '') throw new TypeError('notify needs some text')
-        await call('notify', { pluginId: spec.id, text: text.slice(0, MAX_NOTIFY_LENGTH) })
+        const checked = parseNotifyOptions(options)
+        const params = {
+          pluginId: spec.id,
+          // Longer text is cut in main too; this saves the round trip.
+          text: text.slice(0, MAX_NOTIFY_TEXT),
+          ...(options !== undefined ? { options: checked } : {})
+        }
+        if (!checked.action) {
+          await call('notify', params)
+          return { clicked: false }
+        }
+        return new Promise<NotifyOutcome>((resolve, reject) => {
+          const gone = (): void => resolve({ clicked: false })
+          rt.notifyCalls.add(gone)
+          call('notify', params, { timeoutMs: NOTIFY_ACTION_WAIT_MS + NOTIFY_RPC_MARGIN_MS })
+            .then((answer) => resolve(notifyOutcomeOf(answer)), reject)
+            .finally(() => rt.notifyCalls.delete(gone))
+        })
       })
 
     // ctx.openExternal: a request to main, which opens the system browser (host-api.ts openExternal).
@@ -436,6 +469,7 @@ export class HostContexts {
     this.runtimes.delete(pluginId)
     if (
       rt.oauthCalls.size > 0 ||
+      rt.notifyCalls.size > 0 ||
       rt.webviewUsed ||
       rt.headerUsed ||
       (rt.spec.webviewPanels?.length ?? 0) > 0 ||
@@ -449,7 +483,8 @@ export class HostContexts {
       // gone), and a view only after a navigate; a plugin with webview panels always
       // tells, since its panel reports placements before any navigate and main keeps them. A ctx
       // that set a panel header tells too: main clears it, or its buttons would stay up with no
-      // onAction listener behind them (an unload for bad settings keeps the host running).
+      // onAction listener behind them (an unload for bad settings keeps the host running). So does a
+      // ctx with a notification waiting for a click: main closes it (HostManager, NoticeWaits).
       this.deps.emit?.('plugin.disposed', { pluginId })
     }
     if (rt.oauthCalls.size > 0) {
@@ -457,6 +492,8 @@ export class HostContexts {
       for (const reject of rt.oauthCalls) reject(gone)
       rt.oauthCalls.clear()
     }
+    for (const settle of rt.notifyCalls) settle()
+    rt.notifyCalls.clear()
     rt.scheduler.dispose()
     rt.settings.clear()
     // A `ccc <name>` still running for this copy answers now (exit 1) and its handler's signal

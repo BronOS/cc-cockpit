@@ -180,7 +180,8 @@ script served at `/__sdk/panel.js`. See the `panels` topic.
 ## Settings, secrets, sign-in
 
 See the `settings-secrets` topic. In short: JSON Schema forms from the manifest, a `secret`
-format for tokens, a `multiline` format for a text area, `ctx.secrets` for stored credentials and
+format for tokens, a `multiline` format for a text area, a `sound` format for a notification sound
+picker, `ctx.secrets` for stored credentials and
 `ctx.oauth` for a PKCE sign-in.
 
 ## Built-in plugins

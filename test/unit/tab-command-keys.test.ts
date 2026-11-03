@@ -155,6 +155,8 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
       claudeTabOnOpen: { get: () => undefined, set: () => {} },
       sessionGist: { get: () => undefined, set: () => {} },
       sessionGistChanged: () => {},
+      notificationSounds: { get: () => undefined, set: () => {} },
+      notificationSound: { get: () => undefined, set: () => {}, systemHas: async () => false },
       confirmTabClose: { get: () => undefined, set: () => {} },
       tabCloseSide: { get: () => undefined, set: () => {} },
       sessionFilesShown: { get: () => undefined, set: () => {} },

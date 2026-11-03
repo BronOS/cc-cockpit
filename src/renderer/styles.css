@@ -2798,7 +2798,10 @@ ul.settings-alert {
   align-items: center;
   padding: 6px 0;
 }
-.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > :not(label):not(input):not(select):not(textarea):not(.settings-secret) {
+/* In :where(), weightless: each excluded kind in a :not() adds specificity, and with
+   .settings-sound added this rule outweighed the description rule below, so a description ran the
+   full width under its field's control (a long one showed through the sound picker, 2026-11-03). */
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > :where(:not(label):not(input):not(select):not(textarea):not(.settings-secret):not(.settings-sound)) {
   grid-column: 1 / -1;
 }
 /* A labelled field's description sits under its label, and the field beside both (centred on
@@ -2811,13 +2814,13 @@ ul.settings-alert {
   grid-column: 1;
   grid-row: 2;
 }
-.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label ~ :is(input, select, .settings-secret) {
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label ~ :is(input, select, .settings-secret, .settings-sound) {
   grid-column: 2;
   grid-row: 1;
 }
 /* Spanning only when there is a description: over an empty second row the field's height would be
    shared between the two, and the label would sit above the field's middle. */
-.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label + .field-description ~ :is(input, select, .settings-secret) {
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label + .field-description ~ :is(input, select, .settings-secret, .settings-sound) {
   grid-row: 1 / span 2;
 }
 /* A multi-line field ("format": "multiline"): the full width under its label and description,
@@ -2848,6 +2851,18 @@ ul.settings-alert {
   margin-right: auto;
 }
 .settings-plugin-form .settings-secret input {
+  flex: 1;
+  min-width: 0;
+}
+/* A sound field (plugin-form-templates.tsx SoundWidget): the dropdown and its Play button share
+   the field column. */
+.settings-plugin-form .settings-sound {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-plugin-form .settings-sound select {
   flex: 1;
   min-width: 0;
 }

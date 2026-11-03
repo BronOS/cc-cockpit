@@ -39,7 +39,8 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 - Electron-only modules sit behind adapter files so logic stays testable under vitest:
   `node-pty` only in `main/pty/node-pty-backend.ts` (fake: `test/fakes/fake-pty-backend.ts`),
   `utilityProcess` only in `main/plugins/host-process.ts`; `WebContentsView` for plugin web views only in
-  `main/webview/electron-webview.ts` (fake in `test/unit/webview-manager.test.ts`); `safeStorage` is imported only by
+  `main/webview/electron-webview.ts` (fake in `test/unit/webview-manager.test.ts`); `Notification` only in
+  `main/notifications/electron-notification.ts` (logic and test backend in `notifier.ts`); `safeStorage` is imported only by
   `main/index.ts` and reached through `main/secrets/secret-store.ts`. Do not import them elsewhere
   (rule stated in `main/index.ts`).
 - `CC_COCKPIT_DATA_DIR` overrides the data dir (default: Electron `userData`); tests always set it.

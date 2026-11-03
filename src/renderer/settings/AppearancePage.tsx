@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { AppearanceView, CccCommandView, KeyBindingRow, UpdateState } from '../../shared/ipc'
+import type { AppearanceView, CccCommandView, KeyBindingRow, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
 import { chordFromEvent } from '../../shared/keys'
 import { SESSION_FILES_SHOWN_RANGE } from '../../shared/session-files'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
 import { captureKeys, displayChord, fuzzyFilter } from '../commands/keybindings'
 import { SearchIcon } from './icons'
+import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { NumberField, TerminalFontSettings } from './TerminalFontSettings'
 import { WindowBackgroundSettings } from './WindowBackgroundSettings'
@@ -25,7 +26,7 @@ const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
  * Settings › Appearance and keys (design §6): the app-wide theme, the see-through window background
  * (WindowBackgroundSettings), what a tab does when its process
  * exits, whether a project that opens empty gets a Claude tab, whether Haiku writes a gist of each
- * Claude session, whether closing a running tab asks first, which end of a tab its close button sits at, whether the side zones give way to a narrow
+ * Claude session, whether plugin notifications ring a sound and which (NotificationSoundRow), whether closing a running tab asks first, which end of a tab its close button sits at, whether the side zones give way to a narrow
  * terminal and at what width, the app-wide entries of the new-tab menu, the
  * terminals' font (TerminalFontSettings), and the keybinding list with overrides. A theme change goes through main, which tells every window (and so every plugin
  * panel and terminal). A key is changed by pressing the new chord in a field that records it; main
@@ -37,6 +38,8 @@ export function AppearancePage(): React.JSX.Element {
   const { busy, error, run, setError } = useAction()
   const ccc = useLoaded(loadCcc)
   const updates = useLoaded(loadUpdates)
+  const sounds = useLoaded(loadSoundGroups)
+  const playSound = usePlaySound()
   // A toggle flipped in another window arrives as an event; re-read instead of showing it stale.
   const reloadUpdates = updates.reload
   useEffect(() => window.cockpit.on('updates.changed', () => void reloadUpdates()), [reloadUpdates])
@@ -250,6 +253,44 @@ export function AppearancePage(): React.JSX.Element {
             </div>
           </Group>
 
+          <Group title="Notifications">
+            <div className="settings-card">
+              <Row
+                label="Notification sounds"
+                htmlFor={`${id}-notification-sounds`}
+                help="A short sound from the window (the one picked below, or the one a plugin's own settings pick) when a plugin's notification asks for a sound (a meeting reminder), at most one every 5 seconds. Off: such notifications show without any sound."
+              >
+                <Switch
+                  id={`${id}-notification-sounds`}
+                  checked={data.notificationSounds}
+                  disabled={busy !== null}
+                  onChange={(e) => {
+                    const value = e.target.checked
+                    void run('notificationSounds', () =>
+                      window.cockpit.invoke('settings.notificationSoundsSet', { value })
+                    ).then(reload)
+                  }}
+                />
+              </Row>
+              <NotificationSoundRow
+                id={`${id}-notification-sound`}
+                value={data.notificationSound}
+                groups={sounds.data}
+                disabled={busy !== null || !data.notificationSounds}
+                onChange={(value) => {
+                  void run('notificationSound', () => window.cockpit.invoke('settings.notificationSoundSet', { value })).then(
+                    () => {
+                      reload()
+                      // A file may have gone since the list was read: show the folders as they are now.
+                      sounds.reload()
+                    }
+                  )
+                }}
+                onPlay={() => playSound(data.notificationSound)}
+              />
+            </div>
+          </Group>
+
           <Group
             title="Commands in the new-tab menu"
             description={
@@ -385,6 +426,42 @@ export function AppearancePage(): React.JSX.Element {
         </>
       )}
     </section>
+  )
+}
+
+/**
+ * The notification "Sound" dropdown and its Play button: Built-in, then a group per OS sound folder
+ * (main lists them; names only; sound-options.tsx, shared with a plugin's `"format": "sound"`
+ * field). A picked system sound that is gone keeps its own option, marked missing; it rings the
+ * Chime meanwhile.
+ */
+function NotificationSoundRow(props: {
+  id: string
+  value: string
+  groups: NotificationSoundGroup[] | null
+  disabled: boolean
+  onChange: (value: string) => void
+  onPlay: () => void
+}): React.JSX.Element {
+  return (
+    <Row
+      label="Sound"
+      htmlFor={props.id}
+      help={`The app's sound: what a notification that asks for a sound rings, and the "App default" of a plugin's own sound setting. A built-in tone, or a sound file from the system's sound folders. A file that goes away rings the Chime.`}
+    >
+      <Select
+        id={props.id}
+        aria-label="Sound"
+        value={props.value}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        <SoundOptions value={props.value} groups={props.groups} />
+      </Select>
+      <button type="button" className="quiet" disabled={props.disabled} onClick={props.onPlay}>
+        <span aria-hidden="true">▶</span> Play
+      </button>
+    </Row>
   )
 }
 

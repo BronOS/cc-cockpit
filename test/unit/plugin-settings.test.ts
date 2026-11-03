@@ -124,6 +124,41 @@ describe('compileSettingsSchema', () => {
     expect(validateSettings(s, { profile: 5 }).ok).toBe(false)
   })
 
+  it('checks a "format": "sound" field: a plain string with "" or a built-in default, anywhere', () => {
+    const ok = {
+      type: 'object',
+      properties: {
+        reminder: { type: 'string', format: 'sound', title: 'Reminder sound', description: 'd', default: '', $comment: 'c' },
+        alarm: { type: 'string', format: 'sound', default: 'builtin:bell' },
+        bare: { type: 'string', format: 'sound' },
+        perCalendar: { type: 'array', items: { type: 'object', properties: { sound: { type: 'string', format: 'sound' } } } }
+      }
+    }
+    expect(compileSettingsSchema(ok).ok).toBe(true)
+    // Not checked against the app's sounds: main does that when the plugin passes it to ctx.notify.
+    const value = { reminder: 'system:0:x/y.oga', perCalendar: [{ sound: 'anything' }] }
+    expect(validateSettings(ok, value).ok).toBe(true)
+    const field = (f: Record<string, unknown>): object => ({ type: 'object', properties: { s: { format: 'sound', ...f } } })
+    expect(errorsOf(field({ type: 'integer' }))[0]).toBe('/properties/s: a "format": "sound" field must have "type": "string"')
+    expect(errorsOf(field({}))[0]).toContain('must have "type": "string"')
+    expect(errorsOf(field({ type: ['string', 'null'] }))[0]).toContain('must have "type": "string"')
+    // A system file differs per machine; an unknown built-in or another type is no sound.
+    for (const bad of ['system:0:freedesktop/stereo/bell.oga', 'builtin:kazoo', 'chime', null]) {
+      expect(errorsOf(field({ type: 'string', default: bad }))[0]).toContain(`"default" is "" (the app's sound) or a built-in id`)
+    }
+    for (const key of ['enum', 'maxLength', 'const', 'examples', 'oneOf']) {
+      const extra = key === 'oneOf' ? [{ const: 'builtin:bell' }] : key === 'maxLength' ? 10 : ['builtin:bell']
+      expect(errorsOf(field({ type: 'string', [key]: extra })).join()).toContain(`not "${key}"`)
+    }
+    // Nested: the same rules in `items` and a nested object.
+    expect(errorsOf({ type: 'object', properties: { a: { type: 'array', items: { type: 'number', format: 'sound' } } } })[0]).toBe(
+      '/properties/a/items: a "format": "sound" field must have "type": "string"'
+    )
+    // "sound" as data (a default, an enum value) or as a property name is no format keyword.
+    expect(compileSettingsSchema({ type: 'object', properties: { format: { type: 'string', enum: ['sound'] } } }).ok).toBe(true)
+    expect(compileSettingsSchema({ type: 'object', properties: { a: { type: 'object', default: { format: 'sound' } } } }).ok).toBe(true)
+  })
+
   it('does not honour $data', () => {
     const s = { type: 'object', properties: { a: { type: 'integer' }, b: { minimum: { $data: '1/a' } } } }
     // With $data off ajv rejects the non-numeric minimum at meta-schema time rather than resolving it.

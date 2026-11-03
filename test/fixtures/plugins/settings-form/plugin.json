@@ -69,6 +69,13 @@
             },
             "default": {}
           },
+          "alert": {
+            "type": "string",
+            "format": "sound",
+            "title": "Alert sound",
+            "description": "What this plugin's notifications ring: a long description on purpose, so it wraps over several lines and must stay in the label column, never under the dropdown or its Play button.",
+            "default": ""
+          },
           "limit": {
             "type": "integer",
             "title": "Limit",

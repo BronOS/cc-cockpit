@@ -23,7 +23,9 @@
 // What a host may ask of main (Task 26), each checked against THIS host's own project and plugin
 // list, whatever ids the request names:
 //   commands.register / commands.unregister  only ids the plugin's manifest declares
-//   notify                                   rate-capped per plugin, text capped
+//   notify                                   rate-capped per plugin, text capped, options checked
+//                                            (shared/notify.ts); with an action it waits for the
+//                                            click, ended with the plugin's ctx or the process
 // plus sessions, badge and overlay (Task 27), handled by a HostApi (host-api.ts) built per host
 // process with the same scope, revoked (every request refused) as soon as the host starts
 // stopping or its window closes, and disposed when that process goes.
@@ -50,6 +52,8 @@ import type { CliContribution, OpenFileContribution, PluginManifest } from '../.
 import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
 import { OPEN_FILE_PICK } from '../../shared/services'
 import { capText } from '../../shared/text'
+import { MAX_NOTIFY_TEXT, parseNotifyOptions, type NotifyOutcome } from '../../shared/notify'
+import type { PluginNotice } from '../notifications/notifier'
 import type { PluginCommandDef } from '../commands/command-registry'
 import type { Env } from '../env/login-env'
 import type { LayoutService, PluginPanelDef } from '../layout/layout-service'
@@ -99,7 +103,6 @@ export const MAX_LOG_LINES_PER_WINDOW = 100
  */
 export const NOTIFY_WINDOW_MS = 60_000
 export const MAX_NOTIFICATIONS_PER_WINDOW = 10
-const MAX_NOTIFY_TEXT = 500
 
 /** How long main waits for a host to answer `activate` for `count` plugins before killing it. */
 export function activateBudgetMs(count: number, activateTimeoutMs = ACTIVATE_TIMEOUT_MS): number {
@@ -237,6 +240,11 @@ export interface HostSource {
   pluginId: string
 }
 
+/** Who a ctx.notify is for: main's own record of the host's project and window, never the host's word. */
+export interface HostNotifySource extends HostSource {
+  windowId: number
+}
+
 export interface HostCommandSink {
   add(projectId: string, pluginId: string, def: PluginCommandDef): void
   /** Remove every command of the plugin in the project. */
@@ -310,8 +318,13 @@ export interface HostManagerDeps {
   serviceProviders?(projectId: string): Record<string, string>
   /** The project's command registry: commands appear when a plugin registers them. */
   commands?: HostCommandSink
-  /** `ctx.notify`: show a system notification. */
-  notify?(text: string, source: HostSource): void
+  /**
+   * `ctx.notify`: show a system notification (checked: text capped, options parsed). For one with
+   * an `action`, resolve true on a click, false when it ends; `signal` aborts when the plugin's ctx
+   * or its host process ends first (the notification is then closed). Undefined, or a request
+   * without an action: nothing to wait for, the call answers `{ clicked: false }` at once.
+   */
+  notify?(notice: PluginNotice, source: HostNotifySource, signal: AbortSignal): Promise<boolean> | void
   /** `ctx.log`: append a line to `<data>/logs/<pluginId>.log` (rotation is the writer's). */
   pluginLog?(entry: PluginLogEntry): void
   /** Sessions, badges and overlays for plugins (host-api.ts). Without it those requests are unknown methods. */
@@ -382,6 +395,8 @@ interface HostRecord {
   cliInFlight: Map<string, number>
   /** ctx.notify rate cap, per plugin id: start of its current window and notifications shown in it. */
   notifyWindows: Map<string, { start: number; count: number }>
+  /** The ctx.notify calls of `proc` waiting for a click (one per process, like `api`). */
+  notices?: NoticeWaits
   /** Crash times within the last CRASH_WINDOW_MS. */
   crashes: number[]
   /** Crashes in a row, for the backoff; reset by a host that lived CRASH_WINDOW_MS. */
@@ -467,6 +482,7 @@ export class HostManager {
     // and type into the NEW window's tabs. stopProcess revokes too; this also covers a close that
     // waits behind an earlier one (`previous` below) before stopProcess runs.
     rec.api?.revoke()
+    rec.notices?.endAll()
     this.clearTimer(rec)
     this.closing.add(rec)
     const stop = async (): Promise<void> => {
@@ -947,26 +963,32 @@ export class HostManager {
           (event, params) => rpc.emit(event, params)
         )
       : undefined
+    const notices = new NoticeWaits()
     const rpc = new RpcEndpoint({
       port: proc.port,
       // Host -> main requests. Panel ports go the other way only (sendPanelPort).
       handlers: {
         'commands.register': (params) => this.registerCommand(rec, ids, params),
         'commands.unregister': (params) => this.unregisterCommand(rec, ids, params),
-        notify: (params) => this.notifyFromHost(rec, ids, params),
+        notify: (params) => this.notifyFromHost(rec, ids, notices, params),
         ...api?.handlers
       },
       onEvent: (event, params) => {
         // A plugin's ctx ended inside the host (any reason): its sign-ins end too. This process's
         // own HostApi, not rec.api: a host being replaced must not touch the next one's calls.
-        if (event === 'plugin.disposed') api?.contextDisposed(params)
-        else this.onEvent(rec, ids, event, params)
+        // Its notifications waiting for a click close too (the host already answered the call).
+        if (event === 'plugin.disposed') {
+          api?.contextDisposed(params)
+          const { pluginId } = (params ?? {}) as Record<string, unknown>
+          if (typeof pluginId === 'string') notices.endPlugin(pluginId)
+        } else this.onEvent(rec, ids, event, params)
       },
       log: (m) => this.log(`plugin host ${rec.projectId}: ${m}`)
     })
     rec.proc = proc
     rec.rpc = rpc
     rec.api = api
+    rec.notices = notices
     rec.stopping = false
     rec.startedAt = Date.now()
     rec.exited = new Promise((resolve) => {
@@ -1311,6 +1333,7 @@ export class HostManager {
     // refused from here on (HostApi.revoke). They check only the project id, and a window
     // reopened during the grace makes that project id another window's.
     rec.api?.revoke()
+    rec.notices?.endAll()
     try {
       await rpc?.call('deactivate', {}, { timeoutMs: DEACTIVATE_GRACE_MS })
     } catch (err) {
@@ -1420,12 +1443,15 @@ export class HostManager {
     return { plugin, id }
   }
 
-  private notifyFromHost(rec: HostRecord, ids: Set<string>, params: unknown): null {
+  private async notifyFromHost(rec: HostRecord, ids: Set<string>, notices: NoticeWaits, params: unknown): Promise<NotifyOutcome> {
     // Like registerCommand: a host whose window closed speaks for no window any more.
     if (rec.closed) throw new Error('notify: the window is closing')
-    const { pluginId, text } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, text, options } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || !ids.has(pluginId)) throw new Error('notify: unknown plugin')
     if (typeof text !== 'string' || text.trim() === '') throw new Error('notify: text must be a non-empty string')
+    // The host's ctx checked these with the same rule; checked again, a host can send anything.
+    // Before the rate count: a refused call spends no budget.
+    const checked = parseNotifyOptions(options)
     if (!this.deps.notify) throw new Error('notify: notifications are not available')
     const now = Date.now()
     let win = rec.notifyWindows.get(pluginId)
@@ -1438,8 +1464,19 @@ export class HostManager {
       throw new Error(`notify: more than ${MAX_NOTIFICATIONS_PER_WINDOW} notifications in ${NOTIFY_WINDOW_MS / 1000} s`)
     }
     win.count++
-    this.deps.notify(capText(text, MAX_NOTIFY_TEXT), { projectId: rec.projectId, pluginId })
-    return null
+    const notice: PluginNotice = { text: capText(text, MAX_NOTIFY_TEXT), ...checked }
+    // The window main spawned this host for; the chime rings there, whatever the request says.
+    const source = { projectId: rec.projectId, pluginId, windowId: rec.windowId }
+    if (!notice.action) {
+      this.deps.notify(notice, source, new AbortController().signal)
+      return { clicked: false }
+    }
+    const wait = notices.start(pluginId)
+    try {
+      return { clicked: (await this.deps.notify(notice, source, wait.signal)) === true }
+    } finally {
+      notices.done(pluginId, wait)
+    }
   }
 
   /** The plugin's settings, or a failing result when the settings service throws. */
@@ -1518,8 +1555,10 @@ export class HostManager {
     }
   }
 
-  /** The process is gone or going: its overlays are dismissed and its badges cleared. */
+  /** The process is gone or going: its overlays are dismissed, its badges cleared, its notifications waiting for a click closed. */
   private disposeApi(rec: HostRecord): void {
+    rec.notices?.endAll()
+    rec.notices = undefined
     // Badges live per project and panel key in the layout. When the window was reopened while
     // this host was still deactivating, a newer record serves the project; its launch waits for
     // this close (`closes`), but whatever it has badged is left to it all the same.
@@ -1538,6 +1577,45 @@ export class HostManager {
   private clearTimer(rec: HostRecord): void {
     if (rec.restartTimer !== undefined) clearTimeout(rec.restartTimer)
     rec.restartTimer = undefined
+  }
+}
+
+/**
+ * The ctx.notify calls of ONE host process that wait for a click, per plugin. The plugin's ctx
+ * ending (`plugin.disposed`) aborts its own; the process stopping or its window closing aborts all
+ * (the notifications close and each call answers `{ clicked: false }`, to nobody if the process is
+ * gone). A fresh one per process, so a host being replaced never ends the next one's.
+ */
+class NoticeWaits {
+  private readonly byPlugin = new Map<string, Set<AbortController>>()
+  private ended = false
+
+  start(pluginId: string): AbortController {
+    const wait = new AbortController()
+    if (this.ended) wait.abort()
+    else {
+      let set = this.byPlugin.get(pluginId)
+      if (!set) this.byPlugin.set(pluginId, (set = new Set()))
+      set.add(wait)
+    }
+    return wait
+  }
+
+  done(pluginId: string, wait: AbortController): void {
+    const set = this.byPlugin.get(pluginId)
+    set?.delete(wait)
+    if (set?.size === 0) this.byPlugin.delete(pluginId)
+  }
+
+  endPlugin(pluginId: string): void {
+    const set = this.byPlugin.get(pluginId)
+    this.byPlugin.delete(pluginId)
+    for (const wait of set ?? []) wait.abort()
+  }
+
+  endAll(): void {
+    this.ended = true
+    for (const id of [...this.byPlugin.keys()]) this.endPlugin(id)
   }
 }
 

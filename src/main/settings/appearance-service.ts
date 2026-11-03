@@ -1,7 +1,9 @@
 // "Appearance and keys" in the settings overlay (design §6): the app-wide theme, the
 // keybinding overrides, what a tab does when its process exits (`tabExit`) and whether a project
 // that opens empty gets a Claude tab (`claudeTabOnOpen`), whether Haiku writes a gist of each Claude
-// session (`sessionGist`, main/sessions/session-gist.ts), whether closing a running tab asks first
+// session (`sessionGist`, main/sessions/session-gist.ts), whether a plugin notification with `sound`
+// chimes (`notificationSounds`, main/notifications/notifier.ts ChimeGate) and with which sound
+// (`notificationSound`, shared/notify-sound.ts; system files in main/notifications/system-sounds.ts), whether closing a running tab asks first
 // (`confirmTabClose`), which end of a tab its close button sits at (`tabCloseSide`), whether the side
 // zones give way to a narrow terminal (`zoneAutoHide`, `minTerminalWidth`), the terminals'
 // font (`terminalFont`; checks in terminal-font.ts), the see-through window background
@@ -29,6 +31,7 @@
 import { own } from '../../shared/guards'
 import type { AppearanceView, KeyBindingRow, ShellPrefs } from '../../shared/ipc'
 import { normalizeChord, type KeyPlatform } from '../../shared/keys'
+import { notificationSoundOf, parseSoundId } from '../../shared/notify-sound'
 import { SESSION_FILES_SHOWN_RANGE, sessionFilesShownOf } from '../../shared/session-files'
 import type { Theme } from '../../shared/theme'
 import type { TerminalFont } from '../../shared/terminal-font'
@@ -77,6 +80,13 @@ export interface AppearanceDeps {
   sessionGist: { get(): unknown; set(next: boolean): void }
   /** The session gist was turned on or off: start or cancel runs, remove the gists (SessionGist.settingChanged). */
   sessionGistChanged(): void
+  /** `app.json` › `notificationSounds`, as stored (unvalidated). Read at each chime, so it needs no event. */
+  notificationSounds: { get(): unknown; set(next: boolean): void }
+  /**
+   * `app.json` › `notificationSound`, as stored (unvalidated), and whether a system id is in a
+   * fresh listing of the OS sound folders now (SystemSounds.has). Read at each chime: no event.
+   */
+  notificationSound: { get(): unknown; set(next: string): void; systemHas(id: string): Promise<boolean> }
   /**
    * `app.json` › `sessionFilesShown`, as stored (unvalidated). The Sessions panel draws from it, so
    * a change is pushed to every window (`prefsChanged`), like `tabCloseSide`.
@@ -143,6 +153,14 @@ export function sessionGistOf(stored: unknown): boolean {
 }
 
 /**
+ * The stored `notificationSounds`, default applied: only an explicit `false` turns it off. A plugin
+ * asks for the sound per notification (a reminder), so on is what the plugin author expects.
+ */
+export function notificationSoundsOf(stored: unknown): boolean {
+  return stored !== false
+}
+
+/**
  * The stored `confirmTabClose`, default applied: only an explicit `false` turns it off. A damaged
  * value reads as on: the cost of a wrong "on" is one extra click, of a wrong "off" a killed task.
  */
@@ -170,6 +188,8 @@ export class AppearanceService {
       tabExit: tabExitOf(this.deps.tabExit.get()),
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
+      notificationSounds: notificationSoundsOf(this.deps.notificationSounds.get()),
+      notificationSound: notificationSoundOf(this.deps.notificationSound.get()),
       sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
       zoneAutoHide: zoneAutoHideOf(this.deps.zoneAutoHide.get()),
       minTerminalWidth: minTerminalWidthOf(this.deps.minTerminalWidth.get()),
@@ -221,6 +241,25 @@ export class AppearanceService {
     const before = sessionGistOf(this.deps.sessionGist.get())
     this.deps.sessionGist.set(value)
     if (before !== value) this.deps.sessionGistChanged()
+  }
+
+  /** Let plugin notifications with `sound` chime (true), or never; the next chime reads it. */
+  setNotificationSounds(value: unknown): void {
+    if (typeof value !== 'boolean') throw new Error('give true or false')
+    this.deps.notificationSounds.set(value)
+  }
+
+  /**
+   * Pick the sound of every notification with `sound`: a built-in tone, or a system sound that is
+   * in main's listing right now (the renderer's id is a claim, like any payload). The next chime reads it.
+   */
+  async setNotificationSound(value: unknown): Promise<void> {
+    const parsed = parseSoundId(value)
+    if (!parsed) throw new Error('not a notification sound')
+    if (parsed.kind === 'system' && !(await this.deps.notificationSound.systemHas(value as string))) {
+      throw new Error('that sound file is no longer there')
+    }
+    this.deps.notificationSound.set(value as string)
   }
 
   /** How many changed files each session lists in the Sessions panel; every window follows. */
