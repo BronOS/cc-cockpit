@@ -9,7 +9,7 @@ import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { OverlayInfo } from '../../src/shared/ipc'
 import { expect, launchCockpit, test as base, type Cockpit } from './fixtures'
 
-const IDS = ['cockpit.browser', 'cockpit.editor', 'cockpit.reviewer']
+const IDS = ['cockpit.browser', 'cockpit.editor', 'cockpit.files', 'cockpit.reviewer']
 
 const test = base.extend<{ cockpit: Cockpit }>({
   // eslint-disable-next-line no-empty-pattern
@@ -119,7 +119,7 @@ test('off in all projects stops a built-in plugin in every window, locks the pro
     await offSwitch.click()
     await expect(offSwitch).toBeChecked()
     await expect(settings.locator('[data-plugin="cockpit.reviewer"] [data-testid="off-in-all-projects"]')).toBeVisible()
-    await expect.poll(() => running(cockpit, projectDir), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor'])
+    await expect.poll(() => running(cockpit, projectDir), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor', 'cockpit.files'])
     // app.json is written debounced.
     await expect.poll(() => storedOff(cockpit)).toEqual(['cockpit.reviewer'])
 
@@ -135,7 +135,7 @@ test('off in all projects stops a built-in plugin in every window, locks the pro
     // A second project, never told anything about the reviewer, does not run it either.
     await cockpit.hook('openProject', dirB)
     await expect.poll(() => app.windows().length).toBe(2)
-    await expect.poll(() => running(cockpit, dirB), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor'])
+    await expect.poll(() => running(cockpit, dirB), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor', 'cockpit.files'])
 
     // Undone: both projects run it again (their own switches were on all along).
     const again = await openSettings(page, 'Plugins')
@@ -172,7 +172,7 @@ test('a third-party open-file plugin replaces the reviewer through the pick, and
   // The reviewer off in this project: the fixture is the only candidate and is used without a pick.
   await settings.getByRole('navigation').getByRole('button', { name: 'This project', exact: true }).click()
   await settings.locator('[data-plugin="cockpit.reviewer"]').getByRole('checkbox', { name: 'Enable Reviewer' }).click()
-  await expect.poll(() => running(cockpit, projectDir), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor', 'test.openfile'])
+  await expect.poll(() => running(cockpit, projectDir), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor', 'cockpit.files', 'test.openfile'])
   await settings.getByRole('navigation').getByRole('button', { name: 'Plugins', exact: true }).click()
   await expect(select).toHaveValue('test.openfile')
   await page.keyboard.press('Escape')

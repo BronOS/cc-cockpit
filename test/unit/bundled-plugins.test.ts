@@ -79,11 +79,12 @@ function linkedFolder(id: string, cli: string[]): string {
 }
 
 describe('allowlist and the test switch', () => {
-  it('ships the browser, reviewer and editor plugins, on by default', () => {
+  it('ships the browser, reviewer, editor and files plugins, on by default', () => {
     const all = [
       { id: BID, dir: 'browser', enabledByDefault: true },
       { id: 'cockpit.reviewer', dir: 'reviewer', enabledByDefault: true },
-      { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true }
+      { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true },
+      { id: 'cockpit.files', dir: 'files', enabledByDefault: true }
     ]
     expect(BUNDLED_PLUGINS).toEqual(all)
     expect(bundledPluginSpecs('/r', {}, false)).toEqual(all.map((p) => ({ ...p, dir: join('/r', p.dir) })))

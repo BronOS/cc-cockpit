@@ -20,7 +20,9 @@ export const BUNDLED_PLUGINS: readonly BundledPluginSpec[] = [
   { id: 'cockpit.browser', dir: 'browser', enabledByDefault: true },
   { id: 'cockpit.reviewer', dir: 'reviewer', enabledByDefault: true },
   // On by default: without micro, Edit shows how to install it instead of failing silently.
-  { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true }
+  { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true },
+  // The project tree (plugins/files/docs/design.md): opens any file through the open-file pick.
+  { id: 'cockpit.files', dir: 'files', enabledByDefault: true }
 ]
 
 /**

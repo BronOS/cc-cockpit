@@ -25,7 +25,7 @@ describe('electron-builder.yml', () => {
     expect(yml).toMatch(/^extraResources:$/m)
     expect(yml).toMatch(/^ {2}- from: plugins\/browser$/m)
     expect(yml).toMatch(/^ {4}to: plugins\/browser$/m)
-    for (const name of ['reviewer', 'editor']) {
+    for (const name of ['reviewer', 'editor', 'files']) {
       expect(yml).toMatch(new RegExp(`^ {2}- from: plugins/${name}$`, 'm'))
       expect(yml).toMatch(new RegExp(`^ {4}to: plugins/${name}$`, 'm'))
     }
@@ -33,6 +33,11 @@ describe('electron-builder.yml', () => {
     const reviewer = yml.slice(yml.indexOf('- from: plugins/reviewer'), yml.indexOf('- from: plugins/editor'))
     expect(reviewer).toMatch(/^ {6}- overlay\/\*\*$/m)
     expect(reviewer).not.toMatch(/src|test|docs|FRICTION/)
+    // The files plugin: its panel page and icon ship, its tests and design notes do not.
+    const files = yml.slice(yml.indexOf('- from: plugins/files'), yml.indexOf('# The bundled terminal fonts'))
+    expect(files).toMatch(/^ {6}- panels\/\*\*$/m)
+    expect(files).toMatch(/^ {6}- icons\/\*\*$/m)
+    expect(files).not.toMatch(/src|test|docs|FRICTION/)
   })
 
   it('points mac and Linux at the rendered app icon, and the files exist', () => {

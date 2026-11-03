@@ -1,0 +1,38 @@
+{
+  "id": "cockpit.files",
+  "name": "Files",
+  "version": "0.1.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "contributes": {
+    "panels": [
+      {
+        "id": "tree",
+        "title": "Files",
+        "entry": "panels/tree.html",
+        "icon": "icons/files.svg",
+        "defaultZone": "left"
+      }
+    ],
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "hideHidden": {
+            "type": "boolean",
+            "title": "Hide hidden files",
+            "description": "Leave out files and folders whose name starts with a dot (.env, .github, .claude). .git is never shown.",
+            "default": false
+          },
+          "hideIgnored": {
+            "type": "boolean",
+            "title": "Hide ignored files",
+            "description": "Leave out what git ignores (.gitignore: node_modules, dist, logs). When shown, they are dimmed.",
+            "default": false
+          }
+        }
+      }
+    }
+  },
+  "services": { "uses": { "editor": 1 } }
+}
