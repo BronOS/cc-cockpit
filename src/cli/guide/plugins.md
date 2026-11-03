@@ -195,6 +195,31 @@ plugin in "Plugin used to open files"; with both on, the project picks (until th
 fails as ambiguous and a file click opens the built-in viewer). Turn the built-in one off (in the
 project or everywhere) and yours is the only provider, used without a pick.
 
+### The reviewer service
+
+The built-in `reviewer` service (v1): `"uses": { "reviewer": 1 }`, then `ctx.services.use('reviewer')`. Both methods
+resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; the tab picker starts on
+`tabId` when it is a live Claude tab of the window, else on the shown tab (`SessionInfo.active`).
+
+- `open(path, { tabId? })`: a project file's diff against the last commit, with notes and a comment.
+- `annotate({ title, text, url?, key?, tabId? })`: a text of yours (a ticket, a mail) in the same overlay, one
+  read-only pane; the person adds notes on selections and a comment and sends them to Claude. `title` 1-200
+  characters, `text` at most 400 KiB, `url` http(s) only, `key` (one overlay and one kept draft per key; default from
+  the title) 1-200 of letters, digits and `._:@#+=~/-`.
+- `annotate({ title, html, assets?, url?, key?, tabId? })`: the same with HTML (at most 2 MiB) in place of `text`
+  (exactly one of the two). The page sanitizes it against an allow-list: headings, paragraphs, lists, `pre`/`code`,
+  blockquote, tables, links (http(s)/mailto, shown but not opened), `strong`/`em`/`s`/`u`/`sub`/`sup`, `span`/`div`,
+  `details`/`summary`, `figure`/`figcaption`; attributes `class` (an allow-list: `jira-panel`, `jira-panel-info`,
+  `-note`, `-warning`, `-error`, `-success`, `mention`, `card`, `card-header`, `meta`, `new`, `old`, `status`,
+  `lozenge` and `lozenge-info`/`-success`/`-warning`/`-error`, `attachment-list`, `fields`, `muted`),
+  `colspan`/`rowspan`, `alt`, `title`; everything else (script, style, on* and style attributes, iframes, forms) is
+  dropped. Images only as `<img src="asset:<id>">` naming one of `assets: [{ id, name?, mime, dataUrl }]` (png, jpeg,
+  gif or webp as a base64 data: URL; each at most 1,000,000 characters, 8 MiB and 30 in all); any other src is
+  dropped and its alt text shown.
+
+Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
+`On «quote»: note` for HTML. The reviewer README has the details and a Jira example.
+
 ## Build and ship
 
 Plugins ship built JavaScript. Plain JS needs no build step. For TypeScript, bundle with esbuild

@@ -39,3 +39,8 @@ Where the guide was unclear or wrong, an API was missing, or I had to guess, fou
 - `dev-loop` (question, not checked): what happens to an open overlay when its plugin reloads (edit of a linked file)
   is not documented. Does it close, stay with its handle dead, or stay connected to the new copy?
   **Outcome: decided.** Main closes a plugin's open overlays when it reloads, stops or is disabled; the guide says so.
+- `api` / overlay (annotate's HTML mode, 2026-11-02): a plugin page has no way to open a link outside the app (no
+  `openExternal` for plugins; the frame may not navigate), so links in annotated HTML only show their URL when
+  clicked. **Outcome: open.**
+- `api` / overlay (same): an html overlay page cannot claim Esc (main pops the overlay before the page sees the key),
+  so an in-page modal (the image lightbox) cannot close on Esc first; Esc closes the whole review. **Outcome: open.**

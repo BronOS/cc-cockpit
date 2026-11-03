@@ -623,6 +623,8 @@ export interface TabHandlerDeps {
   input(projectId: string, tabId: string, data: string): void
   resize(projectId: string, tabId: string, cols: number, rows: number): void
   ack(projectId: string, tabId: string, count: number): void
+  /** The window shows this tab now (SessionRegistry.setActive after a check that it is the project's). */
+  select(projectId: string, tabId: string): void
 }
 
 /**
@@ -693,6 +695,11 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const count = fields('tabs.ack', payload).count
     if (typeof count !== 'number') throw new Error('tabs.ack: count must be a number')
     tabs.ack(ctx.projectId, tabIdOf('tabs.ack', payload), count)
+  })
+
+  // Only the id travels; whether it is one of the sender's project's tabs is main's check (select).
+  router.handleProject('tabs.selected', (ctx, payload) => {
+    tabs.select(ctx.projectId, tabIdOf('tabs.selected', payload))
   })
 }
 

@@ -3,6 +3,13 @@
 // no place to count on module chunks, so no code splitting and no dynamic import).
 //
 // The host owns everything that leaves the page: it saves drafts and formats and sends the review.
+// `sides.mode` is 'diff' or 'plain' for a file, or 'text' for an annotated text (the service's
+// annotate): then `path` is the caller's title, `url` an optional link shown as plain text, and
+// `new` the one read-only pane, with no diff, no layout toggle and no Edit. 'html' is annotate's
+// HTML mode: no pane at all but the caller's HTML, sanitized (sanitize.mjs) and rendered as a
+// document; it comes after the init in `htmlParts` { type: 'html', index, part } messages the page
+// asks for with { type: 'content' }, followed by one { type: 'asset', id, dataUrl } per image and
+// { type: 'assets-done' }. Its notes anchor on the selected text (anchor.mjs), not on lines.
 // The page shows the two sides, collects notes and the global comment, and posts
 //   { type: 'draft', draft }                          on every change;
 //   { result: { action: 'discuss'|'new'|'close', tabId?, draft } }   from the buttons.
@@ -35,6 +42,8 @@ import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { toml } from '@codemirror/legacy-modes/mode/toml'
 import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile'
 import { lua } from '@codemirror/legacy-modes/mode/lua'
+import { sanitizeTree, render, isImageDataUrl } from './sanitize.mjs'
+import { makeAnchor, locate } from './anchor.mjs'
 
 /* global ccPanel */
 
@@ -205,6 +214,7 @@ function postDraft() {
 }
 
 function refreshHighlights() {
+  if (isHtml()) return refreshHtmlHighlights()
   for (const side of ['old', 'new']) {
     const v = state.views[side]
     if (!v) continue
@@ -215,6 +225,11 @@ function refreshHighlights() {
 
 // ---- editors ----
 
+// An annotated text: markdown-ish colouring at most (what a source plugin is likely to hand over),
+// and wrapped lines, since a ticket or a mail is prose, not code.
+const isText = () => !!state.sides && state.sides.mode === 'text'
+const isHtml = () => !!state.sides && state.sides.mode === 'html'
+
 function extensionsFor(side, path) {
   return [
     lineNumbers(),
@@ -224,7 +239,7 @@ function extensionsFor(side, path) {
     highlightSelectionMatches(),
     EditorState.readOnly.of(true), // the reviewer only reads; Edit opens the editor
     keymap.of([...searchKeymap, { key: 'a', run: () => (addNote(side), true) }, { key: 'e', run: () => (edit(), true) }, { key: 'j', run: goToNextChunk }, { key: 'k', run: goToPreviousChunk }]),
-    languageFor(path),
+    isText() ? [markdown(), EditorView.lineWrapping] : languageFor(path),
     baseTheme,
     themeCompartment.of(syntaxFor()),
     notedField,
@@ -240,6 +255,11 @@ function extensionsFor(side, path) {
 function buildEditors() {
   const host = $('editors')
   host.replaceChildren()
+  if (isHtml()) {
+    $('layout').hidden = true
+    host.append(htmlView.scroller)
+    return
+  }
   if (state.merge) state.merge.destroy()
   for (const v of Object.values(state.views)) if (v && v !== state.merge?.a && v !== state.merge?.b) v.destroy()
   state.merge = null
@@ -326,6 +346,7 @@ function selectionOf(side) {
 }
 
 function currentSelectionSide() {
+  if (isHtml()) return htmlSelection() ? 'new' : null
   if (state.lastSide && selectionOf(state.lastSide)) return state.lastSide
   return ['new', 'old'].find((s) => selectionOf(s)) || null
 }
@@ -340,6 +361,7 @@ function updateAddButton() {
 let noteSeq = 0
 function addNote(sideHint) {
   if (atNoteLimit()) return updateAddButton() // the hint says why
+  if (isHtml()) return addHtmlNote()
   const side = sideHint && selectionOf(sideHint) ? sideHint : currentSelectionSide()
   if (!side) return
   const sel = selectionOf(side)
@@ -353,6 +375,7 @@ function addNote(sideHint) {
 }
 
 function scrollTo(note) {
+  if (isHtml()) return scrollToHtml(note)
   const v = state.views[note.side]
   if (!v) return
   const line = v.state.doc.line(Math.min(note.from, v.state.doc.lines))
@@ -362,15 +385,17 @@ function scrollTo(note) {
 function renderNotes(focusId) {
   const list = $('notes')
   list.replaceChildren()
-  const notes = [...state.draft.notes].sort((a, b) => a.from - b.from || (a.side === 'old' ? -1 : 1))
+  const notes = isHtml() ? htmlNotesInOrder() : [...state.draft.notes].sort((a, b) => a.from - b.from || (a.side === 'old' ? -1 : 1))
   $('notes-count').textContent = notes.length ? `(${notes.length})` : ''
-  if (!notes.length) list.append(el('div', 'empty', 'Select text in the diff, then press a or "Add note".'))
+  if (!notes.length) list.append(el('div', 'empty', `Select text in the ${isText() || isHtml() ? 'text' : 'diff'}, then press a or "Add note".`))
   for (const n of notes) {
     const box = el('div', 'note')
     const head = el('div', 'note-head')
-    const where = el('button', 'link', `${n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`}${state.sides.mode === 'diff' ? (n.side === 'old' ? ' · old' : ' · new') : ''}`)
+    const where = isHtml()
+      ? htmlNoteLabel(n)
+      : el('button', 'link', `${n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`}${state.sides.mode === 'diff' ? (n.side === 'old' ? ' · old' : ' · new') : ''}`)
     where.type = 'button'
-    where.title = 'Show in the diff'
+    where.title = where.title || (isText() || isHtml() ? 'Show in the text' : 'Show in the diff')
     where.addEventListener('click', () => scrollTo(n))
     const del = el('button', 'link danger', 'Delete')
     del.type = 'button'
@@ -398,6 +423,245 @@ function renderNotes(focusId) {
     if (n.id === focusId) setTimeout(() => text.focus(), 0)
   }
 }
+
+// ---- HTML mode (annotate with html) ----
+
+// The rendered document and what the notes need of it. `full` is the concatenation of its text
+// nodes (anchor.mjs offsets point into it); `texts` maps offsets back to nodes, for ranges.
+const htmlView = {
+  scroller: null, // the scrolling block in #editors
+  body: null, // the rendered document inside it
+  parts: [], // the html parts received so far
+  rendered: false,
+  full: '',
+  texts: [], // [{ node, start }] in document order
+  assets: new Map(), // id -> { mime, name } as the init declared them
+  data: new Map(), // id -> dataUrl, once it came
+  assetsDone: false,
+  located: new Map(), // note id -> { start, end } in `full`, for the notes found in this version
+}
+
+{
+  htmlView.scroller = el('div', 'doc')
+  htmlView.scroller.tabIndex = 0
+  htmlView.body = el('article', 'doc-body')
+  htmlView.scroller.append(htmlView.body)
+}
+
+function startHtml(s) {
+  htmlView.parts = new Array(Math.max(1, Number.isInteger(s.htmlParts) ? s.htmlParts : 1)).fill(null)
+  htmlView.assets = new Map((Array.isArray(s.assets) ? s.assets : []).filter((a) => a && typeof a.id === 'string').map((a) => [a.id, a]))
+  htmlView.body.replaceChildren(el('p', 'muted', 'Loading…'))
+}
+
+function htmlPart(m) {
+  if (!isHtml() || htmlView.rendered || !Number.isInteger(m.index) || m.index < 0 || m.index >= htmlView.parts.length) return
+  if (typeof m.part !== 'string') return
+  htmlView.parts[m.index] = m.part
+  if (htmlView.parts.every((p) => p !== null)) renderHtml(htmlView.parts.join(''))
+}
+
+/** Parses (inert), sanitizes and renders the caller's HTML; then finds the draft's notes in it. */
+function renderHtml(source) {
+  htmlView.rendered = true
+  htmlView.parts = []
+  const parsed = new DOMParser().parseFromString(source, 'text/html')
+  htmlView.body.replaceChildren(render(sanitizeTree(parsed.body), document))
+  const texts = []
+  let full = ''
+  const walker = document.createTreeWalker(htmlView.body, NodeFilter.SHOW_TEXT)
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    texts.push({ node: n, start: full.length })
+    full += n.data
+  }
+  htmlView.full = full
+  htmlView.texts = texts
+  for (const img of htmlView.body.querySelectorAll('img[data-asset]')) {
+    if (!htmlView.assets.has(img.dataset.asset)) assetFailed(img) // named by the HTML, never sent
+    else if (htmlView.data.has(img.dataset.asset)) assetLoaded(img, htmlView.data.get(img.dataset.asset))
+  }
+  if (htmlView.assetsDone) htmlAssetsDone()
+  refreshHighlights() // finds the draft's notes first: the list says which were not found
+  renderNotes()
+  updateAddButton()
+}
+
+function assetLoaded(img, dataUrl) {
+  img.src = dataUrl
+  img.parentElement.classList.remove('pending', 'failed')
+  if (!img.alt) img.alt = (htmlView.assets.get(img.dataset.asset) || {}).name || ''
+}
+
+function assetFailed(img) {
+  img.parentElement.classList.remove('pending')
+  img.parentElement.classList.add('failed')
+}
+
+function htmlAsset(m) {
+  const want = htmlView.assets.get(m.id)
+  // Only an asset the init declared, of its declared type, as a base64 image data: URL (the host
+  // checked it; the page does not take an image src on trust either).
+  if (!want || !isImageDataUrl(m.dataUrl) || !m.dataUrl.startsWith(`data:${want.mime};base64,`)) return
+  htmlView.data.set(m.id, m.dataUrl)
+  for (const img of htmlView.body.querySelectorAll('img[data-asset]')) if (img.dataset.asset === m.id) assetLoaded(img, m.dataUrl)
+}
+
+function htmlAssetsDone() {
+  htmlView.assetsDone = true
+  for (const img of htmlView.body.querySelectorAll('.asset-box.pending > img')) assetFailed(img)
+}
+
+/** The offset in `full` of a DOM boundary point inside the document. */
+function offsetOf(container, offset) {
+  const r = document.createRange()
+  r.selectNodeContents(htmlView.body)
+  r.setEnd(container, offset)
+  return r.toString().length
+}
+
+/** The selection inside the rendered document, as { start, end } offsets in `full`, or null. */
+function htmlSelection() {
+  if (!htmlView.rendered) return null
+  const sel = window.getSelection()
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null
+  const r = sel.getRangeAt(0).cloneRange()
+  if (!r.intersectsNode(htmlView.body)) return null
+  // A drag that ran past the document's edge keeps the part inside it.
+  if (!htmlView.body.contains(r.startContainer)) r.setStart(htmlView.body, 0)
+  if (!htmlView.body.contains(r.endContainer)) r.setEnd(htmlView.body, htmlView.body.childNodes.length)
+  const start = offsetOf(r.startContainer, r.startOffset)
+  const end = offsetOf(r.endContainer, r.endOffset)
+  if (end <= start || !htmlView.full.slice(start, end).trim()) return null
+  return { start, end }
+}
+
+/** A DOM Range over [start, end) of `full`. */
+function rangeOf(start, end) {
+  const point = (off, isEnd) => {
+    // The last text node starting at or before `off` (for an end, strictly before, so a range
+    // ending at a node's start ends in the node before it).
+    let lo = 0
+    let hi = htmlView.texts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (isEnd ? htmlView.texts[mid].start < off : htmlView.texts[mid].start <= off) lo = mid
+      else hi = mid - 1
+    }
+    const t = htmlView.texts[lo]
+    return [t.node, Math.min(off - t.start, t.node.data.length)]
+  }
+  const r = document.createRange()
+  r.setStart(...point(start, false))
+  r.setEnd(...point(end, true))
+  return r
+}
+
+function addHtmlNote() {
+  const sel = htmlSelection()
+  if (!sel) return
+  const { quote, anchor } = makeAnchor(htmlView.full, sel.start, sel.end)
+  const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, quote, anchor, text: '' }
+  htmlView.located.set(note.id, { start: sel.start, end: sel.end })
+  state.draft.notes.push(note)
+  renderNotes(note.id)
+  refreshHighlights()
+  updateAddButton()
+  postDraft()
+}
+
+/** HTML notes where they are in the text, then the ones not found in this version (and old line notes). */
+function htmlNotesInOrder() {
+  const pos = (n) => (htmlView.located.has(n.id) ? htmlView.located.get(n.id).start : Infinity)
+  return [...state.draft.notes].sort((a, b) => pos(a) - pos(b))
+}
+
+function htmlNoteLabel(n) {
+  const q = (n.quote || '').replace(/\s+/g, ' ').trim()
+  const shown = q.length > 60 ? `«${q.slice(0, 60)}…»` : `«${q}»`
+  // Before the document is rendered nothing is located yet: no "not found" for that moment.
+  const found = htmlView.located.has(n.id) || !htmlView.rendered
+  const b = el('button', found ? 'link' : 'link outdated', found ? shown : `${shown} · not found in this version`)
+  if (!found) b.title = 'The quoted text is not in the document any more: the note is kept, not highlighted'
+  return b
+}
+
+let focusedNote = null
+function refreshHtmlHighlights() {
+  if (!htmlView.rendered) return
+  htmlView.located = new Map()
+  for (const n of state.draft.notes) {
+    const at = n.anchor ? locate(htmlView.full, n) : null
+    if (at) htmlView.located.set(n.id, at)
+  }
+  // The CSS Custom Highlight API paints the ranges without touching the DOM, so offsets stay true.
+  if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return
+  const all = []
+  for (const at of htmlView.located.values()) all.push(rangeOf(at.start, at.end))
+  CSS.highlights.set('rv-note', new Highlight(...all))
+  const f = focusedNote && htmlView.located.get(focusedNote)
+  if (f) CSS.highlights.set('rv-note-focus', new Highlight(rangeOf(f.start, f.end)))
+  else CSS.highlights.delete('rv-note-focus')
+}
+
+function scrollToHtml(note) {
+  const at = htmlView.located.get(note.id)
+  if (!at) return
+  focusedNote = note.id
+  refreshHtmlHighlights()
+  const r = rangeOf(at.start, at.end)
+  const target = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement
+  if (target) target.scrollIntoView({ block: 'center' })
+}
+
+// Links: a plugin page cannot open a URL outside the app (no plugin API for it, and the frame may
+// not navigate), so a click shows where the link goes instead of going there.
+htmlView.body.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a')
+  if (a) {
+    e.preventDefault()
+    $('status').textContent = a.href ? `Link (not opened from here): ${a.href}` : ''
+    return
+  }
+  const img = e.target.closest && e.target.closest('.asset-box:not(.pending):not(.failed) > img')
+  if (img) openLightbox(img)
+})
+htmlView.body.addEventListener('auxclick', (e) => {
+  if (e.target.closest && e.target.closest('a')) e.preventDefault()
+})
+
+// The lightbox: an image shown larger above the review. A click or a key closes it; Esc is not
+// the page's to take (main closes the whole overlay on Esc, the draft kept), so it closes both.
+function openLightbox(img) {
+  const box = $('lightbox')
+  const big = $('lightbox-img')
+  big.src = img.src
+  big.alt = img.alt
+  box.hidden = false
+  box.focus()
+}
+function closeLightbox() {
+  $('lightbox').hidden = true
+  $('lightbox-img').removeAttribute('src')
+}
+$('lightbox').addEventListener('click', closeLightbox)
+$('lightbox').addEventListener('keydown', (e) => {
+  e.preventDefault()
+  e.stopPropagation()
+  closeLightbox()
+  htmlView.scroller.focus()
+})
+
+document.addEventListener('selectionchange', () => {
+  if (isHtml()) updateAddButton()
+})
+// `a` adds a note on the selection, as in a file review (where CodeMirror's keymap handles it).
+document.addEventListener('keydown', (e) => {
+  if (!isHtml() || e.key !== 'a' || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return
+  const t = e.target
+  if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return
+  e.preventDefault()
+  addNote()
+})
 
 // ---- tabs and buttons ----
 
@@ -438,7 +702,8 @@ function updateQueuedHint() {
 
 /** Asks the host to open the editor at the new side's cursor line (the old side has no file). */
 function edit() {
-  if (state.sides.newMissing) return
+  // An annotated text is no file: there is nothing to edit (the button is hidden; this is the `e` key).
+  if (state.sides.newMissing || isText() || isHtml()) return
   const v = state.views.new
   const line = v ? v.state.doc.lineAt(v.state.selection.main.head).number : 1
   // Edit closes the review: not while the draft is unsaved, or the unsaved part is gone.
@@ -488,18 +753,24 @@ function init(m) {
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   const s = state.sides
   $('path').textContent = s.path
-  $('base').textContent = s.mode === 'diff' ? `vs last commit ${s.head ? s.head.slice(0, 8) : ''}` : ''
+  // Plain text, never a link: the page is no place to navigate from, and the URL is the caller's.
+  $('base').textContent = s.mode === 'diff' ? `vs last commit ${s.head ? s.head.slice(0, 8) : ''}` : (isText() || isHtml()) && s.url ? s.url : ''
+  $('global').placeholder = isText() || isHtml() ? 'Comment on the whole text (optional)' : 'Comment on the whole file (optional)'
   $('note').textContent = s.note || ''
   $('note').hidden = !s.note
   $('global').value = state.draft.global
   limitInput($('global'), $('global-limit'), GLOBAL_MAX)
-  $('edit').hidden = m.canEdit === false // no plugin provides the editor service
+  $('edit').hidden = m.canEdit === false || isText() || isHtml() // no plugin provides the editor service, or no file
+  if (isHtml()) startHtml(s)
   $('edit').disabled = !!s.newMissing
   $('edit').title = s.newMissing ? 'The file is deleted: nothing to edit' : $('edit').title
   buildEditors()
   renderNotes()
   renderTabs()
-  ;(state.views.new || state.views.old).focus()
+  if (isHtml()) {
+    htmlView.scroller.focus()
+    ccPanel.post({ type: 'content' }) // the host sends the HTML parts and the images now
+  } else (state.views.new || state.views.old).focus()
 }
 
 $('global').addEventListener('input', (e) => {
@@ -539,7 +810,9 @@ ccPanel.onMessage((m) => {
   else if (m.type === 'tabs') {
     state.tabs = m.tabs || []
     renderTabs()
-  }
+  } else if (m.type === 'html') htmlPart(m)
+  else if (m.type === 'asset') htmlAsset(m)
+  else if (m.type === 'assets-done') htmlAssetsDone()
 })
 
 // The theme arrives in a message after load (`ccc guide panels`): swap the syntax colours then.

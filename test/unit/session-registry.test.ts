@@ -262,6 +262,53 @@ describe('project colour', () => {
   })
 })
 
+describe('setActive (the tab the window shows)', () => {
+  it('marks one Claude tab per project, reporting the tabs that gained and lost it', () => {
+    start('a')
+    start('b')
+    start('x', P2)
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    reg.setActive(P1, 'a')
+    reg.setActive(P2, 'x')
+    expect(reg.activeTab(P1)).toBe('a')
+    expect(reg.activeTab(P2)).toBe('x')
+    reg.setActive(P1, 'b')
+    expect(reg.activeTab(P1)).toBe('b')
+    // Same selection again: nothing to report.
+    reg.setActive(P1, 'b')
+    expect(changes.map((c) => c.tabId)).toEqual(['a', 'x', 'a', 'b'])
+    // Nothing in the entry moved: a gist or status subscriber sees no transition.
+    expect(changes.every((c) => c.entry === c.prev)).toBe(true)
+  })
+
+  it('a selected shell tab leaves no Claude tab active; a foreign id never marks another project', () => {
+    start('a')
+    start('sh', P1, 'shell')
+    start('x', P2)
+    reg.setActive(P1, 'a')
+    reg.setActive(P1, 'sh')
+    expect(reg.activeTab(P1)).toBeUndefined()
+    reg.setActive(P1, 'x')
+    expect(reg.activeTab(P1)).toBeUndefined()
+    expect(reg.activeTab(P2)).toBeUndefined()
+  })
+
+  it('survives a restart of the tab, ends with its close, and clears with undefined', () => {
+    start('a')
+    reg.setActive(P1, 'a')
+    reg.tabExited('a', 0)
+    start('a')
+    expect(reg.activeTab(P1)).toBe('a')
+    reg.tabClosed('a')
+    expect(reg.activeTab(P1)).toBeUndefined()
+    start('b')
+    reg.setActive(P1, 'b')
+    reg.setActive(P1, undefined)
+    expect(reg.activeTab(P1)).toBeUndefined()
+  })
+})
+
 describe('cancelQueuedFor', () => {
   it('cancels an item of the project’s own tab', () => {
     start('a', P1)

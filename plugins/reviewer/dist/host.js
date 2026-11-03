@@ -3,9 +3,11 @@
 // where the person selects text to attach notes, writes one comment for the whole file, and hands
 // the review to Claude (Discuss: the tab whose file was clicked; New session: a fresh tab).
 //
-// Entry points, all ending in openReview():
+// Entry points, all ending in showReview():
 // - a click on a changed file in the Sessions panel (ctx.files.onOpen, `contributes.openFile`);
-// - the `reviewer` service (v1): open(path, { tabId? }), for the file tree and other plugins;
+// - the `reviewer` service (v1): open(path, { tabId? }), for the file tree and other plugins, and
+//   annotate({ title, text | html, assets?, url?, key?, tabId? }): the same overlay on a text or an
+//   HTML document another plugin hands over (a Jira issue, a mail), with no diff, no file and no Edit;
 // - `ccc review <path>`.
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
@@ -61,6 +63,19 @@ const promptStart = (s) =>
     .trim()
     .slice(0, MATCH_CHARS)
 
+/**
+ * The tab the picker starts on: `tabId` when it is one of the window's live Claude tabs (the app's
+ * own click names the clicked tab; a service caller's id is only a wish), else the tab the window
+ * shows (SessionInfo.active, "the tab the person is looking at"), else null: the page then picks
+ * the only tab, or asks. `tabs` is tabsInfo()'s list (ended tabs already left out). Exported for tests.
+ */
+function defaultTab(tabs, tabId) {
+  if (typeof tabId === 'string' && tabs.some((t) => t.tabId === tabId)) return tabId
+  const shown = tabs.find((t) => t.active)
+  return shown ? shown.tabId : null
+}
+exports.defaultTab = defaultTab
+
 let disposers = []
 // Ended on deactivate: the watches of queued reviews (their drafts stay kept), and the draft
 // writers of open reviews (flushed, best effort, so a reload loses no pending write).
@@ -74,11 +89,11 @@ exports.activate = (ctx) => {
   // micro, by default). Resolved on every call, so it may come and go.
   const editor = ctx.services.use('editor')
 
-  // One overlay per file: a second open of the same file brings the first to the front. `opening`
-  // settles when the first open has its outcome (shown, or refused within OPEN_SETTLE_MS): a second
-  // caller during that wait reported `{ opened: true }` for an overlay main then refused, so it
-  // waits for the same outcome instead.
-  const open = new Map() // path -> { handle, opening: Promise<void> }
+  // One overlay per file (`file:<path>`) and per annotated text (`text:<key>`): a second open of
+  // the same one brings the first to the front. `opening` settles when the first open has its
+  // outcome (shown, or refused within OPEN_SETTLE_MS): a second caller during that wait reported
+  // `{ opened: true }` for an overlay main then refused, so it waits for the same outcome instead.
+  const open = new Map() // openKey -> { handle, opening: Promise<void> }
 
   /** Brings an open (or opening) review to the front once it is up; throws the first open's refusal. */
   async function focusExisting(entry) {
@@ -100,6 +115,7 @@ exports.activate = (ctx) => {
         tabId: s.tabId,
         status: s.status,
         lastPrompt: (s.lastPrompt || '').replace(/\s+/g, ' ').slice(0, LAST_PROMPT_MAX),
+        active: s.active === true,
       }))
   }
 
@@ -111,7 +127,7 @@ exports.activate = (ctx) => {
    * `prevPrompt` is the tab's prompt before the send: the same review sent twice is not mistaken
    * for this one's delivery. No plugin API reports a queued item's fate, hence the prompt match.
    */
-  function watchQueued({ path, draftKey, tabId, text, sentDraft, prevPrompt, kept }) {
+  function watchQueued({ what, draftKey, tabId, text, sentDraft, prevPrompt, kept }) {
     const want = promptStart(text)
     let over = false
     const end = () => {
@@ -129,10 +145,10 @@ exports.activate = (ctx) => {
         if (JSON.stringify(now) === JSON.stringify(sentDraft)) await ctx.storage.delete(draftKey)
       } else if (!s || s.status === 'ended') {
         end()
-        ctx.notify(`Review of ${path} may not have reached Claude: its tab ended while the review was queued. ${kept ? 'The draft is kept.' : 'Its draft could not be saved.'}`)
+        ctx.notify(`Review of ${what} may not have reached Claude: its tab ended while the review was queued. ${kept ? 'The draft is kept.' : 'Its draft could not be saved.'}`)
       }
     }
-    const run = (list) => check(list).catch((e) => ctx.log.warn(`queued review of ${path}: ${e.message}`))
+    const run = (list) => check(list).catch((e) => ctx.log.warn(`queued review of ${what}: ${e.message}`))
     const stop = ctx.sessions.onChange(run)
     watches.add(stop)
     // Delivery may have happened before the watch started (the tab stopped right after the send).
@@ -140,43 +156,112 @@ exports.activate = (ctx) => {
   }
 
   /**
-   * Opens the review overlay for a project-relative path. Resolves once the overlay is up, with
-   * `done` (the promise of its end), so the openFile listener can keep running (a listener still
-   * running after 1 s counts as handled) while a service caller does not wait for the person.
-   * Throws before anything is shown when the file cannot be reviewed; for a click, that sends it
-   * to the built-in viewer.
+   * The review of a project-relative path (a diff against the last commit). Throws before anything
+   * is shown when the file cannot be reviewed; for a click, that sends it to the built-in viewer.
    */
   async function openReview(rel, { tabId } = {}) {
     const r = await root()
     const sides = await files.readSides(exec, r, rel)
-    if (open.has(sides.path)) return focusExisting(open.get(sides.path))
-    const draftKey = review.draftKey(sides.path)
+    return showReview(
+      {
+        openKey: `file:${sides.path}`,
+        draftKey: review.draftKey(sides.path),
+        what: sides.path,
+        overlayTitle: overlayTitle('Review: ', sides.path),
+        sides,
+        editPath: sides.path,
+        build: (d) => review.buildReview(d, sides),
+        tooLarge: `${sides.path} is too large to review (with escaping and its saved draft)`,
+      },
+      { tabId },
+    )
+  }
+
+  /**
+   * annotate: the review overlay on a text another plugin handed over. `sides` in mode 'text' is
+   * one read-only pane (the page shows no diff, no layout toggle and no Edit); in mode 'html' the
+   * page renders the caller's HTML through its allow-list sanitizer (src/page/sanitize.mjs) instead.
+   * The draft has its own key namespace (review.annotationKey), so a caller's key never reaches a
+   * file's draft.
+   *
+   * HTML mode: 2 MiB of HTML and 8 MiB of images do not fit the one init message (a page message
+   * takes 1,040,384 chars of JSON), so the init names how many `html` parts follow and which assets
+   * (id, name, mime). The page asks for them ({ type: 'content' }) once it has the init, and the
+   * host then posts the parts, each asset in a message of its own, and `assets-done`: the page shows
+   * a placeholder for an image until its asset comes, and its alt text once `assets-done` came
+   * without it. Not posted with the init: until the page has loaded, main queues at most 100
+   * messages or 8 MiB for it and drops (logs) the rest, which 10 MiB of content would overflow;
+   * once the page asks, it has loaded and each post goes straight out, in order.
+   */
+  async function openAnnotation(options) {
+    const a = review.annotateInput(options)
+    const base = { path: a.title, url: a.url, old: '', oldMissing: true, newMissing: false, note: null }
+    let sides
+    let after = []
+    if (a.html !== null) {
+      const parts = review.splitParts(a.html)
+      sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: a.assets.map(({ id, name, mime }) => ({ id, name, mime })) }
+      after = [
+        ...parts.map((part, index) => ({ type: 'html', index, part })),
+        ...a.assets.map(({ id, dataUrl }) => ({ type: 'asset', id, dataUrl })),
+        { type: 'assets-done' },
+      ]
+    } else {
+      sides = { ...base, mode: 'text', new: a.text }
+    }
+    return showReview(
+      {
+        openKey: `text:${a.key}`,
+        draftKey: review.annotationKey(a.key),
+        what: a.title,
+        overlayTitle: overlayTitle('Notes: ', a.title),
+        sides,
+        after,
+        editPath: null,
+        build: (d) => review.buildAnnotation(d, a),
+        tooLarge: 'the text is too large to show (with escaping and its saved draft)',
+      },
+      { tabId: a.tabId },
+    )
+  }
+
+  /**
+   * Opens the review overlay for one subject (a file's sides, or an annotated text). Resolves once
+   * the overlay is up, with `done` (the promise of its end), so the openFile listener can keep
+   * running (a listener still running after 1 s counts as handled) while a service caller does
+   * not wait for the person. `subject`: openKey (one overlay per key), draftKey, what (named in
+   * notices), overlayTitle, sides, after (messages posted when the page asks for them with
+   * { type: 'content' }, each within the page message limit; may be absent), editPath (null: no Edit), build(draft) -> { text, cut }, and
+   * tooLarge (the refusal when the init message would not fit).
+   */
+  async function showReview(subject, { tabId } = {}) {
+    const { openKey, draftKey, what, sides } = subject
+    if (open.has(openKey)) return focusExisting(open.get(openKey))
     let draft = review.cleanDraft(await ctx.storage.get(draftKey))
     const tabs = await tabsInfo()
     const savedLayout = await ctx.appStorage.get(LAYOUT_KEY).catch(() => null)
     const layout = LAYOUTS.includes(savedLayout) ? savedLayout : 'split'
-    // A tab id from a service caller is checked against this window's tabs (the app's own click
-    // gives one it knows). An unknown id is dropped, and the page asks which tab.
-    const target = tabs.some((t) => t.tabId === tabId) ? tabId : null
+    const target = defaultTab(tabs, tabId)
 
     // Checked again after the awaits above: two quick clicks (or `ccc review` calls) on the same
     // file both pass the first check, and the second must focus the first overlay, not open
     // another. Nothing between here and open.set awaits, so the pair is atomic.
-    if (open.has(sides.path)) return focusExisting(open.get(sides.path))
+    if (open.has(openKey)) return focusExisting(open.get(openKey))
     // Measured before the overlay starts: MAX_SIDE_BYTES bounds the raw bytes, but JSON escaping (a
     // newline or a quote is two chars) and a saved draft can push the message past what post takes.
     // Throwing here hands a click to the built-in viewer; a post that threw after start would leave
     // a blank overlay cached in `open`, so that file never reopened.
-    const init = { type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: ctx.services.available('editor') }
+    const init = { type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: subject.editPath !== null && ctx.services.available('editor') }
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
-      throw new files.ReviewError(`${sides.path} is too large to review (with escaping and its saved draft)`, { fallback: true })
+      throw new files.ReviewError(subject.tooLarge, { fallback: true })
     }
-    const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: overlayTitle('Review: ', sides.path), size: 'large' })
+    const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: subject.overlayTitle, size: 'large' })
+    let after = subject.after && subject.after.length ? subject.after : null
     let settle
     const opening = new Promise((resolve, reject) => (settle = { resolve, reject }))
     opening.catch(() => {}) // observed by focusExisting only when a second open comes in the wait
     const entry = { handle, opening }
-    open.set(sides.path, entry)
+    open.set(openKey, entry)
     // Drafts arrive on every change: Esc closes the overlay without asking the page, so the last
     // posted draft is what Close keeps. Writes are coalesced: `pending` is the newest draft not
     // written yet, and flush() queues it behind the writes before it. A failed write is shown in
@@ -246,7 +331,7 @@ exports.activate = (ctx) => {
         saveTimer = setTimeout(flush, DRAFT_SAVE_MS)
       } else if (m.type === 'layout' && LAYOUTS.includes(m.layout)) {
         ctx.appStorage.set(LAYOUT_KEY, m.layout).catch((e) => ctx.log.error(`layout save: ${e.message}`))
-      } else if (m.type === 'edit') {
+      } else if (m.type === 'edit' && subject.editPath !== null) {
         // Open the editor first and close the review only when that worked, so a missing editor
         // leaves the person where they were, with the reason. Not while the newest draft is
         // unsaved: closing then would lose it, so the review stays open and says so.
@@ -254,18 +339,24 @@ exports.activate = (ctx) => {
         flush()
           .then(() => {
             if (saveError) return post({ type: 'error', message: `The editor is not opened while the draft is not saved (${saveError}).` })
-            return editor.open(sides.path, { line }).then(() => handle.close())
+            return editor.open(subject.editPath, { line }).then(() => handle.close())
           })
           .catch((e) => post({ type: 'error', message: e.message.replace(/^editor: /, '') }))
       } else if (m.type === 'tabs') {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
+      } else if (m.type === 'content' && after) {
+        // Once: the content is let go after it went out (it can be 10 MiB). A post that fails is
+        // logged and the page lives without it (an image shows its alt text after assets-done).
+        const list = after
+        after = null
+        for (const msg of list) post(msg)
       }
     })
 
     try {
       handle.post(init)
     } catch (e) {
-      open.delete(sides.path)
+      open.delete(openKey)
       flushers.delete(flush)
       settle.reject(e)
       handle.close()
@@ -281,7 +372,7 @@ exports.activate = (ctx) => {
     // shown, or throws the same refusal.
     const ended = await earlyEnd(handle.result)
     if (ended && ended.error) {
-      if (open.get(sides.path) === entry) open.delete(sides.path)
+      if (open.get(openKey) === entry) open.delete(openKey)
       flushers.delete(flush) // a refused overlay never loaded its page, so no draft is pending
       const err = new files.ReviewError(`the review overlay did not open: ${ended.error.message}`, { fallback: true })
       settle.reject(err)
@@ -301,7 +392,7 @@ exports.activate = (ctx) => {
           saveError = e.message
         }
       }
-      ctx.notify(`The review draft of ${sides.path} was not saved: ${saveError}. The last saved draft is kept.`)
+      ctx.notify(`The review draft of ${what} was not saved: ${saveError}. The last saved draft is kept.`)
     }
 
     const done = handle.result
@@ -313,14 +404,14 @@ exports.activate = (ctx) => {
         const raw = v.draft || draft
         const problem = review.draftProblem(raw)
         if (problem) {
-          ctx.notify(`Review of ${sides.path} not sent: ${problem}. The last saved draft is kept.`)
+          ctx.notify(`Review of ${what} not sent: ${problem}. The last saved draft is kept.`)
           return
         }
         const finalDraft = review.cleanDraft(raw)
         if (review.isEmpty(finalDraft)) return closedUnsaved()
         // A review past MAX_MESSAGE even without quotes goes out with its tail cut; the draft is
         // kept whole then (deleting it lost the unsent part), and the person is told.
-        const { text, cut } = review.buildReview(finalDraft, sides)
+        const { text, cut } = subject.build(finalDraft)
         // Stores the full draft whenever Claude may not get all of it; says whether that worked
         // (the send failing and the write failing too must not read "the draft is kept").
         const keep = async (kept) => {
@@ -346,33 +437,33 @@ exports.activate = (ctx) => {
               queued = true
               const KEPT = 'The draft is kept until Claude gets it.'
               const kept = await keep(KEPT)
-              watchQueued({ path: sides.path, draftKey, tabId: v.tabId, text, sentDraft: finalDraft, prevPrompt: tab.lastPrompt, kept: kept === KEPT })
+              watchQueued({ what, draftKey, tabId: v.tabId, text, sentDraft: finalDraft, prevPrompt: tab.lastPrompt, kept: kept === KEPT })
               const cutNote = cut ? ` It was too long and was cut at ${review.MAX_MESSAGE} characters.` : ''
-              ctx.notify(`Review of ${sides.path} queued: it is sent when Claude is waiting for input.${cutNote} ${kept}`)
+              ctx.notify(`Review of ${what} queued: it is sent when Claude is waiting for input.${cutNote} ${kept}`)
             }
           } else {
             await ctx.sessions.open({ prompt: text })
           }
         } catch (e) {
-          ctx.log.error(`review of ${sides.path}: ${e.message}`)
-          ctx.notify(`Review of ${sides.path} not sent: ${e.message}. ${await keep('The draft is kept.')}`)
+          ctx.log.error(`review of ${what}: ${e.message}`)
+          ctx.notify(`Review of ${what} not sent: ${e.message}. ${await keep('The draft is kept.')}`)
           return
         }
         if (queued) return
         if (cut) {
-          ctx.notify(`Review of ${sides.path} was too long and was cut at ${review.MAX_MESSAGE} characters. ${await keep('The full draft is kept.')}`)
+          ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_MESSAGE} characters. ${await keep('The full draft is kept.')}`)
           return
         }
         // All of it reached Claude: only now does the draft go. A failed delete only leaves it.
         await ctx.storage.delete(draftKey).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
       })
       .catch((e) => {
-        ctx.log.error(`review of ${sides.path}: ${e.message}`)
-        ctx.notify(`Review of ${sides.path}: ${e.message}. The last saved draft is kept.`)
+        ctx.log.error(`review of ${what}: ${e.message}`)
+        ctx.notify(`Review of ${what}: ${e.message}. The last saved draft is kept.`)
       })
       .finally(() => {
         flushers.delete(flush)
-        if (open.get(sides.path) === entry) open.delete(sides.path)
+        if (open.get(openKey) === entry) open.delete(openKey)
       })
     return { done }
   }
@@ -393,6 +484,16 @@ exports.activate = (ctx) => {
       try {
         const tabId = options && typeof options === 'object' && typeof options.tabId === 'string' ? options.tabId : undefined
         await openReview(path, { tabId })
+        return { opened: true }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
+    },
+    // Additive in v1: a provider without it answers a call with "has no method", so a caller can
+    // tell an older reviewer apart and fall back.
+    async annotate(options) {
+      try {
+        await openAnnotation(options)
         return { opened: true }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)

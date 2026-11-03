@@ -133,7 +133,12 @@ behind it are in [design.md](design.md).
   to see its diff (side by side or unified; the choice is remembered), select text to attach notes, write one comment
   for the file, then send the review to Claude with Discuss (the session you came from) or New session, or open the file
   in the editor with Edit. A draft is kept when you close it, and a second click on a file under review brings it to the
-  front. Edit appears only when a plugin provides the `editor` service.
+  front. Edit appears only when a plugin provides the `editor` service. Other plugins can open the same overlay on a
+  text of their own (the `reviewer` service's `annotate`: a ticket, a mail): one read-only pane, the same notes and
+  buttons, no diff and no Edit. Or on HTML (a Jira issue with its panels, mentions, tables, comments and
+  screenshots), sanitized against an allow-list and rendered as a document; notes go on selected text and are
+  highlighted again when the draft reopens. Links in it are shown, not opened; Esc closes the review even while an
+  image is shown larger. The tab picker starts on the tab you are looking at unless the caller names one.
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour
   scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it

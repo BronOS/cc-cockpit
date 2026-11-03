@@ -151,6 +151,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
   }, [sessions])
 
+  // main keeps the selection for plugins (SessionInfo.active: "the tab the person is looking
+  // at"); every way it changes (a click, a key, a close, main's tabs.select, the first list) ends
+  // in activeId, so this one effect reports them all. A failure is only logged: the selection here
+  // is unaffected, and a plugin then sees the previous tab as active until the next change.
+  useEffect(() => {
+    if (state.activeId === null) return
+    window.cockpit.invoke('tabs.selected', { tabId: state.activeId }).catch((err: unknown) => {
+      console.warn('reporting the selected tab failed', err)
+    })
+  }, [state.activeId])
+
   const run = (action: Promise<unknown>): void => {
     setError(null)
     action.catch((err: unknown) => setError(ipcErrorMessage(err)))

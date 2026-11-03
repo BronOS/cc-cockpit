@@ -131,8 +131,11 @@ with full Node access.
   put in its terminal title (spinner glyph removed), what the Sessions panel and the tab strip
   name the tab; absent until Claude has one. `lastPrompt` is the person's last prompt with Claude
   Code's own markup taken out (a turn of system reminders or task notifications only keeps the
-  one before).
-- `ctx.sessions.onChange(listener)`: the whole list again on every change (at most 4 a second).
+  one before). `active: true` marks the tab the window shows (selected in its tab pane), the one
+  the person is looking at; absent on the others, and on all of them while a shell tab is
+  selected. Selection only: the window may be in the background.
+- `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
+  included (at most 4 a second).
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
 - `ctx.sessions.open({ cwd, prompt })`: a new Claude tab; the prompt is an argument, never typed.

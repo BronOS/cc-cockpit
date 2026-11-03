@@ -1,0 +1,181 @@
+// The allow-list sanitizer of annotate's HTML mode. The HTML comes from any plugin of the project
+// (a Jira issue's rendered description, a mail), so it never reaches the DOM as markup: no
+// innerHTML of it, ever. The page parses it with DOMParser (an inert document: no script runs, no
+// image loads, no style applies), sanitizeTree() walks that tree into plain data that keeps only
+// the allowed elements and attributes, and render() builds fresh elements from the data with
+// createElement / setAttribute / createTextNode. Nothing is serialized and parsed again, so the
+// parser differentials behind mutation XSS have nothing to work on. The page CSP blocks script as
+// well; this does not count on it.
+//
+// Pure functions over the DOM node interface (nodeType, nodeName, namespaceURI, attributes,
+// childNodes), so test/html.test.js runs them under node with small fake nodes.
+
+/** Elements kept as themselves. Everything else is unwrapped (its children kept) or, in DROP, dropped whole. */
+export const ALLOWED_TAGS = new Set([
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'ul', 'ol', 'li', 'pre', 'code', 'blockquote',
+  'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'img', 'strong', 'em', 's', 'u', 'sub', 'sup',
+  'span', 'div', 'details', 'summary', 'figure', 'figcaption',
+])
+
+/**
+ * The class names an element may carry (the reviewer's CSS styles them; README "HTML mode"). Any
+ * other class is dropped, so a caller cannot dress its content up as the page's own UI.
+ */
+export const ALLOWED_CLASSES = new Set([
+  'jira-panel', 'jira-panel-info', 'jira-panel-note', 'jira-panel-warning', 'jira-panel-error', 'jira-panel-success',
+  'mention', 'card', 'card-header', 'meta', 'new', 'old', 'status', 'lozenge',
+  'lozenge-info', 'lozenge-success', 'lozenge-warning', 'lozenge-error', 'attachment-list', 'fields', 'muted',
+])
+
+// Dropped with everything inside: code, styles, embedded documents, forms and their controls,
+// media that would load something, and head-only elements. Unwrapping these would show a script's
+// source or a form's labels as text, which is noise at best.
+const DROP = new Set([
+  'script', 'style', 'template', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'param',
+  'noscript', 'noembed', 'noframes', 'svg', 'math', 'form', 'input', 'button', 'select', 'option',
+  'optgroup', 'textarea', 'datalist', 'output', 'meter', 'progress', 'canvas', 'video', 'audio', 'source',
+  'track', 'picture', 'map', 'area', 'link', 'meta', 'base', 'title', 'head', 'portal', 'slot', 'dialog',
+  'xmp', 'plaintext', 'marquee',
+])
+
+const HTML_NS = 'http://www.w3.org/1999/xhtml'
+const ASSET_ID = /^[A-Za-z0-9._-]{1,100}$/
+const MAX_ATTR = 500 // title and alt: a tooltip, not a document
+const MAX_HREF = 2048
+const MAX_SPAN = 1000
+// Deeper than this, elements are unwrapped (their text stays): a document nested thousands deep is
+// not one a person reads, and the walk is recursive.
+const MAX_DEPTH = 100
+
+/** An http(s) or mailto URL, normalized, or null for anything else (javascript:, data:, relative...). */
+export function safeHref(raw) {
+  if (typeof raw !== 'string') return null
+  const v = raw.trim()
+  // Browsers drop tabs and newlines inside a URL (java\nscript:), so a control char is a refusal.
+  if (!v || v.length > MAX_HREF || /[\x00-\x1f\x7f]/.test(v)) return null
+  let u
+  try {
+    u = new URL(v) // no base: a relative link has nowhere to go from this page
+  } catch {
+    return null
+  }
+  return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:' ? u.href : null
+}
+
+/** The asset id an <img> names (`src="asset:<id>"` or `data-asset="<id>"`), or null. */
+export function assetRef(src, dataAsset) {
+  if (typeof dataAsset === 'string' && ASSET_ID.test(dataAsset)) return dataAsset
+  if (typeof src === 'string' && src.startsWith('asset:') && ASSET_ID.test(src.slice(6))) return src.slice(6)
+  return null
+}
+
+const attrsOf = (node) => {
+  const out = new Map()
+  for (const a of node.attributes || []) out.set(String(a.name).toLowerCase(), String(a.value))
+  return out
+}
+
+const short = (s) => s.slice(0, MAX_ATTR)
+
+function classesOf(value) {
+  const kept = String(value).split(/\s+/).filter((c) => ALLOWED_CLASSES.has(c))
+  return kept.length ? [...new Set(kept)].join(' ') : null
+}
+
+/** The allowed attributes of one allowed element, as [name, value] pairs. */
+function cleanAttrs(tag, a) {
+  const out = []
+  const cls = a.has('class') ? classesOf(a.get('class')) : null
+  if (cls) out.push(['class', cls])
+  if (a.has('title')) out.push(['title', short(a.get('title'))])
+  if (tag === 'a') {
+    const href = safeHref(a.get('href'))
+    if (href) out.push(['href', href])
+  }
+  if (tag === 'td' || tag === 'th') {
+    for (const name of ['colspan', 'rowspan']) {
+      const v = a.get(name)
+      if (v && /^\d{1,4}$/.test(v.trim()) && +v >= 1 && +v <= MAX_SPAN) out.push([name, String(+v)])
+    }
+  }
+  return out
+}
+
+/**
+ * The sanitized children of `parent`: an array of { text } and { tag, attrs: [[name, value]],
+ * children }. Images are { tag: 'img', attrs } with `data-asset`, `alt`, `title` and `class` only,
+ * and never a src: the page sets it from the asset the host sends. An image naming no asset
+ * becomes { tag: 'span', attrs: [['class', 'img-missing']] } with its alt as text.
+ */
+export function sanitizeTree(parent, depth = 0) {
+  const out = []
+  for (const node of parent.childNodes || []) {
+    if (node.nodeType === 3) {
+      if (node.nodeValue) out.push({ text: String(node.nodeValue) })
+      continue
+    }
+    if (node.nodeType !== 1) continue // comments, processing instructions, doctypes
+    // Only HTML elements: SVG and MathML content has its own script and link rules.
+    if (node.namespaceURI && node.namespaceURI !== HTML_NS) continue
+    const tag = String(node.nodeName).toLowerCase()
+    if (DROP.has(tag)) continue
+    if (!ALLOWED_TAGS.has(tag) || depth >= MAX_DEPTH) {
+      out.push(...sanitizeTree(node, depth + 1))
+      continue
+    }
+    const a = attrsOf(node)
+    if (tag === 'img') {
+      const id = assetRef(a.get('src'), a.get('data-asset'))
+      const alt = a.has('alt') ? short(a.get('alt')) : ''
+      if (!id) {
+        out.push({ tag: 'span', attrs: [['class', 'img-missing']], children: [{ text: alt ? `[image: ${alt}]` : '[image]' }] })
+        continue
+      }
+      const attrs = [['data-asset', id], ['alt', alt]]
+      if (a.has('title')) attrs.push(['title', short(a.get('title'))])
+      const cls = a.has('class') ? classesOf(a.get('class')) : null
+      if (cls) attrs.push(['class', cls])
+      out.push({ tag: 'img', attrs, children: [] })
+      continue
+    }
+    const children = tag === 'br' || tag === 'hr' ? [] : sanitizeTree(node, depth + 1)
+    out.push({ tag, attrs: cleanAttrs(tag, a), children })
+  }
+  return out
+}
+
+/**
+ * The DOM of a sanitized tree, built in `doc` (a DocumentFragment). Every image goes inside a
+ * `span.asset-box.pending` that carries its alt text in `data-alt`: the box shows a placeholder
+ * until the asset comes and the alt text if it never does, both through CSS (`content:
+ * attr(data-alt)`), so no text node is added or removed later and a note's offsets stay true.
+ */
+export function render(tree, doc) {
+  const frag = doc.createDocumentFragment()
+  const build = (nodes, into) => {
+    for (const n of nodes) {
+      if ('text' in n) {
+        into.appendChild(doc.createTextNode(n.text))
+        continue
+      }
+      const e = doc.createElement(n.tag)
+      for (const [name, value] of n.attrs) e.setAttribute(name, value)
+      if (n.tag === 'img') {
+        const box = doc.createElement('span')
+        box.setAttribute('class', 'asset-box pending')
+        const alt = (n.attrs.find(([k]) => k === 'alt') || [])[1]
+        box.setAttribute('data-alt', alt || 'image')
+        box.appendChild(e)
+        into.appendChild(box)
+        continue
+      }
+      build(n.children, e)
+      into.appendChild(e)
+    }
+  }
+  build(tree, frag)
+  return frag
+}
+
+/** A data: URL the page may set as an image src: one of the four image types, base64, nothing else. */
+export const isImageDataUrl = (s) => typeof s === 'string' && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]*={0,2}$/.test(s)

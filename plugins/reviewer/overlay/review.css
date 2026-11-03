@@ -44,3 +44,77 @@ button.link { background: none; border: none; padding: 0; color: var(--cc-accent
 button.link.danger { color: var(--cc-status-ended); }
 select { max-width: 320px; }
 textarea:focus, button:focus-visible, select:focus-visible { outline: 2px solid var(--cc-focus); outline-offset: 1px; }
+
+/* annotate's HTML mode: the caller's document, sanitized (src/page/sanitize.mjs). Only the class
+   names its allow-list keeps are styled here, all under .doc-body, so content cannot reach the
+   page's own UI styles. Wide content (a table, a code block) scrolls inside its own block. */
+.doc { height: 100%; overflow: auto; outline: none; }
+.doc-body {
+  max-width: 920px; margin: 0 auto; padding: 16px 24px 48px;
+  font: 14px/1.6 system-ui, sans-serif; color: var(--cc-fg); overflow-wrap: anywhere;
+}
+.doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4, .doc-body h5, .doc-body h6 { margin: 1.2em 0 .5em; line-height: 1.3; }
+.doc-body h1 { font-size: 1.6em; } .doc-body h2 { font-size: 1.35em; } .doc-body h3 { font-size: 1.15em; }
+.doc-body h4, .doc-body h5, .doc-body h6 { font-size: 1em; }
+.doc-body > :first-child { margin-top: 0; }
+.doc-body p, .doc-body ul, .doc-body ol, .doc-body pre, .doc-body blockquote, .doc-body table, .doc-body details, .doc-body figure { margin: 0 0 .9em; }
+.doc-body ul, .doc-body ol { padding-left: 1.6em; }
+.doc-body li + li { margin-top: .2em; }
+.doc-body hr { border: none; border-top: 1px solid var(--cc-border); margin: 1.2em 0; }
+.doc-body a { color: var(--cc-accent); text-decoration: underline; cursor: pointer; }
+.doc-body code { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--cc-surface-1); border-radius: 3px; padding: 0 .3em; }
+.doc-body pre { overflow-x: auto; padding: 8px 10px; background: var(--cc-surface-1); border: 1px solid var(--cc-border); border-radius: 4px; }
+.doc-body pre code { background: none; padding: 0; white-space: pre; }
+.doc-body blockquote { padding: 2px 12px; border-left: 3px solid var(--cc-border-strong); color: var(--cc-fg-muted); }
+/* A table scrolls sideways on its own, not the whole document. */
+.doc-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.doc-body th, .doc-body td { border: 1px solid var(--cc-border); padding: 4px 8px; text-align: left; vertical-align: top; }
+.doc-body th { background: var(--cc-surface-1); font-weight: 600; }
+.doc-body details { border: 1px solid var(--cc-border); border-radius: 4px; padding: 4px 10px; }
+.doc-body summary { cursor: pointer; font-weight: 600; }
+.doc-body figure { margin-left: 0; margin-right: 0; }
+.doc-body figcaption { font-size: 12px; color: var(--cc-fg-muted); }
+.doc-body .muted, .doc-body .meta { color: var(--cc-fg-muted); }
+.doc-body .meta { font-size: 12px; }
+/* Cards: a comment, a linked issue (card-header on top, meta under it). */
+.doc-body .card { border: 1px solid var(--cc-border); border-radius: 6px; background: var(--cc-surface-1); padding: 8px 12px; margin: 0 0 .9em; }
+.doc-body .card-header { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-weight: 600; margin-bottom: 4px; }
+.doc-body .card-header .meta { font-weight: normal; }
+/* Jira panels: a tinted block with a coloured edge. */
+.doc-body .jira-panel { border-left: 4px solid var(--cc-border-strong); border-radius: 4px; padding: 8px 12px; margin: 0 0 .9em; background: var(--cc-surface-1); }
+.doc-body .jira-panel > :last-child { margin-bottom: 0; }
+.doc-body .jira-panel-info { border-left-color: var(--cc-status-working); background: color-mix(in srgb, var(--cc-status-working) 10%, var(--cc-bg)); }
+.doc-body .jira-panel-note { border-left-color: var(--cc-project-purple); background: color-mix(in srgb, var(--cc-project-purple) 10%, var(--cc-bg)); }
+.doc-body .jira-panel-warning { border-left-color: var(--cc-status-needs-permission); background: color-mix(in srgb, var(--cc-status-needs-permission) 10%, var(--cc-bg)); }
+.doc-body .jira-panel-error { border-left-color: var(--cc-status-ended); background: color-mix(in srgb, var(--cc-status-ended) 10%, var(--cc-bg)); }
+.doc-body .jira-panel-success { border-left-color: var(--cc-status-waiting); background: color-mix(in srgb, var(--cc-status-waiting) 10%, var(--cc-bg)); }
+.doc-body .mention { display: inline-block; padding: 0 .5em; border-radius: 1em; background: var(--cc-accent-soft); color: var(--cc-fg); font-size: .92em; line-height: 1.5; }
+.doc-body .lozenge, .doc-body .status {
+  display: inline-block; padding: 0 .45em; border-radius: 3px; font-size: 11px; font-weight: 700; line-height: 1.6;
+  text-transform: uppercase; letter-spacing: .02em; background: var(--cc-surface-2); color: var(--cc-fg);
+}
+.doc-body .lozenge-info { background: color-mix(in srgb, var(--cc-status-working) 25%, var(--cc-bg)); }
+.doc-body .lozenge-success { background: color-mix(in srgb, var(--cc-status-waiting) 25%, var(--cc-bg)); }
+.doc-body .lozenge-warning { background: color-mix(in srgb, var(--cc-status-needs-permission) 25%, var(--cc-bg)); }
+.doc-body .lozenge-error { background: color-mix(in srgb, var(--cc-status-ended) 25%, var(--cc-bg)); }
+/* What is new since the person last looked (a new comment, a changed field), and what went. */
+.doc-body .new { background: color-mix(in srgb, var(--cc-status-waiting) 14%, transparent); box-shadow: inset 3px 0 0 var(--cc-status-waiting); border-radius: 3px; }
+.doc-body .old { color: var(--cc-fg-muted); text-decoration: line-through; }
+.doc-body .fields th { width: 1%; white-space: nowrap; }
+.doc-body .attachment-list { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; }
+.doc-body .attachment-list > li { margin: 0; padding: 6px; border: 1px solid var(--cc-border); border-radius: 4px; background: var(--cc-surface-1); max-width: 220px; font-size: 12px; }
+.doc-body .img-missing { color: var(--cc-fg-subtle); font-style: italic; }
+/* Images: a placeholder until the host's asset comes, the alt text if it never does (CSS text, so
+   no text node changes and note anchors keep their offsets). */
+.doc-body .asset-box { display: inline-block; max-width: 100%; vertical-align: top; }
+.doc-body .asset-box img { max-width: 100%; height: auto; cursor: zoom-in; border-radius: 3px; }
+.doc-body .asset-box.pending, .doc-body .asset-box.failed { min-width: 120px; min-height: 60px; border: 1px dashed var(--cc-border-strong); border-radius: 4px; padding: 6px; color: var(--cc-fg-subtle); font-size: 12px; }
+.doc-body .asset-box.pending img, .doc-body .asset-box.failed img { display: none; }
+.doc-body .asset-box.pending::after { content: 'Loading image…'; }
+.doc-body .asset-box.failed::after { content: attr(data-alt); font-style: italic; }
+::highlight(rv-note) { background-color: color-mix(in srgb, var(--cc-status-needs-permission) 30%, transparent); }
+::highlight(rv-note-focus) { background-color: color-mix(in srgb, var(--cc-status-needs-permission) 60%, transparent); }
+button.link.outdated { color: var(--cc-fg-muted); text-align: left; }
+#lightbox { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--cc-bg) 85%, transparent); cursor: zoom-out; outline: none; }
+#lightbox[hidden] { display: none; }
+#lightbox img { max-width: 95vw; max-height: 95vh; box-shadow: 0 4px 24px var(--cc-shadow); background: var(--cc-bg); }

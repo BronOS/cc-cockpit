@@ -91,6 +91,14 @@ export class SessionRegistry {
    * sequence half-read when the process died must not run into the next one's output.
    */
   private readonly titles = new Map<string, TitleParser>()
+  /**
+   * projectId -> the tab its window shows (selected in the tab pane), as the renderer last
+   * reported it (`tabs.selected`, checked by main to be a tab of that project). Any tab kind: a
+   * selected shell tab means no Claude tab is active. Read for `SessionInfo.active`; kept apart
+   * from the entries because selection is the window's state, not the session's, and a restart
+   * (a fresh entry) must not lose it.
+   */
+  private readonly activeTabs = new Map<string, string>()
 
   constructor(private readonly options: SessionRegistryOptions) {
     this.interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
@@ -244,6 +252,31 @@ export class SessionRegistry {
   cancelQueuedFor(projectId: string, tabId: string, itemId: string): boolean {
     if (this.entries.get(tabId)?.projectId !== projectId) return false
     return this.cancelQueued(tabId, itemId)
+  }
+
+  /**
+   * The project window selected `tabId` (or, with undefined, its window went away). The caller
+   * (main's `tabs.selected` handler) has checked the tab belongs to `projectId`; an entry is still
+   * marked only when its own project matches, so a stale or foreign id can never mark another
+   * project's tab. The Claude entries that gained or lost the selection are reported as changes
+   * (entry === prev: nothing in the entry moved), which sends plugin hosts their throttled
+   * `sessions` event; a move between two shell tabs reports nothing.
+   */
+  setActive(projectId: string, tabId: string | undefined): void {
+    const before = this.activeTabs.get(projectId)
+    if (before === tabId) return
+    if (tabId === undefined) this.activeTabs.delete(projectId)
+    else this.activeTabs.set(projectId, tabId)
+    for (const id of [before, tabId]) {
+      const entry = id === undefined ? undefined : this.entries.get(id)
+      if (entry && entry.projectId === projectId) this.changed({ tabId: entry.tabId, entry, prev: entry })
+    }
+  }
+
+  /** The Claude tab `projectId`'s window shows, if the selected tab is one (see setActive). */
+  activeTab(projectId: string): string | undefined {
+    const tabId = this.activeTabs.get(projectId)
+    return tabId !== undefined && this.entries.get(tabId)?.projectId === projectId ? tabId : undefined
   }
 
   get(tabId: string): SessionEntry | undefined {
