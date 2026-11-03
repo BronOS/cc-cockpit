@@ -483,7 +483,8 @@ describe('registerTabHandlers', () => {
       restart: rec('restart', info) as TabHandlerDeps['restart'],
       input: rec('input') as TabHandlerDeps['input'],
       resize: rec('resize') as TabHandlerDeps['resize'],
-      ack: rec('ack') as TabHandlerDeps['ack']
+      ack: rec('ack') as TabHandlerDeps['ack'],
+      select: rec('select') as TabHandlerDeps['select']
     })
     return { ipc, calls }
   }
@@ -498,6 +499,7 @@ describe('registerTabHandlers', () => {
     await ipc.invoke('tabs.input', 11, [{ tabId: 't1', data: 'ls\r' }])
     await ipc.invoke('tabs.resize', 11, [{ tabId: 't1', cols: 80, rows: 24 }])
     await ipc.invoke('tabs.ack', 11, [{ tabId: 't1', count: 5 }])
+    await ipc.invoke('tabs.selected', 12, [{ tabId: 't1', projectId: PROJECT_A }])
     expect(calls).toEqual([
       ['attach', PROJECT_A, 1],
       ['create', PROJECT_B, { kind: 'claude', cwd: 'sub' }, 2],
@@ -506,7 +508,8 @@ describe('registerTabHandlers', () => {
       ['restart', PROJECT_B, 't1', 2],
       ['input', PROJECT_A, 't1', 'ls\r'],
       ['resize', PROJECT_A, 't1', 80, 24],
-      ['ack', PROJECT_A, 't1', 5]
+      ['ack', PROJECT_A, 't1', 5],
+      ['select', PROJECT_B, 't1']
     ])
   })
 
@@ -571,7 +574,9 @@ describe('registerTabHandlers', () => {
       ['tabs.restart', [{}]],
       ['tabs.input', [{ tabId: 't1', data: 5 }]],
       ['tabs.resize', [{ tabId: 't1', cols: '80', rows: 24 }]],
-      ['tabs.ack', [{ tabId: 't1', count: '5' }]]
+      ['tabs.ack', [{ tabId: 't1', count: '5' }]],
+      ['tabs.selected', [{ tabId: 3 }]],
+      ['tabs.selected', []]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()

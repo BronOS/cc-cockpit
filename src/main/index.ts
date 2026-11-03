@@ -378,6 +378,8 @@ function start(): void {
       pluginSecrets.evictProject(projectId)
       firstTab.disarm(projectId)
       tabs.closeProject(projectId)
+      // No window, no selection: a reopened window reports its own once its page loads.
+      sessions.setActive(projectId, undefined)
       // The user closed the window: its tabs are over, so is their record. While quitting the
       // same callback runs for every window and the saved tabs are exactly what must stay; on a
       // reopen they were just queued for the new window.
@@ -692,6 +694,7 @@ function start(): void {
     api: {
       listSessions: (projectId) => sessions.listByProject(projectId),
       session: (tabId) => sessions.get(tabId),
+      activeTab: (projectId) => sessions.activeTab(projectId),
       // The send gate, as for every programmatic text (send-gate.ts).
       send: (tabId, text) => sessions.send(tabId, text),
       onSessionsChange: (listener) => sessions.onChange(listener),
@@ -1469,6 +1472,11 @@ function start(): void {
     },
     resize: (projectId, tabId, cols, rows) => tabs.resize(projectId, tabId, cols, rows),
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),
+    // The tab pane's selection, for SessionInfo.active. Only a tab of the sender's project counts:
+    // anything else (a tab closed while the message travelled, a foreign id) leaves it as it was.
+    select: (projectId, tabId) => {
+      if (tabs.list(projectId).some((t) => t.id === tabId)) sessions.setActive(projectId, tabId)
+    },
     // With each entry's chord from the project's resolved key table, shown next to its label.
     commands: (projectId) => {
       const keys = new Map(commands.view(projectId).commands.map((c) => [c.id, c.key]))

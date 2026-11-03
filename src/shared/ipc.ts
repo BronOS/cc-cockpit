@@ -863,6 +863,12 @@ export interface IpcInvokeMap {
   'tabs.resize': { req: { tabId: string; cols: number; rows: number }; res: void }
   /** The renderer wrote `count` characters (string length) of output into xterm. */
   'tabs.ack': { req: { tabId: string; count: number }; res: void }
+  /**
+   * The tab pane's selection changed (or the page loaded with one): main keeps it per project for
+   * `SessionInfo.active`, so plugins know the tab the person is looking at. A tab id that is not
+   * the sender's project's is ignored, as a selection racing a close is normal.
+   */
+  'tabs.selected': { req: { tabId: string }; res: void }
 }
 
 /** main -> renderer events for `cockpit.on(channel, cb)`; later tasks add status, theme, ... */
@@ -1036,7 +1042,8 @@ export const INVOKE_CHANNELS = [
   'tabs.restart',
   'tabs.input',
   'tabs.resize',
-  'tabs.ack'
+  'tabs.ack',
+  'tabs.selected'
 ] as const satisfies readonly InvokeChannel[]
 
 /** Every main -> renderer event channel, for the preload's allow-list (see INVOKE_CHANNELS). */

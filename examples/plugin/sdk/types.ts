@@ -224,6 +224,13 @@ export interface SessionInfo {
    * built-in viewer.
    */
   readonly files: readonly string[]
+  /**
+   * `true` for the tab the project window shows (selected in its tab pane): "the tab the person
+   * is looking at". Absent on every other tab, and on all of them while a shell tab is selected.
+   * A selection change reaches `onChange` like any other change (throttled). Selection only: the
+   * window itself may be in the background.
+   */
+  readonly active?: boolean
 }
 
 /** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */

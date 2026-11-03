@@ -416,3 +416,178 @@ test('a review delivered at once clears its draft', async () => {
   assert.equal(store.has('draft:a.js'), false)
   host.deactivate()
 })
+
+test('defaultTab: the caller\'s live tab, else the tab the window shows, else none', () => {
+  const tabs = [
+    { tabId: 't1', active: false },
+    { tabId: 't2', active: true },
+  ]
+  assert.equal(host.defaultTab(tabs, 't1'), 't1')
+  // A gone, foreign or mistyped id is only a wish: the shown tab wins over it.
+  assert.equal(host.defaultTab(tabs, 'gone'), 't2')
+  assert.equal(host.defaultTab(tabs, 5), 't2')
+  assert.equal(host.defaultTab(tabs, undefined), 't2')
+  assert.equal(host.defaultTab([{ tabId: 't1', active: false }], undefined), null)
+  assert.equal(host.defaultTab([], 't1'), null)
+})
+
+test('a file review starts its picker on the shown tab when the caller names none', async () => {
+  const f = setup({ editorAvailable: true })
+  f.ctx.sessions.list = async () => [
+    { tabId: 't1', status: 'waiting', lastPrompt: 'a' },
+    { tabId: 't2', status: 'working', lastPrompt: 'b', active: true },
+    { tabId: 't3', status: 'ended', lastPrompt: 'c' },
+  ]
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const init = f.handles[0].posts[0]
+  assert.equal(init.tabId, 't2')
+  assert.deepEqual(init.tabs.map((t) => [t.tabId, t.active]), [['t1', false], ['t2', true]])
+  host.deactivate()
+})
+
+test('annotate: a text overlay with no file and no Edit, one per key, its own draft namespace', async () => {
+  const f = setup({ editorAvailable: true })
+  const { store } = storeFake(f)
+  f.ctx.sessions.list = async () => [
+    { tabId: 't1', status: 'waiting', lastPrompt: 'a' },
+    { tabId: 't2', status: 'waiting', lastPrompt: 'b', active: true },
+  ]
+  const starts = []
+  f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
+  host.activate(f.ctx)
+  const opts = { title: 'PROJ-1 Fix login', text: 'line one\nline two', url: 'https://x.atlassian.net/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' }
+  assert.deepEqual(await f.provided.reviewer.annotate(opts), { opened: true })
+  const h = f.handles[0]
+  const init = h.posts[0]
+  assert.equal(init.sides.mode, 'text')
+  assert.equal(init.sides.path, 'PROJ-1 Fix login')
+  assert.equal(init.sides.new, 'line one\nline two')
+  assert.equal(init.sides.url, opts.url)
+  assert.equal(init.canEdit, false)
+  assert.equal(init.tabId, 't1')
+  assert.equal(starts[0].title, 'Notes: PROJ-1 Fix login')
+  // No git ran: it is not a file.
+  assert.ok(!f.execs.some((a) => a[0] === 'git'))
+  // The same key focuses the open overlay; another key opens its own.
+  await f.provided.reviewer.annotate({ ...opts, text: 'changed' })
+  assert.equal(f.handles.length, 1)
+  await f.provided.reviewer.annotate({ ...opts, key: 'jira:PROJ-2', tabId: undefined })
+  assert.equal(f.handles.length, 2)
+  assert.equal(f.handles[1].posts[0].tabId, 't2') // no tab named: the shown one
+  // Edit is ignored for a text; the draft goes under annotate:<key>.
+  h.say({ type: 'edit', line: 1 })
+  h.say({ type: 'draft', draft: { global: 'g', notes: [note('n')] } })
+  await wait(SAVE_WAIT)
+  assert.deepEqual([...store.keys()], ['annotate:jira:PROJ-1'])
+  assert.equal(h.closed, 0)
+  host.deactivate()
+})
+
+test('annotate: Discuss sends "About <title> (<url>)" with notes as a file review has them, then clears the draft', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  const sent = []
+  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
+  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'PROJ-1 Fix login', text: 'a\nb\nc', url: 'https://x/browse/PROJ-1', key: 'jira:PROJ-1' })
+  const h = f.handles[0]
+  const draft = { global: 'Start here.', notes: [{ id: 'n1', side: 'new', from: 2, to: 3, quote: 'b\nc', text: 'Unclear.' }] }
+  h.say({ type: 'draft', draft })
+  await wait(SAVE_WAIT)
+  assert.ok(store.has('annotate:jira:PROJ-1'))
+  h.end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft } })
+  await wait(50)
+  assert.deepEqual(sent, [['t1', 'About PROJ-1 Fix login (https://x/browse/PROJ-1)\n\nStart here.\n\n1. Lines 2-3:\n   > b\n   > c\n   Unclear.']])
+  assert.equal(store.size, 0)
+  host.deactivate()
+})
+
+test('annotate: bad input is refused before any overlay, with the reviewer prefix', async () => {
+  const f = setup({ editorAvailable: false })
+  host.activate(f.ctx)
+  await assert.rejects(f.provided.reviewer.annotate({ title: '', text: 'x' }), /^Error: reviewer: title must not be empty/)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', url: 'javascript:alert(1)' }), /reviewer: url must be http or https/)
+  await assert.rejects(f.provided.reviewer.annotate(null), /reviewer: annotate takes/)
+  assert.equal(f.handles.length, 0)
+  host.deactivate()
+})
+
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+const PAGE_MESSAGE_MAX = 1040384 // OverlayHandle.post's limit (`ccc guide api`)
+
+test('annotate html: the init names the parts and assets; the page asks, then gets parts, each asset, assets-done', async () => {
+  const f = setup({ editorAvailable: true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  // Past one page message: escaped quotes double the JSON, so this needs several parts.
+  const html = '<p class="new">' + '"'.repeat(900000) + '</p>'
+  const big = 'data:image/jpeg;base64,' + 'A'.repeat(999000)
+  const assets = [
+    { id: 'shot-1', name: 'shot.png', mime: 'image/png', dataUrl: PNG },
+    { id: 'photo', mime: 'image/jpeg', dataUrl: big },
+  ]
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'PROJ-1', html, assets, key: 'jira:PROJ-1' }), { opened: true })
+  const h = f.handles[0]
+  assert.equal(h.posts.length, 1) // only the init until the page has loaded and asks
+  const init = h.posts[0]
+  assert.equal(init.sides.mode, 'html')
+  assert.equal(init.canEdit, false)
+  assert.ok(init.sides.htmlParts >= 2)
+  assert.deepEqual(init.sides.assets, [{ id: 'shot-1', name: 'shot.png', mime: 'image/png' }, { id: 'photo', name: null, mime: 'image/jpeg' }])
+  assert.ok(JSON.stringify(init).length < 10000) // no HTML and no image data in it
+  h.say({ type: 'content' })
+  const rest = h.posts.slice(1)
+  const parts = rest.filter((m) => m.type === 'html')
+  assert.equal(parts.length, init.sides.htmlParts)
+  assert.deepEqual(parts.map((m) => m.index), [...parts.keys()])
+  assert.equal(parts.map((m) => m.part).join(''), html)
+  assert.deepEqual(rest.slice(parts.length), [{ type: 'asset', id: 'shot-1', dataUrl: PNG }, { type: 'asset', id: 'photo', dataUrl: big }, { type: 'assets-done' }])
+  for (const m of rest) assert.ok(JSON.stringify(m).length <= PAGE_MESSAGE_MAX)
+  // Once: a second ask sends nothing (the content was let go).
+  h.say({ type: 'content' })
+  assert.equal(h.posts.length, 1 + rest.length)
+  host.deactivate()
+})
+
+test('annotate html: a text annotation never answers a content request; bad assets are refused before any overlay', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'T', text: 'plain' })
+  f.handles[0].say({ type: 'content' })
+  assert.equal(f.handles[0].posts.length, 1)
+  await assert.rejects(
+    f.provided.reviewer.annotate({ title: 'U', html: '<p>x</p>', assets: [{ id: 'a', mime: 'image/svg+xml', dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }] }),
+    /^Error: reviewer: assets\[0\]\.mime must be one of/,
+  )
+  await assert.rejects(f.provided.reviewer.annotate({ title: 'U', html: '<p>x</p>', text: 'x' }), /reviewer: pass text or html, not both/)
+  assert.equal(f.handles.length, 1)
+  host.deactivate()
+})
+
+test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: note" notes', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  const sent = []
+  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
+  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'PROJ-1 Fix login', html: '<p>Redirect to /home after login.</p>', url: 'https://x/browse/PROJ-1', key: 'jira:PROJ-1' })
+  const h = f.handles[0]
+  const draft = {
+    global: 'Start here.',
+    notes: [{ id: 'n1', quote: 'Redirect to /home', anchor: { prefix: '', suffix: ' after login.', occurrence: 0, length: 17, at: 0 }, text: 'Which home?' }],
+  }
+  h.say({ type: 'draft', draft })
+  await wait(SAVE_WAIT)
+  assert.deepEqual(store.get('annotate:jira:PROJ-1').notes[0].anchor, draft.notes[0].anchor)
+  h.end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft } })
+  await wait(50)
+  assert.deepEqual(sent, [['t1', 'About PROJ-1 Fix login (https://x/browse/PROJ-1)\n\nStart here.\n\n1. On «Redirect to /home»: Which home?']])
+  assert.equal(store.size, 0)
+  host.deactivate()
+})

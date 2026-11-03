@@ -169,6 +169,11 @@ export interface HostApiDeps {
   listSessions(projectId: string): SessionEntry[]
   /** Any tab's entry (SessionRegistry.get); the scope check is HostApi's. */
   session(tabId: string): SessionEntry | undefined
+  /**
+   * The Claude tab this project's window shows (SessionRegistry.activeTab), for
+   * `SessionInfo.active`. Without it no tab is ever marked active.
+   */
+  activeTab?(projectId: string): string | undefined
   /** The send gate (SessionRegistry.send): types now only when the tab is waiting, else queues. */
   send(tabId: string, text: string): { id: string; delivered: boolean }
   /** Subscribe to registry changes (SessionRegistry.onChange); returns the unsubscribe. */
@@ -288,8 +293,9 @@ export class RateWindow {
 /**
  * The plugin-facing view of one tab. Field by field, never a spread: the queue (texts other
  * plugins or the user sent), the exit code, the delivering flag and the project id stay in main.
+ * `active` (the window shows this tab) is set only when true, so a list has at most one.
  */
-export function sessionInfoOf(e: SessionEntry): SessionInfo {
+export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   const out: { -readonly [K in keyof SessionInfo]: SessionInfo[K] } = {
     tabId: e.tabId,
     status: e.status,
@@ -302,6 +308,7 @@ export function sessionInfoOf(e: SessionEntry): SessionInfo {
   if (e.lastPrompt !== undefined) out.lastPrompt = e.lastPrompt
   if (e.title !== undefined) out.title = e.title
   if (e.steps !== undefined) out.steps = { ...e.steps }
+  if (active) out.active = true
   return out
 }
 
@@ -548,7 +555,13 @@ export class HostApi {
 
   private list(): SessionInfo[] {
     this.alive()
-    return this.deps.listSessions(this.scope.projectId).map(sessionInfoOf)
+    return this.sessionInfos()
+  }
+
+  /** This project's tabs as plugins see them, the shown one marked (ctx.sessions.list and the event). */
+  private sessionInfos(): SessionInfo[] {
+    const active = this.deps.activeTab?.(this.scope.projectId)
+    return this.deps.listSessions(this.scope.projectId).map((e) => sessionInfoOf(e, e.tabId === active))
   }
 
   private send(params: unknown): SendResult {
@@ -1121,7 +1134,7 @@ export class HostApi {
       this.timer = undefined
       if (this.revoked) return
       try {
-        this.emit('sessions', { sessions: this.deps.listSessions(this.scope.projectId).map(sessionInfoOf) })
+        this.emit('sessions', { sessions: this.sessionInfos() })
       } catch (err) {
         this.log(`plugin host ${this.scope.projectId}: sessions event failed: ${errorText(err)}`)
       }

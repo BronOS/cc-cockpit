@@ -309,6 +309,12 @@ on screen, still not sendable.
   changes, so the spinner never causes a broadcast. The tab strip and the Sessions panel show it in
   place of "Claude · folder" / "Claude N"; plugins get it in `SessionInfo.title`. It is not in the
   top strip's cross-window fields: it is made from the prompts.
+- **Active tab.** The renderer reports its tab pane's selection (`tabs.selected`, on every change of
+  `activeId`); main keeps it per project only when the id is one of the sender's project's tabs
+  (`SessionRegistry.setActive`, cleared when the window closes) and plugins get `SessionInfo.active:
+  true` on that tab, absent elsewhere and on every tab while a shell tab is selected. A change is
+  reported for the tabs that gained and lost it, so it reaches `ctx.sessions.onChange` through the
+  usual throttle. It is the selection only, not window focus.
 - **Session gist** (Settings › Appearance and keys › Claude sessions; `app.json` › `sessionGist`, off
   unless exactly `true`): after a turn ends (entry
   moves into *waiting*) and the tab's last five cleaned prompts changed since its last run, main
@@ -752,7 +758,8 @@ The index entry (not the manifest) may set `enabledByDefault`; the project recor
 (`cockpit.browser`) has a webview panel, an app setting `home`, `ccc browser open|url|reload`
 and a skill. The reviewer (`cockpit.reviewer`) opens a changed file as a diff in a two-way html overlay (CodeMirror 6 with
 `@codemirror/merge`), takes notes on selections and one comment per file, and hands the review to Claude (Discuss, New
-session) or to the `editor` service (Edit); its design is in `plugins/reviewer/docs/design.md`. The editor
+session) or to the `editor` service (Edit); its `reviewer` service also takes a plain text from another plugin
+(`annotate`: a ticket, a mail), as text or as allow-list-sanitized HTML with image assets, for notes in the same overlay; its design is in `plugins/reviewer/docs/design.md`. The editor
 (`cockpit.editor`) provides `editor` v1: micro in a terminal overlay, with app settings `autosaveSeconds`, `colorscheme`
 and `microPath` and `ccc edit`; it needs micro installed and says how to install it when it is missing. Files a session
 edits outside its project stay in the built-in viewer: plugins only receive project-relative paths.

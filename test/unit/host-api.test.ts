@@ -124,6 +124,7 @@ beforeEach(() => {
   deps = {
     listSessions: (projectId) => registry.listByProject(projectId),
     session: (tabId) => registry.get(tabId),
+    activeTab: (projectId) => registry.activeTab(projectId),
     send: (tabId, text) => registry.send(tabId, text),
     onSessionsChange: (listener) => registry.onChange(listener),
     openTab: async (projectId, options, windowId) => {
@@ -798,6 +799,30 @@ describe('the sessions event', () => {
     registry.applyHook(mine.id, 'Stop', {})
     await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS * 2)
     expect(events).toHaveLength(1)
+  })
+
+  it('marks the tab the window shows as active, in the list and in an event for a selection change', async () => {
+    vi.useFakeTimers()
+    const events: { event: string; params: unknown }[] = []
+    const call = hostA(events)
+    const one = tabs.create(A, { kind: 'claude' })
+    const two = tabs.create(A, { kind: 'claude' })
+    const theirs = tabs.create(B, { kind: 'claude' })
+    await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS)
+    events.length = 0
+    registry.setActive(A, two.id)
+    registry.setActive(B, theirs.id)
+    const listed = (await call('sessions.list', {})) as { tabId: string; active?: boolean }[]
+    expect(listed.map((s) => [s.tabId, s.active])).toEqual([
+      [one.id, undefined],
+      [two.id, true]
+    ])
+    // Absent, not false, on the others.
+    expect('active' in listed[0]!).toBe(false)
+    await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS)
+    expect(events).toHaveLength(1)
+    const pushed = (events[0]!.params as { sessions: { tabId: string; active?: boolean }[] }).sessions
+    expect(pushed.filter((s) => s.active).map((s) => s.tabId)).toEqual([two.id])
   })
 })
 

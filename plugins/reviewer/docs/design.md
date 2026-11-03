@@ -69,6 +69,8 @@ the whole app, not only per project.
 ```js
 // reviewer v1
 open(path, { tabId? })  // show the review overlay for a file; tabId: the Claude tab the review goes to
+annotate({ title, text, url?, key?, tabId? })  // the same overlay on a plain text (below)
+annotate({ title, html, assets?, url?, key?, tabId? })  // ... or on sanitized HTML (below)
 // editor v1 (implemented by the editor plugin)
 open(path, { line? })
 ```
@@ -76,6 +78,101 @@ open(path, { line? })
 `path` is resolved inside the project folder. The reviewer refuses a path outside it and a path through a
 symlink that leaves the folder. A file over a size cap (about 2 MiB) and a binary file get a notice
 instead of a diff.
+
+### annotate (added to v1, 2026-11-02)
+
+```js
+annotate({ title, text, url?, key?, tabId? })  // -> { opened: true } once the overlay is up
+```
+
+The review overlay on a text another plugin hands over (a Jira issue, a mail), not a file: one
+read-only pane with `text` (markdown colouring, wrapped lines), the same notes on selections, the
+same comment, the same Discuss / New session / Close and tab picker. No diff, no layout toggle, no
+git, no Edit (the `e` key does nothing). The header shows `title` and `url` as plain text.
+
+Inputs come from any plugin of the project, so the host checks them (`dist/lib/review.js`,
+`annotateInput`) and rejects with `reviewer: <field> ...` before anything is shown:
+
+| Field | Rule |
+|---|---|
+| `title` | a string; whitespace and control runs become one space; 1-200 characters after that |
+| `text` | a string of at most 400 KiB of UTF-8 (a file side's cap), no NUL; empty is allowed |
+| `url` | absent/null, or an `http:`/`https:` URL of at most 2048 characters with no whitespace or controls |
+| `key` | absent/null (then `title:` + 32 hex chars of the title's SHA-256), or 1-200 characters of `A-Z a-z 0-9 . _ : @ # + = ~ / -` |
+| `tabId` | absent/null or a string |
+
+One overlay per key: a second call with the same key brings it to the front (the new text is not
+shown; close it first). The draft is kept in `ctx.storage` under `annotate:<key>` (hashed past the
+200-character key limit), a namespace apart from the files' `draft:<path>`, and behaves as a file's:
+it survives Esc and Close, and goes once Claude has the whole review. An init message over the page
+limit (a large text plus escaping plus its draft) is refused like a file's.
+
+Claude receives, through the same caps and quote shortening as a file review:
+
+```
+About PROJ-1 Fix the login redirect (https://example.atlassian.net/browse/PROJ-1)
+
+<global comment, if any>
+
+1. Lines 3-4:
+   > the selected text,
+   > quoted line by line
+   the note
+```
+
+There are no old/new sides. It opens with `About`, so it never starts with `/`, `!`, `#` or `&`.
+
+### annotate with HTML (added to v1, 2026-11-02)
+
+```js
+annotate({ title, html, assets?, url?, key?, tabId? })  // exactly one of text and html
+```
+
+For a source whose content is rich (a Jira issue: panels, mentions, tables, comments, screenshots), plain text loses
+too much. The page renders the HTML as a document instead of the text pane; everything else (title, url, key, tabId,
+draft, buttons, picker) is as with `text`. The allowed elements, attributes and classes are listed in the README
+("HTML mode").
+
+- **Sanitizing.** In the page, before anything touches the DOM: `DOMParser` (an inert document) and an allow-list walk
+  (`src/page/sanitize.mjs`) into plain data, from which fresh elements are built with `createElement` /
+  `setAttribute` / text nodes. No `innerHTML`, and nothing is serialized and re-parsed, so mutation XSS has no
+  parser round trip to use. A vetted library (DOMPurify) was the alternative; it returns markup or a fragment built
+  from the browser's own clone of the input, and adding it meant a new dependency in the bundle for less than this
+  walk needs to do (class allow-list, asset references). The page CSP blocks script anyway; the sanitizer does not
+  count on it. Tests: `test/html.test.js` (the walk over fake nodes, links, images, anchors) and the app's
+  `test/e2e/reviewer-annotate.spec.ts` (the real parser, with script, onerror, style, javascript: and an asset).
+- **Links** are not opened: a plugin page cannot open a URL outside the app (no plugin API for it) and the frame may
+  not navigate. A click shows the URL in the status line. A gap, if the need is real: an `openExternal` for plugins.
+- **Images** are assets the caller hands over as base64 data: URLs (png, jpeg, gif, webp; never SVG, which is a
+  document with script and links of its own); the page CSP allows `data:` images. `<img src="asset:<id>">` names
+  one; any other src is dropped, so the page loads nothing from the network or the disk.
+- **Limits** (`dist/lib/review.js`, `annotateInput`): html at most 2 MiB of UTF-8, no NUL; at most 30 assets, each
+  dataUrl at most 1,000,000 chars, 8 MiB in all; ids 1-100 of `A-Z a-z 0-9 . _ -`, unique.
+- **Transport.** A page message takes 1,040,384 chars of JSON, and until the page has loaded main queues at most 100
+  messages or 8 MiB for it (dropping, with a log line, what does not fit). So the init carries no content, only
+  `htmlParts` and the asset list (id, name, mime); once the page has the init it posts `{ type: 'content' }` and the
+  host answers with the HTML in parts of at most 900,000 JSON chars (`splitParts`: a part is at most 150,000 chars,
+  never cutting a surrogate pair), one `{ type: 'asset', id, dataUrl }` per asset, and `{ type: 'assets-done' }`.
+  The page renders when the last part is in, shows a placeholder for an image until its asset comes, and its alt text
+  after `assets-done` (CSS generated text, so no text node changes and anchors keep their offsets).
+- **Notes** anchor on text, not lines: `{ id, quote, anchor: { prefix, suffix, occurrence, length, at }, text }`
+  (`src/page/anchor.mjs`). Offsets are into the concatenated text nodes of the rendered document. `quote` is the
+  selection's first 500 chars, `length` its full length, `prefix`/`suffix` 32 chars around it (the host keeps up to
+  64), `occurrence` how many matches of the quote come before it, `at` its offset (orders the notes). Reopening
+  scores every match of the quote (prefix match, suffix match, the same occurrence) and highlights the best with the
+  CSS Custom Highlight API, which paints ranges without changing the DOM; a quote that is gone leaves the note listed,
+  marked "not found in this version". The `a` key and the Add note button work as in a file review.
+- **Message:** `About <title> (<url>)`, the comment, then `N. On «quote»: note` in text order; the quote made one line,
+  shortened by the same ladder as file reviews but never below 40 chars (it is all that locates the note), with
+  ` …` when shortened or when the selection was longer than its stored quote.
+- **Esc.** The image lightbox closes on a click or a key, but Esc closes the overlay itself (draft kept): main takes
+  Esc before the page sees it, and a page has no way to claim it.
+
+### Which tab the picker starts on
+
+For `open`, `annotate` and a click alike: `tabId` when it is one of the window's live Claude tabs
+(a click names the clicked tab), else the tab the window shows (`SessionInfo.active`, core since
+2026-11-02), else the only tab when there is one; otherwise the page asks.
 
 ## Diff base: the last commit
 

@@ -1,0 +1,11 @@
+{
+  "id": "test.annotatecaller",
+  "name": "Annotate Caller",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "html", "title": "Annotate: HTML" }]
+  },
+  "services": { "uses": { "reviewer": 1 } }
+}
