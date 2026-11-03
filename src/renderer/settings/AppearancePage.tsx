@@ -2,10 +2,11 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { AppearanceView, CccCommandView, KeyBindingRow, UpdateState } from '../../shared/ipc'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
 import { chordFromEvent } from '../../shared/keys'
+import { SESSION_FILES_SHOWN_RANGE } from '../../shared/session-files'
 import { captureKeys, displayChord, fuzzyFilter } from '../commands/keybindings'
 import { SearchIcon } from './icons'
 import { TabCommandsEditor } from './TabCommandsEditor'
-import { TerminalFontSettings } from './TerminalFontSettings'
+import { NumberField, TerminalFontSettings } from './TerminalFontSettings'
 import { WindowBackgroundSettings } from './WindowBackgroundSettings'
 import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
@@ -199,6 +200,18 @@ export function AppearancePage(): React.JSX.Element {
                   }}
                 />
               </Row>
+              <NumberField
+                label="Changed files per session"
+                help="How many changed files each session lists in the Sessions panel; the rest are behind Show all under the list."
+                ariaLabel="Changed files per session"
+                range={SESSION_FILES_SHOWN_RANGE}
+                step={1}
+                value={data.sessionFilesShown}
+                disabled={busy !== null}
+                onCommit={(value) => {
+                  void run('sessionFilesShown', () => window.cockpit.invoke('settings.sessionFilesShownSet', { value })).then(reload)
+                }}
+              />
             </div>
           </Group>
 

@@ -1280,6 +1280,14 @@ function start(): void {
         })
       }
     },
+    sessionFilesShown: {
+      get: () => registry.app.data.sessionFilesShown,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.sessionFilesShown = next
+        })
+      }
+    },
     tabCloseSide: {
       get: () => registry.app.data.tabCloseSide,
       set: (next) => {
@@ -1414,6 +1422,7 @@ function start(): void {
     setTabExit: (value) => appearance.setTabExit(value),
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
     setSessionGist: (value) => appearance.setSessionGist(value),
+    setSessionFilesShown: (value) => appearance.setSessionFilesShown(value),
     confirmTabClose: () => appearance.confirmTabClose(),
     setConfirmTabClose: (value) => appearance.setConfirmTabClose(value),
     setTabCloseSide: (value) => appearance.setTabCloseSide(value),

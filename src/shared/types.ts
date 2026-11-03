@@ -164,6 +164,12 @@ export interface AppSettings {
    */
   tabCloseSide?: TabCloseSide
   /**
+   * How many changed files each session lists in the Sessions panel; the rest sit behind a
+   * "Show all" button under the list. Absent or damaged (the file is user-writable) reads as 10
+   * (src/shared/session-files.ts). Pushed to every window (`prefs.changed`).
+   */
+  sessionFilesShown?: number
+  /**
    * The font every terminal draws with (tabs and terminal overlays), apart from the app UI's.
    * Absent = the defaults; each field that is missing or damaged (the file is user-writable) reads
    * as its own default (main/settings/terminal-font.ts). Pushed to every window (`prefs.changed`).

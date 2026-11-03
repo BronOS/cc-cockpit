@@ -1423,6 +1423,22 @@ iframe:focus-visible {
   font-size: var(--cc-text-xs);
   color: var(--cc-fg-subtle);
 }
+/* "Show all (N more)" / "Hide (N)" under a list longer than the sessionFilesShown setting: a quiet
+   text button, so it reads as part of the list rather than another file. */
+.session-files-more {
+  margin: 2px 0 0;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: none;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-muted);
+  cursor: pointer;
+}
+.session-files-more:hover {
+  color: var(--cc-fg);
+  text-decoration: underline;
+}
 
 .session-file {
   display: flex;

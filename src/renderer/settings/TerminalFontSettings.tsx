@@ -234,8 +234,10 @@ function DraftInput(props: {
   )
 }
 
-function NumberField(props: {
+export function NumberField(props: {
   label: string
+  /** The line under the label, as on any settings row. */
+  help?: string
   /** Shown after the field (px); the value sent is the bare number. */
   unit?: string
   ariaLabel: string
@@ -248,7 +250,7 @@ function NumberField(props: {
   const { range } = props
   const id = useId()
   return (
-    <Row label={props.label} htmlFor={id}>
+    <Row label={props.label} htmlFor={id} help={props.help}>
       <span className="settings-number">
         <DraftInput
           id={id}

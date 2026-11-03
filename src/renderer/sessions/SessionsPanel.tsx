@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { SessionDetail } from '../../shared/ipc'
+import { usePrefs } from '../prefs/prefs-store'
 import { StatusDot } from '../status/StatusDot'
 import { statusText } from '../status/strip-order'
 import { useSessions } from '../status/use-sessions'
@@ -49,6 +50,13 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
   // The file whose last click main refused (the tab closed, the file left the record), so the
   // click does not just do nothing. Cleared by the next click.
   const [refused, setRefused] = useState<string | undefined>()
+  // Only the first `sessionFilesShown` files (app setting, default 10) are listed until "Show all";
+  // a long session would otherwise push every other session out of the panel. The choice is kept
+  // per session while the panel lives (the item is keyed by tab id), not stored: it is a glance.
+  const { sessionFilesShown } = usePrefs()
+  const [allFiles, setAllFiles] = useState(false)
+  const hiddenFiles = Math.max(0, session.files.length - sessionFilesShown)
+  const files = allFiles ? session.files : session.files.slice(0, sessionFilesShown)
   return (
     <li className="session-item" data-tab-id={session.tabId} data-status={session.status}>
       <div className="session-head">
@@ -112,7 +120,7 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
           {session.files.length} changed {session.files.length === 1 ? 'file' : 'files'}
         </div>
         <ul className="session-files" aria-label="Changed files">
-          {session.files.map((file) => (
+          {files.map((file) => (
             <li key={file}>
               <button
                 type="button"
@@ -144,6 +152,16 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
             </li>
           ))}
         </ul>
+        {hiddenFiles > 0 && (
+          <button
+            type="button"
+            className="session-files-more"
+            aria-expanded={allFiles}
+            onClick={() => setAllFiles(!allFiles)}
+          >
+            {allFiles ? `Hide (${hiddenFiles})` : `Show all (${hiddenFiles} more)`}
+          </button>
+        )}
         </div>
       )}
       {refused !== undefined && (

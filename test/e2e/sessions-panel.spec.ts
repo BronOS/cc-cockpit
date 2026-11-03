@@ -260,3 +260,31 @@ test('a plugin that opens files takes the click; the built-in viewer opens when 
   await overlay.getByRole('button', { name: 'Close overlay' }).click()
   await expect(overlay).toHaveCount(0)
 })
+
+test('past the "Changed files per session" setting the rest are behind Show all, and every window follows a change', async ({
+  cockpit
+}) => {
+  const { page, projectDir } = cockpit
+  const files = ['a.txt', 'b.txt', 'c.txt'].map((n) => join(projectDir, n))
+  for (const f of files) writeFileSync(f, lines(f))
+  // The setting goes through main like the settings page sends it; prefs.changed brings it back.
+  await page.evaluate<void>("window.cockpit.invoke('settings.sessionFilesShownSet', { value: 2 })")
+  await openPanel(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
+  for (const f of files) await cockpit.typeLine(`/edit ${f}`)
+
+  const item = page.locator('.session-item')
+  await expect(item.locator('.session-files-caption')).toHaveText('3 changed files')
+  await expect(item.locator('.session-file')).toHaveCount(2)
+  const more = item.getByRole('button', { name: 'Show all (1 more)' })
+  await more.click()
+  await expect(item.locator('.session-file')).toHaveCount(3)
+  await item.getByRole('button', { name: 'Hide (1)' }).click()
+  await expect(item.locator('.session-file')).toHaveCount(2)
+
+  // A larger setting shows them all and drops the button, without a reload.
+  await page.evaluate<void>("window.cockpit.invoke('settings.sessionFilesShownSet', { value: 10 })")
+  await expect(item.locator('.session-file')).toHaveCount(3)
+  await expect(item.locator('.session-files-more')).toHaveCount(0)
+})

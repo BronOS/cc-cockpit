@@ -28,6 +28,7 @@
 import { own } from '../../shared/guards'
 import type { AppearanceView, KeyBindingRow, ShellPrefs } from '../../shared/ipc'
 import { normalizeChord, type KeyPlatform } from '../../shared/keys'
+import { SESSION_FILES_SHOWN_RANGE, sessionFilesShownOf } from '../../shared/session-files'
 import type { Theme } from '../../shared/theme'
 import type { TerminalFont } from '../../shared/terminal-font'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
@@ -74,6 +75,11 @@ export interface AppearanceDeps {
   sessionGist: { get(): unknown; set(next: boolean): void }
   /** The session gist was turned on or off: start or cancel runs, remove the gists (SessionGist.settingChanged). */
   sessionGistChanged(): void
+  /**
+   * `app.json` › `sessionFilesShown`, as stored (unvalidated). The Sessions panel draws from it, so
+   * a change is pushed to every window (`prefsChanged`), like `tabCloseSide`.
+   */
+  sessionFilesShown: { get(): unknown; set(next: number): void }
   /**
    * `app.json` › `confirmTabClose`, as stored (unvalidated). The renderer reads it at each close a
    * user starts (`settings.confirmTabClose`), so a change applies to the next close in any window.
@@ -156,6 +162,7 @@ export class AppearanceService {
       tabExit: tabExitOf(this.deps.tabExit.get()),
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
+      sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
       confirmTabClose: this.confirmTabClose(),
       tabCloseSide: tabCloseSideOf(this.deps.tabCloseSide.get()),
       terminalFont: terminalFontOf(this.deps.terminalFont.get()),
@@ -206,6 +213,16 @@ export class AppearanceService {
     if (before !== value) this.deps.sessionGistChanged()
   }
 
+  /** How many changed files each session lists in the Sessions panel; every window follows. */
+  setSessionFilesShown(value: unknown): void {
+    const { min, max } = SESSION_FILES_SHOWN_RANGE
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`give a whole number from ${min} to ${max}`)
+    }
+    this.deps.sessionFilesShown.set(value)
+    this.deps.prefsChanged()
+  }
+
   /** Whether closing a running tab asks first (default applied). */
   confirmTabClose(): boolean {
     return confirmTabCloseOf(this.deps.confirmTabClose.get())
@@ -221,6 +238,7 @@ export class AppearanceService {
   prefs(): ShellPrefs {
     return {
       tabCloseSide: tabCloseSideOf(this.deps.tabCloseSide.get()),
+      sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
       terminalFont: terminalFontOf(this.deps.terminalFont.get()),
       backgroundOpacity: this.windowBackground().opacity,
       seeThroughArea: this.windowBackground().area

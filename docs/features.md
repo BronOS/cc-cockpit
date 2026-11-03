@@ -77,6 +77,8 @@ behind it are in [design.md](design.md).
 - The last prompt under each session is what the person typed: Claude Code's own markup in a user turn is taken out
   (a `<system-reminder>`, a `<task-notification>`, an agent message, a `!` command's output). A turn made only of that
   markup keeps the prompt before it; a slash command reads `/name args`, a shell command `! command`.
+- Changed files per session (Settings > Appearance and keys > Claude sessions, 10 by default): the Sessions panel lists
+  that many of a session's changed files; the rest are behind Show all (N more) / Hide (N) under the list.
 - Session gist (off by default; Settings > Appearance and keys > Claude sessions): after a turn ends, Claude Haiku
   writes a one-line summary of the session from its last five prompts, shown in the Sessions panel in place of the last
   prompt (which stays as the tooltip). It uses your Claude Code login (`claude -p --model haiku --safe-mode`, so none of

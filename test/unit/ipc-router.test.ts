@@ -253,7 +253,7 @@ describe('core handlers', () => {
         external.push(url)
       },
       currentTheme: () => BUILTIN_THEMES[0]!,
-      shellPrefs: () => ({ tabCloseSide: 'left', terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }),
+      shellPrefs: () => ({ tabCloseSide: 'left', sessionFilesShown: 10, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }),
       commands: (projectId) => ({
         commands: [{ id: projectId, title: 't', source: 'core' }],
         conflicts: []
@@ -417,7 +417,7 @@ describe('core handlers', () => {
 
   it('prefs.get answers every window kind with the shell prefs', async () => {
     const { ipc } = core()
-    const prefs = { tabCloseSide: 'left', terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }
+    const prefs = { tabCloseSide: 'left', sessionFilesShown: 10, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }
     await expect(ipc.invoke('prefs.get', 11)).resolves.toEqual(prefs)
     await expect(ipc.invoke('prefs.get', 13)).resolves.toEqual(prefs)
   })
@@ -990,7 +990,7 @@ describe('registerProjectSettingsHandlers', () => {
         rec('saveProjectPluginSettings', { ok: true as const, values: {} })(...args),
       movePanel: rec('movePanel', undefined),
       setProjectColor: rec('setProjectColor', 'blue'),
-      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
+      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, sessionFilesShown: 10, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
       setTheme: rec('setTheme', undefined),
       setKey: rec('setKey', undefined),
       setTabExit: rec('setTabExit', undefined),
@@ -999,6 +999,7 @@ describe('registerProjectSettingsHandlers', () => {
       confirmTabClose: rec('confirmTabClose', false),
       setConfirmTabClose: rec('setConfirmTabClose', undefined),
       setTabCloseSide: rec('setTabCloseSide', undefined),
+      setSessionFilesShown: rec('setSessionFilesShown', undefined),
       setTerminalFont: rec('setTerminalFont', undefined),
       setWindowBackground: rec('setWindowBackground', undefined),
       setTabCommands: rec('setTabCommands', [])
@@ -1010,7 +1011,7 @@ describe('registerProjectSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = projectSettingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(17)
+    expect(channels).toHaveLength(18)
     for (const channel of channels) {
       await expect(ipc.invoke(channel, 13, [{}])).rejects.toThrow(/not a project window/)
     }
@@ -1065,6 +1066,16 @@ describe('registerProjectSettingsHandlers', () => {
     expect(calls).toEqual([
       ['setSessionGist', true],
       ['setSessionGist', 'yes']
+    ])
+  })
+
+  it('passes the changed-files count on as unknown for the service to check', async () => {
+    const { ipc, calls } = projectSettingsSetup()
+    await ipc.invoke('settings.sessionFilesShownSet', 11, [{ value: 20 }])
+    await ipc.invoke('settings.sessionFilesShownSet', 12, [{ value: 'many' }])
+    expect(calls).toEqual([
+      ['setSessionFilesShown', 20],
+      ['setSessionFilesShown', 'many']
     ])
   })
 

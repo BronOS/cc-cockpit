@@ -315,6 +315,11 @@ on screen, still not sendable.
   true` on that tab, absent elsewhere and on every tab while a shell tab is selected. A change is
   reported for the tabs that gained and lost it, so it reaches `ctx.sessions.onChange` through the
   usual throttle. It is the selection only, not window focus.
+- **Changed files per session** (Settings › Appearance and keys › Claude sessions; `app.json` ›
+  `sessionFilesShown`, a whole number 1–500, default 10, anything damaged reads as 10;
+  `src/shared/session-files.ts`): the Sessions panel lists that many of a card's changed files and
+  puts the rest behind Show all (N more) / Hide (N). A ShellPrefs field (`prefs.changed`), so every
+  window redraws at once; the open/closed choice is the card's own state, not stored.
 - **Session gist** (Settings › Appearance and keys › Claude sessions; `app.json` › `sessionGist`, off
   unless exactly `true`): after a turn ends (entry
   moves into *waiting*) and the tab's last five cleaned prompts changed since its last run, main

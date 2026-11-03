@@ -157,6 +157,7 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
       sessionGistChanged: () => {},
       confirmTabClose: { get: () => undefined, set: () => {} },
       tabCloseSide: { get: () => undefined, set: () => {} },
+      sessionFilesShown: { get: () => undefined, set: () => {} },
       terminalFont: { get: () => undefined, set: () => {} },
       prefsChanged: () => {},
       tabCommands: { get: () => r.state.app },

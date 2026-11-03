@@ -459,6 +459,8 @@ export interface KeyBindingRow {
  */
 export interface ShellPrefs {
   tabCloseSide: TabCloseSide
+  /** Changed files each session lists in the Sessions panel before "Show all" (AppSettings.sessionFilesShown). */
+  sessionFilesShown: number
   /** What every terminal draws with (tabs and terminal overlays). */
   terminalFont: TerminalFont
   /**
@@ -498,6 +500,8 @@ export interface AppearanceView {
   claudeTabOnOpen: boolean
   /** Haiku writes a one-line gist of each Claude session (AppSettings.sessionGist, default off). */
   sessionGist: boolean
+  /** Changed files each session lists before "Show all" (AppSettings.sessionFilesShown, default applied). */
+  sessionFilesShown: number
   /** Ask before closing a tab that is still running (AppSettings.confirmTabClose, default applied). */
   confirmTabClose: boolean
   /** Which end of each tab the close button sits at (AppSettings.tabCloseSide, default applied). */
@@ -748,6 +752,8 @@ export interface IpcInvokeMap {
   'settings.claudeTabOnOpenSet': { req: { value: boolean }; res: void }
   /** Turn the session gist on or off (AppSettings.sessionGist). Off cancels runs and removes every gist. */
   'settings.sessionGistSet': { req: { value: boolean }; res: void }
+  /** How many changed files each session lists in the Sessions panel (AppSettings.sessionFilesShown). Every window follows. */
+  'settings.sessionFilesShownSet': { req: { value: number }; res: void }
   /**
    * Whether closing a running tab asks first (AppSettings.confirmTabClose, default applied). Read
    * by the tab bar at each close, like `tabs.commands` at each menu open, so a change made in any
@@ -1012,6 +1018,7 @@ export const INVOKE_CHANNELS = [
   'settings.tabExitSet',
   'settings.claudeTabOnOpenSet',
   'settings.sessionGistSet',
+  'settings.sessionFilesShownSet',
   'settings.confirmTabClose',
   'settings.confirmTabCloseSet',
   'settings.tabCloseSideSet',
