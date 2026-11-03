@@ -1,7 +1,8 @@
 // ctx.files (friction round 1, Task 12): a plugin takes over the click on a changed file in core's
 // Sessions panel. Main decides which plugin gets the click (the project's pick, src/shared/services.ts
 // selectOpenFile), checks the tab and the path, and sends this host `files.open { pluginId, path,
-// tabId }`; the answer is the ack. `false` (nobody listening, every listener failed) and no answer
+// tabId? }`; the answer is the ack. `tabId` is absent when the open came from a plugin's
+// `ctx.files.open` without a tab of this project (the file tree), not from a tab's list. `false` (nobody listening, every listener failed) and no answer
 // within main's bound both make main open its built-in viewer, so the user always sees something.
 //
 // The ack must come quickly but a listener may legitimately run long (it opens an overlay and awaits
@@ -9,6 +10,11 @@
 // rejection before then is a failure, a promise still pending then counts as handled. The wait stays
 // well inside main's 2 s (OPEN_FILE_ACK_MS in host-manager.ts), so a host that is merely busy for a
 // moment is not mistaken for one that failed.
+//
+// `ctx.files.open(path, { tabId? })` is the other direction: a request to main (`files.open`, the same
+// method name the other way; src/main/plugins/host-api.ts), which routes the file exactly like a click
+// and answers `{ via }`. Main checks the path and the tab; here only the shapes, so the mistake
+// surfaces as a rejection at the call site. Any plugin may call it, declared or not.
 import type { Disposer, OpenFileRequest, PluginContext } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 
@@ -18,10 +24,15 @@ export const OPEN_LISTENER_WAIT_MS = 1_000
 type Listener = (req: OpenFileRequest) => unknown
 
 export interface FilesApiDeps {
+  pluginId: string
   /** The manifest declares `contributes.openFile` (HostPluginSpec.openFile). */
   declared: boolean
   /** Throws when the plugin is deactivated. */
   alive(): void
+  /** A request to main. */
+  call(method: string, params: unknown): Promise<unknown>
+  /** Runs `body` unless the plugin is deactivated; any throw becomes a rejection. */
+  guardAsync<T>(body: () => Promise<T>): Promise<T>
   /** This plugin's listeners (owned by the runtime, so dispose drops them with it). */
   listeners: Set<Listener>
 }
@@ -41,17 +52,37 @@ export function createFilesApi(deps: FilesApiDeps): PluginContext['files'] {
       return () => {
         deps.listeners.delete(entry)
       }
-    }
+    },
+    open: (path: string, options?: { tabId?: string }): Promise<{ via: 'plugin' | 'builtin' }> =>
+      deps.guardAsync(async () => {
+        if (typeof path !== 'string' || path === '') throw new TypeError('files.open needs a path relative to the project folder')
+        if (options !== undefined && (options === null || typeof options !== 'object')) {
+          throw new TypeError('files.open: options must be an object')
+        }
+        const tabId: unknown = options?.tabId
+        if (tabId !== undefined && typeof tabId !== 'string') throw new TypeError('files.open: tabId must be a string')
+        const answer = (await deps.call('files.open', {
+          pluginId: deps.pluginId,
+          path,
+          ...(tabId !== undefined ? { tabId } : {})
+        })) as { via?: unknown } | null
+        const via = answer?.via
+        if (via !== 'plugin' && via !== 'builtin') throw new Error('files.open: unexpected answer from the app')
+        return { via }
+      })
   })
 }
 
-/** Main's `files.open` params, checked (main built them; the shapes are verified anyway). */
-export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId: string } {
+/**
+ * Main's `files.open` params, checked (main built them; the shapes are verified anyway). `tabId` is
+ * optional: absent for a ctx.files.open that named no tab of this project.
+ */
+export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string } {
   const { pluginId, path, tabId } = (params ?? {}) as Record<string, unknown>
-  if (typeof pluginId !== 'string' || typeof path !== 'string' || typeof tabId !== 'string') {
-    throw new Error('files.open: pluginId, path and tabId must be strings')
+  if (typeof pluginId !== 'string' || typeof path !== 'string' || (tabId !== undefined && typeof tabId !== 'string')) {
+    throw new Error('files.open: pluginId and path must be strings, tabId a string when present')
   }
-  return { pluginId, path, tabId }
+  return tabId !== undefined ? { pluginId, path, tabId } : { pluginId, path }
 }
 
 /**
@@ -61,7 +92,7 @@ export function parseOpenFile(params: unknown): { pluginId: string; path: string
  */
 export async function runOpenListeners(
   listeners: Iterable<Listener>,
-  req: { path: string; tabId: string },
+  req: { path: string; tabId?: string },
   log: (message: string) => void,
   waitMs = OPEN_LISTENER_WAIT_MS
 ): Promise<boolean> {
@@ -76,7 +107,8 @@ export async function runOpenListeners(
       list.map((listener) => {
         // Through a resolved promise, so a synchronous throw lands in the same catch as a rejection.
         const run = Promise.resolve()
-          .then(() => listener(Object.freeze({ path: req.path, tabId: req.tabId })))
+          // No `tabId` key at all when there is none, so `'tabId' in req` agrees with the type.
+          .then(() => listener(Object.freeze(req.tabId !== undefined ? { path: req.path, tabId: req.tabId } : { path: req.path })))
           .then(
             () => true,
             (err: unknown) => {

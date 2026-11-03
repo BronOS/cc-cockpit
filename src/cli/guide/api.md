@@ -139,15 +139,24 @@ with full Node access.
   a disposer. Needs `"contributes": { "openFile": { "title": "Review" } }` (`plugins` topic), else
   it throws. `listener({ path, tabId })` gets the file relative to the project folder (`src/a.ts`,
   `/` separators, never outside the project) and the Claude tab whose list was clicked; both come
-  from the app. Clicks reach the plugin only when the project uses it to open files: it is the
+  from the app. `tabId` is absent when the open did not come from a tab (a `ctx.files.open` call
+  without one), so check it before use. Opens reach the plugin only when the project uses it to open files: it is the
   only enabled plugin declaring `openFile`, or the one picked in Settings > Plugins ("Plugin used
   to open files", where "Built-in viewer" is also a choice). The built-in viewer (a diff or the
   file in a pager) opens instead when the plugin is not active, has no listener, or every listener
   throws or rejects within 1 s; a listener still running after 1 s counts as handled, so one that
   awaits an overlay is fine. The app waits at most 2 s for the host. A file outside the project
   (a session can write anywhere: `/tmp`, another repo) always opens in the built-in viewer, so a
-  plugin only ever receives project-relative paths. Only this click goes through the hook: other plugins that
-  want to open a file call a service of yours.
+  plugin only ever receives project-relative paths. Clicks and `ctx.files.open` calls (below) both
+  reach the listener.
+- `ctx.files.open(path, { tabId }?)`: open a project file the way a Sessions panel click does, with
+  the person's "Plugin used to open files" pick (that plugin's `onOpen` listener; it may be your
+  own), else the built-in viewer. Resolves `{ via: 'plugin' | 'builtin' }`. `path` is relative to the
+  project folder with `/` separators; it rejects for an absolute path, a `..` segment, a path whose
+  real path (symlinks resolved) is outside the project, a missing file or one that is not a regular
+  file. `tabId` is passed to the listener when it is a Claude tab of this project, else silently
+  dropped. Needs no manifest declaration; at most 20 calls per 10 s per plugin and window. Use it
+  instead of calling another plugin's service directly, so the person's pick holds.
 
 ## Commands and misc
 

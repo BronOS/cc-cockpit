@@ -1,13 +1,24 @@
 // The open-file hook (friction round 1, Task 12): which plugin a Sessions panel file click goes to
 // (the shared rule), main's routing with its checks and the built-in viewer as the fallback, the
 // pick on the Plugins page, and the host's `ctx.files.onOpen` with its ack.
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
 import { OPEN_LISTENER_WAIT_MS, runOpenListeners } from '../../src/host/ctx/files'
 import { parsePluginSpecs } from '../../src/host/loader'
 import { ServiceChoices } from '../../src/main/plugins/service-choices'
 import type { DiffTab } from '../../src/main/sessions/open-diff'
-import { projectRelativePath, routeOpenFile, type OpenFileRouteDeps } from '../../src/main/sessions/open-file'
+import type { OverlaySpec } from '../../src/main/overlays/overlay-manager'
+import { openProjectFileDiff, type OpenDiffOptions } from '../../src/main/sessions/open-diff'
+import {
+  projectRelativePath,
+  resolveProjectFile,
+  routeOpenFile,
+  routeProjectFile,
+  type OpenFileRouteDeps
+} from '../../src/main/sessions/open-file'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, openFileStatus, selectOpenFile, type OpenFilePlugin } from '../../src/shared/services'
 import { hostSpec } from '../fakes/host-spec'
 
@@ -113,7 +124,7 @@ describe('routeOpenFile', () => {
   const caller = { windowId: 7, projectId: P }
 
   function setup(options: { handler?: string | null; deliver?: OpenFileRouteDeps['deliver']; tabs?: Record<string, DiffTab> } = {}) {
-    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId: string } }> = []
+    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId?: string } }> = []
     const builtin: Array<{ tabId: string; file: string }> = []
     const logs: string[] = []
     const deps: OpenFileRouteDeps = {
@@ -130,6 +141,9 @@ describe('routeOpenFile', () => {
       builtin: async (_caller, tabId, file) => {
         builtin.push({ tabId, file })
         return true
+      },
+      builtinFile: async () => {
+        throw new Error('not for a click')
       },
       delivering: new Set(),
       realpath: (p) => p,
@@ -243,6 +257,173 @@ describe('routeOpenFile', () => {
     ack(true)
     await again
     expect(count).toBe(2)
+  })
+})
+
+describe('resolveProjectFile / routeProjectFile (ctx.files.open)', () => {
+  let root: string
+  let proj: string
+  const caller = { windowId: 7, projectId: P }
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'cc-open-file-')))
+    proj = join(root, 'proj')
+    mkdirSync(join(proj, 'src'), { recursive: true })
+    writeFileSync(join(proj, 'src', 'a.ts'), 'a')
+    writeFileSync(join(root, 'secret.txt'), 's')
+    // One link out of the project, one that stays inside.
+    symlinkSync(root, join(proj, 'out'))
+    symlinkSync(join(proj, 'src'), join(proj, 'in'))
+  })
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('accepts a file inside, normalized, and one through a link that stays inside', async () => {
+    await expect(resolveProjectFile(proj, 'src/a.ts')).resolves.toBe('src/a.ts')
+    await expect(resolveProjectFile(proj, './src//a.ts')).resolves.toBe('src/a.ts')
+    await expect(resolveProjectFile(proj, 'in/a.ts')).resolves.toBe('in/a.ts')
+  })
+
+  it('refuses absolute paths, ".." segments, a link out, a missing path and a directory', async () => {
+    await expect(resolveProjectFile(proj, join(proj, 'src', 'a.ts'))).rejects.toThrow('relative to the project folder')
+    await expect(resolveProjectFile(proj, 'C:/x')).rejects.toThrow('relative to the project folder')
+    await expect(resolveProjectFile(proj, '../secret.txt')).rejects.toThrow('".." segments')
+    await expect(resolveProjectFile(proj, 'src/../src/a.ts')).rejects.toThrow('".." segments')
+    await expect(resolveProjectFile(proj, 'out/secret.txt')).rejects.toThrow('outside the project folder')
+    await expect(resolveProjectFile(proj, 'src/nope.ts')).rejects.toThrow('no such file')
+    await expect(resolveProjectFile(proj, 'src')).rejects.toThrow('not a regular file')
+    await expect(resolveProjectFile(proj, './')).rejects.toThrow('names the project folder')
+    await expect(resolveProjectFile(proj, '')).rejects.toThrow('non-empty string')
+    await expect(resolveProjectFile(proj, 5)).rejects.toThrow('non-empty string')
+    await expect(resolveProjectFile(proj, 'src/a\0.ts')).rejects.toThrow('NUL')
+  })
+
+  function setup(options: { handler?: string | null; deliver?: OpenFileRouteDeps['deliver']; tabs?: Record<string, DiffTab> } = {}) {
+    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId?: string } }> = []
+    const builtinFiles: Array<{ projectDir: string; path: string }> = []
+    const deps: OpenFileRouteDeps = {
+      tab: (id) => (options.tabs ?? { t1: { projectId: P, cwd: proj, files: [] }, t2: { projectId: OTHER, cwd: proj, files: [] } })[id],
+      projectPath: () => proj,
+      windowOf: () => 7,
+      handler: async () => (options.handler === undefined ? 'a.tree' : options.handler),
+      deliver:
+        options.deliver ??
+        (async (projectId, pluginId, req) => {
+          delivered.push({ projectId, pluginId, req })
+          return true
+        }),
+      builtin: async () => {
+        throw new Error('not for ctx.files.open')
+      },
+      builtinFile: async (_caller, projectDir, path) => {
+        builtinFiles.push({ projectDir, path })
+        return true
+      },
+      delivering: new Set(),
+      log: () => {}
+    }
+    return { deps, delivered, builtinFiles }
+  }
+
+  it('hands the checked path to the picked plugin, with no tabId key when none was given', async () => {
+    const { deps, delivered, builtinFiles } = setup()
+    await expect(routeProjectFile(deps, caller, './src/a.ts')).resolves.toBe('plugin')
+    expect(delivered).toEqual([{ projectId: P, pluginId: 'a.tree', req: { path: 'src/a.ts' } }])
+    expect('tabId' in delivered[0]!.req).toBe(false)
+    expect(builtinFiles).toEqual([])
+  })
+
+  it('passes a tab of this project on, and drops a foreign or unknown one without an error', async () => {
+    const { deps, delivered } = setup()
+    await routeProjectFile(deps, caller, 'src/a.ts', 't1')
+    await routeProjectFile(deps, caller, 'src/a.ts', 't2')
+    await routeProjectFile(deps, caller, 'src/a.ts', 'nope')
+    expect(delivered.map((d) => d.req)).toEqual([{ path: 'src/a.ts', tabId: 't1' }, { path: 'src/a.ts' }, { path: 'src/a.ts' }])
+  })
+
+  it('opens the built-in viewer over the project folder for the @builtin pick, a declined or a failed delivery', async () => {
+    const none = setup({ handler: null })
+    await expect(routeProjectFile(none.deps, caller, 'src/a.ts', 't1')).resolves.toBe('builtin')
+    expect(none.delivered).toEqual([])
+    expect(none.builtinFiles).toEqual([{ projectDir: proj, path: 'src/a.ts' }])
+
+    const declined = setup({ deliver: async () => false })
+    await expect(routeProjectFile(declined.deps, caller, 'src/a.ts')).resolves.toBe('builtin')
+    expect(declined.builtinFiles).toHaveLength(1)
+
+    const thrown = setup({
+      deliver: async () => {
+        throw new Error('host gone')
+      }
+    })
+    await expect(routeProjectFile(thrown.deps, caller, 'src/a.ts')).resolves.toBe('builtin')
+    expect(thrown.builtinFiles).toHaveLength(1)
+  })
+
+  it('a refused path reaches no plugin and no viewer', async () => {
+    const { deps, delivered, builtinFiles } = setup()
+    await expect(routeProjectFile(deps, caller, 'out/secret.txt')).rejects.toThrow('outside the project folder')
+    await expect(routeProjectFile(deps, caller, '/etc/hosts')).rejects.toThrow('relative')
+    expect(delivered).toEqual([])
+    expect(builtinFiles).toEqual([])
+  })
+
+  it('rejects when the caller is no longer the project window, before or after the pick', async () => {
+    const other = setup()
+    other.deps.windowOf = () => 8
+    await expect(routeProjectFile(other.deps, caller, 'src/a.ts')).rejects.toThrow('window is gone')
+    let windowId: number | undefined = 7
+    const gone = setup()
+    gone.deps.windowOf = () => windowId
+    gone.deps.handler = async () => {
+      windowId = undefined
+      return 'a.tree'
+    }
+    await expect(routeProjectFile(gone.deps, caller, 'src/a.ts')).rejects.toThrow('window is gone')
+    expect(other.delivered).toEqual([])
+    expect(gone.delivered).toEqual([])
+  })
+
+  it('a second open of the same file while the first waits for its ack calls the plugin once', async () => {
+    let ack: (ok: boolean) => void = () => {}
+    let count = 0
+    const { deps } = setup({
+      deliver: () => {
+        count++
+        return new Promise<boolean>((resolve) => (ack = resolve))
+      }
+    })
+    const first = routeProjectFile(deps, caller, 'src/a.ts')
+    await vi.waitFor(() => expect(count).toBe(1))
+    await expect(routeProjectFile(deps, caller, 'src/a.ts', 't1')).resolves.toBe('plugin')
+    ack(true)
+    await expect(first).resolves.toBe('plugin')
+    expect(count).toBe(1)
+  })
+
+  it('openProjectFileDiff: the diff over the project folder, one overlay per window and file at a time', async () => {
+    const opened: Array<{ windowId: number; spec: OverlaySpec }> = []
+    const options: OpenDiffOptions = {
+      // The real tabs are never consulted: the synthetic one stands in.
+      tab: () => {
+        throw new Error('no tab lookup')
+      },
+      lsFiles: async () => ({ code: 0 }),
+      open: (windowId, spec) => {
+        opened.push({ windowId, spec })
+        return new Promise(() => {})
+      },
+      shown: new Set(),
+      log: () => {}
+    }
+    await expect(openProjectFileDiff(options, caller, proj, 'src/a.ts')).resolves.toBe(true)
+    await expect(openProjectFileDiff(options, caller, proj, 'src/a.ts')).resolves.toBe(true)
+    expect(opened).toHaveLength(1)
+    expect(opened[0]).toMatchObject({ windowId: 7, spec: { kind: 'terminal', cwd: proj, title: 'a.ts' } })
+    expect((opened[0]!.spec as { argv: string[] }).argv).toContain(join(proj, 'src', 'a.ts'))
+    expect([...options.shown]).toEqual(['7\0\0src/a.ts'])
   })
 })
 
@@ -360,6 +541,45 @@ describe('ctx.files.onOpen (host)', () => {
   it('refuses malformed files.open params', async () => {
     const { contexts } = setup()
     await expect(contexts.openFile({ pluginId: 'a.rev', path: 5, tabId: 't1' })).rejects.toThrow('must be strings')
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'a', tabId: 5 })).rejects.toThrow('tabId a string')
+  })
+
+  it('an open with no tab reaches the listener without a tabId key', async () => {
+    const { contexts, ctx } = setup()
+    const seen: Array<Record<string, unknown>> = []
+    ctx.files.onOpen((req) => void seen.push(req as unknown as Record<string, unknown>))
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts' })).resolves.toBe(true)
+    expect(seen).toEqual([{ path: 'src/a.ts' }])
+    expect('tabId' in seen[0]!).toBe(false)
+  })
+
+  it('ctx.files.open asks main with its own plugin id, needs no declaration, and checks the shapes', async () => {
+    const calls: Array<{ method: string; params: unknown }> = []
+    let answer: unknown = { via: 'builtin' }
+    const contexts = new HostContexts({
+      log: () => {},
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return answer
+      }
+    })
+    // No contributes.openFile: calling open is for every plugin.
+    const ctx = contexts.create(hostSpec({ id: 'a.tree', dir: '/d', main: 'm.js' }))
+    await expect(ctx.files.open('src/a.ts')).resolves.toEqual({ via: 'builtin' })
+    answer = { via: 'plugin' }
+    await expect(ctx.files.open('src/a.ts', { tabId: 't1' })).resolves.toEqual({ via: 'plugin' })
+    expect(calls).toEqual([
+      { method: 'files.open', params: { pluginId: 'a.tree', path: 'src/a.ts' } },
+      { method: 'files.open', params: { pluginId: 'a.tree', path: 'src/a.ts', tabId: 't1' } }
+    ])
+    await expect(ctx.files.open('' as string)).rejects.toThrow('needs a path')
+    await expect(ctx.files.open('a', { tabId: 5 as never })).rejects.toThrow('tabId must be a string')
+    await expect(ctx.files.open('a', 'x' as never)).rejects.toThrow('options must be an object')
+    answer = { via: 'elsewhere' }
+    await expect(ctx.files.open('a')).rejects.toThrow('unexpected answer')
+    expect(calls).toHaveLength(3)
+    contexts.dispose('a.tree')
+    await expect(ctx.files.open('a')).rejects.toThrow('deactivated')
   })
 
   it('the spec parser keeps openFile only as a boolean', () => {

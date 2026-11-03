@@ -260,14 +260,22 @@ export interface WebviewPage {
 }
 
 /**
- * A click on a changed file in core's Sessions panel, handed to this plugin (`ctx.files.onOpen`).
- * Both fields come from the app: the click happened in its own UI.
+ * A file the project opens with this plugin (`ctx.files.onOpen`): a click on a changed file in core's
+ * Sessions panel, or a plugin's `ctx.files.open`. Both fields are checked by the app.
  */
 export interface OpenFileRequest {
   /** The file, relative to the project folder (`src/app.ts`); never outside it. */
   readonly path: string
-  /** The Claude tab whose list of changed files was clicked (an id `ctx.sessions` knows). */
-  readonly tabId: string
+  /**
+   * The Claude tab whose list of changed files was clicked, or the one a `ctx.files.open` caller
+   * passed (an id `ctx.sessions` knows). Absent when the open did not come from a tab.
+   */
+  readonly tabId?: string
+}
+
+/** Where `ctx.files.open` sent the file: the project's open-file plugin, or the app's built-in viewer. */
+export interface OpenFileResult {
+  readonly via: 'plugin' | 'builtin'
 }
 
 export type CliHandler = (argv: string[], call: CliCall) => CliResult | void | Promise<CliResult | void>
@@ -424,14 +432,25 @@ export interface PluginContext {
   // files
   readonly files: {
     /**
-     * Take over a click on a changed file in the Sessions panel. Needs `contributes.openFile` in
-     * the manifest (throws otherwise). Clicks come only when the project uses this plugin to open
+     * Take over a click on a changed file in the Sessions panel, and every plugin's `files.open`.
+     * Needs `contributes.openFile` in the manifest (throws otherwise). Opens come only when the
+     * project uses this plugin to open
      * files: it is the only enabled one declaring `openFile`, or the one picked in Settings >
      * Plugins. Every listener is called; the app's built-in viewer opens instead when none is
      * registered, or each one throws or rejects within 1 s (a promise still pending then counts
      * as handled). The app waits at most 2 s for this host.
      */
     onOpen(listener: (req: OpenFileRequest) => unknown): Disposer
+    /**
+     * Open a project file the way a Sessions panel click does: with the plugin the project uses to
+     * open files (its `onOpen` listener; it may be this plugin), else the built-in viewer (a diff
+     * when git has one, else the file in a pager). `path` is relative to the project folder, with
+     * `/` separators; it rejects for an absolute path, a `..` segment, a path whose real path
+     * (symlinks resolved) is outside the project, a missing file or one that is not a regular file.
+     * `options.tabId` is handed to the listener when it is a Claude tab of this project, else
+     * dropped. Needs no manifest declaration; at most 20 calls per 10 s.
+     */
+    open(path: string, options?: { tabId?: string }): Promise<OpenFileResult>
   }
 
   /**

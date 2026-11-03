@@ -31,6 +31,11 @@
 //   webview.navigate { pluginId, panelId, target } -> null      a webview panel the plugin declares, in this
 //   webview.back|forward|reload { pluginId, panelId } -> null    window only (webview-manager.ts decides
 //   webview.current { pluginId, panelId }      -> { url, title } what a target may be and where a page may go)
+//   files.open      { pluginId, path, tabId? } -> { via }        a project file through the project's open-file
+//                                                                pick (open-file.ts routeProjectFile: the path
+//                                                                checked against THIS project's folder, a tabId
+//                                                                kept only when it is this project's; `via` is
+//                                                                'plugin' or 'builtin'); no manifest declaration
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
@@ -147,6 +152,12 @@ export const MAX_NAVIGATES_PER_WINDOW = 60
 /** ctx.panels.show per plugin: each real change publishes a layout and fights the user's hide. */
 export const PANEL_SHOW_WINDOW_MS = 60_000
 export const MAX_PANEL_SHOWS_PER_WINDOW = 30
+/**
+ * ctx.files.open per plugin: each one may open an overlay (the built-in viewer runs a PTY) or wake
+ * the picked plugin. A tree opens one file per click; a loop must not stack viewers on the screen.
+ */
+export const FILE_OPEN_WINDOW_MS = 10_000
+export const MAX_FILE_OPENS_PER_WINDOW = 20
 /** The `setting:` keys of project-scoped secret settings fields (any project). */
 const PROJECT_SETTING_PREFIX = `${SETTING_KEY_PREFIX}project:`
 /** At most this often the host hears that its project's sessions changed. */
@@ -198,6 +209,11 @@ export interface HostApiDeps {
   appStorage?: AppStorageApi
   /** ctx.webview (WebviewManager). Without it the webview requests are refused. */
   webview?: Pick<WebviewManager, 'navigate' | 'back' | 'forward' | 'reload' | 'current' | 'destroyPlugin'>
+  /**
+   * ctx.files.open (open-file.ts routeProjectFile with main's open-file route): `caller` is this
+   * host's scope, `path` and `tabId` the plugin's, checked there. Without it files.open is refused.
+   */
+  openFile?(caller: { windowId: number; projectId: string }, path: string, tabId?: string): Promise<'plugin' | 'builtin'>
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -337,6 +353,7 @@ export class HostApi {
   private readonly authorizes = new RateWindow(MAX_AUTHORIZES_PER_WINDOW, AUTHORIZE_WINDOW_MS)
   private readonly navigates = new RateWindow(MAX_NAVIGATES_PER_WINDOW, NAVIGATE_WINDOW_MS)
   private readonly panelShows = new RateWindow(MAX_PANEL_SHOWS_PER_WINDOW, PANEL_SHOW_WINDOW_MS)
+  private readonly fileOpens = new RateWindow(MAX_FILE_OPENS_PER_WINDOW, FILE_OPEN_WINDOW_MS)
   /**
    * Plugins whose webviews this host drove, or whose earlier copy declared webview panels (a dev reload
    * may drop them from the scope before that copy's ctx ends): torn down when their ctx ends (contextDisposed) or the process goes.
@@ -414,7 +431,8 @@ export class HostApi {
       'webview.back': (params) => this.webviewStep(params, 'back'),
       'webview.forward': (params) => this.webviewStep(params, 'forward'),
       'webview.reload': (params) => this.webviewStep(params, 'reload'),
-      'webview.current': (params) => this.webviewCurrent(params)
+      'webview.current': (params) => this.webviewCurrent(params),
+      'files.open': (params) => this.filesOpen(params)
     }
   }
 
@@ -632,6 +650,32 @@ export class HostApi {
     const key = `${plugin.id}/${panelId}`
     if (!this.deps.showPanel(this.scope.projectId, key)) throw new Error(`panels.show: no panel ${key} in this window`)
     return null
+  }
+
+  /**
+   * ctx.files.open: a file of THIS project, opened the way a Sessions panel click opens one (the
+   * project's pick, else the built-in viewer). Any plugin of the host may call it; nothing in the
+   * manifest is needed, since it shows the person a file of their own project and nothing more.
+   * The shapes are checked before the budget is spent; a path refusal (open-file.ts) is not
+   * refunded: each one costs fs lookups in main, and a loop of bad paths must stay bounded too.
+   */
+  private async filesOpen(params: unknown): Promise<{ via: 'plugin' | 'builtin' }> {
+    this.alive()
+    const { pluginId, path, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'files.open')
+    if (typeof path !== 'string' || path === '') throw new Error('files.open: path must be a non-empty string')
+    if (tabId !== undefined && typeof tabId !== 'string') throw new Error('files.open: tabId must be a string')
+    if (!this.deps.openFile) throw new Error('files.open: opening files is not available')
+    if (!this.fileOpens.take(plugin.id)) {
+      throw new Error(`files.open: more than ${MAX_FILE_OPENS_PER_WINDOW} files in ${FILE_OPEN_WINDOW_MS / 1000} s`)
+    }
+    let via: 'plugin' | 'builtin'
+    try {
+      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId)
+    } catch (err) {
+      throw withMethod('files.open', err)
+    }
+    return { via }
   }
 
   private async overlay(params: unknown): Promise<PluginOverlayResult> {

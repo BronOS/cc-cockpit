@@ -368,7 +368,14 @@ export class HostContexts {
       sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions }),
       commands: Object.freeze({ register }),
       cli: Object.freeze({ register: registerCli }),
-      files: createFilesApi({ declared: spec.openFile === true, alive, listeners: rt.openListeners }),
+      files: createFilesApi({
+        pluginId: spec.id,
+        declared: spec.openFile === true,
+        alive,
+        call,
+        guardAsync,
+        listeners: rt.openListeners
+      }),
       services: Object.freeze({
         provide: (name: string, impl: Record<string, (...args: never[]) => unknown>) => {
           alive()
@@ -579,9 +586,10 @@ export class HostContexts {
   }
 
   /**
-   * Main hands a plugin a click on a changed file (`files.open { pluginId, path, tabId }`): true
-   * when one of its `ctx.files.onOpen` listeners took it (files.ts), false when the plugin does not
-   * run here, has no listener, or every listener failed. Main opens its built-in viewer on false.
+   * Main hands a plugin a click on a changed file, or a ctx.files.open routed to it (`files.open
+   * { pluginId, path, tabId? }`): true when one of its `ctx.files.onOpen` listeners took it (files.ts),
+   * false when the plugin does not run here, has no listener, or every listener failed. Main opens
+   * its built-in viewer on false.
    */
   async openFile(params: unknown): Promise<boolean> {
     const req = parseOpenFile(params)

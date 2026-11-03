@@ -13,12 +13,23 @@
 //     the plugin awaits the host: a tab closed meanwhile is never handed to a plugin.
 // The built-in viewer also opens when the plugin does not take the click within the bound (not
 // active, no listener, its listener failed, the host is slow or gone: HostManager.openFile), so a
-// click always shows something. Only this click goes through the hook; plugins that open files for
-// other reasons call each other through services.
+// click always shows something.
+//
+// A plugin opens a project file the same way (`ctx.files.open`, routeProjectFile below; the file tree
+// plugin's row click): the same pick, the same delivery and the same fallback, so the person's
+// "Plugin used to open files" choice holds wherever the open starts. There main checks the path the
+// plugin named (resolveProjectFile: relative, no `..`, a regular file inside the project by its real
+// path) and the tab id it may pass (one of the host's own project, else dropped): the project is the
+// asking host's scope, never a value in the request.
 import { realpathSync } from 'node:fs'
+import { realpath as realpathAsync } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { errorText } from '../../shared/error-text'
+import { resolveInside } from '../plugins/validate'
 import type { DiffTab } from './open-diff'
+
+/** ctx.files.open's path, at most this long: far above any real project path (PATH_MAX is 4096). */
+export const MAX_OPEN_PATH_LENGTH = 4096
 
 export interface OpenFileRouteDeps {
   tab(tabId: string): DiffTab | undefined
@@ -28,10 +39,18 @@ export interface OpenFileRouteDeps {
   windowOf(projectId: string): number | undefined
   /** The plugin chosen to open files in the project, or null for the built-in viewer. */
   handler(projectId: string): Promise<string | null>
-  /** Ask the plugin's host to take the click; true only when it did, within the ack bound. */
-  deliver(projectId: string, pluginId: string, req: { path: string; tabId: string }): Promise<boolean>
+  /**
+   * Ask the plugin's host to take the open; true only when it did, within the ack bound. `tabId` is
+   * absent for a ctx.files.open without a (valid) tab.
+   */
+  deliver(projectId: string, pluginId: string, req: { path: string; tabId?: string }): Promise<boolean>
   /** Core's viewer (openDiff); it re-checks the tab and the file itself. */
   builtin(caller: { windowId: number; projectId: string }, tabId: string, file: string): Promise<boolean>
+  /**
+   * Core's viewer for a checked project-relative file with no tab behind it (openProjectFileDiff:
+   * a diff when git has one, else the pager, with the project folder as cwd).
+   */
+  builtinFile(caller: { windowId: number; projectId: string }, projectDir: string, path: string): Promise<boolean>
   /**
    * Clicks being handed to a plugin right now, by window, tab and file. A double click must not
    * call the plugin twice while the first ack is pending (openDiff's `shown` does this for the
@@ -138,4 +157,100 @@ export async function routeOpenFile(
     deps.delivering.delete(key)
   }
   return taken ? true : deps.builtin(caller, tabId, file)
+}
+
+/**
+ * ctx.files.open's `path`, checked against the project folder: the path to hand on (normalized:
+ * `./` and empty segments dropped, `/` separators), or a throw whose message the plugin sees.
+ * Refused: a non-string or empty path, NUL, an absolute path (POSIX or a Windows drive), any `..`
+ * segment (even one that would stay inside: one rule, no lexical resolving to get wrong), a path
+ * naming the folder itself, and then by the real path (resolveInside, symlinks resolved): one
+ * outside the project (`link/x`, `link` -> `/etc`), a missing one, one that is not a regular file
+ * (a directory, a FIFO a pager would block on). A backslash is an ordinary file-name character on
+ * the platforms the app runs on, so it is allowed; the real-path check is the guard either way.
+ * The lexical path is returned, not the real one: what the plugin named (and the tree showed), and
+ * known to land inside.
+ */
+export async function resolveProjectFile(projectDir: string, path: unknown): Promise<string> {
+  if (typeof path !== 'string' || path === '') throw new Error('path must be a non-empty string')
+  if (path.length > MAX_OPEN_PATH_LENGTH) throw new Error(`path is longer than ${MAX_OPEN_PATH_LENGTH} characters`)
+  if (path.includes('\0')) throw new Error('path contains a NUL byte')
+  if (isAbsolute(path) || /^[A-Za-z]:/.test(path)) throw new Error('path must be relative to the project folder')
+  const segments = path.split('/').filter((s) => s !== '' && s !== '.')
+  if (segments.includes('..')) throw new Error('path must not contain ".." segments')
+  if (segments.length === 0) throw new Error('path names the project folder, not a file')
+  const rel = segments.join('/')
+  let root: string
+  try {
+    // The registry keeps the real path already; resolved again so a containment check against a
+    // symlinked spelling can never pass a file it should refuse (resolveInside wants a real root).
+    root = await realpathAsync(projectDir)
+  } catch {
+    throw new Error('the project folder cannot be read')
+  }
+  const target = await resolveInside(root, rel)
+  if (target.ok) return rel
+  switch (target.problem) {
+    case 'missing':
+      throw new Error(`no such file: ${rel}`)
+    case 'outside':
+      throw new Error(`${rel} resolves outside the project folder`)
+    case 'root':
+    case 'not-file':
+      throw new Error(`${rel} is not a regular file`)
+  }
+}
+
+/**
+ * ctx.files.open from a plugin of the project's host (HostApi `files.open`): `caller` is the
+ * host's own scope. Resolves with where the file went; rejects for a refused path (resolveProjectFile)
+ * or a project whose window is no longer the caller's. `tabId` is passed on only when it names a tab
+ * of the caller's project, checked right before the delivery; anything else is dropped without an
+ * error (a tab that closed meanwhile is ordinary, and a foreign id learns nothing either way).
+ * The picked plugin may be the caller itself: its own onOpen listener then gets the file, as for a click.
+ */
+export async function routeProjectFile(
+  deps: OpenFileRouteDeps,
+  caller: { windowId: number; projectId: string },
+  path: unknown,
+  tabId?: string
+): Promise<'plugin' | 'builtin'> {
+  const windowStill = (): void => {
+    if (deps.windowOf(caller.projectId) !== caller.windowId) throw new Error('the project window is gone')
+  }
+  windowStill()
+  const projectDir = deps.projectPath(caller.projectId)
+  if (projectDir === undefined) throw new Error('the project is gone')
+  const rel = await resolveProjectFile(projectDir, path)
+  const log = deps.log ?? ((m) => console.warn(m))
+  let pluginId: string | null = null
+  try {
+    pluginId = await deps.handler(caller.projectId)
+  } catch (err) {
+    log(`files.open: choosing the plugin that opens files failed: ${errorText(err)}`)
+  }
+  // Both awaits above may have outlived the window (the host is revoked then too, but its call is
+  // already past that check).
+  windowStill()
+  if (pluginId !== null) {
+    const tab = tabId !== undefined && deps.tab(tabId)?.projectId === caller.projectId ? tabId : undefined
+    // No tab in the key: the same file handed over twice at once (a double click in a tree) is one
+    // delivery whatever tab rides along, and the empty tab field never meets a click's key (main's
+    // tab ids are never empty). The second call answers 'plugin' like a second click answers true.
+    const key = `${caller.windowId}\0\0${rel}`
+    if (deps.delivering.has(key)) return 'plugin'
+    deps.delivering.add(key)
+    let taken = false
+    try {
+      taken = await deps.deliver(caller.projectId, pluginId, { path: rel, ...(tab !== undefined ? { tabId: tab } : {}) })
+    } catch (err) {
+      log(`files.open: handing a file to ${pluginId} failed: ${errorText(err)}`)
+    } finally {
+      deps.delivering.delete(key)
+    }
+    if (taken) return 'plugin'
+    windowStill()
+  }
+  if (!(await deps.builtinFile(caller, projectDir, rel))) throw new Error('the built-in viewer could not open it')
+  return 'builtin'
 }
