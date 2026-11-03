@@ -603,6 +603,41 @@ export interface ServicesApi {
    * counts; a call then waits for it (or rejects with the failure).
    */
   available(name: string): boolean
+  /**
+   * Every provider of service `name`, for a plugin that reads from all of them (Inbox collecting
+   * each `inbox-feed`). `name` must be in both `services.uses` and `services.collects` (app 0.9.7+:
+   * older apps refuse a manifest with `collects`). The project's provider pick does not apply, and
+   * the Plugins page offers no pick for a name only collectors use. Throws for an undeclared name.
+   */
+  useAll(name: string): ServiceSet
+}
+
+/** One provider of a collected service (`ServiceSet.providers`). */
+export interface ServiceProvider {
+  /** The providing plugin's id. */
+  readonly pluginId: string
+  /**
+   * A handle whose calls go to this plugin only (they wait while it activates, and reject once it
+   * no longer provides the name), and whose `on` hears this plugin's events only.
+   */
+  readonly handle: ServiceHandle
+}
+
+/** `ctx.services.useAll`: the providers of one service, read fresh on every call. */
+export interface ServiceSet {
+  /**
+   * The plugins that provide the name at this plugin's `uses` major and have called `provide`, in
+   * the host's plugin order. One still activating joins when it provides (see `onChange`); one
+   * whose activate failed, or of another major, is left out.
+   */
+  providers(): ServiceProvider[]
+  /** Events from every provider, with the emitting plugin's id; returns the unsubscriber. */
+  on(event: string, listener: (data: unknown, pluginId: string) => void): Disposer
+  /**
+   * The provider set may have changed (a provider provided, withdrew, reloaded, was enabled or
+   * disabled): call `providers()` again. Several changes in one turn call it once.
+   */
+  onChange(listener: () => void): Disposer
 }
 
 /** What a plugin's `main` module exports. */

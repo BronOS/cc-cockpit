@@ -193,8 +193,23 @@ with full Node access.
     (async always). The provider is resolved on every call, so a handle got in `activate` keeps
     working across provider reloads. A call waits for a provider that is still activating.
   - `ctx.services.emit(name, event, data)`: only the provider the project selected reaches
-    consumers (others are dropped, logged once); `handle.on(event, listener)` subscribes and
-    returns the unsubscriber. Listeners run later, never inside `emit`.
+    `use` consumers (others are dropped, logged once while a `use` consumer exists);
+    `handle.on(event, listener)` subscribes and returns the unsubscriber. Listeners run later,
+    never inside `emit`. Every provider reaches `useAll` consumers.
+  - `ctx.services.useAll(name)` (app 0.9.7+): every provider of `name`, for a plugin that reads
+    from all of them (an inbox merging every `inbox-feed`) instead of the one the project picked.
+    The name must be in your `services.uses` and in `services.collects` (a list of names; an older
+    app refuses a manifest with `collects`). It returns a set:
+    - `set.providers()`: `[{ pluginId, handle }]`, every enabled plugin that provides `name` at
+      your `uses` major and has called `provide`, read fresh on each call, in plugin order. Each
+      `handle` calls that plugin only (it waits while the plugin activates, rejects once it no
+      longer provides the name), and its `handle.on` hears that plugin's events only. A provider
+      still activating joins when it provides; one whose activate failed is left out.
+    - `set.on(event, (data, pluginId) => ...)`: events from every provider, with the sender's id.
+    - `set.onChange(listener)`: the provider set may have changed (provided, withdrawn, reloaded,
+      enabled, disabled): call `providers()` again. Several changes at once call it once.
+    The Plugins page shows no "pick one" for a name only collectors use. Use `use` when one
+    answer is wanted (the person's pick holds), `useAll` when every provider's answer is.
   - `ctx.services.caller()`: in a provider, the id of the plugin whose call it is serving, for
     per-caller usage counts or caps. It holds inside the provided method and in what that method
     awaits or starts (timers, promise callbacks) while the call is still running; with nested calls

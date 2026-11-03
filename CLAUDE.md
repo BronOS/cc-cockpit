@@ -63,6 +63,9 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
   plugin host with no round trip to main, resolved on every call (never a cached provider), and carry plain data only
   (`structuredClone` both ways). Main decides the specs and the project's provider picks; `selectProvider` /
   `serviceStatus` in `src/shared/services.ts` are the one rule for host and Plugins page, so use them, never a copy.
+- Collected services (`services.collects` + `ctx.services.useAll`, `src/host/services.ts`): every provider of the name
+  answers and emits to a collector, the project's pick does not apply, and `serviceStatus` marks a name only collectors use
+  `collectedOnly` (no pick row, no problem). A collected name is still in `uses`; `useAll` refuses one not in `collects`.
 - App-wide plugin state is owned by main (`ctx.appStorage`, `main/plugins/app-storage.ts`): each window has its own plugin host,
   so a store the hosts wrote themselves would lose updates; main applies calls one at a time (design.md §5 "App-wide plugin
   storage"). A new app-wide plugin store goes through main the same way, never a file a host writes.

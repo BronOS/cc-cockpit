@@ -1,0 +1,11 @@
+{
+  "id": "test.svccollector",
+  "name": "Svc Collector",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "collect", "title": "Svc: Collect greet" }]
+  },
+  "services": { "uses": { "greet": 1 }, "collects": ["greet"] }
+}

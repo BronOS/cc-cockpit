@@ -797,6 +797,15 @@ dispatched inside the host with no round trip to main.
   Plugins page warn on the consumer. `selectProvider` and `serviceStatus` (`src/shared/services.ts`)
   are the one rule, used by the host and by main over the same set of specs, so warnings and errors
   agree. Main decides the specs and the picks; the host only applies them.
+- Collectors (0.9.7, for Inbox): a plugin that wants every provider's answer, not the picked one,
+  lists the name in `services.collects` (a subset of `uses`) and calls `ctx.services.useAll(name)`.
+  `providers()` lists every enabled plugin that provides the name at the collector's major and has
+  called `provide` (read fresh each call), each with a handle bound to that plugin; `on` hears every
+  provider's events with the sender's id; `onChange` fires (once per turn) when the set changes. The
+  app is the registry: a new source joins by providing the name, with no change to the collector.
+  A name only collectors use has no pick and no problem on the Plugins page (`collectedOnly` in
+  `serviceStatus`), and an emit no `use` consumer misses is not logged as dropped. `services` is
+  strict in the manifest schema, so an app before 0.9.7 refuses a manifest with `collects`.
 - `ctx.services.caller()`, inside a provider's method, is the id of the plugin whose call it serves, for per-caller
   counts or caps. The registry takes it from the calling plugin's own `ctx` (the AsyncLocalStorage frame it
   pushes for each provider method), never from an argument, so a caller cannot name another plugin; it holds in

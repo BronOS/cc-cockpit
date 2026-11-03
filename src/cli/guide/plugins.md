@@ -50,8 +50,10 @@ so a person chooses to install or link it.
   line (`title`), a cli entry is a `summary` (200 chars) and a `usage` (500 chars).
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
-  not provide and use the same name. No other key inside `services` (unlike the top level, an
-  unknown one is an error). Only declared names work with `ctx.services` (`api` topic).
+  not provide and use the same name. `collects` (app 0.9.7+) lists used names read from every
+  provider with `ctx.services.useAll`; each must also be in `uses`. No other key inside `services`
+  (unlike the top level, an unknown one is an error, so an app before 0.9.7 refuses `collects`).
+  Only declared names work with `ctx.services` (`api` topic).
 - `openFile` (an object, not a list; needs `main`): the plugin can take over a click on a changed
   file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
   names the choice in Settings > Plugins, where a project with several such plugins picks one (or

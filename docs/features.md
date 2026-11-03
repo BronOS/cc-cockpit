@@ -141,6 +141,9 @@ behind it are in [design.md](design.md).
   one for the project (it restarts the project's plugin host). A missing provider does not block enabling a
   plugin: the consumer runs, its calls throw, and the Plugins page warns (also for a version mismatch).
   Inside a provider's method, `ctx.services.caller()` is the id of the calling plugin, for per-caller counts or caps.
+  A plugin that reads every provider of a name (Inbox reading every `inbox-feed`) declares it in `services.collects`
+  and calls `ctx.services.useAll` (0.9.7+): all providers answer, events come from each with its id, and the
+  Plugins page shows no pick or warning for a name only such plugins use.
 - Open-file hook: a plugin with `contributes.openFile` takes a click on a changed file in the Sessions panel
   through `ctx.files.onOpen({ path, tabId })` (path relative to the project; main checks the tab and the path).
   With several such plugins, or to keep the built-in viewer, Settings > Plugins > "Plugin used to open files"
