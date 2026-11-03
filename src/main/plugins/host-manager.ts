@@ -772,6 +772,18 @@ export class HostManager {
   }
 
   /**
+   * A click on a plugin panel's header action, from the project's window (`panels.action`). The
+   * project's current host decides (HostApi.panelAction: a header it set, the action there now,
+   * not busy or disabled); false when there is no running host or it dropped the click. The key and
+   * id are renderer input and are only looked up, never parsed into anything else.
+   */
+  panelAction(projectId: string, panelKey: string, actionId: string): boolean {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.proc || rec.stopping) return false
+    return rec.api?.panelAction(panelKey, actionId) ?? false
+  }
+
+  /**
    * The panel ids `pluginId` declares when it runs in the project's host right now (activated;
    * a scheduled job failing since does not stop it), else undefined: no host, a plugin that is
    * starting, failed to activate the last time it was told, was disabled or given up on, or one
@@ -1513,7 +1525,10 @@ export class HostManager {
     // this close (`closes`), but whatever it has badged is left to it all the same.
     const newer = this.newerHost(rec)
     try {
-      rec.api?.dispose(newer ? (key) => newer.api?.hasBadged(key) === true : undefined)
+      rec.api?.dispose(
+        newer ? (key) => newer.api?.hasBadged(key) === true : undefined,
+        newer ? (key) => newer.api?.hasHeader(key) === true : undefined
+      )
     } catch (err) {
       this.log(`plugin host ${rec.projectId}: ${errorText(err)}`)
     }

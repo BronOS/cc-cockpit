@@ -3,10 +3,10 @@
 // every one against the panels that exist, so a page cannot place a panel that is not there.
 //
 // Panels come from two places: the core ones below and, per project, those of its enabled plugins
-// (Task 25 and later call `setPluginPanels`). A panel's badge and error are plugin-reported state
-// kept here, not in the persisted layout.
+// (Task 25 and later call `setPluginPanels`). A panel's badge, error and header (ctx.panels.header)
+// are plugin-reported state kept here, not in the persisted layout.
 import type { PanelKind } from '../../shared/manifest'
-import type { LayoutView, PanelBadge, PanelInfo } from '../../shared/ipc'
+import type { LayoutView, PanelBadge, PanelHeaderInfo, PanelInfo } from '../../shared/ipc'
 import {
   ZONE_IDS,
   isZoneId,
@@ -49,6 +49,8 @@ export interface PluginPanelDef {
 export interface PanelStatus {
   badge?: PanelBadge
   error?: string
+  /** Already checked and built by HostApi (host-api.ts), the only caller; stored as given. */
+  header?: PanelHeaderInfo
 }
 
 export interface LayoutServiceDeps {
@@ -213,6 +215,15 @@ export class LayoutService {
     return this.patch(projectId, panelKey, { badge: badge ?? undefined })
   }
 
+  /**
+   * Set (null clears) only the header of a panel, keeping its badge and error. False for a panel
+   * the project does not have; an unchanged header publishes nothing (a plugin that sets the same
+   * "updated 2 min ago" on every tick does not redraw the window each time). See setBadge.
+   */
+  setHeader(projectId: string, panelKey: string, header: PanelHeaderInfo | null): boolean {
+    return this.patch(projectId, panelKey, { header: header ?? undefined })
+  }
+
   /** Set (undefined clears) only the error (⚠) of a panel, keeping its badge. See setBadge. */
   setError(projectId: string, panelKey: string, error: string | undefined): boolean {
     return this.patch(projectId, panelKey, { error })
@@ -237,6 +248,10 @@ export class LayoutService {
       if (change.error === undefined) delete next.error
       else next.error = change.error
     }
+    if ('header' in change) {
+      if (change.header === undefined) delete next.header
+      else next.header = change.header
+    }
     const clean = cleanStatus(next)
     if (JSON.stringify(clean) === JSON.stringify(current)) return true
     return this.setStatus(projectId, panelKey, clean)
@@ -251,7 +266,7 @@ export class LayoutService {
     return this.available(projectId).some((p) => p.panelKey === panelKey)
   }
 
-  /** A panel that is gone must not come back with the badge it had when its plugin returns. */
+  /** A panel that is gone must not come back with the badge (or header) it had when its plugin returns. */
   private dropStaleStatus(projectId: string): void {
     const map = this.status.get(projectId)
     if (!map) return
@@ -344,5 +359,8 @@ function cleanStatus(status: PanelStatus): PanelStatus | undefined {
   if (typeof status.error === 'string' && status.error !== '') {
     out.error = status.error.slice(0, MAX_ERROR_LENGTH)
   }
-  return out.badge || out.error ? out : undefined
+  if (status.header && (status.header.meta !== undefined || (status.header.actions?.length ?? 0) > 0)) {
+    out.header = status.header
+  }
+  return out.badge || out.error || out.header ? out : undefined
 }

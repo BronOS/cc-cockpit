@@ -94,6 +94,10 @@ behind it are in [design.md](design.md).
 - Plugin system: install from git, from the Marketplace, or link a folder, per-project enable, a sandboxed panel
   per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify...). A panel's icon is drawn in
   the strip's text colour (only its shape counts), so it follows the theme, hover and open states.
+- Panel headers: a plugin can put a short muted text ("3 open", "synced 2 min ago") after its panel's title and up to
+  three icon buttons (refresh, add, search, filter, settings, open external, check, sort, or its own SVG) before the
+  "…" menu (`ctx.panels.header`, clicks through `ctx.panels.onAction`). A busy button spins and ignores clicks. The
+  header is cleared when the plugin stops or reloads.
 - Plugin storage: `ctx.storage` is per project; `ctx.appStorage` (with an atomic `increment`) and `ctx.appDataDir` are
   shared by every project window, for state that must add up across windows. Both are kept when the plugin is
   uninstalled (only secrets are deleted). App storage is written to disk about 300 ms after a change and at quit, so

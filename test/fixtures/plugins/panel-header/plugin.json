@@ -1,0 +1,10 @@
+{
+  "id": "test.panelheader",
+  "name": "Panel header",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [{ "id": "board", "title": "Board", "entry": "board.html", "defaultZone": "left" }]
+  }
+}

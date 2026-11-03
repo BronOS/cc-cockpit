@@ -14,6 +14,7 @@ import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
+import type { PanelHeaderIconName } from './panel-header'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -202,6 +203,26 @@ export interface CommandsView {
 export type PanelBadge = { kind: 'count'; count: number } | { kind: 'dot' }
 
 /**
+ * One header action as the renderer draws it (ctx.panels.header, checked in main by
+ * shared/panel-header.ts). Exactly one of `icon` (a core icon name) and `iconSrc` (main's
+ * `cc-plugin://<pluginId>/<path>` of the plugin's .svg) is set.
+ */
+export interface PanelHeaderActionInfo {
+  id: string
+  title: string
+  icon?: PanelHeaderIconName
+  iconSrc?: string
+  busy?: boolean
+  disabled?: boolean
+}
+
+/** What a plugin put in its panel's title bar; absent is the bare title. */
+export interface PanelHeaderInfo {
+  meta?: string
+  actions?: PanelHeaderActionInfo[]
+}
+
+/**
  * A panel that exists for the sender's project right now, as its icon strip needs it. Where it
  * sits (zone, open, size) is in the LayoutState, not here.
  */
@@ -219,6 +240,8 @@ export interface PanelInfo {
   badge?: PanelBadge
   /** The plugin's error for this panel; the strip shows a warning mark with this as tooltip. */
   error?: string
+  /** A plugin panel's title bar content (ctx.panels.header); cleared when its plugin stops. */
+  header?: PanelHeaderInfo
   /**
    * A plugin panel's page: `cc-plugin://<pluginId>/<entry>` (main builds it from the manifest).
    * Absent for core panels; PluginPanel loads it in a sandboxed iframe.
@@ -663,6 +686,12 @@ export interface IpcInvokeMap {
   'panels.connect': { req: { panelKey: string; nonce: number }; res: boolean }
   /** The Restart of "plugin stopped: Restart": start the sender's project's plugin host again. */
   'plugins.restart': { req: void; res: void }
+  /**
+   * A click on a plugin panel's header action. main delivers it to the plugin's onAction only when
+   * the panel is one of the sender's project and its current header has that action, not busy or
+   * disabled; false when it was dropped (the header changed under the click, the host is gone).
+   */
+  'panels.action': { req: { panelKey: string; actionId: string }; res: boolean }
 
   // Settings overlay. Any project window may call these; the data is app-wide.
   /** Every known project, most recently opened first. */
@@ -989,6 +1018,7 @@ export const INVOKE_CHANNELS = [
   'commands.run',
   'panels.connect',
   'plugins.restart',
+  'panels.action',
   'settings.projects',
   'settings.projectOpen',
   'settings.projectRelink',

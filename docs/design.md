@@ -606,7 +606,7 @@ that project.
 | data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir`; `ctx.appStorage` (the same KV, app-wide, with an atomic `increment`), `ctx.appDataDir` |
 | work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
-| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
+| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
 | files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
@@ -617,6 +617,22 @@ that project.
 | misc | `ctx.log`, `ctx.notify(text)` |
 
 `activate`'s return value is ignored; a plugin offers an API to others with `ctx.services`.
+
+**Panel header** (`ctx.panels.header`, `ctx.panels.onAction`; `src/shared/panel-header.ts`). A plugin fills the
+title bar of one of its own panels (html or webview): `meta`, muted plain text after the title (≤ 120 chars, an
+ellipsis when it does not fit, the whole text as tooltip), and up to 3 `actions` `{id, icon, title, busy?, disabled?}`,
+icon buttons before the panel's "…" menu, which stays last. `icon` is a core name (`refresh`, `add`, `search`,
+`filter`, `settings`, `open-external`, `check`, `sort`, drawn in the window's stroke style) or a relative `.svg` path in
+the plugin folder (the manifest `icon` rule; drawn as a mask over the header colour, served by `cc-plugin://`, which
+checks containment). Ids are 1 to 40 of `[A-Za-z0-9._-]` and unique, titles ≤ 80; text is drawn as React text, never
+HTML. One parse rule serves both sides: the host throws a TypeError at the call site, and main checks the request again
+(`HostApi`, which never trusts a host) and refuses a panel the calling plugin does not declare. The header follows the
+badge's path: main keeps it per project and panel key in the layout service's panel status and pushes it with the
+`PanelInfo`; it is cleared when the plugin's ctx ends (the host sends `plugin.disposed` for a ctx that set one), when
+the plugin reloads in place, and when the host stops. A click goes renderer → main (`panels.action`, the project is the
+sender's) → the project's host (`panel.action` event) → that panel's `onAction` listeners, only for an action the
+current header has that is neither busy nor disabled (the renderer drops those clicks too). A busy action's icon spins
+(under `prefers-reduced-motion` it is dimmed instead).
 
 **App-wide plugin storage** (`ctx.appStorage`, `ctx.appDataDir`; `src/main/plugins/app-storage.ts`).
 `ctx.storage` has one writer, the project's host, and lives in `<data>/plugin-data/<projectId>/<pluginId>/`.

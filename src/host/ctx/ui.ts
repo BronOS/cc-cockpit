@@ -7,6 +7,9 @@
 //   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
 //                                      focus }; open(spec) is start(spec).result
 //   panels.post / panels.onMessage     over the panel's MessagePort
+//   panels.header / panels.onAction    the panel's title bar: meta text and up to 3 icon buttons,
+//                                      checked here and again in main (shared/panel-header.ts);
+//                                      a click comes back as main's `panel.action` event
 //
 // Panel ports: main creates one channel per panel instance and hands the host its end, tagged with
 // the plugin and panel id (src/main/plugins/panel-ports.ts). Here that end is the small PanelPort
@@ -33,6 +36,7 @@ import type {
   PluginContext
 } from '../../sdk/types'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
+import { parsePanelHeader } from '../../shared/panel-header'
 import { errorText } from '../../shared/error-text'
 
 /** Longest panel message, as JSON text (the RPC cap). */
@@ -217,6 +221,53 @@ export class PanelPorts {
   }
 }
 
+type ActionListener = (actionId: string) => void
+
+/**
+ * The ctx.panels.onAction listeners of every plugin of one host, keyed `<pluginId>/<panelId>`,
+ * and the routing of main's `panel.action { pluginId, panelId, actionId }` to them. Main only
+ * sends a click on an action the plugin's current header has (not busy, not disabled), so nothing
+ * is re-checked here beyond the shape; a click that arrives after the plugin cleared its header
+ * (it raced the IPC) just reaches listeners that know what to ignore.
+ */
+export class PanelActions {
+  private readonly listeners = new Map<string, Set<ActionListener>>()
+
+  constructor(private readonly log: (pluginId: string, message: string) => void) {}
+
+  onAction(pluginId: string, panelId: string, listener: ActionListener): Disposer {
+    const key = `${pluginId}/${panelId}`
+    const set = this.listeners.get(key) ?? new Set<ActionListener>()
+    // Wrapped: the same function registered twice is two registrations, each with its disposer.
+    const entry: ActionListener = (id) => listener(id)
+    set.add(entry)
+    this.listeners.set(key, set)
+    return () => {
+      set.delete(entry)
+      if (set.size === 0 && this.listeners.get(key) === set) this.listeners.delete(key)
+    }
+  }
+
+  /** The plugin's ctx ended: its listeners go (a reloaded copy registers its own). */
+  removePlugin(pluginId: string): void {
+    const prefix = `${pluginId}/`
+    for (const key of [...this.listeners.keys()]) if (key.startsWith(prefix)) this.listeners.delete(key)
+  }
+
+  /** main's `panel.action`; anything malformed is dropped. */
+  handleEvent(params: unknown): void {
+    const { pluginId, panelId, actionId } = (params ?? {}) as Record<string, unknown>
+    if (typeof pluginId !== 'string' || typeof panelId !== 'string' || typeof actionId !== 'string') return
+    for (const listener of [...(this.listeners.get(`${pluginId}/${panelId}`) ?? [])]) {
+      try {
+        listener(actionId)
+      } catch (err) {
+        this.log(pluginId, `a panels.onAction listener threw: ${errorText(err)}`)
+      }
+    }
+  }
+}
+
 /** One ctx.overlay.start handle of this host, while its overlay is open. */
 interface OverlayLink {
   readonly pluginId: string
@@ -306,7 +357,14 @@ export interface UiApiDeps {
   ports: PanelPorts
   /** The host's overlay handles (ctx.overlay.start). */
   overlays: OverlayLinks
-  /** Where a failed fire-and-forget request (badge) is reported. */
+  /** The host's header action listeners (ctx.panels.onAction). */
+  actions: PanelActions
+  /**
+   * The plugin set a header: its dispose must tell main (`plugin.disposed`), which clears it. A
+   * header outliving its ctx would offer buttons whose listeners are gone.
+   */
+  headerUsed?(): void
+  /** Where a failed fire-and-forget request (badge, panels.header) is reported. */
   logError(message: string): void
 }
 
@@ -336,7 +394,7 @@ function checkBadge(value: unknown): BadgeValue {
 export function createUiApi(
   deps: UiApiDeps
 ): Pick<PluginContext, 'panels' | 'badge' | 'overlay'> {
-  const { pluginId, ports, overlays } = deps
+  const { pluginId, ports, overlays, actions } = deps
 
   const start = (spec: OverlaySpec): OverlayHandle => {
     const html = typeof spec === 'object' && spec !== null && (spec as { kind?: unknown }).kind === 'html'
@@ -420,6 +478,25 @@ export function createUiApi(
         void deps.call('panels.show', { pluginId, panelId: id }).catch((err: unknown) => {
           deps.logError(`panels.show ${id}: ${errorText(err)}`)
         })
+      },
+      header: (panelId: string, header: unknown): void => {
+        deps.alive()
+        // Either kind: a webview panel's title bar is the same header (its toolbar sits below).
+        const id = declared(deps, panelId, 'panels.header')
+        // Throws here, at the plugin's call site, for anything main would refuse (main checks again).
+        const clean = parsePanelHeader(header)
+        deps.headerUsed?.()
+        // Fire and forget like badge: a refusal from main is logged, not thrown. The port keeps
+        // order, so the last call is the header that shows.
+        void deps.call('panels.header', { pluginId, panelId: id, header: clean }).catch((err: unknown) => {
+          deps.logError(`panels.header ${id}: ${errorText(err)}`)
+        })
+      },
+      onAction: (panelId: string, listener: ActionListener): Disposer => {
+        deps.alive()
+        const id = declared(deps, panelId, 'panels.onAction')
+        if (typeof listener !== 'function') throw new TypeError('panels.onAction needs a function')
+        return actions.onAction(pluginId, id, listener)
       }
     }),
     badge: (panelId: string, value: BadgeValue): void => {

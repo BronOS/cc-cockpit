@@ -336,6 +336,8 @@ export interface PanelHandlerDeps {
   connect(projectId: string, windowId: number, panelKey: unknown, nonce: unknown): boolean
   /** Start the project's plugin host again if it gave up (HostManager.restartStopped). */
   restartHost(projectId: string): Promise<void>
+  /** A header action click (HostManager.panelAction); false when the host dropped it. */
+  panelAction(projectId: string, panelKey: string, actionId: string): boolean
 }
 
 /**
@@ -348,6 +350,16 @@ export function registerPanelHandlers(router: IpcRouter, deps: PanelHandlerDeps)
     return deps.connect(ctx.projectId, ctx.windowId, panelKey, nonce)
   })
   router.handleProject('plugins.restart', (ctx) => deps.restartHost(ctx.projectId))
+  // The project is the sender's; the key and id are only looked up in that project's host
+  // (HostApi.panelAction), which delivers nothing but an action its plugin set there. The caps
+  // keep a junk payload from being carried any further.
+  router.handleProject('panels.action', (ctx, payload) => {
+    const { panelKey, actionId } = fields('panels.action', payload)
+    if (typeof panelKey !== 'string' || panelKey.length > 300 || typeof actionId !== 'string' || actionId.length > 40) {
+      throw new Error('panels.action: panelKey and actionId must be short strings')
+    }
+    return deps.panelAction(ctx.projectId, panelKey, actionId)
+  })
 }
 
 /**

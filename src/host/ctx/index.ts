@@ -37,7 +37,7 @@ import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { SettingsHolder } from './settings'
 import { createStorage, type StorageHandle } from './storage'
-import { createUiApi, OverlayLinks, PanelPorts, type PanelPort } from './ui'
+import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
 import { createWebviewApi, WebviewHub } from './webview'
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -105,6 +105,8 @@ interface Runtime {
   oauthCalls: Set<(err: Error) => void>
   /** This ctx called ctx.webview.navigate: main has views of it to close at dispose. */
   webviewUsed: boolean
+  /** This ctx called ctx.panels.header: main has a header of it to clear at dispose. */
+  headerUsed: boolean
   dataDirReady: boolean
   appDataDirReady: boolean
   disposed: boolean
@@ -123,12 +125,14 @@ export class HostContexts {
   private readonly sessions: SessionsHub
   private readonly ports: PanelPorts
   private readonly overlays: OverlayLinks
+  private readonly actions: PanelActions
   private readonly webviews: WebviewHub
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m))
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
   }
 
@@ -167,6 +171,7 @@ export class HostContexts {
       children: new Set(),
       oauthCalls: new Set(),
       webviewUsed: false,
+      headerUsed: false,
       dataDirReady: false,
       appDataDirReady: false,
       disposed: false
@@ -305,6 +310,10 @@ export class HostContexts {
       guardAsync,
       ports: this.ports,
       overlays: this.overlays,
+      actions: this.actions,
+      headerUsed: () => {
+        rt.headerUsed = true
+      },
       logError: (m) => logAs('error', m)
     })
 
@@ -412,14 +421,22 @@ export class HostContexts {
     if (!rt || rt.disposed) return
     rt.disposed = true
     this.runtimes.delete(pluginId)
-    if (rt.oauthCalls.size > 0 || rt.webviewUsed || (rt.spec.webviewPanels?.length ?? 0) > 0 || this.overlays.has(pluginId)) {
+    if (
+      rt.oauthCalls.size > 0 ||
+      rt.webviewUsed ||
+      rt.headerUsed ||
+      (rt.spec.webviewPanels?.length ?? 0) > 0 ||
+      this.overlays.has(pluginId)
+    ) {
       // Main aborts the plugin's pending authorize and refreshes, closes its web views and
       // dismisses its overlays (HostApi.contextDisposed). Sent before anything else of the id can be: a new copy's
       // create() runs this first, and the port keeps order, so main never takes the new copy's
       // sign-in (or view) for this one. Only when there is something: main has no sign-in of this
       // ctx that the host is not still waiting on (main answers each call only after its entry is
       // gone), and a view only after a navigate; a plugin with webview panels always
-      // tells, since its panel reports placements before any navigate and main keeps them.
+      // tells, since its panel reports placements before any navigate and main keeps them. A ctx
+      // that set a panel header tells too: main clears it, or its buttons would stay up with no
+      // onAction listener behind them (an unload for bad settings keeps the host running).
       this.deps.emit?.('plugin.disposed', { pluginId })
     }
     if (rt.oauthCalls.size > 0) {
@@ -439,6 +456,7 @@ export class HostContexts {
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
     this.overlays.removePlugin(pluginId)
+    this.actions.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
     for (const child of rt.children) killChild(child)
     rt.children.clear()
@@ -513,6 +531,13 @@ export class HostContexts {
     if (event === 'overlay.message') {
       // Keyed by plugin and handle; a handle of a disposed copy was dropped with it.
       this.overlays.handleEvent(params)
+      return
+    }
+    if (event === 'panel.action') {
+      // A header click main checked against what this plugin's current copy set. Only a plugin
+      // that runs here: a click for a disposed copy finds no listeners anyway.
+      const pluginId = (params as { pluginId?: unknown } | null)?.pluginId
+      if (typeof pluginId === 'string' && this.runtimes.has(pluginId)) this.actions.handleEvent(params)
       return
     }
     if (event === 'webview.navigated') {

@@ -689,7 +689,7 @@ function start(): void {
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
     notify: (text, source) => showNotification(text, `cc-cockpit: ${source.pluginId}`),
     pluginLog: (entry) => pluginLogs.write(entry),
-    // ctx.sessions, ctx.badge, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage (host-api.ts).
+    // ctx.sessions, ctx.badge, ctx.panels.header, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage (host-api.ts).
     // Functions, not objects: `sessions` and `tabs` are defined below; these only run once a host exists.
     api: {
       listSessions: (projectId) => sessions.listByProject(projectId),
@@ -707,6 +707,7 @@ function start(): void {
         return tab
       },
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
+      setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey),
       openOverlay,
       postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
@@ -1449,7 +1450,8 @@ function start(): void {
 
   registerPanelHandlers(router, {
     connect: (projectId, windowId, panelKey, nonce) => panelPorts.connect(projectId, windowId, panelKey, nonce),
-    restartHost: (projectId) => hosts.restartStopped(projectId)
+    restartHost: (projectId) => hosts.restartStopped(projectId),
+    panelAction: (projectId, panelKey, actionId) => hosts.panelAction(projectId, panelKey, actionId)
   })
 
   // Webview panels' toolbar and placeholder: the panel key is looked up in main's own layout (a

@@ -151,3 +151,43 @@ export function GearGlyph(props: GlyphProps): React.JSX.Element {
     </Glyph>
   )
 }
+
+// The core icons a plugin may name for a panel header action (ctx.panels.header,
+// zones/PanelHeaderBar.tsx); refresh, add, settings and open-external reuse the glyphs above.
+
+/** A magnifier, as the settings screen's filter field (settings/icons.tsx SearchIcon). */
+export function SearchGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <circle cx="7" cy="7" r="4.25" />
+      <path d="M10.25 10.25 13.5 13.5" />
+    </Glyph>
+  )
+}
+
+/** A funnel. */
+export function FilterGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <path d="M2.75 3.25h10.5L9.25 8.25v4.25l-2.5 1.25V8.25z" />
+    </Glyph>
+  )
+}
+
+export function CheckGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <path d="M3.25 8.5 6.5 11.75l6.25-7.5" strokeWidth="1.5" />
+    </Glyph>
+  )
+}
+
+/** Sort: an arrow down beside lines that get shorter. */
+export function SortGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <path d="M4.5 2.75v10.5M2.25 11 4.5 13.25 6.75 11" />
+      <path d="M8.75 4h5M8.75 8h3.5M8.75 12h2" />
+    </Glyph>
+  )
+}

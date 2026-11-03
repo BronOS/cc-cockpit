@@ -4,6 +4,7 @@ import { MIN_SIZE, type PanelPlacement, type ZoneId, type ZoneState } from '../.
 import { SessionsMeta, SessionsPanel } from '../sessions/SessionsPanel'
 import { MoreGlyph } from '../window-icons'
 import { MENU_WIDTH, ZONE_MENU_TRIGGER } from './IconStrip'
+import { PanelHeaderActions, PanelHeaderMeta } from './PanelHeaderBar'
 import { PluginPanel } from './PluginPanel'
 import { Splitter } from './Splitter'
 
@@ -116,10 +117,14 @@ export function PanelArea(props: {
               >
                 <header className="panel-header">
                   <span className="panel-title">{info.title}</span>
+                  {/* Core's own count for Sessions; a plugin panel's meta and actions are what
+                      its plugin set with ctx.panels.header (main only ever has them for those). */}
                   {placement.panelKey === 'core/sessions' && <SessionsMeta />}
+                  <PanelHeaderMeta header={info.header} />
                   <span className="panel-header-spacer" />
+                  <PanelHeaderActions panelKey={placement.panelKey} header={info.header} />
                   {/* The zone menu (Move to … / Hide) without hunting for the icon's right-click,
-                      which still works. Named after what it does, not "<title> menu": the specs
+                      which still works. Always last, after any plugin actions. Named after what it does, not "<title> menu": the specs
                       (and a screen-reader user) find the panel's icon by a name starting with
                       its title, which this must not also match. */}
                   <button

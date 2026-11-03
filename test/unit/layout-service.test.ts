@@ -304,6 +304,31 @@ describe('panel status', () => {
     expect(service.setError(P, 'jira/other', 'x')).toBe(false)
   })
 
+  it('sets the header apart from the badge and error, publishing only a change', () => {
+    const { service, published } = setup()
+    service.setPluginPanels(P, 'jira', [notes])
+    const info = (): unknown => published.at(-1)!.panels.find((p) => p.panelKey === 'jira/notes')
+    const header = { meta: '3 open', actions: [{ id: 'refresh', title: 'Refresh', icon: 'refresh' as const }] }
+    service.setBadge(P, 'jira/notes', { kind: 'dot' })
+    expect(service.setHeader(P, 'jira/notes', header)).toBe(true)
+    service.setError(P, 'jira/notes', 'job failed')
+    expect(info()).toEqual({ panelKey: 'jira/notes', title: 'Notes', badge: { kind: 'dot' }, error: 'job failed', header })
+    const count = published.length
+    service.setHeader(P, 'jira/notes', { ...header })
+    expect(published).toHaveLength(count)
+    service.setBadge(P, 'jira/notes', null)
+    service.setError(P, 'jira/notes', undefined)
+    expect(info()).toEqual({ panelKey: 'jira/notes', title: 'Notes', header })
+    service.setHeader(P, 'jira/notes', null)
+    expect(info()).toEqual({ panelKey: 'jira/notes', title: 'Notes' })
+    expect(service.setHeader(P, 'jira/other', header)).toBe(false)
+    // A panel that goes takes its header with it: it does not come back when the plugin does.
+    service.setHeader(P, 'jira/notes', header)
+    service.setPluginPanels(P, 'jira', [])
+    service.setPluginPanels(P, 'jira', [notes])
+    expect(info()).toEqual({ panelKey: 'jira/notes', title: 'Notes' })
+  })
+
   it('drops the status of a panel whose plugin goes away', () => {
     const { service, published } = setup()
     service.setPluginPanels(P, 'jira', [notes])

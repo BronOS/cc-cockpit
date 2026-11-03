@@ -151,6 +151,22 @@ export interface ExecResult {
 export type BadgeValue = number | 'dot' | null
 
 /**
+ * An icon button in a panel's title bar (ctx.panels.header). `icon` is one of the app's own icons
+ * (`refresh`, `add`, `search`, `filter`, `settings`, `open-external`, `check`, `sort`) or a path to
+ * an `.svg` inside the plugin folder (drawn in the header's colour, like a panel icon).
+ */
+export interface PanelHeaderAction {
+  /** 1 to 40 of `A-Z a-z 0-9 . _ -`, unique in the header: what `onAction` gets on a click. */
+  id: string
+  icon: string
+  /** Tooltip and accessible name, at most 80 characters. */
+  title: string
+  /** The icon spins and clicks are ignored (a refresh under way). */
+  busy?: boolean
+  disabled?: boolean
+}
+
+/**
  * How big an overlay is drawn: `default` a centered dialog (75 % of the window), `large` about 90 %,
  * `full` the whole window below the top bar with a small margin. Every size keeps the title bar and
  * the close button. A terminal overlay's program is resized to fit.
@@ -354,6 +370,16 @@ export interface PluginContext {
      * a refusal from main is logged.
      */
     show(panelId: string): void
+    /**
+     * The title bar of one of this plugin's own panels (either kind): `meta` is muted plain text
+     * after the title (at most 120 characters; cut with an ellipsis when it does not fit, the
+     * whole text as tooltip), `actions` up to 3 icon buttons before the panel's "…" menu. Each
+     * call replaces the whole header; null clears it back to the bare title. Throws for an
+     * undeclared panel or a header over the limits; cleared when the plugin stops or reloads.
+     */
+    header(panelId: string, header: { meta?: string; actions?: PanelHeaderAction[] } | null): void
+    /** A click on one of the panel's header actions (not a busy or disabled one): its `id`. */
+    onAction(panelId: string, listener: (actionId: string) => void): Disposer
   }
   /**
    * Badge on one of this plugin's own panel icons: a count, a dot, or null to clear. Throws for a

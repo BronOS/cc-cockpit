@@ -22,7 +22,16 @@ export function panelLabel(info: PanelInfo): string {
  * a stroke="currentColor" SVG). A mask reports no load errors, so a detached Image probe loads the
  * same url and tells PanelGlyph to fall back to the letter.
  */
-function MaskIcon({ src, onFail }: { src: string; onFail: (src: string) => void }): React.JSX.Element {
+export function MaskIcon({
+  src,
+  onFail,
+  className = 'panel-icon-img'
+}: {
+  src: string
+  onFail: (src: string) => void
+  /** The size rule; `.panel-icon-img` (the strip's 18px) by default. A panel header action passes its own. */
+  className?: string
+}): React.JSX.Element {
   useEffect(() => {
     const probe = new Image()
     probe.onerror = () => onFail(src)
@@ -34,7 +43,7 @@ function MaskIcon({ src, onFail }: { src: string; onFail: (src: string) => void 
   const url = `url(${JSON.stringify(src)})`
   return (
     <span
-      className="panel-icon-img"
+      className={className}
       aria-hidden="true"
       style={{ maskImage: url, WebkitMaskImage: url }}
     />

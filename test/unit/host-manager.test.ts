@@ -789,6 +789,61 @@ describe('HostManager', () => {
       expect(listeners.size).toBe(0)
     })
 
+    it("routes a header action click to the project's host and clears the header when the host goes", async () => {
+      const headers: { projectId: string; key: string; header: unknown }[] = []
+      manager = new HostManager({
+        factory,
+        plugins: async (projectId) => enabled[projectId] ?? [],
+        env: async () => ({ PATH: '/usr/bin' }),
+        projectPath: (projectId) => `/projects/${projectId}`,
+        layouts,
+        pluginDataDir: (projectId, pluginId) => `/data/plugin-data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/plugin-data/_app/${pluginId}`,
+        settings: () => ({ ok: true, project: {}, app: {} }),
+        api: {
+          listSessions: () => [],
+          session: () => undefined,
+          send: () => ({ id: 'q', delivered: false }),
+          onSessionsChange: () => () => {},
+          openTab: async () => ({ id: 'new' }),
+          setBadge: () => true,
+          setPanelHeader: (projectId, key, header) => {
+            headers.push({ projectId, key, header })
+            return true
+          },
+          openOverlay: async () => ({ kind: 'dismissed' }),
+          secrets: unusedSecrets,
+          oauth: unusedOAuth
+        },
+        log
+      })
+      const heard: unknown[] = []
+      factory.onHostEvent = (event, params) => {
+        if (event === 'panel.action') heard.push(params)
+      }
+      await manager.open('p1', 1)
+      const first = factory.last
+      await first.host.call('panels.header', {
+        pluginId: 'a.one',
+        panelId: 'main',
+        header: { meta: 'm', actions: [{ id: 'refresh', icon: 'refresh', title: 'Refresh' }] }
+      })
+      expect(headers).toEqual([
+        { projectId: 'p1', key: 'a.one/main', header: { meta: 'm', actions: [{ id: 'refresh', title: 'Refresh', icon: 'refresh' }] } }
+      ])
+      expect(manager.panelAction('p1', 'a.one/main', 'refresh')).toBe(true)
+      // Another project's window cannot click this host's action; an unknown action is dropped.
+      expect(manager.panelAction('p2', 'a.one/main', 'refresh')).toBe(false)
+      expect(manager.panelAction('p1', 'a.one/main', 'other')).toBe(false)
+      await flush()
+      expect(heard).toEqual([{ pluginId: 'a.one', panelId: 'main', actionId: 'refresh' }])
+      first.exit(1) // a crash
+      await flush()
+      expect(headers.at(-1)).toEqual({ projectId: 'p1', key: 'a.one/main', header: null })
+      expect(manager.panelAction('p1', 'a.one/main', 'refresh')).toBe(false)
+      await manager.close('p1')
+    })
+
     // Plan 20261102 Task 5: every way a plugin's code is replaced or turned off closes its overlays.
     // A whole-host stop goes through disposeApi; an in-place reload or unload through the host's
     // `plugin.disposed` (what the real host sends for a ctx with an overlay open, host/ctx).

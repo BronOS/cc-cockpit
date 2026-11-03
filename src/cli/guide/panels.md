@@ -95,3 +95,33 @@ send.addEventListener('click', () => ccPanel.post({ result: input.value }))
 ## Badges
 
 `ctx.badge(panelId, n | 'dot' | null)` shows a count or a dot on the panel's icon.
+
+## Header
+
+`ctx.panels.header(panelId, { meta?, actions? } | null)` fills the title bar of one of your own
+panels (html or webview). `meta` is muted plain text after the title, at most 120 characters, cut
+with an ellipsis when the panel is narrow (the whole text is its tooltip): "3 open", "synced 2 min
+ago". `actions` is up to 3 icon buttons before the panel's "…" menu, each
+`{ id, icon, title, busy?, disabled? }`: `id` is 1 to 40 of `A-Z a-z 0-9 . _ -`, unique; `title`
+(at most 80) is the tooltip and the accessible name; `icon` is one of the app's own icons
+(`refresh`, `add`, `search`, `filter`, `settings`, `open-external`, `check`, `sort`) or a path to
+an `.svg` in your plugin folder, drawn in the header's colour like a panel icon. Every call
+replaces the whole header; `null` clears it. Over a limit or for an undeclared panel it throws a
+TypeError; all text is shown as text, never HTML. The header is cleared when the plugin stops or
+reloads, so set it again in `activate`.
+
+`ctx.panels.onAction(panelId, (actionId) => …)` hears the clicks and returns a disposer. A `busy`
+action spins and takes no clicks, a `disabled` one is greyed out; neither reaches `onAction`.
+
+```js
+const header = (busy) =>
+  ctx.panels.header('board', {
+    meta: `${items.length} open`,
+    actions: [{ id: 'refresh', icon: 'refresh', title: 'Refresh', busy }]
+  })
+ctx.panels.onAction('board', async (id) => {
+  if (id !== 'refresh') return
+  header(true)
+  try { await load() } finally { header(false) }
+})
+```

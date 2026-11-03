@@ -755,7 +755,8 @@ describe('registerPanelHandlers', () => {
       },
       restartHost: async (projectId) => {
         restarts.push(projectId)
-      }
+      },
+      panelAction: () => false
     })
     await expect(ipc.invoke('panels.connect', 12, [{ panelKey: 'a.one/board', nonce: 3, projectId: PROJECT_A }])).resolves.toBe(true)
     await expect(ipc.invoke('panels.connect', 11, [{ panelKey: 'other/x', nonce: 4 }])).resolves.toBe(false)
@@ -771,6 +772,31 @@ describe('registerPanelHandlers', () => {
     await ipc.invoke('plugins.restart', 11, [{ projectId: PROJECT_B }])
     expect(restarts).toEqual([PROJECT_A])
     await expect(ipc.invoke('plugins.restart', 13)).rejects.toThrow(/not a project window/)
+  })
+
+  it("hands a header action click to the sender's project, refusing junk before it goes further", async () => {
+    const { ipc, router } = setup()
+    const clicks: unknown[][] = []
+    registerPanelHandlers(router, {
+      connect: () => false,
+      restartHost: async () => {},
+      panelAction: (projectId, panelKey, actionId) => {
+        clicks.push([projectId, panelKey, actionId])
+        return actionId === 'refresh'
+      }
+    })
+    // The project is the sender's, whatever the payload says.
+    await expect(ipc.invoke('panels.action', 11, [{ panelKey: 'a.one/board', actionId: 'refresh', projectId: PROJECT_B }])).resolves.toBe(true)
+    await expect(ipc.invoke('panels.action', 12, [{ panelKey: 'a.one/board', actionId: 'other' }])).resolves.toBe(false)
+    expect(clicks).toEqual([
+      [PROJECT_A, 'a.one/board', 'refresh'],
+      [PROJECT_B, 'a.one/board', 'other']
+    ])
+    await expect(ipc.invoke('panels.action', 11, [{ panelKey: 'a.one/board', actionId: 'x'.repeat(41) }])).rejects.toThrow(/short strings/)
+    await expect(ipc.invoke('panels.action', 11, [{ panelKey: 7, actionId: 'refresh' }])).rejects.toThrow(/short strings/)
+    await expect(ipc.invoke('panels.action', 11, ['nope'])).rejects.toThrow(/bad payload/)
+    await expect(ipc.invoke('panels.action', 13, [{ panelKey: 'a.one/board', actionId: 'refresh' }])).rejects.toThrow(/not a project window/)
+    expect(clicks).toHaveLength(2)
   })
 })
 

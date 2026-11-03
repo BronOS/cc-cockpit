@@ -9,6 +9,9 @@
 //   sessions.open   { pluginId, cwd?, prompt? }-> { tabId }      a new Claude tab in this project
 //   badge           { pluginId, panelId, value}-> null           a panel the plugin itself declares
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
+//   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
+//                                                                declares (any kind), checked again here
+//                                                                (shared/panel-header.ts); null clears it
 //   overlay.open    { pluginId, spec, handle? } -> OverlayResult on this project's window; `handle`
 //                                                                (ctx.overlay.start) names the overlay
 //                                                                in the three calls below
@@ -40,9 +43,12 @@
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
 //   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
+//   panel.action    { pluginId, panelId, actionId }              a click on a header action this host set
+//                                                                (panelAction: current, not busy/disabled)
 // and one event the host sends (host-manager routes it to contextDisposed):
 //   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls,
-//                                                                its webviews and its overlays go
+//                                                                its webviews, its overlays and its panel
+//                                                                headers go
 //
 // `pluginId` must be one of the plugins this host process runs. Plugins sharing a host can post in
 // each other's name (host-manager.ts says why that is accepted); the boundary is the project.
@@ -100,7 +106,8 @@ import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler } from '../../host/rpc'
 import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, SessionInfo } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
-import type { PanelBadge } from '../../shared/ipc'
+import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
+import { isPanelHeaderIcon, parsePanelHeader, type CleanPanelHeader } from '../../shared/panel-header'
 import {
   MAX_OVERLAY_MESSAGE_LENGTH,
   OverlayOutbox,
@@ -187,6 +194,11 @@ export interface HostApiDeps {
   openTab(projectId: string, options: { cwd?: string; prompt?: string }, windowId: number): Promise<{ id: string }>
   /** LayoutService.setBadge: false for a panel the project does not have. */
   setBadge(projectId: string, panelKey: string, badge: PanelBadge | null): boolean
+  /**
+   * LayoutService.setHeader (ctx.panels.header): false for a panel the project does not have.
+   * Without it the request is refused.
+   */
+  setPanelHeader?(projectId: string, panelKey: string, header: PanelHeaderInfo | null): boolean
   /**
    * LayoutService.show (ctx.panels.show): unhide, open, expand its zone; false for a panel the
    * project does not have. Without it the request is refused.
@@ -317,6 +329,25 @@ function withMethod(what: string, err: unknown): Error {
   return new Error(`${what}: ${errorText(err)}`, { cause: err })
 }
 
+/**
+ * A checked header as the renderer draws it: a core icon by name, a plugin's .svg as its
+ * `cc-plugin://` URL (served only from inside the plugin folder, like a panel icon).
+ */
+export function headerInfoOf(pluginId: string, header: CleanPanelHeader): PanelHeaderInfo {
+  const out: PanelHeaderInfo = {}
+  if (header.meta !== undefined) out.meta = header.meta
+  if (header.actions) {
+    out.actions = header.actions.map((a) => ({
+      id: a.id,
+      title: a.title,
+      ...(isPanelHeaderIcon(a.icon) ? { icon: a.icon } : { iconSrc: pluginFileUrl(pluginId, a.icon) }),
+      ...(a.busy ? { busy: true } : {}),
+      ...(a.disabled ? { disabled: true } : {})
+    }))
+  }
+  return out
+}
+
 /** ctx.badge's value as the layout stores it; throws for anything else. */
 export function badgeOf(value: unknown): PanelBadge | null {
   if (value === null) return null
@@ -382,6 +413,12 @@ export class HostApi {
   private readonly overlayCopies = new Map<string, AbortController>()
   /** Panel keys this host badged: cleared when it goes, so a dead plugin leaves no stale count. */
   private readonly badged = new Set<string>()
+  /**
+   * Panel key -> the header this host set there, as checked: what a click is checked against
+   * (panelAction), and what is cleared when the plugin's ctx or the host goes, so no button is
+   * left up with nobody to hear it.
+   */
+  private readonly headers = new Map<string, CleanPanelHeader>()
   /** Aborted at dispose: the oauth refreshes in flight end (overlays: `overlayCopies`). */
   private readonly gone = new AbortController()
   private readonly unsubscribe: () => void
@@ -411,6 +448,7 @@ export class HostApi {
       'sessions.open': (params) => this.open(params),
       badge: (params) => this.badge(params),
       'panels.show': (params) => this.showPanel(params),
+      'panels.header': (params) => this.panelHeader(params),
       'overlay.open': (params) => this.overlay(params),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
@@ -468,6 +506,7 @@ export class HostApi {
         this.log(`plugin host ${this.scope.projectId}: clearing badge ${key} failed: ${errorText(err)}`)
       }
     }
+    this.clearHeaders((key) => key.startsWith(`${next.id}/`))
   }
 
   /**
@@ -495,11 +534,38 @@ export class HostApi {
     const overlays = this.overlayCopies.get(pluginId)
     this.overlayCopies.delete(pluginId)
     overlays?.abort()
+    // And its panel headers (the host sends this for a ctx that set one): their actions had
+    // onAction listeners in that ctx only. Unlike a badge, which is a count the next copy will
+    // set again, a stale button would take clicks for nobody. Not once revoked: dispose() clears
+    // them then, sparing what a newer host of the project may have set on the same keys.
+    if (!this.revoked) this.clearHeaders((key) => key.startsWith(`${pluginId}/`))
   }
 
   /** Whether this host set a badge on `panelKey` that is still showing. */
   hasBadged(panelKey: string): boolean {
     return this.badged.has(panelKey)
+  }
+
+  /** Whether this host set a header on `panelKey` that is still showing. */
+  hasHeader(panelKey: string): boolean {
+    return this.headers.has(panelKey)
+  }
+
+  /**
+   * A click on a header action (the renderer's `panels.action`; the router took the project from
+   * the sender, host-manager found this project's host). Delivered to the plugin as `panel.action`
+   * only when `panelKey` is a header this host set and `actionId` is one of its actions now, not
+   * busy and not disabled: the renderer ignores those clicks too, but main does not trust it, and
+   * a click can race the header that just made the action busy. False when dropped.
+   */
+  panelAction(panelKey: string, actionId: string): boolean {
+    if (this.revoked) return false
+    const action = this.headers.get(panelKey)?.actions?.find((a) => a.id === actionId)
+    if (!action || action.busy || action.disabled) return false
+    const slash = panelKey.indexOf('/')
+    // Plugin ids hold no slash, so the first one splits the key (the key is ours: set in panelHeader).
+    this.emit('panel.action', { pluginId: panelKey.slice(0, slash), panelId: panelKey.slice(slash + 1), actionId })
+    return true
   }
 
   /**
@@ -523,10 +589,11 @@ export class HostApi {
 
   /**
    * The host process is gone (exit, stop, app quit). Stop the sessions events, dismiss the
-   * overlays it opened, clear its badges, except the ones `keep` names: a newer host of the same
-   * project (its window reopened while this one was deactivating) owns those now. Idempotent.
+   * overlays it opened, clear its badges and headers, except the ones `keep` (badges) and
+   * `keepHeader` name: a newer host of the same project (its window reopened while this one was
+   * deactivating) owns those now. Idempotent.
    */
-  dispose(keep?: (panelKey: string) => boolean): void {
+  dispose(keep?: (panelKey: string) => boolean, keepHeader?: (panelKey: string) => boolean): void {
     if (this.disposed) return
     this.revoke()
     this.disposed = true
@@ -549,6 +616,20 @@ export class HostApi {
       }
     }
     this.badged.clear()
+    this.clearHeaders((key) => !keepHeader?.(key))
+  }
+
+  /** Clear the headers this host set on the keys `which` picks (each one also leaves `headers`). */
+  private clearHeaders(which: (panelKey: string) => boolean): void {
+    for (const key of [...this.headers.keys()]) {
+      if (!which(key)) continue
+      this.headers.delete(key)
+      try {
+        this.deps.setPanelHeader?.(this.scope.projectId, key, null)
+      } catch (err) {
+        this.log(`plugin host ${this.scope.projectId}: clearing header ${key} failed: ${errorText(err)}`)
+      }
+    }
   }
 
   // -------------------------------------------------------------------------------------------
@@ -641,6 +722,37 @@ export class HostApi {
     if (!this.deps.setBadge(this.scope.projectId, key, badge)) throw new Error(`badge: no panel ${key} in this window`)
     if (badge) this.badged.add(key)
     else this.badged.delete(key)
+    return null
+  }
+
+  /**
+   * ctx.panels.header: the title bar of one of the plugin's own declared panels (either kind), in
+   * this host's project. The host checked the header already (ui.ts); it is checked again here
+   * with the same rule (shared/panel-header.ts), because a host is not trusted to have used ctx.
+   * No budget: an unchanged header publishes nothing (LayoutService.setHeader), and a changed one
+   * is one small layout push, like a badge.
+   */
+  private panelHeader(params: unknown): null {
+    this.alive()
+    const { pluginId, panelId, header } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'panels.header')
+    // Only the plugin's own declared panels, as for badge: never another plugin's or a core panel.
+    if (typeof panelId !== 'string' || !plugin.panels.includes(panelId)) {
+      throw new Error(`panels.header: ${plugin.id} declares no panel "${String(panelId)}"`)
+    }
+    if (!this.deps.setPanelHeader) throw new Error('panels.header: panel headers are not available')
+    let clean: CleanPanelHeader | null
+    try {
+      clean = parsePanelHeader(header)
+    } catch (err) {
+      // The message already names panels.header and the limit; an Error like every refusal here.
+      throw new Error(errorText(err), { cause: err })
+    }
+    const key = `${plugin.id}/${panelId}`
+    const info = clean ? headerInfoOf(plugin.id, clean) : null
+    if (!this.deps.setPanelHeader(this.scope.projectId, key, info)) throw new Error(`panels.header: no panel ${key} in this window`)
+    if (clean) this.headers.set(key, clean)
+    else this.headers.delete(key)
     return null
   }
 

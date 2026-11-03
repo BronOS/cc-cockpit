@@ -129,6 +129,145 @@ describe('ctx.badge', () => {
   })
 })
 
+describe('ctx.panels.header / onAction', () => {
+  it("sends a checked header for the plugin's own declared panel, null clearing it", async () => {
+    const { ctx, calls } = setup()
+    ctx.panels.header('board', {
+      meta: 'synced\n2 min ago',
+      actions: [
+        { id: 'refresh', icon: 'refresh', title: 'Refresh', busy: true },
+        { id: 'star.1', icon: 'icons/star.svg', title: 'Star', disabled: false, extra: 1 } as never
+      ]
+    })
+    ctx.panels.header('side', { meta: '' })
+    ctx.panels.header('board', null)
+    await flush()
+    expect(calls.map((c) => [c.method, c.params])).toEqual([
+      [
+        'panels.header',
+        {
+          pluginId: 'a.one',
+          panelId: 'board',
+          // A control character becomes a space; unknown keys and a false flag are left out.
+          header: {
+            meta: 'synced 2 min ago',
+            actions: [
+              { id: 'refresh', icon: 'refresh', title: 'Refresh', busy: true },
+              { id: 'star.1', icon: 'icons/star.svg', title: 'Star' }
+            ]
+          }
+        }
+      ],
+      // An empty header is the bare title, like null.
+      ['panels.header', { pluginId: 'a.one', panelId: 'side', header: null }],
+      ['panels.header', { pluginId: 'a.one', panelId: 'board', header: null }]
+    ])
+  })
+
+  it('throws a TypeError naming the limit, before anything reaches main', async () => {
+    const { ctx, calls } = setup()
+    const action = (over: Record<string, unknown>) => ({ id: 'a', icon: 'refresh', title: 'A', ...over })
+    const refused: [unknown, RegExp][] = [
+      [{ meta: 'x'.repeat(121) }, /meta is longer than 120/],
+      [{ meta: 5 }, /meta must be a string/],
+      [{ actions: [action({ id: 'a' }), action({ id: 'b' }), action({ id: 'c' }), action({ id: 'd' })] }, /at most 3 actions/],
+      [{ actions: [action({ id: '' })] }, /must be 1 to 40 letters/],
+      [{ actions: [action({ id: 'x'.repeat(41) })] }, /must be 1 to 40 letters/],
+      [{ actions: [action({ id: 'a b' })] }, /must be 1 to 40 letters/],
+      [{ actions: [action({ id: 'a/b' })] }, /must be 1 to 40 letters/],
+      [{ actions: [action({}), action({})] }, /"a" is used twice/],
+      [{ actions: [action({ title: '' })] }, /title must be a non-empty string/],
+      [{ actions: [action({ title: 'x'.repeat(81) })] }, /title is longer than 80/],
+      [{ actions: [action({ icon: 'rocket' })] }, /icon must be one of refresh, add/],
+      [{ actions: [action({ icon: 'icons/star.png' })] }, /icon must be one of/],
+      [{ actions: [action({ icon: '../up.svg' })] }, /must not contain "\.\." segments/],
+      [{ actions: [action({ icon: '/abs/star.svg' })] }, /must be relative to the plugin folder/],
+      [{ actions: [action({ icon: 'a\\b.svg' })] }, /must use "\/" separators/],
+      [{ actions: [action({ busy: 'yes' })] }, /busy must be a boolean/],
+      [{ actions: [action({ disabled: 1 })] }, /disabled must be a boolean/],
+      [{ actions: {} }, /actions must be an array/],
+      [{ actions: ['refresh'] }, /each action must be an object/],
+      ['meta', /header must be an object or null/],
+      [undefined, /header must be an object or null/]
+    ]
+    for (const [header, message] of refused) {
+      let thrown: unknown
+      try {
+        ctx.panels.header('board', header as never)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown, JSON.stringify(header)).toBeInstanceOf(TypeError)
+      expect((thrown as Error).message, JSON.stringify(header)).toMatch(message)
+      expect((thrown as Error).message).toMatch(/^panels\.header: /)
+    }
+    // Exactly at the limits is fine.
+    ctx.panels.header('board', {
+      meta: 'x'.repeat(120),
+      actions: [action({ id: 'x'.repeat(40), title: 't'.repeat(80) }), action({ id: 'b' }), action({ id: 'c' })]
+    })
+    expect(() => ctx.panels.header('inbox', null)).toThrow('panel "inbox" is not declared')
+    expect(() => ctx.panels.onAction('inbox', () => {})).toThrow('panel "inbox" is not declared')
+    expect(() => ctx.panels.onAction('board', 'x' as never)).toThrow('needs a function')
+    await flush()
+    expect(calls).toHaveLength(1)
+  })
+
+  it("delivers main's panel.action to that panel's listeners only, a throwing one logged", () => {
+    const { contexts, ctx, other, logs } = setup()
+    const heard: string[] = []
+    const off = ctx.panels.onAction('board', (id) => heard.push(`board:${id}`))
+    ctx.panels.onAction('side', (id) => heard.push(`side:${id}`))
+    ctx.panels.onAction('board', () => {
+      throw new Error('listener bug')
+    })
+    const heardByOther: string[] = []
+    other.panels.onAction('inbox', (id) => heardByOther.push(id))
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'board', actionId: 'refresh' })
+    expect(heard).toEqual(['board:refresh'])
+    expect(logs).toContainEqual({ pluginId: 'a.one', level: 'error', text: 'a panels.onAction listener threw: listener bug' })
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'board', actionId: 7 })
+    contexts.handleEvent('panel.action', { pluginId: 'nobody', panelId: 'board', actionId: 'x' })
+    off()
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'board', actionId: 'again' })
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'go' })
+    expect(heard).toEqual(['board:refresh', 'side:go'])
+    expect(heardByOther).toEqual([])
+    // Disposed: its listeners went with it.
+    contexts.dispose('a.one')
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'late' })
+    expect(heard).toEqual(['board:refresh', 'side:go'])
+    expect(() => ctx.panels.header('board', null)).toThrow('deactivated')
+  })
+
+  it('disposing a plugin that set a header tells main (plugin.disposed), so main clears it', () => {
+    const emitted: { event: string; params: unknown }[] = []
+    const contexts = new HostContexts({ log: () => {}, call: async () => null, emit: (event, params) => emitted.push({ event, params }) })
+    const one = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js', panels: ['board'] }))
+    const two = contexts.create(hostSpec({ id: 'a.two', dir: '/p/two', main: 'h.js', panels: ['inbox'] }))
+    one.panels.header('board', { meta: 'hi' })
+    // Only listening is nothing for main to clear.
+    two.panels.onAction('inbox', () => {})
+    contexts.dispose('a.two')
+    expect(emitted).toEqual([])
+    contexts.dispose('a.one')
+    expect(emitted).toEqual([{ event: 'plugin.disposed', params: { pluginId: 'a.one' } }])
+  })
+
+  it("logs main's refusal instead of throwing", async () => {
+    const { ctx, logs } = setup(() => {
+      throw new Error('panels.header: no panel a.one/board in this window')
+    })
+    ctx.panels.header('board', { meta: 'x' })
+    await flush()
+    expect(logs).toContainEqual({
+      pluginId: 'a.one',
+      level: 'error',
+      text: 'panels.header board: panels.header: no panel a.one/board in this window'
+    })
+  })
+})
+
 describe('ctx.overlay', () => {
   it('asks main with no timeout and returns its result', async () => {
     const { ctx, calls } = setup(() => ({ kind: 'value', value: 42 }))

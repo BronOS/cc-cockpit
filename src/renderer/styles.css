@@ -1187,6 +1187,54 @@ iframe:focus-visible {
 .panel-header-spacer {
   flex: 1;
 }
+/* A plugin's meta (ctx.panels.header): shrinks before the title does, cut with an ellipsis (the
+   whole text is its tooltip). */
+.panel-plugin-meta {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A plugin's header actions (PanelHeaderBar.tsx) are icon-button sm, like the "…"; a plugin's own
+   .svg is drawn as a mask over currentColor like its strip icon, so hover and disabled apply. */
+.panel-action-img {
+  display: block;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+.panel-action-letter {
+  font-size: var(--cc-text-sm);
+  font-weight: 600;
+}
+.panel-action[aria-busy='true'] {
+  cursor: progress;
+}
+.panel-action[aria-busy='true'] > .glyph,
+.panel-action[aria-busy='true'] > .panel-action-img {
+  transform-origin: 50% 50%;
+  animation: cc-panel-action-spin 0.9s linear infinite;
+}
+@keyframes cc-panel-action-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* No spin when the OS asks for less motion: a steady dimmed icon still says "busy". */
+@media (prefers-reduced-motion: reduce) {
+  .panel-action[aria-busy='true'] > .glyph,
+  .panel-action[aria-busy='true'] > .panel-action-img {
+    animation: none;
+    opacity: 0.55;
+  }
+}
 
 .panel-body {
   flex: 1;

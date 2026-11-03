@@ -22,10 +22,11 @@
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
+//   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text }
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
-//   badge { pluginId, panelId, value }, overlay.open { pluginId, spec, handle } (no timeout; see
+//   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
 //   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click)
 // Events to main:

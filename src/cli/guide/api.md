@@ -94,6 +94,14 @@ with full Node access.
 - `ctx.panels.show(panelId)`: bring one of your own panels into sight (either kind): a hidden
   panel comes back, a closed one opens and its zone expands. Use it when a command should make
   the panel visible (`ccc browser open`). Throws for an undeclared id; a refusal is logged.
+- `ctx.panels.header(panelId, { meta?, actions? } | null)`: the title bar of one of your own
+  panels (either kind): `meta` is muted text after the title (at most 120 characters), `actions`
+  up to 3 icon buttons `{ id, icon, title, busy?, disabled? }` before the "…" menu, `icon` a core
+  name (`refresh`, `add`, `search`, `filter`, `settings`, `open-external`, `check`, `sort`) or an
+  `.svg` path in your folder. Each call replaces the header, `null` clears it; over a limit it
+  throws a TypeError. Cleared when the plugin stops or reloads (`ccc guide panels`).
+- `ctx.panels.onAction(panelId, (actionId) => …)`: a click on one of that panel's header actions
+  (never a busy or disabled one); returns a disposer.
 - `ctx.webview`: drives the native web view of one of your `"kind": "webview"` panels (`ccc guide
   webview`). `navigate(panelId, target)` shows an http(s) URL or an absolute file path (a local
   file is served read-only with the files next to it); `back(panelId)`, `forward(panelId)`,

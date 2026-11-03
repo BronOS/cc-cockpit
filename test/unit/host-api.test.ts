@@ -133,6 +133,7 @@ beforeEach(() => {
       return tab
     },
     setBadge: (projectId, key, badge) => layouts.setBadge(projectId, key, badge),
+    setPanelHeader: (projectId, key, header) => layouts.setHeader(projectId, key, header),
     openOverlay: async (windowId, spec, opener, peerGone, channel) => overlays.open(windowId, spec, opener, peerGone, channel),
     postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
     closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
@@ -396,6 +397,122 @@ describe('badge', () => {
     expect(badgeOf(A, 'a.two/inbox')).toEqual({ kind: 'count', count: 7 })
     apis[0]!.dispose()
     expect(badgeOf(A, 'a.two/inbox')).toBeUndefined()
+  })
+})
+
+describe('panels.header / panelAction', () => {
+  const headerOf = (projectId: string, key: string): unknown =>
+    layouts.view(projectId)!.panels.find((p) => p.panelKey === key)?.header
+  const refresh = { id: 'refresh', icon: 'refresh', title: 'Refresh' }
+
+  it("sets the header of the plugin's own panel only, a plugin .svg as its cc-plugin:// url", async () => {
+    const call = hostA()
+    await call('panels.header', {
+      pluginId: 'a.one',
+      panelId: 'board',
+      header: { meta: '3 open', actions: [{ ...refresh, busy: true }, { id: 'star', icon: 'icons/my star.svg', title: 'Star', disabled: true }] }
+    })
+    expect(headerOf(A, 'a.one/board')).toEqual({
+      meta: '3 open',
+      actions: [
+        { id: 'refresh', title: 'Refresh', icon: 'refresh', busy: true },
+        { id: 'star', title: 'Star', iconSrc: 'cc-plugin://a.one/icons/my%20star.svg', disabled: true }
+      ]
+    })
+    // Never another plugin's panel, a core panel, or a plugin this host does not run.
+    for (const panelId of ['inbox', 'a.two/inbox', 'core/sessions', '../board']) {
+      await expect(call('panels.header', { pluginId: 'a.one', panelId, header: { meta: 'x' } }), panelId).rejects.toThrow(
+        'declares no panel'
+      )
+    }
+    await expect(call('panels.header', { pluginId: 'b.one', panelId: 'board', header: { meta: 'x' } })).rejects.toThrow(
+      'unknown plugin'
+    )
+    expect(headerOf(A, 'a.two/inbox')).toBeUndefined()
+    expect(headerOf(A, 'core/sessions')).toBeUndefined()
+    expect(headerOf(B, 'b.one/board')).toBeUndefined()
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: null })
+    expect(headerOf(A, 'a.one/board')).toBeUndefined()
+  })
+
+  it('checks the header again, whatever the host sent: limits, ids, icons, plain strings', async () => {
+    const call = hostA()
+    const action = (over: Record<string, unknown>) => ({ ...refresh, ...over })
+    for (const [header, message] of [
+      [{ actions: [action({ id: 'a' }), action({ id: 'b' }), action({ id: 'c' }), action({ id: 'd' })] }, 'at most 3 actions'],
+      [{ actions: [action({ id: 'no spaces' })] }, 'must be 1 to 40 letters'],
+      [{ actions: [action({ id: '<b>' })] }, 'must be 1 to 40 letters'],
+      [{ actions: [action({}), action({})] }, 'used twice'],
+      [{ actions: [action({ title: 'x'.repeat(81) })] }, 'title is longer than 80'],
+      [{ actions: [action({ title: { html: '<b>' } })] }, 'title must be a non-empty string'],
+      [{ actions: [action({ icon: '../../outside.svg' })] }, 'must not contain ".." segments'],
+      [{ actions: [action({ icon: 'javascript:alert(1)' })] }, 'icon must be one of'],
+      [{ meta: 'x'.repeat(121) }, 'meta is longer than 120'],
+      [{ meta: ['x'] }, 'meta must be a string'],
+      ['<b>x</b>', 'must be an object or null']
+    ] as const) {
+      await expect(call('panels.header', { pluginId: 'a.one', panelId: 'board', header }), JSON.stringify(header)).rejects.toThrow(message)
+    }
+    expect(headerOf(A, 'a.one/board')).toBeUndefined()
+  })
+
+  it('delivers a click only on an action the current header has, not busy or disabled', async () => {
+    const events: { event: string; params: unknown }[] = []
+    const call = hostA(events)
+    const api = apis[0]!
+    const clicks = (): unknown[] => events.filter((e) => e.event === 'panel.action').map((e) => e.params)
+    // Nothing set yet: nothing to click.
+    expect(api.panelAction('a.one/board', 'refresh')).toBe(false)
+    await call('panels.header', {
+      pluginId: 'a.one',
+      panelId: 'board',
+      header: { actions: [refresh, { id: 'add', icon: 'add', title: 'Add', disabled: true }] }
+    })
+    expect(api.panelAction('a.one/board', 'refresh')).toBe(true)
+    expect(clicks()).toEqual([{ pluginId: 'a.one', panelId: 'board', actionId: 'refresh' }])
+    // An unknown or disabled action, another panel, a key no header of this host is on.
+    expect(api.panelAction('a.one/board', 'nope')).toBe(false)
+    expect(api.panelAction('a.one/board', 'add')).toBe(false)
+    expect(api.panelAction('a.two/inbox', 'refresh')).toBe(false)
+    expect(api.panelAction('core/sessions', 'refresh')).toBe(false)
+    // Busy: the click that raced the header making it busy is dropped.
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { actions: [{ ...refresh, busy: true }] } })
+    expect(api.panelAction('a.one/board', 'refresh')).toBe(false)
+    // Cleared: the action is gone.
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { actions: [refresh] } })
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: null })
+    expect(api.panelAction('a.one/board', 'refresh')).toBe(false)
+    expect(clicks()).toHaveLength(1)
+    // A stopping host takes no clicks.
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { actions: [refresh] } })
+    api.revoke()
+    expect(api.panelAction('a.one/board', 'refresh')).toBe(false)
+    expect(clicks()).toHaveLength(1)
+  })
+
+  it("clears the headers when the host goes, the plugin's ctx ends or it reloads; a newer host's stay", async () => {
+    const call = hostA()
+    const api = apis[0]!
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { meta: 'one' } })
+    await call('panels.header', { pluginId: 'a.two', panelId: 'inbox', header: { meta: 'two', actions: [refresh] } })
+    layouts.setBadge(A, 'a.two/inbox', { kind: 'dot' })
+    // a.one's ctx ended (an unload for bad settings, a failed activate): only its header goes.
+    api.contextDisposed({ pluginId: 'a.one' })
+    expect(headerOf(A, 'a.one/board')).toBeUndefined()
+    expect(headerOf(A, 'a.two/inbox')).toEqual({ meta: 'two', actions: [{ id: 'refresh', title: 'Refresh', icon: 'refresh' }] })
+    // A reload in place: the old copy's header goes, the badge is the layout's to keep.
+    apis[0]!.updatePlugin({ id: 'a.two', dir: pluginTwo, panels: ['inbox'] })
+    expect(headerOf(A, 'a.two/inbox')).toBeUndefined()
+    expect(api.panelAction('a.two/inbox', 'refresh')).toBe(false)
+    // The host goes: what it set is cleared, except where a newer host of the project set one.
+    await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { meta: 'again' } })
+    await call('panels.header', { pluginId: 'a.two', panelId: 'inbox', header: { meta: 'again' } })
+    const newer = hostA()
+    await newer('panels.header', { pluginId: 'a.two', panelId: 'inbox', header: { meta: 'newer' } })
+    api.dispose(undefined, (key) => apis[1]!.hasHeader(key))
+    expect(headerOf(A, 'a.one/board')).toBeUndefined()
+    expect(headerOf(A, 'a.two/inbox')).toEqual({ meta: 'newer' })
+    await expect(call('panels.header', { pluginId: 'a.one', panelId: 'board', header: null })).rejects.toThrow('stopping')
   })
 })
 
