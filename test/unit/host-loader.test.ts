@@ -283,6 +283,35 @@ describe('PluginLoader services', () => {
     await expect(handle.hi()).rejects.toThrow('no enabled plugin in this project provides service "greet"')
   })
 
+  it('passes services.collects to ctx.services.useAll, end to end', async () => {
+    svc()
+    const feedCode = (tag: string): string =>
+      `exports.activate = (ctx) => { ctx.services.provide('feed', { items: () => ['${tag}'] }); ctx.services.emit('feed', 'changed', '${tag}') }`
+    write(join(root, 'p1'), feedCode('one'))
+    write(join(root, 'p2'), feedCode('two'))
+    write(
+      join(root, 'inbox'),
+      "exports.activate = (ctx) => { const set = ctx.services.useAll('feed'); __svc.set = set; __svc.heard = []; " +
+        "set.on('changed', (d, id) => __svc.heard.push(id + ':' + d)); " +
+        "try { ctx.services.useAll('other') } catch (e) { __svc.refused = e.message } }"
+    )
+    const loader = makeLoader()
+    const spec = (id: string, services: HostPluginSpec['services']): HostPluginSpec => hostSpec({ id, dir: join(root, id.slice(2)), main: 'host.js', services })
+    const states = await loader.activateAll([
+      spec('a.inbox', { uses: { feed: 1, other: 1 }, collects: ['feed'] }),
+      spec('a.p1', { provides: { feed: 1 } }),
+      spec('a.p2', { provides: { feed: 1 } })
+    ])
+    expect(states.map((s) => s.state)).toEqual(['active', 'active', 'active'])
+    const set = svc().set as { providers(): { pluginId: string; handle: { items(): Promise<string[]> } }[] }
+    const list = set.providers()
+    expect(list.map((p) => p.pluginId)).toEqual(['a.p1', 'a.p2'])
+    expect(await Promise.all(list.map((p) => p.handle.items()))).toEqual([['one'], ['two']])
+    await new Promise((r) => setImmediate(r))
+    expect(svc().heard).toEqual(['a.p1:one', 'a.p2:two'])
+    expect(svc().refused).toContain('services.collects')
+  })
+
   it('fails a cycle through an already active provider at once, not after the activate timeout', async () => {
     svc()
     // b is active; a's activate calls b, whose method calls back into a, still activating. Before

@@ -938,11 +938,11 @@ describe('registerServiceHandlers (with ServiceChoices)', () => {
     const { ipc } = servicesSetup()
     const a = (await ipc.invoke('settings.pluginServices', 11, [{ projectId: PROJECT_B }])) as ServicesStatus
     expect(a.services).toEqual([
-      { service: 'mail', candidates: [], selected: null },
-      { service: 'triage', candidates: ['a.one', 'a.two'], selected: null }
+      { service: 'mail', candidates: [], selected: null, collectedOnly: false },
+      { service: 'triage', candidates: ['a.one', 'a.two'], selected: null, collectedOnly: false }
     ])
     const b = (await ipc.invoke('settings.pluginServices', 12)) as ServicesStatus
-    expect(b.services).toEqual([{ service: 'triage', candidates: ['b.other'], selected: 'b.other' }])
+    expect(b.services).toEqual([{ service: 'triage', candidates: ['b.other'], selected: 'b.other', collectedOnly: false }])
     await expect(ipc.invoke('settings.pluginServices', 13)).rejects.toThrow(/not a project window/)
     await expect(ipc.invoke('settings.pluginServiceProvider', 13, [{ service: 'triage', pluginId: 'a.one' }])).rejects.toThrow(
       /not a project window/
@@ -989,7 +989,7 @@ describe('registerServiceHandlers (with ServiceChoices)', () => {
     sets[PROJECT_A] = sets[PROJECT_A]!.filter((p) => p.id !== 'a.two')
     const status = (await ipc.invoke('settings.pluginServices', 11)) as ServicesStatus
     // One provider left: it answers, the stale pick is simply not used.
-    expect(status.services.find((s) => s.service === 'triage')).toEqual({ service: 'triage', candidates: ['a.one'], selected: 'a.one' })
+    expect(status.services.find((s) => s.service === 'triage')).toEqual({ service: 'triage', candidates: ['a.one'], selected: 'a.one', collectedOnly: false })
     expect(status.plugins.find((p) => p.id === 'a.user')?.problems).toEqual([{ kind: 'missing', service: 'mail' }])
     // With a third provider back, the stale pick still names no one: ambiguous, the page asks again.
     sets[PROJECT_A] = [...sets[PROJECT_A]!, { id: 'a.three', services: { provides: { triage: 1 } } }]

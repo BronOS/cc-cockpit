@@ -488,6 +488,16 @@ describe('services', () => {
     expect((await errorsOf(withServices({ uses: many(33) }))).join()).toMatch(/services\/uses/)
   })
 
+  it('accepts services.collects for used names and refuses the rest', async () => {
+    expect((await validateManifest(withServices({ uses: { 'inbox-feed': 1 }, collects: ['inbox-feed'] }), dir)).ok).toBe(true)
+    expect(await errorsOf(withServices({ uses: { other: 1 }, collects: ['inbox-feed'] }))).toEqual([
+      'service "inbox-feed" is in services.collects but not in services.uses'
+    ])
+    expect((await errorsOf(withServices({ uses: { a: 1 }, collects: ['A b'] }))).join()).toMatch(/services\/collects/)
+    expect((await errorsOf(withServices({ uses: { a: 1 }, collects: ['a', 'a'] }))).join()).toMatch(/services\/collects/)
+    expect((await errorsOf(withServices({ uses: { a: 1 }, collects: 'a' }))).join()).toMatch(/services\/collects/)
+  })
+
   it('refuses a name both provided and used', async () => {
     const errs = await errorsOf(withServices({ provides: { triage: 1 }, uses: { triage: 1, other: 1 } }))
     expect(errs).toEqual(['service "triage" is both provided and used; a plugin cannot use a service it provides'])

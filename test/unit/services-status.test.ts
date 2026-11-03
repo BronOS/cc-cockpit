@@ -62,20 +62,20 @@ describe('serviceStatus', () => {
   it('none: a consumer with no provider gets a missing problem', () => {
     const s = serviceStatus([cons('c', { triage: 1 })], {})
     expect(s.plugins[0]!.problems).toEqual([{ kind: 'missing', service: 'triage' }])
-    expect(s.services).toEqual([{ service: 'triage', candidates: [], selected: null }])
+    expect(s.services).toEqual([{ service: 'triage', candidates: [], selected: null, collectedOnly: false }])
   })
 
   it('one provider: selected, no problems', () => {
     const s = serviceStatus([prov('p', { triage: 1 }), cons('c', { triage: 1 })], {})
     expect(s.plugins.find((p) => p.id === 'c')!.problems).toEqual([])
     expect(s.plugins.find((p) => p.id === 'p')!.provides).toEqual([{ service: 'triage', version: 1 }])
-    expect(s.services).toEqual([{ service: 'triage', candidates: ['p'], selected: 'p' }])
+    expect(s.services).toEqual([{ service: 'triage', candidates: ['p'], selected: 'p', collectedOnly: false }])
   })
 
   it('two unpicked: ambiguous', () => {
     const s = serviceStatus([prov('a', { triage: 1 }), prov('b', { triage: 1 }), cons('c', { triage: 1 })], {})
     expect(s.plugins.find((p) => p.id === 'c')!.problems).toEqual([{ kind: 'ambiguous', service: 'triage', candidates: ['a', 'b'] }])
-    expect(s.services[0]).toEqual({ service: 'triage', candidates: ['a', 'b'], selected: null })
+    expect(s.services[0]).toEqual({ service: 'triage', candidates: ['a', 'b'], selected: null, collectedOnly: false })
   })
 
   it('two picked: selected, no problems', () => {
@@ -101,5 +101,29 @@ describe('serviceStatus', () => {
   it('sorts services by name', () => {
     const s = serviceStatus([prov('p', { zeta: 1, alpha: 1 })], {})
     expect(s.services.map((x) => x.service)).toEqual(['alpha', 'zeta'])
+  })
+})
+
+describe('serviceStatus with collectors (services.collects)', () => {
+  const coll = (id: string, name: string): ServicePlugin => ({ id, services: { uses: { [name]: 1 }, collects: [name] } })
+
+  it('reports no pick and no problem for a name only collectors use', () => {
+    const st = serviceStatus([prov('chat', { 'inbox-feed': 1 }), prov('mail', { 'inbox-feed': 1 }), coll('inbox', 'inbox-feed')], {})
+    expect(st.services).toEqual([{ service: 'inbox-feed', candidates: ['chat', 'mail'], selected: null, collectedOnly: true }])
+    expect(st.plugins.find((p) => p.id === 'inbox')?.problems).toEqual([])
+  })
+
+  it('a collector with no provider has no problem either', () => {
+    expect(serviceStatus([coll('inbox', 'inbox-feed')], {}).plugins[0]?.problems).toEqual([])
+  })
+
+  it('a plain use consumer beside a collector still needs the pick', () => {
+    const st = serviceStatus([prov('chat', { 'inbox-feed': 1 }), prov('mail', { 'inbox-feed': 1 }), coll('inbox', 'inbox-feed'), cons('plain', { 'inbox-feed': 1 })], {})
+    expect(st.services[0]?.collectedOnly).toBe(false)
+    expect(st.plugins.find((p) => p.id === 'plain')?.problems.map((p) => p.kind)).toEqual(['ambiguous'])
+  })
+
+  it('a name nobody uses is not collectedOnly', () => {
+    expect(serviceStatus([prov('chat', { 'inbox-feed': 1 })], {}).services[0]?.collectedOnly).toBe(false)
   })
 })

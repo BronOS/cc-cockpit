@@ -51,7 +51,17 @@ var MANIFEST_SCHEMA = {
     // Strict inside, unlike the top level: a key the app does not know here (`description`, a
     // misspelt `provide`) is a declaration that silently does nothing, and the plugin host reads
     // only these two.
-    services: { type: "object", additionalProperties: false, properties: { provides: serviceMap, uses: serviceMap } },
+    // `collects`: the names this plugin reads from every provider (`ctx.services.useAll`); each must
+    // also be in `uses` (validate.ts). Unknown to apps before 0.9.7, whose strict schema refuses it.
+    services: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        provides: serviceMap,
+        uses: serviceMap,
+        collects: { type: "array", maxItems: MAX_SERVICES, uniqueItems: true, items: { type: "string", pattern: SERVICE_NAME_PATTERN.source } }
+      }
+    },
     contributes: {
       type: "object",
       properties: {

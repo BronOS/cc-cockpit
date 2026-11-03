@@ -247,6 +247,12 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
       errors.push(`service "${name}" is both provided and used; a plugin cannot use a service it provides`)
     }
   }
+  // A collected name is one the plugin uses, read from every provider: `uses` carries its major.
+  for (const name of manifest.services?.collects ?? []) {
+    if (!Object.hasOwn(manifest.services?.uses ?? {}, name)) {
+      errors.push(`service "${name}" is in services.collects but not in services.uses`)
+    }
+  }
   // The command is implemented by the plugin's host, which only starts from `main`.
   if ((c.cli ?? []).length > 0 && manifest.main === undefined) {
     errors.push('contributes.cli needs "main": a plugin\'s commands run in its host')

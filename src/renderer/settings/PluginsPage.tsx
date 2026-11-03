@@ -52,7 +52,8 @@ export function PluginsPage(props: {
     services.reload()
   }
   const nameOf = (id: string): string => data?.find((p) => p.id === id)?.name ?? id
-  const shared = (services.data?.services ?? []).filter((s) => s.candidates.length >= 2)
+  // A service only collectors read (`useAll`) has no pick: every provider is read.
+  const shared = (services.data?.services ?? []).filter((s) => s.candidates.length >= 2 && !s.collectedOnly)
   // The open-file pick sits with the service picks (same rule, same record): shown as soon as one
   // plugin offers to open files, since the built-in viewer is always the other choice.
   const openFile = services.data?.openFile

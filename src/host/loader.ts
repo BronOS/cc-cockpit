@@ -148,7 +148,7 @@ export function parseServiceProviders(params: unknown): Record<string, string> {
 }
 
 /**
- * `{ provides?: {name: int}, uses?: {name: int} }`: the shape only; main checked names and ranges.
+ * `{ provides?: {name: int}, uses?: {name: int}, collects?: string[] }`: the shape only; main checked names and ranges.
  * Other keys are ignored, not refused (main refuses them in the manifest; one that still arrives,
  * from an older main or a later field, must not stop the plugin). A malformed provides or uses
  * gives `invalid` instead of services.
@@ -164,6 +164,13 @@ function parseServicesField(v: unknown): { services?: NonNullable<PluginManifest
     if (typeof map !== 'object' || map === null || Array.isArray(map)) return invalid
     if (Object.values(map).some((n) => !Number.isInteger(n))) return invalid
     out[key] = map as Record<string, number>
+  }
+  if (Object.hasOwn(v, 'collects')) {
+    const list: unknown = (v as Record<string, unknown>).collects
+    if (list !== undefined) {
+      if (!Array.isArray(list) || list.some((n) => typeof n !== 'string')) return invalid
+      out.collects = [...(list as string[])]
+    }
   }
   return { services: out }
 }

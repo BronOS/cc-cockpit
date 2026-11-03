@@ -73,6 +73,12 @@ export function selectProvider(
   return { ok: true, provider, version }
 }
 
+/** Whether the plugin reads `service` from every provider (`services.collects`). */
+export function collectsName(p: ServicePlugin, service: string): boolean {
+  const list = p.services?.collects
+  return Array.isArray(list) && list.includes(service)
+}
+
 /** `A`, `A and B`, `A, B and C`. */
 function joinNames(names: string[]): string {
   return names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
@@ -103,6 +109,12 @@ export interface PluginServiceStatus {
 
 export interface ServiceInfo {
   service: string
+  /**
+   * Every plugin of the project that uses the name collects it (`services.collects`, read with
+   * `useAll`), and one does: no call resolves a single provider, so there is nothing to pick and
+   * several providers are not a problem (Chat, Gmail and Jira all provide `inbox-feed`).
+   */
+  collectedOnly: boolean
   /** Provider ids in plugin order. */
   candidates: string[]
   /** The provider calls reach, or null (no provider, or several with no valid pick). */
@@ -129,6 +141,9 @@ export function serviceStatus(plugins: readonly ServicePlugin[], choices: Servic
     for (const e of [...provides, ...uses]) names.add(e.service)
     const problems: ServiceProblem[] = []
     for (const u of uses) {
+      // A collected name reads every provider: none, several or another major on one of them is
+      // not this plugin's problem (useAll lists the providers of its major).
+      if (collectsName(p, u.service)) continue
       const sel = selectProvider(u.service, plugins, choices, { id: p.id, version: u.version })
       if (!sel.ok) problems.push(sel.problem)
     }
@@ -136,7 +151,9 @@ export function serviceStatus(plugins: readonly ServicePlugin[], choices: Servic
   })
   const services = [...names].sort().map((service): ServiceInfo => {
     const sel = selectProvider(service, plugins, choices)
-    return { service, candidates: providersOf(service, plugins), selected: sel.ok ? sel.provider : null }
+    const users = plugins.filter((p) => p.services?.uses !== undefined && Object.hasOwn(p.services.uses, service))
+    const collectedOnly = users.length > 0 && users.every((p) => collectsName(p, service))
+    return { service, candidates: providersOf(service, plugins), selected: sel.ok ? sel.provider : null, collectedOnly }
   })
   return { plugins: statuses, services }
 }

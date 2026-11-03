@@ -23,7 +23,8 @@ import {
   type PluginContext,
   type PluginLogger,
   type PluginSettings,
-  type ServiceHandle
+  type ServiceHandle,
+  type ServiceSet
 } from '../../sdk/types'
 import { errorText, toError } from '../../shared/error-text'
 import { normalizeCliResult, type PluginCliResult } from '../../shared/plugin-cli'
@@ -438,6 +439,10 @@ export class HostContexts {
         use: (name: string) => {
           alive()
           return servicesOf().use(spec.id, name) as ServiceHandle
+        },
+        useAll: (name: string) => {
+          alive()
+          return servicesOf().useAll(spec.id, name) as ServiceSet
         },
         emit: (name: string, event: string, data?: unknown) => {
           alive()

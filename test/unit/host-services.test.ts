@@ -1326,3 +1326,135 @@ describe('ServiceRegistry available()', () => {
     expect(reg.available('unknown-plugin', 'editor')).toBe(false)
   })
 })
+
+describe('ServiceRegistry useAll (collectors)', () => {
+  const collector = (id: string, uses: Record<string, number>, collects: string[]) => ({ id, services: { uses, collects } })
+  const feed = (tag: string) => ({ items: () => [tag], fail: () => { throw new Error(`${tag} broke`) } })
+
+  function two() {
+    const ctx = setup()
+    ctx.reg.setSpec(provider('chat', { 'inbox-feed': 1 }))
+    ctx.reg.setSpec(provider('mail', { 'inbox-feed': 1 }))
+    ctx.reg.setSpec(collector('inbox', { 'inbox-feed': 1 }, ['inbox-feed']))
+    ctx.acts.finish('chat')
+    ctx.acts.finish('mail')
+    ctx.reg.provide('chat', 'inbox-feed', feed('chat'))
+    ctx.reg.provide('mail', 'inbox-feed', feed('mail'))
+    return ctx
+  }
+
+  it('lists every provider and each handle reaches its own, whatever the pick', async () => {
+    const { reg } = two()
+    reg.setChoices({ 'inbox-feed': 'mail' })
+    const set = reg.useAll('inbox', 'inbox-feed')
+    const list = set.providers()
+    expect(list.map((p) => p.pluginId)).toEqual(['chat', 'mail'])
+    expect(await call(list[0]!.handle, 'items')).toEqual(['chat'])
+    expect(await call(list[1]!.handle, 'items')).toEqual(['mail'])
+    // A provider's throw arrives as a fresh Error with its message.
+    await expect(call(list[0]!.handle, 'fail')).rejects.toThrow('chat broke')
+  })
+
+  it('hears events from every provider with its id; a plain use subscriber still needs a pick', async () => {
+    const { reg, logs } = two()
+    reg.setSpec(consumer('plain', { 'inbox-feed': 1 }))
+    const heard: [unknown, string][] = []
+    reg.useAll('inbox', 'inbox-feed').on('changed', (d, id) => heard.push([d, id]))
+    const plain: unknown[] = []
+    reg.use('plain', 'inbox-feed').on('changed', (d) => plain.push(d))
+    reg.emit('chat', 'inbox-feed', 'changed', { n: 1 })
+    reg.emit('mail', 'inbox-feed', 'changed', { n: 2 })
+    await flush()
+    expect(heard).toEqual([[{ n: 1 }, 'chat'], [{ n: 2 }, 'mail']])
+    expect(plain).toEqual([])
+    // The plain consumer misses them, so the drop is logged once per provider.
+    expect(logs.filter(([, t]) => t.includes('dropped'))).toHaveLength(2)
+  })
+
+  it('logs no drop when only collectors use the service', async () => {
+    const { reg, logs } = two()
+    reg.useAll('inbox', 'inbox-feed').on('changed', () => {})
+    reg.emit('chat', 'inbox-feed', 'changed', {})
+    await flush()
+    expect(logs).toEqual([])
+  })
+
+  it("a provider entry's on hears that provider only", async () => {
+    const { reg } = two()
+    const [chat] = reg.useAll('inbox', 'inbox-feed').providers()
+    const heard: unknown[] = []
+    chat!.handle.on('changed', (d) => heard.push(d))
+    reg.emit('mail', 'inbox-feed', 'changed', 'from mail')
+    reg.emit('chat', 'inbox-feed', 'changed', 'from chat')
+    await flush()
+    expect(heard).toEqual(['from chat'])
+  })
+
+  it('a late provider joins with onChange; a release leaves; several changes notify once', async () => {
+    const { reg, acts } = two()
+    const set = reg.useAll('inbox', 'inbox-feed')
+    let changes = 0
+    set.onChange(() => changes++)
+    reg.setSpec(provider('jira', { 'inbox-feed': 1 }))
+    acts.start('jira')
+    // Declared but not provided yet: still activating, so not listed.
+    expect(set.providers().map((p) => p.pluginId)).toEqual(['chat', 'mail'])
+    reg.provide('jira', 'inbox-feed', feed('jira'))
+    await flush()
+    expect(changes).toBe(1)
+    expect(set.providers().map((p) => p.pluginId)).toEqual(['chat', 'mail', 'jira'])
+    // A call to the still-activating provider waits for it.
+    const pending = call(set.providers()[2]!.handle, 'items')
+    acts.finish('jira')
+    expect(await pending).toEqual(['jira'])
+    reg.release('mail')
+    reg.removeSpec('mail')
+    await flush()
+    expect(changes).toBe(2)
+    expect(set.providers().map((p) => p.pluginId)).toEqual(['chat', 'jira'])
+  })
+
+  it('leaves out an errored provider and one of another major', () => {
+    const { reg } = two()
+    reg.setSpec(provider('old', { 'inbox-feed': 2 }))
+    reg.provide('old', 'inbox-feed', feed('old'))
+    // An errored activation is released by the loader: no implementation, not listed.
+    reg.release('mail')
+    expect(reg.useAll('inbox', 'inbox-feed').providers().map((p) => p.pluginId)).toEqual(['chat'])
+  })
+
+  it("a stale entry's handle fails once its plugin no longer provides the service", async () => {
+    const { reg } = two()
+    const [, mail] = reg.useAll('inbox', 'inbox-feed').providers()
+    reg.release('mail')
+    reg.setSpec(provider('mail', {}))
+    await expect(call(mail!.handle, 'items')).rejects.toThrow('mail no longer provides service "inbox-feed"')
+  })
+
+  it('refuses useAll for a name not in uses or not in collects, and a stale set after release', () => {
+    const { reg } = two()
+    reg.setSpec(consumer('plain', { 'inbox-feed': 1 }))
+    expect(() => reg.useAll('plain', 'inbox-feed')).toThrow('services.collects')
+    expect(() => reg.useAll('inbox', 'other')).toThrow('services.uses')
+    const set = reg.useAll('inbox', 'inbox-feed')
+    reg.release('inbox')
+    expect(() => set.providers()).toThrow('previous copy')
+    expect(() => set.on('changed', () => {})).toThrow('previous copy')
+    expect(() => set.onChange(() => {})).toThrow('previous copy')
+  })
+
+  it("a throwing onChange listener goes to the collector's log; a release drops its listeners", async () => {
+    const { reg, logs } = two()
+    const set = reg.useAll('inbox', 'inbox-feed')
+    set.onChange(() => {
+      throw new Error('boom')
+    })
+    reg.release('chat')
+    await flush()
+    expect(logs).toEqual([['inbox', 'service "inbox-feed": onChange listener threw: boom']])
+    reg.release('inbox')
+    reg.release('mail')
+    await flush()
+    expect(logs).toHaveLength(1)
+  })
+})

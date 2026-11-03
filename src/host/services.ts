@@ -59,6 +59,26 @@ export type ServiceOn = (event: string, listener: (data: unknown) => void) => ()
  */
 export type ServiceHandle = { readonly on: ServiceOn } & { readonly [method: string]: ServiceMethod }
 
+/** One provider in a `useAll` set: its plugin id and a handle whose calls go to that plugin only. */
+export interface ServiceProviderEntry {
+  readonly pluginId: string
+  readonly handle: ServiceHandle
+}
+
+/**
+ * The consumer's view of every provider of a service (`ctx.services.useAll`), for a plugin that
+ * collects from all of them (Inbox reading every `inbox-feed`). The project's provider pick does not
+ * apply: a collector talks to each provider by name.
+ */
+export interface ServiceSet {
+  /** The providers that can answer now, resolved on every call, in host order. */
+  providers(): ServiceProviderEntry[]
+  /** Events from every provider of the service, with the emitting plugin's id. */
+  on(event: string, listener: (data: unknown, pluginId: string) => void): () => void
+  /** The provider set may have changed (a provider provided, withdrew, reloaded or left): read `providers()` again. */
+  onChange(listener: () => void): () => void
+}
+
 /**
  * Names a provided object may not use as methods. `then` would make the handle a thenable;
  * `constructor`, `__proto__` and `prototype` are the Object-machinery words a lookup could confuse
@@ -200,6 +220,14 @@ interface Frame {
   caller?: string
 }
 
+/** One `onChange` listener of a collector. */
+interface ChangeSubscription {
+  consumer: string
+  service: string
+  listener: () => unknown
+  live: boolean
+}
+
 /** What the loader runs each activate() in (see `ServiceRegistry.beginActivate`). */
 export interface ActivateFrame {
   /** Run `fn` with this frame as the root of the call chain. */
@@ -235,7 +263,13 @@ interface Subscription {
   consumer: string
   service: string
   event: string
-  listener: (data: unknown) => unknown
+  listener: (data: unknown, pluginId: string) => unknown
+  /**
+   * A collector's subscription (`useAll`): it hears every provider whose major matches its `uses`,
+   * with the provider's id, whatever the project's pick; `from` narrows it to one provider (the `on`
+   * of a provider entry's handle). A plain one (`use`) hears the selected provider only.
+   */
+  all?: { from?: string }
   /**
    * Cleared by the disposer and by the consumer's `release`. Checked again at delivery, so an emit
    * queued just before either still reaches no one.
@@ -261,6 +295,10 @@ export class ServiceRegistry {
    * or the old code would keep receiving events beside the new copy until the next release.
    */
   private readonly releases = new Map<string, number>()
+  /** service -> `onChange` subscriptions of collectors. */
+  private readonly changeSubs = new Map<string, Set<ChangeSubscription>>()
+  /** Services with a provider-set change queued: several changes in one turn reach a listener once. */
+  private readonly changePending = new Set<string>()
   /**
    * The call chain of the running code (frames, root first), for cycle detection through providers
    * that are already active (step 3a). Node's AsyncLocalStorage, so it follows awaits, timers and
@@ -292,12 +330,17 @@ export class ServiceRegistry {
    * reload can change them). A replaced spec keeps its place in the order.
    */
   setSpec(spec: ServicePlugin): void {
+    const before = this.providedNames(spec.id)
     this.specs.set(spec.id, { id: spec.id, services: spec.services })
+    // A reload can add, drop or re-version a provided name: tell the collectors of both sides.
+    for (const name of new Set([...before, ...this.providedNames(spec.id)])) this.notifyChange(name)
   }
 
   /** Forget a plugin's declarations (Task 4: on `unload`). Its implementations go with `release`. */
   removeSpec(pluginId: string): void {
+    const before = this.providedNames(pluginId)
     this.specs.delete(pluginId)
+    for (const name of before) this.notifyChange(name)
   }
 
   /** The project's provider picks (main sends them with every activate). */
@@ -313,7 +356,12 @@ export class ServiceRegistry {
    * they are keyed by service, so they get the events of whichever provider comes next.
    */
   release(pluginId: string): void {
+    const withdrawn = [...(this.impls.get(pluginId)?.keys() ?? [])]
     this.impls.delete(pluginId)
+    for (const name of withdrawn) this.notifyChange(name)
+    for (const set of this.changeSubs.values()) {
+      for (const sub of set) if (sub.consumer === pluginId) this.unsubscribeChange(sub)
+    }
     this.droppedLogged.delete(pluginId)
     this.releases.set(pluginId, this.releaseCount(pluginId) + 1)
     for (const byEvent of this.subs.values()) {
@@ -342,29 +390,95 @@ export class ServiceRegistry {
    * An emit nobody listens to is a silent no-op.
    */
   emit(pluginId: string, service: string, event: string, data?: unknown): void {
-    if (this.declared(pluginId, 'provides', service) === undefined) {
+    const providesVersion = this.declared(pluginId, 'provides', service)
+    if (providesVersion === undefined) {
       throw new Error(`plugin ${pluginId} does not declare service "${service}" in services.provides`)
     }
     checkEventName(service, event)
     const snapshot = cloneData(data, `service "${service}" event "${event}": the data`)
     const sel = selectProvider(service, [...this.specs.values()], this.choices)
-    if (!sel.ok || sel.provider !== pluginId) {
+    const selected = sel.ok && sel.provider === pluginId
+    // Logged only when a plain consumer exists that misses it: with collectors alone (every
+    // `inbox-feed` provider, no pick) nothing is dropped for anyone, and a line per provider would
+    // be noise.
+    if (!selected && this.hasPlainConsumer(service)) {
       const why = sel.ok ? `${sel.provider} is the selected provider` : serviceProblemMessage(sel.problem)
       this.logDropped(pluginId, service, `service "${service}": events from ${pluginId} are dropped: ${why}`)
-      return
     }
     const set = this.subs.get(service)?.get(event)
     if (!set) return
     let first = true
     for (const sub of set) {
-      if (this.declared(sub.consumer, 'uses', service) !== sel.version) continue
+      if (sub.all) {
+        if (sub.all.from !== undefined && sub.all.from !== pluginId) continue
+        if (!this.collects(sub.consumer, service)) continue
+        if (this.declared(sub.consumer, 'uses', service) !== providesVersion) continue
+      } else {
+        if (!selected || this.declared(sub.consumer, 'uses', service) !== providesVersion) continue
+      }
       // The snapshot is plain data already, so these copies cannot fail.
       const copy = first ? snapshot : structuredClone(snapshot)
       first = false
       // Outside the emitter's call chain: nobody awaits a listener, so a call it makes is not work
       // the emitter's activate (or caller) waits on, and must not count toward a cycle.
-      queueMicrotask(() => this.chain.exit(() => this.deliver(sub, copy)))
+      queueMicrotask(() => this.chain.exit(() => this.deliver(sub, copy, pluginId)))
     }
+  }
+
+  /** Whether some plugin declares `service` in `uses` without collecting it (a `use` consumer). */
+  private hasPlainConsumer(service: string): boolean {
+    for (const spec of this.specs.values()) {
+      if (this.declared(spec.id, 'uses', service) !== undefined && !this.collects(spec.id, service)) return true
+    }
+    return false
+  }
+
+  /** The names a plugin's spec provides (empty for an unknown plugin). */
+  private providedNames(pluginId: string): string[] {
+    const map = this.specs.get(pluginId)?.services?.provides
+    return map ? Object.keys(map) : []
+  }
+
+  /** Whether the plugin lists `service` in `services.collects` (the right to call `useAll`). */
+  private collects(pluginId: string, service: string): boolean {
+    const list = this.specs.get(pluginId)?.services?.collects
+    return Array.isArray(list) && list.includes(service)
+  }
+
+  /**
+   * Queue one `onChange` delivery for the collectors of `service`. Several changes in one turn (a
+   * reload is release, setSpec and provide back to back) reach each listener once, after them all,
+   * when `providers()` already shows the end state.
+   */
+  private notifyChange(service: string): void {
+    if (!this.changeSubs.has(service) || this.changePending.has(service)) return
+    this.changePending.add(service)
+    queueMicrotask(() =>
+      this.chain.exit(() => {
+        this.changePending.delete(service)
+        for (const sub of [...(this.changeSubs.get(service) ?? [])]) {
+          if (!sub.live) continue
+          try {
+            const result = sub.listener()
+            if (result instanceof Promise) result.catch((err: unknown) => this.logChangeThrow(sub, err))
+          } catch (err) {
+            this.logChangeThrow(sub, err)
+          }
+        }
+      })
+    )
+  }
+
+  private logChangeThrow(sub: ChangeSubscription, err: unknown): void {
+    this.deps.log?.(sub.consumer, `service "${sub.service}": onChange listener threw: ${errorText(err)}`)
+  }
+
+  private unsubscribeChange(sub: ChangeSubscription): void {
+    sub.live = false
+    const set = this.changeSubs.get(sub.service)
+    if (!set) return
+    set.delete(sub)
+    if (set.size === 0) this.changeSubs.delete(sub.service)
   }
 
   private logDropped(pluginId: string, service: string, text: string): void {
@@ -376,13 +490,14 @@ export class ServiceRegistry {
   }
 
   /** Call one listener; its throw (or an async listener's rejection) goes to the consumer's log. */
-  private deliver(sub: Subscription, data: unknown): void {
+  private deliver(sub: Subscription, data: unknown, from: string): void {
     if (!sub.live) return
     const fail = (err: unknown): void =>
       this.deps.log?.(sub.consumer, `service "${sub.service}": listener for "${sub.event}" threw: ${errorText(err)}`)
     try {
       const listener = sub.listener
-      const result = listener(data)
+      // A plain listener gets the data alone, as before; a collector's also hears who sent it.
+      const result = sub.all ? listener(data, from) : (listener as (data: unknown) => unknown)(data)
       // An async listener: without this its rejection would be unhandled in the shared host process.
       if (result instanceof Promise) result.catch(fail)
     } catch (err) {
@@ -439,6 +554,7 @@ export class ServiceRegistry {
     let mine = this.impls.get(pluginId)
     if (!mine) this.impls.set(pluginId, (mine = new Map()))
     mine.set(service, { target: impl, methods })
+    this.notifyChange(service)
   }
 
   /**
@@ -449,7 +565,14 @@ export class ServiceRegistry {
     if (this.declared(pluginId, 'uses', service) === undefined) {
       throw new Error(`plugin ${pluginId} does not declare service "${service}" in services.uses`)
     }
-    const releasesAtUse = this.releaseCount(pluginId)
+    return this.handleFor(pluginId, service, this.releaseCount(pluginId))
+  }
+
+  /**
+   * A handle: on `use`, calls resolve the selected provider each time; with `fixed` (a `useAll`
+   * entry), they go to that plugin only, and its `on` hears that plugin only.
+   */
+  private handleFor(consumer: string, service: string, releasesAtUse: number, fixed?: string): ServiceHandle {
     // A null-prototype target, so no Object.prototype member answers before the trap does.
     const target = Object.create(null) as object
     return new Proxy(target, {
@@ -457,13 +580,67 @@ export class ServiceRegistry {
         // Symbols (util.inspect.custom, Symbol.toPrimitive, ...) are never methods.
         if (typeof prop === 'symbol') return undefined
         if (prop === 'then') return undefined
-        if (prop === 'on') return this.onFor(pluginId, service, releasesAtUse)
-        return (...args: unknown[]) => this.call(pluginId, service, prop, args, releasesAtUse)
+        if (prop === 'on') {
+          return fixed === undefined
+            ? this.onFor(consumer, service, releasesAtUse)
+            : (event: string, listener: (data: unknown) => void) =>
+                this.subscribe(consumer, service, event, listener, releasesAtUse, { from: fixed })
+        }
+        return (...args: unknown[]) => this.call(consumer, service, prop, args, releasesAtUse, fixed)
       },
       set: () => false,
       defineProperty: () => false,
       deleteProperty: () => false
     }) as ServiceHandle
+  }
+
+  /**
+   * `ctx.services.useAll(service)` for a collector: every provider of the name, by plugin. Only a
+   * name in both its `uses` and its `collects` (checked now and on every use of the set, since a
+   * reload can drop it). Nothing is cached: `providers()` reads the registry each time.
+   */
+  useAll(pluginId: string, service: string): ServiceSet {
+    this.checkCollector(pluginId, service)
+    const releasesAtUse = this.releaseCount(pluginId)
+    const set: ServiceSet = {
+      providers: () => {
+        this.checkCollector(pluginId, service)
+        this.checkFresh(pluginId, service, releasesAtUse)
+        const version = this.declared(pluginId, 'uses', service)
+        const out: ServiceProviderEntry[] = []
+        // Only plugins that called `provide`: one still activating joins when it does (onChange),
+        // one whose activate failed was released and stays out.
+        for (const spec of this.specs.values()) {
+          if (this.declared(spec.id, 'provides', service) !== version) continue
+          if (!this.impls.get(spec.id)?.has(service)) continue
+          out.push(Object.freeze({ pluginId: spec.id, handle: this.handleFor(pluginId, service, releasesAtUse, spec.id) }))
+        }
+        return out
+      },
+      on: (event, listener) => this.subscribe(pluginId, service, event, listener, releasesAtUse, {}),
+      onChange: (listener) => {
+        this.checkCollector(pluginId, service)
+        this.checkFresh(pluginId, service, releasesAtUse)
+        if (typeof listener !== 'function') throw new Error(`service "${service}": the onChange listener must be a function`)
+        const sub: ChangeSubscription = { consumer: pluginId, service, listener, live: true }
+        let subs = this.changeSubs.get(service)
+        if (!subs) this.changeSubs.set(service, (subs = new Set()))
+        subs.add(sub)
+        return () => {
+          if (sub.live) this.unsubscribeChange(sub)
+        }
+      }
+    }
+    return Object.freeze(set)
+  }
+
+  private checkCollector(consumer: string, service: string): void {
+    if (this.declared(consumer, 'uses', service) === undefined) {
+      throw new Error(`plugin ${consumer} does not declare service "${service}" in services.uses`)
+    }
+    if (!this.collects(consumer, service)) {
+      throw new Error(`plugin ${consumer} does not declare service "${service}" in services.collects`)
+    }
   }
 
   /**
@@ -473,24 +650,35 @@ export class ServiceRegistry {
    * listener, and from a handle of a released copy of the consumer (see `releases`).
    */
   private onFor(consumer: string, service: string, releasesAtUse: number): ServiceOn {
-    return (event, listener) => {
-      if (this.declared(consumer, 'uses', service) === undefined) {
-        throw new Error(`plugin ${consumer} does not declare service "${service}" in services.uses`)
-      }
-      this.checkFresh(consumer, service, releasesAtUse)
-      checkEventName(service, event)
-      if (typeof listener !== 'function') {
-        throw new Error(`service "${service}": the listener for "${event}" must be a function`)
-      }
-      const sub: Subscription = { consumer, service, event, listener, live: true }
-      let byEvent = this.subs.get(service)
-      if (!byEvent) this.subs.set(service, (byEvent = new Map()))
-      let set = byEvent.get(event)
-      if (!set) byEvent.set(event, (set = new Set()))
-      set.add(sub)
-      return () => {
-        if (sub.live) this.unsubscribe(sub)
-      }
+    return (event, listener) => this.subscribe(consumer, service, event, listener, releasesAtUse)
+  }
+
+  /** One subscription (see `onFor`); `all` makes it a collector's (`useAll`, or a provider entry's handle). */
+  private subscribe(
+    consumer: string,
+    service: string,
+    event: string,
+    listener: (data: unknown, pluginId: string) => unknown,
+    releasesAtUse: number,
+    all?: { from?: string }
+  ): () => void {
+    if (all) this.checkCollector(consumer, service)
+    else if (this.declared(consumer, 'uses', service) === undefined) {
+      throw new Error(`plugin ${consumer} does not declare service "${service}" in services.uses`)
+    }
+    this.checkFresh(consumer, service, releasesAtUse)
+    checkEventName(service, event)
+    if (typeof listener !== 'function') {
+      throw new Error(`service "${service}": the listener for "${event}" must be a function`)
+    }
+    const sub: Subscription = { consumer, service, event, listener, live: true, ...(all ? { all } : {}) }
+    let byEvent = this.subs.get(service)
+    if (!byEvent) this.subs.set(service, (byEvent = new Map()))
+    let set = byEvent.get(event)
+    if (!set) byEvent.set(event, (set = new Set()))
+    set.add(sub)
+    return () => {
+      if (sub.live) this.unsubscribe(sub)
     }
   }
 
@@ -510,13 +698,21 @@ export class ServiceRegistry {
    * after any activation wait (the consumer can be released meanwhile); a call already running in
    * the provider when the consumer is released finishes.
    */
-  private async call(consumer: string, service: string, method: string, args: unknown[], releasesAtUse: number): Promise<unknown> {
+  private async call(
+    consumer: string,
+    service: string,
+    method: string,
+    args: unknown[],
+    releasesAtUse: number,
+    fixed?: string
+  ): Promise<unknown> {
     this.checkFresh(consumer, service, releasesAtUse)
     // Resolve, and if the provider is still activating, wait and resolve again: the wait can span
-    // a reload that changed the declarations, so the provider after it may be another one.
+    // a reload that changed the declarations, so the provider after it may be another one (or, for
+    // a fixed provider, may no longer offer the service).
     let provider: string
     for (;;) {
-      provider = this.resolve(consumer, service)
+      provider = fixed === undefined ? this.resolve(consumer, service) : this.resolveFixed(consumer, service, fixed)
       const activation = this.deps.activationOf(provider)
       // Not loaded at all: nothing to wait for; the implementation check below decides.
       if (activation === undefined) break
@@ -638,6 +834,20 @@ export class ServiceRegistry {
     const sel = selectProvider(service, [...this.specs.values()], this.choices, { id: consumer, version })
     if (!sel.ok) throw new Error(serviceProblemMessage(sel.problem))
     return sel.provider
+  }
+
+  /** A `useAll` entry's provider, still a collector's provider of this name at the consumer's major. */
+  private resolveFixed(consumer: string, service: string, provider: string): string {
+    this.checkCollector(consumer, service)
+    const uses = this.declared(consumer, 'uses', service)
+    const provides = this.declared(provider, 'provides', service)
+    if (provides === undefined) throw new Error(`plugin ${provider} no longer provides service "${service}"`)
+    if (provides !== uses) {
+      throw new Error(
+        `service "${service}": ${consumer} uses version ${String(uses)}, but ${provider} provides version ${String(provides)}`
+      )
+    }
+    return provider
   }
 
   private checkActive(provider: string, service: string, state: ActivationState): void {
