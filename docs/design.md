@@ -383,7 +383,10 @@ not abbreviated to `~`.
 
 **Panels** are sandboxed iframes (`sandbox="allow-scripts"`, no same-origin, strict CSP) loaded
 from the plugin's files, talking to their plugin backend through a `MessagePort` that main hands
-over. The core injects the theme's CSS variables into every panel.
+over. The core injects the theme's CSS variables into every panel. The SDK also adopts a constructable
+stylesheet with thin themed scrollbars (`:where()`, zero specificity, so a plugin's CSS wins; a constructable
+sheet needs no CSP change); the theme message carries `mac` and the rule is skipped on macOS, where overlay
+scrollbars already fit. The shell has the same rule in `styles.css`, scoped by `html[data-platform]`.
 
 **Overlay stack.** Opened by plugins (API), the CLI and the user's overlay entries of the new-tab
 menu (§3 Custom commands); covers the whole window (on macOS, everything under the in-page title bar); overlays stack.
@@ -614,7 +617,7 @@ that project.
 | sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt})` |
 | commands | `ctx.commands.register(id, fn)` |
 | services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)`, `caller()` → the calling plugin's id or `undefined` |
-| misc | `ctx.log`, `ctx.notify(text)` |
+| misc | `ctx.log`, `ctx.notify(text)`, `ctx.openExternal(url)` (system browser; below) |
 
 `activate`'s return value is ignored; a plugin offers an API to others with `ctx.services`.
 
@@ -675,6 +678,18 @@ something. A plugin opens a project file the same way with `ctx.files.open(path,
 tab of that project (else drops it, so the listener's `tabId` is absent), then uses the same pick, delivery
 and fallback as a click; the built-in viewer runs over the project folder (`openProjectFileDiff`), and the
 call resolves `{ via: 'plugin' | 'builtin' }`. No manifest declaration; 20 calls per 10 s per plugin and window.
+
+**Opening a web page outside the app** (`ctx.openExternal(url)`, host API `openExternal`). Main is where a link
+leaves the app: the plugin host's env is an allow-list (`hostEnv`, no `DISPLAY`, `WAYLAND_DISPLAY`, D-Bus or desktop
+variables), so `xdg-open` from `ctx.exec` fails on Linux, and the env stays narrow rather than growing for this. The
+host checks the shape (a non-empty string of at most 2048 characters, else a `TypeError`); main checks it all again
+with the renderer's link rule (`src/shared/web-url.ts` `checkWebUrl`, also behind `app.openExternal`): http and
+https only (no `file:`, `javascript:`, `data:` or app schemes), at most 2048 characters before and after
+normalizing, and no userinfo (`https://bank.example@evil.example/` puts a trusted name in front of another host).
+Then at most 3 opens per 10 s per plugin and window, the webview's `window.open` rate: a loop opening browser tabs
+is the hardest flood for the person to clean up. A refused URL spends no budget. The normalized `href` goes to
+`shell.openExternal` through a lambda (the e2e recorder replaces it). No manifest declaration. Pages (panels,
+overlays) still cannot open links themselves; they post to their host, which calls this with a URL it chose.
 
 **Plugin services**: one plugin offers a named API, others in the same project call it and listen to
 its events (`src/host/services.ts`, `src/shared/services.ts`). All plugins of a project run in one

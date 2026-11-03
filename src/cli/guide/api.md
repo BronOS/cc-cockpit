@@ -251,7 +251,15 @@ with full Node access.
   reads it): `<ISO time> <level> [<projectId>] <text>`, at most 4000 chars and 100 lines per 10 s,
   line breaks written as `\n`.
 - `ctx.notify(text)`: a system notification, at most 10 a minute.
+- `ctx.openExternal(url)`: open a web page in the person's default browser, outside the app.
+  `url` is http or https, at most 2048 characters, with no `user:pass@` in it; anything else
+  rejects, and so does a call past 3 per 10 s per plugin and window. The app opens the normalized
+  URL (`new URL(url).href`) and resolves once it handed it to the system. Use this, not
+  `ctx.exec(['xdg-open', url])` or `open`: the host process has no display or desktop session in
+  its env, so those fail on Linux. Open a page on the person's click, not unasked. A panel or an
+  html overlay page cannot open links itself: post a message to the host and let it call this,
+  with a URL the host chose (never one taken from the page as is).
 
-Calls that reach main (`exec`, `overlay`, `notify`, `webview`, ...) are limited there and
+Calls that reach main (`exec`, `overlay`, `notify`, `webview`, `openExternal`, ...) are limited there and
 a rejected promise carries the reason; `ctx.services` calls never reach main, see above.
 Types: `PluginContext` in the SDK types; `ccc guide types` prints the file.

@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, log and notify; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, log, notify and openExternal; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -33,6 +33,7 @@ import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
 import { createAppStorageApi } from './app-storage'
 import { createFilesApi, parseOpenFile, runOpenListeners } from './files'
+import { MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { SettingsHolder } from './settings'
@@ -301,6 +302,17 @@ export class HostContexts {
         await call('notify', { pluginId: spec.id, text: text.slice(0, MAX_NOTIFY_LENGTH) })
       })
 
+    // ctx.openExternal: a request to main, which opens the system browser (host-api.ts openExternal).
+    // The host has no display or D-Bus env (host-manager.ts hostEnv), so `xdg-open` from ctx.exec
+    // fails on Linux; main is where links leave the app. Only the shape is checked here, so a
+    // mistake rejects at the call site without a round trip; main checks the URL itself again.
+    const openExternal = (url: string): Promise<void> =>
+      guardAsync(async () => {
+        if (typeof url !== 'string' || url === '') throw new TypeError('openExternal needs a URL string')
+        if (url.length > MAX_PLUGIN_URL_LENGTH) throw new TypeError(`openExternal: url is over ${MAX_PLUGIN_URL_LENGTH} characters`)
+        await call('openExternal', { pluginId: spec.id, url })
+      })
+
     const ui = createUiApi({
       pluginId: spec.id,
       panels: spec.panels,
@@ -408,7 +420,8 @@ export class HostContexts {
         available: (name: string) => servicesOf().available(spec.id, name)
       }),
       log: Object.freeze(logger),
-      notify
+      notify,
+      openExternal
     })
   }
 

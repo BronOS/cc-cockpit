@@ -465,6 +465,7 @@ test('annotate: a text overlay with no file and no Edit, one per key, its own dr
   assert.equal(init.sides.new, 'line one\nline two')
   assert.equal(init.sides.url, opts.url)
   assert.equal(init.canEdit, false)
+  assert.equal(init.canOpenUrl, false) // this fake ctx has no openExternal: no button
   assert.equal(init.tabId, 't1')
   assert.equal(starts[0].title, 'Notes: PROJ-1 Fix login')
   // No git ran: it is not a file.
@@ -505,12 +506,51 @@ test('annotate: Discuss sends "About <title> (<url>)" with notes as a file revie
   host.deactivate()
 })
 
+test('annotate: "Open in browser" opens the URL the caller gave, never one from the page, and shows a refusal', async () => {
+  const f = setup({ editorAvailable: false })
+  const opened = []
+  let refuse = null
+  f.ctx.openExternal = async (url) => {
+    opened.push(url)
+    if (refuse) throw refuse
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const url = 'https://x.atlassian.net/browse/PROJ-1'
+  await f.provided.reviewer.annotate({ title: 'PROJ-1', text: 'a', url, key: 'jira:PROJ-1' })
+  const h = f.handles[0]
+  assert.equal(h.posts[0].canOpenUrl, true)
+  // A URL in the message is ignored: the page only says "open".
+  h.say({ type: 'open-url', url: 'https://evil.example/' })
+  await wait(10)
+  assert.deepEqual(opened, [url])
+  refuse = new Error('openExternal: more than 3 links in 10 s; try again in a moment')
+  h.say({ type: 'open-url' })
+  await wait(10)
+  assert.deepEqual(h.posts.at(-1), { type: 'error', message: 'Not opened in the browser: more than 3 links in 10 s; try again in a moment' })
+  // No url: no button, and an open-url message opens nothing.
+  await f.provided.reviewer.annotate({ title: 'PROJ-2', text: 'a', key: 'jira:PROJ-2' })
+  const h2 = f.handles[1]
+  assert.equal(h2.posts[0].canOpenUrl, false)
+  h2.say({ type: 'open-url' })
+  // A file review has no url either.
+  await f.provided.reviewer.open('a.js')
+  const h3 = f.handles[2]
+  assert.equal(h3.posts[0].canOpenUrl, false)
+  h3.say({ type: 'open-url' })
+  await wait(10)
+  assert.equal(opened.length, 2)
+  host.deactivate()
+})
+
 test('annotate: bad input is refused before any overlay, with the reviewer prefix', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
   await assert.rejects(f.provided.reviewer.annotate({ title: '', text: 'x' }), /^Error: reviewer: title must not be empty/)
   await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', url: 'javascript:alert(1)' }), /reviewer: url must be http or https/)
   await assert.rejects(f.provided.reviewer.annotate(null), /reviewer: annotate takes/)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', aside: 'a'.repeat(100001) }), /^Error: reviewer: aside is over 100000 characters/)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', aside: ['<p>'] }), /reviewer: aside must be a string/)
   assert.equal(f.handles.length, 0)
   host.deactivate()
 })
@@ -549,6 +589,28 @@ test('annotate html: the init names the parts and assets; the page asks, then ge
   // Once: a second ask sends nothing (the content was let go).
   h.say({ type: 'content' })
   assert.equal(h.posts.length, 1 + rest.length)
+  host.deactivate()
+})
+
+test('annotate aside: not in the init; the first message after the page asks, with text or html', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const aside = '<dl class="facts"><dt>Status</dt><dd>' + '"'.repeat(99000) + '</dd></dl>'
+  await f.provided.reviewer.annotate({ title: 'T', text: 'x'.repeat(400 * 1024), aside })
+  const h = f.handles[0]
+  assert.equal(h.posts.length, 1)
+  assert.equal(h.posts[0].sides.aside, true)
+  assert.ok(!JSON.stringify(h.posts[0]).includes('facts'))
+  h.say({ type: 'content' })
+  assert.deepEqual(h.posts.slice(1), [{ type: 'aside', html: aside }])
+  await f.provided.reviewer.annotate({ title: 'H', html: '<p>x</p>', aside: '<p>side</p>' })
+  const h2 = f.handles[1]
+  h2.say({ type: 'content' })
+  assert.deepEqual(h2.posts.slice(1).map((m) => m.type), ['aside', 'html', 'assets-done'])
+  // No aside: the init says nothing of one.
+  await f.provided.reviewer.annotate({ title: 'N', text: 'x' })
+  assert.equal(f.handles[2].posts[0].sides.aside, undefined)
   host.deactivate()
 })
 

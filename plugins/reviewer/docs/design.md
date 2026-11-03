@@ -88,7 +88,14 @@ annotate({ title, text, url?, key?, tabId? })  // -> { opened: true } once the o
 The review overlay on a text another plugin hands over (a Jira issue, a mail), not a file: one
 read-only pane with `text` (markdown colouring, wrapped lines), the same notes on selections, the
 same comment, the same Discuss / New session / Close and tab picker. No diff, no layout toggle, no
-git, no Edit (the `e` key does nothing). The header shows `title` and `url` as plain text.
+git, no Edit (the `e` key does nothing). No header row either (2026-11-03): the overlay's title bar already shows
+`title`, and a Jira issue's HTML names it a third time. For a `url` a small "Open in browser" icon button (the URL in
+its tooltip) sits in the document: at the end of the HTML's first `h1`, placed by the page after sanitizing (its own
+element, never the caller's markup), else floated to the top right of the HTML document or in the top right corner
+of the text pane. A click posts `{ type: 'open-url' }`, nothing more: the host opens the URL the
+caller gave it with `ctx.openExternal` (never a URL from the page, a sandboxed frame that shows the caller's content),
+and the page shows the reason in its status line when the app refuses (no `user:pass@`, 3 opens per 10 s). Without
+`ctx.openExternal` (an older app) the button is not shown.
 
 Inputs come from any plugin of the project, so the host checks them (`dist/lib/review.js`,
 `annotateInput`) and rejects with `reviewer: <field> ...` before anything is shown:
@@ -100,6 +107,15 @@ Inputs come from any plugin of the project, so the host checks them (`dist/lib/r
 | `url` | absent/null, or an `http:`/`https:` URL of at most 2048 characters with no whitespace or controls |
 | `key` | absent/null (then `title:` + 32 hex chars of the title's SHA-256), or 1-200 characters of `A-Z a-z 0-9 . _ : @ # + = ~ / -` |
 | `tabId` | absent/null or a string |
+| `aside` | absent/null/empty, or a string of HTML of at most 100,000 characters, no NUL (with `text` or `html`) |
+
+`aside` (2026-11-03) is a details column at the right (about 240 px, scrolling on its own, under the
+document below 700 px of width), shown only when given: the key fields of an item, so the body keeps the
+prose. It is sanitized and rendered like `html` (the same allow-list and `assets`); a `dl.facts` there is
+a vertical list, each label above its value, where the body lays one out as a grid. It is not in the init:
+with a 400 KiB text and a draft that could pass the page message limit, so the init says `sides.aside`, the
+page asks with `{ type: 'content' }` as in HTML mode, and `{ type: 'aside', html }` is the first answer
+(100,000 chars escaped stay well inside one message). Notes go on the body only.
 
 One overlay per key: a second call with the same key brings it to the front (the new text is not
 shown; close it first). The draft is kept in `ctx.storage` under `annotate:<key>` (hashed past the
@@ -125,7 +141,7 @@ There are no old/new sides. It opens with `About`, so it never starts with `/`, 
 ### annotate with HTML (added to v1, 2026-11-02)
 
 ```js
-annotate({ title, html, assets?, url?, key?, tabId? })  // exactly one of text and html
+annotate({ title, html, aside?, assets?, url?, key?, tabId? })  // exactly one of text and html
 ```
 
 For a source whose content is rich (a Jira issue: panels, mentions, tables, comments, screenshots), plain text loses
@@ -161,7 +177,7 @@ draft, buttons, picker) is as with `text`. The allowed elements, attributes and 
   64), `occurrence` how many matches of the quote come before it, `at` its offset (orders the notes). Reopening
   scores every match of the quote (prefix match, suffix match, the same occurrence) and highlights the best with the
   CSS Custom Highlight API, which paints ranges without changing the DOM; a quote that is gone leaves the note listed,
-  marked "not found in this version". The `a` key and the Add note button work as in a file review.
+  marked "not found in this version". The `a` key and the floating Add note button work as in a file review.
 - **Message:** `About <title> (<url>)`, the comment, then `N. On «quote»: note` in text order; the quote made one line,
   shortened by the same ladder as file reviews but never below 40 chars (it is all that locates the note), with
   ` …` when shortened or when the selection was longer than its stored quote.
@@ -188,12 +204,18 @@ with `git show HEAD:<path>` and the working-tree file, and the view computes the
 
 ## The review overlay
 
-- **Top:** a textarea for the comment on the whole file.
+- **Top:** a textarea for the comment on the whole file, and right under it the notes: a compact numbered
+  list (at most about 120 px, then it scrolls; no room at all while there is none, the textarea's
+  placeholder says how to add one). Each row: where (a click shows it), the quote in italics cut to 90
+  characters, the note's text (beside the quote when both fit, else under it) and ✕ to delete. There is
+  no sidebar (2026-11-03): the diff or document gets the width.
 - **Body:** a side-by-side or unified diff (a toggle, remembered). It is read-only in the reviewer; changing
   the file is the editor's job.
-- **Annotations:** select text in either side, then "Add note" (a button and a key). Each note
+- **Annotations:** select text in either side, then "Add note" (the `a` key, or a small button that floats just
+  under the end of the selection while there is one, in every mode: re-placed on scroll, hidden once the selection
+  is scrolled out of the pane, collapses, or focus moves into a note or the comment). Each note
   stores the side (old or new), the line range, the selected text (up to about 500 characters) and the
-  note. A note shows as a highlight with a margin marker and can be edited or deleted. Any number of
+  note. A note shows as a highlight with a margin marker and can be edited or deleted in the list. Any number of
   notes.
 - **Buttons:**
   - **Discuss** sends the review to `tabId`, the Claude tab whose file was clicked, through

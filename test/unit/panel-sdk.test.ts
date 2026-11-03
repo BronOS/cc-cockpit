@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_PANEL_MESSAGE_LENGTH,
   MAX_QUEUED_MESSAGES,
+  BASE_SCROLLBAR_CSS,
   PanelClient,
   PORT_MESSAGE,
   THEME_MESSAGE,
@@ -183,6 +184,32 @@ describe('panel SDK: theme', () => {
   })
 })
 
+describe('panel SDK: base scrollbar style', () => {
+  const withStyles = (): { c: PanelClient; sheets: string[] } => {
+    const sheets: string[] = []
+    return { c: new PanelClient(fakeRoot(), () => {}, { install: (css) => void sheets.push(css) }), sheets }
+  }
+  const msg = (mac: boolean): unknown => ({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} }, mac })
+
+  it('installs the zero-specificity rule once, on the first theme', () => {
+    const { c, sheets } = withStyles()
+    c.receive(msg(false), [])
+    c.receive(msg(false), [])
+    expect(sheets).toEqual([BASE_SCROLLBAR_CSS])
+    expect(BASE_SCROLLBAR_CSS).toContain('scrollbar-width: thin')
+    expect(BASE_SCROLLBAR_CSS.replace(/:where\([^)]*\)/g, '')).not.toMatch(/[.#a-z]\s*\{/)
+  })
+
+  it('does not install it on macOS, or when the message does not say', () => {
+    const a = withStyles()
+    a.c.receive(msg(true), [])
+    expect(a.sheets).toEqual([])
+    const b = withStyles()
+    b.c.receive({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} } }, [])
+    expect(b.sheets).toEqual([BASE_SCROLLBAR_CSS])
+  })
+})
+
 describe('frame messages (the shell side)', () => {
   it('tells plugin pages from inline overlay pages', () => {
     expect(isPluginPage('cc-plugin://a.one/p.html')).toBe(true)
@@ -193,7 +220,7 @@ describe('frame messages (the shell side)', () => {
     expect(portMessage).toEqual({ type: PORT_MESSAGE })
     const msg = themeMessage({ id: 'x', name: 'X', kind: 'light', vars: { '--a': '#fff' }, xterm: { red: '#f00' } })
     // The xterm palette stays in the shell.
-    expect(msg).toEqual({ type: THEME_MESSAGE, theme: { kind: 'light', vars: { '--a': '#fff' } } })
+    expect(msg).toEqual({ type: THEME_MESSAGE, theme: { kind: 'light', vars: { '--a': '#fff' } }, mac: false })
   })
 
   it("reads a plugin overlay page's { result } and nothing else", () => {

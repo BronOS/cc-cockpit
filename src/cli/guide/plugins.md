@@ -204,18 +204,27 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
 - `open(path, { tabId? })`: a project file's diff against the last commit, with notes and a comment.
 - `annotate({ title, text, url?, key?, tabId? })`: a text of yours (a ticket, a mail) in the same overlay, one
   read-only pane; the person adds notes on selections and a comment and sends them to Claude. `title` 1-200
-  characters, `text` at most 400 KiB, `url` http(s) only, `key` (one overlay and one kept draft per key; default from
-  the title) 1-200 of letters, digits and `._:@#+=~/-`.
+  characters, `text` at most 400 KiB, `url` http(s) only (an "Open in browser" icon at the end of the HTML's first `h1`, else
+  at the document's top right, which opens it with the reviewer's `ctx.openExternal`, so one with `user:pass@` is
+  refused there; the overlay's title bar shows `title`, the page repeats it nowhere), `key` (one overlay
+  and one kept draft per key; default from the title) 1-200 of letters, digits and `._:@#+=~/-`.
 - `annotate({ title, html, assets?, url?, key?, tabId? })`: the same with HTML (at most 2 MiB) in place of `text`
   (exactly one of the two). The page sanitizes it against an allow-list: headings, paragraphs, lists, `pre`/`code`,
   blockquote, tables, links (http(s)/mailto, shown but not opened), `strong`/`em`/`s`/`u`/`sub`/`sup`, `span`/`div`,
-  `details`/`summary`, `figure`/`figcaption`; attributes `class` (an allow-list: `jira-panel`, `jira-panel-info`,
-  `-note`, `-warning`, `-error`, `-success`, `mention`, `card`, `card-header`, `meta`, `new`, `old`, `status`,
-  `lozenge` and `lozenge-info`/`-success`/`-warning`/`-error`, `attachment-list`, `fields`, `muted`),
+  `details`/`summary`, `figure`/`figcaption`, `dl`/`dt`/`dd`; attributes `class` (an allow-list: `jira-panel`,
+  `jira-panel-info`, `-note`, `-warning`, `-error`, `-success`, `mention`, `card`, `card-header`, `meta`, `new`,
+  `old`, `status`, `lozenge` and `lozenge-info`/`-success`/`-warning`/`-error`, `attachment-list`, `fields`,
+  `muted`; on a `dl` only `facts`, a grid of label/value pairs for key fields; on a `span` only `person`, a name
+  chip, and the tones `lozenge-neutral`/`-danger`; one lozenge tone per element, the first named),
   `colspan`/`rowspan`, `alt`, `title`; everything else (script, style, on* and style attributes, iframes, forms) is
   dropped. Images only as `<img src="asset:<id>">` naming one of `assets: [{ id, name?, mime, dataUrl }]` (png, jpeg,
   gif or webp as a base64 data: URL; each at most 1,000,000 characters, 8 MiB and 30 in all); any other src is
   dropped and its alt text shown.
+- `aside` (optional, with `text` or `html`): HTML of at most 100,000 characters for a details column at the right
+  (about 240 px, scrolling on its own, under the document when the overlay is narrower than 700 px), shown only when
+  given and sanitized with the same allow-list (images name the same `assets`). A `dl.facts` there is a vertical list,
+  each label above its value: put the key fields (status, assignee, priority) there and the description in the body.
+  Notes go on the body only.
 
 Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
 `On «quote»: note` for HTML. The reviewer README has the details and a Jira example.

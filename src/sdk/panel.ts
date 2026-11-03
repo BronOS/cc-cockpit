@@ -14,7 +14,16 @@
 // `exports` reference would throw in a page); the logic lives in panel-core.ts and is bundled in.
 import { PanelClient, type PortLike } from './panel-core'
 
-const client = new PanelClient(document.documentElement.style, (m) => console.warn(`ccPanel: ${m}`))
+// The base stylesheet is a constructable one: not an inline <style>, and the plugin CSP's
+// style-src ('unsafe-inline') allows it anyway, so no CSP change. Missing support: no base styles.
+const client = new PanelClient(document.documentElement.style, (m) => console.warn(`ccPanel: ${m}`), {
+  install(css) {
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(css)
+    // First in the list: a page's own adopted sheets come later and win on equal specificity.
+    document.adoptedStyleSheets = [sheet, ...document.adoptedStyleSheets]
+  }
+})
 
 window.addEventListener('message', (event: MessageEvent) => {
   // Only the shell, which embeds this page, hands out ports and themes. The page's own scripts

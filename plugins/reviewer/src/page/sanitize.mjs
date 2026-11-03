@@ -14,7 +14,7 @@
 export const ALLOWED_TAGS = new Set([
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'ul', 'ol', 'li', 'pre', 'code', 'blockquote',
   'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'img', 'strong', 'em', 's', 'u', 'sub', 'sup',
-  'span', 'div', 'details', 'summary', 'figure', 'figcaption',
+  'span', 'div', 'details', 'summary', 'figure', 'figcaption', 'dl', 'dt', 'dd',
 ])
 
 /**
@@ -26,6 +26,21 @@ export const ALLOWED_CLASSES = new Set([
   'mention', 'card', 'card-header', 'meta', 'new', 'old', 'status', 'lozenge',
   'lozenge-info', 'lozenge-success', 'lozenge-warning', 'lozenge-error', 'attachment-list', 'fields', 'muted',
 ])
+
+/**
+ * Class names only one element may carry, on top of ALLOWED_CLASSES (added for the Jira issue view,
+ * 2026-11-03): `facts` makes a `dl` a grid of label/value pairs, `person` a `span` a name chip, and the
+ * two newer lozenge tones are `span` only. The older classes stay on any element, as callers use them.
+ */
+export const TAG_CLASSES = new Map([
+  ['dl', new Set(['facts'])],
+  ['span', new Set(['person', 'lozenge-neutral', 'lozenge-danger'])],
+])
+
+// A lozenge has one colour: past the first tone named, the others are dropped (the CSS would
+// otherwise pick by rule order, which a caller cannot see). `lozenge-error` is the older name of
+// `lozenge-danger` and styled the same.
+const LOZENGE_TONES = new Set(['lozenge-neutral', 'lozenge-info', 'lozenge-success', 'lozenge-warning', 'lozenge-danger', 'lozenge-error'])
 
 // Dropped with everything inside: code, styles, embedded documents, forms and their controls,
 // media that would load something, and head-only elements. Unwrapping these would show a script's
@@ -77,15 +92,25 @@ const attrsOf = (node) => {
 
 const short = (s) => s.slice(0, MAX_ATTR)
 
-function classesOf(value) {
-  const kept = String(value).split(/\s+/).filter((c) => ALLOWED_CLASSES.has(c))
-  return kept.length ? [...new Set(kept)].join(' ') : null
+function classesOf(tag, value) {
+  const onTag = TAG_CLASSES.get(tag)
+  let tone = false
+  const kept = []
+  for (const c of new Set(String(value).split(/\s+/))) {
+    if (!ALLOWED_CLASSES.has(c) && !(onTag && onTag.has(c))) continue
+    if (LOZENGE_TONES.has(c)) {
+      if (tone) continue
+      tone = true
+    }
+    kept.push(c)
+  }
+  return kept.length ? kept.join(' ') : null
 }
 
 /** The allowed attributes of one allowed element, as [name, value] pairs. */
 function cleanAttrs(tag, a) {
   const out = []
-  const cls = a.has('class') ? classesOf(a.get('class')) : null
+  const cls = a.has('class') ? classesOf(tag, a.get('class')) : null
   if (cls) out.push(['class', cls])
   if (a.has('title')) out.push(['title', short(a.get('title'))])
   if (tag === 'a') {
@@ -133,7 +158,7 @@ export function sanitizeTree(parent, depth = 0) {
       }
       const attrs = [['data-asset', id], ['alt', alt]]
       if (a.has('title')) attrs.push(['title', short(a.get('title'))])
-      const cls = a.has('class') ? classesOf(a.get('class')) : null
+      const cls = a.has('class') ? classesOf('img', a.get('class')) : null
       if (cls) attrs.push(['class', cls])
       out.push({ tag: 'img', attrs, children: [] })
       continue

@@ -8,8 +8,27 @@ body {
 .muted { color: var(--cc-fg-muted); }
 header, footer { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--cc-bg-bar); }
 header { border-bottom: 1px solid var(--cc-border); justify-content: space-between; }
+header[hidden] { display: none; } /* annotate: the overlay's title bar names the text */
 footer { border-top: 1px solid var(--cc-border); }
 .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* annotate's "Open in browser" (its url): an icon, not the URL's text. The page puts it at the end of
+   the document's first h1 (.in-title), else at the top right of the HTML document (.float) or of the
+   text pane (.corner). */
+button.icon { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; padding: 2px 4px; background: none; border-color: transparent; color: var(--cc-fg-muted); }
+button.icon:hover:not(:disabled) { color: var(--cc-fg); background: var(--cc-surface-2); }
+button.icon[hidden] { display: none; }
+#open-url.in-title { margin-left: .35em; font-size: 14px; position: relative; top: -.1em; }
+#open-url.in-title svg { width: 16px; height: 16px; }
+#open-url.float { float: right; margin: 0 0 8px 12px; }
+#open-url.corner { position: absolute; top: 6px; right: 18px; z-index: 5; background: var(--cc-bg); border-color: var(--cc-border); }
+/* "Add note", floating just under the end of the selection (placed by the page, in viewport pixels). */
+#add-note {
+  position: fixed; z-index: 9; padding: 2px 10px; font-size: 12px; white-space: nowrap;
+  background: var(--cc-accent); color: var(--cc-accent-fg); border-color: var(--cc-accent);
+  box-shadow: 0 2px 8px var(--cc-shadow);
+}
+#add-note:hover:not(:disabled) { background: var(--cc-accent-hover); }
+#add-note[hidden] { display: none; }
 .tools { display: flex; gap: 6px; }
 .spacer { flex: 1; }
 .banner { padding: 6px 12px; background: var(--cc-bg-banner); color: var(--cc-fg-muted); border-bottom: 1px solid var(--cc-border); }
@@ -19,19 +38,44 @@ footer { border-top: 1px solid var(--cc-border); }
   font: inherit; color: inherit; background: var(--cc-surface-1); border: 1px solid var(--cc-border); border-radius: 4px;
 }
 main { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--cc-border); }
-#editors { flex: 1; min-width: 0; overflow: hidden; }
+#editors { flex: 1; min-width: 0; overflow: hidden; position: relative; }
 #editors > .cm-mergeView, #editors > .cm-editor { height: 100%; }
 .cm-mergeView { overflow-y: auto; }
-aside { width: 300px; flex: none; overflow-y: auto; border-left: 1px solid var(--cc-border); padding: 8px 10px; background: var(--cc-bg); }
-aside h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--cc-fg-subtle); }
-.empty { color: var(--cc-fg-muted); }
-.note { border: 1px solid var(--cc-border); border-left: 3px solid var(--cc-status-needs-permission); border-radius: 4px; padding: 6px; margin-bottom: 8px; background: var(--cc-surface-1); }
-.note-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.quote { margin: 0 0 6px; padding: 4px 6px; max-height: 6em; overflow: hidden; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.4 ui-monospace, monospace; color: var(--cc-fg-muted); background: var(--cc-bg); border-radius: 3px; }
 .limit { margin: -4px 12px 6px; font-size: 11px; color: var(--cc-fg-muted); text-align: right; }
-.note .limit { margin: 2px 0 0; }
-aside > .limit { margin: 0 0 8px; text-align: left; }
-.note-text { width: 100%; resize: vertical; font: inherit; color: inherit; background: var(--cc-bg); border: 1px solid var(--cc-border); border-radius: 3px; padding: 4px 6px; }
+#notes-limit { text-align: left; }
+/* The notes: a compact numbered list under the comment, scrolling past ~120px; no room when empty. */
+#notes { margin: -2px 12px 8px; padding: 0; max-height: 120px; overflow-y: auto; list-style: none; counter-reset: note; }
+#notes[hidden] { display: none; }
+.note { display: flex; align-items: flex-start; gap: 6px; padding: 2px 0; border-bottom: 1px solid var(--cc-border); counter-increment: note; }
+.note:last-child { border-bottom: none; }
+.note::before { content: counter(note) "."; flex: none; min-width: 1.6em; padding-top: 3px; color: var(--cc-fg-subtle); font-size: 12px; text-align: right; }
+/* Where, the quote and the text on one line when they fit; the text wraps under them when not. */
+.note-body { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
+.note-body > button.link, .note-body > .quote { flex: 0 1 auto; max-width: 100%; padding-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-body > button.link:not(.quote) { flex: none; }
+.quote { font-style: italic; color: var(--cc-fg-muted); font-size: 12px; }
+button.link.quote { color: var(--cc-fg-muted); text-align: left; }
+button.link.quote:hover { color: var(--cc-fg); text-decoration: underline; }
+.note .limit { flex-basis: 100%; margin: 0; }
+.note-text { flex: 1 1 16em; min-width: 10em; min-height: 24px; max-height: 6.5em; resize: none; font: inherit; color: inherit; background: var(--cc-bg); border: 1px solid transparent; border-radius: 3px; padding: 2px 6px; }
+.note-text:hover { border-color: var(--cc-border); }
+.note-text:placeholder-shown { border-color: var(--cc-border); }
+.note-del { flex: none; padding: 1px 6px; font-size: 11px; line-height: 1.4; background: none; border-color: transparent; color: var(--cc-fg-subtle); }
+.note-del:hover:not(:disabled) { color: var(--cc-status-ended); background: var(--cc-surface-2); }
+/* annotate's `aside`: the details column, ~240px, scrolling on its own; under the document when narrow. */
+#details { width: 240px; flex: none; overflow-y: auto; border-left: 1px solid var(--cc-border); background: var(--cc-bg-bar); }
+#details[hidden] { display: none; }
+.doc-body.details-body { max-width: none; margin: 0; padding: 10px 12px 16px; font-size: 13px; line-height: 1.5; }
+/* In the column, facts are a vertical list: each label above its value. */
+.doc-body.details-body dl.facts { display: block; padding: 0; border: none; background: none; }
+.doc-body.details-body dl.facts dt { margin-top: 8px; }
+.doc-body.details-body dl.facts dt:first-child { margin-top: 0; }
+.doc-body.details-body dl.facts dd { margin: 1px 0 0; }
+@media (max-width: 700px) {
+  main { flex-direction: column; }
+  #editors { min-height: 0; }
+  #details { width: auto; max-height: 40%; border-left: none; border-top: 1px solid var(--cc-border); }
+}
 button, select {
   font: inherit; color: inherit; background: var(--cc-surface-1);
   border: 1px solid var(--cc-border); border-radius: 4px; padding: 3px 10px; cursor: pointer;
@@ -56,7 +100,7 @@ textarea:focus, button:focus-visible, select:focus-visible { outline: 2px solid 
 .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4, .doc-body h5, .doc-body h6 { margin: 1.2em 0 .5em; line-height: 1.3; }
 .doc-body h1 { font-size: 1.6em; } .doc-body h2 { font-size: 1.35em; } .doc-body h3 { font-size: 1.15em; }
 .doc-body h4, .doc-body h5, .doc-body h6 { font-size: 1em; }
-.doc-body > :first-child { margin-top: 0; }
+.doc-body > :first-child, .doc-body > #open-url.float + * { margin-top: 0; }
 .doc-body p, .doc-body ul, .doc-body ol, .doc-body pre, .doc-body blockquote, .doc-body table, .doc-body details, .doc-body figure { margin: 0 0 .9em; }
 .doc-body ul, .doc-body ol { padding-left: 1.6em; }
 .doc-body li + li { margin-top: .2em; }
@@ -90,13 +134,35 @@ textarea:focus, button:focus-visible, select:focus-visible { outline: 2px solid 
 .doc-body .jira-panel-success { border-left-color: var(--cc-status-waiting); background: color-mix(in srgb, var(--cc-status-waiting) 10%, var(--cc-bg)); }
 .doc-body .mention { display: inline-block; padding: 0 .5em; border-radius: 1em; background: var(--cc-accent-soft); color: var(--cc-fg); font-size: .92em; line-height: 1.5; }
 .doc-body .lozenge, .doc-body .status {
-  display: inline-block; padding: 0 .45em; border-radius: 3px; font-size: 11px; font-weight: 700; line-height: 1.6;
-  text-transform: uppercase; letter-spacing: .02em; background: var(--cc-surface-2); color: var(--cc-fg);
+  display: inline-block; padding: 0 .6em; border-radius: 1em; font-size: 11px; font-weight: 700; line-height: 1.6;
+  text-transform: uppercase; letter-spacing: .02em; color: var(--cc-fg);
+  /* A tint of the text colour, not a surface step: it shows on a card or a facts list too. */
+  background: color-mix(in srgb, var(--cc-fg) 10%, transparent); vertical-align: .1em;
 }
-.doc-body .lozenge-info { background: color-mix(in srgb, var(--cc-status-working) 25%, var(--cc-bg)); }
-.doc-body .lozenge-success { background: color-mix(in srgb, var(--cc-status-waiting) 25%, var(--cc-bg)); }
-.doc-body .lozenge-warning { background: color-mix(in srgb, var(--cc-status-needs-permission) 25%, var(--cc-bg)); }
-.doc-body .lozenge-error { background: color-mix(in srgb, var(--cc-status-ended) 25%, var(--cc-bg)); }
+/* Tones: a tint of the status colour behind, the colour itself mixed toward the text colour in
+   front, so the text stays readable on the tint in light and dark alike. One tone per lozenge (the
+   sanitizer keeps the first). lozenge-error is the older name of lozenge-danger. */
+.doc-body .lozenge-neutral { background: color-mix(in srgb, var(--cc-fg) 10%, transparent); color: var(--cc-fg-muted); }
+.doc-body .lozenge-info { --tone: var(--cc-status-working); }
+.doc-body .lozenge-success { --tone: var(--cc-status-waiting); }
+.doc-body .lozenge-warning { --tone: var(--cc-status-needs-permission); }
+.doc-body .lozenge-danger, .doc-body .lozenge-error { --tone: var(--cc-status-ended); }
+.doc-body :is(.lozenge-info, .lozenge-success, .lozenge-warning, .lozenge-danger, .lozenge-error) {
+  background: color-mix(in srgb, var(--tone) 20%, var(--cc-bg)); color: color-mix(in srgb, var(--tone) 60%, var(--cc-fg));
+}
+/* A person's name: a faint chip, lighter than a mention. */
+.doc-body .person { padding: 0 .35em; border-radius: 3px; background: color-mix(in srgb, var(--cc-fg) 7%, transparent); font-weight: 600; white-space: nowrap; }
+/* Description lists, and the key fields of an item as a compact grid of label / value pairs
+   (dl.facts: dt, dd, dt, dd ...), as many pairs per row as fit. */
+.doc-body dl { margin: 0 0 .9em; }
+.doc-body dt { font-weight: 600; }
+.doc-body dd { margin: 0 0 .4em 1.4em; }
+.doc-body dl.facts {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(6em, max-content) minmax(10em, 1fr)); gap: 4px 12px;
+  align-items: baseline; padding: 8px 12px; border: 1px solid var(--cc-border); border-radius: 6px; background: var(--cc-surface-1);
+}
+.doc-body dl.facts dt { font-size: 11px; font-weight: 600; font-variant: all-small-caps; letter-spacing: .04em; color: var(--cc-fg-muted); white-space: nowrap; }
+.doc-body dl.facts dd { margin: 0; min-width: 0; }
 /* What is new since the person last looked (a new comment, a changed field), and what went. */
 .doc-body .new { background: color-mix(in srgb, var(--cc-status-waiting) 14%, transparent); box-shadow: inset 3px 0 0 var(--cc-status-waiting); border-radius: 3px; }
 .doc-body .old { color: var(--cc-fg-muted); text-decoration: line-through; }

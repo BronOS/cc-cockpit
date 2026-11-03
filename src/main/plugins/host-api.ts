@@ -39,6 +39,10 @@
 //                                                                checked against THIS project's folder, a tabId
 //                                                                kept only when it is this project's; `via` is
 //                                                                'plugin' or 'builtin'); no manifest declaration
+//   openExternal    { pluginId, url }          -> null           the system browser on an http(s) link
+//                                                                (shared/web-url.ts checkWebUrl: no other
+//                                                                scheme, no user:pass@, 2048 chars); the
+//                                                                normalized href is what is opened
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
@@ -114,6 +118,7 @@ import {
   type OverlayChannel,
   type OverlayResult
 } from '../overlays/overlay-manager'
+import { checkWebUrl, MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
 import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
 import type { SessionEntry } from '../sessions/status-reducer'
@@ -165,6 +170,13 @@ export const MAX_PANEL_SHOWS_PER_WINDOW = 30
  */
 export const FILE_OPEN_WINDOW_MS = 10_000
 export const MAX_FILE_OPENS_PER_WINDOW = 20
+/**
+ * ctx.openExternal per plugin: each one puts a tab in the person's browser, outside the app, where
+ * a loop is the most intrusive flood of all (and the hardest to clean up). A plugin opens a page on
+ * a click; three in 10 s leaves room for a double click and a retry, not for a loop.
+ */
+export const EXTERNAL_OPEN_WINDOW_MS = 10_000
+export const MAX_EXTERNAL_OPENS_PER_WINDOW = 3
 /** The `setting:` keys of project-scoped secret settings fields (any project). */
 const PROJECT_SETTING_PREFIX = `${SETTING_KEY_PREFIX}project:`
 /** At most this often the host hears that its project's sessions changed. */
@@ -231,6 +243,11 @@ export interface HostApiDeps {
    * host's scope, `path` and `tabId` the plugin's, checked there. Without it files.open is refused.
    */
   openFile?(caller: { windowId: number; projectId: string }, path: string, tabId?: string): Promise<'plugin' | 'builtin'>
+  /**
+   * ctx.openExternal: hand an already checked http(s) URL to the system browser (shell.openExternal,
+   * through a lambda so the e2e recorder that replaces it is seen). Without it openExternal is refused.
+   */
+  openExternal?(url: string): Promise<void>
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -393,6 +410,7 @@ export class HostApi {
   private readonly navigates = new RateWindow(MAX_NAVIGATES_PER_WINDOW, NAVIGATE_WINDOW_MS)
   private readonly panelShows = new RateWindow(MAX_PANEL_SHOWS_PER_WINDOW, PANEL_SHOW_WINDOW_MS)
   private readonly fileOpens = new RateWindow(MAX_FILE_OPENS_PER_WINDOW, FILE_OPEN_WINDOW_MS)
+  private readonly externalOpens = new RateWindow(MAX_EXTERNAL_OPENS_PER_WINDOW, EXTERNAL_OPEN_WINDOW_MS)
   /**
    * Plugins whose webviews this host drove, or whose earlier copy declared webview panels (a dev reload
    * may drop them from the scope before that copy's ctx ends): torn down when their ctx ends (contextDisposed) or the process goes.
@@ -478,7 +496,8 @@ export class HostApi {
       'webview.forward': (params) => this.webviewStep(params, 'forward'),
       'webview.reload': (params) => this.webviewStep(params, 'reload'),
       'webview.current': (params) => this.webviewCurrent(params),
-      'files.open': (params) => this.filesOpen(params)
+      'files.open': (params) => this.filesOpen(params),
+      openExternal: (params) => this.openExternal(params)
     }
   }
 
@@ -802,6 +821,33 @@ export class HostApi {
       throw withMethod('files.open', err)
     }
     return { via }
+  }
+
+  /**
+   * ctx.openExternal: the system browser on a link of the plugin's. The host checked the shape;
+   * main checks it all again (main is the authority, and a host is plain Node that can send
+   * anything): http(s) only, no userinfo, MAX_PLUGIN_URL_LENGTH (checkWebUrl). Hosts get no
+   * DISPLAY/DBUS env (host-manager.ts hostEnv), so `xdg-open` cannot do this from the host, and the
+   * env stays narrow on purpose. A refused URL spends no budget (the check is cheap and opens
+   * nothing); one handed to the OS does even when the OS then fails, since a tab may have opened.
+   */
+  private async openExternal(params: unknown): Promise<null> {
+    this.alive()
+    const { pluginId, url } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'openExternal')
+    const href = checkWebUrl(url, { method: 'openExternal', maxLength: MAX_PLUGIN_URL_LENGTH, noUserinfo: true })
+    if (!this.deps.openExternal) throw new Error('openExternal: opening links is not available')
+    if (!this.externalOpens.take(plugin.id)) {
+      throw new Error(
+        `openExternal: more than ${MAX_EXTERNAL_OPENS_PER_WINDOW} links in ${EXTERNAL_OPEN_WINDOW_MS / 1000} s; try again in a moment`
+      )
+    }
+    try {
+      await this.deps.openExternal(href)
+    } catch (err) {
+      throw withMethod('openExternal', err)
+    }
+    return null
   }
 
   private async overlay(params: unknown): Promise<PluginOverlayResult> {

@@ -1,4 +1,4 @@
-// ctx.commands, ctx.notify, ctx.log and the clean-up on deactivate, against a fake main.
+// ctx.commands, ctx.notify, ctx.openExternal, ctx.log and the clean-up on deactivate, against a fake main.
 import { describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
 import { hostSpec } from '../fakes/host-spec'
@@ -111,6 +111,23 @@ describe('ctx.notify and ctx.log', () => {
   it('rejects notify when there is no connection to main', async () => {
     const ctx = new HostContexts({ log: () => {} }).create(hostSpec({ id: 'a.one', dir: '/d', main: 'm.js' }))
     await expect(ctx.notify('x')).rejects.toThrow('no connection to the app')
+  })
+
+  it('ctx.openExternal asks main with its own plugin id, checks the shape first, and passes main\'s refusal on', async () => {
+    const { contexts, ctx, calls, failCalls } = setup()
+    await expect(ctx.openExternal('https://example.com/a')).resolves.toBeUndefined()
+    expect(calls).toEqual([['openExternal', { pluginId: 'a.one', url: 'https://example.com/a' }]])
+    // Shapes reject as TypeErrors at the call site, without a round trip.
+    for (const bad of ['', 5, null, undefined, { href: 'https://x' }]) {
+      await expect(ctx.openExternal(bad as never)).rejects.toBeInstanceOf(TypeError)
+    }
+    await expect(ctx.openExternal(`https://x/${'a'.repeat(2048)}`)).rejects.toThrow('over 2048 characters')
+    expect(calls).toHaveLength(1)
+    // Scheme, userinfo and rate are main's to decide: the host hands those on as they are.
+    failCalls(new Error('openExternal: only http and https links are opened'))
+    await expect(ctx.openExternal('file:///etc/passwd')).rejects.toThrow('only http and https')
+    contexts.dispose('a.one')
+    await expect(ctx.openExternal('https://example.com')).rejects.toThrow('deactivated')
   })
 
   it('sends log lines to main tagged with the plugin id and level', () => {

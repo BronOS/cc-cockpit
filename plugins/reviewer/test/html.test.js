@@ -84,6 +84,30 @@ test('sanitizeTree drops every attribute but the allowed ones, and classes off t
   assert.deepEqual(p.attrs, [])
 })
 
+test('sanitizeTree: facts lists, lozenge tones and person chips, each on its own element', async () => {
+  const { sanitizeTree } = await load('sanitize.mjs')
+  const [dl] = sanitizeTree(body(h('dl', { class: 'facts grid' }, h('dt', { class: 'facts' }, 'Status'), h('dd', {}, h('span', { class: 'lozenge lozenge-success' }, 'Done')))))
+  assert.equal(dl.tag, 'dl')
+  assert.deepEqual(dl.attrs, [['class', 'facts']])
+  const [dt, dd] = dl.children
+  assert.deepEqual([dt.tag, dt.attrs, dd.tag], ['dt', [], 'dd']) // facts is a dl's class only
+  assert.deepEqual(dd.children[0].attrs, [['class', 'lozenge lozenge-success']])
+  for (const tone of ['neutral', 'info', 'success', 'warning', 'danger']) {
+    const [s] = sanitizeTree(body(h('span', { class: `lozenge lozenge-${tone}` }, 'x')))
+    assert.deepEqual(s.attrs, [['class', `lozenge lozenge-${tone}`]], tone)
+  }
+  // One tone at most: the first named wins; unknown names go, the known ones stay.
+  const [mixed] = sanitizeTree(body(h('span', { class: 'lozenge lozenge-danger lozenge-info lozenge-purple banner' }, 'x')))
+  assert.deepEqual(mixed.attrs, [['class', 'lozenge lozenge-danger']])
+  const [person] = sanitizeTree(body(h('span', { class: 'person avatar' }, 'Ann Lee')))
+  assert.deepEqual(person.attrs, [['class', 'person']])
+  // The span-only names are dropped elsewhere; the older lozenge names still work on any element.
+  const [div] = sanitizeTree(body(h('div', { class: 'person lozenge lozenge-danger lozenge-neutral' }, 'x')))
+  assert.deepEqual(div.attrs, [['class', 'lozenge']])
+  const [old] = sanitizeTree(body(h('div', { class: 'status lozenge lozenge-error' }, 'x')))
+  assert.deepEqual(old.attrs, [['class', 'status lozenge lozenge-error']])
+})
+
 test('links keep http(s) and mailto hrefs only', async () => {
   const { sanitizeTree, safeHref } = await load('sanitize.mjs')
   assert.equal(safeHref('https://x.atlassian.net/browse/PROJ-1'), 'https://x.atlassian.net/browse/PROJ-1')

@@ -7,6 +7,10 @@ import { startTheme } from './theme/apply-theme'
 import './assets/fonts/fonts.css'
 import './styles.css'
 
+// Scopes the themed scrollbars (styles.css) away from macOS, whose overlay scrollbars already fit;
+// the same platform test as the rest of the renderer (window-chrome.ts keys off the platform too).
+document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
+
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root element in index.html')
 

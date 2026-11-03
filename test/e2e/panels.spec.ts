@@ -68,6 +68,14 @@ test('a plugin panel renders, round-trips a message through its host, gets the t
   await cockpit.hook('setTheme', 'light')
   await expect.poll(() => cssVar(pluginFrame(page, 'panel.html'), '--cc-bg')).toBe('#faf8f6')
 
+  // Thin themed scrollbars from the SDK's base stylesheet (and the shell's own rule); macOS keeps its own.
+  if (process.platform !== 'darwin') {
+    const width = (f: Frame | undefined): Promise<string | null> =>
+      f ? f.evaluate<string>(`getComputedStyle(document.body).scrollbarWidth`).catch(() => null) : Promise.resolve(null)
+    await expect.poll(() => width(pluginFrame(page, 'panel.html'))).toBe('thin')
+    expect(await page.evaluate(() => getComputedStyle(document.body).scrollbarWidth)).toBe('thin')
+  }
+
   // The host restarts: the old port died with it, the page reloads and talks to the new host.
   await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.panels')
   await expect

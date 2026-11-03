@@ -89,6 +89,16 @@ test('the reviewer and editor load by default, show as built in, and a modified-
   await expect(page.frameLocator('iframe[title="Review: src/a.txt"]').getByPlaceholder('Comment on the whole file (optional)')).toHaveValue(
     'kept through Esc'
   )
+
+  // "Add note" floats under a selection in the diff too (no toolbar button), and goes once used.
+  const addNote = review.locator('#add-note')
+  await expect(addNote).toBeHidden()
+  await review.locator('.cm-merge-b .cm-line', { hasText: 'three' }).dblclick()
+  await expect(addNote).toBeVisible()
+  await addNote.click()
+  await expect(review.locator('.note .link').first()).toHaveText('Line 3 · new')
+  await expect(review.locator('main > aside:visible')).toHaveCount(0) // no notes sidebar, no details column
+  await expect(addNote).toBeHidden()
 })
 
 const running = async (c: Cockpit, dir: string): Promise<string[]> =>

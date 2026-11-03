@@ -689,7 +689,8 @@ function start(): void {
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
     notify: (text, source) => showNotification(text, `cc-cockpit: ${source.pluginId}`),
     pluginLog: (entry) => pluginLogs.write(entry),
-    // ctx.sessions, ctx.badge, ctx.panels.header, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage (host-api.ts).
+    // ctx.sessions, ctx.badge, ctx.panels.header, ctx.overlay, ctx.secrets, ctx.oauth, ctx.appStorage,
+    // ctx.files.open, ctx.openExternal (host-api.ts).
     // Functions, not objects: `sessions` and `tabs` are defined below; these only run once a host exists.
     api: {
       listSessions: (projectId) => sessions.listByProject(projectId),
@@ -718,7 +719,10 @@ function start(): void {
       appStorage,
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
-      openFile: (caller, path, tabId) => routeProjectFile(openFileRoute, caller, path, tabId)
+      openFile: (caller, path, tabId) => routeProjectFile(openFileRoute, caller, path, tabId),
+      // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget. A
+      // lambda, as for ctx.oauth: the e2e's recorder replaces shell.openExternal after launch.
+      openExternal: (url) => shell.openExternal(url)
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin

@@ -16,8 +16,10 @@ import {
   type UrlView
 } from '../../src/main/overlays/overlay-manager'
 import {
+  EXTERNAL_OPEN_WINDOW_MS,
   FILE_OPEN_WINDOW_MS,
   HostApi,
+  MAX_EXTERNAL_OPENS_PER_WINDOW,
   MAX_FILE_OPENS_PER_WINDOW,
   MAX_OPEN_OVERLAYS,
   MAX_OPENS_PER_WINDOW,
@@ -1004,6 +1006,80 @@ describe('files.open (ctx.files.open)', () => {
     vi.advanceTimersByTime(FILE_OPEN_WINDOW_MS)
     await expect(call('files.open', { pluginId: 'a.one', path: 'a' })).resolves.toEqual({ via: 'plugin' })
     expect(asked).toHaveLength(MAX_FILE_OPENS_PER_WINDOW + 2)
+  })
+})
+
+describe('openExternal (ctx.openExternal)', () => {
+  /** shell.openExternal as main wires it, faked: the URLs it was handed. */
+  function withBrowser(fail?: Error): string[] {
+    const opened: string[] = []
+    deps.openExternal = async (url) => {
+      opened.push(url)
+      if (fail) throw fail
+    }
+    return opened
+  }
+
+  it('hands the normalized http(s) href to the openExternal lambda', async () => {
+    const opened = withBrowser()
+    const call = hostA()
+    await expect(call('openExternal', { pluginId: 'a.one', url: 'HTTPS://Example.com/a b?x=1#h' })).resolves.toBeNull()
+    await call('openExternal', { pluginId: 'a.two', url: 'http://localhost:3000' })
+    expect(opened).toEqual(['https://example.com/a%20b?x=1#h', 'http://localhost:3000/'])
+  })
+
+  it('refuses other schemes, userinfo, long or malformed URLs and unknown plugins, before the browser', async () => {
+    const opened = withBrowser()
+    const call = hostA()
+    const refused: Array<[unknown, RegExp]> = [
+      ['file:///etc/passwd', /only http and https/],
+      ['javascript:alert(1)', /only http and https/],
+      ['vscode://file/etc/passwd', /only http and https/],
+      ['data:text/html,hi', /only http and https/],
+      ['ftp://example.com/x', /only http and https/],
+      ['https://user:pass@example.com/', /user name or password/],
+      ['https://bank.example@evil.example/', /user name or password/],
+      ['https://:pw@example.com/', /user name or password/],
+      [`https://example.com/${'a'.repeat(2048)}`, /over 2048 characters/],
+      // Within the limit as asked, over it once percent-encoded: what is opened counts.
+      [`https://example.com/${' '.repeat(1000)}x`, /over 2048 characters/],
+      ['not a url', /not a valid URL/],
+      ['', /non-empty string/],
+      [5, /non-empty string/],
+      [undefined, /non-empty string/]
+    ]
+    for (const [url, why] of refused) {
+      await expect(call('openExternal', { pluginId: 'a.one', url }), String(url)).rejects.toThrow(why)
+    }
+    await expect(call('openExternal', { pluginId: 'b.one', url: 'https://example.com' })).rejects.toThrow('unknown plugin')
+    expect(opened).toEqual([])
+    // Refusals spent no budget: the plugin still has all of it.
+    for (let i = 0; i < MAX_EXTERNAL_OPENS_PER_WINDOW; i++) await call('openExternal', { pluginId: 'a.one', url: 'https://example.com' })
+    expect(opened).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW)
+  })
+
+  it(`allows ${MAX_EXTERNAL_OPENS_PER_WINDOW} per plugin per ${EXTERNAL_OPEN_WINDOW_MS / 1000} s, each plugin its own budget`, async () => {
+    vi.useFakeTimers()
+    const opened = withBrowser()
+    const call = hostA()
+    for (let i = 0; i < MAX_EXTERNAL_OPENS_PER_WINDOW; i++) await call('openExternal', { pluginId: 'a.one', url: `https://example.com/${i}` })
+    await expect(call('openExternal', { pluginId: 'a.one', url: 'https://example.com/x' })).rejects.toThrow(
+      `more than ${MAX_EXTERNAL_OPENS_PER_WINDOW} links in ${EXTERNAL_OPEN_WINDOW_MS / 1000} s`
+    )
+    await expect(call('openExternal', { pluginId: 'a.two', url: 'https://example.com/y' })).resolves.toBeNull()
+    vi.advanceTimersByTime(EXTERNAL_OPEN_WINDOW_MS)
+    await expect(call('openExternal', { pluginId: 'a.one', url: 'https://example.com/z' })).resolves.toBeNull()
+    expect(opened).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW + 2)
+  })
+
+  it('prefixes the browser\'s failure, and is refused without a lambda or once the host is stopping', async () => {
+    withBrowser(new Error('no handler'))
+    const call = hostA()
+    await expect(call('openExternal', { pluginId: 'a.one', url: 'https://example.com' })).rejects.toThrow('openExternal: no handler')
+    apis[0]!.revoke()
+    await expect(call('openExternal', { pluginId: 'a.one', url: 'https://example.com' })).rejects.toThrow('stopping')
+    delete deps.openExternal
+    await expect(hostA()('openExternal', { pluginId: 'a.one', url: 'https://example.com' })).rejects.toThrow('not available')
   })
 })
 

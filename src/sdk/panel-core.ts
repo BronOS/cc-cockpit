@@ -7,7 +7,8 @@
 //   { type: 'cc-plugin.port' } + a MessagePort   the line to the plugin's host (or, for an html
 //                                                 overlay, to the overlay itself); a later one
 //                                                 replaces the earlier one
-//   { type: 'cc-plugin.theme', theme: { kind, vars } }   the app's theme, again on every change
+//   { type: 'cc-plugin.theme', theme: { kind, vars }, mac }   the app's theme, again on every change;
+//                                                 `mac` is the shell's platform (no scrollbar rule there)
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
@@ -40,6 +41,22 @@ export interface ThemeRoot {
   removeProperty(name: string): unknown
   colorScheme: string
 }
+
+/** Where the base stylesheet goes: a constructable stylesheet adopted by the document in the browser. */
+export interface BaseStyles {
+  install(css: string): void
+}
+
+/**
+ * Thin themed scrollbars for every plugin page, at zero specificity (`:where`) so the plugin's own
+ * CSS wins. The same rule, for the shell, is in src/renderer/styles.css. `scrollbar-color` inherits,
+ * `scrollbar-width` does not, hence the `*`. Not installed on macOS (the theme message's `mac`): its
+ * overlay scrollbars already look right, and these properties turn them into always-visible classic bars.
+ */
+export const BASE_SCROLLBAR_CSS =
+  ':where(:root) { scrollbar-color: color-mix(in srgb, var(--cc-fg, #888) 22%, transparent) transparent; }\n' +
+  ':where(*) { scrollbar-width: thin; }\n' +
+  ':where(*:hover) { scrollbar-color: color-mix(in srgb, var(--cc-fg, #888) 38%, transparent) transparent; }'
 
 export interface PanelApi {
   /** Send to the plugin (JSON, at most 1 MiB as text). Queued until the page is connected. */
@@ -81,11 +98,13 @@ export class PanelClient {
   private readonly themeListeners = new Set<(theme: PanelTheme) => void>()
   private theme: PanelTheme | undefined
   private applied: string[] = []
+  private baseStyled = false
   readonly api: PanelApi
 
   constructor(
     private readonly root: ThemeRoot,
-    private readonly warn: (message: string) => void = () => {}
+    private readonly warn: (message: string) => void = () => {},
+    private readonly styles?: BaseStyles
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -112,7 +131,10 @@ export class PanelClient {
   receive(data: unknown, ports: readonly PortLike[]): void {
     const type = (data as { type?: unknown } | null)?.type
     if (type === PORT_MESSAGE && ports[0]) this.connect(ports[0])
-    else if (type === THEME_MESSAGE) this.applyTheme((data as { theme?: unknown }).theme)
+    else if (type === THEME_MESSAGE) {
+      this.installBaseStyles((data as { mac?: unknown }).mac === true)
+      this.applyTheme((data as { theme?: unknown }).theme)
+    }
   }
 
   private connect(port: PortLike): void {
@@ -182,6 +204,16 @@ export class PanelClient {
       } catch (err) {
         this.warn(`an onMessage listener threw: ${errorText(err)}`)
       }
+    }
+  }
+
+  private installBaseStyles(mac: boolean): void {
+    if (this.baseStyled || mac || !this.styles) return
+    this.baseStyled = true
+    try {
+      this.styles.install(BASE_SCROLLBAR_CSS)
+    } catch (err) {
+      this.warn(`could not install the base styles: ${errorText(err)}`)
     }
   }
 

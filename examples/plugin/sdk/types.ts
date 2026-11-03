@@ -506,6 +506,15 @@ export interface PluginContext {
    * window (more reject).
    */
   notify(text: string): Promise<void>
+  /**
+   * Open a web page in the person's default browser, outside the app. `url` must be an http or
+   * https URL of at most 2048 characters with no user name or password in it (`user:pass@`);
+   * anything else rejects, and so does a call past 3 per 10 s per plugin and window. The URL is
+   * normalized (`new URL(url).href`) before it is opened. Resolves once the app handed it to the
+   * system; whether a browser then showed it is not reported. Use it on a person's click, not
+   * unasked: a page opening by itself takes them out of what they were doing.
+   */
+  openExternal(url: string): Promise<void>
 }
 
 /**

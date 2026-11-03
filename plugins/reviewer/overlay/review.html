@@ -10,9 +10,11 @@
   </head>
   <body>
     <header>
-      <div class="title"><strong id="path"></strong> <span id="base" class="muted"></span></div>
+      <div class="title">
+        <strong id="path"></strong>
+        <span id="base" class="muted"></span>
+      </div>
       <div class="tools">
-        <button id="add-note" type="button" disabled title="Attach a note to the selected text (a)">Add note</button>
         <button id="layout" type="button" title="Switch between side by side and unified">Unified</button>
       </div>
     </header>
@@ -20,13 +22,13 @@
     <div id="draft-error" class="banner error" role="alert" hidden></div>
     <textarea id="global" rows="2" maxlength="20000" placeholder="Comment on the whole file (optional)"></textarea>
     <div id="global-limit" class="limit" hidden></div>
+    <div id="notes-limit" class="limit" hidden>200 notes, the most one review keeps: delete one to add another.</div>
+    <!-- The notes, under the comment; hidden while there is none. -->
+    <ol id="notes" aria-label="Notes" hidden></ol>
     <main>
       <div id="editors"></div>
-      <aside>
-        <h2>Notes <span id="notes-count" class="muted"></span></h2>
-        <div id="notes-limit" class="limit" hidden>200 notes, the most one review keeps: delete one to add another.</div>
-        <div id="notes"></div>
-      </aside>
+      <!-- annotate's `aside`: the caller's details column, sanitized like the document. -->
+      <aside id="details" aria-label="Details" hidden><article id="details-body" class="doc-body details-body"></article></aside>
     </main>
     <footer>
       <span id="status" class="muted"></span>
@@ -38,6 +40,19 @@
       <button id="new-session" type="button" title="Open a new Claude tab with this review as its prompt">New session</button>
       <button id="close" type="button" title="Close without sending; the draft is kept (Esc too)">Close</button>
     </footer>
+    <!-- "Add note", floating just under the end of the selection (the page positions it; hidden while
+         there is none). -->
+    <button id="add-note" type="button" title="Attach a note to the selected text (a)" hidden>Add note</button>
+    <!-- annotate's url: the page cannot open links (a sandboxed frame), so a click asks the host,
+         which opens the URL its caller gave with ctx.openExternal. The page moves this button into
+         the document: at the end of its first h1, else to its top right corner. -->
+    <button id="open-url" class="icon" type="button" title="Open in browser" aria-label="Open in browser" hidden>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 9v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1H7" />
+        <path d="M10 2.5h3.5V6" />
+        <path d="M13.5 2.5 7.5 8.5" />
+      </svg>
+    </button>
     <!-- annotate's HTML mode: an image shown larger. A click or a key closes it. -->
     <div id="lightbox" tabindex="-1" role="dialog" aria-label="Image" hidden><img id="lightbox-img" alt="" /></div>
     <script src="review.bundle.js"></script>

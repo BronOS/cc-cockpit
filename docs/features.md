@@ -92,7 +92,8 @@ behind it are in [design.md](design.md).
   still closes it, and the host's posts wait until the page has loaded. Messages up to 1 MiB less 8 KiB, routed by main
   only between the overlay and the plugin and window that opened it. Esc dismisses without asking the page.
 - Plugin system: install from git, from the Marketplace, or link a folder, per-project enable, a sandboxed panel
-  per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify...). A panel's icon is drawn in
+  per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify, opening a web page in the
+  system browser with `ctx.openExternal`...). A panel's icon is drawn in
   the strip's text colour (only its shape counts), so it follows the theme, hover and open states.
 - Panel headers: a plugin can put a short muted text ("3 open", "synced 2 min ago") after its panel's title and up to
   three icon buttons (refresh, add, search, filter, settings, open external, check, sort, or its own SVG) before the
@@ -122,6 +123,7 @@ behind it are in [design.md](design.md).
   With several such plugins, or to keep the built-in viewer, Settings > Plugins > "Plugin used to open files"
   picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
   fails, or it does not answer within 2 s, and for a file outside the project.
+- Thin themed scrollbars in the shell and in every plugin page (overridable by the plugin; macOS keeps its overlay scrollbars).
 - Themes, commands, a command palette and editable keybindings, a Settings screen.
 - The `ccc` command line tool, the `hello` reference plugin and an example plugin to copy.
 - Operable by Claude: inside a tab, `ccc guide [topic]` prints bundled docs (CLI, plugin API,
@@ -138,12 +140,15 @@ behind it are in [design.md](design.md).
 - A built-in reviewer plugin (`cockpit.reviewer`, on by default, ships with the app): click a file a session changed
   to see its diff (side by side or unified; the choice is remembered), select text to attach notes, write one comment
   for the file, then send the review to Claude with Discuss (the session you came from) or New session, or open the file
-  in the editor with Edit. A draft is kept when you close it, and a second click on a file under review brings it to the
+  in the editor with Edit. "Add note" floats just under the selection (or press `a`). A draft is kept when you close it, and a second click on a file under review brings it to the
   front. Edit appears only when a plugin provides the `editor` service. Other plugins can open the same overlay on a
   text of their own (the `reviewer` service's `annotate`: a ticket, a mail): one read-only pane, the same notes and
   buttons, no diff and no Edit. Or on HTML (a Jira issue with its panels, mentions, tables, comments and
   screenshots), sanitized against an allow-list and rendered as a document; notes go on selected text and are
-  highlighted again when the draft reopens. Links in it are shown, not opened; Esc closes the review even while an
+  highlighted again when the draft reopens. No header row repeats the title (the overlay's title bar has it);
+  the caller's `url` is an open-in-browser icon at the end of the document's first heading (the link opens in the
+  system browser); key fields can show as a compact grid with coloured lozenges and name chips, or in a details column at the right
+  (`aside`); the notes are a compact list under the comment, with no sidebar; links inside the text are shown, not opened. Esc closes the review even while an
   image is shown larger. The tab picker starts on the tab you are looking at unless the caller names one.
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour

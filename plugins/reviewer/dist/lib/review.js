@@ -29,6 +29,9 @@ const ANNOTATE_KEY_CHARS = /^[A-Za-z0-9._:@#+=~\/-]+$/
 // an allow-list (src/page/sanitize.mjs); the host only bounds what it carries. 2 MiB is more than one
 // page message takes (1,040,384 chars of JSON), so the host posts it in parts (htmlParts).
 const MAX_ANNOTATE_HTML = 2 * 1024 * 1024 // UTF-8 bytes
+// annotate's `aside`: a details column of HTML (key fields), sanitized like `html`. Sent in a message
+// of its own after the init (escaped, at most 6 chars per char: within one page message).
+const MAX_ANNOTATE_ASIDE = 100000 // characters
 // Images only, as data: URLs the page sets as an <img> src (its CSP allows data: images). No SVG:
 // an SVG is a document with script and links of its own, so it is not "just an image".
 const ASSET_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
@@ -315,14 +318,16 @@ function checkAssets(list) {
  * text and html is a string, the other null), or a ReviewError naming the bad field. title: 1-200
  * chars once made one line. text: a string of at most MAX_ANNOTATE_TEXT UTF-8 bytes without NUL
  * (empty is allowed: the comment can still say something). html: the same, at most
- * MAX_ANNOTATE_HTML bytes; the page sanitizes it. assets: with html only (checkAssets). url:
+ * MAX_ANNOTATE_HTML bytes; the page sanitizes it. aside: absent, or HTML of at most
+ * MAX_ANNOTATE_ASIDE chars without NUL, for the details column (sanitized the same way; with text or
+ * html; null when absent or empty). assets: with html only (checkAssets). url:
  * absent, or an http(s) URL of at most 2048 chars with no whitespace or controls (it goes into the
  * message as is). key: absent (then `title:` + a hash of the title, so the same title reopens the
  * same draft), or 1-200 chars of ANNOTATE_KEY_CHARS. tabId: absent or a string; the host checks it
  * against the window's tabs.
  */
 function annotateInput(o) {
-  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, assets?, url?, key?, tabId? }')
+  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId? }')
   if (typeof o.title !== 'string') throw new ReviewError('title must be a string')
   const title = oneLine(o.title)
   if (!title) throw new ReviewError('title must not be empty')
@@ -342,6 +347,13 @@ function annotateInput(o) {
     if (Buffer.byteLength(o.text, 'utf8') > MAX_ANNOTATE_TEXT) throw new ReviewError(`text is larger than ${MAX_ANNOTATE_TEXT / 1024} KiB`)
     text = o.text
   }
+  let aside = null
+  if (given(o.aside)) {
+    if (typeof o.aside !== 'string') throw new ReviewError('aside must be a string of HTML')
+    if (o.aside.includes('\0')) throw new ReviewError('aside contains a NUL byte')
+    if (o.aside.length > MAX_ANNOTATE_ASIDE) throw new ReviewError(`aside is over ${MAX_ANNOTATE_ASIDE} characters`)
+    aside = o.aside || null
+  }
   if (html === null && Array.isArray(o.assets) && o.assets.length) throw new ReviewError('assets go with html, not text')
   const assets = html === null ? [] : checkAssets(o.assets)
   const url = given(o.url) ? checkUrl(o.url) : null
@@ -355,7 +367,7 @@ function annotateInput(o) {
     key = o.key
   }
   if (given(o.tabId) && typeof o.tabId !== 'string') throw new ReviewError('tabId must be a string')
-  return { title, text, html, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined }
+  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined }
 }
 
 /**
@@ -400,6 +412,7 @@ module.exports = {
   MAX_ANNOTATE_URL,
   MAX_ANNOTATE_KEY,
   MAX_ANNOTATE_HTML,
+  MAX_ANNOTATE_ASIDE,
   ASSET_MIMES,
   MAX_ASSETS,
   MAX_ASSET_CHARS,

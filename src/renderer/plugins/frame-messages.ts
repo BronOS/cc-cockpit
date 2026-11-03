@@ -13,8 +13,12 @@ export function isPluginPage(src: string): boolean {
 export const portMessage = Object.freeze({ type: PORT_MESSAGE })
 
 /** The theme as a page gets it: the CSS variables and the kind, not the xterm palette. */
-export function themeMessage(theme: Theme): { type: string; theme: { kind: Theme['kind']; vars: Record<string, string> } } {
-  return { type: THEME_MESSAGE, theme: { kind: theme.kind, vars: { ...theme.vars } } }
+export function themeMessage(
+  theme: Theme,
+  mac = false
+): { type: string; theme: { kind: Theme['kind']; vars: Record<string, string> }; mac: boolean } {
+  // `mac`: the SDK skips its scrollbar rule there (overlay scrollbars already look right).
+  return { type: THEME_MESSAGE, theme: { kind: theme.kind, vars: { ...theme.vars } }, mac }
 }
 
 /**

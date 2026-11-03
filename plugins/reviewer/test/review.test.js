@@ -125,7 +125,7 @@ test('the page enforces the note count and draft size caps of the host', () => {
 test('annotateInput: checks and caps every field', () => {
   const { annotateInput, MAX_ANNOTATE_TITLE, MAX_ANNOTATE_TEXT, MAX_ANNOTATE_KEY } = require('../dist/lib/review')
   const ok = annotateInput({ title: '  PROJ-1:\n Fix\tlogin ', text: '', url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
-  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
+  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
   // Title: one line, 1-200 chars.
   assert.equal(annotateInput({ title: 't'.repeat(MAX_ANNOTATE_TITLE), text: '' }).title.length, MAX_ANNOTATE_TITLE)
   assert.throws(() => annotateInput({ title: 't'.repeat(MAX_ANNOTATE_TITLE + 1), text: '' }), /title is over 200/)
@@ -158,6 +158,19 @@ test('annotateInput: checks and caps every field', () => {
   assert.notEqual(annotateInput({ title: 'Other', text: '' }).key, a)
   assert.throws(() => annotateInput({ title: 't', text: '', tabId: 7 }), /tabId must be a string/)
   assert.throws(() => annotateInput('PROJ-1'), /annotate takes/)
+})
+
+test('annotateInput: aside is optional HTML of at most 100,000 characters, with text or html', () => {
+  const { annotateInput, MAX_ANNOTATE_ASIDE } = require('../dist/lib/review')
+  assert.equal(MAX_ANNOTATE_ASIDE, 100000)
+  assert.equal(annotateInput({ title: 't', text: '', aside: '<dl class="facts"></dl>' }).aside, '<dl class="facts"></dl>')
+  assert.equal(annotateInput({ title: 't', html: '<p>x</p>', aside: 'a'.repeat(MAX_ANNOTATE_ASIDE) }).aside.length, MAX_ANNOTATE_ASIDE)
+  assert.equal(annotateInput({ title: 't', text: '', aside: null }).aside, null)
+  assert.equal(annotateInput({ title: 't', text: '', aside: '' }).aside, null) // nothing to show: no column
+  assert.throws(() => annotateInput({ title: 't', text: '', aside: 'a'.repeat(MAX_ANNOTATE_ASIDE + 1) }), /aside is over 100000 characters/)
+  assert.throws(() => annotateInput({ title: 't', text: '', aside: { html: 'x' } }), /aside must be a string of HTML/)
+  assert.throws(() => annotateInput({ title: 't', text: '', aside: 5 }), /aside must be a string of HTML/)
+  assert.throws(() => annotateInput({ title: 't', text: '', aside: 'a\0b' }), /aside contains a NUL/)
 })
 
 test('annotationKey: its own namespace, never a file draft key; hashed past the key limit', () => {

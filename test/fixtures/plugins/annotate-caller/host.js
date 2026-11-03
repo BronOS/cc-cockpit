@@ -11,8 +11,18 @@ const path = require('node:path')
 const PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEUlEQVR4nGP4z8DwnwGMgRQAH+4D/dJQfRoAAAAASUVORK5CYII='
 
+// The details column: key fields as a facts list (vertical there), plus what the sanitizer must drop.
+const ASIDE = `
+<dl class="facts" style="display:grid" onclick="window.__pwned='aside'">
+  <dt>Priority</dt><dd><span class="lozenge lozenge-danger">High</span></dd>
+  <dt>Reporter</dt><dd><span class="person">Bob Stone</span></dd>
+</dl>
+<script>window.__pwned = 'aside script'</script>
+<p>See <a href="https://example.atlassian.net/browse/PROJ-2">PROJ-2</a>.</p>
+`
+
 const HTML = `
-<h2 id="global">Fix the login redirect</h2>
+<h1 id="global">Fix the login redirect</h1>
 <script>window.__pwned = 'script'</script>
 <style>body { display: none }</style>
 <div class="jira-panel jira-panel-warning banner" style="position:fixed;inset:0" onclick="window.__pwned='click'">
@@ -24,6 +34,7 @@ const HTML = `
 <iframe src="https://example.com"></iframe>
 <form><input name="q" value="typed"></form>
 <table><tr><th>Status</th><td colspan="2" onmouseover="x()">In progress</td></tr></table>
+<dl class="facts"><dt>Status</dt><dd><span class="lozenge lozenge-info">In progress</span></dd><dt>Assignee</dt><dd><span class="person">Ann Lee</span></dd></dl>
 <p>The redirect target is wrong in the second step.</p>
 <figure><img src="asset:shot-1" alt="Screenshot of the bug"><figcaption>The bug</figcaption></figure>
 <p><img src="asset:never-sent" alt="Missing picture"></p>
@@ -39,6 +50,7 @@ exports.activate = (ctx) => {
       const r = await reviewer.annotate({
         title: 'PROJ-1 Fix the login redirect',
         html: HTML,
+        aside: ASIDE,
         assets: [{ id: 'shot-1', name: 'shot.png', mime: 'image/png', dataUrl: PNG }],
         url: 'https://example.atlassian.net/browse/PROJ-1',
         key: 'jira:PROJ-1',

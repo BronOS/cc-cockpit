@@ -28,7 +28,8 @@
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
-//   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click)
+//   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click),
+//   openExternal { pluginId, url } -> null (ctx.openExternal; main checks the URL and opens the browser)
 // Events to main:
 //   log        { pluginId, level, text }      a ctx.log line
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)

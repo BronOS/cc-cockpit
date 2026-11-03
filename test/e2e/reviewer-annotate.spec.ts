@@ -4,7 +4,11 @@
 // an asset. The overlay page parses it inertly and rebuilds it from an allow-list
 // (plugins/reviewer/src/page/sanitize.mjs); this checks the DOM it ended up with in the real
 // Chromium parser, that the asset image loads, that a link does not navigate, and that a note on a
-// selection is highlighted again when the draft reopens. Bundled plugins are on for this spec.
+// selection (made with the floating "Add note" under it) is highlighted again when the draft reopens,
+// and that the "Open in browser" icon at the end of the document's h1 opens the caller's url through
+// ctx.openExternal. The page has no header row in annotate mode: the overlay's title bar names it.
+// The caller's `aside` is a details column, sanitized the same way, with its facts list vertical; the
+// notes are a compact list under the comment (no sidebar), and ✕ deletes one. Bundled plugins are on for this spec.
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -64,20 +68,60 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await annotate()
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE])
   const frame = page.frameLocator(`iframe[title="${TITLE}"]`)
-  const doc = frame.locator('.doc-body')
+  const doc = frame.locator('#editors .doc-body')
   await expect(doc).toContainText('Users land on')
-  await expect(frame.locator('#base')).toHaveText('https://example.atlassian.net/browse/PROJ-1')
+  // No header row (title, toolbar): the overlay frame's title bar is the one title outside the document.
+  await expect(frame.locator('header')).toBeHidden()
+  // The caller's url is an icon button at the end of the document's first h1, not text; a click opens
+  // that URL through the reviewer host's ctx.openExternal (main records it here in place of the real browser).
+  const openUrl = frame.locator('#open-url')
+  await expect(openUrl).toBeVisible()
+  await expect(doc.locator('h1 > #open-url')).toHaveCount(1)
+  await expect(openUrl).toHaveAttribute('aria-label', 'Open in browser')
+  await expect(openUrl).toHaveAttribute('title', 'Open in browser: https://example.atlassian.net/browse/PROJ-1')
+  await cockpit.app.evaluate(({ shell }) => {
+    const g = globalThis as { __opened?: string[] }
+    g.__opened = []
+    shell.openExternal = (url: string) => {
+      g.__opened!.push(url)
+      return Promise.resolve()
+    }
+  })
+  await openUrl.click()
+  await expect
+    .poll(() => cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened ?? []))
+    .toEqual(['https://example.atlassian.net/browse/PROJ-1'])
+
+  // No notes sidebar: the only column beside the document is the caller's details.
+  await expect(frame.locator('main > aside')).toHaveCount(1)
+  await expect(frame.locator('#notes')).toBeHidden() // no note yet: the list takes no room
+  const aside = frame.locator('#details')
+  await expect(aside).toBeVisible()
+  await expect(aside.locator('.person')).toHaveText('Bob Stone')
+  await expect(aside.locator('.lozenge')).toHaveAttribute('class', 'lozenge lozenge-danger')
+  await expect(aside.locator('script')).toHaveCount(0)
+  await expect(aside.locator('dl')).not.toHaveAttribute('style')
+  await expect(aside.locator('dl')).not.toHaveAttribute('onclick')
+  await expect(aside.locator('a')).toHaveAttribute('href', 'https://example.atlassian.net/browse/PROJ-2')
+  // Facts: a grid in the document, a vertical list (each label above its value) in the column.
+  expect(await doc.locator('dl.facts').evaluate((e) => getComputedStyle(e).display)).toBe('grid')
+  expect(await aside.locator('dl.facts').evaluate((e) => getComputedStyle(e).display)).toBe('block')
+  const dt = (await aside.locator('dt').first().boundingBox())!
+  const dd = (await aside.locator('dd').first().boundingBox())!
+  expect(dd.y).toBeGreaterThanOrEqual(dt.y + dt.height - 1)
+  expect(Math.abs(dd.x - dt.x)).toBeLessThan(2)
 
   // Dropped with their content: script, style, iframe, form and its input.
   for (const sel of ['script', 'style', 'iframe', 'form', 'input']) await expect(doc.locator(sel)).toHaveCount(0)
   await expect(doc).not.toContainText('__pwned')
   await expect(doc).not.toContainText('display: none')
-  // No event handler, style or id attribute anywhere; classes off the allow-list are gone.
+  // No event handler, style or id attribute anywhere; classes off the allow-list are gone. (The open
+  // icon is the page's own element, not the caller's markup.)
   const attrs = await doc.evaluate((root) =>
-    [...root.querySelectorAll('*')].flatMap((e) => [...e.attributes].map((a) => a.name)).filter((n) => n.startsWith('on') || n === 'style' || n === 'id' || n === 'target')
+    [...root.querySelectorAll('*:not(#open-url):not(#open-url *)')].flatMap((e) => [...e.attributes].map((a) => a.name)).filter((n) => n.startsWith('on') || n === 'style' || n === 'id' || n === 'target')
   )
   expect(attrs).toEqual([])
-  await expect(doc.locator('h2')).toHaveText('Fix the login redirect')
+  await expect(doc.locator('h1')).toHaveText('Fix the login redirect')
   await expect(doc.locator('div.jira-panel')).toHaveAttribute('class', 'jira-panel jira-panel-warning')
   await expect(doc.locator('span.mention')).toHaveText('@Ann Lee')
   await expect(doc.locator('td')).toHaveAttribute('colspan', '2')
@@ -126,11 +170,31 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
       }
       throw new Error(`no text ${t}`)
     }, text)
+  // "Add note" floats just under the end of the selection, and only while there is one.
+  const addNote = frame.locator('#add-note')
+  await expect(addNote).toBeHidden()
   await select('redirect target')
-  await expect(frame.locator('#add-note')).toBeEnabled()
-  await frame.locator('#add-note').click()
+  await expect(addNote).toBeVisible()
+  await expect(addNote).toBeEnabled()
+  const selBottom = await doc.evaluate((root) => {
+    const rects = root.ownerDocument.getSelection()!.getRangeAt(0).getClientRects()
+    return rects[rects.length - 1]!.bottom
+  })
+  const box = (await addNote.evaluate((b) => b.getBoundingClientRect().toJSON())) as DOMRect
+  expect(box.top).toBeGreaterThanOrEqual(selBottom)
+  expect(box.top - selBottom).toBeLessThan(20)
+  await doc.evaluate((root) => root.ownerDocument.getSelection()!.collapseToEnd())
+  await expect(addNote).toBeHidden()
+  await select('redirect target')
+  await addNote.click()
   await expect(frame.locator('.note')).toHaveCount(1)
-  await expect(frame.locator('.note-head button').first()).toHaveText('«redirect target»')
+  await expect(addNote).toBeHidden()
+  // The notes list sits under the comment, outside the document's row.
+  await expect(frame.locator('#notes')).toBeVisible()
+  await expect(frame.locator('main #notes')).toHaveCount(0)
+  const commentBox = (await frame.locator('#global').boundingBox())!
+  expect((await frame.locator('#notes').boundingBox())!.y).toBeGreaterThanOrEqual(commentBox.y + commentBox.height)
+  await expect(frame.locator('.note .link').first()).toHaveText('«redirect target»')
   await frame.locator('.note-text').fill('Which step?')
   const highlighted = (): Promise<number> =>
     doc.evaluate((el) => {
@@ -150,6 +214,12 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await annotate()
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE])
   await expect(frame.locator('.note-text')).toHaveValue('Which step?')
-  await expect(frame.locator('.note-head button').first()).toHaveText('«redirect target»')
+  await expect(frame.locator('.note .link').first()).toHaveText('«redirect target»')
   await expect.poll(highlighted).toBe(1)
+
+  // ✕ deletes the note: the list goes, and so does the highlight.
+  await frame.getByRole('button', { name: 'Delete note' }).click()
+  await expect(frame.locator('.note')).toHaveCount(0)
+  await expect(frame.locator('#notes')).toBeHidden()
+  await expect.poll(highlighted).toBe(0)
 })

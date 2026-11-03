@@ -6,7 +6,7 @@
 // Entry points, all ending in showReview():
 // - a click on a changed file in the Sessions panel (ctx.files.onOpen, `contributes.openFile`);
 // - the `reviewer` service (v1): open(path, { tabId? }), for the file tree and other plugins, and
-//   annotate({ title, text | html, assets?, url?, key?, tabId? }): the same overlay on a text or an
+//   annotate({ title, text | html, aside?, assets?, url?, key?, tabId? }): the same overlay on a text or an
 //   HTML document another plugin hands over (a Jira issue, a mail), with no diff, no file and no Edit;
 // - `ccc review <path>`.
 //
@@ -209,6 +209,12 @@ exports.activate = (ctx) => {
     } else {
       sides = { ...base, mode: 'text', new: a.text }
     }
+    // The details column (`aside`, at most 100,000 chars): its own message, first, so a 400 KiB text
+    // and a draft in the init leave it room; `sides.aside` tells the page to ask for the content.
+    if (a.aside !== null) {
+      sides.aside = true
+      after = [{ type: 'aside', html: a.aside }, ...after]
+    }
     return showReview(
       {
         openKey: `text:${a.key}`,
@@ -218,6 +224,9 @@ exports.activate = (ctx) => {
         sides,
         after,
         editPath: null,
+        // The URL the caller gave, checked by annotateInput: the only one the header's "Open in
+        // browser" button ever opens (the page says "open", never which URL).
+        openUrl: a.url,
         build: (d) => review.buildAnnotation(d, a),
         tooLarge: 'the text is too large to show (with escaping and its saved draft)',
       },
@@ -231,7 +240,8 @@ exports.activate = (ctx) => {
    * running (a listener still running after 1 s counts as handled) while a service caller does
    * not wait for the person. `subject`: openKey (one overlay per key), draftKey, what (named in
    * notices), overlayTitle, sides, after (messages posted when the page asks for them with
-   * { type: 'content' }, each within the page message limit; may be absent), editPath (null: no Edit), build(draft) -> { text, cut }, and
+   * { type: 'content' }, each within the page message limit; may be absent), editPath (null: no Edit),
+   * openUrl (the caller's url for the header's "Open in browser" button; absent or null: none), build(draft) -> { text, cut }, and
    * tooLarge (the refusal when the init message would not fit).
    */
   async function showReview(subject, { tabId } = {}) {
@@ -251,7 +261,19 @@ exports.activate = (ctx) => {
     // newline or a quote is two chars) and a saved draft can push the message past what post takes.
     // Throwing here hands a click to the built-in viewer; a post that threw after start would leave
     // a blank overlay cached in `open`, so that file never reopened.
-    const init = { type: 'init', sides, draft, tabs, tabId: target, layout, canEdit: subject.editPath !== null && ctx.services.available('editor') }
+    // ctx.openExternal is in every app that bundles this plugin; checked anyway, so a copy run on an
+    // older app hides the button instead of showing one that throws.
+    const openUrl = subject.openUrl && typeof ctx.openExternal === 'function' ? subject.openUrl : null
+    const init = {
+      type: 'init',
+      sides,
+      draft,
+      tabs,
+      tabId: target,
+      layout,
+      canEdit: subject.editPath !== null && ctx.services.available('editor'),
+      canOpenUrl: openUrl !== null,
+    }
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
       throw new files.ReviewError(subject.tooLarge, { fallback: true })
     }
@@ -342,6 +364,10 @@ exports.activate = (ctx) => {
             return editor.open(subject.editPath, { line }).then(() => handle.close())
           })
           .catch((e) => post({ type: 'error', message: e.message.replace(/^editor: /, '') }))
+      } else if (m.type === 'open-url' && openUrl !== null) {
+        // The page names no URL (it shows the caller's content in a sandboxed frame): the host opens
+        // the one it was given. The app refuses some (user:pass@, 3 per 10 s): the page says why.
+        ctx.openExternal(openUrl).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
       } else if (m.type === 'tabs') {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
       } else if (m.type === 'content' && after) {

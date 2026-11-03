@@ -4,12 +4,16 @@
 //
 // The host owns everything that leaves the page: it saves drafts and formats and sends the review.
 // `sides.mode` is 'diff' or 'plain' for a file, or 'text' for an annotated text (the service's
-// annotate): then `path` is the caller's title, `url` an optional link shown as plain text, and
+// annotate): then `path` is the caller's title (the overlay's own title bar shows it, so the page has
+// no header row), `url` an optional link (an "Open in browser" icon in the document, when the init
+// says `canOpenUrl`; the click posts { type: 'open-url' } and the host opens the URL its caller gave,
+// never one from here), and
 // `new` the one read-only pane, with no diff, no layout toggle and no Edit. 'html' is annotate's
 // HTML mode: no pane at all but the caller's HTML, sanitized (sanitize.mjs) and rendered as a
 // document; it comes after the init in `htmlParts` { type: 'html', index, part } messages the page
 // asks for with { type: 'content' }, followed by one { type: 'asset', id, dataUrl } per image and
-// { type: 'assets-done' }. Its notes anchor on the selected text (anchor.mjs), not on lines.
+// { type: 'assets-done' }. With `sides.aside` (annotate's details column, text or html) the page asks
+// too, and { type: 'aside', html } comes first: sanitized the same way, shown in a column at the right. Its notes anchor on the selected text (anchor.mjs), not on lines.
 // The page shows the two sides, collects notes and the global comment, and posts
 //   { type: 'draft', draft }                          on every change;
 //   { result: { action: 'discuss'|'new'|'close', tabId?, draft } }   from the buttons.
@@ -296,6 +300,42 @@ function buildEditors() {
   clearPick()
   refreshHighlights()
   updateAddButton()
+  placeOpenUrl()
+}
+
+/**
+ * Puts annotate's "Open in browser" icon (#open-url, the page's own element) next to the title in
+ * the document: at the end of the HTML's first h1, else floated to the top right of the HTML
+ * document, or in the top right corner of the text pane. Hidden until the HTML is rendered, and
+ * always when the overlay has no url to open.
+ */
+function placeOpenUrl() {
+  const b = $('open-url')
+  // The markup's indentation left whitespace text nodes in the icon. Inside the HTML document they
+  // would count in a selection's offsets (Range.toString) but not in `full`, shifting every note.
+  const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT)
+  const blanks = []
+  for (let n = w.nextNode(); n; n = w.nextNode()) blanks.push(n)
+  for (const n of blanks) n.remove()
+  b.classList.remove('in-title', 'float', 'corner')
+  if (!b.dataset.show || (isHtml() && !htmlView.rendered)) {
+    b.hidden = true
+    return
+  }
+  if (isHtml()) {
+    const h1 = htmlView.body.querySelector('h1')
+    if (h1) {
+      b.classList.add('in-title')
+      h1.append(b)
+    } else {
+      b.classList.add('float')
+      htmlView.body.prepend(b)
+    }
+  } else {
+    b.classList.add('corner')
+    $('editors').append(b)
+  }
+  b.hidden = false
 }
 
 // ---- removed lines in the unified view ----
@@ -353,9 +393,76 @@ function currentSelectionSide() {
 
 const atNoteLimit = () => state.draft.notes.length >= NOTES_MAX
 
+/** Where the selection ends, as a client rect ({ left, right, top, bottom }), or null. */
+function selectionEndRect() {
+  const lastRect = (r) => {
+    const rects = [...r.getClientRects()].filter((x) => x.width || x.height)
+    return rects.length ? rects[rects.length - 1] : r.getBoundingClientRect()
+  }
+  if (isHtml()) {
+    const r = htmlSelection() && htmlSelectionRange()
+    return r ? lastRect(r) : null
+  }
+  const side = currentSelectionSide()
+  if (!side) return null
+  if (side === 'old' && !state.views.old && state.oldPick) {
+    // A removed block of the unified view: under the selection inside it, else under its start
+    // (a click picks the whole block, which may be wider than the screen).
+    const sel = window.getSelection()
+    if (sel && !sel.isCollapsed && sel.rangeCount && state.oldPick.el.contains(sel.anchorNode)) return lastRect(sel.getRangeAt(0))
+    const b = state.oldPick.el.getBoundingClientRect()
+    return { left: b.left + 24, right: b.left + 24, top: b.top, bottom: b.bottom }
+  }
+  const v = state.views[side]
+  return v ? v.coordsAtPos(v.state.selection.main.to, -1) : null
+}
+
+// "Add note" floats just under the end of the selection, in every mode: one place to look, next to
+// the text it is about. Positioned in a microtask, never inside a CodeMirror update listener (which
+// may not read layout), and coalesced, since selectionchange and scroll fire in bursts.
+let floatQueued = false
 function updateAddButton() {
-  $('add-note').disabled = atNoteLimit() || !currentSelectionSide()
   $('notes-limit').hidden = !atNoteLimit()
+  $('add-note').disabled = atNoteLimit() // shown, but off: the hint above the notes says why
+  if (floatQueued) return
+  floatQueued = true
+  queueMicrotask(placeAddButton)
+}
+
+function placeAddButton() {
+  floatQueued = false
+  const btn = $('add-note')
+  // Typing in a note or the comment: the selection left behind in the document is not what the
+  // person is working on now.
+  const t = document.activeElement
+  const typing = !!t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT')
+  const at = !typing && $('lightbox').hidden ? selectionEndRect() : null
+  const area = $('editors').getBoundingClientRect()
+  // Scrolled out of the document area: hidden, not pinned to its edge.
+  if (!at || at.bottom < area.top || at.top > area.bottom || at.right < area.left || at.left > area.right) {
+    btn.hidden = true
+    return
+  }
+  btn.hidden = false
+  const gap = 4
+  const w = btn.offsetWidth
+  const h = btn.offsetHeight
+  let top = at.bottom + gap
+  if (top + h > Math.min(area.bottom, window.innerHeight) - gap) top = at.top - h - gap // no room under it: above
+  const left = Math.min(Math.max(gap, at.right - w / 2), window.innerWidth - w - gap)
+  btn.style.left = `${Math.round(left)}px`
+  btn.style.top = `${Math.round(Math.max(gap, top))}px`
+}
+
+/** Collapses the selection a note was just made from, so the floating button goes with it. */
+function collapseSelection(side) {
+  if (isHtml()) {
+    const sel = window.getSelection()
+    if (sel) sel.removeAllRanges()
+    return
+  }
+  const v = state.views[side]
+  if (v && !v.state.selection.main.empty) v.dispatch({ selection: { anchor: v.state.selection.main.to } })
 }
 
 let noteSeq = 0
@@ -367,6 +474,7 @@ function addNote(sideHint) {
   const sel = selectionOf(side)
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, side, from: sel.from, to: sel.to, quote: sel.quote, text: '' }
   if (side === 'old') clearPick()
+  collapseSelection(side)
   state.draft.notes.push(note)
   renderNotes(note.id)
   refreshHighlights()
@@ -382,23 +490,58 @@ function scrollTo(note) {
   v.dispatch({ effects: EditorView.scrollIntoView(line.from, { y: 'center' }) })
 }
 
+const QUOTE_SHOWN = 90 // a note row shows this much of its quote, made one line
+
+/** A quote as one line of at most QUOTE_SHOWN chars. */
+function shortQuote(q) {
+  const one = (q || '').replace(/\s+/g, ' ').trim()
+  return one.length > QUOTE_SHOWN ? `${one.slice(0, QUOTE_SHOWN)}…` : one
+}
+
+/** Grows a note's textarea with its text, up to the CSS max-height (then it scrolls). */
+function fitText(t) {
+  t.style.height = 'auto'
+  t.style.height = `${t.scrollHeight + 2}px`
+}
+
+// The notes: a compact numbered list right under the comment (no sidebar: the document gets the
+// width). Each row: where the note is (a click shows it in the text), the quote, the note's text
+// (beside the quote when both fit on one line, else under it) and a delete button. The list takes
+// no room while there is no note; the comment's placeholder says how to make one.
 function renderNotes(focusId) {
   const list = $('notes')
   list.replaceChildren()
   const notes = isHtml() ? htmlNotesInOrder() : [...state.draft.notes].sort((a, b) => a.from - b.from || (a.side === 'old' ? -1 : 1))
-  $('notes-count').textContent = notes.length ? `(${notes.length})` : ''
-  if (!notes.length) list.append(el('div', 'empty', `Select text in the ${isText() || isHtml() ? 'text' : 'diff'}, then press a or "Add note".`))
+  list.hidden = !notes.length
   for (const n of notes) {
-    const box = el('div', 'note')
-    const head = el('div', 'note-head')
+    const row = el('li', 'note')
+    const body = el('div', 'note-body')
     const where = isHtml()
       ? htmlNoteLabel(n)
       : el('button', 'link', `${n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`}${state.sides.mode === 'diff' ? (n.side === 'old' ? ' · old' : ' · new') : ''}`)
     where.type = 'button'
     where.title = where.title || (isText() || isHtml() ? 'Show in the text' : 'Show in the diff')
     where.addEventListener('click', () => scrollTo(n))
-    const del = el('button', 'link danger', 'Delete')
+    body.append(where)
+    // In HTML mode the label is the quote itself; a line note shows it after the line range.
+    if (!isHtml() && n.quote) body.append(el('span', 'quote', shortQuote(n.quote)))
+    const text = el('textarea', 'note-text')
+    text.placeholder = 'Your note'
+    text.rows = 1
+    text.value = n.text
+    text.setAttribute('aria-label', `Note on ${isHtml() ? shortQuote(n.quote) : where.textContent}`)
+    text.addEventListener('input', () => {
+      n.text = text.value
+      fitText(text)
+      postDraft()
+    })
+    const hint = el('div', 'limit')
+    limitInput(text, hint, NOTE_MAX)
+    body.append(text, hint)
+    const del = el('button', 'note-del', '✕')
     del.type = 'button'
+    del.title = 'Delete this note'
+    del.setAttribute('aria-label', 'Delete note')
     del.addEventListener('click', () => {
       state.draft.notes = state.draft.notes.filter((x) => x.id !== n.id)
       renderNotes()
@@ -406,21 +549,15 @@ function renderNotes(focusId) {
       updateAddButton()
       postDraft()
     })
-    head.append(where, del)
-    const quote = el('pre', 'quote', n.quote.length > 160 ? n.quote.slice(0, 160) + ' …' : n.quote)
-    const text = el('textarea', 'note-text')
-    text.placeholder = 'Your note'
-    text.rows = 3
-    text.value = n.text
-    text.addEventListener('input', () => {
-      n.text = text.value
-      postDraft()
-    })
-    const hint = el('div', 'limit')
-    limitInput(text, hint, NOTE_MAX)
-    box.append(head, quote, text, hint)
-    list.append(box)
-    if (n.id === focusId) setTimeout(() => text.focus(), 0)
+    row.append(body, del)
+    list.append(row)
+    setTimeout(() => fitText(text), 0) // once laid out: scrollHeight is 0 before
+    if (n.id === focusId) {
+      setTimeout(() => {
+        row.scrollIntoView({ block: 'nearest' })
+        text.focus()
+      }, 0)
+    }
   }
 }
 
@@ -476,15 +613,23 @@ function renderHtml(source) {
   }
   htmlView.full = full
   htmlView.texts = texts
-  for (const img of htmlView.body.querySelectorAll('img[data-asset]')) {
-    if (!htmlView.assets.has(img.dataset.asset)) assetFailed(img) // named by the HTML, never sent
-    else if (htmlView.data.has(img.dataset.asset)) assetLoaded(img, htmlView.data.get(img.dataset.asset))
-  }
-  if (htmlView.assetsDone) htmlAssetsDone()
+  showAssets(htmlView.body)
+  placeOpenUrl() // after the text walk: the button holds no text, so the offsets would not move anyway
   refreshHighlights() // finds the draft's notes first: the list says which were not found
   renderNotes()
   updateAddButton()
 }
+
+/** The images under `root` (the document or the details column): loaded, failed, or left pending. */
+function showAssets(root) {
+  for (const img of root.querySelectorAll('img[data-asset]')) {
+    if (!htmlView.assets.has(img.dataset.asset)) assetFailed(img) // named by the HTML, never sent
+    else if (htmlView.data.has(img.dataset.asset)) assetLoaded(img, htmlView.data.get(img.dataset.asset))
+  }
+  if (htmlView.assetsDone) htmlAssetsDone()
+}
+
+const assetRoots = () => [htmlView.body, $('details-body')]
 
 function assetLoaded(img, dataUrl) {
   img.src = dataUrl
@@ -503,12 +648,12 @@ function htmlAsset(m) {
   // checked it; the page does not take an image src on trust either).
   if (!want || !isImageDataUrl(m.dataUrl) || !m.dataUrl.startsWith(`data:${want.mime};base64,`)) return
   htmlView.data.set(m.id, m.dataUrl)
-  for (const img of htmlView.body.querySelectorAll('img[data-asset]')) if (img.dataset.asset === m.id) assetLoaded(img, m.dataUrl)
+  for (const root of assetRoots()) for (const img of root.querySelectorAll('img[data-asset]')) if (img.dataset.asset === m.id) assetLoaded(img, m.dataUrl)
 }
 
 function htmlAssetsDone() {
   htmlView.assetsDone = true
-  for (const img of htmlView.body.querySelectorAll('.asset-box.pending > img')) assetFailed(img)
+  for (const root of assetRoots()) for (const img of root.querySelectorAll('.asset-box.pending > img')) assetFailed(img)
 }
 
 /** The offset in `full` of a DOM boundary point inside the document. */
@@ -519,8 +664,8 @@ function offsetOf(container, offset) {
   return r.toString().length
 }
 
-/** The selection inside the rendered document, as { start, end } offsets in `full`, or null. */
-function htmlSelection() {
+/** The selection as a Range cut to the rendered document, or null. */
+function htmlSelectionRange() {
   if (!htmlView.rendered) return null
   const sel = window.getSelection()
   if (!sel || sel.isCollapsed || !sel.rangeCount) return null
@@ -529,6 +674,13 @@ function htmlSelection() {
   // A drag that ran past the document's edge keeps the part inside it.
   if (!htmlView.body.contains(r.startContainer)) r.setStart(htmlView.body, 0)
   if (!htmlView.body.contains(r.endContainer)) r.setEnd(htmlView.body, htmlView.body.childNodes.length)
+  return r
+}
+
+/** The selection inside the rendered document, as { start, end } offsets in `full`, or null. */
+function htmlSelection() {
+  const r = htmlSelectionRange()
+  if (!r) return null
   const start = offsetOf(r.startContainer, r.startOffset)
   const end = offsetOf(r.endContainer, r.endOffset)
   if (end <= start || !htmlView.full.slice(start, end).trim()) return null
@@ -562,6 +714,7 @@ function addHtmlNote() {
   const { quote, anchor } = makeAnchor(htmlView.full, sel.start, sel.end)
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, quote, anchor, text: '' }
   htmlView.located.set(note.id, { start: sel.start, end: sel.end })
+  collapseSelection()
   state.draft.notes.push(note)
   renderNotes(note.id)
   refreshHighlights()
@@ -576,11 +729,10 @@ function htmlNotesInOrder() {
 }
 
 function htmlNoteLabel(n) {
-  const q = (n.quote || '').replace(/\s+/g, ' ').trim()
-  const shown = q.length > 60 ? `«${q.slice(0, 60)}…»` : `«${q}»`
+  const shown = `«${shortQuote(n.quote)}»`
   // Before the document is rendered nothing is located yet: no "not found" for that moment.
   const found = htmlView.located.has(n.id) || !htmlView.rendered
-  const b = el('button', found ? 'link' : 'link outdated', found ? shown : `${shown} · not found in this version`)
+  const b = el('button', found ? 'link quote' : 'link quote outdated', found ? shown : `${shown} · not found in this version`)
   if (!found) b.title = 'The quoted text is not in the document any more: the note is kept, not highlighted'
   return b
 }
@@ -613,21 +765,35 @@ function scrollToHtml(note) {
   if (target) target.scrollIntoView({ block: 'center' })
 }
 
-// Links: a plugin page cannot open a URL outside the app (no plugin API for it, and the frame may
-// not navigate), so a click shows where the link goes instead of going there.
-htmlView.body.addEventListener('click', (e) => {
-  const a = e.target.closest && e.target.closest('a')
-  if (a) {
-    e.preventDefault()
-    $('status').textContent = a.href ? `Link (not opened from here): ${a.href}` : ''
-    return
-  }
-  const img = e.target.closest && e.target.closest('.asset-box:not(.pending):not(.failed) > img')
-  if (img) openLightbox(img)
-})
-htmlView.body.addEventListener('auxclick', (e) => {
-  if (e.target.closest && e.target.closest('a')) e.preventDefault()
-})
+// Links: the page does not open a URL from the caller's content (the frame may not navigate, and
+// only the caller's own `url` goes to the browser), so a click shows where the link goes instead.
+// The same in the document and in the details column.
+for (const root of assetRoots()) {
+  root.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a')
+    if (a) {
+      e.preventDefault()
+      $('status').textContent = a.href ? `Link (not opened from here): ${a.href}` : ''
+      return
+    }
+    const img = e.target.closest && e.target.closest('.asset-box:not(.pending):not(.failed) > img')
+    if (img) openLightbox(img)
+  })
+  root.addEventListener('auxclick', (e) => {
+    if (e.target.closest && e.target.closest('a')) e.preventDefault()
+  })
+}
+
+// annotate's `aside`: the caller's details column (key fields), sanitized like the document and
+// rendered once. It has no notes: a selection there is not in the document's text.
+let asideRendered = false
+function renderAside(m) {
+  if (asideRendered || !state.sides || !state.sides.aside || typeof m.html !== 'string') return
+  asideRendered = true
+  const parsed = new DOMParser().parseFromString(m.html, 'text/html')
+  $('details-body').replaceChildren(render(sanitizeTree(parsed.body), document))
+  showAssets($('details-body'))
+}
 
 // The lightbox: an image shown larger above the review. A click or a key closes it; Esc is not
 // the page's to take (main closes the whole overlay on Esc, the draft kept), so it closes both.
@@ -638,10 +804,12 @@ function openLightbox(img) {
   big.alt = img.alt
   box.hidden = false
   box.focus()
+  updateAddButton()
 }
 function closeLightbox() {
   $('lightbox').hidden = true
   $('lightbox-img').removeAttribute('src')
+  updateAddButton()
 }
 $('lightbox').addEventListener('click', closeLightbox)
 $('lightbox').addEventListener('keydown', (e) => {
@@ -651,9 +819,14 @@ $('lightbox').addEventListener('keydown', (e) => {
   htmlView.scroller.focus()
 })
 
-document.addEventListener('selectionchange', () => {
-  if (isHtml()) updateAddButton()
-})
+// The floating "Add note" follows the selection: CodeMirror's update listener covers its panes, these
+// the HTML document, the unified view's removed blocks, scrolling (capture: the scrollers are
+// elements, not the window), a resize and focus moving into a note or the comment.
+document.addEventListener('selectionchange', () => updateAddButton())
+document.addEventListener('scroll', () => updateAddButton(), true)
+window.addEventListener('resize', () => updateAddButton())
+document.addEventListener('focusin', () => updateAddButton())
+document.addEventListener('focusout', () => updateAddButton())
 // `a` adds a note on the selection, as in a file review (where CodeMirror's keymap handles it).
 document.addEventListener('keydown', (e) => {
   if (!isHtml() || e.key !== 'a' || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return
@@ -753,9 +926,21 @@ function init(m) {
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   const s = state.sides
   $('path').textContent = s.path
-  // Plain text, never a link: the page is no place to navigate from, and the URL is the caller's.
-  $('base').textContent = s.mode === 'diff' ? `vs last commit ${s.head ? s.head.slice(0, 8) : ''}` : (isText() || isHtml()) && s.url ? s.url : ''
-  $('global').placeholder = isText() || isHtml() ? 'Comment on the whole text (optional)' : 'Comment on the whole file (optional)'
+  $('base').textContent = s.mode === 'diff' ? `vs last commit ${s.head ? s.head.slice(0, 8) : ''}` : ''
+  // annotate: the overlay's title bar already names the text, and the document usually does too, so
+  // no header row (a third copy of the title). The file review keeps it: path, base, layout toggle.
+  document.querySelector('header').hidden = isText() || isHtml()
+  // annotate's url as an icon button, not the long URL as text: the page cannot navigate (a sandboxed
+  // frame), so the click asks the host, which opens the URL it was given. The URL is only shown in
+  // the tooltip. Off when the host cannot open links (no ctx.openExternal); placeOpenUrl puts it in
+  // the document.
+  const openUrl = $('open-url')
+  openUrl.dataset.show = (isText() || isHtml()) && s.url && m.canOpenUrl ? '1' : ''
+  openUrl.title = openUrl.dataset.show ? `Open in browser: ${s.url}` : 'Open in browser'
+  // The hint on making a note lives here: the notes list takes no room while it is empty.
+  const how = 'for a note on a part, select it, then press a or "Add note"'
+  $('global').placeholder = isText() || isHtml() ? `Comment on the whole text (optional); ${how}` : `Comment on the whole file (optional); ${how}`
+  $('details').hidden = !s.aside
   $('note').textContent = s.note || ''
   $('note').hidden = !s.note
   $('global').value = state.draft.global
@@ -767,10 +952,10 @@ function init(m) {
   buildEditors()
   renderNotes()
   renderTabs()
-  if (isHtml()) {
-    htmlView.scroller.focus()
-    ccPanel.post({ type: 'content' }) // the host sends the HTML parts and the images now
-  } else (state.views.new || state.views.old).focus()
+  if (isHtml()) htmlView.scroller.focus()
+  else (state.views.new || state.views.old).focus()
+  // The host sends the details column, the HTML parts and the images now.
+  if (isHtml() || s.aside) ccPanel.post({ type: 'content' })
 }
 
 $('global').addEventListener('input', (e) => {
@@ -795,6 +980,12 @@ $('discuss').addEventListener('click', () => finish('discuss'))
 $('new-session').addEventListener('click', () => finish('new'))
 $('edit').addEventListener('click', () => edit())
 $('close').addEventListener('click', () => finish('close'))
+$('open-url').addEventListener('click', (e) => {
+  // Inside the document: not a link click of the document's (an h1 inside an <a>) as well.
+  e.stopPropagation()
+  $('status').textContent = ''
+  ccPanel.post({ type: 'open-url' })
+})
 
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return
@@ -811,6 +1002,7 @@ ccPanel.onMessage((m) => {
     state.tabs = m.tabs || []
     renderTabs()
   } else if (m.type === 'html') htmlPart(m)
+  else if (m.type === 'aside') renderAside(m)
   else if (m.type === 'asset') htmlAsset(m)
   else if (m.type === 'assets-done') htmlAssetsDone()
 })

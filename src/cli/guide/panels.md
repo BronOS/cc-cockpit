@@ -39,6 +39,9 @@ load, the strip shows the title's first letter.
   already set on `:root` (and `color-scheme` is `kind`), so style with `var(--...)`.
   `ccPanel.theme.onChange(listener)` fires on every change. The shell sends the theme in a
   message after the page loads, so the first paint can come before it.
+- The SDK also gives the page thin themed scrollbars (`scrollbar-width: thin`, a `--cc-fg` tinted
+  thumb) at zero specificity, so any `scrollbar-*` rule of your own overrides it. Not on macOS,
+  whose overlay scrollbars are left alone.
 
 ## Theme variables
 

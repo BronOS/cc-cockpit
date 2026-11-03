@@ -24,6 +24,21 @@
   --cc-traffic-lights-w: 86px;
 }
 
+/* Thin themed scrollbars instead of the OS default (on Linux GTK a wide bar with arrow buttons).
+   Zero specificity (:where), so the specific rules below (`scrollbar-width: none`, a transparent
+   `scrollbar-color`) still win. `scrollbar-color` inherits, `scrollbar-width` does not (hence `*`).
+   Not on macOS: setting either turns its overlay scrollbars into always-visible classic bars. The
+   panel SDK installs the same rule in plugin pages (src/sdk/panel-core.ts BASE_SCROLLBAR_CSS). */
+:where(:root:not([data-platform='darwin'])) {
+  scrollbar-color: color-mix(in srgb, var(--cc-fg) 22%, transparent) transparent;
+}
+:where(:root:not([data-platform='darwin']) *) {
+  scrollbar-width: thin;
+}
+:where(:root:not([data-platform='darwin']) *:hover) {
+  scrollbar-color: color-mix(in srgb, var(--cc-fg) 38%, transparent) transparent;
+}
+
 html,
 body,
 #root {

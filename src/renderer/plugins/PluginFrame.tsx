@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { portMessage, themeMessage } from './frame-messages'
 
+const isMac = navigator.platform.toLowerCase().includes('mac')
+
 /**
  * The one loader of plugin pages, used by plugin panels (PluginPanel) and by html overlays a
  * plugin opened (HtmlOverlay): a `cc-plugin://` page in an iframe sandboxed with `allow-scripts`
@@ -29,7 +31,7 @@ export function PluginFrame(props: {
   useEffect(() => {
     // '*': a sandboxed frame's origin is opaque, there is no origin to name; only this frame's
     // window receives it.
-    const offTheme = onTheme((theme) => frame.current?.contentWindow?.postMessage(themeMessage(theme), '*'))
+    const offTheme = onTheme((theme) => frame.current?.contentWindow?.postMessage(themeMessage(theme, isMac), '*'))
     return () => {
       offTheme()
       cleanup.current?.()
@@ -41,7 +43,7 @@ export function PluginFrame(props: {
     const target = frame.current?.contentWindow
     if (!target) return
     const theme = currentTheme()
-    if (theme) target.postMessage(themeMessage(theme), '*')
+    if (theme) target.postMessage(themeMessage(theme, isMac), '*')
     // A page that navigated itself (allowed in its sandbox) is a new page: it gets a new port.
     cleanup.current?.()
     cleanup.current = connect.current((port) => {

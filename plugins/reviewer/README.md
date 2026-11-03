@@ -11,6 +11,8 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     one read-only pane, notes on selections, one comment, Discuss / New session / Close; no diff, no file, no Edit.
   - `annotate({ title, html, assets?, url?, key?, tabId? })`: the same with HTML in place of `text` (exactly one of
     the two), rendered as a document; see "HTML mode" below.
+  - `aside` (either form, optional): HTML of at most 100,000 characters for a details column at the right of the
+    text, sanitized like `html` (see "HTML mode"); `dl.facts` is a vertical list there.
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
   for the same file or `key` brings the open overlay to the front. The tab picker starts on `tabId` when it is a live
@@ -30,13 +32,13 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
 
 ## HTML mode
 
-`annotate({ title, html, assets?, url?, key?, tabId? })`. The HTML (at most 2 MiB of UTF-8) never reaches the page as
+`annotate({ title, html, aside?, assets?, url?, key?, tabId? })`. The HTML (at most 2 MiB of UTF-8) never reaches the page as
 markup: the page parses it with `DOMParser` (inert: nothing runs or loads) and rebuilds it element by element from an
 allow-list (`src/page/sanitize.mjs`); no `innerHTML`. What survives:
 
 - Elements: `h1`-`h6`, `p`, `br`, `hr`, `ul`, `ol`, `li`, `pre`, `code`, `blockquote`, `table`, `thead`, `tbody`, `tr`,
   `th`, `td`, `a`, `img`, `strong`, `em`, `s`, `u`, `sub`, `sup`, `span`, `div`, `details`, `summary`, `figure`,
-  `figcaption`. Other elements are unwrapped (their text stays); `script`, `style`, `iframe`, `object`, `svg`, `math`,
+  `figcaption`, `dl`, `dt`, `dd`. Other elements are unwrapped (their text stays); `script`, `style`, `iframe`, `object`, `svg`, `math`,
   forms and their controls, media and head elements are dropped with their content. Nesting past 100 levels is unwrapped.
 - Attributes: `class` (only the names below), `title`, `colspan`/`rowspan` on cells (1-1000), `alt` and `data-asset`
   on images, `href` on links (`http:`, `https:` or `mailto:` only). Every other attribute (`on*`, `style`, `id`,
@@ -44,7 +46,10 @@ allow-list (`src/page/sanitize.mjs`); no `innerHTML`. What survives:
 - Classes, styled by `overlay/review.css` with the app's theme variables: `jira-panel` with `jira-panel-info`,
   `-note`, `-warning`, `-error`, `-success` (tinted panels); `card`, `card-header`, `meta` (a comment or a linked
   item: header row, muted meta text); `mention` (a chip); `status`, `lozenge`, `lozenge-info`, `-success`,
-  `-warning`, `-error`; `new` (highlighted: new since last time) and `old` (struck out); `attachment-list` (a row of
+  `-warning`, `-error` (a pill, the tone tinting its background and text); on a `span` only, `lozenge-neutral` and
+  `lozenge-danger` (`lozenge-error` is its older name) and `person` (a person's name as a faint chip); at most one
+  tone per element (the first named; the rest are dropped); on a `dl` only, `facts` (the key fields of an item: a
+  compact grid of `dt` label / `dd` value pairs, muted small-caps labels, as many pairs per row as fit); `new` (highlighted: new since last time) and `old` (struck out); `attachment-list` (a row of
   boxes); `fields` (a key/value table with narrow keys); `muted`.
 - Links show where they go in the status line when clicked; they are not opened (a plugin page cannot open a URL
   outside the app, and the overlay frame may not navigate).
@@ -67,12 +72,18 @@ order (quotes made one line and shortened as in file reviews; no line numbers).
 await reviewer.annotate({
   title: `${issue.key} ${issue.summary}`,
   html: `
-    <div class="card"><div class="card-header">${esc(issue.key)} <span class="lozenge lozenge-info">In progress</span>
-      <span class="meta">updated ${esc(updated)}</span></div>
+    <h1>${esc(issue.key)} ${esc(issue.summary)}</h1>
+    <dl class="facts"><dt>Status</dt><dd><span class="lozenge lozenge-info">In progress</span></dd>
+      <dt>Priority</dt><dd><span class="lozenge lozenge-danger">High</span></dd>
+      <dt>Assignee</dt><dd><span class="person">Ann Lee</span></dd></dl>
+    <div class="card"><div class="card-header">Description <span class="meta">updated ${esc(updated)}</span></div>
       <div class="jira-panel jira-panel-warning"><p>Only for logged-in users.</p></div>
       <p>Ask <span class="mention">@Ann Lee</span>.</p></div>
     <div class="card new"><div class="card-header">Bob <span class="meta">2 h ago</span></div><p>Still broken.</p></div>
     <ul class="attachment-list"><li><img src="asset:a1" alt="screenshot.png"></li></ul>`,
+  // The key fields in the details column at the right: a vertical list there.
+  aside: `<dl class="facts"><dt>Reporter</dt><dd><span class="person">${esc(issue.reporter)}</span></dd>
+    <dt>Labels</dt><dd>${issue.labels.map(esc).join(', ')}</dd></dl>`,
   assets: [{ id: 'a1', name: 'screenshot.png', mime: 'image/png', dataUrl: `data:image/png;base64,${b64}` }],
   url: `https://example.atlassian.net/browse/${issue.key}`,
   key: `jira:${issue.key}`,

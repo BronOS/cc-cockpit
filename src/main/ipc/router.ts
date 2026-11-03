@@ -32,6 +32,7 @@ import { projectColorOf, type ProjectColor } from '../../shared/project-color'
 import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
+import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { SenderContext } from '../windows/window-manager'
 
@@ -213,29 +214,12 @@ export interface CoreHandlerDeps {
   runCommand(projectId: string, id: string): Promise<void>
 }
 
-/** Longest link we hand to the OS; a terminal can print megabytes of "URL" without a break. */
-const MAX_EXTERNAL_URL_LENGTH = 8192
-
 /**
- * Parse a link a renderer wants opened outside the app. Only http and https pass: `file:`,
- * `javascript:`, custom app schemes (`ssh:`, `vscode:`) and the like would let text printed in a
- * terminal (a build log, a file Claude was asked to cat) launch another program. The normalized
- * `href` is returned, not the raw string, so what is checked is exactly what is opened.
+ * Parse a link a renderer wants opened outside the app (shared/web-url.ts checkWebUrl, the same
+ * check as ctx.openExternal's): http and https only, the normalized `href` returned.
  */
 export function webUrlOf(value: unknown): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_EXTERNAL_URL_LENGTH) {
-    throw new Error('app.openExternal: url must be a non-empty string')
-  }
-  let parsed: URL
-  try {
-    parsed = new URL(value)
-  } catch {
-    throw new Error('app.openExternal: not a valid URL')
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('app.openExternal: only http and https links are opened')
-  }
-  return parsed.href
+  return checkWebUrl(value, { method: 'app.openExternal', maxLength: MAX_EXTERNAL_URL_LENGTH })
 }
 
 /** Register the handlers of this task. Later tasks add theirs here too, through the same router. */
