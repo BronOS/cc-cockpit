@@ -1,7 +1,7 @@
 // Fixture for test/e2e/reviewer-annotate.spec.ts: calls the bundled reviewer's annotate() in HTML
 // mode with markup a sanitizer must strip (script, an onerror handler, a style block and attribute,
 // a javascript: link, an iframe, a form, a remote image) next to what it must keep (a Jira panel, a
-// mention, an http link, a table, an image from an asset). The command "html" records the outcome
+// mention, http links (one with an entity-encoded query), a table, an image from an asset). The command "html" records the outcome
 // in $HOME/annotate-caller.json, which the test reads; the file is rewritten at activate, so the
 // test can tell the host is up.
 const fs = require('node:fs')
@@ -30,6 +30,7 @@ const HTML = `
 </div>
 <p>Ask <span class="mention">@Ann Lee</span> about it, see <a href="javascript:window.__pwned='link'">this</a>
   and <a href="https://example.atlassian.net/browse/PROJ-1" target="_top">the issue</a>.</p>
+<p>Attached: <a href="https://example.atlassian.net/secure/attachment/1/redirect-log.txt?a=1&amp;b=2">the redirect log of the second step</a></p>
 <img src="x" onerror="window.__pwned='onerror'" alt="broken">
 <iframe src="https://example.com"></iframe>
 <form><input name="q" value="typed"></form>

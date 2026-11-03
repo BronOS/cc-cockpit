@@ -558,6 +558,71 @@ test('annotate: bad input is refused before any overlay, with the reviewer prefi
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
 const PAGE_MESSAGE_MAX = 1040384 // OverlayHandle.post's limit (`ccc guide api`)
 
+test('annotate: a link click opens only an http(s) link of the caller\'s own html or aside, and shows a refusal', async () => {
+  const f = setup({ editorAvailable: false })
+  const opened = []
+  let refuse = null
+  f.ctx.openExternal = async (url) => {
+    opened.push(url)
+    if (refuse) throw refuse
+  }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const html = [
+    '<p><a title="a > b" href="https://x.atlassian.net/browse/PROJ-1">issue</a>',
+    // Entity-encoded, as an HTML serializer writes a query: the page's DOM has the decoded href.
+    "<A class=x HREF='https://x.example/att?id=1&amp;name=a&#x20;b&#39;s'>file</A>",
+    '<a href="javascript:alert(1)">js</a> <a href="data:text/html,hi">data</a>',
+    '<a href="mailto:ann@example.com">Ann</a></p>',
+  ].join('')
+  await f.provided.reviewer.annotate({ title: 'PROJ-1', html, aside: '<a href=https://x.example/side>side</a>', key: 'jira:PROJ-1' })
+  const h = f.handles[0]
+  assert.equal(h.posts[0].canOpenLinks, true)
+  const errors = () => h.posts.filter((m) => m.type === 'error').map((m) => m.message)
+  // What the page's DOM has: safeHref's normalized href.
+  h.say({ type: 'open-link', href: 'https://x.atlassian.net/browse/PROJ-1' })
+  h.say({ type: 'open-link', href: new URL("https://x.example/att?id=1&name=a b's").href })
+  h.say({ type: 'open-link', href: 'https://x.example/side' })
+  await wait(10)
+  assert.deepEqual(opened, ['https://x.atlassian.net/browse/PROJ-1', "https://x.example/att?id=1&name=a%20b%27s", 'https://x.example/side'])
+  assert.deepEqual(errors(), [])
+  // Not in what the caller sent, not http(s), or not a string: refused with a reason, nothing opened.
+  for (const href of ['https://evil.example/', 'javascript:alert(1)', 'data:text/html,hi', 'https://x.example/att?id=1&amp;name=a', 42, undefined]) {
+    h.say({ type: 'open-link', href })
+  }
+  h.say({ type: 'open-link', href: 'mailto:ann@example.com' })
+  await wait(10)
+  assert.equal(opened.length, 3)
+  assert.deepEqual(errors(), [...new Array(6).fill('Not opened: not a link of this document'), 'mailto links are not opened: ann@example.com'])
+  // The app's refusal (3 links per 10 s) is shown as the "Open in browser" button shows it.
+  refuse = new Error('openExternal: more than 3 links in 10 s; try again in a moment')
+  h.say({ type: 'open-link', href: 'https://x.atlassian.net/browse/PROJ-1' })
+  await wait(10)
+  assert.equal(errors().at(-1), 'Not opened in the browser: more than 3 links in 10 s; try again in a moment')
+  // A file review has no links of a caller: an open-link there opens nothing and says nothing.
+  await f.provided.reviewer.open('a.js')
+  const h2 = f.handles[1]
+  assert.equal(h2.posts[0].canOpenLinks, false)
+  h2.say({ type: 'open-link', href: 'https://x.atlassian.net/browse/PROJ-1' })
+  await wait(10)
+  assert.equal(opened.length, 4)
+  assert.equal(h2.posts.filter((m) => m.type === 'error').length, 0)
+  host.deactivate()
+})
+
+test('annotate: no ctx.openExternal, no link opening', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'P', html: '<a href="https://x.example/">x</a>', key: 'k' })
+  const h = f.handles[0]
+  assert.equal(h.posts[0].canOpenLinks, false)
+  h.say({ type: 'open-link', href: 'https://x.example/' })
+  await wait(10)
+  assert.equal(h.posts.filter((m) => m.type === 'error').length, 0)
+  host.deactivate()
+})
+
 test('annotate html: the init names the parts and assets; the page asks, then gets parts, each asset, assets-done', async () => {
   const f = setup({ editorAvailable: true })
   f.ctx.overlay.start = () => pageHandle(f)

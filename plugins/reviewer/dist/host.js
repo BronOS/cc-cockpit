@@ -227,6 +227,9 @@ exports.activate = (ctx) => {
         // The URL the caller gave, checked by annotateInput: the only one the header's "Open in
         // browser" button ever opens (the page says "open", never which URL).
         openUrl: a.url,
+        // The links of the caller's own html and aside, read from the strings it passed (built once,
+        // here): a link click opens one of these or nothing.
+        links: review.linkSet(a.html, a.aside),
         build: (d) => review.buildAnnotation(d, a),
         tooLarge: 'the text is too large to show (with escaping and its saved draft)',
       },
@@ -241,7 +244,9 @@ exports.activate = (ctx) => {
    * not wait for the person. `subject`: openKey (one overlay per key), draftKey, what (named in
    * notices), overlayTitle, sides, after (messages posted when the page asks for them with
    * { type: 'content' }, each within the page message limit; may be absent), editPath (null: no Edit),
-   * openUrl (the caller's url for the header's "Open in browser" button; absent or null: none), build(draft) -> { text, cut }, and
+   * openUrl (the caller's url for the header's "Open in browser" button; absent or null: none), links
+   * (review.linkSet of the caller's html and aside: the only links an `open-link` opens; absent or
+   * null: none, as in a file review), build(draft) -> { text, cut }, and
    * tooLarge (the refusal when the init message would not fit).
    */
   async function showReview(subject, { tabId } = {}) {
@@ -264,6 +269,7 @@ exports.activate = (ctx) => {
     // ctx.openExternal is in every app that bundles this plugin; checked anyway, so a copy run on an
     // older app hides the button instead of showing one that throws.
     const openUrl = subject.openUrl && typeof ctx.openExternal === 'function' ? subject.openUrl : null
+    const links = subject.links && typeof ctx.openExternal === 'function' ? subject.links : null
     const init = {
       type: 'init',
       sides,
@@ -273,6 +279,7 @@ exports.activate = (ctx) => {
       layout,
       canEdit: subject.editPath !== null && ctx.services.available('editor'),
       canOpenUrl: openUrl !== null,
+      canOpenLinks: links !== null,
     }
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
       throw new files.ReviewError(subject.tooLarge, { fallback: true })
@@ -368,6 +375,13 @@ exports.activate = (ctx) => {
         // The page names no URL (it shows the caller's content in a sandboxed frame): the host opens
         // the one it was given. The app refuses some (user:pass@, 3 per 10 s): the page says why.
         ctx.openExternal(openUrl).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
+      } else if (m.type === 'open-link' && links !== null) {
+        // A link clicked in the document or the details column. The href comes from the page, so it
+        // opens only when the caller's own html or aside has that link (review.linkVerdict), and only
+        // http(s): ctx.openExternal takes nothing else, so a mailto link is named, not opened.
+        const v = review.linkVerdict(links, m.href)
+        if (v.refuse) post({ type: 'error', message: v.refuse })
+        else ctx.openExternal(v.open).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
       } else if (m.type === 'tabs') {
         tabsInfo().then((t) => handle.post({ type: 'tabs', tabs: t }))
       } else if (m.type === 'content' && after) {

@@ -157,8 +157,17 @@ draft, buttons, picker) is as with `text`. The allowed elements, attributes and 
   walk needs to do (class allow-list, asset references). The page CSP blocks script anyway; the sanitizer does not
   count on it. Tests: `test/html.test.js` (the walk over fake nodes, links, images, anchors) and the app's
   `test/e2e/reviewer-annotate.spec.ts` (the real parser, with script, onerror, style, javascript: and an asset).
-- **Links** are not opened: a plugin page cannot open a URL outside the app (no plugin API for it) and the frame may
-  not navigate. A click shows the URL in the status line. A gap, if the need is real: an `openExternal` for plugins.
+- **Links** open through the host: the frame may not navigate, so a plain click (Enter, a middle click) posts
+  `{ type: 'open-link', href }` with the sanitized DOM's href, and the host calls `ctx.openExternal`. The page renders
+  a caller's HTML, so its href is not taken on trust (a sanitizer or page bug must not open a URL the caller never
+  gave): when annotate starts, the host reads the hrefs of the `<a>` tags in the caller's `html` and `aside` strings
+  (a linear scan of each tag's attributes, entities decoded as the parser decodes attribute values), normalizes them
+  with `new URL()` as `safeHref` does, and opens only an http(s) href in that set (`linkSet`, `linkVerdict` in
+  `dist/lib/review.js`). A link it reads differently from the browser (an exotic named entity) is refused: it fails
+  closed. `mailto:` is named in the status line, not opened (`ctx.openExternal` takes http(s) only). A click that ends
+  a drag-select is not a link click (`src/page/links.mjs`, `isPlainClick`: no movement past 4 px, no new selection,
+  no double click). Chromium starts no selection on a link (a press there drags the link), so a selection reaches
+  a link from the text around it; the check covers any other way a click on a link comes with a new selection.
 - **Images** are assets the caller hands over as base64 data: URLs (png, jpeg, gif, webp; never SVG, which is a
   document with script and links of its own); the page CSP allows `data:` images. `<img src="asset:<id>">` names
   one; any other src is dropped, so the page loads nothing from the network or the disk.

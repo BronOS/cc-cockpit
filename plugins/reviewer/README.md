@@ -51,8 +51,13 @@ allow-list (`src/page/sanitize.mjs`); no `innerHTML`. What survives:
   tone per element (the first named; the rest are dropped); on a `dl` only, `facts` (the key fields of an item: a
   compact grid of `dt` label / `dd` value pairs, muted small-caps labels, as many pairs per row as fit); `new` (highlighted: new since last time) and `old` (struck out); `attachment-list` (a row of
   boxes); `fields` (a key/value table with narrow keys); `muted`.
-- Links show where they go in the status line when clicked; they are not opened (a plugin page cannot open a URL
-  outside the app, and the overlay frame may not navigate).
+- Links in the document and the details column open in the system browser on a plain click, Enter on a focused link,
+  or a middle click (a drag-select that ends on a link makes a selection for a note and opens nothing). The page
+  posts the href; the host opens it with `ctx.openExternal` only when it is http(s) and a link of the caller's own
+  `html` or `aside` (read from those strings, entities decoded, both sides normalized with `new URL()`). Otherwise
+  the status line says why: `Not opened: not a link of this document`, or `mailto links are not opened: <address>`
+  (`ctx.openExternal` takes http(s) only); the app's own refusals (3 links per 10 s) show there too. A link without
+  a `title` shows its URL as a tooltip.
 - Images: only `<img src="asset:<id>">` (or `data-asset="<id>"`) naming one of `assets`; any other `src` is dropped
   and the image shows as `[image: <alt>]`. A click shows an image larger; a click or a key closes it (Esc closes the
   whole overlay, the draft kept: the app takes Esc before the page).

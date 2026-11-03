@@ -80,8 +80,9 @@ let the user retry after fixing it; it must not keep the secret in a file or in 
 - OAuth: `ctx.oauth.authorize({ authUrl, tokenUrl, clientId, clientSecret?, scopes })` opens the
   system browser, catches the loopback redirect and exchanges the code (PKCE). Both URLs are
   https. Keep the client secret in a secret field. Store the returned tokens with
-  `ctx.secrets`; renew with `ctx.oauth.refresh(spec, refreshToken)`. One `authorize` at a time,
-  5 a minute.
+  `ctx.secrets`; renew with `ctx.oauth.refresh(spec, refreshToken)`. One `authorize` at a time
+  (a new one cancels the pending one, so a "Sign in again" button works when the provider shows
+  an error page and never redirects), 5 a minute.
 - CLI login (`gh auth login`): open a terminal overlay with `ctx.overlay.open` and check the
   result with `ctx.exec`.
 

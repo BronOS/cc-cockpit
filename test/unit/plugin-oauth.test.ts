@@ -521,30 +521,28 @@ describe('HostApi oauth requests', () => {
     expect(fake.authorizes).toEqual([])
   })
 
-  it('one sign-in per plugin at a time; another plugin of the host is not blocked', async () => {
+  it('a new sign-in replaces the pending one of the same plugin; another plugin of the host is not touched', async () => {
     const first = authorize({ pluginId: PLUGIN, spec: RAW_SPEC })
-    await vi.waitFor(() => expect(fake.authorizes).toHaveLength(1))
-    await expect(authorize({ pluginId: PLUGIN, spec: RAW_SPEC })).rejects.toThrow('already in progress')
     const other = authorize({ pluginId: OTHER, spec: RAW_SPEC })
     await vi.waitFor(() => expect(fake.authorizes).toHaveLength(2))
-    fake.authorizes[0]!.resolve(TOKENS)
-    fake.authorizes[1]!.resolve(TOKENS)
-    await Promise.all([first, other])
-    // Finished: the next one may start.
-    const again = authorize({ pluginId: PLUGIN, spec: RAW_SPEC })
+    // The user is stuck on a provider error page (no redirect ever comes) and clicks Sign in again.
+    const second = authorize({ pluginId: PLUGIN, spec: RAW_SPEC })
+    await expect(first).rejects.toThrow('oauth.authorize: sign-in was cancelled')
+    expect(fake.authorizes[0]!.signal.aborted).toBe(true)
+    expect(fake.authorizes[1]!.signal.aborted).toBe(false)
     await vi.waitFor(() => expect(fake.authorizes).toHaveLength(3))
+    fake.authorizes[1]!.resolve(TOKENS)
     fake.authorizes[2]!.resolve(TOKENS)
-    await again
+    await expect(Promise.all([second, other])).resolves.toEqual([TOKENS, TOKENS])
   })
 
-  it(`at most ${MAX_AUTHORIZES_PER_WINDOW} sign-ins a minute per plugin; refused specs and concurrent calls cost nothing`, async () => {
+  it(`at most ${MAX_AUTHORIZES_PER_WINDOW} sign-ins a minute per plugin, replacements included; refused specs cost nothing`, async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(0)
     await expect(authorize({ pluginId: PLUGIN, spec: { ...RAW_SPEC, clientId: '' } })).rejects.toThrow('clientId')
     for (let i = 0; i < MAX_AUTHORIZES_PER_WINDOW; i++) {
       const pending = authorize({ pluginId: PLUGIN, spec: RAW_SPEC })
       await vi.waitFor(() => expect(fake.authorizes).toHaveLength(i + 1))
-      await expect(authorize({ pluginId: PLUGIN, spec: RAW_SPEC })).rejects.toThrow('already in progress')
       fake.authorizes[i]!.resolve(TOKENS)
       await pending
     }
@@ -580,18 +578,23 @@ describe('HostApi oauth requests', () => {
     await vi.waitFor(() => expect(fake.authorizes).toHaveLength(2))
     await vi.waitFor(() => expect(fake.refreshes).toHaveLength(2))
     api.contextDisposed({ pluginId: PLUGIN })
-    // The next copy's first sign-in, right behind the event, is not "already in progress".
+    // The next copy's first sign-in, right behind the event, starts at once.
     const next = authorize({ pluginId: PLUGIN, spec: RAW_SPEC })
     await expect(one).rejects.toThrow('oauth.authorize: sign-in was cancelled')
     await expect(oneRefresh).rejects.toThrow('oauth.refresh: the token request was cancelled')
     expect(fake.authorizes[1]!.signal.aborted).toBe(false)
     expect(fake.refreshes[1]!.signal!.aborted).toBe(false)
     await vi.waitFor(() => expect(fake.authorizes).toHaveLength(3))
-    // The old call's finally does not drop the new copy's entry.
-    await expect(authorize({ pluginId: PLUGIN, spec: RAW_SPEC })).rejects.toThrow('already in progress')
-    for (const a of fake.authorizes.slice(1)) a.resolve(TOKENS)
+    // The old call's finally does not drop the new copy's entry: a further sign-in still finds
+    // `next` pending and replaces it.
+    const last = authorize({ pluginId: PLUGIN, spec: RAW_SPEC })
+    await expect(next).rejects.toThrow('cancelled')
+    expect(fake.authorizes[2]!.signal.aborted).toBe(true)
+    await vi.waitFor(() => expect(fake.authorizes).toHaveLength(4))
+    fake.authorizes[1]!.resolve(TOKENS)
+    fake.authorizes[3]!.resolve(TOKENS)
     fake.refreshes[1]!.resolve(TOKENS)
-    await expect(Promise.all([two, twoRefresh, next])).resolves.toEqual([TOKENS, TOKENS, TOKENS])
+    await expect(Promise.all([two, twoRefresh, last])).resolves.toEqual([TOKENS, TOKENS, TOKENS])
     // Nothing pending, an unknown id, junk: no-ops.
     api.contextDisposed({ pluginId: PLUGIN })
     api.contextDisposed({ pluginId: 'b.elsewhere' })

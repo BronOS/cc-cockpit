@@ -147,7 +147,7 @@ export const MAX_OPEN_OVERLAYS = 3
  */
 export const SECRET_WRITE_WINDOW_MS = 60_000
 export const MAX_SECRET_WRITES_PER_WINDOW = 60
-/** ctx.oauth.authorize per plugin: each one opens a browser tab. One pending at a time besides. */
+/** ctx.oauth.authorize per plugin: each one opens a browser tab. One pending at a time besides: a new one replaces it. */
 export const AUTHORIZE_WINDOW_MS = 60_000
 export const MAX_AUTHORIZES_PER_WINDOW = 5
 /**
@@ -1126,10 +1126,14 @@ export class HostApi {
     const checked = this.checked('oauth.authorize', () => checkOAuthSpec(spec))
     // Synchronous up to the authorize call below: the entry is set before the host's next message
     // (a `plugin.disposed` for this copy) can be handled.
-    if (this.signIns.has(plugin.id)) throw new Error('oauth.authorize: a sign-in of this plugin is already in progress')
     if (!this.authorizes.take(plugin.id)) {
       throw new Error(`oauth.authorize: more than ${MAX_AUTHORIZES_PER_WINDOW} sign-ins in ${AUTHORIZE_WINDOW_MS / 1000} s`)
     }
+    // A new sign-in replaces a pending one of the same plugin (its call rejects as cancelled). A
+    // provider's error page ("Access blocked", a closed tab) never redirects to the loopback, so
+    // refusing here left the user stuck for the 5-minute timeout with no way to try again. Still one
+    // at a time (one loopback, one browser tab), and the budget above bounds how often it can happen.
+    this.signIns.get(plugin.id)?.abort()
     const controller = new AbortController()
     this.signIns.set(plugin.id, controller)
     try {

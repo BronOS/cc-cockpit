@@ -148,7 +148,7 @@ behind it are in [design.md](design.md).
   highlighted again when the draft reopens. No header row repeats the title (the overlay's title bar has it);
   the caller's `url` is an open-in-browser icon at the end of the document's first heading (the link opens in the
   system browser); key fields can show as a compact grid with coloured lozenges and name chips, or in a details column at the right
-  (`aside`); the notes are a compact list under the comment, with no sidebar; links inside the text are shown, not opened. Esc closes the review even while an
+  (`aside`); the notes are a compact list under the comment, with no sidebar; links in the HTML and the details column open in the system browser on a click (http and https only, and only links present in what the caller sent; a drag-select ending on a link does not open it). Esc closes the review even while an
   image is shown larger. The tab picker starts on the tab you are looking at unless the caller names one.
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour

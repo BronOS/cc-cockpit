@@ -305,3 +305,35 @@ test('buildAnnotation: HTML notes read "On «quote»: note" in text order, quote
   assert.ok(short.text.length <= MAX_MESSAGE)
   assert.match(short.text, /1\. On «word0 word1 [^»]* …»: n+/)
 })
+
+test('linkHrefs reads <a> hrefs as the HTML parser does: quotes, no quotes, entities, the first href', () => {
+  const { linkHrefs } = require('../dist/lib/review')
+  assert.deepEqual(
+    linkHrefs(
+      [
+        '<a href="https://a/?x=1&amp;y=2">',
+        "<A TITLE='q > r' Href='https://b/&quot;&#39;&#x41;&#66;'>",
+        '<a href=https://c/x>',
+        '<a href="https://d/" href="https://evil/">',
+        '<a\nhref = "https://e/?a=1&b=2&ltx=3&lt=4&lt">',
+        '<abbr href="https://not-a-link/">',
+        '<a title="no href">',
+        '<a href="https://f/&copy;&#0;&#x110000;',
+      ].join(''),
+    ),
+    ['https://a/?x=1&y=2', 'https://b/"\'AB', 'https://c/x', 'https://d/', 'https://e/?a=1&b=2&ltx=3&lt=4<', 'https://f/&copy;\ufffd\ufffd'],
+  )
+  assert.deepEqual(linkHrefs(null), [])
+})
+
+test('linkSet and linkVerdict: normalized both ways, http(s) opened, mailto named, the rest refused', () => {
+  const { linkSet, linkVerdict } = require('../dist/lib/review')
+  const set = linkSet('<a href=" HTTPS://X.example/a b ">x</a><a href="mailto:a%40b@c.d">m</a><a href="javascript:x">j</a>', null, '<a href="/rel">r</a>')
+  assert.deepEqual([...set], ['https://x.example/a%20b', 'mailto:a%40b@c.d', 'javascript:x'])
+  assert.deepEqual(linkVerdict(set, 'https://x.example/a%20b'), { open: 'https://x.example/a%20b' })
+  assert.deepEqual(linkVerdict(set, 'https://x.example/a b'), { open: 'https://x.example/a%20b' })
+  assert.deepEqual(linkVerdict(set, 'mailto:a%40b@c.d'), { refuse: 'mailto links are not opened: a@b@c.d' })
+  for (const href of ['javascript:x', '/rel', 'https://y.example/', '', null, 'x'.repeat(10000)]) {
+    assert.deepEqual(linkVerdict(set, href), { refuse: 'Not opened: not a link of this document' })
+  }
+})

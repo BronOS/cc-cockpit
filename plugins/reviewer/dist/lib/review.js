@@ -390,6 +390,132 @@ function splitParts(s, maxJson = MAX_PART_JSON) {
   return parts
 }
 
+// ---- links of an annotated text ----
+//
+// A click on a link in annotate's document or details column posts { type: 'open-link', href } with
+// the href of the page's sanitized DOM. The page renders a caller's HTML, so the host does not take
+// that href on trust (a sanitizer bug, a page bug): it opens only a link the caller's own `html` or
+// `aside` string has. The set is built here from the strings the caller passed, read the way the
+// browser reads an attribute (entity references decoded), and both sides are normalized by `new
+// URL()`, as the page's safeHref (src/page/sanitize.mjs) does. A link this reads differently from
+// the browser (an exotic named entity) is refused, never opened by mistake: it fails closed.
+
+const MAX_LINK_HREF = 2048 // safeHref's MAX_HREF: a longer href is not rendered as a link
+
+// The named references decoded here: the ones a URL plausibly carries (names are case-sensitive;
+// `&AMP;` is a name of its own). All but `apos` are legacy names the browser also takes without the
+// `;`, except inside an attribute when a letter, digit or `=` follows: `?a=1&ltx=2` stays as written.
+const NAMED_ENTITIES = { amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', quot: '"', QUOT: '"', apos: "'", nbsp: '\u00a0' }
+const LEGACY_ENTITIES = new Set(['amp', 'AMP', 'lt', 'LT', 'gt', 'GT', 'quot', 'QUOT', 'nbsp'])
+
+const codePoint = (n) => (n === 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff) ? '\ufffd' : String.fromCodePoint(n))
+
+/** An attribute value as the HTML parser hands it to the DOM: &amp; &quot; &#39; &#x26; ... decoded. */
+function decodeAttr(v) {
+  return v.replace(/&(?:#[xX]([0-9a-fA-F]{1,8});?|#([0-9]{1,10});?|([A-Za-z]{2,8})(;?))/g, (m, hex, dec, name, semi, at, s) => {
+    if (hex !== undefined) return codePoint(parseInt(hex, 16))
+    if (dec !== undefined) return codePoint(parseInt(dec, 10))
+    if (!Object.hasOwn(NAMED_ENTITIES, name)) return m
+    if (semi) return NAMED_ENTITIES[name]
+    if (!LEGACY_ENTITIES.has(name)) return m
+    const next = s[at + m.length]
+    return next !== undefined && /[A-Za-z0-9=]/.test(next) ? m : NAMED_ENTITIES[name]
+  })
+}
+
+/** An href normalized as the page's safeHref has it (trimmed, `new URL().href`), or null. */
+function normalizeHref(raw) {
+  if (typeof raw !== 'string') return null
+  const v = raw.trim()
+  if (!v || v.length > MAX_LINK_HREF) return null
+  try {
+    return new URL(v).href
+  } catch {
+    return null
+  }
+}
+
+const SPACE = /[\t\n\f\r ]/
+
+/**
+ * The href values of the `<a>` tags in an HTML string, entity-decoded. A linear scan of each tag's
+ * attributes as the HTML tokenizer reads them (quoted, unquoted, no value; the first `href` wins, as a
+ * duplicate attribute is dropped), so a `>` inside a quoted title does not end the tag early. An `<a`
+ * in a comment or a script counts too: the caller wrote it, so that is no URL from elsewhere.
+ */
+function linkHrefs(html) {
+  const out = []
+  if (typeof html !== 'string') return out
+  const s = html
+  const tag = /<a[\t\n\f\r />]/gi
+  let m
+  while ((m = tag.exec(s))) {
+    let i = m.index + 2
+    let href = null
+    for (;;) {
+      while (i < s.length && (SPACE.test(s[i]) || s[i] === '/')) i++
+      if (i >= s.length || s[i] === '>') break
+      let j = i + 1 // a name may start with `=`
+      while (j < s.length && !SPACE.test(s[j]) && s[j] !== '/' && s[j] !== '>' && s[j] !== '=') j++
+      const name = s.slice(i, j).toLowerCase()
+      i = j
+      while (i < s.length && SPACE.test(s[i])) i++
+      let value = null
+      if (s[i] === '=') {
+        i++
+        while (i < s.length && SPACE.test(s[i])) i++
+        const q = s[i]
+        if (q === '"' || q === "'") {
+          const end = s.indexOf(q, i + 1)
+          const stop = end === -1 ? s.length : end
+          value = s.slice(i + 1, stop)
+          i = stop + 1
+        } else {
+          j = i
+          while (j < s.length && !SPACE.test(s[j]) && s[j] !== '>') j++
+          value = s.slice(i, j)
+          i = j
+        }
+      }
+      if (name === 'href' && href === null) href = value === null ? '' : value
+    }
+    tag.lastIndex = Math.max(tag.lastIndex, i)
+    if (href !== null) out.push(decodeAttr(href))
+  }
+  return out
+}
+
+/** The normalized hrefs of the links in the given HTML strings (null entries skipped). */
+function linkSet(...htmls) {
+  const set = new Set()
+  for (const html of htmls) {
+    for (const raw of linkHrefs(html)) {
+      const href = normalizeHref(raw)
+      if (href) set.add(href)
+    }
+  }
+  return set
+}
+
+/**
+ * What to do with an `open-link` from the page: { open: url } for an http(s) link of the caller's,
+ * else { refuse: why } for the status line. `links` is linkSet() of what the caller sent.
+ */
+function linkVerdict(links, href) {
+  const norm = typeof href === 'string' && href.length <= 4 * MAX_LINK_HREF ? normalizeHref(href) : null
+  if (!norm || !links.has(norm)) return { refuse: 'Not opened: not a link of this document' }
+  const u = new URL(norm)
+  if (u.protocol === 'http:' || u.protocol === 'https:') return { open: norm }
+  if (u.protocol === 'mailto:') {
+    let address = u.pathname
+    try {
+      address = decodeURIComponent(address)
+    } catch {}
+    return { refuse: `mailto links are not opened: ${address}` }
+  }
+  return { refuse: 'Not opened: not a link of this document' }
+}
+
 module.exports = {
   draftKey,
   cleanDraft,
@@ -401,6 +527,9 @@ module.exports = {
   annotationKey,
   buildAnnotation,
   splitParts,
+  linkHrefs,
+  linkSet,
+  linkVerdict,
   MAX_MESSAGE,
   MAX_NOTE_TEXT,
   MAX_GLOBAL,

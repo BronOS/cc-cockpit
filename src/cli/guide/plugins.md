@@ -210,7 +210,7 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
   and one kept draft per key; default from the title) 1-200 of letters, digits and `._:@#+=~/-`.
 - `annotate({ title, html, assets?, url?, key?, tabId? })`: the same with HTML (at most 2 MiB) in place of `text`
   (exactly one of the two). The page sanitizes it against an allow-list: headings, paragraphs, lists, `pre`/`code`,
-  blockquote, tables, links (http(s)/mailto, shown but not opened), `strong`/`em`/`s`/`u`/`sub`/`sup`, `span`/`div`,
+  blockquote, tables, links (http(s)/mailto; see below), `strong`/`em`/`s`/`u`/`sub`/`sup`, `span`/`div`,
   `details`/`summary`, `figure`/`figcaption`, `dl`/`dt`/`dd`; attributes `class` (an allow-list: `jira-panel`,
   `jira-panel-info`, `-note`, `-warning`, `-error`, `-success`, `mention`, `card`, `card-header`, `meta`, `new`,
   `old`, `status`, `lozenge` and `lozenge-info`/`-success`/`-warning`/`-error`, `attachment-list`, `fields`,
@@ -225,6 +225,11 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
   given and sanitized with the same allow-list (images name the same `assets`). A `dl.facts` there is a vertical list,
   each label above its value: put the key fields (status, assignee, priority) there and the description in the body.
   Notes go on the body only.
+- Links in `html` and `aside` open in the system browser on a click (or Enter, or a middle click; a drag-select
+  that ends on one does not): http and https only, and only a link present in the `html` or `aside` you sent (the
+  host matches the page's href against your strings, entities decoded), through the reviewer's `ctx.openExternal`
+  (3 per 10 s; a refusal shows in the overlay's status line). A `mailto:` link is named there, not opened. Each link
+  shows its URL as a tooltip unless it has a `title`.
 
 Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
 `On «quote»: note` for HTML. The reviewer README has the details and a Jira example.

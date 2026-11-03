@@ -1,7 +1,7 @@
 // `ctx.oauth` in main (design §6 "Plugin sign-ins and secrets"): the authorization code + PKCE
 // sign-in a plugin asks for, and refreshing its access token. Built on the loopback, PKCE and
 // token-response pieces of oauth.ts; host-api.ts in front of it checks which plugin asks, keeps
-// one `authorize` per plugin at a time and 5 a minute, and aborts a pending one when the host stops.
+// one `authorize` per plugin at a time (a new one replaces the pending one) and 5 a minute, and aborts a pending one when the host stops.
 //
 // The plugin owns everything here: the client (id, secret), the URLs and, afterwards, the tokens
 // (it stores them with ctx.secrets). Main keeps nothing between calls. What main adds is what a
@@ -172,7 +172,7 @@ export class PluginOAuth implements PluginOAuthApi {
         })
       // Raced with the code, never awaited alone: an openExternal that never settles would leave
       // the call deaf to the 5-minute timeout and to an abort (both reject loopback.code), and
-      // host-api.ts would refuse every later sign-in of the plugin as "already in progress". A
+      // host-api.ts would keep the plugin's sign-in slot taken until the next one replaced it. A
       // browser that comes back before openExternal settles finishes the sign-in as usual.
       code = await Promise.race([opened.then(() => loopback.code), loopback.code])
     } finally {

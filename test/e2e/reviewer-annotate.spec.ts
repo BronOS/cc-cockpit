@@ -3,7 +3,8 @@
 // link, an iframe, a form and a remote image next to the content it must keep, plus one image as
 // an asset. The overlay page parses it inertly and rebuilds it from an allow-list
 // (plugins/reviewer/src/page/sanitize.mjs); this checks the DOM it ended up with in the real
-// Chromium parser, that the asset image loads, that a link does not navigate, and that a note on a
+// Chromium parser, that the asset image loads, that a link click opens the link through the host's
+// ctx.openExternal without navigating the frame (a drag-select ending on a link does not), and that a note on a
 // selection (made with the floating "Add note" under it) is highlighted again when the draft reopens,
 // and that the "Open in browser" icon at the end of the document's h1 opens the caller's url through
 // ctx.openExternal. The page has no header row in annotate mode: the overlay's title bar names it.
@@ -87,10 +88,9 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
       return Promise.resolve()
     }
   })
+  const opened = (): Promise<string[]> => cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened ?? [])
   await openUrl.click()
-  await expect
-    .poll(() => cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened ?? []))
-    .toEqual(['https://example.atlassian.net/browse/PROJ-1'])
+  await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1'])
 
   // No notes sidebar: the only column beside the document is the caller's details.
   await expect(frame.locator('main > aside')).toHaveCount(1)
@@ -127,9 +127,12 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await expect(doc.locator('td')).toHaveAttribute('colspan', '2')
   // The javascript: link keeps its text but no href; the https one keeps its href.
   const links = doc.locator('a')
-  await expect(links).toHaveCount(2)
+  await expect(links).toHaveCount(3)
   expect(await links.nth(0).getAttribute('href')).toBeNull()
   await expect(links.nth(1)).toHaveAttribute('href', 'https://example.atlassian.net/browse/PROJ-1')
+  // The caller wrote `?a=1&amp;b=2`: the DOM has it decoded, and the host matches it to the caller's markup.
+  const attachment = 'https://example.atlassian.net/secure/attachment/1/redirect-log.txt?a=1&b=2'
+  await expect(links.nth(2)).toHaveAttribute('href', attachment)
   // A remote image is not loaded: its alt text stands in.
   await expect(doc.locator('.img-missing')).toHaveText('[image: broken]')
   // Nothing ran: no script, no handler.
@@ -142,10 +145,31 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await expect(doc.locator('.asset-box:has(img[data-asset="never-sent"])')).toHaveClass(/failed/)
   await expect(doc.locator('.asset-box:has(img[data-asset="shot-1"])')).not.toHaveClass(/pending|failed/)
 
-  // A link click stays in the page and says where it goes.
+  // A link click opens it through the reviewer host's ctx.openExternal (only a link the caller's own
+  // html has); the frame stays where it was. A link shows its URL as a tooltip. (openExternal takes 3
+  // links per 10 s: this spec opens exactly 3.)
+  await expect(links.nth(1)).toHaveAttribute('title', 'https://example.atlassian.net/browse/PROJ-1')
   await links.nth(1).click()
-  await expect(frame.locator('#status')).toHaveText('Link (not opened from here): https://example.atlassian.net/browse/PROJ-1')
+  await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1', 'https://example.atlassian.net/browse/PROJ-1'])
+  await expect(frame.locator('#status')).toHaveText('')
   await expect(doc).toContainText('Users land on')
+  // A drag-select from the text before the link to its end makes a selection for a note and opens nothing.
+  await links.nth(2).scrollIntoViewIfNeeded()
+  const linkBox = (await links.nth(2).boundingBox())!
+  await page.mouse.move(linkBox.x - 50, linkBox.y + linkBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(linkBox.x + linkBox.width - 3, linkBox.y + linkBox.height / 2, { steps: 8 })
+  await page.mouse.up()
+  expect(await doc.evaluate((root) => root.ownerDocument.getSelection()!.toString().length)).toBeGreaterThan(10)
+  await expect(frame.locator('#add-note')).toBeVisible()
+  await page.waitForTimeout(500)
+  expect(await opened()).toHaveLength(2)
+  // Enter on the focused link opens it too.
+  await doc.evaluate((root) => root.ownerDocument.getSelection()!.removeAllRanges())
+  await links.nth(2).focus()
+  await links.nth(2).press('Enter')
+  await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1', 'https://example.atlassian.net/browse/PROJ-1', attachment])
+  await expect(frame.locator('#status')).toHaveText('')
   // The image opens larger; a click closes it.
   await shot.click()
   await expect(frame.locator('#lightbox')).toBeVisible()

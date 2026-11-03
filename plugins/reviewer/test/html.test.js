@@ -218,3 +218,27 @@ test('the page anchors carry the host caps', () => {
   const ctx = Number(/export const CONTEXT = (\d+)\n/.exec(src)[1])
   assert.ok(ctx <= MAX_ANCHOR_CONTEXT)
 })
+
+test('isPlainClick: a click opens a link; a drag-select, a double click or a moved press does not', async () => {
+  const { isPlainClick, selectionKey, CLICK_SLOP } = await load('links.mjs')
+  const n1 = {}
+  const n2 = {}
+  const none = selectionKey({ rangeCount: 0 })
+  assert.equal(none, null)
+  const caret = selectionKey({ rangeCount: 1, anchorNode: n1, anchorOffset: 2, focusNode: n1, focusOffset: 2 })
+  const picked = selectionKey({ rangeCount: 1, anchorNode: n1, anchorOffset: 2, focusNode: n2, focusOffset: 5 })
+  const down = { x: 10, y: 10, sel: none }
+  assert.equal(isPlainClick(down, { x: 10, y: 10, sel: caret, collapsed: true, detail: 1 }), true)
+  assert.equal(isPlainClick(down, { x: 10 + CLICK_SLOP, y: 10, sel: caret, collapsed: true, detail: 1 }), true)
+  // A drag-select that ends on the link: moved, and a selection it did not start with.
+  assert.equal(isPlainClick(down, { x: 80, y: 10, sel: picked, collapsed: false, detail: 1 }), false)
+  // A short drag that still picked a character.
+  assert.equal(isPlainClick(down, { x: 12, y: 10, sel: picked, collapsed: false, detail: 1 }), false)
+  // An earlier selection the click left as it was (a click inside it).
+  assert.equal(isPlainClick({ x: 1, y: 1, sel: picked }, { x: 1, y: 1, sel: [...picked], collapsed: false, detail: 1 }), true)
+  assert.equal(isPlainClick(down, { x: 10, y: 10, sel: caret, collapsed: true, detail: 2 }), false)
+  assert.equal(isPlainClick(down, { x: 10, y: 10 + CLICK_SLOP + 1, sel: caret, collapsed: true, detail: 1 }), false)
+  // No press seen in the content; a keyboard (detail 0) click.
+  assert.equal(isPlainClick(null, { x: 0, y: 0, sel: none, collapsed: true, detail: 1 }), false)
+  assert.equal(isPlainClick(null, { x: 0, y: 0, sel: picked, collapsed: false, detail: 0 }), true)
+})

@@ -909,7 +909,8 @@ ignored and can be deleted by hand.) Core keeps only what main alone can do:
 - **`ctx.oauth`**: optional helper wrapping the loopback + PKCE code. `authorize(spec)` opens
   the system browser, catches the loopback redirect and exchanges the code; `refresh(spec,
   refreshToken)` gets a fresh access token. `spec` is `{ authUrl, tokenUrl, clientId,
-  clientSecret?, scopes }`; both URLs must be https. One `authorize` per plugin at a time and 5 a
+  clientSecret?, scopes }`; both URLs must be https. One `authorize` per plugin at a time (a new one cancels the pending one: a provider error page
+  never redirects, so the user can retry at once) and 5 a
   minute, counted per plugin per project (the limit lives in the project's host API, not
   app-wide). Each call belongs to the plugin's ctx that made it: when that ctx is disposed, for
   any reason (deactivate, unload or reload, a failed or timed-out `activate`, the host

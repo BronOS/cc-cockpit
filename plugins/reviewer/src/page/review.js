@@ -14,6 +14,8 @@
 // asks for with { type: 'content' }, followed by one { type: 'asset', id, dataUrl } per image and
 // { type: 'assets-done' }. With `sides.aside` (annotate's details column, text or html) the page asks
 // too, and { type: 'aside', html } comes first: sanitized the same way, shown in a column at the right. Its notes anchor on the selected text (anchor.mjs), not on lines.
+// A plain click on a link in either (or Enter on it, or a middle click) posts { type: 'open-link', href }
+// when the init says `canOpenLinks`; the host opens it only when the caller's own html or aside has it.
 // The page shows the two sides, collects notes and the global comment, and posts
 //   { type: 'draft', draft }                          on every change;
 //   { result: { action: 'discuss'|'new'|'close', tabId?, draft } }   from the buttons.
@@ -48,6 +50,7 @@ import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile'
 import { lua } from '@codemirror/legacy-modes/mode/lua'
 import { sanitizeTree, render, isImageDataUrl } from './sanitize.mjs'
 import { makeAnchor, locate } from './anchor.mjs'
+import { isPlainClick, selectionKey } from './links.mjs'
 
 /* global ccPanel */
 
@@ -176,6 +179,7 @@ const state = {
   // Unified view: removed lines are a widget the editor does not treat as text, so its selection
   // never sees them. A click or selection inside one picks it here instead (pickDeleted).
   oldPick: null, // { from, to, quote, el }
+  canOpenLinks: false, // the host opens links of the caller's content (it has ctx.openExternal)
 }
 
 const $ = (id) => document.getElementById(id)
@@ -614,6 +618,7 @@ function renderHtml(source) {
   htmlView.full = full
   htmlView.texts = texts
   showAssets(htmlView.body)
+  prepareLinks(htmlView.body)
   placeOpenUrl() // after the text walk: the button holds no text, so the offsets would not move anyway
   refreshHighlights() // finds the draft's notes first: the list says which were not found
   renderNotes()
@@ -765,22 +770,62 @@ function scrollToHtml(note) {
   if (target) target.scrollIntoView({ block: 'center' })
 }
 
-// Links: the page does not open a URL from the caller's content (the frame may not navigate, and
-// only the caller's own `url` goes to the browser), so a click shows where the link goes instead.
-// The same in the document and in the details column.
+// Links: the frame may not navigate, so a link of the caller's content opens through the host: a
+// plain click, Enter on a focused link or a middle click posts { type: 'open-link', href } with the
+// href of the sanitized DOM, and the host opens it in the browser only when the caller's own html or
+// aside has that link, and only http(s); it answers with the reason otherwise. The same in the
+// document and in the details column. A click that ends a drag-select is the end of a selection for
+// a note, not a request to leave (isPlainClick). Without ctx.openExternal the click only shows where
+// the link goes.
+
+/** Each link shows its URL as a tooltip unless it has a title of its own. */
+function prepareLinks(root) {
+  for (const a of root.querySelectorAll('a[href]')) if (!a.title) a.title = a.getAttribute('href')
+}
+
+function openLink(a) {
+  const href = a.getAttribute('href')
+  if (!state.canOpenLinks) {
+    $('status').textContent = `Link (not opened from here): ${href}`
+    return
+  }
+  $('status').textContent = ''
+  ccPanel.post({ type: 'open-link', href })
+}
+
+let linkDown = null // { x, y, sel } at the last mousedown in the document or the details column
+const selectionNow = () => selectionKey(document.getSelection())
+function plainClick(e) {
+  const sel = document.getSelection()
+  return isPlainClick(linkDown, { x: e.clientX, y: e.clientY, detail: e.detail, collapsed: !sel || sel.isCollapsed, sel: selectionNow() })
+}
+
 for (const root of assetRoots()) {
+  root.addEventListener('mousedown', (e) => {
+    linkDown = { x: e.clientX, y: e.clientY, sel: selectionNow() }
+  })
   root.addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a')
     if (a) {
       e.preventDefault()
-      $('status').textContent = a.href ? `Link (not opened from here): ${a.href}` : ''
+      if (a.hasAttribute('href') && plainClick(e)) openLink(a)
       return
     }
     const img = e.target.closest && e.target.closest('.asset-box:not(.pending):not(.failed) > img')
     if (img) openLightbox(img)
   })
   root.addEventListener('auxclick', (e) => {
-    if (e.target.closest && e.target.closest('a')) e.preventDefault()
+    const a = e.target.closest && e.target.closest('a')
+    if (!a) return
+    e.preventDefault()
+    if (e.button === 1 && a.hasAttribute('href') && plainClick(e)) openLink(a)
+  })
+  // Enter on the focused link itself (not on the "Open in browser" icon inside a linked h1). Taken in
+  // keydown, so the browser's own activation click does not follow.
+  root.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing || !(e.target instanceof Element) || !e.target.matches('a[href]')) return
+    e.preventDefault()
+    openLink(e.target)
   })
 }
 
@@ -793,6 +838,7 @@ function renderAside(m) {
   const parsed = new DOMParser().parseFromString(m.html, 'text/html')
   $('details-body').replaceChildren(render(sanitizeTree(parsed.body), document))
   showAssets($('details-body'))
+  prepareLinks($('details-body'))
 }
 
 // The lightbox: an image shown larger above the review. A click or a key closes it; Esc is not
@@ -923,6 +969,7 @@ function init(m) {
   state.tabs = m.tabs || []
   state.tabId = m.tabId || null
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
+  state.canOpenLinks = m.canOpenLinks === true
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   const s = state.sides
   $('path').textContent = s.path
