@@ -49,6 +49,13 @@ export interface SessionDetail {
   status: TabStatus
   tool?: string
   lastPrompt?: string
+  /** The topic Claude set as its terminal title; the tab's name when present (else "Claude N"). */
+  title?: string
+  /**
+   * A one-line summary of the session (the app setting `sessionGist`, written by Claude Haiku
+   * after a turn); shown under the name in place of the last prompt. Absent while the setting is off.
+   */
+  gist?: string
   notes: string[]
   steps?: { done: number; total: number }
   files: string[]
@@ -489,6 +496,8 @@ export interface AppearanceView {
   tabExit: TabExitBehavior
   /** Open a Claude tab when a project opens empty (AppSettings.claudeTabOnOpen, default applied). */
   claudeTabOnOpen: boolean
+  /** Haiku writes a one-line gist of each Claude session (AppSettings.sessionGist, default off). */
+  sessionGist: boolean
   /** Ask before closing a tab that is still running (AppSettings.confirmTabClose, default applied). */
   confirmTabClose: boolean
   /** Which end of each tab the close button sits at (AppSettings.tabCloseSide, default applied). */
@@ -737,6 +746,8 @@ export interface IpcInvokeMap {
   'settings.tabExitSet': { req: { value: TabExitBehavior }; res: void }
   /** Open a Claude tab when a project window opens with no tabs (AppSettings.claudeTabOnOpen). */
   'settings.claudeTabOnOpenSet': { req: { value: boolean }; res: void }
+  /** Turn the session gist on or off (AppSettings.sessionGist). Off cancels runs and removes every gist. */
+  'settings.sessionGistSet': { req: { value: boolean }; res: void }
   /**
    * Whether closing a running tab asks first (AppSettings.confirmTabClose, default applied). Read
    * by the tab bar at each close, like `tabs.commands` at each menu open, so a change made in any
@@ -994,6 +1005,7 @@ export const INVOKE_CHANNELS = [
   'settings.keySet',
   'settings.tabExitSet',
   'settings.claudeTabOnOpenSet',
+  'settings.sessionGistSet',
   'settings.confirmTabClose',
   'settings.confirmTabCloseSet',
   'settings.tabCloseSideSet',

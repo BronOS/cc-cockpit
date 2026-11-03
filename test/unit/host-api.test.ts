@@ -199,9 +199,12 @@ describe('sessions.list', () => {
     tabs.create(B, { kind: 'claude' })
     registry.applyHook(mine.id, 'UserPromptSubmit', { prompt: 'fix it' })
     registry.send(mine.id, 'queued text')
+    registry.tabOutput(mine.id, '\x1b]0;✳ Fixing it\x07')
+    // The gist is main's (the Sessions panel's), not part of the plugin API; nor are the recent prompts.
+    registry.setGist(mine.id, 'a gist')
     const list = (await hostA()('sessions.list', {})) as Record<string, unknown>[]
     expect(list).toEqual([
-      { tabId: mine.id, status: 'working', cwd: join(projA, 'sub'), lastPrompt: 'fix it', notes: [], files: [] }
+      { tabId: mine.id, status: 'working', cwd: join(projA, 'sub'), lastPrompt: 'fix it', title: 'Fixing it', notes: [], files: [] }
     ])
     // Nothing of main's bookkeeping: the queue, the project id, the delivering flag.
     expect(Object.keys(list[0]!)).not.toContain('queue')

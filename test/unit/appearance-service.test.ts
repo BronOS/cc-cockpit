@@ -3,7 +3,7 @@
 // values in plain variables.
 import { describe, expect, it } from 'vitest'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
-import { AppearanceService, claudeTabOnOpenOf, confirmTabCloseOf, tabCloseSideOf } from '../../src/main/settings/appearance-service'
+import { AppearanceService, claudeTabOnOpenOf, confirmTabCloseOf, sessionGistOf, tabCloseSideOf } from '../../src/main/settings/appearance-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
 import { DEFAULT_TERMINAL_FONT, LEGACY_DEFAULT_FAMILY } from '../../src/shared/terminal-font'
 
@@ -18,6 +18,8 @@ function rig(initialOverrides: unknown = {}) {
     keysChanged: 0,
     tabExit: undefined as unknown,
     claudeTabOnOpen: undefined as unknown,
+    sessionGist: undefined as unknown,
+    sessionGistChanged: 0,
     confirmTabClose: undefined as unknown,
     tabCloseSide: undefined as unknown,
     terminalFont: undefined as unknown,
@@ -57,6 +59,15 @@ function rig(initialOverrides: unknown = {}) {
       set: (next) => {
         state.claudeTabOnOpen = next
       }
+    },
+    sessionGist: {
+      get: () => state.sessionGist,
+      set: (next) => {
+        state.sessionGist = next
+      }
+    },
+    sessionGistChanged: () => {
+      state.sessionGistChanged++
     },
     confirmTabClose: {
       get: () => state.confirmTabClose,
@@ -332,6 +343,35 @@ describe('Claude tab on open', () => {
     expect(() => r.service.setClaudeTabOnOpen('false')).toThrow('give true or false')
     expect(() => r.service.setClaudeTabOnOpen(0)).toThrow('give true or false')
     expect(r.state.claudeTabOnOpen).toBe(true)
+  })
+})
+
+describe('session gist', () => {
+  it('is off by default, and only an explicit true turns it on', () => {
+    const r = rig()
+    expect(r.service.view(P).sessionGist).toBe(false)
+    // app.json is user-writable: a damaged value must not start spending the person's usage.
+    for (const damaged of ['true', 1, {}, null]) {
+      r.state.sessionGist = damaged
+      expect(r.service.view(P).sessionGist).toBe(false)
+    }
+    r.state.sessionGist = true
+    expect(r.service.view(P).sessionGist).toBe(true)
+    expect(sessionGistOf(undefined)).toBe(false)
+  })
+
+  it('stores true and false, tells the scheduler only on a real flip, and refuses anything else', () => {
+    const r = rig()
+    r.service.setSessionGist(true)
+    expect(r.state.sessionGist).toBe(true)
+    expect(r.state.sessionGistChanged).toBe(1)
+    r.service.setSessionGist(true)
+    expect(r.state.sessionGistChanged).toBe(1)
+    r.service.setSessionGist(false)
+    expect(r.service.view(P).sessionGist).toBe(false)
+    expect(r.state.sessionGistChanged).toBe(2)
+    expect(() => r.service.setSessionGist('true')).toThrow('give true or false')
+    expect(r.state.sessionGistChanged).toBe(2)
   })
 })
 

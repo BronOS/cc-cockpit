@@ -145,6 +145,13 @@ export interface AppSettings {
    */
   claudeTabOnOpen?: boolean
   /**
+   * The session gist: after a Claude tab's turn ends, Claude Haiku writes a one-line summary of the
+   * session from its last prompts (main/sessions/session-gist.ts), shown in the Sessions panel.
+   * Off unless exactly `true` (the file is user-writable): each gist is a request on the person's
+   * Claude Code login, so it never starts by accident.
+   */
+  sessionGist?: boolean
+  /**
    * Ask before the user closes a tab whose process is still running (a Claude turn, a dev server).
    * Absent or anything but `false` (the file is user-writable) reads as on. Read by the renderer at
    * each close (`settings.confirmTabClose`); closes main or a plugin makes never ask.

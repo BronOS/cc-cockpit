@@ -53,18 +53,19 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
     <li className="session-item" data-tab-id={session.tabId} data-status={session.status}>
       <div className="session-head">
         <StatusDot status={session.status} tool={session.tool} />
-        {/* N is the position among this window's Claude tabs (tab titles carry no number, so
-            nothing stabler matches them); the click jumps to the tab, which main resolves from
-            its own registry (sessions.focus). */}
+        {/* The name is the topic Claude put in its terminal title, the same one the tab strip
+            shows. Until it has one, "Claude N": N is the position among this window's Claude tabs
+            (tab labels carry no number, so nothing stabler matches them). The click jumps to the
+            tab, which main resolves from its own registry (sessions.focus). */}
         <button
           type="button"
           className="session-title"
-          title="Go to this tab"
+          title={session.title ? `${session.title}\nGo to this tab` : 'Go to this tab'}
           onClick={() => {
             window.cockpit.invoke('sessions.focus', { tabId: session.tabId }).catch(() => {})
           }}
         >
-          Claude {props.index}
+          {session.title ?? `Claude ${props.index}`}
         </button>
         <span className="session-status">{statusText(session.status, session.tool)}</span>
         {steps && (
@@ -83,10 +84,18 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
           </span>
         )}
       </div>
-      {session.lastPrompt !== undefined && (
-        <p className="session-prompt" title={session.lastPrompt}>
-          {session.lastPrompt}
+      {/* The gist (Haiku's one-line summary, when the setting is on) stands in for the last prompt;
+          the prompt itself stays reachable as the tooltip. */}
+      {session.gist !== undefined ? (
+        <p className="session-prompt session-gist" title={session.lastPrompt ?? session.gist}>
+          {session.gist}
         </p>
+      ) : (
+        session.lastPrompt !== undefined && (
+          <p className="session-prompt" title={session.lastPrompt}>
+            {session.lastPrompt}
+          </p>
+        )
       )}
       {session.notes.length > 0 && (
         <ul className="session-notes" aria-label="Notes">

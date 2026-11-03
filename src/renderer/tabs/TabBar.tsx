@@ -256,7 +256,7 @@ export function TabBar(props: {
             <button
               type="button"
               className="tab-close"
-              aria-label={`Close ${tabLabel(tab)}`}
+              aria-label={`Close ${tabLabel(tab, status?.title)}`}
               onClick={() => props.onClose(tab.id)}
             >
               <CloseGlyph size={12} />
@@ -278,7 +278,13 @@ export function TabBar(props: {
               role="tab"
               aria-selected={tab.id === activeId}
               className="tab-label"
-              title={tab.kind === 'command' && tab.command !== undefined ? `${tab.command}\n${tab.cwd}` : tab.cwd}
+              title={
+                tab.kind === 'command' && tab.command !== undefined
+                  ? `${tab.command}\n${tab.cwd}`
+                  : status?.title
+                    ? `${status.title}\n${tab.cwd}`
+                    : tab.cwd
+              }
               onClick={() => props.onSelect(tab.id)}
               onPointerDown={(e) => onPointerDown(e, tab.id)}
               onPointerMove={onPointerMove}
@@ -298,7 +304,7 @@ export function TabBar(props: {
               {tab.kind === 'shell' && <ShellGlyph size={14} className="tab-kind" />}
               {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
               <span className="tab-text">
-                {tabLabel(tab)}
+                {tabLabel(tab, status?.title)}
                 {tab.notStarted ? ' (not started)' : tab.exit ? ' (exited)' : ''}
               </span>
             </button>

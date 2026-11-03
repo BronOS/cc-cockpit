@@ -985,11 +985,12 @@ describe('registerProjectSettingsHandlers', () => {
         rec('saveProjectPluginSettings', { ok: true as const, values: {} })(...args),
       movePanel: rec('movePanel', undefined),
       setProjectColor: rec('setProjectColor', 'blue'),
-      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
+      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
       setTheme: rec('setTheme', undefined),
       setKey: rec('setKey', undefined),
       setTabExit: rec('setTabExit', undefined),
       setClaudeTabOnOpen: rec('setClaudeTabOnOpen', undefined),
+      setSessionGist: rec('setSessionGist', undefined),
       confirmTabClose: rec('confirmTabClose', false),
       setConfirmTabClose: rec('setConfirmTabClose', undefined),
       setTabCloseSide: rec('setTabCloseSide', undefined),
@@ -1004,7 +1005,7 @@ describe('registerProjectSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = projectSettingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(16)
+    expect(channels).toHaveLength(17)
     for (const channel of channels) {
       await expect(ipc.invoke(channel, 13, [{}])).rejects.toThrow(/not a project window/)
     }
@@ -1049,6 +1050,16 @@ describe('registerProjectSettingsHandlers', () => {
     expect(calls).toEqual([
       ['setTabExit', 'keep'],
       ['setTabExit', 3]
+    ])
+  })
+
+  it('passes the session gist choice on as unknown for the service to check', async () => {
+    const { ipc, calls } = projectSettingsSetup()
+    await ipc.invoke('settings.sessionGistSet', 11, [{ value: true }])
+    await ipc.invoke('settings.sessionGistSet', 12, [{ value: 'yes' }])
+    expect(calls).toEqual([
+      ['setSessionGist', true],
+      ['setSessionGist', 'yes']
     ])
   })
 

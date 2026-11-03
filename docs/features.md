@@ -71,6 +71,17 @@ behind it are in [design.md](design.md).
 - Claude status from hooks: tab dots, a top strip across windows, a Sessions panel with notes,
   steps and changed files (click a file for `git diff` in a terminal overlay). A permission prompt,
   a question from Claude and a plan approval all show as needing you and sort first.
+- Session names: a Claude tab is named after the topic Claude Code puts in its terminal title (`File tree plugin`),
+  in the tab strip and the Sessions panel, its spinner glyph left out; "Claude N" until Claude has one. Plugins see it
+  as `title` in `ctx.sessions`.
+- The last prompt under each session is what the person typed: Claude Code's own markup in a user turn is taken out
+  (a `<system-reminder>`, a `<task-notification>`, an agent message, a `!` command's output). A turn made only of that
+  markup keeps the prompt before it; a slash command reads `/name args`, a shell command `! command`.
+- Session gist (off by default; Settings > Appearance and keys > Claude sessions): after a turn ends, Claude Haiku
+  writes a one-line summary of the session from its last five prompts, shown in the Sessions panel in place of the last
+  prompt (which stays as the tooltip). It uses your Claude Code login (`claude -p --model haiku --safe-mode`, so none of
+  your hooks or MCP servers run and no transcript is kept), one small request per gist: only when the prompts changed,
+  at most one a minute per tab and two at once. Failures are logged only. Turning it off cancels runs and hides gists.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
@@ -259,6 +270,11 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   reports the tool done, not on a key; a cancelled question (Esc) keeps showing until Claude's
   next turn, and a background subagent's tool call while the dialog is up shows "working".
 - Closing a whole project window, or quitting, does not ask, even with running tabs.
+- A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
+  "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name
+  (and no gist) until Claude sets the title again.
+- A harness block the person pasted into a prompt (a copied `<system-reminder>…</system-reminder>`) is taken out of
+  the shown prompt too.
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z; the app may take some chords before plugins.
 - On Linux `Cmd` is Ctrl, so the default chords take Ctrl+T, Ctrl+W, Ctrl+B, Ctrl+J and Ctrl+O, which
   Claude Code and the shell use themselves (todos, delete-word, background, newline, transcript):

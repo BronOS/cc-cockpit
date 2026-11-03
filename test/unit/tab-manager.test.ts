@@ -531,6 +531,18 @@ describe('lifecycle', () => {
     ])
   })
 
+  it('reports the output of Claude tabs only (for the terminal title), after the window got it', () => {
+    const outputs: string[] = []
+    const tabs = manager('/data/app.sock', { output: (id, chunk) => outputs.push(`${id} ${chunk}`) })
+    const claude = tabs.create(A, { kind: 'claude' })
+    tabs.create(A, { kind: 'shell' })
+    backend.spawned[0]!.emit('\x1b]0;✳ Topic\x07')
+    backend.spawned[1]!.emit('shell output')
+    vi.advanceTimersByTime(20)
+    expect(outputs).toEqual([`${claude.id} \x1b]0;✳ Topic\x07`])
+    expect(events.filter((e) => e.channel === 'tabs.data')).toHaveLength(2)
+  })
+
   it('reports shell tabs too (the registry filters by kind) and nothing for a failed create', () => {
     const { calls, lifecycle } = recording()
     const tabs = manager('/data/app.sock', lifecycle)

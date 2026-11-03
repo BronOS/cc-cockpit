@@ -1307,13 +1307,20 @@ iframe:focus-visible {
 }
 
 .session-title {
+  /* A topic from the terminal title can be long: it shrinks with an ellipsis like the status
+     beside it, and the full text is the tooltip. */
+  min-width: 0;
+  flex: 0 1 auto;
   padding: 0;
   border: 0;
   background: none;
   color: inherit;
   font: inherit;
   font-weight: 600;
+  text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 
@@ -1370,6 +1377,12 @@ iframe:focus-visible {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow-wrap: anywhere;
+}
+
+/* Haiku's gist in place of the last prompt: one line, read as a summary rather than a quote. */
+.session-gist {
+  -webkit-line-clamp: 2;
+  color: var(--cc-fg-muted);
 }
 
 .session-notes {

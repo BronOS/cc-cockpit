@@ -153,6 +153,8 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
       },
       tabExit: { get: () => undefined, set: () => {} },
       claudeTabOnOpen: { get: () => undefined, set: () => {} },
+      sessionGist: { get: () => undefined, set: () => {} },
+      sessionGistChanged: () => {},
       confirmTabClose: { get: () => undefined, set: () => {} },
       tabCloseSide: { get: () => undefined, set: () => {} },
       terminalFont: { get: () => undefined, set: () => {} },

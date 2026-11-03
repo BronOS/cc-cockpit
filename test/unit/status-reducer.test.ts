@@ -6,6 +6,7 @@ import {
   MAX_NOTES,
   MAX_PATH_CHARS,
   MAX_PROMPT_CHARS,
+  MAX_RECENT_PROMPTS,
   MAX_TOOL_CHARS,
   cap,
   isAnswerKey,
@@ -507,5 +508,36 @@ describe('withNote / withSteps (ccc session note / steps)', () => {
     [Number.NaN, 5]
   ])('refuses steps %j/%j', (done, total) => {
     expect(() => withSteps(base(), done, total)).toThrow(/steps/)
+  })
+})
+
+describe('UserPromptSubmit and harness markup (harness-markup.ts)', () => {
+  it('keeps the previous prompt for a turn made only of harness blocks, still working', () => {
+    const from = withStatus('waiting', { lastPrompt: 'fix the bug', recentPrompts: ['fix the bug'] })
+    const next = reduce(
+      from,
+      hook('UserPromptSubmit', { prompt: '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>' })
+    )
+    expect(next).toMatchObject({ status: 'working', lastPrompt: 'fix the bug', recentPrompts: ['fix the bug'] })
+  })
+
+  it('stores the cleaned text: blocks out, a slash command as /name args, a paste unwrapped', () => {
+    expect(
+      reduce(base(), hook('UserPromptSubmit', { prompt: '<system-reminder>ctx</system-reminder>\nwhy?' })).lastPrompt
+    ).toBe('why?')
+    expect(
+      reduce(base(), hook('UserPromptSubmit', { prompt: '<command-name>/review</command-name><command-args>42</command-args>' }))
+        .lastPrompt
+    ).toBe('/review 42')
+    expect(
+      reduce(base(), hook('UserPromptSubmit', { prompt: '<system-reminder>r</system-reminder>\n<pasted_content id="91a8">\nlog\n</pasted_content id="91a8">\n' }))
+        .lastPrompt
+    ).toBe('log')
+  })
+
+  it('keeps the last MAX_RECENT_PROMPTS prompts for the gist, oldest first', () => {
+    let e = base()
+    for (let i = 1; i <= MAX_RECENT_PROMPTS + 2; i++) e = reduce(e, hook('UserPromptSubmit', { prompt: `p${i}` }))
+    expect(e.recentPrompts).toEqual(Array.from({ length: MAX_RECENT_PROMPTS }, (_, i) => `p${i + 3}`))
   })
 })
