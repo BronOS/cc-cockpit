@@ -300,6 +300,7 @@ export function sessionInfoOf(e: SessionEntry): SessionInfo {
   if (e.sessionId !== undefined) out.sessionId = e.sessionId
   if (e.tool !== undefined) out.tool = e.tool
   if (e.lastPrompt !== undefined) out.lastPrompt = e.lastPrompt
+  if (e.title !== undefined) out.title = e.title
   if (e.steps !== undefined) out.steps = { ...e.steps }
   return out
 }

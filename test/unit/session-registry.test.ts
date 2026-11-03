@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionsSnapshot } from '../../src/shared/ipc'
 import { hookHandler } from '../../src/main/sessions/hook-handler'
-import { SessionRegistry, type SessionChange } from '../../src/main/sessions/session-registry'
+import { MAX_GIST_CHARS, SessionRegistry, type SessionChange } from '../../src/main/sessions/session-registry'
 
 const P1 = 'p1'
 const P2 = 'p2'
@@ -434,5 +434,69 @@ describe('addNote / setSteps (ccc session note / steps)', () => {
     reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'p' })
     reg.applyHook('c1', 'Stop', {})
     expect(reg.get('c1')).toMatchObject({ notes: ['n'], steps: { done: 1, total: 3 } })
+  })
+})
+
+describe('terminal title (tabOutput)', () => {
+  const title = (text: string): string => `\x1b]0;${text}\x07`
+
+  it('names the entry after the topic, in the detail the window gets', () => {
+    start('c1')
+    reg.tabOutput('c1', `${title('✳ Claude Code')}banner`)
+    expect(reg.get('c1')?.title).toBeUndefined()
+    reg.tabOutput('c1', title('◐ Greeting in two words'))
+    expect(reg.get('c1')?.title).toBe('Greeting in two words')
+    vi.runAllTimers()
+    expect(sent.at(-1)?.own[0]).toMatchObject({ tabId: 'c1', title: 'Greeting in two words' })
+    // The strip (every window) gets no title: it is made from the prompts.
+    expect(sent.at(-1)?.strip[0]).not.toHaveProperty('title')
+  })
+
+  it('reports no change while only the spinner glyph animates, nor for the reset at exit', () => {
+    start('c1')
+    reg.tabOutput('c1', title('◐ Fix the build'))
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    for (const glyph of ['◑', '◐', '✳', '◑']) reg.tabOutput('c1', `out ${title(`${glyph} Fix the build`)} more`)
+    reg.tabOutput('c1', title(''))
+    reg.tabOutput('c1', title('✳ Claude Code'))
+    expect(changes).toEqual([])
+    expect(reg.get('c1')?.title).toBe('Fix the build')
+  })
+
+  it('reads a title split across chunks, ignores tabs with no entry, and starts over on restart', () => {
+    start('c1')
+    reg.tabOutput('c1', '\x1b]0;✳ Split ti')
+    reg.tabOutput('c1', 'tle\x07')
+    expect(reg.get('c1')?.title).toBe('Split title')
+    reg.tabOutput('nope', title('✳ x'))
+    reg.tabOutput('c1', '\x1b]0;✳ half of a tit')
+    reg.tabExited('c1', 1)
+    start('c1')
+    // The new process's output does not complete the dead one's sequence, and the old name goes.
+    reg.tabOutput('c1', 'le\x07')
+    expect(reg.get('c1')?.title).toBeUndefined()
+  })
+})
+
+describe('setGist', () => {
+  it('stores a one-line, capped gist, removes it on blank or undefined, and only reports changes', () => {
+    start('c1')
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    expect(reg.setGist('c1', '  Adding a file\n tree plugin  ')).toBe(true)
+    expect(reg.get('c1')?.gist).toBe('Adding a file tree plugin')
+    reg.setGist('c1', 'Adding a file tree plugin')
+    expect(changes).toHaveLength(1)
+    reg.setGist('c1', 'x'.repeat(MAX_GIST_CHARS + 50))
+    expect(reg.get('c1')?.gist).toHaveLength(MAX_GIST_CHARS)
+    vi.runAllTimers()
+    expect(sent.at(-1)?.own[0]?.gist).toHaveLength(MAX_GIST_CHARS)
+    reg.setGist('c1', '   ')
+    expect(reg.get('c1')).not.toHaveProperty('gist')
+    reg.setGist('c1', 'again')
+    reg.setGist('c1', undefined)
+    expect(reg.get('c1')).not.toHaveProperty('gist')
+    expect(reg.setGist('nope', 'x')).toBe(false)
   })
 })

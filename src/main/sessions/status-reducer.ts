@@ -38,6 +38,7 @@
 import { SESSION_ID } from '../tabs/claude-argv'
 import { isPlainObject } from '../../shared/guards'
 import { isDialogTool, type HookEvent } from '../../shared/hooks'
+import { cleanHarnessMarkup } from './harness-markup'
 import { unwrapPastes } from './paste-wrappers'
 import type { TabStatus } from '../../shared/ipc'
 import type { TabKind } from '../../shared/types'
@@ -60,6 +61,16 @@ export interface SessionEntry {
   status: TabStatus
   tool?: string
   lastPrompt?: string
+  /**
+   * The last few prompts (lastPrompt's history, oldest first, at most MAX_RECENT_PROMPTS), only for
+   * the session gist (session-gist.ts). Never sent anywhere as is: detailOf and the other views list
+   * their fields one by one.
+   */
+  recentPrompts?: string[]
+  /** The topic Claude put in the terminal title (terminal-title.ts), the tab's name when set. */
+  title?: string
+  /** The one-line summary of the session gist setting (session-gist.ts); set by main only. */
+  gist?: string
   /** Free-form notes (plugins add them in later tasks); capped at MAX_NOTES x MAX_NOTE_CHARS. */
   notes: string[]
   steps?: { done: number; total: number }
@@ -77,6 +88,8 @@ export interface SessionEntry {
 
 /** Caps for text a hook (or a plugin) hands us: a token only proves WHICH tab sent it. */
 export const MAX_PROMPT_CHARS = 2048
+/** How many prompts `recentPrompts` keeps (what a gist is written from). */
+export const MAX_RECENT_PROMPTS = 5
 export const MAX_TOOL_CHARS = 100
 export const MAX_FILES = 500
 export const MAX_NOTES = 20
@@ -167,9 +180,17 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
     case 'UserPromptSubmit': {
       const next: SessionEntry = { ...entry, status: 'working', tool: undefined }
       const prompt = payload.prompt
-      // Unwrapped before the cap: a long paste would lose its closing tag to the cut, and the
-      // opener would then stay.
-      if (typeof prompt === 'string') next.lastPrompt = cap(unwrapPastes(prompt), MAX_PROMPT_CHARS)
+      if (typeof prompt !== 'string') return next
+      // Harness markup first, then pastes, then the cap: a long paste or block would lose its
+      // closing tag to the cut, and the opener would then stay. A turn made only of harness
+      // blocks (a background task's notification, a system reminder) is not the person's prompt,
+      // so the previous one stays (harness-markup.ts). The order means a harness block the person
+      // PASTED is cut too; that is the rarer case.
+      const cleaned = cleanHarnessMarkup(prompt)
+      if (cleaned === undefined) return next
+      const text = cap(unwrapPastes(cleaned), MAX_PROMPT_CHARS)
+      next.lastPrompt = text
+      next.recentPrompts = [...(entry.recentPrompts ?? []), text].slice(-MAX_RECENT_PROMPTS)
       return next
     }
     case 'PreToolUse': {

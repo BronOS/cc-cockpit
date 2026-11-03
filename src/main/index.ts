@@ -80,7 +80,7 @@ import { PluginOAuth } from './oauth/plugin-oauth'
 import { PluginSecrets } from './secrets/plugin-secrets'
 import { choosePasswordStore, execRunner } from './secrets/password-store'
 import { safeStorageSecretStore, selectSecretStore } from './secrets/secret-store'
-import { AppearanceService, claudeTabOnOpenOf, tabExitOf } from './settings/appearance-service'
+import { AppearanceService, claudeTabOnOpenOf, sessionGistOf, tabExitOf } from './settings/appearance-service'
 import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings'
 import { ProjectSettingsService } from './settings/project-settings-service'
 import { ServiceChoices } from './plugins/service-choices'
@@ -90,6 +90,8 @@ import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
+import { runGist } from './sessions/gist-run'
+import { SessionGist } from './sessions/session-gist'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
@@ -777,6 +779,20 @@ function start(): void {
     // defined below and is only reached once a tab exists.
     write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
   })
+  // The session gist (app setting, off by default): Haiku summarises a tab's last prompts after a
+  // turn. The run gets the env a tab gets with no tab variables (no token, no socket), so `claude`
+  // resolves on the same PATH as a tab's and nothing it starts can act as a tab (gist-run.ts).
+  const sessionGist = new SessionGist({
+    enabled: () => sessionGistOf(registry.app.data.sessionGist),
+    sessions,
+    run: async (prompts, signal) => {
+      await loginEnvReady
+      return runGist(prompts, signal, {
+        env: buildPtyEnv(loginEnv, { binDir: paths.binDir }),
+        track: (child) => liveChildren.track(child)
+      })
+    }
+  })
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
     projectPath: (projectId) => registry.get(projectId)?.path,
@@ -793,7 +809,8 @@ function start(): void {
       started: (tab) => sessions.tabStarted(tab),
       // The signal too: a signal death can arrive as code 0 (tabExited maps it to 128 + n).
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
-      closed: (tabId) => sessions.tabClosed(tabId)
+      closed: (tabId) => sessions.tabClosed(tabId),
+      output: (tabId, chunk) => sessions.tabOutput(tabId, chunk)
     },
     // Every create / close / reorder / restart / new session id: save the project's tabs.
     onTabsChanged: (projectId) => restorer.tabsChanged(projectId),
@@ -1243,6 +1260,15 @@ function start(): void {
         })
       }
     },
+    sessionGist: {
+      get: () => registry.app.data.sessionGist,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.sessionGist = next
+        })
+      }
+    },
+    sessionGistChanged: () => sessionGist.settingChanged(),
     confirmTabClose: {
       get: () => registry.app.data.confirmTabClose,
       set: (next) => {
@@ -1384,6 +1410,7 @@ function start(): void {
     setKey: (projectId, commandId, chord) => appearance.setKey(projectId, commandId, chord),
     setTabExit: (value) => appearance.setTabExit(value),
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
+    setSessionGist: (value) => appearance.setSessionGist(value),
     confirmTabClose: () => appearance.confirmTabClose(),
     setConfirmTabClose: (value) => appearance.setConfirmTabClose(value),
     setTabCloseSide: (value) => appearance.setTabCloseSide(value),
@@ -1718,6 +1745,7 @@ function start(): void {
     devWatch.dispose()
     hosts.disposeAll()
     void socket.stop()
+    sessionGist.dispose()
     sessions.dispose()
     tabs.disposeAll()
     registry.flushAll()

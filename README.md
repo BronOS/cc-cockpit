@@ -12,7 +12,8 @@ tested).
   and comes back as you left it.
 - **Terminal tabs.** Run Claude, a shell or your own commands. Claude conversations resume after a restart.
 - **Claude status at a glance.** See which sessions are working, waiting or need permission across all your windows,
-  with notes, progress and changed files.
+  with notes, progress and changed files. Tabs are named after the topic Claude gives the session, and an optional
+  one-line gist written by Claude Haiku says what each session is about.
 - **Safe text sending.** Plugins and tools can send text to a session. It is delivered only while Claude is waiting for
   input and queued otherwise, so a keystroke doesn't answer a permission prompt by accident.
 - **Plugins.** A plugin can add panels, settings, commands, `ccc` commands and Claude skills. Install from the

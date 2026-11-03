@@ -22,8 +22,8 @@ const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
 /**
  * Settings › Appearance and keys (design §6): the app-wide theme, the see-through window background
  * (WindowBackgroundSettings), what a tab does when its process
- * exits, whether a project that opens empty gets a Claude tab, whether closing a running tab asks
- * first, which end of a tab its close button sits at, the app-wide entries of the new-tab menu, the
+ * exits, whether a project that opens empty gets a Claude tab, whether Haiku writes a gist of each
+ * Claude session, whether closing a running tab asks first, which end of a tab its close button sits at, the app-wide entries of the new-tab menu, the
  * terminals' font (TerminalFontSettings), and the keybinding list with overrides. A theme change goes through main, which tells every window (and so every plugin
  * panel and terminal). A key is changed by pressing the new chord in a field that records it; main
  * validates the chord, stores it, and sends the new table to the windows. A chord that two
@@ -178,6 +178,26 @@ export function AppearancePage(): React.JSX.Element {
                   <option value="left">Left</option>
                   <option value="right">Right</option>
                 </Select>
+              </Row>
+            </div>
+          </Group>
+
+          <Group title="Claude sessions">
+            <div className="settings-card">
+              <Row
+                label="Session gist (Haiku)"
+                htmlFor={`${id}-session-gist`}
+                help="A one-line summary of what each Claude session is about, written by Claude Haiku after a turn ends and shown in the Sessions panel in place of the last prompt. Uses your Claude Code login; each gist is one small Haiku request, at most one a minute per tab."
+              >
+                <Switch
+                  id={`${id}-session-gist`}
+                  checked={data.sessionGist}
+                  disabled={busy !== null}
+                  onChange={(e) => {
+                    const value = e.target.checked
+                    void run('sessionGist', () => window.cockpit.invoke('settings.sessionGistSet', { value })).then(reload)
+                  }}
+                />
               </Row>
             </div>
           </Group>

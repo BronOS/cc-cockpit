@@ -103,6 +103,11 @@ export interface TabLifecycle {
   exited?(tabId: string, code: number, signal: number | null): void
   /** The tab no longer exists: closed by the user or its window closed. */
   closed?(tabId: string): void
+  /**
+   * A Claude tab's PTY printed `chunk` (each batch PtyService flushes, so a few per frame at most).
+   * For the terminal title (session-registry.ts tabOutput); shell and command tabs are not reported.
+   */
+  output?(tabId: string, chunk: string): void
 }
 
 export interface CreateTabOptions {
@@ -537,7 +542,9 @@ export class TabManager {
 
   private onData(id: string, data: string): void {
     const tab = this.byId.get(id)
-    if (tab) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data })
+    if (!tab) return
+    this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data })
+    if (tab.kind === 'claude') this.notify((l) => l.output?.(id, data))
   }
 
   private onExit(id: string, code: number, signal: number | null): void {

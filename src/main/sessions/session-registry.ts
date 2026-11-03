@@ -18,7 +18,11 @@ import type { ProjectColor } from '../../shared/project-color'
 import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
-import { isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SessionEntry } from './status-reducer'
+import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SessionEntry } from './status-reducer'
+import { cleanTitle, TitleParser } from './terminal-title'
+
+/** The longest gist kept (the gist run asks for ~80 characters; a chatty answer is cut). */
+export const MAX_GIST_CHARS = 160
 
 /** At most this many snapshots per second (plan: throttled to 10/s). */
 const DEFAULT_INTERVAL_MS = 100
@@ -82,6 +86,11 @@ export class SessionRegistry {
   /** tabId -> the timer of the delivery in flight (at most one per tab: `delivering`). */
   private readonly deliveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly deliveringTimeout: number
+  /**
+   * tabId -> the terminal-title parser of its current process. Per process, not per entry: a
+   * sequence half-read when the process died must not run into the next one's output.
+   */
+  private readonly titles = new Map<string, TitleParser>()
 
   constructor(private readonly options: SessionRegistryOptions) {
     this.interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
@@ -100,7 +109,41 @@ export class SessionRegistry {
     if (tab.kind !== 'claude') return
     const prev = this.entries.get(tab.tabId)
     this.clearDeliveryTimer(tab.tabId)
+    this.titles.set(tab.tabId, new TitleParser())
     this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId }))
+  }
+
+  /**
+   * Output of a Claude tab's PTY (TabManager calls it with each flushed chunk). Only the terminal
+   * title is read (terminal-title.ts) and becomes the entry's `title`. A change is reported only
+   * when the cleaned title differs: Claude rewrites the title on every spinner frame while it
+   * works, and each of those would otherwise be a change and a broadcast. A title that names
+   * nothing (empty, plain "Claude Code") leaves the last topic in place.
+   */
+  tabOutput(tabId: string, chunk: string): void {
+    const raw = this.titles.get(tabId)?.feed(chunk)
+    if (raw === undefined) return
+    const title = cleanTitle(raw)
+    const prev = this.entries.get(tabId)
+    if (title === undefined || !prev || prev.title === title) return
+    this.set(prev, { ...prev, title })
+  }
+
+  /**
+   * Store (or with undefined, remove) the tab's session gist (session-gist.ts, main's own Haiku
+   * run). Trimmed, one line, capped; a blank text removes it. False when the tab has no entry.
+   */
+  setGist(tabId: string, gist: string | undefined): boolean {
+    const prev = this.entries.get(tabId)
+    if (!prev) return false
+    const text = gist === undefined ? '' : cap(gist.replace(/\s+/g, ' ').trim(), MAX_GIST_CHARS)
+    const next = text === '' ? undefined : text
+    if (prev.gist === next) return true
+    const entry = { ...prev }
+    if (next === undefined) delete entry.gist
+    else entry.gist = next
+    this.set(prev, entry)
+    return true
   }
 
   /**
@@ -138,6 +181,7 @@ export class SessionRegistry {
     const prev = this.entries.get(tabId)
     if (!prev) return
     this.clearDeliveryTimer(tabId)
+    this.titles.delete(tabId)
     this.entries.delete(tabId)
     const change: SessionChange = { tabId, entry: undefined, prev }
     if (prev.queue.length > 0) {
@@ -384,6 +428,8 @@ function detailOf(e: SessionEntry): SessionDetail {
   }
   if (e.tool !== undefined) out.tool = e.tool
   if (e.lastPrompt !== undefined) out.lastPrompt = e.lastPrompt
+  if (e.title !== undefined) out.title = e.title
+  if (e.gist !== undefined) out.gist = e.gist
   if (e.steps !== undefined) out.steps = { ...e.steps }
   return out
 }

@@ -127,7 +127,11 @@ with full Node access.
   as Claude gave them, files outside the project included, each once, in the order first written,
   kept for the tab's life and capped at 500 (later files are not added). Only the ones inside
   the project can reach a plugin through a click (see Files); make a path project-relative
-  yourself against `ctx.projectDir` when you need one.
+  yourself against `ctx.projectDir` when you need one. `title` is the short topic Claude Code
+  put in its terminal title (spinner glyph removed), what the Sessions panel and the tab strip
+  name the tab; absent until Claude has one. `lastPrompt` is the person's last prompt with Claude
+  Code's own markup taken out (a turn of system reminders or task notifications only keeps the
+  one before).
 - `ctx.sessions.onChange(listener)`: the whole list again on every change (at most 4 a second).
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.

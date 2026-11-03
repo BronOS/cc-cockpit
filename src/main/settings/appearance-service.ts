@@ -1,6 +1,7 @@
 // "Appearance and keys" in the settings overlay (design §6): the app-wide theme, the
 // keybinding overrides, what a tab does when its process exits (`tabExit`) and whether a project
-// that opens empty gets a Claude tab (`claudeTabOnOpen`), whether closing a running tab asks first
+// that opens empty gets a Claude tab (`claudeTabOnOpen`), whether Haiku writes a gist of each Claude
+// session (`sessionGist`, main/sessions/session-gist.ts), whether closing a running tab asks first
 // (`confirmTabClose`), which end of a tab its close button sits at (`tabCloseSide`), the terminals'
 // font (`terminalFont`; checks in terminal-font.ts), the see-through window background
 // (`windowBackground`; checks in window-background.ts), and shows the app-wide new-tab menu entries
@@ -69,6 +70,10 @@ export interface AppearanceDeps {
    * attaches (main/tabs/first-tab.ts), so a change applies to the next window that opens.
    */
   claudeTabOnOpen: { get(): unknown; set(next: boolean): void }
+  /** `app.json` › `sessionGist`, as stored (unvalidated). */
+  sessionGist: { get(): unknown; set(next: boolean): void }
+  /** The session gist was turned on or off: start or cancel runs, remove the gists (SessionGist.settingChanged). */
+  sessionGistChanged(): void
   /**
    * `app.json` › `confirmTabClose`, as stored (unvalidated). The renderer reads it at each close a
    * user starts (`settings.confirmTabClose`), so a change applies to the next close in any window.
@@ -116,6 +121,14 @@ export function claudeTabOnOpenOf(stored: unknown): boolean {
 }
 
 /**
+ * The stored `sessionGist`, default applied: only an explicit `true` turns it on. The other way round
+ * from `claudeTabOnOpenOf`: a damaged value must not start spending the person's Claude usage.
+ */
+export function sessionGistOf(stored: unknown): boolean {
+  return stored === true
+}
+
+/**
  * The stored `confirmTabClose`, default applied: only an explicit `false` turns it off. A damaged
  * value reads as on: the cost of a wrong "on" is one extra click, of a wrong "off" a killed task.
  */
@@ -142,6 +155,7 @@ export class AppearanceService {
       keys: this.deps.commands.bindings(projectId),
       tabExit: tabExitOf(this.deps.tabExit.get()),
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
+      sessionGist: sessionGistOf(this.deps.sessionGist.get()),
       confirmTabClose: this.confirmTabClose(),
       tabCloseSide: tabCloseSideOf(this.deps.tabCloseSide.get()),
       terminalFont: terminalFontOf(this.deps.terminalFont.get()),
@@ -182,6 +196,14 @@ export class AppearanceService {
   setClaudeTabOnOpen(value: unknown): void {
     if (typeof value !== 'boolean') throw new Error('give true or false')
     this.deps.claudeTabOnOpen.set(value)
+  }
+
+  /** Turn the session gist on or off; the scheduler hears it at once (off cancels and hides). */
+  setSessionGist(value: unknown): void {
+    if (typeof value !== 'boolean') throw new Error('give true or false')
+    const before = sessionGistOf(this.deps.sessionGist.get())
+    this.deps.sessionGist.set(value)
+    if (before !== value) this.deps.sessionGistChanged()
   }
 
   /** Whether closing a running tab asks first (default applied). */

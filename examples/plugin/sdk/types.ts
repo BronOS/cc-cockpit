@@ -207,7 +207,13 @@ export interface SessionInfo {
   readonly cwd: string
   readonly sessionId?: string
   readonly tool?: string
+  /** The person's last prompt, Claude Code's own markup (system reminders, task notifications) taken out. */
   readonly lastPrompt?: string
+  /**
+   * The short topic Claude Code put in the terminal title (`Greeting in two words`), spinner glyph
+   * removed; what the Sessions panel and the tab strip name the tab. Absent until Claude has one.
+   */
+  readonly title?: string
   readonly notes: readonly string[]
   readonly steps?: { readonly done: number; readonly total: number }
   /**

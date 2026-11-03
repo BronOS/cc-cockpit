@@ -295,6 +295,32 @@ on screen, still not sendable.
   text the user saw: `main/sessions/paste-wrappers.ts`), status, notes, steps done (a count over a small bar) and changed files under
   an "N changed files" caption; a file click opens it in an overlay. Its header counts the
   window's sessions ("2 in this window").
+- **Prompt cleaning.** Claude Code delivers its own input as user turns (`<system-reminder>`,
+  `<task-notification>`, `<agent-message>`, `<bash-input>`/`<bash-stdout>`, `<command-name>`/
+  `<command-args>`, `<local-command-stdout>`, …), and UserPromptSubmit reports them as the prompt.
+  Main cuts those blocks out before the paste unwrap (`main/sessions/harness-markup.ts`, known tag
+  names only, closed blocks only, linear time): a turn of nothing else keeps the previous
+  `lastPrompt`, a slash command reads `/name args`, a `!` command `! command`.
+- **Session name.** Main reads OSC 0/2 (the terminal title) from each Claude tab's PTY output as it
+  flushes (`main/sessions/terminal-title.ts`, across chunk boundaries, bounded, other OSC numbers
+  skipped). Claude Code sets `✳ <topic>` with an animated status glyph (`◐`/`◑` while working) and
+  plain `Claude Code` before a topic exists; main strips the glyph and control characters, ignores
+  the generic and the empty title (the reset at exit), and stores `title` on the entry only when it
+  changes, so the spinner never causes a broadcast. The tab strip and the Sessions panel show it in
+  place of "Claude · folder" / "Claude N"; plugins get it in `SessionInfo.title`. It is not in the
+  top strip's cross-window fields: it is made from the prompts.
+- **Session gist** (Settings › Appearance and keys › Claude sessions; `app.json` › `sessionGist`, off
+  unless exactly `true`): after a turn ends (entry
+  moves into *waiting*) and the tab's last five cleaned prompts changed since its last run, main
+  runs `claude -p --model haiku --safe-mode --strict-mcp-config --no-session-persistence
+  --disable-slash-commands --tools ""` with the prompts (at most 4000 characters, newest kept) on
+  stdin, in the OS temp folder, with the tabs' env minus every tab variable (`claude` resolves on
+  the same PATH). `--safe-mode` turns off the person's hooks, MCP servers, CLAUDE.md and plugins
+  but keeps their login (`--bare` would not). Bounded: 60 s timeout (SIGKILL to the group), one run
+  per tab, at least 60 s between a tab's runs (later turns coalesce), two at once app-wide;
+  failures logged, never shown. The first output line is the entry's `gist`, shown under the name
+  in place of the last prompt. Off cancels runs and clears every gist
+  (`main/sessions/session-gist.ts`, `gist-run.ts`).
 
 **Restore.** Main saves each project's tabs (kind, cwd, `session_id`, order; a command tab's own
 label and command); on next start Claude tabs reopen with `claude --resume <id>`, shell tabs start

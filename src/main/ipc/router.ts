@@ -478,6 +478,7 @@ export interface ProjectSettingsHandlerDeps {
   setKey(projectId: string, commandId: unknown, chord: unknown): void
   setTabExit(value: unknown): void
   setClaudeTabOnOpen(value: unknown): void
+  setSessionGist(value: unknown): void
   /** AppSettings.confirmTabClose with the default applied. */
   confirmTabClose(): boolean
   setConfirmTabClose(value: unknown): void
@@ -520,6 +521,9 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   })
   router.handleProject('settings.claudeTabOnOpenSet', (_ctx, payload) => {
     deps.setClaudeTabOnOpen(fields('settings.claudeTabOnOpenSet', payload).value)
+  })
+  router.handleProject('settings.sessionGistSet', (_ctx, payload) => {
+    deps.setSessionGist(fields('settings.sessionGistSet', payload).value)
   })
   router.handleProject('settings.confirmTabClose', () => deps.confirmTabClose())
   router.handleProject('settings.confirmTabCloseSet', (_ctx, payload) => {
