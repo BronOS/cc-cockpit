@@ -1,6 +1,6 @@
 {
   "name": "cc-cockpit",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Desktop cockpit for Claude Code: terminal tabs, session status and plugin panels",
   "license": "MIT",
   "author": "Oleg Bronzov",
