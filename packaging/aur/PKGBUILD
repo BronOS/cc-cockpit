@@ -2,7 +2,7 @@
 #
 # Repackages the released .deb, so Arch runs the same build as everyone else.
 pkgname=cc-cockpit-bin
-pkgver=0.9.1
+pkgver=0.9.2
 pkgrel=1
 pkgdesc='Desktop cockpit for Claude Code: terminal tabs, session status and plugin panels'
 arch=('x86_64')
@@ -17,7 +17,7 @@ options=('!strip' '!debug')
 source=("cc-cockpit-${pkgver}.deb::${url}/releases/download/v${pkgver}/cc-cockpit-${pkgver}-linux-x64.deb"
         "LICENSE-${pkgver}::https://raw.githubusercontent.com/BronOS/cc-cockpit/v${pkgver}/LICENSE")
 noextract=("cc-cockpit-${pkgver}.deb")
-sha256sums=('94afdd87463ef7146539ad9d05ead3115bd9d1d9e7d11f26239a738b512b7640'
+sha256sums=('d477c3afc77c52aa8ffa63b6d8ebeb7c4a44e17b90d6d3cbbea531c01d1d5bb7'
             'SKIP')
 
 prepare() {
