@@ -13,9 +13,10 @@ playwright-report/
 !plugins/hello/dist/
 # The built-in browser plugin ships its built host too (scripts/build-browser.mjs).
 !plugins/browser/dist/
-# The bundled reviewer and editor ship their (plain JS) hosts too.
+# The bundled reviewer, editor and files plugins ship their (plain JS) hosts too.
 !plugins/reviewer/dist/
 !plugins/editor/dist/
+!plugins/files/dist/
 # The marketplace index repo template ships its built CI tools (scripts/build-marketplace-tools.mjs).
 !marketplace/tools/dist/
 # The example plugin ships its built host too: it is the master copy of a public template repo (examples/plugin/README.md).
