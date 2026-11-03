@@ -13,9 +13,15 @@ field per property of the root object):
 - `title` is the label (the property name when absent); `description` is shown between the label
   and the input; `default` is the starting value.
 - `string` is a text input; `boolean` a checkbox; `number` a number input (any step) and `integer`
-  one with step 1; `minimum` and `maximum` are set on the input. An `array` of strings gets
-  add/remove buttons; an array with `uniqueItems` whose `items` have an `enum` is a multi-select;
-  a nested `object` is a group of its own fields.
+  one with step 1; `minimum` and `maximum` are set on the input. An `array` gets Add, and per item
+  Move up / Move down / Remove; an item of an array of objects is a box of its fields, and when
+  `items` has a `title` ("Rule") the buttons use it ("Add Rule", "Remove Rule 2"). An array with
+  `uniqueItems` whose `items` have an `enum` is a multi-select. A nested `object` is a group of its
+  own fields; an array's or a nested object's `title` is the group's heading.
+- `"format": "multiline"` on a string property (anywhere: top level, nested, in `items`) is a
+  text area that grows with its text, for a profile, a prompt or a question's wording. It is a
+  form hint only: main does not check formats, so the value is any string within `maxLength`
+  (with an `enum` the drop-down stays).
 - `enum` is a drop-down that shows the raw values: `enumNames` is ignored. For display labels write
   the choices as `"oneOf": [{ "const": "a", "title": "Alpha" }, { "const": "b", "title": "Beta" }]`
   on the property (with `"type": "string"`): the drop-down shows the titles and stores `a` / `b`.

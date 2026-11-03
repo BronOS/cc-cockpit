@@ -908,6 +908,9 @@ name, not which plugin is asking; installed plugins are trusted code.
   Custom commands › Keys for entries).
 
 All plugin forms are rendered from the manifest's JSON Schema; no plugin-owned settings pages.
+Besides `"format": "secret"` (§6) the form knows one more format, `"multiline"`: a string drawn as
+a growing text area, allowed anywhere in the schema. It is a hint to the form only (main's ajv does
+not validate formats), so it needs no check in main.
 
 **Projects**: File › Open Folder or `<app> open <path>`; an already-open folder focuses its
 window. The project picker (recent projects + Open Folder…) appears by itself when no project

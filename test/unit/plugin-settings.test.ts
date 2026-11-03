@@ -106,6 +106,24 @@ describe('compileSettingsSchema', () => {
     expect(compileSettingsSchema(s).ok).toBe(true)
   })
 
+  it('takes "format": "multiline" as a form hint anywhere, checking only the string', () => {
+    // The settings form draws it as a textarea (plugin-form-templates.tsx); main's ajv has
+    // validateFormats off, so the unknown format neither fails the compile nor the values.
+    const s = {
+      type: 'object',
+      properties: {
+        profile: { type: 'string', format: 'multiline', maxLength: 20, default: '' },
+        rules: { type: 'array', items: { type: 'object', properties: { note: { type: 'string', format: 'multiline' } } } },
+        criteria: { type: 'object', properties: { urgent: { type: 'string', format: 'multiline' } } }
+      }
+    }
+    expect(compileSettingsSchema(s).ok).toBe(true)
+    const value = { profile: 'two\nlines', rules: [{ note: 'a\nb' }], criteria: { urgent: 'x\ny' } }
+    expect(validateSettings(s, value)).toEqual({ ok: true, value })
+    expect(validateSettings(s, { profile: 'x'.repeat(21) }).ok).toBe(false)
+    expect(validateSettings(s, { profile: 5 }).ok).toBe(false)
+  })
+
   it('does not honour $data', () => {
     const s = { type: 'object', properties: { a: { type: 'integer' }, b: { minimum: { $data: '1/a' } } } }
     // With $data off ajv rejects the non-numeric minimum at meta-schema time rather than resolving it.
