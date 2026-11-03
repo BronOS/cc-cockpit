@@ -23,6 +23,9 @@ load, the strip shows the title's first letter.
   without a bundler; an import from another host or a bare package name (`import 'lodash'`)
   fails (no import maps: they would be inline script). The frame is sandboxed with scripts
   only: its origin is opaque, so no `localStorage` or cookies; keep state in the host.
+- A panel or overlay page cannot submit a `<form>`: the frame is sandboxed without
+  `allow-forms`, so its `submit` event never fires (Enter in a field included). Use buttons
+  (`type="button"`) and act on their `click`.
 - Include the SDK first: `<script src="/__sdk/panel.js"></script>`. It defines `ccPanel`.
 
 ## `ccPanel`

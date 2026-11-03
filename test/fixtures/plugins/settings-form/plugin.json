@@ -1,0 +1,82 @@
+{
+  "id": "test.settingsform",
+  "name": "Settings form fixture",
+  "version": "1.0.0",
+  "api": 1,
+  "contributes": {
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string",
+            "title": "Profile",
+            "description": "Who you are and what you own: a few lines.",
+            "format": "multiline",
+            "maxLength": 8000,
+            "default": ""
+          },
+          "rules": {
+            "type": "array",
+            "title": "Rules",
+            "description": "Checked in order, first match wins.",
+            "maxItems": 20,
+            "default": [],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["field", "priority"],
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "title": "Field",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "contains": {
+                  "type": "string",
+                  "title": "Contains",
+                  "maxLength": 500
+                },
+                "priority": {
+                  "type": "string",
+                  "title": "Priority",
+                  "enum": ["urgent", "action", "fyi", "noise"],
+                  "default": "fyi"
+                }
+              }
+            }
+          },
+          "tags": {
+            "type": "array",
+            "title": "Tags",
+            "items": { "type": "string" },
+            "default": []
+          },
+          "criteria": {
+            "type": "object",
+            "title": "Priority choices",
+            "description": "One line per choice; empty keeps the built-in wording.",
+            "additionalProperties": false,
+            "properties": {
+              "urgent": { "type": "string", "title": "urgent", "default": "" },
+              "action": {
+                "type": "string",
+                "title": "action",
+                "format": "multiline",
+                "default": ""
+              }
+            },
+            "default": {}
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "minimum": 1,
+            "default": 10
+          }
+        }
+      }
+    }
+  }
+}

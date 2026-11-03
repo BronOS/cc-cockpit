@@ -2,10 +2,11 @@
 // `@rjsf/validator-ajv8` (ajv), which this page must not bundle (see noRendererValidation).
 import Form from '@rjsf/core/lib/components/Form.js'
 import type { RJSFSchema, ValidatorType, WidgetProps } from '@rjsf/utils'
-import { Component, createContext, useContext, useState } from 'react'
+import { Component, createContext, useContext, useEffect, useRef, useState } from 'react'
 import { errorText } from '../../shared/error-text'
 import type { PluginSettingsSaveResult, SecretEdits, SecretFieldsView } from '../../shared/ipc'
 import { ipcErrorMessage } from '../ipc-error'
+import { formatWidgets, formTemplates } from './plugin-form-templates'
 
 /**
  * rjsf's usual validator is ajv, which compiles a schema into a function with `new Function`:
@@ -13,7 +14,7 @@ import { ipcErrorMessage } from '../ipc-error'
  * the form gets a validator that checks nothing and the schema never reaches an ajv in the
  * renderer. main is the authority: it re-validates every save against the manifest's schema (no
  * regexes, no custom keywords, defaults applied: plugins/validate.ts) and answers with the
- * reasons, shown above the form.
+ * reasons, shown by the Save button.
  *
  * What a validator also does for rjsf is pick the matching branch of `oneOf`/`anyOf` and of
  * `if/then/else`: with `isValid` always true the first branch is the one shown. Settings schemas
@@ -138,7 +139,7 @@ function SecretWidget(props: WidgetProps): React.JSX.Element {
   )
 }
 
-const widgets = { secret: SecretWidget }
+const widgets = { ...formatWidgets, secret: SecretWidget }
 
 /** The edits worth sending: a typed value that is still empty is no change. */
 function secretsToSend(edits: SecretEdits): SecretEdits {
@@ -161,6 +162,19 @@ export function PluginSettingsForm(props: {
   onSaved: () => void
 }): React.JSX.Element {
   const [errors, setErrors] = useState<string[]>(props.problem !== undefined ? [props.problem] : [])
+  // Where the list stands: at the top for the stored values' problem, met when the form opens; by
+  // Save for a save's refusal. A long form (an array of rules) put the top list out of view, so a
+  // refused Save looked like it did nothing. Counted, so a second refusal with the same reasons
+  // still brings the list into view.
+  const [refusals, setRefusals] = useState(0)
+  const errorsRef = useRef<HTMLUListElement>(null)
+  const footerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (refusals === 0) return
+    // The list and the Save button under it, both in view when they fit.
+    footerRef.current?.scrollIntoView({ block: 'nearest' })
+    errorsRef.current?.focus({ preventScroll: true })
+  }, [refusals])
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
   // The form owns the values while it is edited. A reload that brings a different schema, stored
@@ -180,6 +194,7 @@ export function PluginSettingsForm(props: {
     setSecretFields(props.secretFields ?? {})
     setEdits({})
     setErrors(props.problem !== undefined ? [props.problem] : [])
+    setRefusals(0)
   }
   const secretState: SecretFormState = {
     fields: secretFields,
@@ -211,32 +226,40 @@ export function PluginSettingsForm(props: {
           props.onSaved()
         } else {
           setErrors(result.errors)
+          setRefusals((n) => n + 1)
         }
       },
       (err: unknown) => {
         setSaving(false)
         setErrors([ipcErrorMessage(err)])
+        setRefusals((n) => n + 1)
       }
     )
   }
 
+  // One list, never two: at the top or by Save (see `refusals`). Focusable so a refusal can move
+  // the keyboard there (tabIndex -1: not a stop in the Tab order).
+  const errorList =
+    errors.length > 0 ? (
+      <ul role="alert" ref={errorsRef} tabIndex={-1} className="settings-alert settings-form-errors">
+        {errors.map((e, i) => (
+          <li key={i}>{e}</li>
+        ))}
+      </ul>
+    ) : null
+
   return (
-    // A panel under the plugin's row; rjsf's unclassed markup is drawn as label / field rows by
-    // the `.settings-plugin-form` rules.
+    // A panel under the plugin's row; rjsf's markup (and the templates in plugin-form-templates)
+    // is drawn as label / field rows by the `.settings-plugin-form` rules.
     <div className="settings-subpanel settings-plugin-form">
-      {errors.length > 0 && (
-        <ul role="alert" className="settings-alert">
-          {errors.map((e, i) => (
-            <li key={i}>{e}</li>
-          ))}
-        </ul>
-      )}
+      {refusals === 0 && errorList}
       <FormBoundary>
         <SecretContext.Provider value={secretState}>
           <Form
             schema={props.schema as RJSFSchema}
             formData={data}
             widgets={widgets}
+            templates={formTemplates}
             validator={noRendererValidation}
             noValidate
             // The browser's own constraint check (min/max/required on the inputs) would block the
@@ -250,15 +273,18 @@ export function PluginSettingsForm(props: {
             }}
             onSubmit={(e) => submit((e.formData ?? {}) as Record<string, unknown>)}
           >
-            <div className="settings-form-actions">
-              <button type="submit" className="primary" disabled={saving}>
-                Save settings
-              </button>
-              {saved && (
-                <span role="status" className="settings-saved">
-                  Saved.
-                </span>
-              )}
+            <div ref={footerRef}>
+              {refusals > 0 && errorList}
+              <div className="settings-form-actions">
+                <button type="submit" className="primary" disabled={saving}>
+                  Save settings
+                </button>
+                {saved && (
+                  <span role="status" className="settings-saved">
+                    Saved.
+                  </span>
+                )}
+              </div>
             </div>
           </Form>
         </SecretContext.Provider>

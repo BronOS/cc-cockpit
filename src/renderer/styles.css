@@ -2696,18 +2696,23 @@ ul.settings-alert {
 }
 
 /* rjsf's default theme draws plain markup: each field is a label over its input in a .rjsf-field
-   (.rjsf-field-<type>; the root object is one too). Drawn here as the screen's rows, the label
-   left and the field right. */
+   (.rjsf-field-<type>; the root object is one too). Drawn here as the screen's rows: the label and
+   its description at the left, the field at the right in a column of one width at every level
+   (top level, nested object, array item), so the fields line up down the form. Arrays and nested
+   objects are fieldsets with a title (plugin-form-templates.tsx); the root's title is hidden. */
+/* The form is its own size container: in a narrow window (the settings column of a small window)
+   the fixed field column left the labels no room, a word a line; below the width the stacked rule
+   at the end of this block puts each label over its field instead, at every level at once. */
+.settings-plugin-form {
+  container: plugin-form / inline-size;
+}
 .settings-plugin-form fieldset {
   border: 0;
   margin: 0;
   padding: 0;
   min-width: 0;
 }
-.settings-plugin-form legend {
-  display: none;
-}
-.settings-plugin-form .rjsf-field:not(.rjsf-field-object) {
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object):not(fieldset) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
   column-gap: 16px;
@@ -2716,6 +2721,40 @@ ul.settings-alert {
 }
 .settings-plugin-form .rjsf-field:not(.rjsf-field-object) > :not(label):not(input):not(select):not(textarea):not(.settings-secret) {
   grid-column: 1 / -1;
+}
+/* A labelled field's description sits under its label, and the field beside both (centred on
+   them) rather than on a row of its own under the description. */
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label {
+  grid-column: 1;
+  grid-row: 1;
+}
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label + .field-description {
+  grid-column: 1;
+  grid-row: 2;
+}
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label ~ :is(input, select, .settings-secret) {
+  grid-column: 2;
+  grid-row: 1;
+}
+/* Spanning only when there is a description: over an empty second row the field's height would be
+   shared between the two, and the label would sit above the field's middle. */
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > label.control-label + .field-description ~ :is(input, select, .settings-secret) {
+  grid-row: 1 / span 2;
+}
+/* A multi-line field ("format": "multiline"): the full width under its label and description,
+   four rows to start and growing with the text (field-sizing) up to a scroll. */
+.settings-plugin-form .rjsf-field:not(.rjsf-field-object) > textarea {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+}
+.settings-plugin-form textarea.form-control {
+  height: auto;
+  min-height: calc(4lh + 14px);
+  max-height: 24lh;
+  padding: 6px 9px;
+  field-sizing: content;
+  resize: vertical;
+  line-height: 1.45;
 }
 /* A secret field (PluginSettingsForm SecretWidget): its state and buttons in the field column, at
    the right like the other controls; while replacing, the password field takes the room. */
@@ -2744,6 +2783,121 @@ ul.settings-alert {
   margin: 2px 0 0;
   font-size: var(--cc-text-sm);
   color: var(--cc-fg-muted);
+}
+/* The title of an array or a nested object: a heading over its description and fields. Floated
+   (full width) so it leaves the fieldset's border: a legend is otherwise drawn inside the top rule
+   below, with the rule running on beside the title. */
+.settings-plugin-form .settings-form-title {
+  float: left;
+  width: 100%;
+  padding: 0;
+  font-weight: 600;
+}
+.settings-plugin-form .settings-form-title + * {
+  clear: both;
+}
+/* An array or a nested object below a field: a gap and a rule above it, so it reads as a section. */
+.settings-plugin-form .rjsf-field-object .rjsf-field-object > fieldset,
+.settings-plugin-form .settings-form-array {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--cc-border);
+}
+.settings-plugin-form .rjsf-field-array {
+  padding-bottom: 0;
+}
+/* An array item's own object is the item's box (its header names it): no second section rule, and
+   its legend ("Rules-1", rjsf's) is for screen readers only. */
+.settings-plugin-form .settings-form-item-group > .rjsf-field-object > fieldset {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.settings-plugin-form .settings-form-item-group > .rjsf-field-object > fieldset > legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.settings-plugin-form .settings-form-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* An object item: a box with a header (its name, then move and remove at the right). */
+.settings-plugin-form .settings-form-item-group {
+  padding: 4px 12px 6px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-surface-1);
+}
+.settings-plugin-form .settings-form-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--cc-border);
+}
+.settings-plugin-form .settings-form-item-title {
+  font-size: var(--cc-text-sm);
+  font-weight: 600;
+  color: var(--cc-fg-muted);
+}
+.settings-plugin-form .settings-form-item-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: -6px;
+}
+/* A single-value item (an array of strings): the field, then its buttons, on one row. Its label
+   ("Tags-1", rjsf's) is for screen readers only. */
+.settings-plugin-form .settings-form-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-plugin-form .settings-form-item-body {
+  flex: 1;
+  min-width: 0;
+}
+.settings-plugin-form .settings-form-item-row .rjsf-field {
+  display: block;
+  padding: 0;
+}
+.settings-plugin-form .settings-form-item-row .rjsf-field > label.control-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.settings-plugin-form .settings-form-add {
+  margin-top: 8px;
+}
+/* A save's refusal, by the Save button (PluginSettingsForm `refusals`). */
+.settings-plugin-form .settings-form-errors {
+  margin: 14px 0 0;
+}
+.settings-plugin-form .settings-form-errors:focus {
+  outline: none;
+}
+/* Stacked: one column, each part on its own row. !important over the placements above, which
+   name a row and a column with more specific selectors than one rule here could match. */
+@container plugin-form (max-width: 520px) {
+  .settings-plugin-form .rjsf-field:not(.rjsf-field-object):not(fieldset) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 4px;
+  }
+  .settings-plugin-form .rjsf-field:not(.rjsf-field-object):not(fieldset) > * {
+    grid-column: 1 / -1 !important;
+    grid-row: auto !important;
+  }
 }
 /* A boolean: rjsf wraps the checkbox and its title in one label; the switch goes to the right. */
 .settings-plugin-form .checkbox label {

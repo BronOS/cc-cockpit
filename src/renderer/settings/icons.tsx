@@ -122,6 +122,15 @@ export function ArrowDownIcon(props: GlyphProps): React.JSX.Element {
   )
 }
 
+/** Add an entry (a plugin settings form's array). */
+export function PlusIcon(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <path d="M8 3.5v9M3.5 8h9" strokeWidth="1.5" />
+    </Glyph>
+  )
+}
+
 export function TrashIcon(props: GlyphProps): React.JSX.Element {
   return (
     <Glyph {...props}>
