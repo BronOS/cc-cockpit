@@ -125,7 +125,7 @@ test('the page enforces the note count and draft size caps of the host', () => {
 test('annotateInput: checks and caps every field', () => {
   const { annotateInput, MAX_ANNOTATE_TITLE, MAX_ANNOTATE_TEXT, MAX_ANNOTATE_KEY } = require('../dist/lib/review')
   const ok = annotateInput({ title: '  PROJ-1:\n Fix\tlogin ', text: '', url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
-  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
+  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null })
   // Title: one line, 1-200 chars.
   assert.equal(annotateInput({ title: 't'.repeat(MAX_ANNOTATE_TITLE), text: '' }).title.length, MAX_ANNOTATE_TITLE)
   assert.throws(() => annotateInput({ title: 't'.repeat(MAX_ANNOTATE_TITLE + 1), text: '' }), /title is over 200/)
@@ -158,6 +158,89 @@ test('annotateInput: checks and caps every field', () => {
   assert.notEqual(annotateInput({ title: 'Other', text: '' }).key, a)
   assert.throws(() => annotateInput({ title: 't', text: '', tabId: 7 }), /tabId must be a string/)
   assert.throws(() => annotateInput('PROJ-1'), /annotate takes/)
+})
+
+test('annotateInput: a companion is checked like the main document, with html only, and shares the asset budget', () => {
+  const { annotateInput, MAX_ANNOTATE_TITLE, MAX_ANNOTATE_HTML, MAX_ANNOTATE_ASIDE, MAX_ASSETS, MAX_ASSET_CHARS, MAX_ANNOTATE_LABEL, MAX_ANNOTATE_URL_LABEL } = require('../dist/lib/review')
+  const png = (n) => 'data:image/png;base64,' + 'A'.repeat(n)
+  const asset = (id, n = 4) => ({ id, mime: 'image/png', dataUrl: png(n) })
+  const main = { title: 'Mail', html: '<p>m</p>' }
+  const ok = annotateInput({ ...main, assets: [asset('a')], companion: { title: '  PROJ-1:\n Fix ', html: '<h1>PROJ-1</h1>', facts: '<dl class="facts"></dl>', url: 'https://x.example/browse/PROJ-1', assets: [{ ...asset('b'), name: 'b.png' }] } })
+  assert.deepEqual(ok.companion, {
+    title: 'PROJ-1: Fix',
+    html: '<h1>PROJ-1</h1>',
+    facts: '<dl class="facts"></dl>',
+    url: 'https://x.example/browse/PROJ-1',
+    assets: [{ id: 'b', name: 'b.png', mime: 'image/png', dataUrl: png(4) }],
+    label: 'PROJ-1: Fix',
+    urlLabel: null,
+  })
+  // Optional parts: absent or empty is none.
+  assert.deepEqual(annotateInput({ ...main, companion: { title: 'C', html: '', facts: '' } }).companion, { title: 'C', html: '', facts: null, url: null, assets: [], label: 'C', urlLabel: null })
+  // The header bars' labels: plain text made one line and bounded; a label defaults to the title, cut.
+  const labelled = annotateInput({ ...main, label: ' Mail ', urlLabel: 'Example\nMail', companion: { title: 'C', html: '', label: 'Jira · PROJ-1', urlLabel: 'Jira' } })
+  assert.deepEqual([labelled.label, labelled.urlLabel, labelled.companion.label, labelled.companion.urlLabel], ['Mail', 'Example Mail', 'Jira · PROJ-1', 'Jira'])
+  const long = annotateInput({ title: 'T'.repeat(100), html: '', companion: { title: 'C'.repeat(100), html: '' } })
+  assert.equal(long.label, 'T'.repeat(MAX_ANNOTATE_LABEL - 1) + '…')
+  assert.equal(long.companion.label, 'C'.repeat(MAX_ANNOTATE_LABEL - 1) + '…')
+  assert.throws(() => annotateInput({ ...main, label: 'x'.repeat(MAX_ANNOTATE_LABEL + 1) }), /label is over 60 characters/)
+  assert.throws(() => annotateInput({ ...main, urlLabel: 'x'.repeat(MAX_ANNOTATE_URL_LABEL + 1) }), /urlLabel is over 30 characters/)
+  assert.throws(() => annotateInput({ ...main, label: ' ' }), /label must not be empty/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', label: 5 } }), /companion\.label must be a string/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', urlLabel: '' } }), /companion\.urlLabel must not be empty/)
+  assert.equal(annotateInput({ ...main, companion: null }).companion, null)
+  // With html only, and an object with a title and html.
+  assert.throws(() => annotateInput({ title: 't', text: 'x', companion: { title: 'C', html: '' } }), /companion goes with html, not text/)
+  assert.throws(() => annotateInput({ ...main, companion: 'PROJ-1' }), /companion must be \{ title, html/)
+  assert.throws(() => annotateInput({ ...main, companion: [] }), /companion must be \{ title, html/)
+  assert.throws(() => annotateInput({ ...main, companion: { html: '' } }), /companion\.title must be a string/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: ' ', html: '' } }), /companion\.title must not be empty/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 't'.repeat(MAX_ANNOTATE_TITLE + 1), html: '' } }), /companion\.title is over 200/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C' } }), /companion\.html must be a string/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: 'a\0' } }), /companion\.html contains a NUL/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: 'x'.repeat(MAX_ANNOTATE_HTML + 1) } }), /companion\.html is larger than 2 MiB/)
+  assert.equal(annotateInput({ ...main, companion: { title: 'C', html: 'x'.repeat(MAX_ANNOTATE_HTML) } }).companion.html.length, MAX_ANNOTATE_HTML)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', facts: 'a'.repeat(MAX_ANNOTATE_ASIDE + 1) } }), /companion\.facts is over 100000/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', facts: 5 } }), /companion\.facts must be a string of HTML/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', url: 'javascript:x' } }), /companion\.url must be http or https/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', url: 'https://x/a b' } }), /companion\.url must not contain whitespace/)
+  // Assets: one id namespace and one budget (30 and 8 MiB) for both documents.
+  assert.throws(() => annotateInput({ ...main, assets: [asset('a')], companion: { title: 'C', html: '', assets: [asset('a')] } }), /companion\.assets\[0\]\.id a is used twice \(the ids of assets and companion\.assets are one namespace\)/)
+  const many = (n, p) => Array.from({ length: n }, (_, i) => asset(`${p}${i}`))
+  assert.equal(annotateInput({ ...main, assets: many(20, 'm'), companion: { title: 'C', html: '', assets: many(MAX_ASSETS - 20, 'c') } }).companion.assets.length, MAX_ASSETS - 20)
+  assert.throws(() => annotateInput({ ...main, assets: many(20, 'm'), companion: { title: 'C', html: '', assets: many(MAX_ASSETS - 19, 'c') } }), /at most 30 assets \(assets and companion\.assets together\)/)
+  const big = (id) => ({ id, mime: 'image/png', dataUrl: png(MAX_ASSET_CHARS - 22) })
+  const five = ['m1', 'm2', 'm3', 'm4', 'm5'].map(big)
+  assert.equal(annotateInput({ ...main, assets: five, companion: { title: 'C', html: '', assets: [big('c1'), big('c2'), big('c3')] } }).companion.assets.length, 3)
+  assert.throws(() => annotateInput({ ...main, assets: five, companion: { title: 'C', html: '', assets: [big('c1'), big('c2'), big('c3'), big('c4')] } }), /assets are over 8 MiB in all \(assets and companion\.assets together\)/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', assets: [{ id: 'x', mime: 'image/svg+xml', dataUrl: 'data:image/svg+xml;base64,AA' }] } }), /companion\.assets\[0\]\.mime must be one of/)
+  assert.throws(() => annotateInput({ ...main, companion: { title: 'C', html: '', assets: {} } }), /companion\.assets must be an array/)
+  // The main document's own messages are unchanged.
+  assert.throws(() => annotateInput({ ...main, assets: many(MAX_ASSETS + 1, 'm') }), /at most 30 assets$/)
+})
+
+test('buildAnnotation: with a companion the head names it and its notes say they are in it, after the main ones', () => {
+  const { buildAnnotation, cleanDraft } = require('../dist/lib/review')
+  const anchor = (at) => ({ prefix: '', suffix: '', occurrence: 0, length: 5, at })
+  const draft = {
+    global: '',
+    notes: [
+      { id: 'c', quote: 'issue', anchor: anchor(0), text: 'In the issue.', doc: 'companion' },
+      { id: 'm', quote: 'mail.', anchor: anchor(40), text: 'In the mail.' },
+      { id: 'e', quote: '', anchor: anchor(9), text: 'Whole issue.', doc: 'companion' },
+    ],
+  }
+  // cleanDraft keeps `doc` only as 'companion'.
+  assert.deepEqual(cleanDraft({ notes: [{ ...draft.notes[0], doc: 'other' }] }).notes[0].doc, undefined)
+  assert.equal(cleanDraft(draft).notes[0].doc, 'companion')
+  const a = { title: 'Re: login', url: 'https://mail.example/1', companion: { title: 'PROJ-1: Fix login', url: 'https://x.example/browse/PROJ-1' } }
+  assert.equal(
+    buildAnnotation(draft, a).text,
+    'About Re: login (https://mail.example/1), with PROJ-1: Fix login (https://x.example/browse/PROJ-1) beside it\n\n' +
+      '1. On «mail.»: In the mail.\n\n2. In PROJ-1: Fix login, on «issue»: In the issue.\n\n3. In PROJ-1: Fix login, on the text: Whole issue.',
+  )
+  // A companion note with no companion this time (the caller sent none): it still says where it was.
+  assert.match(buildAnnotation(draft, { title: 'Re: login', url: null }).text, /^About Re: login\n\n1\. On «mail\.»: In the mail\.\n\n2\. In the document beside it, on «issue»/)
 })
 
 test('annotateInput: aside is optional HTML of at most 100,000 characters, with text or html', () => {

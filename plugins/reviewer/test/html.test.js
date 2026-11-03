@@ -242,3 +242,35 @@ test('isPlainClick: a click opens a link; a drag-select, a double click or a mov
   assert.equal(isPlainClick(null, { x: 0, y: 0, sel: none, collapsed: true, detail: 1 }), false)
   assert.equal(isPlainClick(null, { x: 0, y: 0, sel: picked, collapsed: false, detail: 0 }), true)
 })
+
+test('split: the divider stays within the host\'s bounds; a selection belongs to the column it starts in', async () => {
+  const { clampSplit, splitAt, splitKey, selectionDoc, SPLIT_MIN, SPLIT_MAX, SPLIT_DEFAULT, SPLIT_STEP } = await load('split.mjs')
+  const reviewerHost = require('../dist/host.js')
+  assert.equal(SPLIT_MIN, reviewerHost.SPLIT_MIN)
+  assert.equal(SPLIT_MAX, reviewerHost.SPLIT_MAX)
+  assert.equal(SPLIT_DEFAULT, 0.5)
+  for (const [v, want] of [[0.33333, 0.333], [0, SPLIT_MIN], [1, SPLIT_MAX], [NaN, 0.5], ['0.3', 0.5], [null, 0.5], [undefined, 0.5], [Infinity, 0.5]]) assert.equal(clampSplit(v), want, String(v))
+  assert.equal(splitAt(300, 100, 800), 0.25)
+  assert.equal(splitAt(0, 100, 800), SPLIT_MIN)
+  assert.equal(splitAt(5000, 100, 800), SPLIT_MAX)
+  assert.equal(splitAt(300, 100, 0), 0.5) // a row not laid out yet
+  assert.equal(splitKey(0.5, 'ArrowLeft'), 0.5 - SPLIT_STEP)
+  assert.equal(splitKey(0.5, 'ArrowRight'), 0.5 + SPLIT_STEP)
+  assert.equal(splitKey(SPLIT_MAX, 'ArrowRight'), SPLIT_MAX)
+  assert.equal(splitKey(0.5, 'Home'), SPLIT_MIN)
+  assert.equal(splitKey(0.5, 'End'), SPLIT_MAX)
+  assert.equal(splitKey(0.5, 'a'), null)
+  // The column it starts in, else the first it touches, else none.
+  assert.equal(selectionDoc([{ touches: true, starts: false }, { touches: true, starts: true }]), 1)
+  assert.equal(selectionDoc([{ touches: true, starts: true }, { touches: true, starts: false }]), 0)
+  assert.equal(selectionDoc([{ touches: false, starts: false }, { touches: true, starts: false }]), 1)
+  assert.equal(selectionDoc([{ touches: false, starts: false }, { touches: false, starts: false }]), -1)
+  assert.equal(selectionDoc([]), -1)
+})
+
+test('openLabel: the header button names the site the caller gave, else the browser', async () => {
+  const { openLabel } = await load('split.mjs')
+  assert.equal(openLabel('Jira'), 'Open in Jira ↗')
+  assert.equal(openLabel(null), 'Open in browser ↗')
+  assert.equal(openLabel('Example Mail', false), 'Open in Example Mail')
+})

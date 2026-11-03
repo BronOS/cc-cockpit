@@ -10,8 +10,8 @@ import { Splitter } from './Splitter'
 
 /** Room the terminal keeps beside (or above) a zone that is dragged wider (taller). */
 const MIN_CENTRE = 160
-/** Mirrors the 70vw / 70vh cap on .panel-area in styles.css. */
-const MAX_ZONE_SHARE = 0.7
+/** Mirrors the 70vw / 70vh cap on .panel-area in styles.css (also the width auto-hide counts, use-auto-hide.ts). */
+export const MAX_ZONE_SHARE = 0.7
 
 /** Rendered length of an element along x (width) or y (height); 0 for none. */
 function lengthOf(el: Element | null | undefined, horizontal: boolean): number {

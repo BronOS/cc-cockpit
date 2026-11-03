@@ -364,6 +364,24 @@ left / right / bottom, or hide) opens from the "…" button in a panel's header 
 its icon. Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
 keeps its strip, captioned "Bottom zone collapsed" with its key.
 
+**Auto-hide.** The terminal is the priority. When the window narrows so the centre would be under
+the minimum terminal width (Settings › Appearance and keys › Side panels; `app.json` › `zoneAutoHide`,
+default on, and `minTerminalWidth`, default 720 px, 400 to 2000), the right zone's panel area hides
+first, then the left one's; widening brings them back in reverse (left, then right), each only when
+the centre keeps the minimum plus a 48 px margin with it shown, so a window resting at the threshold
+does not flap. Widths are the zones' saved sizes (capped at 70vw like the CSS). The decision is the
+renderer's, a pure function (`renderer/zones/auto-hide.ts`) fed by a ResizeObserver on the zones' row
+(`use-auto-hide.ts`). Auto-hidden is the window's own state, never written to the layout: the zone stays
+expanded with its panels open in the record, it is drawn like a collapsed zone (strip only), and a
+zone the person closed (collapsed, or no panel open) is never auto-hidden, so it never comes back on
+its own. Hiding is checked only when something the person did not ask for narrowed the terminal: the
+window shrank, the minimum went up or the setting on, or panels appeared (the first layout, a plugin's
+declaration). Opening a zone or dragging one wider is the person's pick and hides nothing. A request
+to see an auto-hidden zone shows it: an icon click (opening the panel if it was closed), the zone's
+toggle key, a panel opened or moved into it, or a panel show (`ctx.panels.show`, `ccc panel show`;
+main publishes the view with `reveal` even when the layout did not change). It then stays until the
+window next shrinks.
+
 **Window chrome.** One bar across the top (variant A of the window redesign): the project's
 folder glyph, name and path, then the strip (above), then the gear. On macOS the bar is the
 window's title bar: project windows use `titleBarStyle: 'hiddenInset'` with the traffic lights

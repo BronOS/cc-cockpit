@@ -718,3 +718,146 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
   assert.equal(store.size, 0)
   host.deactivate()
 })
+
+test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
+  const f = setup({ editorAvailable: false })
+  host.activate(f.ctx)
+  assert.deepEqual(await f.provided.reviewer.features(), ['companion'])
+  assert.deepEqual(host.FEATURES, ['companion'])
+  // A copy: a caller changing the answer changes nothing here.
+  ;(await f.provided.reviewer.features()).push('x')
+  assert.deepEqual(await f.provided.reviewer.features(), ['companion'])
+  host.deactivate()
+})
+
+test('annotate companion: the init names it, its parts and facts follow the main ones, assets are one set', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.openExternal = async () => {}
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const big = '<p>' + '"'.repeat(900000) + '</p>'
+  const PNG2 = PNG.replace('AAAA', 'AAAB')
+  await f.provided.reviewer.annotate({
+    title: 'Re: login',
+    html: '<h1>Re: login</h1>',
+    aside: '<dl class="facts"><dt>From</dt><dd>Ann</dd></dl>',
+    assets: [{ id: 'm1', mime: 'image/png', dataUrl: PNG }],
+    url: 'https://mail.example/1',
+    key: 'mail:1',
+    label: 'Mail',
+    urlLabel: 'Example Mail',
+    companion: { title: 'PROJ-1: Fix login', label: 'Jira · PROJ-1', urlLabel: 'Jira', html: big, facts: '<dl class="facts"><dt>Status</dt><dd>Open</dd></dl>', url: 'https://x.example/browse/PROJ-1', assets: [{ id: 'j1', name: 'j.png', mime: 'image/png', dataUrl: PNG2 }] },
+  })
+  const h = f.handles[0]
+  const init = h.posts[0]
+  assert.deepEqual(init.sides.companion, { title: 'PROJ-1: Fix login', url: 'https://x.example/browse/PROJ-1', htmlParts: init.sides.companion.htmlParts, facts: true, label: 'Jira · PROJ-1', urlLabel: 'Jira' })
+  assert.equal(init.sides.label, 'Mail')
+  assert.equal(init.sides.urlLabel, 'Example Mail')
+  assert.ok(init.sides.companion.htmlParts >= 2)
+  assert.deepEqual(init.sides.assets, [{ id: 'm1', name: null, mime: 'image/png' }, { id: 'j1', name: 'j.png', mime: 'image/png' }])
+  assert.equal(init.split, 0.5) // nothing stored yet
+  assert.equal(init.canOpenCompanionUrl, true)
+  assert.equal(init.sides.aside, true)
+  assert.ok(JSON.stringify(init).length < 10000)
+  h.say({ type: 'content' })
+  const rest = h.posts.slice(1)
+  assert.deepEqual(rest.slice(0, 3), [
+    { type: 'aside', html: '<dl class="facts"><dt>From</dt><dd>Ann</dd></dl>' },
+    { type: 'aside', doc: 'companion', html: '<dl class="facts"><dt>Status</dt><dd>Open</dd></dl>' },
+    { type: 'html', index: 0, part: '<h1>Re: login</h1>' },
+  ])
+  const cParts = rest.filter((m) => m.type === 'html' && m.doc === 'companion')
+  assert.equal(cParts.length, init.sides.companion.htmlParts)
+  assert.deepEqual(cParts.map((m) => m.index), [...cParts.keys()])
+  assert.equal(cParts.map((m) => m.part).join(''), big)
+  assert.deepEqual(rest.slice(3 + cParts.length), [{ type: 'asset', id: 'm1', dataUrl: PNG }, { type: 'asset', id: 'j1', dataUrl: PNG2 }, { type: 'assets-done' }])
+  for (const m of rest) assert.ok(JSON.stringify(m).length <= PAGE_MESSAGE_MAX)
+  // Without a companion the init says nothing of one (today's layout, no divider).
+  await f.provided.reviewer.annotate({ title: 'Plain', html: '<p>x</p>' })
+  const plain = f.handles[1].posts[0]
+  assert.equal(plain.sides.companion, undefined)
+  assert.equal(plain.split, undefined)
+  assert.equal(plain.canOpenCompanionUrl, undefined)
+  assert.equal(plain.sides.label, undefined) // no header bars without a companion
+  host.deactivate()
+})
+
+test('annotate companion: its icon opens its own url, its links join the allow-set, the divider is remembered app-wide', async () => {
+  const f = setup({ editorAvailable: false })
+  const opened = []
+  f.ctx.openExternal = async (url) => opened.push(url)
+  const app = new Map([['companionSplit', 0.7]])
+  f.ctx.appStorage = { get: async (k) => app.get(k) ?? null, set: async (k, v) => app.set(k, v) }
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({
+    title: 'Re: login',
+    html: '<a href="https://mail.example/a">a</a>',
+    url: 'https://mail.example/1',
+    key: 'mail:1',
+    companion: { title: 'PROJ-1', html: '<a href="https://x.example/browse/PROJ-2">PROJ-2</a>', facts: '<a href=https://x.example/people/ann>Ann</a>', url: 'https://x.example/browse/PROJ-1' },
+  })
+  const h = f.handles[0]
+  assert.equal(h.posts[0].split, 0.7)
+  const errors = () => h.posts.filter((m) => m.type === 'error').map((m) => m.message)
+  h.say({ type: 'open-url' })
+  h.say({ type: 'open-url', doc: 'companion', url: 'https://evil.example/' })
+  for (const href of ['https://mail.example/a', 'https://x.example/browse/PROJ-2', 'https://x.example/people/ann', 'https://evil.example/']) h.say({ type: 'open-link', href })
+  await wait(10)
+  assert.deepEqual(opened, ['https://mail.example/1', 'https://x.example/browse/PROJ-1', 'https://mail.example/a', 'https://x.example/browse/PROJ-2', 'https://x.example/people/ann'])
+  assert.deepEqual(errors(), ['Not opened: not a link of this document'])
+  // The divider: a value within the bounds is stored; anything else is not.
+  for (const split of [0.35, 0.1, 0.9, '0.5', NaN, null]) h.say({ type: 'split', split })
+  await wait(10)
+  assert.equal(app.get('companionSplit'), 0.35)
+  // A stored value out of bounds (an older copy, a hand edit) opens at half and half.
+  app.set('companionSplit', 3)
+  await f.provided.reviewer.annotate({ title: 'B', html: '<p>b</p>', companion: { title: 'C', html: '<p>c</p>' } })
+  const h2 = f.handles[1]
+  assert.equal(h2.posts[0].split, 0.5)
+  assert.equal(h2.posts[0].canOpenCompanionUrl, false) // no url: no icon, and an open-url opens nothing
+  assert.equal(h2.posts[0].sides.companion.facts, false)
+  h2.say({ type: 'open-url', doc: 'companion' })
+  // No companion: a split message is not stored.
+  await f.provided.reviewer.annotate({ title: 'D', html: '<p>d</p>' })
+  f.handles[2].say({ type: 'split', split: 0.4 })
+  await wait(10)
+  assert.equal(opened.length, 5)
+  assert.equal(app.get('companionSplit'), 3)
+  host.deactivate()
+})
+
+test('annotate companion: Discuss names the companion and says which notes are in it', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  const sent = []
+  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
+  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Re: login', html: '<p>Is it fixed?</p>', key: 'mail:1', companion: { title: 'PROJ-1: Fix login', html: '<p>Redirect to /home.</p>', url: 'https://x.example/browse/PROJ-1' } })
+  const h = f.handles[0]
+  const draft = {
+    global: '',
+    notes: [
+      { id: 'n2', quote: 'Redirect', anchor: { prefix: '', suffix: ' to /home.', occurrence: 0, length: 8, at: 0 }, text: 'Which one?', doc: 'companion' },
+      { id: 'n1', quote: 'fixed', anchor: { prefix: 'Is it ', suffix: '?', occurrence: 0, length: 5, at: 6 }, text: 'Not yet.' },
+    ],
+  }
+  h.say({ type: 'draft', draft })
+  await wait(SAVE_WAIT)
+  assert.equal(store.get('annotate:mail:1').notes[0].doc, 'companion')
+  h.end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft } })
+  await wait(50)
+  assert.deepEqual(sent, [['t1', 'About Re: login, with PROJ-1: Fix login (https://x.example/browse/PROJ-1) beside it\n\n1. On «fixed»: Not yet.\n\n2. In PROJ-1: Fix login, on «Redirect»: Which one?']])
+  host.deactivate()
+})
+
+test('annotate companion: bad input is refused before any overlay', async () => {
+  const f = setup({ editorAvailable: false })
+  host.activate(f.ctx)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', companion: { title: 'C', html: '' } }), /^Error: reviewer: companion goes with html, not text/)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', html: 'x', companion: { title: 'C', html: '', url: 'ftp://x/' } }), /^Error: reviewer: companion\.url must be http or https/)
+  assert.equal(f.handles.length, 0)
+  host.deactivate()
+})

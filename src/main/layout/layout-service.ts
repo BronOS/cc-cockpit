@@ -147,8 +147,10 @@ export class LayoutService {
 
   /**
    * Show a panel (ctx.panels.show): unhidden, opened, its zone expanded (shared/layout.ts
-   * showPanel). Stores and publishes like a user edit when that changes anything. False for a panel
-   * the project does not have now.
+   * showPanel). Stores like a user edit when that changes anything. Publishes either way, with
+   * `reveal` set: a panel already open in an expanded zone may still be off screen because the
+   * window auto-hid that zone for a narrow terminal (renderer/zones/auto-hide.ts), which the stored
+   * layout does not record. False for a panel the project does not have now.
    */
   show(projectId: string, panelKey: string): boolean {
     if (!this.hasKey(projectId, panelKey)) return false
@@ -157,9 +159,8 @@ export class LayoutService {
     const current = reconcile(stored, this.available(projectId))
     const fallback = this.available(projectId).find((p) => p.panelKey === panelKey)?.defaultZone ?? 'left'
     const next = showPanel(current, panelKey, fallback)
-    if (next === current) return true
-    const view = this.set(projectId, next)
-    if (view) this.deps.publish(projectId, view)
+    const view = next === current ? this.view(projectId) : this.set(projectId, next)
+    if (view) this.deps.publish(projectId, { ...view, reveal: panelKey })
     return true
   }
 

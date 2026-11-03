@@ -484,6 +484,10 @@ export interface ShellPrefs {
   tabCloseSide: TabCloseSide
   /** Changed files each session lists in the Sessions panel before "Show all" (AppSettings.sessionFilesShown). */
   sessionFilesShown: number
+  /** Hide the side zones while the terminal would be narrower than `minTerminalWidth` (AppSettings.zoneAutoHide). */
+  zoneAutoHide: boolean
+  /** The terminal's minimum width in px for the zone auto-hide (AppSettings.minTerminalWidth). */
+  minTerminalWidth: number
   /** What every terminal draws with (tabs and terminal overlays). */
   terminalFont: TerminalFont
   /**
@@ -525,6 +529,10 @@ export interface AppearanceView {
   sessionGist: boolean
   /** Changed files each session lists before "Show all" (AppSettings.sessionFilesShown, default applied). */
   sessionFilesShown: number
+  /** Auto-hide the side zones when the terminal gets narrow (AppSettings.zoneAutoHide, default on). */
+  zoneAutoHide: boolean
+  /** The terminal's minimum width for it (AppSettings.minTerminalWidth, default applied). */
+  minTerminalWidth: number
   /** Ask before closing a tab that is still running (AppSettings.confirmTabClose, default applied). */
   confirmTabClose: boolean
   /** Which end of each tab the close button sits at (AppSettings.tabCloseSide, default applied). */
@@ -567,6 +575,13 @@ export interface CccCommandView {
 export interface LayoutView {
   layout: LayoutState
   panels: PanelInfo[]
+  /**
+   * Set on the view a panel show publishes (ctx.panels.show, `ccc panel show`): the panel asked
+   * for. The layout says it is open in an expanded zone, but the window may have auto-hidden that
+   * zone (renderer/zones/auto-hide.ts), which the stored layout does not know; this is what brings
+   * it back. A show that changes nothing in the layout still publishes, for this.
+   */
+  reveal?: string
 }
 
 export type OverlayKind = 'terminal' | 'url' | 'html'
@@ -783,6 +798,10 @@ export interface IpcInvokeMap {
   'settings.sessionGistSet': { req: { value: boolean }; res: void }
   /** How many changed files each session lists in the Sessions panel (AppSettings.sessionFilesShown). Every window follows. */
   'settings.sessionFilesShownSet': { req: { value: number }; res: void }
+  /** Hide the side zones when the terminal gets narrow, or never (AppSettings.zoneAutoHide). Every window follows. */
+  'settings.zoneAutoHideSet': { req: { value: boolean }; res: void }
+  /** The terminal's minimum width for the zone auto-hide (AppSettings.minTerminalWidth). Every window follows. */
+  'settings.minTerminalWidthSet': { req: { value: number }; res: void }
   /**
    * Whether closing a running tab asks first (AppSettings.confirmTabClose, default applied). Read
    * by the tab bar at each close, like `tabs.commands` at each menu open, so a change made in any
@@ -1049,6 +1068,8 @@ export const INVOKE_CHANNELS = [
   'settings.claudeTabOnOpenSet',
   'settings.sessionGistSet',
   'settings.sessionFilesShownSet',
+  'settings.zoneAutoHideSet',
+  'settings.minTerminalWidthSet',
   'settings.confirmTabClose',
   'settings.confirmTabCloseSet',
   'settings.tabCloseSideSet',

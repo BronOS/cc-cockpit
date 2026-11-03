@@ -87,6 +87,13 @@ behind it are in [design.md](design.md).
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
+- Side zones give way to a narrow terminal (Settings > Appearance and keys > Side panels, on by default, minimum
+  terminal width 720 px, 400 to 2000): when the window narrows so the terminal would be under the minimum, the right
+  zone's panels hide first, then the left one's; as it widens they come back, left first, each once the terminal keeps
+  the minimum plus 48 px with it shown (no flapping at the threshold). The icon strips stay; a click on an icon, the
+  zone's toggle key or `ctx.panels.show` shows a hidden zone, and it stays until the window next shrinks. Only zones the
+  app hid come back: one the person closed stays closed, and the saved layout never records an auto-hide. A zone dragged
+  wider never pushes the other one out; the window's next shrink decides.
 - Two-way html overlays: `ctx.overlay.start(spec)` returns `{ result, post, onMessage, close }`; the page's
   `ccPanel.post(message)` without a `result` key reaches `onMessage` and keeps the overlay open, `ccPanel.post({ result })`
   still closes it, and the host's posts wait until the page has loaded. Messages up to 1 MiB less 8 KiB, routed by main
@@ -148,7 +155,11 @@ behind it are in [design.md](design.md).
   highlighted again when the draft reopens. No header row repeats the title (the overlay's title bar has it);
   the caller's `url` is an open-in-browser icon at the end of the document's first heading (the link opens in the
   system browser); key fields can show as a compact grid with coloured lozenges and name chips, or in a details column at the right
-  (`aside`); the notes are a compact list under the comment, with no sidebar; links in the HTML and the details column open in the system browser on a click (http and https only, and only links present in what the caller sent; a drag-select ending on a link does not open it). Esc closes the review even while an
+  (`aside`); the notes are a compact list under the comment, with no sidebar; links in the HTML and the details column open in the system browser on a click (http and https only, and only links present in what the caller sent; a drag-select ending on a link does not open it). A caller can hand a second document to show beside
+  the first (`companion`: the Jira issue a mail is about): two columns side by side, each scrolling on its own under
+  a header row that stays put (each column's label, an "Open in Gmail ↗" / "Open in Jira ↗" style button and its key
+  fields, both cells the same height), a divider you drag (remembered), each header above its own document when the
+  overlay is narrow; notes go on either, and Claude is told which document each is in. Esc closes the review even while an
   image is shown larger. The tab picker starts on the tab you are looking at unless the caller names one.
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour

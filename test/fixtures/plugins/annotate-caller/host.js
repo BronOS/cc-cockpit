@@ -41,6 +41,26 @@ const HTML = `
 <p><img src="asset:never-sent" alt="Missing picture"></p>
 `
 
+// The companion command: a mail with the issue it is about beside it (annotate's `companion`), each
+// with its own facts; the issue is long, so its column scrolls while the mail's does not.
+const MAIL = `
+<div class="card"><h1>Re: the login redirect</h1></div>
+<div class="card"><p>Is the redirect fixed in the second step yet?</p></div>
+`
+const MAIL_FACTS = '<dl class="facts"><dt>From</dt><dd><span class="person">Ann Lee</span></dd></dl>'
+const ISSUE =
+  '<div class="card"><h1>PROJ-1: Fix the login redirect</h1></div>' +
+  '<p>Users land on the wrong page after the second step.</p>' +
+  '<p>See <a href="https://example.atlassian.net/browse/PROJ-3">PROJ-3</a> too.</p>' +
+  Array.from({ length: 80 }, (_, i) => `<p>Comment ${i + 1} on the issue.</p>`).join('') +
+  '<p><img src="asset:issue-shot" alt="Issue screenshot"></p>'
+// Four rows of facts beside the mail's one: the header cells must still be the same height.
+const ISSUE_FACTS =
+  '<dl class="facts"><dt>Status</dt><dd><span class="lozenge lozenge-info">In progress</span></dd>' +
+  '<dt>Priority</dt><dd>High</dd><dt>Assignee</dt><dd><span class="person">Ann Lee</span></dd>' +
+  '<dt>Reporter</dt><dd><span class="person">Bob Stone</span></dd><dt>Sprint</dt><dd>Sprint 7</dd>' +
+  '<dt>Labels</dt><dd>login, redirect</dd><dt>Components</dt><dd>Auth</dd><dt>Fix version</dt><dd>2.0</dd></dl>'
+
 exports.activate = (ctx) => {
   const file = path.join(process.env.HOME, 'annotate-caller.json')
   const seen = { calls: [] }
@@ -57,6 +77,33 @@ exports.activate = (ctx) => {
         key: 'jira:PROJ-1',
       })
       seen.calls.push({ ok: true, value: r })
+    } catch (err) {
+      seen.calls.push({ ok: false, error: String(err && err.message ? err.message : err) })
+    }
+    save()
+  })
+  ctx.commands.register('companion', async () => {
+    try {
+      const features = await reviewer.features()
+      const r = await reviewer.annotate({
+        title: 'Re: the login redirect',
+        html: MAIL,
+        aside: MAIL_FACTS,
+        url: 'https://mail.example.com/thread/1',
+        key: 'mail:1',
+        label: 'Mail',
+        urlLabel: 'Example Mail',
+        companion: {
+          title: 'PROJ-1: Fix the login redirect',
+          label: 'Jira · PROJ-1',
+          urlLabel: 'Jira',
+          html: ISSUE,
+          facts: ISSUE_FACTS,
+          url: 'https://example.atlassian.net/browse/PROJ-1',
+          assets: [{ id: 'issue-shot', name: 'issue.png', mime: 'image/png', dataUrl: PNG }],
+        },
+      })
+      seen.calls.push({ ok: true, value: r, features })
     } catch (err) {
       seen.calls.push({ ok: false, error: String(err && err.message ? err.message : err) })
     }

@@ -2,7 +2,8 @@
 // keybinding overrides, what a tab does when its process exits (`tabExit`) and whether a project
 // that opens empty gets a Claude tab (`claudeTabOnOpen`), whether Haiku writes a gist of each Claude
 // session (`sessionGist`, main/sessions/session-gist.ts), whether closing a running tab asks first
-// (`confirmTabClose`), which end of a tab its close button sits at (`tabCloseSide`), the terminals'
+// (`confirmTabClose`), which end of a tab its close button sits at (`tabCloseSide`), whether the side
+// zones give way to a narrow terminal (`zoneAutoHide`, `minTerminalWidth`), the terminals'
 // font (`terminalFont`; checks in terminal-font.ts), the see-through window background
 // (`windowBackground`; checks in window-background.ts), and shows the app-wide new-tab menu entries
 // (`tabCommands`; saved by TabCommandsService, main/tabs/tab-commands.ts). Plain TypeScript over injected pieces; the router passes the asking
@@ -33,6 +34,7 @@ import type { Theme } from '../../shared/theme'
 import type { TerminalFont } from '../../shared/terminal-font'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
 import type { BlurSupport, WindowBackground } from '../../shared/window-background'
+import { MIN_TERMINAL_WIDTH_RANGE, minTerminalWidthOf, zoneAutoHideOf } from '../../shared/zone-auto-hide'
 import type { CommandRegistry } from '../commands/command-registry'
 import { tabCommandsOf } from '../tabs/tab-commands'
 import { storedTerminalFontFields, terminalFontOf, terminalFontPatchOf } from './terminal-font'
@@ -80,6 +82,12 @@ export interface AppearanceDeps {
    * a change is pushed to every window (`prefsChanged`), like `tabCloseSide`.
    */
   sessionFilesShown: { get(): unknown; set(next: number): void }
+  /**
+   * `app.json` › `zoneAutoHide` and `minTerminalWidth`, as stored (unvalidated). Each window decides
+   * from them as it lays out its zones, so a change is pushed to every window (`prefsChanged`).
+   */
+  zoneAutoHide: { get(): unknown; set(next: boolean): void }
+  minTerminalWidth: { get(): unknown; set(next: number): void }
   /**
    * `app.json` › `confirmTabClose`, as stored (unvalidated). The renderer reads it at each close a
    * user starts (`settings.confirmTabClose`), so a change applies to the next close in any window.
@@ -163,6 +171,8 @@ export class AppearanceService {
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
       sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
+      zoneAutoHide: zoneAutoHideOf(this.deps.zoneAutoHide.get()),
+      minTerminalWidth: minTerminalWidthOf(this.deps.minTerminalWidth.get()),
       confirmTabClose: this.confirmTabClose(),
       tabCloseSide: tabCloseSideOf(this.deps.tabCloseSide.get()),
       terminalFont: terminalFontOf(this.deps.terminalFont.get()),
@@ -223,6 +233,23 @@ export class AppearanceService {
     this.deps.prefsChanged()
   }
 
+  /** Hide the side zones when the terminal gets narrow (true), or never; every window follows. */
+  setZoneAutoHide(value: unknown): void {
+    if (typeof value !== 'boolean') throw new Error('give true or false')
+    this.deps.zoneAutoHide.set(value)
+    this.deps.prefsChanged()
+  }
+
+  /** The terminal's minimum width (px) below which a side zone gives way; every window follows. */
+  setMinTerminalWidth(value: unknown): void {
+    const { min, max } = MIN_TERMINAL_WIDTH_RANGE
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`give a whole number from ${min} to ${max}`)
+    }
+    this.deps.minTerminalWidth.set(value)
+    this.deps.prefsChanged()
+  }
+
   /** Whether closing a running tab asks first (default applied). */
   confirmTabClose(): boolean {
     return confirmTabCloseOf(this.deps.confirmTabClose.get())
@@ -239,6 +266,8 @@ export class AppearanceService {
     return {
       tabCloseSide: tabCloseSideOf(this.deps.tabCloseSide.get()),
       sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
+      zoneAutoHide: zoneAutoHideOf(this.deps.zoneAutoHide.get()),
+      minTerminalWidth: minTerminalWidthOf(this.deps.minTerminalWidth.get()),
       terminalFont: terminalFontOf(this.deps.terminalFont.get()),
       backgroundOpacity: this.windowBackground().opacity,
       seeThroughArea: this.windowBackground().area

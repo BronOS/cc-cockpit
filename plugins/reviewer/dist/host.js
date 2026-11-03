@@ -6,8 +6,10 @@
 // Entry points, all ending in showReview():
 // - a click on a changed file in the Sessions panel (ctx.files.onOpen, `contributes.openFile`);
 // - the `reviewer` service (v1): open(path, { tabId? }), for the file tree and other plugins, and
-//   annotate({ title, text | html, aside?, assets?, url?, key?, tabId? }): the same overlay on a text or an
-//   HTML document another plugin hands over (a Jira issue, a mail), with no diff, no file and no Edit;
+//   annotate({ title, text | html, aside?, assets?, url?, key?, tabId?, companion? }): the same overlay on a
+//   text or an HTML document another plugin hands over (a Jira issue, a mail), with no diff, no file and
+//   no Edit; with `companion`, a second HTML document beside the main one (the Jira issue a mail is
+//   about); features() lists the optional annotate features (FEATURES), so a caller can tell;
 // - `ccc review <path>`.
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
@@ -19,6 +21,18 @@ const OVERLAY_FILE = 'overlay/review.html'
 const LAST_PROMPT_MAX = 80
 const LAYOUT_KEY = 'layout' // ctx.appStorage: the person's last diff layout, the same in every project
 const LAYOUTS = ['split', 'unified']
+// ctx.appStorage: the share of the width the main document takes beside a companion, the person's last
+// drag of the divider (the page's src/page/split.mjs has the same bounds; a test compares them).
+const SPLIT_KEY = 'companionSplit'
+const SPLIT_MIN = 0.2
+const SPLIT_MAX = 0.8
+const SPLIT_DEFAULT = 0.5
+const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT_MIN && v <= SPLIT_MAX
+// What features() answers: the optional parts of annotate this reviewer has, beyond its first
+// version's { title, text | html, assets?, url?, key?, tabId? }. A caller asks before it relies on
+// one, since an older reviewer ignores an option it does not know (a companion would just not be
+// shown); an older reviewer has no features() at all, and the call rejects with "has no method".
+const FEATURES = ['companion']
 // OverlayHandle.post refuses a message over 1,040,384 chars of JSON (`ccc guide api`); a little
 // under it leaves room for the transport's own wrapping.
 const MAX_INIT_CHARS = 1000000
@@ -75,6 +89,9 @@ function defaultTab(tabs, tabId) {
   return shown ? shown.tabId : null
 }
 exports.defaultTab = defaultTab
+exports.SPLIT_MIN = SPLIT_MIN
+exports.SPLIT_MAX = SPLIT_MAX
+exports.FEATURES = FEATURES
 
 let disposers = []
 // Ended on deactivate: the watches of queued reviews (their drafts stay kept), and the draft
@@ -196,21 +213,36 @@ exports.activate = (ctx) => {
   async function openAnnotation(options) {
     const a = review.annotateInput(options)
     const base = { path: a.title, url: a.url, old: '', oldMissing: true, newMissing: false, note: null }
+    const c = a.companion
     let sides
     let after = []
     if (a.html !== null) {
       const parts = review.splitParts(a.html)
-      sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: a.assets.map(({ id, name, mime }) => ({ id, name, mime })) }
+      // One asset namespace for both documents (annotateInput checked the ids and the shared budget).
+      const assets = c ? [...a.assets, ...c.assets] : a.assets
+      sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: assets.map(({ id, name, mime }) => ({ id, name, mime })) }
+      // The companion's html comes in parts of its own ({ doc: 'companion' }), after the main
+      // document's, so the one the person reads first renders first.
+      const cParts = c ? review.splitParts(c.html) : []
+      if (c) {
+        sides.companion = { title: c.title, url: c.url, htmlParts: cParts.length, facts: c.facts !== null, label: c.label, urlLabel: c.urlLabel }
+        // The main column's header bar (shown beside a companion only).
+        sides.label = a.label
+        sides.urlLabel = a.urlLabel
+      }
       after = [
         ...parts.map((part, index) => ({ type: 'html', index, part })),
-        ...a.assets.map(({ id, dataUrl }) => ({ type: 'asset', id, dataUrl })),
+        ...cParts.map((part, index) => ({ type: 'html', doc: 'companion', index, part })),
+        ...assets.map(({ id, dataUrl }) => ({ type: 'asset', id, dataUrl })),
         { type: 'assets-done' },
       ]
     } else {
       sides = { ...base, mode: 'text', new: a.text }
     }
-    // The details column (`aside`, at most 100,000 chars): its own message, first, so a 400 KiB text
-    // and a draft in the init leave it room; `sides.aside` tells the page to ask for the content.
+    // The details blocks (`aside` and the companion's `facts`, at most 100,000 chars each): a message
+    // each, first, so a 400 KiB text and a draft in the init leave them room; `sides.aside` (and
+    // `sides.companion.facts`) tell the page to ask for the content.
+    if (c && c.facts !== null) after = [{ type: 'aside', doc: 'companion', html: c.facts }, ...after]
     if (a.aside !== null) {
       sides.aside = true
       after = [{ type: 'aside', html: a.aside }, ...after]
@@ -225,11 +257,14 @@ exports.activate = (ctx) => {
         after,
         editPath: null,
         // The URL the caller gave, checked by annotateInput: the only one the header's "Open in
-        // browser" button ever opens (the page says "open", never which URL).
+        // browser" button ever opens (the page says "open", never which URL); the companion's own
+        // icon opens the companion's url the same way.
         openUrl: a.url,
-        // The links of the caller's own html and aside, read from the strings it passed (built once,
-        // here): a link click opens one of these or nothing.
-        links: review.linkSet(a.html, a.aside),
+        companionUrl: c ? c.url : null,
+        // The links of the caller's own html and aside (and the companion's html and facts), read
+        // from the strings it passed (built once, here): a link click opens one of these or nothing.
+        links: review.linkSet(a.html, a.aside, c && c.html, c && c.facts),
+        companion: c !== null,
         build: (d) => review.buildAnnotation(d, a),
         tooLarge: 'the text is too large to show (with escaping and its saved draft)',
       },
@@ -244,7 +279,9 @@ exports.activate = (ctx) => {
    * not wait for the person. `subject`: openKey (one overlay per key), draftKey, what (named in
    * notices), overlayTitle, sides, after (messages posted when the page asks for them with
    * { type: 'content' }, each within the page message limit; may be absent), editPath (null: no Edit),
-   * openUrl (the caller's url for the header's "Open in browser" button; absent or null: none), links
+   * openUrl (the caller's url for the header's "Open in browser" button; absent or null: none),
+   * companionUrl (the same for the companion's icon), companion (true: the page shows a companion
+   * and gets the person's divider position), links
    * (review.linkSet of the caller's html and aside: the only links an `open-link` opens; absent or
    * null: none, as in a file review), build(draft) -> { text, cut }, and
    * tooLarge (the refusal when the init message would not fit).
@@ -256,6 +293,11 @@ exports.activate = (ctx) => {
     const tabs = await tabsInfo()
     const savedLayout = await ctx.appStorage.get(LAYOUT_KEY).catch(() => null)
     const layout = LAYOUTS.includes(savedLayout) ? savedLayout : 'split'
+    let split = SPLIT_DEFAULT
+    if (subject.companion) {
+      const saved = await ctx.appStorage.get(SPLIT_KEY).catch(() => null)
+      if (splitOk(saved)) split = saved
+    }
     const target = defaultTab(tabs, tabId)
 
     // Checked again after the awaits above: two quick clicks (or `ccc review` calls) on the same
@@ -269,6 +311,7 @@ exports.activate = (ctx) => {
     // ctx.openExternal is in every app that bundles this plugin; checked anyway, so a copy run on an
     // older app hides the button instead of showing one that throws.
     const openUrl = subject.openUrl && typeof ctx.openExternal === 'function' ? subject.openUrl : null
+    const companionUrl = subject.companionUrl && typeof ctx.openExternal === 'function' ? subject.companionUrl : null
     const links = subject.links && typeof ctx.openExternal === 'function' ? subject.links : null
     const init = {
       type: 'init',
@@ -280,6 +323,10 @@ exports.activate = (ctx) => {
       canEdit: subject.editPath !== null && ctx.services.available('editor'),
       canOpenUrl: openUrl !== null,
       canOpenLinks: links !== null,
+    }
+    if (subject.companion) {
+      init.split = split
+      init.canOpenCompanionUrl = companionUrl !== null
     }
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
       throw new files.ReviewError(subject.tooLarge, { fallback: true })
@@ -371,10 +418,14 @@ exports.activate = (ctx) => {
             return editor.open(subject.editPath, { line }).then(() => handle.close())
           })
           .catch((e) => post({ type: 'error', message: e.message.replace(/^editor: /, '') }))
-      } else if (m.type === 'open-url' && openUrl !== null) {
-        // The page names no URL (it shows the caller's content in a sandboxed frame): the host opens
-        // the one it was given. The app refuses some (user:pass@, 3 per 10 s): the page says why.
-        ctx.openExternal(openUrl).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
+      } else if (m.type === 'split' && subject.companion && splitOk(m.split)) {
+        ctx.appStorage.set(SPLIT_KEY, m.split).catch((e) => ctx.log.error(`divider save: ${e.message}`))
+      } else if (m.type === 'open-url') {
+        // The page names no URL (it shows the caller's content in a sandboxed frame), only which
+        // document's icon was clicked: the host opens the one it was given for it. The app refuses
+        // some (user:pass@, 3 per 10 s): the page says why.
+        const url = m.doc === 'companion' ? companionUrl : openUrl
+        if (url !== null) ctx.openExternal(url).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
       } else if (m.type === 'open-link' && links !== null) {
         // A link clicked in the document or the details column. The href comes from the page, so it
         // opens only when the caller's own html or aside has that link (review.linkVerdict), and only
@@ -538,6 +589,11 @@ exports.activate = (ctx) => {
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
       }
+    },
+    // Additive in v1 too (app 0.9.3): the optional annotate features this reviewer has. An older one
+    // rejects with "has no method", which a caller reads as none.
+    async features() {
+      return [...FEATURES]
     },
   })
 

@@ -71,10 +71,47 @@ button.link.quote:hover { color: var(--cc-fg); text-decoration: underline; }
 .doc-body.details-body dl.facts dt { margin-top: 8px; }
 .doc-body.details-body dl.facts dt:first-child { margin-top: 0; }
 .doc-body.details-body dl.facts dd { margin: 1px 0 0; }
+/* annotate's companion: one grid. Row 1: the two header cells (label bar, open button, facts), the
+   same height (the row takes the taller; the shorter fills it with the same background), at most 40%
+   of the overlay (a long facts list scrolls inside its cell), staying put while the documents scroll.
+   Row 2: the two documents, each scrolling on its own. The divider spans both rows and sets --split
+   (the main column's share). Stacked when narrow: each header above its own document. */
+.split {
+  --split: 50%; height: 100%; display: grid;
+  grid-template-columns: minmax(0, var(--split)) 5px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "hm dv hc" "bm dv bc";
+}
+.split > .col-head-main { grid-area: hm; }
+.split > .col-head-companion { grid-area: hc; }
+.split > .col-main { grid-area: bm; }
+.split > .col-companion { grid-area: bc; }
+.split > .divider { grid-area: dv; }
+.split > .col { min-width: 0; min-height: 0; overflow: hidden; }
+.col-head { min-width: 0; max-height: 40vh; overflow-y: auto; display: flex; flex-direction: column; background: var(--cc-bg-bar); border-bottom: 1px solid var(--cc-border); }
+.col-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--cc-bg-bar); }
+.col-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-open { flex: none; padding: 2px 8px; font-size: 12px; }
+/* The facts fill the rest of the cell, on the cell's own background (no box of their own), so the
+   shorter header looks as tall as the other. */
+.doc-body.col-facts { flex: 1; max-width: none; margin: 0; padding: 0 12px 8px; font-size: 13px; }
+.doc-body.col-facts dl.facts { margin: 0; padding: 0; border: none; background: none; }
+.split .divider { cursor: col-resize; background: var(--cc-border); outline: none; touch-action: none; }
+.split .divider:hover, .split .divider:focus-visible, .split.dragging .divider { background: var(--cc-accent); }
+.split.dragging { cursor: col-resize; user-select: none; }
+.note-body > .doc-tag { flex: none; max-width: 14em; padding: 2px 6px 0; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--cc-fg-muted); background: var(--cc-surface-1); }
 @media (max-width: 700px) {
   main { flex-direction: column; }
   #editors { min-height: 0; }
   #details { width: auto; max-height: 40%; border-left: none; border-top: 1px solid var(--cc-border); }
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas: "hm" "bm" "hc" "bc";
+  }
+  .col-head { max-height: 25vh; }
+  .split > .col-head-companion { border-top: 1px solid var(--cc-border); }
+  .split .divider { display: none; }
 }
 button, select {
   font: inherit; color: inherit; background: var(--cc-surface-1);

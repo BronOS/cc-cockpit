@@ -13,6 +13,10 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     the two), rendered as a document; see "HTML mode" below.
   - `aside` (either form, optional): HTML of at most 100,000 characters for a details column at the right of the
     text, sanitized like `html` (see "HTML mode"); `dl.facts` is a vertical list there.
+  - `companion` (HTML form only, optional, app 0.9.3+): `{ title, html, assets?, url?, facts?, label?, urlLabel? }`,
+    a second document beside the first, with `label` / `urlLabel` for the main column's header; see "Companion" below.
+  - `features()`: the optional annotate features this reviewer has (`['companion']`); an older reviewer has no such
+    method (the call rejects with `has no method "features"`: read it as none).
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
   for the same file or `key` brings the open overlay to the front. The tab picker starts on `tabId` when it is a live
@@ -29,6 +33,51 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     key: `jira:${issue.key}`, // one overlay and one kept draft per issue
   })
   ```
+
+## Companion
+
+`annotate({ title, html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })`
+shows a second document beside the first: a mail with the Jira issue it is about, an issue with the pull request that
+fixes it. The page then has one grid: a header row, and under it two columns, the main document left and the
+companion right, each scrolling on its own, with a divider spanning both rows (drag it, arrow keys or Home / End on it
+when focused, double-click for half and half; the position is the person's, kept app-wide in `ctx.appStorage` like
+the diff layout). The header row's two cells are the same height (the taller one's, at most 40% of the overlay, a
+longer facts list scrolls inside its cell) and stay put while the documents scroll. Each cell is a bar with the
+column's `label` (default: the title, cut to 60) and, when it has a `url`, a button `Open in <urlLabel> ↗` (`Open in
+browser ↗` without one), then its details block: the caller's `aside` in the main column, the companion's `facts` in
+its column, `dl.facts` as a grid. The details column at the right and the icon after the `h1` are not shown then.
+Narrower than 700 px the columns stack, each header above its own document, and the divider is hidden. Without
+`companion` the page is exactly as before (labels are checked but not shown).
+
+- Checked like the main document (`checkCompanion` in `dist/lib/review.js`): `title` 1-200 characters made one line,
+  `html` at most 2 MiB of UTF-8 with no NUL (required), `facts` at most 100,000 characters, `url` http(s) of at most
+  2048 characters. Both are sanitized by the same allow-list.
+- `assets`: one budget and one id namespace with the main document's (30 and 8 MiB in all, ids unique across both),
+  so an `asset:<id>` names the same picture in either. A caller with pictures in both splits the budget itself.
+- `label` 1-60 and `urlLabel` 1-30 characters of plain text (made one line), on annotate and on the companion.
+- Each column's button opens its own `url` (the page says which column, the host picks the URL); the companion's links
+  (in `html` and `facts`) open like the main document's (the host's allow-set holds both).
+- Notes go on either document. A note on the companion is stored with `doc: 'companion'`, anchored and highlighted in
+  the companion's own text, and listed after the main document's with the companion's label as a tag. Claude gets
+  `About <title> (<url>), with <companion title> (<url>) beside it`, then the main document's notes as `On «quote»:`
+  and the companion's as `In <companion title>, on «quote»: note`.
+- Detection: `await reviewer.features().catch(() => [])` includes `'companion'` from app 0.9.3 on. An older reviewer
+  would ignore `companion` and show the main document alone, so ask first and fall back when it is missing.
+
+```js
+const features = await reviewer.features().catch(() => [])
+if (features.includes('companion')) {
+  await reviewer.annotate({
+    title: mail.subject,
+    html: mail.html,
+    aside: mail.facts,
+    key: `mail:${mail.id}`,
+    label: 'Mail',
+    urlLabel: 'Gmail',
+    companion: { title: `${issue.key}: ${issue.summary}`, label: `Jira · ${issue.key}`, urlLabel: 'Jira', html: issue.html, facts: issue.facts, url: issue.url, assets: issue.assets },
+  })
+}
+```
 
 ## HTML mode
 

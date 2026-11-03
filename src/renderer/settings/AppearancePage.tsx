@@ -3,6 +3,7 @@ import type { AppearanceView, CccCommandView, KeyBindingRow, UpdateState } from 
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
 import { chordFromEvent } from '../../shared/keys'
 import { SESSION_FILES_SHOWN_RANGE } from '../../shared/session-files'
+import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
 import { captureKeys, displayChord, fuzzyFilter } from '../commands/keybindings'
 import { SearchIcon } from './icons'
 import { TabCommandsEditor } from './TabCommandsEditor'
@@ -24,7 +25,8 @@ const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
  * Settings › Appearance and keys (design §6): the app-wide theme, the see-through window background
  * (WindowBackgroundSettings), what a tab does when its process
  * exits, whether a project that opens empty gets a Claude tab, whether Haiku writes a gist of each
- * Claude session, whether closing a running tab asks first, which end of a tab its close button sits at, the app-wide entries of the new-tab menu, the
+ * Claude session, whether closing a running tab asks first, which end of a tab its close button sits at, whether the side zones give way to a narrow
+ * terminal and at what width, the app-wide entries of the new-tab menu, the
  * terminals' font (TerminalFontSettings), and the keybinding list with overrides. A theme change goes through main, which tells every window (and so every plugin
  * panel and terminal). A key is changed by pressing the new chord in a field that records it; main
  * validates the chord, stores it, and sends the new table to the windows. A chord that two
@@ -180,6 +182,39 @@ export function AppearancePage(): React.JSX.Element {
                   <option value="right">Right</option>
                 </Select>
               </Row>
+            </div>
+          </Group>
+
+          <Group title="Side panels">
+            <div className="settings-card">
+              <Row
+                label="Auto-hide side panels when the terminal gets narrow"
+                htmlFor={`${id}-zone-auto-hide`}
+                help="When the window gets too narrow for the terminal, the right zone's panels hide first, then the left one's, and they come back as the window widens. A click on an icon shows a hidden zone again; a zone you close yourself stays closed."
+              >
+                <Switch
+                  id={`${id}-zone-auto-hide`}
+                  checked={data.zoneAutoHide}
+                  disabled={busy !== null}
+                  onChange={(e) => {
+                    const value = e.target.checked
+                    void run('zoneAutoHide', () => window.cockpit.invoke('settings.zoneAutoHideSet', { value })).then(reload)
+                  }}
+                />
+              </Row>
+              <NumberField
+                label="Minimum terminal width"
+                help="How wide the terminal stays before a side zone gives way."
+                unit="px"
+                ariaLabel="Minimum terminal width (px)"
+                range={MIN_TERMINAL_WIDTH_RANGE}
+                step={1}
+                value={data.minTerminalWidth}
+                disabled={busy !== null || !data.zoneAutoHide}
+                onCommit={(value) => {
+                  void run('minTerminalWidth', () => window.cockpit.invoke('settings.minTerminalWidthSet', { value })).then(reload)
+                }}
+              />
             </div>
           </Group>
 

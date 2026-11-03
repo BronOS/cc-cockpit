@@ -92,7 +92,8 @@ with full Node access.
   is not JSON or over 1 MiB. So do not push state at the panel from `activate`: have the page
   send a first message when it loads (`ccPanel.post({ hello: 1 })`) and answer that.
 - `ctx.panels.show(panelId)`: bring one of your own panels into sight (either kind): a hidden
-  panel comes back, a closed one opens and its zone expands. Use it when a command should make
+  panel comes back, a closed one opens and its zone expands (a side zone the window auto-hid for a
+  narrow terminal shows again too). Use it when a command should make
   the panel visible (`ccc browser open`). Throws for an undeclared id; a refusal is logged.
 - `ctx.panels.header(panelId, { meta?, actions? } | null)`: the title bar of one of your own
   panels (either kind): `meta` is muted text after the title (at most 120 characters), `actions`

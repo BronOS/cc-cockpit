@@ -16,6 +16,16 @@
 // too, and { type: 'aside', html } comes first: sanitized the same way, shown in a column at the right. Its notes anchor on the selected text (anchor.mjs), not on lines.
 // A plain click on a link in either (or Enter on it, or a middle click) posts { type: 'open-link', href }
 // when the init says `canOpenLinks`; the host opens it only when the caller's own html or aside has it.
+// With `sides.companion` ({ title, url, htmlParts, facts, label, urlLabel }, annotate's companion)
+// the page shows two documents side by side, the main one left and the companion right, each scrolling
+// on its own, with a divider between them (dragged: { type: 'split', split } for the host to remember).
+// Above them, one grid row of two header cells (so both get the height of the taller): each a bar with
+// the column's label (`sides.label`, `sides.companion.label`) and an "Open in <urlLabel> ↗" button, and
+// its details block (the main one's `aside`, the companion's facts, { type: 'aside', doc: 'companion',
+// html }); the right-hand details column and the icons after the h1s are not shown then. The
+// companion's html comes in { type: 'html', doc: 'companion', index, part } messages; the assets are
+// one set for both. A note on the companion has `doc: 'companion'`; its button posts { type:
+// 'open-url', doc: 'companion' }.
 // The page shows the two sides, collects notes and the global comment, and posts
 //   { type: 'draft', draft }                          on every change;
 //   { result: { action: 'discuss'|'new'|'close', tabId?, draft } }   from the buttons.
@@ -51,6 +61,7 @@ import { lua } from '@codemirror/legacy-modes/mode/lua'
 import { sanitizeTree, render, isImageDataUrl } from './sanitize.mjs'
 import { makeAnchor, locate } from './anchor.mjs'
 import { isPlainClick, selectionKey } from './links.mjs'
+import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
 
 /* global ccPanel */
 
@@ -180,6 +191,7 @@ const state = {
   // never sees them. A click or selection inside one picks it here instead (pickDeleted).
   oldPick: null, // { from, to, quote, el }
   canOpenLinks: false, // the host opens links of the caller's content (it has ctx.openExternal)
+  split: SPLIT_DEFAULT, // with a companion: the share of the width the main document takes
 }
 
 const $ = (id) => document.getElementById(id)
@@ -265,7 +277,8 @@ function buildEditors() {
   host.replaceChildren()
   if (isHtml()) {
     $('layout').hidden = true
-    host.append(htmlView.scroller)
+    if (hasCompanion()) buildSplit(host, initMsg)
+    else host.append(htmlView.scroller)
     return
   }
   if (state.merge) state.merge.destroy()
@@ -311,22 +324,16 @@ function buildEditors() {
  * Puts annotate's "Open in browser" icon (#open-url, the page's own element) next to the title in
  * the document: at the end of the HTML's first h1, else floated to the top right of the HTML
  * document, or in the top right corner of the text pane. Hidden until the HTML is rendered, and
- * always when the overlay has no url to open.
+ * always when the overlay has no url to open, and beside a companion (the header bars have buttons).
  */
 function placeOpenUrl() {
   const b = $('open-url')
-  // The markup's indentation left whitespace text nodes in the icon. Inside the HTML document they
-  // would count in a selection's offsets (Range.toString) but not in `full`, shifting every note.
-  const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT)
-  const blanks = []
-  for (let n = w.nextNode(); n; n = w.nextNode()) blanks.push(n)
-  for (const n of blanks) n.remove()
+  dropBlanks(b)
   b.classList.remove('in-title', 'float', 'corner')
-  if (!b.dataset.show || (isHtml() && !htmlView.rendered)) {
+  // Beside a companion each column's header bar has the open button: no icon in the document then.
+  if (!b.dataset.show || (isHtml() && !htmlView.rendered) || hasCompanion()) {
     b.hidden = true
-    return
-  }
-  if (isHtml()) {
+  } else if (isHtml()) {
     const h1 = htmlView.body.querySelector('h1')
     if (h1) {
       b.classList.add('in-title')
@@ -335,11 +342,23 @@ function placeOpenUrl() {
       b.classList.add('float')
       htmlView.body.prepend(b)
     }
+    b.hidden = false
   } else {
     b.classList.add('corner')
     $('editors').append(b)
+    b.hidden = false
   }
-  b.hidden = false
+}
+
+/**
+ * The markup's indentation left whitespace text nodes in an icon. Inside the HTML document they
+ * would count in a selection's offsets (Range.toString) but not in `full`, shifting every note.
+ */
+function dropBlanks(b) {
+  const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT)
+  const blanks = []
+  for (let n = w.nextNode(); n; n = w.nextNode()) blanks.push(n)
+  for (const n of blanks) n.remove()
 }
 
 // ---- removed lines in the unified view ----
@@ -405,7 +424,7 @@ function selectionEndRect() {
   }
   if (isHtml()) {
     const r = htmlSelection() && htmlSelectionRange()
-    return r ? lastRect(r) : null
+    return r ? lastRect(r.range) : null
   }
   const side = currentSelectionSide()
   if (!side) return null
@@ -441,7 +460,9 @@ function placeAddButton() {
   const t = document.activeElement
   const typing = !!t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT')
   const at = !typing && $('lightbox').hidden ? selectionEndRect() : null
-  const area = $('editors').getBoundingClientRect()
+  // With a companion, each column scrolls on its own: the area is the selection's own column.
+  const hs = at && isHtml() ? htmlSelectionRange() : null
+  const area = (hs ? hs.view.scroller : $('editors')).getBoundingClientRect()
   // Scrolled out of the document area: hidden, not pinned to its edge.
   if (!at || at.bottom < area.top || at.top > area.bottom || at.right < area.left || at.left > area.right) {
     btn.hidden = true
@@ -496,6 +517,11 @@ function scrollTo(note) {
 
 const QUOTE_SHOWN = 90 // a note row shows this much of its quote, made one line
 
+const TITLE_SHOWN = 32 // a companion note's tag shows this much of the companion's title
+const companionTitle = () => (state.sides && state.sides.companion && state.sides.companion.title) || 'the document beside it'
+const companionLabel = () => (state.sides && state.sides.companion && state.sides.companion.label) || companionTitle()
+const shortTitle = (t) => (t.length > TITLE_SHOWN ? `${t.slice(0, TITLE_SHOWN)}…` : t)
+
 /** A quote as one line of at most QUOTE_SHOWN chars. */
 function shortQuote(q) {
   const one = (q || '').replace(/\s+/g, ' ').trim()
@@ -526,6 +552,12 @@ function renderNotes(focusId) {
     where.type = 'button'
     where.title = where.title || (isText() || isHtml() ? 'Show in the text' : 'Show in the diff')
     where.addEventListener('click', () => scrollTo(n))
+    // A note on the companion says so in front of its quote: the list holds the notes of both.
+    if (isHtml() && n.doc === 'companion') {
+      const tag = el('span', 'doc-tag', shortTitle(companionLabel()))
+      tag.title = `In ${companionTitle()}`
+      body.append(tag)
+    }
     body.append(where)
     // In HTML mode the label is the quote itself; a line note shows it after the line range.
     if (!isHtml() && n.quote) body.append(el('span', 'quote', shortQuote(n.quote)))
@@ -567,79 +599,102 @@ function renderNotes(focusId) {
 
 // ---- HTML mode (annotate with html) ----
 
-// The rendered document and what the notes need of it. `full` is the concatenation of its text
-// nodes (anchor.mjs offsets point into it); `texts` maps offsets back to nodes, for ranges.
-const htmlView = {
-  scroller: null, // the scrolling block in #editors
-  body: null, // the rendered document inside it
-  parts: [], // the html parts received so far
-  rendered: false,
-  full: '',
-  texts: [], // [{ node, start }] in document order
-  assets: new Map(), // id -> { mime, name } as the init declared them
-  data: new Map(), // id -> dataUrl, once it came
-  assetsDone: false,
-  located: new Map(), // note id -> { start, end } in `full`, for the notes found in this version
+// A rendered document and what the notes need of it: the main one (`htmlView`) and annotate's
+// companion (`companionView`). `full` is the concatenation of its text nodes (anchor.mjs offsets
+// point into it); `texts` maps offsets back to nodes, for ranges. `facts` is the details block in its
+// column's header cell, outside `body`, so its text is never in `full`: used with a companion only
+// (buildSplit); without one the main `aside` is the column at the right, as before.
+function docView(name) {
+  const v = {
+    name, // 'main' | 'companion'
+    scroller: el('div', 'doc'), // the scrolling block (in #editors, or a column of the split)
+    facts: el('div', 'doc-body col-facts'),
+    body: el('article', 'doc-body'), // the rendered document inside it
+    parts: [], // the html parts received so far
+    rendered: false,
+    full: '',
+    texts: [], // [{ node, start }] in document order
+  }
+  v.scroller.tabIndex = 0
+  v.facts.hidden = true
+  v.scroller.append(v.body)
+  return v
 }
+const htmlView = docView('main')
+const companionView = docView('companion')
 
-{
-  htmlView.scroller = el('div', 'doc')
-  htmlView.scroller.tabIndex = 0
-  htmlView.body = el('article', 'doc-body')
-  htmlView.scroller.append(htmlView.body)
+const hasCompanion = () => isHtml() && !!state.sides.companion
+/** The documents shown, in column order. */
+const docViews = () => (hasCompanion() ? [htmlView, companionView] : [htmlView])
+/** The document a note is on: the companion's notes have `doc: 'companion'` (null: no companion shown now). */
+const viewOf = (n) => (n.doc === 'companion' ? (hasCompanion() ? companionView : null) : htmlView)
+
+// The images of both documents: one set, as the init declared them (the host checked the ids).
+const assetStore = {
+  declared: new Map(), // id -> { mime, name } as the init declared them
+  data: new Map(), // id -> dataUrl, once it came
+  done: false,
 }
+// Where each note is in its document now: note id -> { view, start, end }, for the notes found.
+let located = new Map()
 
 function startHtml(s) {
-  htmlView.parts = new Array(Math.max(1, Number.isInteger(s.htmlParts) ? s.htmlParts : 1)).fill(null)
-  htmlView.assets = new Map((Array.isArray(s.assets) ? s.assets : []).filter((a) => a && typeof a.id === 'string').map((a) => [a.id, a]))
+  const parts = (n) => new Array(Math.max(1, Number.isInteger(n) ? n : 1)).fill(null)
+  htmlView.parts = parts(s.htmlParts)
+  assetStore.declared = new Map((Array.isArray(s.assets) ? s.assets : []).filter((a) => a && typeof a.id === 'string').map((a) => [a.id, a]))
   htmlView.body.replaceChildren(el('p', 'muted', 'Loading…'))
+  if (s.companion) {
+    companionView.parts = parts(s.companion.htmlParts)
+    companionView.body.replaceChildren(el('p', 'muted', 'Loading…'))
+  }
 }
 
 function htmlPart(m) {
-  if (!isHtml() || htmlView.rendered || !Number.isInteger(m.index) || m.index < 0 || m.index >= htmlView.parts.length) return
+  const view = m.doc === 'companion' ? (hasCompanion() ? companionView : null) : isHtml() ? htmlView : null
+  if (!view || view.rendered || !Number.isInteger(m.index) || m.index < 0 || m.index >= view.parts.length) return
   if (typeof m.part !== 'string') return
-  htmlView.parts[m.index] = m.part
-  if (htmlView.parts.every((p) => p !== null)) renderHtml(htmlView.parts.join(''))
+  view.parts[m.index] = m.part
+  if (view.parts.every((p) => p !== null)) renderHtml(view, view.parts.join(''))
 }
 
-/** Parses (inert), sanitizes and renders the caller's HTML; then finds the draft's notes in it. */
-function renderHtml(source) {
-  htmlView.rendered = true
-  htmlView.parts = []
+/** Parses (inert), sanitizes and renders a document of the caller's; then finds the draft's notes in it. */
+function renderHtml(view, source) {
+  view.rendered = true
+  view.parts = []
   const parsed = new DOMParser().parseFromString(source, 'text/html')
-  htmlView.body.replaceChildren(render(sanitizeTree(parsed.body), document))
+  view.body.replaceChildren(render(sanitizeTree(parsed.body), document))
   const texts = []
   let full = ''
-  const walker = document.createTreeWalker(htmlView.body, NodeFilter.SHOW_TEXT)
+  const walker = document.createTreeWalker(view.body, NodeFilter.SHOW_TEXT)
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     texts.push({ node: n, start: full.length })
     full += n.data
   }
-  htmlView.full = full
-  htmlView.texts = texts
-  showAssets(htmlView.body)
-  prepareLinks(htmlView.body)
+  view.full = full
+  view.texts = texts
+  showAssets(view.body)
+  prepareLinks(view.body)
   placeOpenUrl() // after the text walk: the button holds no text, so the offsets would not move anyway
   refreshHighlights() // finds the draft's notes first: the list says which were not found
   renderNotes()
   updateAddButton()
 }
 
-/** The images under `root` (the document or the details column): loaded, failed, or left pending. */
+/** The images under `root` (a document or a details block): loaded, failed, or left pending. */
 function showAssets(root) {
   for (const img of root.querySelectorAll('img[data-asset]')) {
-    if (!htmlView.assets.has(img.dataset.asset)) assetFailed(img) // named by the HTML, never sent
-    else if (htmlView.data.has(img.dataset.asset)) assetLoaded(img, htmlView.data.get(img.dataset.asset))
+    if (!assetStore.declared.has(img.dataset.asset)) assetFailed(img) // named by the HTML, never sent
+    else if (assetStore.data.has(img.dataset.asset)) assetLoaded(img, assetStore.data.get(img.dataset.asset))
   }
-  if (htmlView.assetsDone) htmlAssetsDone()
+  if (assetStore.done) htmlAssetsDone()
 }
 
-const assetRoots = () => [htmlView.body, $('details-body')]
+const assetRoots = () => [htmlView.body, $('details-body'), htmlView.facts, companionView.body, companionView.facts]
 
 function assetLoaded(img, dataUrl) {
   img.src = dataUrl
   img.parentElement.classList.remove('pending', 'failed')
-  if (!img.alt) img.alt = (htmlView.assets.get(img.dataset.asset) || {}).name || ''
+  if (!img.alt) img.alt = (assetStore.declared.get(img.dataset.asset) || {}).name || ''
 }
 
 function assetFailed(img) {
@@ -648,63 +703,70 @@ function assetFailed(img) {
 }
 
 function htmlAsset(m) {
-  const want = htmlView.assets.get(m.id)
+  const want = assetStore.declared.get(m.id)
   // Only an asset the init declared, of its declared type, as a base64 image data: URL (the host
   // checked it; the page does not take an image src on trust either).
   if (!want || !isImageDataUrl(m.dataUrl) || !m.dataUrl.startsWith(`data:${want.mime};base64,`)) return
-  htmlView.data.set(m.id, m.dataUrl)
+  assetStore.data.set(m.id, m.dataUrl)
   for (const root of assetRoots()) for (const img of root.querySelectorAll('img[data-asset]')) if (img.dataset.asset === m.id) assetLoaded(img, m.dataUrl)
 }
 
 function htmlAssetsDone() {
-  htmlView.assetsDone = true
+  assetStore.done = true
   for (const root of assetRoots()) for (const img of root.querySelectorAll('.asset-box.pending > img')) assetFailed(img)
 }
 
-/** The offset in `full` of a DOM boundary point inside the document. */
-function offsetOf(container, offset) {
+/** The offset in `view.full` of a DOM boundary point inside the document. */
+function offsetOf(view, container, offset) {
   const r = document.createRange()
-  r.selectNodeContents(htmlView.body)
+  r.selectNodeContents(view.body)
   r.setEnd(container, offset)
   return r.toString().length
 }
 
-/** The selection as a Range cut to the rendered document, or null. */
+/**
+ * The selection as { view, range }: the document it is in (with a companion, the one it starts in,
+ * else the first it touches: selectionDoc) and the range cut to that document; or null.
+ */
 function htmlSelectionRange() {
-  if (!htmlView.rendered) return null
   const sel = window.getSelection()
   if (!sel || sel.isCollapsed || !sel.rangeCount) return null
-  const r = sel.getRangeAt(0).cloneRange()
-  if (!r.intersectsNode(htmlView.body)) return null
-  // A drag that ran past the document's edge keeps the part inside it.
-  if (!htmlView.body.contains(r.startContainer)) r.setStart(htmlView.body, 0)
-  if (!htmlView.body.contains(r.endContainer)) r.setEnd(htmlView.body, htmlView.body.childNodes.length)
-  return r
+  const raw = sel.getRangeAt(0)
+  const views = docViews().filter((v) => v.rendered)
+  const i = selectionDoc(views.map((v) => ({ touches: raw.intersectsNode(v.body), starts: v.body.contains(raw.startContainer) })))
+  if (i === -1) return null
+  const view = views[i]
+  const r = raw.cloneRange()
+  // A drag that ran past the document's edge (into the other column, too) keeps the part inside it.
+  if (!view.body.contains(r.startContainer)) r.setStart(view.body, 0)
+  if (!view.body.contains(r.endContainer)) r.setEnd(view.body, view.body.childNodes.length)
+  return { view, range: r }
 }
 
-/** The selection inside the rendered document, as { start, end } offsets in `full`, or null. */
+/** The selection inside a rendered document, as { view, start, end } offsets in its `full`, or null. */
 function htmlSelection() {
-  const r = htmlSelectionRange()
-  if (!r) return null
-  const start = offsetOf(r.startContainer, r.startOffset)
-  const end = offsetOf(r.endContainer, r.endOffset)
-  if (end <= start || !htmlView.full.slice(start, end).trim()) return null
-  return { start, end }
+  const hs = htmlSelectionRange()
+  if (!hs) return null
+  const { view, range: r } = hs
+  const start = offsetOf(view, r.startContainer, r.startOffset)
+  const end = offsetOf(view, r.endContainer, r.endOffset)
+  if (end <= start || !view.full.slice(start, end).trim()) return null
+  return { view, start, end }
 }
 
-/** A DOM Range over [start, end) of `full`. */
-function rangeOf(start, end) {
+/** A DOM Range over [start, end) of `view.full`. */
+function rangeOf(view, start, end) {
   const point = (off, isEnd) => {
     // The last text node starting at or before `off` (for an end, strictly before, so a range
     // ending at a node's start ends in the node before it).
     let lo = 0
-    let hi = htmlView.texts.length - 1
+    let hi = view.texts.length - 1
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1
-      if (isEnd ? htmlView.texts[mid].start < off : htmlView.texts[mid].start <= off) lo = mid
+      if (isEnd ? view.texts[mid].start < off : view.texts[mid].start <= off) lo = mid
       else hi = mid - 1
     }
-    const t = htmlView.texts[lo]
+    const t = view.texts[lo]
     return [t.node, Math.min(off - t.start, t.node.data.length)]
   }
   const r = document.createRange()
@@ -716,9 +778,10 @@ function rangeOf(start, end) {
 function addHtmlNote() {
   const sel = htmlSelection()
   if (!sel) return
-  const { quote, anchor } = makeAnchor(htmlView.full, sel.start, sel.end)
+  const { quote, anchor } = makeAnchor(sel.view.full, sel.start, sel.end)
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, quote, anchor, text: '' }
-  htmlView.located.set(note.id, { start: sel.start, end: sel.end })
+  if (sel.view === companionView) note.doc = 'companion'
+  located.set(note.id, { view: sel.view, start: sel.start, end: sel.end })
   collapseSelection()
   state.draft.notes.push(note)
   renderNotes(note.id)
@@ -727,16 +790,23 @@ function addHtmlNote() {
   postDraft()
 }
 
-/** HTML notes where they are in the text, then the ones not found in this version (and old line notes). */
+/** HTML notes where they are in the text (the main document's, then the companion's), then the ones not found in this version (and old line notes). */
 function htmlNotesInOrder() {
-  const pos = (n) => (htmlView.located.has(n.id) ? htmlView.located.get(n.id).start : Infinity)
-  return [...state.draft.notes].sort((a, b) => pos(a) - pos(b))
+  const pos = (n) => {
+    const at = located.get(n.id)
+    return at ? [at.view === companionView ? 1 : 0, at.start] : [2, 0]
+  }
+  return [...state.draft.notes].sort((a, b) => {
+    const [x, y] = [pos(a), pos(b)]
+    return x[0] - y[0] || x[1] - y[1]
+  })
 }
 
 function htmlNoteLabel(n) {
   const shown = `«${shortQuote(n.quote)}»`
-  // Before the document is rendered nothing is located yet: no "not found" for that moment.
-  const found = htmlView.located.has(n.id) || !htmlView.rendered
+  // Before its document is rendered nothing is located yet: no "not found" for that moment.
+  const view = viewOf(n)
+  const found = located.has(n.id) || (view !== null && !view.rendered)
   const b = el('button', found ? 'link quote' : 'link quote outdated', found ? shown : `${shown} · not found in this version`)
   if (!found) b.title = 'The quoted text is not in the document any more: the note is kept, not highlighted'
   return b
@@ -744,30 +814,117 @@ function htmlNoteLabel(n) {
 
 let focusedNote = null
 function refreshHtmlHighlights() {
-  if (!htmlView.rendered) return
-  htmlView.located = new Map()
+  located = new Map()
   for (const n of state.draft.notes) {
-    const at = n.anchor ? locate(htmlView.full, n) : null
-    if (at) htmlView.located.set(n.id, at)
+    const view = n.anchor ? viewOf(n) : null
+    if (!view || !view.rendered) continue
+    const at = locate(view.full, n)
+    if (at) located.set(n.id, { view, ...at })
   }
   // The CSS Custom Highlight API paints the ranges without touching the DOM, so offsets stay true.
   if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return
   const all = []
-  for (const at of htmlView.located.values()) all.push(rangeOf(at.start, at.end))
+  for (const at of located.values()) all.push(rangeOf(at.view, at.start, at.end))
   CSS.highlights.set('rv-note', new Highlight(...all))
-  const f = focusedNote && htmlView.located.get(focusedNote)
-  if (f) CSS.highlights.set('rv-note-focus', new Highlight(rangeOf(f.start, f.end)))
+  const f = focusedNote && located.get(focusedNote)
+  if (f) CSS.highlights.set('rv-note-focus', new Highlight(rangeOf(f.view, f.start, f.end)))
   else CSS.highlights.delete('rv-note-focus')
 }
 
 function scrollToHtml(note) {
-  const at = htmlView.located.get(note.id)
+  const at = located.get(note.id)
   if (!at) return
   focusedNote = note.id
   refreshHtmlHighlights()
-  const r = rangeOf(at.start, at.end)
+  const r = rangeOf(at.view, at.start, at.end)
   const target = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement
   if (target) target.scrollIntoView({ block: 'center' })
+}
+
+// ---- the companion's columns ----
+
+/**
+ * A column's header cell: a bar with its label and, when the host can open its url, the open button
+ * (posting { type: 'open-url', doc? }), then its details block.
+ */
+function columnHead(view, { label, url, urlLabel, canOpen, doc }) {
+  const head = el('div', `col-head col-head-${view.name}`)
+  const bar = el('div', 'col-bar')
+  const name = el('strong', 'col-label', label || '')
+  name.title = label || ''
+  bar.append(name)
+  if (url && canOpen) {
+    const b = el('button', 'col-open', openLabel(urlLabel))
+    b.type = 'button'
+    b.title = `${openLabel(urlLabel, false)}: ${url}`
+    b.addEventListener('click', () => {
+      $('status').textContent = ''
+      ccPanel.post(doc ? { type: 'open-url', doc } : { type: 'open-url' })
+    })
+    bar.append(b)
+  }
+  head.append(bar, view.facts)
+  return head
+}
+
+/**
+ * The two columns in #editors, one grid: a row of the two header cells (label, open button, facts;
+ * the row takes the taller one, so both are the same height, and it stays put while the documents
+ * scroll), a row of the two documents, and the divider spanning both. The divider drags (and arrow
+ * keys move) the split. Stacked when narrow (CSS): each header above its own document.
+ */
+function buildSplit(host, m) {
+  const s = state.sides
+  const row = el('div', 'split')
+  const divider = el('div', 'divider')
+  divider.tabIndex = 0
+  divider.setAttribute('role', 'separator')
+  divider.setAttribute('aria-orientation', 'vertical')
+  divider.setAttribute('aria-label', 'Resize the two documents')
+  divider.title = 'Drag to resize; double-click for half and half'
+  const mainHead = columnHead(htmlView, { label: s.label, url: s.url, urlLabel: s.urlLabel, canOpen: m.canOpenUrl === true })
+  const sideHead = columnHead(companionView, { label: s.companion.label, url: s.companion.url, urlLabel: s.companion.urlLabel, canOpen: m.canOpenCompanionUrl === true, doc: 'companion' })
+  const left = el('div', 'col col-main')
+  const right = el('div', 'col col-companion')
+  left.append(htmlView.scroller)
+  right.append(companionView.scroller)
+  row.append(mainHead, divider, sideHead, left, right)
+  host.append(row)
+  const apply = (v, save) => {
+    state.split = clampSplit(v)
+    row.style.setProperty('--split', `${state.split * 100}%`)
+    divider.setAttribute('aria-valuenow', String(Math.round(state.split * 100)))
+    if (save) ccPanel.post({ type: 'split', split: state.split }) // remembered for the next one
+    updateAddButton()
+  }
+  apply(state.split, false)
+  divider.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    divider.setPointerCapture(e.pointerId)
+    row.classList.add('dragging')
+    const move = (ev) => {
+      const b = row.getBoundingClientRect()
+      apply(splitAt(ev.clientX, b.left, b.width), false)
+    }
+    const up = () => {
+      divider.removeEventListener('pointermove', move)
+      divider.removeEventListener('pointerup', up)
+      divider.removeEventListener('pointercancel', up)
+      row.classList.remove('dragging')
+      apply(state.split, true)
+    }
+    divider.addEventListener('pointermove', move)
+    divider.addEventListener('pointerup', up)
+    divider.addEventListener('pointercancel', up)
+  })
+  divider.addEventListener('dblclick', () => apply(SPLIT_DEFAULT, true))
+  divider.addEventListener('keydown', (e) => {
+    const v = splitKey(state.split, e.key)
+    if (v === null) return
+    e.preventDefault()
+    apply(v, true)
+  })
 }
 
 // Links: the frame may not navigate, so a link of the caller's content opens through the host: a
@@ -830,15 +987,23 @@ for (const root of assetRoots()) {
 }
 
 // annotate's `aside`: the caller's details column (key fields), sanitized like the document and
-// rendered once. It has no notes: a selection there is not in the document's text.
-let asideRendered = false
+// rendered once. It has no notes: a selection there is not in the document's text. With a companion
+// the main `aside` is the details block at the top of the main column instead, and the companion's
+// facts ({ doc: 'companion' }) the one at the top of its column.
+const asideRendered = new Set()
 function renderAside(m) {
-  if (asideRendered || !state.sides || !state.sides.aside || typeof m.html !== 'string') return
-  asideRendered = true
+  const companion = m.doc === 'companion'
+  if (!state.sides || typeof m.html !== 'string') return
+  if (companion ? !hasCompanion() || !state.sides.companion.facts : !state.sides.aside) return
+  const key = companion ? 'companion' : 'main'
+  if (asideRendered.has(key)) return
+  asideRendered.add(key)
+  const target = companion ? companionView.facts : hasCompanion() ? htmlView.facts : $('details-body')
   const parsed = new DOMParser().parseFromString(m.html, 'text/html')
-  $('details-body').replaceChildren(render(sanitizeTree(parsed.body), document))
-  showAssets($('details-body'))
-  prepareLinks($('details-body'))
+  target.replaceChildren(render(sanitizeTree(parsed.body), document))
+  target.hidden = false
+  showAssets(target)
+  prepareLinks(target)
 }
 
 // The lightbox: an image shown larger above the review. A click or a key closes it; Esc is not
@@ -963,13 +1128,16 @@ function finish(action) {
 
 // ---- init ----
 
+let initMsg = null // the init message, for buildSplit's header buttons
 function init(m) {
+  initMsg = m
   state.sides = m.sides
   state.draft = m.draft || { global: '', notes: [] }
   state.tabs = m.tabs || []
   state.tabId = m.tabId || null
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
   state.canOpenLinks = m.canOpenLinks === true
+  state.split = clampSplit(m.split)
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   const s = state.sides
   $('path').textContent = s.path
@@ -984,10 +1152,12 @@ function init(m) {
   const openUrl = $('open-url')
   openUrl.dataset.show = (isText() || isHtml()) && s.url && m.canOpenUrl ? '1' : ''
   openUrl.title = openUrl.dataset.show ? `Open in browser: ${s.url}` : 'Open in browser'
+  const c = isHtml() && s.companion ? s.companion : null
   // The hint on making a note lives here: the notes list takes no room while it is empty.
   const how = 'for a note on a part, select it, then press a or "Add note"'
   $('global').placeholder = isText() || isHtml() ? `Comment on the whole text (optional); ${how}` : `Comment on the whole file (optional); ${how}`
-  $('details').hidden = !s.aside
+  // With a companion the main `aside` is the details block at the top of the main column.
+  $('details').hidden = !s.aside || !!c
   $('note').textContent = s.note || ''
   $('note').hidden = !s.note
   $('global').value = state.draft.global
@@ -1033,6 +1203,7 @@ $('open-url').addEventListener('click', (e) => {
   $('status').textContent = ''
   ccPanel.post({ type: 'open-url' })
 })
+
 
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return

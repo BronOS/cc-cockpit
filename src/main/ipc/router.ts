@@ -476,6 +476,8 @@ export interface ProjectSettingsHandlerDeps {
   setClaudeTabOnOpen(value: unknown): void
   setSessionGist(value: unknown): void
   setSessionFilesShown(value: unknown): void
+  setZoneAutoHide(value: unknown): void
+  setMinTerminalWidth(value: unknown): void
   /** AppSettings.confirmTabClose with the default applied. */
   confirmTabClose(): boolean
   setConfirmTabClose(value: unknown): void
@@ -524,6 +526,12 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   })
   router.handleProject('settings.sessionFilesShownSet', (_ctx, payload) => {
     deps.setSessionFilesShown(fields('settings.sessionFilesShownSet', payload).value)
+  })
+  router.handleProject('settings.zoneAutoHideSet', (_ctx, payload) => {
+    deps.setZoneAutoHide(fields('settings.zoneAutoHideSet', payload).value)
+  })
+  router.handleProject('settings.minTerminalWidthSet', (_ctx, payload) => {
+    deps.setMinTerminalWidth(fields('settings.minTerminalWidthSet', payload).value)
   })
   router.handleProject('settings.confirmTabClose', () => deps.confirmTabClose())
   router.handleProject('settings.confirmTabCloseSet', (_ctx, payload) => {

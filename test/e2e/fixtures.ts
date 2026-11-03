@@ -18,7 +18,10 @@
 // the app's default opens a Claude tab in a project that opens empty, and most specs build their
 // tabs from an empty window and count them or the fake's runs. Likewise `confirmTabClose: false`
 // (LaunchOptions.confirmTabClose): the app's default asks before a running tab closes, and specs
-// close running tabs by click or Cmd+W as a step, not to test the question.
+// close running tabs by click or Cmd+W as a step, not to test the question. And `zoneAutoHide: false`
+// (LaunchOptions.zoneAutoHide): the app's default hides a side zone when the terminal would get
+// narrower than 720 px, which the default window does with both side zones open, and the zone and
+// panel specs open both to test something else.
 import { _electron as electron, test as base, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -76,6 +79,11 @@ export interface LaunchOptions {
    * false (see the header); true leaves the app's own default (on). Ignored on a relaunch (`root`).
    */
   confirmTabClose?: boolean
+  /**
+   * The app setting "Auto-hide side panels when the terminal gets narrow" for a fresh data dir.
+   * Default false (see the header); true leaves the app's own default (on). Ignored on a relaunch (`root`).
+   */
+  zoneAutoHide?: boolean
 }
 
 export async function launchCockpit(
@@ -92,6 +100,7 @@ export async function launchCockpit(
     const settings: Record<string, unknown> = { schemaVersion: 1 }
     if (options.claudeTabOnOpen !== true) settings.claudeTabOnOpen = false
     if (options.confirmTabClose !== true) settings.confirmTabClose = false
+    if (options.zoneAutoHide !== true) settings.zoneAutoHide = false
     if (Object.keys(settings).length > 1) writeFileSync(join(dataDir, 'app.json'), JSON.stringify(settings))
   }
   // mkdtemp under /var/folders is a symlink to /private/var on macOS; the app resolves real paths.

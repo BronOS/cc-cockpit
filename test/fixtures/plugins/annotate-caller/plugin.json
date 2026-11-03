@@ -5,7 +5,10 @@
   "api": 1,
   "main": "host.js",
   "contributes": {
-    "commands": [{ "id": "html", "title": "Annotate: HTML" }]
+    "commands": [
+      { "id": "html", "title": "Annotate: HTML" },
+      { "id": "companion", "title": "Annotate: with a companion" }
+    ]
   },
   "services": { "uses": { "reviewer": 1 } }
 }

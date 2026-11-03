@@ -9,11 +9,17 @@
 // and that the "Open in browser" icon at the end of the document's h1 opens the caller's url through
 // ctx.openExternal. The page has no header row in annotate mode: the overlay's title bar names it.
 // The caller's `aside` is a details column, sanitized the same way, with its facts list vertical; the
-// notes are a compact list under the comment (no sidebar), and ✕ deletes one. Bundled plugins are on for this spec.
+// notes are a compact list under the comment (no sidebar), and ✕ deletes one. The second test hands a
+// companion (a mail with the issue it is about beside it): two columns side by side, each scrolling on
+// its own under one header row (label, "Open in <site> ↗", facts; both cells the same height), a
+// divider that is remembered, the companion's links, a note made in the companion and found again on
+// reopen, stacked when narrow.
+// Bundled plugins are on for this spec.
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { OverlayInfo } from '../../src/shared/ipc'
+import type { Locator } from '@playwright/test'
 import { expect, launchCockpit, test as base, type Cockpit } from './fixtures'
 
 const test = base.extend<{ cockpit: Cockpit }>({
@@ -32,28 +38,30 @@ const CALLER = 'test.annotatecaller'
 const TITLE = 'Notes: PROJ-1 Fix the login redirect'
 const stack = (c: Cockpit): Promise<OverlayInfo[]> => c.hook<OverlayInfo[]>('overlays', c.projectDir)
 
-test('annotate html: the page keeps the allowed markup only, loads the asset, and re-highlights a note', async ({ cockpit }) => {
-  const { page, projectDir } = cockpit
+type Call = { ok: boolean; error?: string; value?: unknown; features?: string[] }
+
+/** Links the fixture into the project; returns a runner of its commands that waits for the outcome. */
+async function linkCaller(cockpit: Cockpit): Promise<{ run: (command: string) => Promise<Call>; calls: () => Call[] }> {
+  const { projectDir } = cockpit
   await expect
     .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', projectDir)).plugins.some((p) => p.id === 'cockpit.reviewer' && p.state === 'active'), {
       timeout: 15_000
     })
     .toBe(true)
-
   const seenFile = join(cockpit.root, 'home', 'annotate-caller.json')
   rmSync(seenFile, { force: true })
   await cockpit.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', 'annotate-caller'))
   await cockpit.hook('enablePlugin', projectDir, CALLER)
   await expect.poll(() => existsSync(seenFile), { timeout: 15_000 }).toBe(true)
-  const calls = (): Array<{ ok: boolean; error?: string }> => (JSON.parse(readFileSync(seenFile, 'utf8')) as { calls: [] }).calls
+  const calls = (): Call[] => (JSON.parse(readFileSync(seenFile, 'utf8')) as { calls: Call[] }).calls
   // The command may reach main a moment after activate wrote the file: retry the run.
-  const annotate = async (): Promise<void> => {
+  const run = async (command: string): Promise<Call> => {
     const before = calls().length
     await expect
       .poll(
         async () => {
           try {
-            await cockpit.hook('runPluginCommand', projectDir, `${CALLER}/html`)
+            await cockpit.hook('runPluginCommand', projectDir, `${CALLER}/${command}`)
             return true
           } catch {
             return false
@@ -63,7 +71,62 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
       )
       .toBe(true)
     await expect.poll(() => calls().length, { timeout: 10_000 }).toBe(before + 1)
-    expect(calls()[before]).toEqual({ ok: true, value: { opened: true } })
+    return calls()[before]!
+  }
+  return { run, calls }
+}
+
+/** Replaces the system browser with a list main records the opened URLs in. */
+async function recordOpened(cockpit: Cockpit): Promise<() => Promise<string[]>> {
+  await cockpit.app.evaluate(({ shell }) => {
+    const g = globalThis as { __opened?: string[] }
+    g.__opened = []
+    shell.openExternal = (url: string) => {
+      g.__opened!.push(url)
+      return Promise.resolve()
+    }
+  })
+  return () => cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened ?? [])
+}
+
+/** Selects the first occurrence of `text` in the text nodes under `root`. */
+const selectIn = (root: Locator, text: string): Promise<void> =>
+  root.evaluate((el, t) => {
+    const w = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const i = (n as Text).data.indexOf(t)
+      if (i === -1) continue
+      const r = el.ownerDocument.createRange()
+      r.setStart(n, i)
+      r.setEnd(n, i + t.length)
+      const sel = el.ownerDocument.getSelection()!
+      sel.removeAllRanges()
+      sel.addRange(r)
+      return
+    }
+    throw new Error(`no text ${t}`)
+  }, text)
+
+/** How many ranges of the note highlight read `text`. */
+const highlightedText = (root: Locator, text: string): Promise<number> =>
+  root.evaluate((el, t) => {
+    const css = (el.ownerDocument.defaultView as unknown as { CSS: { highlights: Map<string, Set<Range>> } }).CSS
+    const h = css.highlights.get('rv-note')
+    return h ? [...h].map((r) => r.toString()).filter((s) => s === t).length : 0
+  }, text)
+
+const pressEsc = (cockpit: Cockpit): Promise<void> =>
+  cockpit.app.evaluate(({ BrowserWindow }) => {
+    const wc = BrowserWindow.getAllWindows()[0]!.webContents
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  })
+
+test('annotate html: the page keeps the allowed markup only, loads the asset, and re-highlights a note', async ({ cockpit }) => {
+  const { page } = cockpit
+  const { run } = await linkCaller(cockpit)
+  const annotate = async (): Promise<void> => {
+    expect(await run('html')).toEqual({ ok: true, value: { opened: true } })
   }
 
   await annotate()
@@ -80,15 +143,7 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await expect(doc.locator('h1 > #open-url')).toHaveCount(1)
   await expect(openUrl).toHaveAttribute('aria-label', 'Open in browser')
   await expect(openUrl).toHaveAttribute('title', 'Open in browser: https://example.atlassian.net/browse/PROJ-1')
-  await cockpit.app.evaluate(({ shell }) => {
-    const g = globalThis as { __opened?: string[] }
-    g.__opened = []
-    shell.openExternal = (url: string) => {
-      g.__opened!.push(url)
-      return Promise.resolve()
-    }
-  })
-  const opened = (): Promise<string[]> => cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened ?? [])
+  const opened = await recordOpened(cockpit)
   await openUrl.click()
   await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1'])
 
@@ -178,22 +233,7 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await expect(frame.locator('#lightbox')).toBeHidden()
 
   // A note on a selection: the quote is listed and highlighted.
-  const select = (text: string): Promise<void> =>
-    doc.evaluate((root, t) => {
-      const w = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-      for (let n = w.nextNode(); n; n = w.nextNode()) {
-        const i = (n as Text).data.indexOf(t)
-        if (i === -1) continue
-        const r = root.ownerDocument.createRange()
-        r.setStart(n, i)
-        r.setEnd(n, i + t.length)
-        const sel = root.ownerDocument.getSelection()!
-        sel.removeAllRanges()
-        sel.addRange(r)
-        return
-      }
-      throw new Error(`no text ${t}`)
-    }, text)
+  const select = (text: string): Promise<void> => selectIn(doc, text)
   // "Add note" floats just under the end of the selection, and only while there is one.
   const addNote = frame.locator('#add-note')
   await expect(addNote).toBeHidden()
@@ -220,20 +260,11 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   expect((await frame.locator('#notes').boundingBox())!.y).toBeGreaterThanOrEqual(commentBox.y + commentBox.height)
   await expect(frame.locator('.note .link').first()).toHaveText('«redirect target»')
   await frame.locator('.note-text').fill('Which step?')
-  const highlighted = (): Promise<number> =>
-    doc.evaluate((el) => {
-      const css = (el.ownerDocument.defaultView as unknown as { CSS: { highlights: Map<string, Set<Range>> } }).CSS
-      const h = css.highlights.get('rv-note')
-      return h ? [...h].map((r) => r.toString()).filter((s) => s === 'redirect target').length : 0
-    })
+  const highlighted = (): Promise<number> => highlightedText(doc, 'redirect target')
   expect(await highlighted()).toBe(1)
 
   // Esc keeps the draft; the same key reopens it with the note found and highlighted again.
-  await cockpit.app.evaluate(({ BrowserWindow }) => {
-    const wc = BrowserWindow.getAllWindows()[0]!.webContents
-    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
-    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
-  })
+  await pressEsc(cockpit)
   await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
   await annotate()
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE])
@@ -246,4 +277,124 @@ test('annotate html: the page keeps the allowed markup only, loads the asset, an
   await expect(frame.locator('.note')).toHaveCount(0)
   await expect(frame.locator('#notes')).toBeHidden()
   await expect.poll(highlighted).toBe(0)
+})
+
+test('annotate companion: two columns with their own facts, a remembered divider, notes and links in the companion', async ({ cockpit }) => {
+  const { page } = cockpit
+  const { run } = await linkCaller(cockpit)
+  const TITLE2 = 'Notes: Re: the login redirect'
+  const annotate = async (): Promise<void> => {
+    expect(await run('companion')).toEqual({ ok: true, value: { opened: true }, features: ['companion'] })
+    await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE2])
+  }
+  await annotate()
+  const frame = page.frameLocator(`iframe[title="${TITLE2}"]`)
+  const left = frame.locator('.split > .col-main')
+  const right = frame.locator('.split > .col-companion')
+  const mainDoc = left.locator('article.doc-body')
+  const issueDoc = right.locator('article.doc-body')
+  await expect(mainDoc).toContainText('Is the redirect fixed')
+  await expect(issueDoc).toContainText('Users land on the wrong page')
+  // Side by side: main left, companion right, the divider between, about half and half.
+  const lb = (await left.boundingBox())!
+  const rb = (await right.boundingBox())!
+  expect(rb.x).toBeGreaterThanOrEqual(lb.x + lb.width)
+  expect(Math.abs(rb.y - lb.y)).toBeLessThan(2)
+  expect(Math.abs(lb.width - rb.width)).toBeLessThan(12)
+  // No details column at the right. One header row above both documents: each cell a bar with the
+  // column's label and its open button, then its facts; both cells the same height (the taller one's).
+  await expect(frame.locator('#details')).toBeHidden()
+  const mainHead = frame.locator('.split > .col-head-main')
+  const issueHead = frame.locator('.split > .col-head-companion')
+  await expect(mainHead.locator('.col-label')).toHaveText('Mail')
+  await expect(issueHead.locator('.col-label')).toHaveText('Jira · PROJ-1')
+  await expect(mainHead.locator('.col-open')).toHaveText('Open in Example Mail ↗')
+  await expect(issueHead.locator('.col-open')).toHaveText('Open in Jira ↗')
+  await expect(issueHead.locator('.col-open')).toHaveAttribute('title', 'Open in Jira: https://example.atlassian.net/browse/PROJ-1')
+  await expect(mainHead.locator('.col-facts .person')).toHaveText('Ann Lee')
+  await expect(issueHead.locator('.col-facts .lozenge')).toHaveText('In progress')
+  expect(await issueHead.locator('dl.facts').evaluate((e) => getComputedStyle(e).display)).toBe('grid')
+  const mh = (await mainHead.boundingBox())!
+  const ih = (await issueHead.boundingBox())!
+  expect(Math.abs(mh.height - ih.height)).toBeLessThan(1)
+  expect(Math.abs(mh.y - ih.y)).toBeLessThan(1)
+  // The mail's facts are one row, the issue's several: the row still took the taller one.
+  expect((await mainHead.locator('dl.facts').boundingBox())!.height).toBeLessThan((await issueHead.locator('dl.facts').boundingBox())!.height)
+  expect((await left.boundingBox())!.y).toBeGreaterThanOrEqual(mh.y + mh.height - 1)
+  // The companion's picture came from the one asset set.
+  await expect.poll(() => issueDoc.locator('img[data-asset="issue-shot"]').evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBe(2)
+  // Each column scrolls on its own, under the header row: the long issue scrolls, the mail and the facts stay put.
+  const scrollTop = (col: Locator): Promise<number> => col.locator('.doc').evaluate((e) => e.scrollTop)
+  await right.locator('.doc').evaluate((e) => (e.scrollTop = 400))
+  expect(await scrollTop(right)).toBeGreaterThan(0)
+  expect(await scrollTop(left)).toBe(0)
+  expect((await issueHead.boundingBox())!.y).toBe(ih.y)
+  await expect(issueHead.locator('.col-facts .lozenge')).toBeInViewport()
+  await right.locator('.doc').evaluate((e) => (e.scrollTop = 0))
+
+  // The header buttons open each column's own url; no icon after the h1s then.
+  const opened = await recordOpened(cockpit)
+  await expect(frame.locator('#open-url')).toBeHidden()
+  await expect(mainDoc.locator('#open-url')).toHaveCount(0)
+  await issueHead.locator('.col-open').click()
+  await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1'])
+  // A link of the companion's opens: the host's allow-set has the companion's links too.
+  await issueDoc.locator('a', { hasText: 'PROJ-3' }).click()
+  await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1', 'https://example.atlassian.net/browse/PROJ-3'])
+  await mainHead.locator('.col-open').click()
+  await expect.poll(opened).toEqual(['https://example.atlassian.net/browse/PROJ-1', 'https://example.atlassian.net/browse/PROJ-3', 'https://mail.example.com/thread/1'])
+  await expect(frame.locator('#status')).toHaveText('')
+
+  // The divider drags; the split is remembered for the next companion.
+  const divider = frame.locator('.split > .divider')
+  const db = (await divider.boundingBox())!
+  await page.mouse.move(db.x + db.width / 2, db.y + db.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(db.x - 150, db.y + db.height / 2, { steps: 6 })
+  await page.mouse.up()
+  const narrowed = (await left.boundingBox())!.width
+  expect(narrowed).toBeLessThan(lb.width - 100)
+  const split = await frame.locator('.split').evaluate((e) => (e as HTMLElement).style.getPropertyValue('--split'))
+  expect(parseFloat(split)).toBeLessThan(45)
+
+  // A note on a selection in the companion: tagged with its title, highlighted there.
+  await selectIn(issueDoc, 'wrong page')
+  await expect(frame.locator('#add-note')).toBeVisible()
+  await frame.locator('#add-note').click()
+  await expect(frame.locator('.note')).toHaveCount(1)
+  await expect(frame.locator('.note .doc-tag')).toHaveText('Jira · PROJ-1')
+  await expect(frame.locator('.note .link')).toHaveText('«wrong page»')
+  await frame.locator('.note-text').fill('Which page?')
+  // And one in the mail, listed first, with no tag (out of the note first: typing hides "Add note").
+  await frame.locator('.note-text').blur()
+  await selectIn(mainDoc, 'second step')
+  await frame.locator('#add-note').click()
+  await expect(frame.locator('.note')).toHaveCount(2)
+  await expect(frame.locator('.note').first().locator('.doc-tag')).toHaveCount(0)
+  await expect(frame.locator('.note').first().locator('.link')).toHaveText('«second step»')
+  await frame.locator('.note').first().locator('.note-text').fill('Not yet.')
+  expect(await highlightedText(issueDoc, 'wrong page')).toBe(1)
+  expect(await highlightedText(mainDoc, 'second step')).toBe(1)
+
+  // Esc keeps the draft; reopening finds both notes again, each in its own document, at the same split.
+  await pressEsc(cockpit)
+  await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
+  await annotate()
+  await expect(frame.locator('.note')).toHaveCount(2)
+  await expect(frame.locator('.note').nth(1).locator('.note-text')).toHaveValue('Which page?')
+  await expect.poll(() => highlightedText(issueDoc, 'wrong page')).toBe(1)
+  await expect.poll(() => highlightedText(mainDoc, 'second step')).toBe(1)
+  await expect(frame.locator('.note .outdated')).toHaveCount(0)
+  expect(Math.abs((await left.boundingBox())!.width - narrowed)).toBeLessThan(4)
+
+  // Narrow: stacked, each header above its own document, the companion under the main one, no divider.
+  await page.locator(`iframe[title="${TITLE2}"]`).evaluate((f) => ((f as HTMLElement).style.width = '600px'))
+  await expect(divider).toBeHidden()
+  const below = async (a: Locator, b: Locator): Promise<boolean> => {
+    const x = (await a.boundingBox())!
+    return (await b.boundingBox())!.y >= x.y + x.height - 1
+  }
+  await expect.poll(() => below(mainHead, left)).toBe(true)
+  await expect.poll(() => below(left, issueHead)).toBe(true)
+  await expect.poll(() => below(issueHead, right)).toBe(true)
 })

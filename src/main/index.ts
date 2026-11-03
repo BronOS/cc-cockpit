@@ -1293,6 +1293,22 @@ function start(): void {
         })
       }
     },
+    zoneAutoHide: {
+      get: () => registry.app.data.zoneAutoHide,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.zoneAutoHide = next
+        })
+      }
+    },
+    minTerminalWidth: {
+      get: () => registry.app.data.minTerminalWidth,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.minTerminalWidth = next
+        })
+      }
+    },
     tabCloseSide: {
       get: () => registry.app.data.tabCloseSide,
       set: (next) => {
@@ -1428,6 +1444,8 @@ function start(): void {
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
     setSessionGist: (value) => appearance.setSessionGist(value),
     setSessionFilesShown: (value) => appearance.setSessionFilesShown(value),
+    setZoneAutoHide: (value) => appearance.setZoneAutoHide(value),
+    setMinTerminalWidth: (value) => appearance.setMinTerminalWidth(value),
     confirmTabClose: () => appearance.confirmTabClose(),
     setConfirmTabClose: (value) => appearance.setConfirmTabClose(value),
     setTabCloseSide: (value) => appearance.setTabCloseSide(value),

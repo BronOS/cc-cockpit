@@ -427,7 +427,7 @@ describe('LayoutService and webview panels', () => {
     expect(service.webviewPanel(P, 'view')).toBeUndefined()
   })
 
-  it('show stores and publishes the shown layout once, and refuses a panel the project lacks', () => {
+  it('show stores the shown layout once, publishes it with reveal every time, and refuses a panel the project lacks', () => {
     const { service, stored, published } = layoutSetup()
     stored.set(P, setZoneCollapsed(service.view(P)!.layout, 'right', true))
     const before = published.length
@@ -436,10 +436,16 @@ describe('LayoutService and webview panels', () => {
     expect(layout.zones.right.collapsed).toBe(false)
     expect(layout.zones.right.panels.find((p) => p.panelKey === 'a.one/view')?.open).toBe(true)
     expect(published).toHaveLength(before + 1)
-    // Already shown: nothing to store or publish.
+    expect(published.at(-1)!.reveal).toBe('a.one/view')
+    // Already shown: nothing to store, but published again with `reveal`, for a window that
+    // auto-hid the zone (the stored layout cannot say so).
+    const writes = JSON.stringify(stored.get(P))
     expect(service.show(P, 'a.one/view')).toBe(true)
-    expect(published).toHaveLength(before + 1)
+    expect(JSON.stringify(stored.get(P))).toBe(writes)
+    expect(published).toHaveLength(before + 2)
+    expect(published.at(-1)).toMatchObject({ layout, reveal: 'a.one/view' })
     expect(service.show(P, 'a.two/view')).toBe(false)
+    expect(published).toHaveLength(before + 2)
   })
 })
 

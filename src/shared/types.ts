@@ -170,6 +170,18 @@ export interface AppSettings {
    */
   sessionFilesShown?: number
   /**
+   * Hide the side zones (right first, then left) while the terminal would be narrower than
+   * `minTerminalWidth`, and bring them back as the window widens (renderer/zones/auto-hide.ts).
+   * Absent or anything but `false` (the file is user-writable) reads as on. Pushed to every window
+   * (`prefs.changed`).
+   */
+  zoneAutoHide?: boolean
+  /**
+   * The terminal's minimum width in px for `zoneAutoHide`. Absent or damaged reads as 720
+   * (src/shared/zone-auto-hide.ts). Pushed to every window (`prefs.changed`).
+   */
+  minTerminalWidth?: number
+  /**
    * The font every terminal draws with (tabs and terminal overlays), apart from the app UI's.
    * Absent = the defaults; each field that is missing or damaged (the file is user-writable) reads
    * as its own default (main/settings/terminal-font.ts). Pushed to every window (`prefs.changed`).

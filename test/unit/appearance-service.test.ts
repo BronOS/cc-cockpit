@@ -6,6 +6,7 @@ import { CommandRegistry } from '../../src/main/commands/command-registry'
 import { AppearanceService, claudeTabOnOpenOf, confirmTabCloseOf, sessionGistOf, tabCloseSideOf } from '../../src/main/settings/appearance-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
 import { sessionFilesShownOf } from '../../src/shared/session-files'
+import { minTerminalWidthOf, zoneAutoHideOf } from '../../src/shared/zone-auto-hide'
 import { DEFAULT_TERMINAL_FONT, LEGACY_DEFAULT_FAMILY } from '../../src/shared/terminal-font'
 
 const P = 'aaaaaaaaaaaaaaaa'
@@ -24,6 +25,8 @@ function rig(initialOverrides: unknown = {}) {
     confirmTabClose: undefined as unknown,
     tabCloseSide: undefined as unknown,
     sessionFilesShown: undefined as unknown,
+    zoneAutoHide: undefined as unknown,
+    minTerminalWidth: undefined as unknown,
     terminalFont: undefined as unknown,
     prefsChanged: 0,
     tabCommands: undefined as unknown,
@@ -81,6 +84,18 @@ function rig(initialOverrides: unknown = {}) {
       get: () => state.sessionFilesShown,
       set: (next) => {
         state.sessionFilesShown = next
+      }
+    },
+    zoneAutoHide: {
+      get: () => state.zoneAutoHide,
+      set: (next) => {
+        state.zoneAutoHide = next
+      }
+    },
+    minTerminalWidth: {
+      get: () => state.minTerminalWidth,
+      set: (next) => {
+        state.minTerminalWidth = next
       }
     },
     tabCloseSide: {
@@ -625,5 +640,47 @@ describe('window background', () => {
     expect(r.state.windowBackground).toEqual({ opacity: 50 })
     expect(r.state.prefsChanged).toBe(1)
     expect(r.state.blurChanged).toEqual([])
+  })
+})
+
+describe('side zone auto-hide', () => {
+  it('is on with a 720 px minimum by default; a damaged value reads as the default', () => {
+    const r = rig()
+    expect(r.service.view(P)).toMatchObject({ zoneAutoHide: true, minTerminalWidth: 720 })
+    expect(r.service.prefs()).toMatchObject({ zoneAutoHide: true, minTerminalWidth: 720 })
+    // app.json is user-writable: only an explicit false turns it off, and a damaged width never
+    // reads as "hide at any width" (0) or as a string.
+    for (const damaged of ['false', 0, null, 'no']) {
+      r.state.zoneAutoHide = damaged
+      expect(r.service.prefs().zoneAutoHide).toBe(true)
+    }
+    for (const damaged of ['800', 0, 399, 2001, 720.5, null, true, NaN]) {
+      r.state.minTerminalWidth = damaged
+      expect(r.service.prefs().minTerminalWidth).toBe(720)
+    }
+    r.state.zoneAutoHide = false
+    r.state.minTerminalWidth = 400
+    expect(r.service.view(P)).toMatchObject({ zoneAutoHide: false, minTerminalWidth: 400 })
+    expect(r.service.prefs()).toMatchObject({ zoneAutoHide: false, minTerminalWidth: 400 })
+    expect(zoneAutoHideOf(undefined)).toBe(true)
+    expect(minTerminalWidthOf(2000)).toBe(2000)
+  })
+
+  it('stores a boolean and a whole width in range and tells every window; refuses the rest without telling anyone', () => {
+    const r = rig()
+    r.service.setZoneAutoHide(false)
+    expect(r.state.zoneAutoHide).toBe(false)
+    r.service.setMinTerminalWidth(960)
+    expect(r.state.minTerminalWidth).toBe(960)
+    expect(r.state.prefsChanged).toBe(2)
+    for (const bad of ['true', 1, undefined, null]) {
+      expect(() => r.service.setZoneAutoHide(bad)).toThrow('give true or false')
+    }
+    for (const bad of [399, 2001, 720.5, '800', undefined, null, NaN]) {
+      expect(() => r.service.setMinTerminalWidth(bad)).toThrow('give a whole number from 400 to 2000')
+    }
+    expect(r.state.zoneAutoHide).toBe(false)
+    expect(r.state.minTerminalWidth).toBe(960)
+    expect(r.state.prefsChanged).toBe(2)
   })
 })

@@ -71,6 +71,8 @@ the whole app, not only per project.
 open(path, { tabId? })  // show the review overlay for a file; tabId: the Claude tab the review goes to
 annotate({ title, text, url?, key?, tabId? })  // the same overlay on a plain text (below)
 annotate({ title, html, assets?, url?, key?, tabId? })  // ... or on sanitized HTML (below)
+annotate({ title, html, ..., label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })  // with a second document beside it (below)
+features()  // the optional annotate features: ['companion'] (app 0.9.3+)
 // editor v1 (implemented by the editor plugin)
 open(path, { line? })
 ```
@@ -192,6 +194,50 @@ draft, buttons, picker) is as with `text`. The allowed elements, attributes and 
   ` …` when shortened or when the selection was longer than its stored quote.
 - **Esc.** The image lightbox closes on a click or a key, but Esc closes the overlay itself (draft kept): main takes
   Esc before the page sees it, and a page has no way to claim it.
+
+### annotate with a companion (added to v1, app 0.9.3)
+
+```js
+annotate({ title, html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?,
+           companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })
+features()  // -> ['companion']
+```
+
+A mail about a Jira issue was shown with the issue appended below it: one long document, the issue's key fields
+merged into the mail's details column, and no way to read both at once. `companion` puts the second document beside
+the first instead.
+
+- **Input.** `checkCompanion` (`dist/lib/review.js`) checks it like the main document (title, html, facts like
+  `aside`, url) and refuses it with `text` (a CodeMirror pane beside a rendered document was not worth the second
+  layout). Assets share one budget and one id namespace with the main ones (`checkAssets` carries the count, the
+  total and the ids across both calls): the page keeps one asset map, the transport posts each asset once, and the
+  caller, who knows which pictures matter, decides the split rather than the reviewer doubling its 8 MiB.
+- **Transport.** The init's `sides.companion` is `{ title, url, htmlParts, facts }` (no content); after `content` the
+  host posts the `aside`, then `{ type: 'aside', doc: 'companion', html }`, the main parts, the companion's parts
+  (`{ type: 'html', doc: 'companion', index, part }`), every asset and `assets-done`. Each fits one page message as
+  before.
+- **Layout.** One CSS grid in `#editors`: a header row of two cells and a row of the two documents, each in its own
+  scroller, with the divider spanning both rows and setting `--split` (the main column's share, 0.2-0.8,
+  `src/page/split.mjs`). A first version put each column's facts at the top of its own scroller; with real data the
+  two blocks had different heights (a mail's two facts beside an issue's eight), it was unclear which column was
+  which, and the issue's only open control was the small icon after its `h1`, which went unnoticed. So the header
+  cells share one grid row (the taller sets the height, the shorter fills it on the same background, at most 40% of
+  the overlay, scrolling inside past that) and stay put while the documents scroll; each starts with a bar: the
+  column's `label` (default: the title, cut) and an `Open in <urlLabel> ↗` text button, which replaces the `h1` icon
+  on both sides. The details blocks sit outside the articles, so their text is never in a note's offsets. The page posts `{ type: 'split', split }` on a drag's end or a key; the host stores
+  it under `companionSplit` in `ctx.appStorage` (in bounds only) and sends it in the next init. A media query stacks the
+  columns under 700 px, each header above its own document. Without a companion the DOM and CSS are as before.
+- **Notes.** One draft for both. `doc: 'companion'` marks a companion note (`cleanDraft` keeps it, and only that value);
+  the page anchors and highlights it in the companion's text, and a selection belongs to the column it starts in
+  (`selectionDoc`; a drag across the divider is cut to that column). The message orders the main notes first and
+  names the companion in the head and in each of its notes. A companion note in a draft reopened without a companion
+  is listed as not found and sent as `In the document beside it, ...`.
+- **Links and url.** The allow-set is `linkSet(html, aside, companion.html, companion.facts)`. The companion's button
+  posts `{ type: 'open-url', doc: 'companion' }`; the host opens `companion.url`, never a URL from the page.
+- **Detection.** Service versions are whole majors, and bumping `reviewer` to 2 would cut off every v1 caller, so the
+  feature is additive in v1 and `features()` says it is there. An older reviewer ignores the unknown option (it
+  would show the mail alone, silently), so a caller asks first; the older one has no `features` and the call
+  rejects with "has no method", read as none.
 
 ### Which tab the picker starts on
 

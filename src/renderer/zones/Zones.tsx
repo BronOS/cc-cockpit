@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { setZoneCollapsed } from '../../shared/layout'
 import { registerHandlers } from '../commands/keybindings'
+import type { SideZone } from './auto-hide'
+import { useAutoHide } from './use-auto-hide'
 import { Zone } from './Zone'
 import { useLayout } from './use-layout'
 
@@ -15,28 +17,48 @@ export function Zones(props: {
   inert?: boolean
 }): React.JSX.Element {
   const controller = useLayout()
-  // The key handlers are registered once but must act on the current controller.
-  const latest = useRef(controller)
+  const upper = useRef<HTMLDivElement>(null)
+  // Side zones the window hid for a narrow terminal (auto-hide.ts): drawn collapsed, stored as they are.
+  const autoHide = useAutoHide(upper, controller.layout, controller.panels)
+  // The key handlers are registered once but must act on the current controller and auto-hide.
+  const latest = useRef({ controller, autoHide })
   useEffect(() => {
-    latest.current = controller
+    latest.current = { controller, autoHide }
   })
 
   useEffect(() => {
     // Collapse keys go through the command registry like every other command; main resolves the
     // chords (Cmd+B / Cmd+J / Cmd+Shift+B by default, user overrides applied).
+    // On an auto-hidden zone the key shows it: it looks collapsed, so that is what the person asks
+    // for, and collapsing it for real would make it theirs to reopen.
+    const toggleSide = (zone: SideZone): void => {
+      const { controller, autoHide } = latest.current
+      if (autoHide.hidden.includes(zone)) autoHide.reveal(zone)
+      else controller.commit((l) => setZoneCollapsed(l, zone))
+    }
     return registerHandlers({
-      'zone.toggleLeft': () => latest.current.commit((l) => setZoneCollapsed(l, 'left')),
-      'zone.toggleBottom': () => latest.current.commit((l) => setZoneCollapsed(l, 'bottom')),
-      'zone.toggleRight': () => latest.current.commit((l) => setZoneCollapsed(l, 'right'))
+      'zone.toggleLeft': () => toggleSide('left'),
+      'zone.toggleBottom': () => latest.current.controller.commit((l) => setZoneCollapsed(l, 'bottom')),
+      'zone.toggleRight': () => toggleSide('right')
     })
   }, [])
 
   return (
     <div className="zones" inert={props.inert}>
-      <div className="zones-upper">
-        <Zone zone="left" controller={controller} />
+      <div ref={upper} className="zones-upper">
+        <Zone
+          zone="left"
+          controller={controller}
+          autoHidden={autoHide.hidden.includes('left')}
+          onReveal={() => autoHide.reveal('left')}
+        />
         <div className="zones-centre">{props.children}</div>
-        <Zone zone="right" controller={controller} />
+        <Zone
+          zone="right"
+          controller={controller}
+          autoHidden={autoHide.hidden.includes('right')}
+          onReveal={() => autoHide.reveal('right')}
+        />
       </div>
       <Zone zone="bottom" controller={controller} />
     </div>

@@ -230,9 +230,30 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
   host matches the page's href against your strings, entities decoded), through the reviewer's `ctx.openExternal`
   (3 per 10 s; a refusal shows in the overlay's status line). A `mailto:` link is named there, not opened. Each link
   shows its URL as a tooltip unless it has a `title`.
+- `companion: { title, html, assets?, url?, facts? }` (optional, with `html` only; app 0.9.3+): a second document shown
+  beside yours (the Jira issue a mail is about). Checked like the main one: `title` 1-200 characters, `html` at most
+  2 MiB sanitized with the same allow-list, `facts` HTML of at most 100,000 characters, `url` http(s). Its `assets`
+  share the main document's budget and id namespace (30 and 8 MiB for both together, ids unique across both; an
+  `asset:<id>` in either names the same image). The page then shows two columns, yours left and the companion right,
+  each scrolling on its own, with a divider the person drags (remembered for the next companion). Above them, one
+  header row that stays put while they scroll, its two cells the same height (the taller one's, at most 40% of the
+  overlay): each a bar with the column's label and an `Open in <urlLabel> ↗` button (`Open in browser ↗` without a
+  `urlLabel`; only with a `url`), then its details block (`aside` in yours, `facts` in the companion's, `dl.facts`
+  as a grid). The details column at the right and the icon after the `h1` are not shown then. Under 700 px the
+  columns stack, each header above its own document. The companion's links open like yours; notes go on either.
+- `label`, `urlLabel`, `companion.label`, `companion.urlLabel` (optional plain text, one line; label 1-60, urlLabel
+  1-30 characters): the header bars beside a companion, e.g. `label: 'Mail', urlLabel: 'Gmail'` and
+  `companion: { label: 'Jira · PROJ-123', urlLabel: 'Jira', ... }`. A label defaults to the title, cut. Without a
+  companion they are checked but not shown.
+- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion']`. An older
+  reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
+  rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
+  relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall
+  back (e.g. append the second document to `html`).
 
 Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
-`On «quote»: note` for HTML. The reviewer README has the details and a Jira example.
+`On «quote»: note` for HTML. With a companion the head adds `, with <title> (<url>) beside it` and a note on it reads
+`In <title>, on «quote»: note`. The reviewer README has the details and a Jira example.
 
 ## Build and ship
 

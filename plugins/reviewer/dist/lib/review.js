@@ -22,6 +22,10 @@ const MAX_ANNOTATE_TITLE = 200 // also main's overlay title limit, before the "N
 const MAX_ANNOTATE_TEXT = MAX_SIDE_BYTES // UTF-8 bytes, the cap of one side of a file review
 const MAX_ANNOTATE_URL = 2048
 const MAX_ANNOTATE_KEY = 200
+// With a companion each column has a header bar: a short label ("Mail", "Jira · PROJ-123") and a
+// button "Open in <urlLabel> ↗" ("Gmail", "Jira"; else "Open in browser ↗"). Plain text, one line.
+const MAX_ANNOTATE_LABEL = 60
+const MAX_ANNOTATE_URL_LABEL = 30
 // A caller's key names its own thing (`PROJ-123`, `jira:PROJ-123`, a message id): a plain charset
 // with no spaces, quotes or controls, so it reads cleanly in a storage key and a log line.
 const ANNOTATE_KEY_CHARS = /^[A-Za-z0-9._:@#+=~\/-]+$/
@@ -102,7 +106,8 @@ function cleanAnchor(a) {
 /**
  * A clean draft { global, notes }; drops bad notes. A note is a line note
  * { id, side, from, to, quote, text } (a file, a text), or, with an `anchor` object, an HTML note
- * { id, quote, anchor: { prefix, suffix, occurrence, length, at }, text } (annotate's HTML mode).
+ * { id, quote, anchor: { prefix, suffix, occurrence, length, at }, text, doc? } (annotate's HTML
+ * mode; `doc: 'companion'` for a note on the companion document, absent for the main one).
  */
 function cleanDraft(d) {
   const out = { global: '', notes: [] }
@@ -112,12 +117,16 @@ function cleanDraft(d) {
     for (const n of d.notes.slice(0, MAX_NOTES)) {
       if (!isObj(n)) continue
       if (isObj(n.anchor)) {
-        out.notes.push({
+        const note = {
           id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.notes.length + 1),
           quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '',
           anchor: cleanAnchor(n.anchor),
           text: typeof n.text === 'string' ? n.text.slice(0, MAX_NOTE_TEXT) : '',
-        })
+        }
+        // A note on annotate's companion (the document beside the main one); absent for the main one,
+        // so a draft from before the companion reads the same.
+        if (n.doc === 'companion') note.doc = 'companion'
+        out.notes.push(note)
         continue
       }
       const from = Math.floor(Number(n.from))
@@ -159,12 +168,15 @@ function inlineQuote(quote, full, max) {
   return q.length < stored.length || full > quote.length ? `${q} …` : q
 }
 
-/** Line notes in line order (old before new at the same line), then HTML notes in text order. */
+/**
+ * Line notes in line order (old before new at the same line), then HTML notes in text order: the
+ * main document's first, then the companion's.
+ */
 function noteOrder(a, b) {
   const ah = !!a.anchor
   const bh = !!b.anchor
   if (ah !== bh) return ah ? 1 : -1
-  if (ah) return a.anchor.at - b.anchor.at
+  if (ah) return (a.doc === 'companion') - (b.doc === 'companion') || a.anchor.at - b.anchor.at
   return a.from - b.from || (a.side === b.side ? 0 : a.side === 'old' ? -1 : 1)
 }
 
@@ -177,7 +189,7 @@ const CUT_MARK = '\n\n(review cut: too long)'
  * which Claude can read itself. `cut`: true when even with no quotes it passed MAX_MESSAGE and its
  * tail was dropped; the host keeps the draft then, since what Claude got is not the whole review.
  */
-function buildMessage(head, draft, sided) {
+function buildMessage(head, draft, sided, companionTitle = null) {
   const d = cleanDraft(draft)
   const notes = d.notes.filter((n) => n.text.trim()).sort(noteOrder)
 
@@ -190,7 +202,9 @@ function buildMessage(head, draft, sided) {
         // No line numbers in rendered HTML: the quote is what locates the note. It is never dropped
         // whole (at least 40 chars stay), or a note would point at nothing.
         const q = n.quote.trim() ? `On «${inlineQuote(n.quote, n.anchor.length, Math.max(quoteMax, 40))}»` : 'On the text'
-        parts.push(`${i + 1}. ${q}: ${body}`)
+        // A note on the companion says which document it is in; the main one's need not.
+        const where = n.doc === 'companion' ? `In ${companionTitle || 'the document beside it'}, ${q[0].toLowerCase()}${q.slice(1)}` : q
+        parts.push(`${i + 1}. ${where}: ${body}`)
         return
       }
       const lines = n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`
@@ -231,10 +245,14 @@ function buildReview(draft, sides) {
  * The text Claude receives for an annotated text (annotate), with `cut` as buildReview. It opens
  * with "About <title>" (plus " (<url>)"), so it never starts with `/`, `!`, `#` or `&`, which the
  * send gate refuses; notes have no sides (one text), otherwise exactly as a file review's. HTML
- * notes read `N. On «quote»: note`, with no line numbers.
+ * notes read `N. On «quote»: note`, with no line numbers. With a companion the head names it too
+ * (`, with <title> (<url>) beside it`) and its notes read `N. In <title>, on «quote»: note`.
  */
-function buildAnnotation(draft, { title, url }) {
-  return buildMessage(`About ${title}${url ? ` (${url})` : ''}`, draft, false)
+function buildAnnotation(draft, { title, url, companion }) {
+  const named = (t, u) => `${t}${u ? ` (${u})` : ''}`
+  const c = companion || null
+  const head = `About ${named(title, url)}${c ? `, with ${named(c.title, c.url)} beside it` : ''}`
+  return buildMessage(head, draft, false, c ? c.title : null)
 }
 
 const DRAFT_PREFIX = 'draft:'
@@ -262,39 +280,81 @@ function annotationKey(key) {
 /** Runs of whitespace and control characters made one space: a title is one line of the header. */
 const oneLine = (s) => s.replace(/[\x00-\x1f\x7f\s]+/g, ' ').trim()
 
-/** An http(s) URL of at most MAX_ANNOTATE_URL chars with no whitespace or controls, or a ReviewError. */
-function checkUrl(u) {
-  if (typeof u !== 'string') throw new ReviewError('url must be a string')
-  if (u.length > MAX_ANNOTATE_URL) throw new ReviewError(`url is over ${MAX_ANNOTATE_URL} characters`)
-  if (/[\x00-\x20\x7f]/.test(u)) throw new ReviewError('url must not contain whitespace or control characters')
+/** An http(s) URL of at most MAX_ANNOTATE_URL chars with no whitespace or controls, or a ReviewError naming `name`. */
+function checkUrl(u, name = 'url') {
+  if (typeof u !== 'string') throw new ReviewError(`${name} must be a string`)
+  if (u.length > MAX_ANNOTATE_URL) throw new ReviewError(`${name} is over ${MAX_ANNOTATE_URL} characters`)
+  if (/[\x00-\x20\x7f]/.test(u)) throw new ReviewError(`${name} must not contain whitespace or control characters`)
   let parsed
   try {
     parsed = new URL(u)
   } catch {
-    throw new ReviewError('url is not a valid URL')
+    throw new ReviewError(`${name} is not a valid URL`)
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new ReviewError('url must be http or https')
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new ReviewError(`${name} must be http or https`)
   return u
 }
 
+/** A title: 1-MAX_ANNOTATE_TITLE chars once made one line, or a ReviewError naming `name`. */
+function checkTitle(v, name) {
+  if (typeof v !== 'string') throw new ReviewError(`${name} must be a string`)
+  const title = oneLine(v)
+  if (!title) throw new ReviewError(`${name} must not be empty`)
+  if (title.length > MAX_ANNOTATE_TITLE) throw new ReviewError(`${name} is over ${MAX_ANNOTATE_TITLE} characters`)
+  return title
+}
+
+/** A plain-text label: absent (null), or 1-`max` chars once made one line; a ReviewError naming `name` otherwise. */
+function checkLabel(v, name, max) {
+  if (v === undefined || v === null) return null
+  if (typeof v !== 'string') throw new ReviewError(`${name} must be a string`)
+  const label = oneLine(v)
+  if (!label) throw new ReviewError(`${name} must not be empty`)
+  if (label.length > max) throw new ReviewError(`${name} is over ${max} characters`)
+  return label
+}
+
+/** `s` cut to `max` chars with a trailing … (a default label from a title). */
+const shorten = (s, max) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s)
+
+/** HTML for the page: a string without NUL of at most MAX_ANNOTATE_HTML UTF-8 bytes, or a ReviewError. */
+function checkHtml(v, name) {
+  if (typeof v !== 'string') throw new ReviewError(`${name} must be a string`)
+  if (v.includes('\0')) throw new ReviewError(`${name} contains a NUL byte`)
+  if (Buffer.byteLength(v, 'utf8') > MAX_ANNOTATE_HTML) throw new ReviewError(`${name} is larger than ${MAX_ANNOTATE_HTML / 1024 / 1024} MiB`)
+  return v
+}
+
+/** A details block of HTML (aside, companion.facts): absent, or at most MAX_ANNOTATE_ASIDE chars without NUL; null when absent or empty. */
+function checkFacts(v, name) {
+  if (v === undefined || v === null) return null
+  if (typeof v !== 'string') throw new ReviewError(`${name} must be a string of HTML`)
+  if (v.includes('\0')) throw new ReviewError(`${name} contains a NUL byte`)
+  if (v.length > MAX_ANNOTATE_ASIDE) throw new ReviewError(`${name} is over ${MAX_ANNOTATE_ASIDE} characters`)
+  return v || null
+}
+
 /**
- * annotate's `assets`, checked: [{ id, name, mime, dataUrl }]. Images only (ASSET_MIMES, no SVG),
- * each a base64 data: URL of its own declared type, at most MAX_ASSET_CHARS, MAX_ASSETS_TOTAL in
- * all, MAX_ASSETS of them, ids unique. Checked here rather than in the page because the host posts
- * each one in a message of its own and must know it fits.
+ * annotate's `assets` (or `companion.assets`), checked: [{ id, name, mime, dataUrl }]. Images only
+ * (ASSET_MIMES, no SVG), each a base64 data: URL of its own declared type, at most MAX_ASSET_CHARS,
+ * MAX_ASSETS_TOTAL in all, MAX_ASSETS of them, ids unique. Checked here rather than in the page
+ * because the host posts each one in a message of its own and must know it fits. `budget` carries
+ * the count, the total and the ids across calls: the main document's assets and the companion's
+ * share one budget and one id namespace (an `asset:<id>` names the same image in either).
  */
-function checkAssets(list) {
+function checkAssets(list, where = 'assets', budget = { count: 0, total: 0, seen: new Set() }) {
   if (list === undefined || list === null) return []
-  if (!Array.isArray(list)) throw new ReviewError('assets must be an array')
-  if (list.length > MAX_ASSETS) throw new ReviewError(`at most ${MAX_ASSETS} assets`)
-  const seen = new Set()
-  let total = 0
+  if (!Array.isArray(list)) throw new ReviewError(`${where} must be an array`)
+  const shared = budget.count > 0 || where !== 'assets'
+  const together = shared ? ' (assets and companion.assets together)' : ''
+  if (budget.count + list.length > MAX_ASSETS) throw new ReviewError(`at most ${MAX_ASSETS} assets${together}`)
+  budget.count += list.length
   return list.map((a, i) => {
-    const at = `assets[${i}]`
+    const at = `${where}[${i}]`
     if (!isObj(a)) throw new ReviewError(`${at} must be { id, name?, mime, dataUrl }`)
     if (typeof a.id !== 'string' || !ASSET_ID_CHARS.test(a.id)) throw new ReviewError(`${at}.id must be 1-100 characters of A-Z a-z 0-9 . _ -`)
-    if (seen.has(a.id)) throw new ReviewError(`${at}.id ${a.id} is used twice`)
-    seen.add(a.id)
+    if (budget.seen.has(a.id)) throw new ReviewError(`${at}.id ${a.id} is used twice${shared ? ' (the ids of assets and companion.assets are one namespace)' : ''}`)
+    budget.seen.add(a.id)
     let name = null
     if (a.name !== undefined && a.name !== null) {
       if (typeof a.name !== 'string') throw new ReviewError(`${at}.name must be a string`)
@@ -307,55 +367,71 @@ function checkAssets(list) {
     if (!a.dataUrl.startsWith(head) || !BASE64.test(a.dataUrl.slice(head.length))) {
       throw new ReviewError(`${at}.dataUrl must be a base64 data: URL of type ${a.mime}`)
     }
-    total += a.dataUrl.length
-    if (total > MAX_ASSETS_TOTAL) throw new ReviewError(`assets are over ${MAX_ASSETS_TOTAL / 1024 / 1024} MiB in all`)
+    budget.total += a.dataUrl.length
+    if (budget.total > MAX_ASSETS_TOTAL) throw new ReviewError(`assets are over ${MAX_ASSETS_TOTAL / 1024 / 1024} MiB in all${together}`)
     return { id: a.id, name, mime: a.mime, dataUrl: a.dataUrl }
   })
 }
 
 /**
- * annotate's options, checked: { title, text, html, assets, url, key, tabId } (exactly one of
- * text and html is a string, the other null), or a ReviewError naming the bad field. title: 1-200
- * chars once made one line. text: a string of at most MAX_ANNOTATE_TEXT UTF-8 bytes without NUL
- * (empty is allowed: the comment can still say something). html: the same, at most
- * MAX_ANNOTATE_HTML bytes; the page sanitizes it. aside: absent, or HTML of at most
+ * annotate's `companion`: a second document shown beside the main one (a Jira issue beside the mail
+ * about it), checked like the main one: { title, html, assets, url, facts }. title as annotate's,
+ * html as annotate's html (required: a companion goes with an html main document), facts as aside
+ * (the companion column's own details block), url as url, assets within the budget the main
+ * document's assets left (`budget`, see checkAssets).
+ */
+function checkCompanion(c, budget) {
+  if (!isObj(c)) throw new ReviewError('companion must be { title, html, assets?, url?, facts?, label?, urlLabel? }')
+  const title = checkTitle(c.title, 'companion.title')
+  const html = checkHtml(c.html, 'companion.html')
+  const facts = checkFacts(c.facts, 'companion.facts')
+  const url = c.url !== undefined && c.url !== null ? checkUrl(c.url, 'companion.url') : null
+  const assets = checkAssets(c.assets, 'companion.assets', budget)
+  // The column's label: the caller's, else the title cut to a header's length.
+  const label = checkLabel(c.label, 'companion.label', MAX_ANNOTATE_LABEL) || shorten(title, MAX_ANNOTATE_LABEL)
+  const urlLabel = checkLabel(c.urlLabel, 'companion.urlLabel', MAX_ANNOTATE_URL_LABEL)
+  return { title, html, assets, url, facts, label, urlLabel }
+}
+
+/**
+ * annotate's options, checked: { title, text, html, aside, assets, url, key, tabId, companion }
+ * (exactly one of text and html is a string, the other null), or a ReviewError naming the bad
+ * field. title: 1-200 chars once made one line. text: a string of at most MAX_ANNOTATE_TEXT UTF-8
+ * bytes without NUL (empty is allowed: the comment can still say something). html: the same, at
+ * most MAX_ANNOTATE_HTML bytes; the page sanitizes it. aside: absent, or HTML of at most
  * MAX_ANNOTATE_ASIDE chars without NUL, for the details column (sanitized the same way; with text or
- * html; null when absent or empty). assets: with html only (checkAssets). url:
- * absent, or an http(s) URL of at most 2048 chars with no whitespace or controls (it goes into the
- * message as is). key: absent (then `title:` + a hash of the title, so the same title reopens the
- * same draft), or 1-200 chars of ANNOTATE_KEY_CHARS. tabId: absent or a string; the host checks it
- * against the window's tabs.
+ * html; null when absent or empty). assets: with html only (checkAssets). url: absent, or an http(s)
+ * URL of at most 2048 chars with no whitespace or controls (it goes into the message as is). key:
+ * absent (then `title:` + a hash of the title, so the same title reopens the same draft), or 1-200
+ * chars of ANNOTATE_KEY_CHARS. tabId: absent or a string; the host checks it against the window's
+ * tabs. label / urlLabel: the main column's header bar beside a companion (checkLabel; label
+ * defaults to the title cut to MAX_ANNOTATE_LABEL). companion: absent (null), or with html only,
+ * checkCompanion's answer.
  */
 function annotateInput(o) {
-  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId? }')
-  if (typeof o.title !== 'string') throw new ReviewError('title must be a string')
-  const title = oneLine(o.title)
-  if (!title) throw new ReviewError('title must not be empty')
-  if (title.length > MAX_ANNOTATE_TITLE) throw new ReviewError(`title is over ${MAX_ANNOTATE_TITLE} characters`)
+  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion? }')
+  const title = checkTitle(o.title, 'title')
+  // The main column's header bar, shown only beside a companion (the title cut, when not given).
+  const label = checkLabel(o.label, 'label', MAX_ANNOTATE_LABEL) || shorten(title, MAX_ANNOTATE_LABEL)
+  const urlLabel = checkLabel(o.urlLabel, 'urlLabel', MAX_ANNOTATE_URL_LABEL)
   const given = (v) => v !== undefined && v !== null
   if (given(o.text) && given(o.html)) throw new ReviewError('pass text or html, not both')
   let text = null
   let html = null
   if (given(o.html)) {
-    if (typeof o.html !== 'string') throw new ReviewError('html must be a string')
-    if (o.html.includes('\0')) throw new ReviewError('html contains a NUL byte')
-    if (Buffer.byteLength(o.html, 'utf8') > MAX_ANNOTATE_HTML) throw new ReviewError(`html is larger than ${MAX_ANNOTATE_HTML / 1024 / 1024} MiB`)
-    html = o.html
+    html = checkHtml(o.html, 'html')
   } else {
     if (typeof o.text !== 'string') throw new ReviewError('text must be a string (or pass html)')
     if (o.text.includes('\0')) throw new ReviewError('text contains a NUL byte')
     if (Buffer.byteLength(o.text, 'utf8') > MAX_ANNOTATE_TEXT) throw new ReviewError(`text is larger than ${MAX_ANNOTATE_TEXT / 1024} KiB`)
     text = o.text
   }
-  let aside = null
-  if (given(o.aside)) {
-    if (typeof o.aside !== 'string') throw new ReviewError('aside must be a string of HTML')
-    if (o.aside.includes('\0')) throw new ReviewError('aside contains a NUL byte')
-    if (o.aside.length > MAX_ANNOTATE_ASIDE) throw new ReviewError(`aside is over ${MAX_ANNOTATE_ASIDE} characters`)
-    aside = o.aside || null
-  }
+  const aside = checkFacts(o.aside, 'aside')
   if (html === null && Array.isArray(o.assets) && o.assets.length) throw new ReviewError('assets go with html, not text')
-  const assets = html === null ? [] : checkAssets(o.assets)
+  if (html === null && given(o.companion)) throw new ReviewError('companion goes with html, not text')
+  const budget = { count: 0, total: 0, seen: new Set() }
+  const assets = html === null ? [] : checkAssets(o.assets, 'assets', budget)
+  const companion = given(o.companion) ? checkCompanion(o.companion, budget) : null
   const url = given(o.url) ? checkUrl(o.url) : null
   let key
   if (!given(o.key)) {
@@ -367,7 +443,7 @@ function annotateInput(o) {
     key = o.key
   }
   if (given(o.tabId) && typeof o.tabId !== 'string') throw new ReviewError('tabId must be a string')
-  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined }
+  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion }
 }
 
 /**
@@ -540,6 +616,8 @@ module.exports = {
   MAX_ANNOTATE_TEXT,
   MAX_ANNOTATE_URL,
   MAX_ANNOTATE_KEY,
+  MAX_ANNOTATE_LABEL,
+  MAX_ANNOTATE_URL_LABEL,
   MAX_ANNOTATE_HTML,
   MAX_ANNOTATE_ASIDE,
   ASSET_MIMES,
