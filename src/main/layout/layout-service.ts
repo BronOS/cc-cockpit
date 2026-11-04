@@ -336,7 +336,14 @@ export class LayoutService {
    */
   refreshSlots(projectId: string): void {
     const view = this.view(projectId)
-    if (view && slotsJson(view) !== this.sentSlots.get(projectId)) this.send(projectId, view)
+    if (!view) {
+      // No stored layout, so no view and no resolveSlots: frames recorded earlier must not stay
+      // open in the port hub, so the hub is told there are none.
+      this.sentSlots.delete(projectId)
+      if (this.frames.delete(projectId)) this.deps.framesChanged?.(projectId, new Set())
+      return
+    }
+    if (slotsJson(view) !== this.sentSlots.get(projectId)) this.send(projectId, view)
   }
 
   /** Forget a closed project's panels, statuses and slots (the stored layout stays). */

@@ -172,6 +172,9 @@ export const MAX_NAVIGATES_PER_WINDOW = 60
 /** ctx.panels.show per plugin: each real change publishes a layout and fights the user's hide. */
 export const PANEL_SHOW_WINDOW_MS = 60_000
 export const MAX_PANEL_SHOWS_PER_WINDOW = 30
+/** panels.slots: a changed `params` is a new frame identity (a remount), so a loop is bounded. */
+export const PANEL_SLOTS_WINDOW_MS = 60_000
+export const MAX_PANEL_SLOTS_PER_WINDOW = 60
 /**
  * ctx.files.open per plugin: each one may open an overlay (the built-in viewer runs a PTY) or wake
  * the picked plugin. A tree opens one file per click; a loop must not stack viewers on the screen.
@@ -430,6 +433,7 @@ export class HostApi {
   private readonly authorizes = new RateWindow(MAX_AUTHORIZES_PER_WINDOW, AUTHORIZE_WINDOW_MS)
   private readonly navigates = new RateWindow(MAX_NAVIGATES_PER_WINDOW, NAVIGATE_WINDOW_MS)
   private readonly panelShows = new RateWindow(MAX_PANEL_SHOWS_PER_WINDOW, PANEL_SHOW_WINDOW_MS)
+  private readonly panelSlotCalls = new RateWindow(MAX_PANEL_SLOTS_PER_WINDOW, PANEL_SLOTS_WINDOW_MS)
   private readonly fileOpens = new RateWindow(MAX_FILE_OPENS_PER_WINDOW, FILE_OPEN_WINDOW_MS)
   private readonly externalOpens = new RateWindow(MAX_EXTERNAL_OPENS_PER_WINDOW, EXTERNAL_OPEN_WINDOW_MS)
   /**
@@ -841,8 +845,9 @@ export class HostApi {
    * clamp, `params` plain JSON of at most 4 KiB), and each type against the panel's manifest
    * `slots`, which never lists an app slot type (validate.ts) but is refused here by name all the
    * same: the top bar is the app's. Who draws each placement is the layout service's question,
-   * asked at every view, so a pick made later needs no new call. No budget, as for headers: the
-   * same placements again publish nothing.
+   * asked at every view, so a pick made later needs no new call. The
+   * same placements again publish nothing. A changed `params` is a new frame identity, though
+   * (the provider's frame remounts), so the call has a per-plugin budget like panels.show.
    */
   private panelSlots(params: unknown): null {
     this.alive()
@@ -854,6 +859,9 @@ export class HostApi {
     }
     if (!this.deps.setPanelSlots) throw new Error('panels.slots: slots are not available')
     const clean = parseSlotPlacements(placements)
+    if (!this.panelSlotCalls.take(plugin.id)) {
+      throw new Error(`panels.slots: more than ${MAX_PANEL_SLOTS_PER_WINDOW} calls in ${PANEL_SLOTS_WINDOW_MS / 1000} s`)
+    }
     const declared = Object.hasOwn(plugin.panelSlots ?? {}, panelId) ? (plugin.panelSlots?.[panelId] ?? []) : []
     for (const p of clean ?? []) {
       if (isAppSlotType(p.type)) throw new Error(`panels.slots: "${p.type}" is placed by the app, not by a panel`)

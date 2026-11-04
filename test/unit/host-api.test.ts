@@ -577,6 +577,14 @@ describe('panels.slots (design-next §2)', () => {
     expect(placed.get(`${A}:a.one/board`)).toBeNull()
   })
 
+  it('budgets the calls per plugin: a changed params is a new frame, so a loop is refused', async () => {
+    const call = hostFor(scope())
+    for (let i = 0; i < 60; i++) {
+      await call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [{ ...agenda, params: { n: i } }] })
+    }
+    await expect(call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [agenda] })).rejects.toThrow('more than 60 calls')
+  })
+
   it('checks the placements again, whatever the host sent: caps, positions, the height clamp, plain JSON params', async () => {
     const call = hostFor(scope())
     const at = (over: Record<string, unknown>) => ({ pluginId: 'a.one', panelId: 'board', placements: [{ ...agenda, ...over }] })
