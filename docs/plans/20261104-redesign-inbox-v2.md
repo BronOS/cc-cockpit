@@ -244,13 +244,14 @@
   `plugins/reviewer/src/page/review.js` (class names only), `examples/plugin/panels/*`
 - Modify: `test/unit/hello-dist.test.ts`, `test/unit/example-plugin.test.ts`, `plugins/files/test/*` if they pin markup
 
-- [ ] replace home-made buttons, inputs, rows and empty states with the components (`.cc-btn`, `.cc-row`, `.cc-empty`,
+- [x] replace home-made buttons, inputs, rows and empty states with the components (`.cc-btn`, `.cc-row`, `.cc-empty`,
   …); keep page-specific CSS (the diff view, the tree indent) unlayered with tokens; remove rules the layer now covers
-- [ ] partly styled `button` rules (a colour, no border) checked for the layer's border showing under them
-- [ ] `npm run build:hello`, `npm run build:reviewer`, `npm run build:example`; commit the rebuilt dists
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`, `npm run build`,
+- [x] partly styled `button` rules (a colour, no border) checked for the layer's border showing under them
+- [x] `npm run build:hello`, `npm run build:reviewer`, `npm run build:example`; commit the rebuilt dists
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`, `npm run build`,
   `npx playwright test test/e2e/hello.spec.ts test/e2e/example-plugin.spec.ts test/e2e/reviewer-annotate.spec.ts
   test/e2e/bundled-plugins.spec.ts` — done when green
+- ➕ decided: the layer styles bare buttons/inputs, so the pages only dropped their home-made rules and took `cc-primary`, `cc-ghost`, `cc-icon`, `cc-spinner`, `cc-error-line`, `cc-row` (tree rows keep their 22px height); `button.link`/`.icon`/`.note-del`/`#add-note` set `height: auto`. The built dists did not change (no markup in them). `reviewer-annotate.spec.ts` companion test fails with and without this change (pre-existing).
 
 ### Phase B — Slots (repo `~/Projects/cc-cockpit`)
 

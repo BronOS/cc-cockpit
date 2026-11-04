@@ -11,7 +11,7 @@
   <body class="loading">
     <!-- Shown until the host's init comes: at once on every open, and for as long as a caller of the
          reviewer service still fetches what it shows (prepare, then annotate). -->
-    <div id="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading…</div>
+    <div id="loading" role="status"><span class="cc-spinner" aria-hidden="true"></span>Loading…</div>
     <header>
       <div class="title">
         <strong id="path"></strong>
@@ -38,7 +38,7 @@
       <span class="spacer"></span>
       <span id="queued" class="muted"></span>
       <select id="target" title="The Claude tab Discuss sends to"></select>
-      <button id="discuss" class="primary" type="button">Discuss</button>
+      <button id="discuss" class="cc-primary" type="button">Discuss</button>
       <button id="edit" type="button" title="Open the file in the editor at the cursor's line (e)">Edit</button>
       <button id="new-session" type="button" title="Open a new Claude tab with this review as its prompt">New session</button>
       <button id="close" type="button" title="Close without sending; the draft is kept (Esc too)">Close</button>

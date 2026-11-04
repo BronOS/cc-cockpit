@@ -12,7 +12,7 @@
       h1 { font-size: 15px; margin: 0 0 8px; }
       section { margin-bottom: 14px; }
       h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px; opacity: 0.7; }
-      select, textarea, button { font: inherit; color: inherit; background: var(--cc-bg-menu); border: 1px solid var(--cc-border); border-radius: 4px; padding: 3px 6px; }
+      /* Buttons, select and textarea come from the SDK's component sheet (`ccc guide style`). */
       textarea { width: 100%; box-sizing: border-box; display: block; margin: 4px 0; }
       pre { margin: 0; white-space: pre-wrap; background: var(--cc-bg-bar); padding: 6px; border-radius: 4px; }
       .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -39,14 +39,14 @@
       <select id="sessions" aria-label="Session"></select>
       <textarea id="text" rows="2" aria-label="Text to send"></textarea>
       <div class="row">
-        <button id="send" type="button">Send</button>
+        <button id="send" class="cc-primary" type="button">Send</button>
         <span id="send-result"></span>
       </div>
     </section>
 
     <section>
       <h2>Git status</h2>
-      <pre id="git">...</pre>
+      <pre id="git" class="cc-muted">...</pre>
       <button id="git-refresh" type="button">Refresh</button>
     </section>
 

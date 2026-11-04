@@ -39,7 +39,7 @@ function markOf(rel, kind) {
 
 function rowEl({ rel, kind, depth, label, sub, entry }) {
   const el = document.createElement('div')
-  el.className = `row ${kind === 'dir' ? 'dir' : 'file'}`
+  el.className = `cc-row row ${kind === 'dir' ? 'dir' : 'file'}`
   if (entry && entry.ignored) el.classList.add('ignored')
   if (entry && entry.link) el.classList.add('link')
   if (entry && entry.blocked) el.classList.add('blocked')
@@ -66,7 +66,7 @@ function rowEl({ rel, kind, depth, label, sub, entry }) {
   if (kind === 'file') {
     const edit = document.createElement('button')
     edit.type = 'button'
-    edit.className = 'edit'
+    edit.className = 'cc-btn cc-ghost edit'
     edit.textContent = 'Edit'
     edit.title = 'Edit in the editor (e)'
     edit.addEventListener('click', (ev) => {
