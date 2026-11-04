@@ -10,6 +10,8 @@
 //   text or an HTML document another plugin hands over (a Jira issue, a mail), with no diff, no file and
 //   no Edit; with `companion`, a second HTML document beside the main one (the Jira issue a mail is
 //   about); features() lists the optional annotate features (FEATURES), so a caller can tell;
+//   prepare({ key, title }) opens that overlay at once with a loader, for a caller that still fetches
+//   what it shows (the annotate with the same key fills it), and cancel({ key }) closes one never filled;
 // - `ccc review <path>`.
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
@@ -32,7 +34,15 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // version's { title, text | html, assets?, url?, key?, tabId? }. A caller asks before it relies on
 // one, since an older reviewer ignores an option it does not know (a companion would just not be
 // shown); an older reviewer has no features() at all, and the call rejects with "has no method".
-const FEATURES = ['companion']
+const FEATURES = ['companion', 'prepare']
+// prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
+// caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
+const PREPARE_MS = 60000
+// A loading overlay the person closed: the annotate that comes for it within this long opens
+// nothing (they no longer want it); a later one opens as usual.
+const DISMISSED_MS = 120000
+// Returned by takePrepared for a key whose loading overlay the person closed.
+const DISMISSED = Symbol('dismissed')
 // OverlayHandle.post refuses a message over 1,040,384 chars of JSON (`ccc guide api`); a little
 // under it leaves room for the transport's own wrapping.
 const MAX_INIT_CHARS = 1000000
@@ -111,6 +121,85 @@ exports.activate = (ctx) => {
   // outcome (shown, or refused within OPEN_SETTLE_MS): a second caller during that wait reported
   // `{ opened: true }` for an overlay main then refused, so it waits for the same outcome instead.
   const open = new Map() // openKey -> { handle, opening: Promise<void> }
+  // prepare(): loading overlays waiting for their annotate (`text:<key>`), and the keys whose
+  // loading overlay the person closed (the time they did). Real-work feedback 8: a source fetched a
+  // mail or an issue for seconds before annotate, with nothing on screen meanwhile.
+  const prepared = new Map() // openKey -> { handle, settled, timer }
+  const dismissed = new Map() // openKey -> ms
+  disposers.push(() => {
+    for (const e of prepared.values()) clearTimeout(e.timer)
+    prepared.clear()
+  })
+
+  /**
+   * The overlay of a coming annotate, opened now with the page's loader (it shows until the init).
+   * Resolves at once: a refused overlay only drops the entry, and the annotate then starts its own
+   * overlay, which reports the refusal. A key already open (or loading) is brought to the front.
+   */
+  async function prepareAnnotation(options) {
+    const { key, title } = review.prepareInput(options)
+    const openKey = `text:${key}`
+    dismissed.delete(openKey)
+    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    const had = prepared.get(openKey)
+    if (had) return had.handle.focus()
+    const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: overlayTitle('Notes: ', title), size: 'large' })
+    const entry = { handle, settled: false, timer: null }
+    prepared.set(openKey, entry)
+    // settled: taken by its annotate, cancelled, or timed out; its result is not ours to read then.
+    const drop = () => {
+      entry.settled = true
+      clearTimeout(entry.timer)
+      if (prepared.get(openKey) === entry) prepared.delete(openKey)
+    }
+    entry.timer = setTimeout(() => {
+      if (entry.settled) return
+      drop()
+      ctx.log.warn(`a loading overlay waited ${PREPARE_MS / 1000} s for its content (${key}); closed`)
+      handle.close()
+    }, PREPARE_MS)
+    handle.result.then(
+      () => {
+        if (entry.settled) return
+        drop()
+        dismissed.set(openKey, Date.now())
+      },
+      (e) => {
+        if (entry.settled) return
+        drop()
+        ctx.log.warn(`the loading overlay did not open (${key}): ${e.message}`)
+      },
+    )
+  }
+
+  /** Closes a loading overlay no annotate filled; false when there is none (filled, or never prepared). */
+  function cancelPrepared(options) {
+    const { key } = review.prepareInput(options, { title: false })
+    const openKey = `text:${key}`
+    dismissed.delete(openKey)
+    const e = prepared.get(openKey)
+    if (!e) return false
+    e.settled = true
+    clearTimeout(e.timer)
+    prepared.delete(openKey)
+    e.handle.close()
+    return true
+  }
+
+  /** The loading overlay of `openKey` for its annotate to fill, DISMISSED when the person closed it, else null. */
+  function takePrepared(openKey) {
+    const e = prepared.get(openKey)
+    if (e) {
+      e.settled = true
+      clearTimeout(e.timer)
+      prepared.delete(openKey)
+      return e.handle
+    }
+    const at = dismissed.get(openKey)
+    if (at === undefined) return null
+    dismissed.delete(openKey)
+    return Date.now() - at < DISMISSED_MS ? DISMISSED : null
+  }
 
   /** Brings an open (or opening) review to the front once it is up; throws the first open's refusal. */
   async function focusExisting(entry) {
@@ -331,7 +420,11 @@ exports.activate = (ctx) => {
     if (JSON.stringify(init).length > MAX_INIT_CHARS) {
       throw new files.ReviewError(subject.tooLarge, { fallback: true })
     }
-    const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: subject.overlayTitle, size: 'large' })
+    // A prepared overlay (its loader showing) is filled instead of a new one started; its title stays
+    // the one prepare gave (an overlay's title is set when it starts).
+    const pre = takePrepared(openKey)
+    if (pre === DISMISSED) return { done: Promise.resolve(), dismissed: true }
+    const handle = pre || ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: subject.overlayTitle, size: 'large' })
     let after = subject.after && subject.after.length ? subject.after : null
     let settle
     const opening = new Promise((resolve, reject) => (settle = { resolve, reject }))
@@ -499,7 +592,8 @@ exports.activate = (ctx) => {
           return
         }
         const finalDraft = review.cleanDraft(raw)
-        if (review.isEmpty(finalDraft)) return closedUnsaved()
+        // An empty draft is sent too (real-work feedback 9: Discuss refused without a note or a
+        // comment): build() then asks Claude to discuss the file or the text, handing it the text.
         // A review past MAX_MESSAGE even without quotes goes out with its tail cut; the draft is
         // kept whole then (deleting it lost the unsent part), and the person is told.
         const { text, cut } = subject.build(finalDraft)
@@ -533,7 +627,9 @@ exports.activate = (ctx) => {
               ctx.notify(`Review of ${what} queued: it is sent when Claude is waiting for input.${cutNote} ${kept}`)
             }
           } else {
-            await ctx.sessions.open({ prompt: text })
+            // The person clicked New session: show them the tab it went to (real-work feedback 10).
+            // An app without `focus` ignores it, and the tab opens unselected as before.
+            await ctx.sessions.open({ prompt: text, focus: true })
           }
         } catch (e) {
           ctx.log.error(`review of ${what}: ${e.message}`)
@@ -584,8 +680,29 @@ exports.activate = (ctx) => {
     // tell an older reviewer apart and fall back.
     async annotate(options) {
       try {
-        await openAnnotation(options)
+        const r = await openAnnotation(options)
+        // The person closed its loading overlay while the caller fetched: nothing opens.
+        return { opened: !(r && r.dismissed) }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
+    },
+    // Additive in v1 (features() lists 'prepare'): the overlay of an annotate still to come, shown at
+    // once with a loader; the annotate with the same key fills it. An older reviewer rejects with
+    // "has no method", which a caller reads as "annotate when ready", as before.
+    async prepare(options) {
+      try {
+        await prepareAnnotation(options)
         return { opened: true }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
+    },
+    // Closes a prepared overlay that no annotate filled (the fetch failed, or the caller shows its
+    // own page instead); a no-op once filled, so a caller may call it whatever happened.
+    async cancel(options) {
+      try {
+        return { closed: cancelPrepared(options) }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
       }

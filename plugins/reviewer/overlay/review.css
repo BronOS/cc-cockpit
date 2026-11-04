@@ -6,6 +6,13 @@ body {
   font: 13px/1.4 system-ui, sans-serif; background: var(--cc-bg); color: var(--cc-fg);
 }
 .muted { color: var(--cc-fg-muted); }
+/* Until the init: only the loader (the reviewer service's prepare shows this while the caller fetches). */
+body.loading > :not(#loading) { display: none !important; }
+#loading { display: none; }
+body.loading > #loading { display: flex; flex: 1; align-items: center; justify-content: center; gap: 10px; color: var(--cc-fg-muted); }
+.spinner { width: 16px; height: 16px; border: 2px solid var(--cc-border); border-top-color: var(--cc-accent, var(--cc-fg)); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
 header, footer { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--cc-bg-bar); }
 header { border-bottom: 1px solid var(--cc-border); justify-content: space-between; }
 header[hidden] { display: none; } /* annotate: the overlay's title bar names the text */

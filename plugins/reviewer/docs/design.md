@@ -278,7 +278,9 @@ with `git show HEAD:<path>` and the working-tree file, and the view computes the
     Claude is waiting". Without a `tabId`, for example when opened from the file tree, Discuss asks
     which tab to use, or is hidden when the window has no Claude tab.
   - **New session** opens a new Claude tab in the project folder, with the review as its first
-    prompt, through `ctx.sessions.open({ cwd, prompt })`.
+    prompt, through `ctx.sessions.open({ cwd, prompt, focus: true })`, and the window selects it.
+  - Discuss and New session need no note and no comment: with neither, Claude is asked to discuss the file (read
+    it and its diff) or, for an annotated text, gets the text itself (as plain text, cut to fit) with that request.
   - **Edit** closes the review and calls `editor.open(path, { line })`, using the line of the selected
     note when there is one.
   - **Close** sends nothing.

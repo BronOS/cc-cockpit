@@ -424,3 +424,15 @@ test('linkSet and linkVerdict: normalized both ways, http(s) opened, mailto name
     assert.deepEqual(linkVerdict(set, href), { refuse: 'Not opened: not a link of this document' })
   }
 })
+
+test('htmlText: tags out, block ends and br as line breaks, list items and facts readable, entities decoded', () => {
+  const { htmlText } = require('../dist/lib/review')
+  assert.equal(
+    htmlText('<h1>A &amp; B</h1><p>one<br>two</p><ul><li>x</li><li>y</li></ul><style>p{}</style><!-- c --><dl class="facts"><dt>From</dt><dd>Sam</dd></dl><table><tr><td>k</td><td>v</td></tr></table>'),
+    'A & B\n\none\ntwo\n\n- x\n- y\n\nFrom: Sam\n\nk v',
+  )
+  assert.equal(htmlText(''), '')
+  assert.equal(htmlText(null), '')
+  // Unclosed script: dropped to the end, never shown.
+  assert.equal(htmlText('<p>ok</p><script>never'), 'ok')
+})

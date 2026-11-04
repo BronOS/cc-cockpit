@@ -6,6 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const host = require('../dist/host.js')
+const review = require('../dist/lib/review')
 
 // A project folder with one changed file, and a fake ctx around it.
 function setup({ editorAvailable }) {
@@ -722,11 +723,11 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  assert.deepEqual(await f.provided.reviewer.features(), ['companion'])
-  assert.deepEqual(host.FEATURES, ['companion'])
+  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare'])
+  assert.deepEqual(host.FEATURES, ['companion', 'prepare'])
   // A copy: a caller changing the answer changes nothing here.
   ;(await f.provided.reviewer.features()).push('x')
-  assert.deepEqual(await f.provided.reviewer.features(), ['companion'])
+  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare'])
   host.deactivate()
 })
 
@@ -860,5 +861,116 @@ test('annotate companion: bad input is refused before any overlay', async () => 
   await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', companion: { title: 'C', html: '' } }), /^Error: reviewer: companion goes with html, not text/)
   await assert.rejects(f.provided.reviewer.annotate({ title: 't', html: 'x', companion: { title: 'C', html: '', url: 'ftp://x/' } }), /^Error: reviewer: companion\.url must be http or https/)
   assert.equal(f.handles.length, 0)
+  host.deactivate()
+})
+
+// Real-work feedback 9: Discuss and New session refused without a note or a comment.
+test('annotate: Discuss with no note and no comment sends the text and asks Claude to discuss it', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f)
+  const sent = []
+  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
+  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({
+    title: 'Lunch on Friday',
+    html: '<h1>Lunch on Friday</h1><p>Can we move it to <b>1 pm</b>?<br>Thanks</p><script>x()</script>',
+    aside: '<dl class="facts"><dt>From</dt><dd>Sam &lt;sam@example.com&gt;</dd></dl>',
+    url: 'https://mail.example.com/t/1',
+    key: 'gmail:1',
+  })
+  f.handles[0].end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft: { global: '  ', notes: [] } } })
+  await wait(50)
+  assert.equal(sent.length, 1)
+  assert.equal(
+    sent[0][1],
+    'About Lunch on Friday (https://mail.example.com/t/1)\n\nDiscuss this with me: what it is about, what matters in it, and what I should do about it, if anything. Its text follows.\n\nFrom: Sam <sam@example.com>\n\nLunch on Friday\n\nCan we move it to 1 pm?\nThanks',
+  )
+  host.deactivate()
+})
+
+// Real-work feedback 10: New session opened a tab the person then had to look for.
+test('New session with an empty draft opens a focused tab with the discuss request; a long text is cut to fit', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f)
+  const opened = []
+  f.ctx.sessions.open = async (o) => (opened.push(o), { tabId: 'new' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Long', text: 'word '.repeat(10000), key: 'k:1' })
+  f.handles[0].end({ kind: 'value', value: { action: 'new', draft: { global: '', notes: [] } } })
+  await wait(50)
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0].focus, true)
+  assert.ok(opened[0].prompt.startsWith('About Long\n\nDiscuss this with me'))
+  assert.ok(opened[0].prompt.endsWith('(text cut: too long)'))
+  assert.ok(opened[0].prompt.length <= review.MAX_MESSAGE)
+  host.deactivate()
+})
+
+test('a file review with an empty draft asks Claude to read the file and its diff', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f)
+  const opened = []
+  f.ctx.sessions.open = async (o) => (opened.push(o), { tabId: 'new' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  f.handles[0].end({ kind: 'value', value: { action: 'new', draft: { global: '', notes: [] } } })
+  await wait(50)
+  assert.equal(opened.length, 1)
+  assert.match(opened[0].prompt, /^Review of a\.js \(changes since the last commit [0-9a-f]{12}\)\n\nDiscuss these changes with me: read the file and its diff/)
+  assert.equal(opened[0].focus, true)
+  host.deactivate()
+})
+
+// Real-work feedback 8: an Inbox item opened after its source fetched it, with nothing on screen meanwhile.
+test('prepare: the overlay opens at once; the annotate with the same key fills it, no second overlay', async () => {
+  const f = setup({ editorAvailable: false })
+  const starts = []
+  f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
+  host.activate(f.ctx)
+  assert.deepEqual(await f.provided.reviewer.prepare({ key: 'gmail:1', title: 'Lunch' }), { opened: true })
+  assert.equal(f.handles.length, 1)
+  assert.equal(starts[0].title, 'Notes: Lunch')
+  assert.equal(starts[0].file, 'overlay/review.html')
+  assert.deepEqual(f.handles[0].posts, []) // the page shows its loader until the init
+  // A second prepare of the same key brings it to the front.
+  await f.provided.reviewer.prepare({ key: 'gmail:1', title: 'Lunch' })
+  assert.equal(f.handles.length, 1)
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'Lunch (2)', text: 'body', key: 'gmail:1' }), { opened: true })
+  assert.equal(f.handles.length, 1)
+  assert.equal(f.handles[0].posts[0].type, 'init')
+  assert.equal(f.handles[0].posts[0].sides.new, 'body')
+  // Filled: cancel closes nothing, and the same key now focuses the open review.
+  assert.deepEqual(await f.provided.reviewer.cancel({ key: 'gmail:1' }), { closed: false })
+  assert.equal(f.handles[0].closed, 0)
+  // Another key prepared and never filled: cancel closes it.
+  await f.provided.reviewer.prepare({ key: 'gmail:2', title: 'Other' })
+  assert.deepEqual(await f.provided.reviewer.cancel({ key: 'gmail:2' }), { closed: true })
+  assert.equal(f.handles[1].closed, 1)
+  // After a cancel the annotate opens its own overlay.
+  await f.provided.reviewer.annotate({ title: 'Other', text: 'x', key: 'gmail:2' })
+  assert.equal(f.handles.length, 3)
+  host.deactivate()
+})
+
+test('prepare: a loading overlay the person closed is not reopened by its annotate; bad input is refused', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'jira:PROJ-1', title: 'PROJ-1' })
+  f.handles[0].end({ kind: 'dismissed' })
+  await wait(10)
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'PROJ-1', text: 'x', key: 'jira:PROJ-1' }), { opened: false })
+  assert.equal(f.handles.length, 1)
+  // Only that one annotate: the next open shows it.
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'PROJ-1', text: 'x', key: 'jira:PROJ-1' }), { opened: true })
+  assert.equal(f.handles.length, 2)
+  await assert.rejects(f.provided.reviewer.prepare({ title: 'no key' }), /^Error: reviewer: key must be a string/)
+  await assert.rejects(f.provided.reviewer.prepare({ key: 'k', title: '' }), /^Error: reviewer: title must not be empty/)
+  await assert.rejects(f.provided.reviewer.cancel('k'), /^Error: reviewer: cancel takes \{ key \}/)
+  assert.equal(f.handles.length, 2)
   host.deactivate()
 })

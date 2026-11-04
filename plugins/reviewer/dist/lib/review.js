@@ -238,7 +238,74 @@ function buildReview(draft, sides) {
   // Sides only mean something when there is a diff: an unchanged file is one text.
   const sided = sides.mode === 'diff' && !unchanged
   const base = sides.mode === 'plain' ? 'the file as it is now, no git diff' : unchanged ? `unchanged since the last commit${commit}` : `changes since the last commit${commit}`
-  return buildMessage(`Review of ${sides.path} (${base})`, draft, sided)
+  const head = `Review of ${sides.path} (${base})`
+  // No comment and no note: Discuss still sends (it used to refuse, real-work feedback 9). Claude
+  // can read the file itself, so the message asks it to and to talk the change through.
+  if (isEmpty(cleanDraft(draft))) {
+    const ask = sided || sides.mode === 'diff' ? DISCUSS_DIFF : DISCUSS_FILE
+    return { text: `${head}\n\n${ask}`, cut: false }
+  }
+  return buildMessage(head, draft, sided)
+}
+
+const DISCUSS_DIFF = 'Discuss these changes with me: read the file and its diff against the last commit, then tell me what you see.'
+const DISCUSS_FILE = 'Discuss this file with me: read it, then tell me what you see.'
+const DISCUSS_TEXT = 'Discuss this with me: what it is about, what matters in it, and what I should do about it, if anything. Its text follows.'
+const TEXT_CUT_MARK = '\n\n(text cut: too long)'
+// How much of a caller's HTML htmlText reads: the message holds MAX_MESSAGE chars, so more is never
+// needed, and the regexes below then never scan megabytes.
+const MAX_HTML_SCAN = 200000
+
+/**
+ * A caller's HTML (annotate's html, aside, companion) as plain text for a message: script, style and
+ * comments dropped, block ends and `br` made line breaks, list items "- ", the other tags removed,
+ * entities decoded, blank runs collapsed. Only for Claude's message: what the person sees is the
+ * page's own sanitized rendering.
+ */
+function htmlText(html) {
+  if (typeof html !== 'string' || !html) return ''
+  const BLOCK = '(?:p|div|h[1-6]|ul|ol|li|tr|table|thead|tbody|blockquote|pre|section|article|header|footer|dl|dt|dd|figure|figcaption|details|summary|hr)'
+  return decodeAttr(
+    html
+      .slice(0, MAX_HTML_SCAN)
+      .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+      .replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<li\b[^>]*>/gi, '\n- ')
+      .replace(/<\/li\s*>/gi, '')
+      // A facts list (`dl.facts`) reads "Label: value", one per line.
+      .replace(/<\/dt\s*>/gi, ': ')
+      .replace(/<dd\b[^>]*>/gi, '')
+      .replace(/<\/t[dh]\s*>/gi, ' ')
+      .replace(new RegExp(`</?${BLOCK}\\b[^>]*>`, 'gi'), '\n')
+      .replace(/<[^>]*>/g, ''),
+  )
+    .replace(/\u00a0/g, ' ')
+    .split('\n')
+    .map((l) => l.replace(/[ \t\f\v\r]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
+ * The message of a Discuss with no comment and no note on an annotated text: the head, the ask, then
+ * the text itself (the aside first, the companion after the main one), since Claude has no other way
+ * to read a mail or a ticket handed to the reviewer. The text is cut to fit MAX_MESSAGE; `cut` stays
+ * false, as nothing of the person's is lost.
+ */
+function discussAnnotation(head, a) {
+  const c = a.companion || null
+  const doc = (aside, body) => [htmlText(aside), body].filter((s) => s).join('\n\n')
+  const main = doc(a.aside, a.html !== null && a.html !== undefined ? htmlText(a.html) : typeof a.text === 'string' ? a.text.trim() : '')
+  const beside = c ? doc(c.facts, htmlText(c.html)) : ''
+  const parts = [main, beside ? `Beside it, ${c.title}:\n\n${beside}` : ''].filter((s) => s)
+  const lead = `${head}\n\n${DISCUSS_TEXT}`
+  let body = parts.join('\n\n')
+  if (!body) return { text: `${head}\n\nDiscuss this with me.`, cut: false }
+  const room = MAX_MESSAGE - lead.length - 2
+  if (body.length > room) body = body.slice(0, Math.max(0, room - TEXT_CUT_MARK.length)).replace(/\s+\S*$/, '') + TEXT_CUT_MARK
+  return { text: `${lead}\n\n${body}`, cut: false }
 }
 
 /**
@@ -248,10 +315,12 @@ function buildReview(draft, sides) {
  * notes read `N. On «quote»: note`, with no line numbers. With a companion the head names it too
  * (`, with <title> (<url>) beside it`) and its notes read `N. In <title>, on «quote»: note`.
  */
-function buildAnnotation(draft, { title, url, companion }) {
+function buildAnnotation(draft, a) {
+  const { title, url, companion } = a
   const named = (t, u) => `${t}${u ? ` (${u})` : ''}`
   const c = companion || null
   const head = `About ${named(title, url)}${c ? `, with ${named(c.title, c.url)} beside it` : ''}`
+  if (isEmpty(cleanDraft(draft))) return discussAnnotation(head, a)
   return buildMessage(head, draft, false, c ? c.title : null)
 }
 
@@ -437,10 +506,7 @@ function annotateInput(o) {
   if (!given(o.key)) {
     key = `title:${require('node:crypto').createHash('sha256').update(title).digest('hex').slice(0, 32)}`
   } else {
-    if (typeof o.key !== 'string') throw new ReviewError('key must be a string')
-    if (!o.key || o.key.length > MAX_ANNOTATE_KEY) throw new ReviewError(`key must be 1-${MAX_ANNOTATE_KEY} characters`)
-    if (!ANNOTATE_KEY_CHARS.test(o.key)) throw new ReviewError('key may only use letters, digits and . _ : @ # + = ~ / -')
-    key = o.key
+    key = checkKey(o.key)
   }
   if (given(o.tabId) && typeof o.tabId !== 'string') throw new ReviewError('tabId must be a string')
   // Where the main document opens: 'top' (default) or 'end', for a conversation whose newest
@@ -448,6 +514,25 @@ function annotateInput(o) {
   if (given(o.start) && o.start !== 'top' && o.start !== 'end') throw new ReviewError("start must be 'top' or 'end'")
   const start = o.start === 'end' ? 'end' : 'top'
   return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start }
+}
+
+/** An annotate key: 1-MAX_ANNOTATE_KEY chars of ANNOTATE_KEY_CHARS. */
+function checkKey(v) {
+  if (typeof v !== 'string') throw new ReviewError('key must be a string')
+  if (!v || v.length > MAX_ANNOTATE_KEY) throw new ReviewError(`key must be 1-${MAX_ANNOTATE_KEY} characters`)
+  if (!ANNOTATE_KEY_CHARS.test(v)) throw new ReviewError('key may only use letters, digits and . _ : @ # + = ~ / -')
+  return v
+}
+
+/**
+ * prepare({ key, title }) and cancel({ key }): the overlay of an annotate still to come, opened at
+ * once with a loader while the caller fetches. `key` is required (it is how the annotate that fills
+ * the overlay finds it) and checked as annotate's; `title` as annotate's (prepare only).
+ */
+function prepareInput(o, { title: withTitle = true } = {}) {
+  if (!isObj(o)) throw new ReviewError(withTitle ? 'prepare takes { key, title }' : 'cancel takes { key }')
+  const key = checkKey(o.key)
+  return withTitle ? { key, title: checkTitle(o.title, 'title') } : { key }
 }
 
 /**
@@ -604,8 +689,10 @@ module.exports = {
   formatReview,
   buildReview,
   annotateInput,
+  prepareInput,
   annotationKey,
   buildAnnotation,
+  htmlText,
   splitParts,
   linkHrefs,
   linkSet,

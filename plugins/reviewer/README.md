@@ -17,7 +17,10 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     for a thread whose newest messages are last. It stays at the end while pictures load, until the person scrolls.
   - `companion` (HTML form only, optional, app 0.9.3+): `{ title, html, assets?, url?, facts?, label?, urlLabel? }`,
     a second document beside the first, with `label` / `urlLabel` for the main column's header; see "Companion" below.
-  - `features()`: the optional annotate features this reviewer has (`['companion']`); an older reviewer has no such
+  - `prepare({ key, title })`: the overlay of an annotate still to come, shown at once with a loader while the caller
+    fetches; the annotate with the same `key` fills it. `cancel({ key })` closes one no annotate filled (a no-op
+    after the fill, so call it in a `finally`). An older reviewer has no `prepare` (rejects with "has no method").
+  - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare']`); an older reviewer has no such
     method (the call rejects with `has no method "features"`: read it as none).
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call

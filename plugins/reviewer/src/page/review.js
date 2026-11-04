@@ -1135,11 +1135,7 @@ function finish(action) {
     $('status').textContent = 'Not sent: the draft is too large. Shorten or delete a note first.'
     return
   }
-  const empty = !state.draft.global.trim() && state.draft.notes.every((n) => !n.text.trim())
-  if (empty) {
-    $('status').textContent = 'Nothing to send yet: write a comment or a note.'
-    return
-  }
+  // No comment and no note is fine: the host then asks Claude to discuss the file or the text.
   if (action === 'discuss' && !state.tabId) {
     $('status').textContent = 'Choose the Claude tab to send the review to.'
     $('target').focus()
@@ -1153,6 +1149,7 @@ function finish(action) {
 let initMsg = null // the init message, for buildSplit's header buttons
 function init(m) {
   initMsg = m
+  document.body.classList.remove('loading')
   state.sides = m.sides
   state.draft = m.draft || { global: '', notes: [] }
   state.tabs = m.tabs || []

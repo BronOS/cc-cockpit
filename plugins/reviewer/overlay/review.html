@@ -8,7 +8,10 @@
     <script src="/__sdk/panel.js"></script>
     <link rel="stylesheet" href="review.css" />
   </head>
-  <body>
+  <body class="loading">
+    <!-- Shown until the host's init comes: at once on every open, and for as long as a caller of the
+         reviewer service still fetches what it shows (prepare, then annotate). -->
+    <div id="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading…</div>
     <header>
       <div class="title">
         <strong id="path"></strong>

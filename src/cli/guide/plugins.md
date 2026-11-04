@@ -251,7 +251,16 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
   1-30 characters): the header bars beside a companion, e.g. `label: 'Mail', urlLabel: 'Gmail'` and
   `companion: { label: 'Jira · PROJ-123', urlLabel: 'Jira', ... }`. A label defaults to the title, cut. Without a
   companion they are checked but not shown.
-- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion']`. An older
+- `prepare({ key, title })` (feature `'prepare'`): opens the overlay of an annotate still to come at once, with a
+  loader, so a click on a mail or an issue shows something while you fetch it. The `annotate` with the same `key`
+  then fills that overlay (its title stays the one `prepare` gave) instead of starting another. Call
+  `cancel({ key })` when no annotate follows (the fetch failed, you show your own page): it closes a loader never
+  filled and resolves `{ closed: false }` otherwise, so call it in a `finally`. A loader the person closes makes the
+  next annotate of that key resolve `{ opened: false }` with nothing shown; one left unfilled closes after 60 s. An
+  older reviewer rejects `prepare` with "has no method": just annotate when ready. The pattern:
+  `const p = await reviewer.prepare({ key, title }).then(() => true, () => false)`, fetch, annotate, and
+  `finally { if (p) await reviewer.cancel({ key }).catch(() => {}) }`.
+- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall
@@ -259,7 +268,10 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
 
 Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
 `On «quote»: note` for HTML. With a companion the head adds `, with <title> (<url>) beside it` and a note on it reads
-`In <title>, on «quote»: note`. The reviewer README has the details and a Jira example.
+`In <title>, on «quote»: note`. With no comment and no note Discuss still sends: the head, a request to discuss it,
+then the text itself (your `aside` and `html` as plain text, the companion after; cut to 20,000 characters in all),
+since Claude cannot read your mail or ticket otherwise; a file review asks Claude to read the file and its diff. New
+session selects the tab it opens. The reviewer README has the details and a Jira example.
 
 ## Build and ship
 
