@@ -40,6 +40,11 @@ load, the strip shows the title's first letter.
   already set on `:root` (and `color-scheme` is `kind`), so style with `var(--...)`.
   `ccPanel.theme.onChange(listener)` fires on every change. The shell sends the theme in a
   message after the page loads, so the first paint can come before it.
+- `ccPanel.slot`: only when the page is drawn as a slot (`contributes.slots`): `{ type,
+  setHeight(px) }`. `setHeight` asks the app for a frame height (rounded, 24-600 px, then within
+  the slot's `[minHeight, placement height]`); without it the frame has the placement's height.
+  `undefined` in a panel or an overlay. It appears once the app has said what the page is, so
+  read it after load, not at script start.
 - The SDK also gives the page thin themed scrollbars (`scrollbar-width: thin`, a `--cc-fg` tinted
   thumb) at zero specificity, so any `scrollbar-*` rule of your own overrides it. Not on macOS,
   whose overlay scrollbars are left alone.

@@ -103,6 +103,20 @@ with full Node access.
   throws a TypeError. Cleared when the plugin stops or reloads (`ccc guide panels`).
 - `ctx.panels.onAction(panelId, (actionId) => …)`: a click on one of that panel's header actions
   (never a busy or disabled one); returns a disposer.
+- `ctx.panels.slots(panelId, placements | null)`: place slots (pages another plugin draws) above or
+  below one of your own panels: `[{ type, position: 'top' | 'bottom', height, params? }]`, at most
+  4; `type` must be in that panel's manifest `slots` (and not an app slot such as
+  `sessions-strip`), `height` 24-600 px, `params` plain JSON of at most 4 KiB that only the
+  provider sees. Each call replaces the set, `null` removes it; a bad placement throws a TypeError
+  or Error, a refusal from the app is logged. Cleared when the plugin stops or reloads. Who draws a
+  type is the project's pick (`@slot:<type>`); with several providers and no pick, none is drawn.
+- `ctx.slots` (the provider side; an older app has none, so check `typeof ctx.slots === 'object'`):
+  `onOpen(type, (slot) => …)` hears a frame of a type from your manifest `contributes.slots`
+  opening (it throws for another type) and returns a disposer. `slot` is `{ id, type, host,
+  params, post(message), onMessage(fn), onClose(fn) }`: `post` and `onMessage` talk to the slot's
+  page with the panel message rules (JSON, 1 MiB; `ccPanel.post` / `ccPanel.onMessage` on the
+  page), `onClose` fires when the frame ends (host panel hidden or reloaded, placement removed,
+  provider changed). `available(type)` resolves whether a placement of `type` would draw now.
 - `ctx.webview`: drives the native web view of one of your `"kind": "webview"` panels (`ccc guide
   webview`). `navigate(panelId, target)` shows an http(s) URL or an absolute file path (a local
   file is served read-only with the files next to it); `back(panelId)`, `forward(panelId)`,

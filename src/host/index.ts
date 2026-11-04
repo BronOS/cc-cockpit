@@ -23,9 +23,11 @@
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 //   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
+//   slot.close { pluginId, id }               a slot frame this host provides ended (SlotInstance.onClose)
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text, options? } -> { clicked }
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
+//   slots.available { pluginId, type } -> boolean (ctx.slots.available), panels.slots { pluginId, panelId, placements },
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
 //   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click),
@@ -35,8 +37,11 @@
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)
 // Next to the RPC, main hands over panel ports (src/main/plugins/panel-ports.ts): a message
 // `{ "panelPort": { pluginId, panelId } }` with the port in its transfer list. Those never reach the
-// RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts).
+// RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts). A slot frame the
+// plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params? } }`
+// and ends with the `slot.close { pluginId, id }` event or its port closing (host/ctx/slots.ts).
 import { HostContexts, type LogLevel } from './ctx'
+import { slotOpenTag } from './ctx/slots'
 import { fromMainPort, panelPortTag, type MainPortLike, type PanelPort } from './ctx/ui'
 import { parsePluginSpecs, parseServiceProviders, PluginLoader } from './loader'
 import { RpcEndpoint, type RpcPort } from './rpc'
@@ -66,6 +71,13 @@ function start(): void {
     const [raw, ...extra] = e.ports ?? []
     for (const p of extra) p.close()
     if (!raw) return
+    const slotTag = slotOpenTag(e.data)
+    if (slotTag) {
+      // A slot frame (this plugin provides the page in it); the close of THIS port ends THIS frame.
+      const slotPort: PanelPort = fromMainPort(raw, () => contexts.detachSlotPort(slotTag.pluginId, slotTag.id, slotPort))
+      contexts.attachSlotPort(slotTag, slotPort)
+      return
+    }
     const tag = panelPortTag(e.data)
     if (!tag) {
       raw.close()

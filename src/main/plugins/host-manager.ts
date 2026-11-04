@@ -1145,6 +1145,9 @@ export class HostManager {
       panels: p.panels.map((panel) => panel.id),
       webviewPanels: p.panels.filter((panel) => panel.kind === 'webview').map((panel) => panel.id),
       cli: (p.cli ?? []).map((c) => c.name),
+      // Only when there is something: a spec of a plugin without slots stays what it was.
+      ...((p.slots ?? []).length > 0 ? { slotTypes: (p.slots ?? []).map((sl) => sl.type) } : {}),
+      ...(Object.keys(panelSlotsOf(p)).length > 0 ? { panelSlots: panelSlotsOf(p) } : {}),
       ...(p.services !== undefined ? { services: p.services } : {}),
       ...(p.openFile !== undefined ? { openFile: true } : {}),
       settings: {

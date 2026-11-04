@@ -534,6 +534,27 @@ describe('panels.header / panelAction', () => {
   })
 })
 
+describe('slots.available (design-next §2)', () => {
+  it('asks the provider lookup of this host\'s own project, and is false without one', async () => {
+    const asked: { projectId: string; type: string }[] = []
+    deps.slotAvailable = (projectId, type) => {
+      asked.push({ projectId, type })
+      return type === 'agenda'
+    }
+    const call = hostA()
+    await expect(call('slots.available', { pluginId: 'a.one', type: 'agenda' })).resolves.toBe(true)
+    await expect(call('slots.available', { pluginId: 'a.one', type: 'weather' })).resolves.toBe(false)
+    expect(asked).toEqual([
+      { projectId: A, type: 'agenda' },
+      { projectId: A, type: 'weather' }
+    ])
+    await expect(call('slots.available', { pluginId: 'b.one', type: 'agenda' })).rejects.toThrow('unknown plugin')
+    await expect(call('slots.available', { pluginId: 'a.one', type: 'Bad Type' })).rejects.toThrow('not a slot type')
+    deps.slotAvailable = undefined
+    await expect(call('slots.available', { pluginId: 'a.one', type: 'agenda' })).resolves.toBe(false)
+  })
+})
+
 describe('panels.slots (design-next §2)', () => {
   /** What the layout service was told, per panel key (the last call). */
   let placed: Map<string, unknown>

@@ -38,6 +38,7 @@ import { createFilesApi, parseOpenFile, runOpenListeners } from './files'
 import { MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
+import { createSlotsApi, SlotHub, type SlotOpenTag } from './slots'
 import { SettingsHolder } from './settings'
 import { createStorage, type StorageHandle } from './storage'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
@@ -115,6 +116,8 @@ interface Runtime {
   webviewUsed: boolean
   /** This ctx called ctx.panels.header: main has a header of it to clear at dispose. */
   headerUsed: boolean
+  /** This ctx called ctx.panels.slots: main has placements of it to clear at dispose. */
+  slotsUsed: boolean
   dataDirReady: boolean
   appDataDirReady: boolean
   disposed: boolean
@@ -135,6 +138,7 @@ export class HostContexts {
   private readonly overlays: OverlayLinks
   private readonly actions: PanelActions
   private readonly webviews: WebviewHub
+  private readonly slots: SlotHub
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
@@ -142,6 +146,7 @@ export class HostContexts {
     this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
     this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m))
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m))
   }
 
   /** Build the ctx for one plugin (the loader's `makeContext`). */
@@ -181,6 +186,7 @@ export class HostContexts {
       notifyCalls: new Set(),
       webviewUsed: false,
       headerUsed: false,
+      slotsUsed: false,
       dataDirReady: false,
       appDataDirReady: false,
       disposed: false
@@ -360,6 +366,10 @@ export class HostContexts {
       headerUsed: () => {
         rt.headerUsed = true
       },
+      panelSlots: spec.panelSlots ?? {},
+      slotsUsed: () => {
+        rt.slotsUsed = true
+      },
       logError: (m) => logAs('error', m)
     })
 
@@ -409,6 +419,7 @@ export class HostContexts {
       panels: ui.panels,
       badge: ui.badge,
       overlay: ui.overlay,
+      slots: createSlotsApi({ pluginId: spec.id, types: spec.slotTypes ?? [], call, alive, guardAsync, hub: this.slots }),
       webview: createWebviewApi({
         pluginId: spec.id,
         webviewPanels: spec.webviewPanels ?? [],
@@ -477,6 +488,7 @@ export class HostContexts {
       rt.notifyCalls.size > 0 ||
       rt.webviewUsed ||
       rt.headerUsed ||
+      rt.slotsUsed ||
       (rt.spec.webviewPanels?.length ?? 0) > 0 ||
       this.overlays.has(pluginId)
     ) {
@@ -513,6 +525,7 @@ export class HostContexts {
     this.overlays.removePlugin(pluginId)
     this.actions.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
+    this.slots.removePlugin(pluginId)
     for (const child of rt.children) killChild(child)
     rt.children.clear()
     // Before the host is killed (main waits at most 5 s for deactivate): the debounce window must
@@ -568,6 +581,26 @@ export class HostContexts {
   }
 
   /**
+   * A slot frame's MessagePort (host/index.ts calls this when main hands the host a port tagged
+   * `slotOpen`). Only for a plugin that runs here and declares the type in `contributes.slots`;
+   * false (and the port closed) otherwise. The frame closes with `slot.close` or its port.
+   */
+  attachSlotPort(tag: SlotOpenTag, port: PanelPort): boolean {
+    const rt = this.runtimes.get(tag.pluginId)
+    if (!rt || rt.disposed || !(rt.spec.slotTypes ?? []).includes(tag.type)) {
+      port.close()
+      return false
+    }
+    this.slots.open(tag, port)
+    return true
+  }
+
+  /** The slot page's end of the port closed (reload, unmount): ends only that port's frame. */
+  detachSlotPort(pluginId: string, id: string, port: PanelPort): void {
+    this.slots.close(pluginId, id, port)
+  }
+
+  /**
    * One-way events from main: `settings` `{ pluginId, project, app }` and `sessions`
    * `{ sessions }` (this project's tabs changed).
    */
@@ -593,6 +626,11 @@ export class HostContexts {
       // that runs here: a click for a disposed copy finds no listeners anyway.
       const pluginId = (params as { pluginId?: unknown } | null)?.pluginId
       if (typeof pluginId === 'string' && this.runtimes.has(pluginId)) this.actions.handleEvent(params)
+      return
+    }
+    if (event === 'slot.close') {
+      const { pluginId, id } = (params ?? {}) as Record<string, unknown>
+      if (typeof pluginId === 'string' && typeof id === 'string') this.slots.close(pluginId, id)
       return
     }
     if (event === 'webview.navigated') {

@@ -55,6 +55,13 @@ export interface HostPluginSpec {
   webviewPanels?: string[]
   /** CLI command names the manifest declares (`contributes.cli`); `ctx.cli.register` accepts only these. */
   cli?: string[]
+  /** Slot types the manifest provides (`contributes.slots`); `ctx.slots.onOpen` accepts only these. Absent is none. */
+  slotTypes?: string[]
+  /**
+   * Panel id -> the slot types its manifest lists (`panels[].slots`): the only ones
+   * `ctx.panels.slots` may place there (a fast error; main checks again). Absent is none.
+   */
+  panelSlots?: Record<string, string[]>
   /**
    * The manifest's `services` field as main validated it (`ctx.services` accepts only these names).
    * Absent is none.
@@ -79,7 +86,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, services, openFile, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, panelSlots, services, openFile, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -102,6 +109,18 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     // Same rule: absent is none (a spec from before contributes.cli existed).
     if (cli !== undefined && (!Array.isArray(cli) || cli.some((c) => typeof c !== 'string'))) {
       throw new Error(`activate: plugin ${i} cli must be an array of strings`)
+    }
+    if (slotTypes !== undefined && (!Array.isArray(slotTypes) || slotTypes.some((c) => typeof c !== 'string'))) {
+      throw new Error(`activate: plugin ${i} slotTypes must be an array of strings`)
+    }
+    if (
+      panelSlots !== undefined &&
+      (typeof panelSlots !== 'object' ||
+        panelSlots === null ||
+        Array.isArray(panelSlots) ||
+        Object.values(panelSlots).some((v) => !Array.isArray(v) || v.some((c) => typeof c !== 'string')))
+    ) {
+      throw new Error(`activate: plugin ${i} panelSlots must map panel ids to arrays of strings`)
     }
     // Absent is none (a plugin without services, or a spec from before the field existed). Main
     // validated the manifest; this only keeps a malformed spec from reaching the registry. Unlike
@@ -126,6 +145,8 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       panels: (panels as string[] | undefined) ?? [],
       webviewPanels: (webviewPanels as string[] | undefined) ?? [],
       cli: (cli as string[] | undefined) ?? [],
+      ...(slotTypes !== undefined ? { slotTypes: slotTypes as string[] } : {}),
+      ...(panelSlots !== undefined ? { panelSlots: panelSlots as Record<string, string[]> } : {}),
       ...(parsed?.services !== undefined ? { services: parsed.services } : {}),
       ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),
       ...(openFile === true ? { openFile: true } : {}),

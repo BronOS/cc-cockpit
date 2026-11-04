@@ -7,6 +7,8 @@
 //   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
 //                                      focus }; open(spec) is start(spec).result
 //   panels.post / panels.onMessage     over the panel's MessagePort
+//   panels.slots                       slot placements in the panel's column (shared/slots.ts rules,
+//                                      checked here for a fast error and again in main)
 //   panels.header / panels.onAction    the panel's title bar: meta text and up to 3 icon buttons,
 //                                      checked here and again in main (shared/panel-header.ts);
 //                                      a click comes back as main's `panel.action` event
@@ -37,6 +39,7 @@ import type {
 } from '../../sdk/types'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
+import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
 import { errorText } from '../../shared/error-text'
 
 /** Longest panel message, as JSON text (the RPC cap). */
@@ -364,6 +367,10 @@ export interface UiApiDeps {
    * header outliving its ctx would offer buttons whose listeners are gone.
    */
   headerUsed?(): void
+  /** Panel id -> the slot types its manifest lists: the only ones `panels.slots` may place there. Default none. */
+  panelSlots?: Readonly<Record<string, readonly string[]>>
+  /** The plugin placed slots: its dispose must tell main (`plugin.disposed`), which clears the placements. */
+  slotsUsed?(): void
   /** Where a failed fire-and-forget request (badge, panels.header) is reported. */
   logError(message: string): void
 }
@@ -490,6 +497,26 @@ export function createUiApi(
         // order, so the last call is the header that shows.
         void deps.call('panels.header', { pluginId, panelId: id, header: clean }).catch((err: unknown) => {
           deps.logError(`panels.header ${id}: ${errorText(err)}`)
+        })
+      },
+      slots: (panelId: string, placements: unknown): void => {
+        deps.alive()
+        // Either kind, as main allows (its column is the shell's, not the page's).
+        const id = declared(deps, panelId, 'panels.slots')
+        // Throws here, at the plugin's call site, for anything main would refuse (main checks again).
+        const clean = parseSlotPlacements(placements)
+        const listed = deps.panelSlots?.[id] ?? []
+        for (const p of clean ?? []) {
+          if (isAppSlotType(p.type)) throw new Error(`panels.slots: "${p.type}" is placed by the app, not by a panel`)
+          if (!listed.includes(p.type)) {
+            throw new Error(`panels.slots: panel ${id} does not list slot "${p.type}" in plugin.json contributes.panels[].slots`)
+          }
+        }
+        deps.slotsUsed?.()
+        // Fire and forget like panels.header: a refusal from main is logged. The port keeps order,
+        // so the last call is the layout that shows.
+        void deps.call('panels.slots', { pluginId, panelId: id, placements: clean }).catch((err: unknown) => {
+          deps.logError(`panels.slots ${id}: ${errorText(err)}`)
         })
       },
       onAction: (panelId: string, listener: ActionListener): Disposer => {

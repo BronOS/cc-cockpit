@@ -7,6 +7,8 @@
 //   ccPanel.onMessage(fn)                what the host sends (`ctx.panels.post`); returns unsubscribe
 //   ccPanel.theme.current                { kind, vars }: the app theme, already applied to :root
 //   ccPanel.theme.onChange(fn)           a new theme (applied before fn runs)
+//   ccPanel.slot                         only when the page is drawn as a slot (contributes.slots):
+//                                        { type, setHeight(px) }; undefined in a panel or an overlay
 //
 // Built to out/sdk/panel.js by the main build (electron.vite.config.ts) and served by the
 // cc-plugin:// handler for every plugin (src/main/plugins/plugin-protocol.ts). It is a classic
@@ -34,7 +36,11 @@ const client = new PanelClient(
       document.adoptedStyleSheets = sdkSheetsFirst(sdkSheets, document.adoptedStyleSheets)
     }
   },
-  componentsCss
+  componentsCss,
+  // Only the shell frames this page, and only the shell hears this: the message is a height.
+  (message) => {
+    if (window.parent !== window) window.parent.postMessage(message, '*')
+  }
 )
 
 window.addEventListener('message', (event: MessageEvent) => {

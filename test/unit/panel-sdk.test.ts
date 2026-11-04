@@ -10,6 +10,8 @@ import {
   BASE_SCROLLBAR_CSS,
   PanelClient,
   PORT_MESSAGE,
+  SLOT_HEIGHT_MESSAGE,
+  SLOT_MESSAGE,
   sdkSheetsFirst,
   THEME_MESSAGE,
   type PortLike,
@@ -394,5 +396,56 @@ describe('frame messages (the shell side)', () => {
     // Over the overlay limit (below the panel one): the host transport could not carry it.
     expect(overlayMessageOf(JSON.stringify('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH - 1)))).toBeUndefined()
     expect(overlayMessageOf(JSON.stringify('x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH - 2)))).toHaveLength(MAX_OVERLAY_MESSAGE_LENGTH)
+  })
+})
+
+describe('panel SDK: ccPanel.slot', () => {
+  function slotClient(): { c: PanelClient; up: { type: string; height: number }[] } {
+    const up: { type: string; height: number }[] = []
+    return { c: new PanelClient(fakeRoot(), () => {}, undefined, undefined, (m) => up.push(m)), up }
+  }
+
+  it('is undefined in a panel and appears, on the same api object, once the shell says the page is a slot', () => {
+    const { c } = slotClient()
+    expect(c.api.slot).toBeUndefined()
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
+    expect(c.api.slot?.type).toBe('agenda')
+    expect(Object.isFrozen(c.api.slot)).toBe(true)
+    expect(Object.keys(c.api)).toContain('slot')
+  })
+
+  it('takes the first slot message only and ignores a bad type', () => {
+    const { c } = slotClient()
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'Bad Type' } }, [])
+    c.receive({ type: SLOT_MESSAGE, slot: {} }, [])
+    c.receive({ type: SLOT_MESSAGE }, [])
+    expect(c.api.slot).toBeUndefined()
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'other' } }, [])
+    expect(c.api.slot?.type).toBe('agenda')
+  })
+
+  it('setHeight rounds and keeps the height within 24 and 600, and refuses a non-number', () => {
+    const { c, up } = slotClient()
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
+    const slot = c.api.slot!
+    slot.setHeight(100.6)
+    slot.setHeight(3)
+    slot.setHeight(5000)
+    expect(up).toEqual([
+      { type: SLOT_HEIGHT_MESSAGE, height: 101 },
+      { type: SLOT_HEIGHT_MESSAGE, height: 24 },
+      { type: SLOT_HEIGHT_MESSAGE, height: 600 }
+    ])
+    expect(() => slot.setHeight(NaN)).toThrow('finite number')
+    expect(() => slot.setHeight(Infinity)).toThrow('finite number')
+    expect(() => slot.setHeight('80' as unknown as number)).toThrow('finite number')
+    expect(up).toHaveLength(3)
+  })
+
+  it('does not fail without a parent to tell', () => {
+    const c = new PanelClient(fakeRoot())
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
+    expect(() => c.api.slot?.setHeight(80)).not.toThrow()
   })
 })

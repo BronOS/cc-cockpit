@@ -521,6 +521,13 @@ describe('parsePluginSpecs', () => {
     // And for webviewPanels (a spec from a main before webview panels).
     expect(parsePluginSpecs({ plugins: [{ ...good, webviewPanels: undefined }] })[0]?.webviewPanels).toEqual([])
     expect(() => parsePluginSpecs({ plugins: [{ ...good, webviewPanels: 'view' }] })).toThrow('webviewPanels must be an array of strings')
+    // slotTypes and panelSlots: absent stays absent; present, they must be lists of strings.
+    expect(parsePluginSpecs({ plugins: [good] })[0]?.slotTypes).toBeUndefined()
+    const slotted = { slotTypes: ['agenda'], panelSlots: { main: ['agenda'] } }
+    expect(parsePluginSpecs({ plugins: [{ ...good, ...slotted }] })[0]).toMatchObject(slotted)
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, slotTypes: 'agenda' }] })).toThrow('slotTypes must be an array of strings')
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, panelSlots: { main: 'agenda' } }] })).toThrow('panelSlots must map')
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, panelSlots: ['agenda'] }] })).toThrow('panelSlots must map')
     // services: absent is none (left out of the spec); present, it is kept as main sent it.
     expect(parsePluginSpecs({ plugins: [good] })[0]?.services).toBeUndefined()
     const services = { provides: { triage: 1 }, uses: { mail: 2 } }

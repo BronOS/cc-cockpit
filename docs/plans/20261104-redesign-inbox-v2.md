@@ -333,13 +333,25 @@
   `src/sdk/panel.ts` (`ccPanel.slot = { type, setHeight(px) }` when the page is a slot)
 - Modify: `test/unit/host-loader.test.ts` (or a new `test/unit/ctx-slots.test.ts`), `test/unit/panel-sdk.test.ts`
 
-- [ ] `ctx.slots.onOpen(type, listener)` (type must be in the plugin's `contributes.slots`, throws otherwise),
+- [x] `ctx.slots.onOpen(type, listener)` (type must be in the plugin's `contributes.slots`, throws otherwise),
   `SlotInstance` with `post` / `onMessage` (panel message rules and caps) / `onClose`, `ctx.slots.available(type)`
   for a host plugin; listeners dropped on ctx end
-- [ ] `ctx.panels.slots(panelId, placements | null)` validated host-side for a fast error, re-checked by main
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] write tests: onOpen for an undeclared type throws, open/message/close routing, `available`, setHeight bounds
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] `ctx.panels.slots(panelId, placements | null)` validated host-side for a fast error, re-checked by main
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] write tests: onOpen for an undeclared type throws, open/message/close routing, `available`, setHeight bounds
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ decided: the host learns what it may check from two optional spec fields main fills only when non-empty,
+  `slotTypes` (the manifest's `contributes.slots` types) and `panelSlots` (panel id -> its `slots`). The frame arrives
+  as `slotOpen` on the port (`slotOpenTag`, `HostContexts.attachSlotPort`); `slot.close` or the page's port closing
+  ends it (`SlotHub` in `src/host/ctx/slots.ts`, with `onClose` told once, also to a listener added after the end).
+- ➕ decided: `ctx.slots.available(type)` is a `Promise<boolean>` (not the design's sync `boolean`): main alone knows
+  the pick, so it is a new RPC `slots.available` (HostApi dep `slotAvailable` -> `HostManager.slotProvider`).
+- ➕ decided: the page side learns it is a slot from the shell's message `{ type: 'cc-plugin.slot', slot: { type } }`
+  (`SLOT_MESSAGE`, sent once with the port: task 7) and `setHeight` posts `{ type: 'cc-plugin.slot-height', height }`
+  to `window.parent` (`SLOT_HEIGHT_MESSAGE`, task 7 relays it to `slots.height`). `ccPanel.slot` is a getter that is
+  `undefined` until then. A short guide text for `ctx.panels.slots`, `ctx.slots` and `ccPanel.slot` went in with this
+  task (drift test); task 8 writes the full slots section.
+
 
 ### Task 7: Slot frames in the renderer and the pick rows [model: opus]
 

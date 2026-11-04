@@ -13,6 +13,8 @@
 //   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
 //                                                                declares (any kind), checked again here
 //                                                                (shared/panel-header.ts); null clears it
+//   slots.available { pluginId, type }                    -> boolean  whether a provider would draw a slot of
+//                                                                `type` here now (ctx.slots.available)
 //   panels.slots    { pluginId, panelId, placements } -> null    slot placements in the column of a panel the
 //                                                                plugin itself declares, each type one that
 //                                                                panel's manifest `slots` lists and not an
@@ -119,7 +121,7 @@ import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, Ses
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
 import { isPanelHeaderIcon, parsePanelHeader, type CleanPanelHeader } from '../../shared/panel-header'
-import { isAppSlotType, parseSlotPlacements, type SlotPlacement } from '../../shared/slots'
+import { isAppSlotType, parseSlotPlacements, SLOT_TYPE_PATTERN, type SlotPlacement } from '../../shared/slots'
 import {
   MAX_OVERLAY_MESSAGE_LENGTH,
   OverlayOutbox,
@@ -233,6 +235,11 @@ export interface HostApiDeps {
    * Without it the request is refused.
    */
   setPanelSlots?(projectId: string, panelKey: string, placements: SlotPlacement[] | null): boolean
+  /**
+   * HostManager.slotProvider is defined (ctx.slots.available): would a placement of `type` draw
+   * now in this project. Without it the answer is false.
+   */
+  slotAvailable?(projectId: string, type: string): boolean
   /**
    * LayoutService.show (ctx.panels.show): unhide, open, expand its zone; false for a panel the
    * project does not have. Without it the request is refused.
@@ -499,6 +506,7 @@ export class HostApi {
       'panels.show': (params) => this.showPanel(params),
       'panels.header': (params) => this.panelHeader(params),
       'panels.slots': (params) => this.panelSlots(params),
+      'slots.available': (params) => this.slotAvailable(params),
       'overlay.open': (params) => this.overlay(params),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
@@ -872,6 +880,15 @@ export class HostApi {
     if (clean && clean.length > 0) this.slotted.add(key)
     else this.slotted.delete(key)
     return null
+  }
+
+  /** ctx.slots.available: whether a provider would draw a slot of `type` here now (the pick, and it runs). */
+  private slotAvailable(params: unknown): boolean {
+    this.alive()
+    const { pluginId, type } = (params ?? {}) as Record<string, unknown>
+    this.plugin(pluginId, 'slots.available')
+    if (typeof type !== 'string' || !SLOT_TYPE_PATTERN.test(type)) throw new Error('slots.available: type is not a slot type')
+    return this.deps.slotAvailable?.(this.scope.projectId, type) ?? false
   }
 
   /**

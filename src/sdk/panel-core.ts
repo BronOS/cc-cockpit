@@ -9,6 +9,10 @@
 //                                                 replaces the earlier one
 //   { type: 'cc-plugin.theme', theme: { kind, vars }, mac }   the app's theme, again on every change;
 //                                                 `mac` is the shell's platform (no scrollbar rule there)
+//   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
+//                                                 the port); from then on `ccPanel.slot` exists
+// and the other way, to the parent only, from a slot page:
+//   { type: 'cc-plugin.slot-height', height }      `ccPanel.slot.setHeight(px)`: the shell sizes the frame
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
@@ -20,6 +24,14 @@ export const MAX_QUEUED_MESSAGES = 100
 
 export const PORT_MESSAGE = 'cc-plugin.port'
 export const THEME_MESSAGE = 'cc-plugin.theme'
+export const SLOT_MESSAGE = 'cc-plugin.slot'
+export const SLOT_HEIGHT_MESSAGE = 'cc-plugin.slot-height'
+
+// A copy of the bounds in src/shared/slots.ts, on purpose (see errorText below): the shell and
+// main clamp to the provider's min/max again, this only keeps a page's number sane.
+const SLOT_HEIGHT_MIN = 24
+const SLOT_HEIGHT_MAX = 600
+const SLOT_TYPE = /^[a-z][a-z0-9-]{0,63}$/
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
@@ -71,6 +83,16 @@ export const BASE_SCROLLBAR_CSS =
   ':where(*) { scrollbar-width: thin; }\n' +
   ':where(*:hover) { scrollbar-color: color-mix(in srgb, var(--cc-fg, #888) 38%, transparent) transparent; }'
 
+/** `ccPanel.slot`: present when the page is shown as a slot (design-next §2). */
+export interface SlotPageApi {
+  readonly type: string
+  /**
+   * Ask the shell for a frame height in px: rounded and kept within 24 to 600 here, then within the
+   * slot's `[minHeight, placement height]` by the shell. The default is the placement's height.
+   */
+  setHeight(px: number): void
+}
+
 export interface PanelApi {
   /** Send to the plugin (JSON, at most 1 MiB as text). Queued until the page is connected. */
   post(message: JsonValue): void
@@ -81,6 +103,8 @@ export interface PanelApi {
     readonly current: PanelTheme | undefined
     onChange(listener: (theme: PanelTheme) => void): () => void
   }
+  /** Set (a frozen object) once the shell says the page is a slot; undefined for a panel or an overlay. */
+  readonly slot: SlotPageApi | undefined
 }
 
 const VAR_NAME = /^--[A-Za-z][A-Za-z0-9_-]*$/
@@ -112,6 +136,8 @@ export class PanelClient {
   private theme: PanelTheme | undefined
   private applied: string[] = []
   private baseStyled = false
+  private slotType: string | undefined
+  private slotApi: SlotPageApi | undefined
   readonly api: PanelApi
 
   /**
@@ -124,7 +150,9 @@ export class PanelClient {
     private readonly root: ThemeRoot,
     private readonly warn: (message: string) => void = () => {},
     private readonly styles?: BaseStyles,
-    componentsCss?: string
+    componentsCss?: string,
+    /** Where a slot page's height request goes: the parent window (the shell), in the browser. */
+    private readonly toParent?: (message: { type: string; height: number }) => void
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -147,21 +175,39 @@ export class PanelClient {
         this.warn(`could not install the component styles: ${errorText(err)}`)
       }
     }
-    this.api = Object.freeze({
+    const api = {
       post: (message: JsonValue) => this.post(message),
       onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),
       theme: Object.freeze(theme) as PanelApi['theme']
-    })
+    }
+    // A getter: the page learns it is a slot after load, and `slot` must then appear on the same object.
+    Object.defineProperty(api, 'slot', { enumerable: true, get: (): SlotPageApi | undefined => this.slotApi })
+    this.api = Object.freeze(api) as PanelApi
   }
 
   /** A message from the parent window (the bootstrap checked its source). */
   receive(data: unknown, ports: readonly PortLike[]): void {
     const type = (data as { type?: unknown } | null)?.type
     if (type === PORT_MESSAGE && ports[0]) this.connect(ports[0])
+    else if (type === SLOT_MESSAGE) this.becomeSlot((data as { slot?: { type?: unknown } }).slot?.type)
     else if (type === THEME_MESSAGE) {
       this.installBaseStyles((data as { mac?: unknown }).mac === true)
       this.applyTheme((data as { theme?: unknown }).theme)
     }
+  }
+
+  /** The shell says this page is a slot frame; the first message wins (the type of a frame does not change). */
+  private becomeSlot(type: unknown): void {
+    if (this.slotType !== undefined || typeof type !== 'string' || !SLOT_TYPE.test(type)) return
+    this.slotType = type
+    this.slotApi = Object.freeze({
+      type,
+      setHeight: (px: number): void => {
+        if (typeof px !== 'number' || !Number.isFinite(px)) throw new TypeError('slot.setHeight needs a finite number of px')
+        const height = Math.min(SLOT_HEIGHT_MAX, Math.max(SLOT_HEIGHT_MIN, Math.round(px)))
+        this.toParent?.({ type: SLOT_HEIGHT_MESSAGE, height })
+      }
+    })
   }
 
   private connect(port: PortLike): void {

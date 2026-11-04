@@ -768,6 +768,7 @@ function start(): void {
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
+      slotAvailable: (projectId, type): boolean => hosts.slotProvider(projectId, type) !== undefined,
       showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey),
       openOverlay,
       postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),

@@ -353,6 +353,34 @@ export interface PluginLogger {
   error(...args: unknown[]): void
 }
 
+/** A placement of `ctx.panels.slots`: where in the panel's column, how tall, and what the provider is told. */
+export interface SlotPlacement {
+  /** `^[a-z][a-z0-9-]{0,63}$`; one of the panel's manifest `slots`. */
+  type: string
+  position: 'top' | 'bottom'
+  /** Px, 24 to 600. */
+  height: number
+  /** Plain JSON, at most 4 KiB as JSON; only the provider sees it. */
+  params?: JsonValue
+}
+
+/** One open frame of a slot this plugin provides (`ctx.slots.onOpen`). */
+export interface SlotInstance {
+  /** Opaque, one per frame. */
+  readonly id: string
+  readonly type: string
+  /** What the frame sits in: another plugin's panel, or the app's top bar. */
+  readonly host: { kind: 'panel'; pluginId: string; panelId: string } | { kind: 'app'; place: 'top-bar' }
+  /** From the placement; untrusted for the provider (the placing plugin chose it). */
+  readonly params: JsonValue | undefined
+  /** JSON only, at most 1 MiB, to the slot's page (`ccPanel.onMessage`). Dropped once the frame closed. */
+  post(message: JsonValue): void
+  /** What the slot's page posts (`ccPanel.post`). */
+  onMessage(listener: (message: JsonValue) => void): Disposer
+  /** The frame ended: the host panel was hidden or reloaded, the placement removed, or the provider changed. */
+  onClose(listener: () => void): Disposer
+}
+
 export interface PluginContext {
   /** The API major this context implements. */
   readonly api: typeof PLUGIN_API_VERSION
@@ -418,6 +446,35 @@ export interface PluginContext {
     header(panelId: string, header: { meta?: string; actions?: PanelHeaderAction[] } | null): void
     /** A click on one of the panel's header actions (not a busy or disabled one): its `id`. */
     onAction(panelId: string, listener: (actionId: string) => void): Disposer
+    /**
+     * Place slots (pages another plugin draws) in the column of one of this plugin's own panels:
+     * `position` is above (`top`) or below (`bottom`) the panel's own frame, `height` 24 to 600 px
+     * (rounded and clamped, then clamped to the provider's `minHeight`/`maxHeight`), `params` plain
+     * JSON of at most 4 KiB that only the provider sees. At most 4 placements; each `type` must be
+     * in that panel's manifest `slots` and not an app slot type such as `sessions-strip`. Each call
+     * replaces the whole set; `null` removes them. Who draws a type is the project's pick (none
+     * while several plugins provide it and none is picked); the frames of a hidden or collapsed
+     * panel are unmounted. Cleared when the plugin stops or reloads. Throws for an undeclared panel
+     * or type or a placement over the limits; a refusal from main is logged.
+     */
+    slots(panelId: string, placements: SlotPlacement[] | null): void
+  }
+  /**
+   * The provider side of slots: pages this plugin draws inside another plugin's panel or the
+   * app's chrome. The types it can draw are the ones in its manifest `contributes.slots`.
+   * Older apps have no `ctx.slots`: check `typeof ctx.slots === 'object'` first.
+   */
+  readonly slots: {
+    /**
+     * A frame of `type` opened (the page at the slot's `entry` is shown in it). Throws for a type
+     * not in `contributes.slots`. Listeners are dropped when the plugin stops.
+     */
+    onOpen(type: string, listener: (slot: SlotInstance) => void): Disposer
+    /**
+     * For a plugin that places slots: would a placement of `type` draw now, i.e. a provider is
+     * picked for this project and running. Asks the app, so it is a promise.
+     */
+    available(type: string): Promise<boolean>
   }
   /**
    * Badge on one of this plugin's own panel icons: a count, a dot, or null to clear. Throws for a
