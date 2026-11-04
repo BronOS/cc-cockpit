@@ -345,3 +345,161 @@ describe('panel status', () => {
     expect(service.view(P)!.panels.map((p) => p.panelKey)).toEqual(['core/sessions'])
   })
 })
+
+describe('LayoutService slots (design-next §2)', () => {
+  type Provider = { pluginId: string; entry: string; minHeight: number; maxHeight: number; epoch: number }
+  function slotSetup(): {
+    service: LayoutService
+    published: LayoutView[]
+    providers: Map<string, Provider>
+    changes: string[][]
+    logs: string[]
+  } {
+    const stored = new Map<string, LayoutState>([[P, defaultLayout()]])
+    const published: LayoutView[] = []
+    const providers = new Map<string, Provider>()
+    const changes: string[][] = []
+    const logs: string[] = []
+    const service = new LayoutService({
+      getLayout: (id) => stored.get(id),
+      setLayout: (id, layout) => void stored.set(id, layout),
+      publish: (_id, view) => void published.push(view),
+      slotProvider: (_id, type) => providers.get(type),
+      framesChanged: (_id, ids) => void changes.push([...ids]),
+      slotLog: (_id, pluginId, text) => void logs.push(`${pluginId}: ${text}`)
+    })
+    service.setPluginPanels(P, 'a.inbox', [{ id: 'main', title: 'Inbox', defaultZone: 'left', slots: ['agenda'] }])
+    return { service, published, providers, changes, logs }
+  }
+  const cal: Provider = { pluginId: 'a.cal', entry: 'slots/agenda.html', minHeight: 48, maxHeight: 320, epoch: 1 }
+  const framesOf = (view: LayoutView | undefined, key = 'a.inbox/main') => view?.panels.find((p) => p.panelKey === key)?.slots
+
+  it('draws a placement only with a provider, its page and its height clamped to the provider', () => {
+    const { service, providers } = slotSetup()
+    expect(service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 600, params: { day: 1 } }])).toBe(true)
+    // No provider (none, "None", ambiguous, not running): no frame, the column is just the panel.
+    expect(framesOf(service.view(P))).toBeUndefined()
+    providers.set('agenda', cal)
+    const [frame] = framesOf(service.view(P))!
+    expect(frame).toEqual({
+      id: expect.stringMatching(/^s\d+$/),
+      type: 'agenda',
+      pluginId: 'a.cal',
+      src: 'cc-plugin://a.cal/slots/agenda.html',
+      position: 'top',
+      height: 320,
+      minHeight: 48
+    })
+    // The params stay in main: the frame record has them, the window's view does not.
+    expect(JSON.stringify(service.view(P))).not.toContain('"day"')
+    expect(service.slotFrame(P, frame!.id)).toMatchObject({ host: { kind: 'panel', pluginId: 'a.inbox', panelId: 'main' }, params: { day: 1 } })
+    service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'bottom', height: 24 }])
+    expect(framesOf(service.view(P))![0]).toMatchObject({ position: 'bottom', height: 48 })
+  })
+
+  it('keeps a frame id while nothing it shows changes; a new provider copy or new params remount it', () => {
+    const { service, providers, changes } = slotSetup()
+    providers.set('agenda', cal)
+    service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 100 }])
+    const first = framesOf(service.view(P))![0]!.id
+    expect(changes.at(-1)).toEqual([first])
+    // The height alone: the same frame.
+    service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 120 }])
+    expect(framesOf(service.view(P))![0]!.id).toBe(first)
+    // The provider reloaded (a new epoch): a new frame, and the old id is reported gone.
+    providers.set('agenda', { ...cal, epoch: 2 })
+    const second = framesOf(service.view(P))![0]!.id
+    expect(second).not.toBe(first)
+    expect(changes.at(-1)).toEqual([second])
+    service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 120, params: 'x' }])
+    expect(framesOf(service.view(P))![0]!.id).not.toBe(second)
+    // The provider turned off or gone: no frame, an empty set.
+    providers.delete('agenda')
+    expect(framesOf(service.view(P))).toBeUndefined()
+    expect(changes.at(-1)).toEqual([])
+    expect(service.slotFrame(P, second)).toBeUndefined()
+  })
+
+  it('places the app slot in the top bar, first, and draws at most 8 frames per window (logged once)', () => {
+    const { service, providers, logs } = slotSetup()
+    providers.set('agenda', cal)
+    providers.set('sessions-strip', { pluginId: 'cockpit.sessions', entry: 'strip.html', minHeight: 24, maxHeight: 40, epoch: 1 })
+    service.setPluginPanels(P, 'a.more', [
+      { id: 'one', title: 'One', defaultZone: 'left', slots: ['agenda'] },
+      { id: 'two', title: 'Two', defaultZone: 'left', slots: ['agenda'] }
+    ])
+    const four = Array.from({ length: 4 }, (_, i) => ({ type: 'agenda', position: 'top' as const, height: 50 + i }))
+    service.setSlots(P, 'a.inbox/main', four)
+    service.setSlots(P, 'a.more/one', four)
+    service.setSlots(P, 'a.more/two', four)
+    const view = service.view(P)!
+    expect(view.appSlots).toEqual([expect.objectContaining({ type: 'sessions-strip', position: 'top-bar', pluginId: 'cockpit.sessions', height: 24 })])
+    expect(framesOf(view)).toHaveLength(4)
+    expect(framesOf(view, 'a.more/one')).toHaveLength(3)
+    expect(framesOf(view, 'a.more/two')).toBeUndefined()
+    // Five placements over the cap, each logged once in its host plugin's log, not on every view.
+    service.view(P)
+    expect(logs).toHaveLength(5)
+    expect(logs[0]).toBe('a.more: slot "agenda" of panel one is not drawn: at most 8 slot frames per window')
+    // App slots draw with no panel at all.
+    service.setSlots(P, 'a.inbox/main', null)
+    expect(framesOf(service.view(P))).toBeUndefined()
+  })
+
+  it('refuses a core or unknown panel and drops the placements of a panel that goes', () => {
+    const { service, providers } = slotSetup()
+    providers.set('agenda', cal)
+    const one = [{ type: 'agenda', position: 'top' as const, height: 60 }]
+    expect(service.setSlots(P, 'core/sessions', one)).toBe(false)
+    expect(service.setSlots(P, 'a.inbox/nope', one)).toBe(false)
+    service.setSlots(P, 'a.inbox/main', one)
+    service.setPluginPanels(P, 'a.inbox', [])
+    service.setPluginPanels(P, 'a.inbox', [{ id: 'main', title: 'Inbox', defaultZone: 'left', slots: ['agenda'] }])
+    expect(framesOf(service.view(P))).toBeUndefined()
+  })
+
+  it('publishes on refreshSlots only when the frames changed; the same placements publish nothing', () => {
+    const { service, providers, published } = slotSetup()
+    const one = [{ type: 'agenda', position: 'top' as const, height: 60 }]
+    service.setSlots(P, 'a.inbox/main', one)
+    const count = published.length
+    service.setSlots(P, 'a.inbox/main', one)
+    service.refreshSlots(P)
+    expect(published).toHaveLength(count)
+    // A pick (or a provider starting) makes the frame appear: one publish, then nothing more.
+    providers.set('agenda', cal)
+    service.refreshSlots(P)
+    expect(published).toHaveLength(count + 1)
+    expect(framesOf(published.at(-1))).toHaveLength(1)
+    service.refreshSlots(P)
+    expect(published).toHaveLength(count + 1)
+    providers.delete('agenda')
+    service.refreshSlots(P)
+    expect(framesOf(published.at(-1))).toBeUndefined()
+  })
+
+  it("keeps a page's setHeight within [minHeight, the frame's height]; never in the top bar", () => {
+    const { service, providers } = slotSetup()
+    providers.set('agenda', cal)
+    providers.set('sessions-strip', { ...cal, pluginId: 'cockpit.sessions' })
+    service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 200 }])
+    const view = service.view(P)!
+    const id = framesOf(view)![0]!.id
+    expect(service.setSlotHeight(P, id, 10)).toBe(true)
+    expect(framesOf(service.view(P))![0]!.pageHeight).toBe(48)
+    expect(service.setSlotHeight(P, id, 999)).toBe(true)
+    expect(framesOf(service.view(P))![0]!.pageHeight).toBe(200)
+    expect(service.setSlotHeight(P, id, Number.NaN)).toBe(false)
+    expect(service.setSlotHeight(P, 's999999', 100)).toBe(false)
+    expect(service.setSlotHeight(P, view.appSlots![0]!.id, 30)).toBe(false)
+  })
+
+  it('reports every frame gone when the project closes', () => {
+    const { service, providers, changes } = slotSetup()
+    providers.set('agenda', cal)
+    service.setSlots(P, 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 60 }])
+    service.view(P)
+    service.closeProject(P)
+    expect(changes.at(-1)).toEqual([])
+  })
+})

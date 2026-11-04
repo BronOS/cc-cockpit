@@ -534,6 +534,115 @@ describe('panels.header / panelAction', () => {
   })
 })
 
+describe('panels.slots (design-next §2)', () => {
+  /** What the layout service was told, per panel key (the last call). */
+  let placed: Map<string, unknown>
+  const scope = (): HostScope => ({
+    ...scopeA(),
+    plugins: [
+      { id: 'a.one', dir: pluginOne, panels: ['board'], panelSlots: { board: ['agenda', 'weather'] } },
+      { id: 'a.two', dir: pluginTwo, panels: ['inbox'], panelSlots: { inbox: ['agenda'] } }
+    ]
+  })
+  const agenda = { type: 'agenda', position: 'top', height: 80 }
+  beforeEach(() => {
+    placed = new Map()
+    deps.setPanelSlots = (projectId, key, placements) => {
+      placed.set(`${projectId}:${key}`, placements)
+      return layouts.setSlots(projectId, key, placements)
+    }
+  })
+
+  it("places slots on the plugin's own panel only, with types its manifest lists", async () => {
+    const call = hostFor(scope())
+    await call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [agenda, { type: 'weather', position: 'bottom', height: 40, params: { city: 'x' } }] })
+    expect(placed.get(`${A}:a.one/board`)).toEqual([agenda, { type: 'weather', position: 'bottom', height: 40, params: { city: 'x' } }])
+    // Never another plugin's panel, a core panel, or a plugin this host does not run.
+    for (const panelId of ['inbox', 'a.two/inbox', 'core/sessions', '../board']) {
+      await expect(call('panels.slots', { pluginId: 'a.one', panelId, placements: [agenda] }), panelId).rejects.toThrow('declares no panel')
+    }
+    await expect(call('panels.slots', { pluginId: 'b.one', panelId: 'board', placements: [agenda] })).rejects.toThrow('unknown plugin')
+    // A type the panel does not list (another panel of the same host lists it, or nobody does), an app type.
+    await expect(call('panels.slots', { pluginId: 'a.two', panelId: 'inbox', placements: [{ ...agenda, type: 'weather' }] })).rejects.toThrow(
+      'does not list slot "weather"'
+    )
+    await expect(call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [{ ...agenda, type: 'sessions-strip' }] })).rejects.toThrow(
+      'placed by the app'
+    )
+    // A plugin whose manifest lists no slots at all.
+    const bare = hostA()
+    await expect(bare('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [agenda] })).rejects.toThrow('does not list slot')
+    expect(placed.has(`${A}:a.two/inbox`)).toBe(false)
+    await call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: null })
+    expect(placed.get(`${A}:a.one/board`)).toBeNull()
+  })
+
+  it('checks the placements again, whatever the host sent: caps, positions, the height clamp, plain JSON params', async () => {
+    const call = hostFor(scope())
+    const at = (over: Record<string, unknown>) => ({ pluginId: 'a.one', panelId: 'board', placements: [{ ...agenda, ...over }] })
+    for (const [params, message] of [
+      [{ pluginId: 'a.one', panelId: 'board', placements: [agenda, agenda, agenda, agenda, agenda] }, 'at most 4 placements'],
+      [{ pluginId: 'a.one', panelId: 'board', placements: agenda }, 'must be an array or null'],
+      [{ pluginId: 'a.one', panelId: 'board', placements: ['agenda'] }, 'must be an object'],
+      [at({ type: 'Agenda' }), 'type must match'],
+      [at({ position: 'inline' }), 'position must be "top" or "bottom"'],
+      [at({ height: '80' }), 'height must be a number'],
+      [at({ height: Number.POSITIVE_INFINITY }), 'height must be a number'],
+      [at({ params: () => 1 }), 'params must be plain JSON'],
+      [at({ params: 10n }), 'params must be plain JSON'],
+      [at({ params: { text: 'é'.repeat(2100) } }), 'params are larger than 4096 bytes']
+    ] as const) {
+      await expect(call('panels.slots', params), JSON.stringify(params, (_k, v) => (typeof v === 'bigint' ? 'big' : v))).rejects.toThrow(message)
+    }
+    expect(placed.size).toBe(0)
+    // Heights are clamped to 24-600 and rounded; params become a clean JSON copy.
+    await call('panels.slots', {
+      pluginId: 'a.one',
+      panelId: 'board',
+      placements: [
+        { ...agenda, height: 3 },
+        { ...agenda, height: 9000 },
+        { ...agenda, height: 99.6, params: { when: new Date(0), skip: undefined, list: [1, 'two'] } }
+      ]
+    })
+    expect(placed.get(`${A}:a.one/board`)).toEqual([
+      { ...agenda, height: 24 },
+      { ...agenda, height: 600 },
+      { ...agenda, height: 100, params: { when: '1970-01-01T00:00:00.000Z', list: [1, 'two'] } }
+    ])
+  })
+
+  it("clears the placements when the plugin's ctx ends, it reloads or the host goes; a newer host's stay", async () => {
+    const call = hostFor(scope())
+    const api = apis[0]!
+    await call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [agenda] })
+    await call('panels.slots', { pluginId: 'a.two', panelId: 'inbox', placements: [agenda] })
+    expect(api.hasSlots('a.one/board')).toBe(true)
+    api.contextDisposed({ pluginId: 'a.one' })
+    expect(placed.get(`${A}:a.one/board`)).toBeNull()
+    expect(api.hasSlots('a.one/board')).toBe(false)
+    expect(placed.get(`${A}:a.two/inbox`)).toEqual([agenda])
+    api.updatePlugin({ id: 'a.two', dir: pluginTwo, panels: ['inbox'], panelSlots: { inbox: ['agenda'] } })
+    expect(placed.get(`${A}:a.two/inbox`)).toBeNull()
+    // The host goes: what it placed is cleared, except where a newer host of the project placed.
+    await call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [agenda] })
+    await call('panels.slots', { pluginId: 'a.two', panelId: 'inbox', placements: [agenda] })
+    const newer = hostFor(scope())
+    await newer('panels.slots', { pluginId: 'a.two', panelId: 'inbox', placements: [{ ...agenda, height: 90 }] })
+    api.dispose(undefined, undefined, (key) => apis[1]!.hasSlots(key))
+    expect(placed.get(`${A}:a.one/board`)).toBeNull()
+    expect(placed.get(`${A}:a.two/inbox`)).toEqual([{ ...agenda, height: 90 }])
+    await expect(call('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: null })).rejects.toThrow('stopping')
+  })
+
+  it('is refused without the layout service', async () => {
+    delete deps.setPanelSlots
+    await expect(hostFor(scope())('panels.slots', { pluginId: 'a.one', panelId: 'board', placements: [agenda] })).rejects.toThrow(
+      'slots are not available'
+    )
+  })
+})
+
 describe('updatePlugin (reload in place, Task 29)', () => {
   const badgeOf = (projectId: string, key: string): unknown => layouts.view(projectId)!.panels.find((p) => p.panelKey === key)?.badge
 

@@ -1764,6 +1764,113 @@ describe('HostManager', () => {
     })
   })
 
+  describe('slots (design-next §2)', () => {
+    const agenda = { type: 'agenda', entry: 'slots/agenda.html', minHeight: 48, maxHeight: 320 }
+    let picks: Record<string, string>
+    let changed: string[]
+    let slotted: HostManager
+    let hostEvents: { event: string; params: unknown }[]
+
+    beforeEach(() => {
+      picks = {}
+      changed = []
+      hostEvents = []
+      factory.onHostEvent = (event, params) => void hostEvents.push({ event, params })
+      factory.handlers = () => ({
+        ...okHandlers(),
+        'plugin.reload': (p) => ({ id: (p as { plugin: { id: string } }).plugin.id, state: 'active' })
+      })
+      slotted = new HostManager({
+        factory,
+        plugins: async (projectId) => enabled[projectId] ?? [],
+        env: async () => ({}),
+        projectPath: (projectId) => `/projects/${projectId}`,
+        layouts,
+        pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/_app/${pluginId}`,
+        settings: (projectId, pluginId) => settingsFor[`${projectId}:${pluginId}`] ?? { ok: true, project: {}, app: {} },
+        serviceProviders: () => picks,
+        onSlotsChanged: (projectId) => void changed.push(projectId)
+      })
+    })
+    afterEach(() => slotted.disposeAll())
+
+    it('resolves the provider from the pick among running plugins only, with min/max and an epoch', async () => {
+      enabled.p1 = [plugin('a.one', { slots: [agenda] }), plugin('a.two', { slots: [{ type: 'agenda', entry: 'b.html' }] }), plugin('a.three')]
+      // No host yet: nothing draws.
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+      await slotted.open('p1', 1)
+      expect(changed).toEqual(['p1'])
+      // Two candidates and no pick: none (the Plugins page shows the row).
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+      picks = { '@slot:agenda': 'a.two' }
+      // Defaults when the provider names no min/max.
+      expect(slotted.slotProvider('p1', 'agenda')).toEqual({ pluginId: 'a.two', entry: 'b.html', minHeight: 24, maxHeight: 600, epoch: 1 })
+      picks = { '@slot:agenda': 'a.one' }
+      expect(slotted.slotProvider('p1', 'agenda')).toEqual({ pluginId: 'a.one', entry: 'slots/agenda.html', minHeight: 48, maxHeight: 320, epoch: 1 })
+      // "None", a stale pick among two, a type nobody declares, another project.
+      picks = { '@slot:agenda': '@none' }
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+      picks = { '@slot:agenda': 'gone.plugin' }
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+      expect(slotted.slotProvider('p1', 'weather')).toBeUndefined()
+      expect(slotted.slotProvider('p2', 'agenda')).toBeUndefined()
+    })
+
+    it('draws nothing for a provider that failed to activate or whose settings are invalid', async () => {
+      enabled.p1 = [plugin('a.one', { slots: [agenda] })]
+      factory.handlers = () => ({ activate: () => [{ id: 'a.one', state: 'errored', error: 'boom' }], deactivate: () => null })
+      await slotted.open('p1', 1)
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+      await slotted.close('p1')
+      settingsFor['p1:a.one'] = { ok: false, reason: 'bad' }
+      factory.handlers = okHandlers
+      await slotted.open('p1', 1)
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+    })
+
+    it('gives a reloaded or restarted provider a new epoch and says so; a crash takes it away', async () => {
+      enabled.p1 = [plugin('a.one', { slots: [agenda] })]
+      await slotted.open('p1', 1)
+      expect(slotted.slotProvider('p1', 'agenda')?.epoch).toBe(1)
+      changed.length = 0
+      await slotted.devReload('a.one')
+      expect(slotted.slotProvider('p1', 'agenda')?.epoch).toBe(2)
+      expect(changed).toContain('p1')
+      changed.length = 0
+      factory.last.exit(1)
+      await flush()
+      expect(changed).toEqual(['p1'])
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(slotted.slotProvider('p1', 'agenda')?.epoch).toBe(3)
+      // A reload that turns the manifest invalid takes it down.
+      changed.length = 0
+      await slotted.devReload('a.one', 'invalid plugin: main is required')
+      expect(changed).toContain('p1')
+      expect(slotted.slotProvider('p1', 'agenda')).toBeUndefined()
+    })
+
+    it("hands a frame's port to the running provider only, and tells it when the frame closes", async () => {
+      enabled.p1 = [plugin('a.one', { slots: [agenda] }), plugin('a.two')]
+      const open = { pluginId: 'a.one', id: 's1', type: 'agenda', host: { kind: 'panel' as const, pluginId: 'a.two', panelId: 'main' }, params: { day: 'today' } }
+      expect(slotted.sendSlotPort('p1', open, {})).toBe(false)
+      await slotted.open('p1', 1)
+      const port = { the: 'port' }
+      expect(slotted.sendSlotPort('p1', open, port)).toBe(true)
+      expect(factory.last.ports).toEqual([{ message: JSON.stringify({ slotOpen: open }), port }])
+      // Not a plugin this host runs, nor another project.
+      expect(slotted.sendSlotPort('p1', { ...open, pluginId: 'evil.other' }, {})).toBe(false)
+      expect(slotted.sendSlotPort('p2', open, {})).toBe(false)
+      slotted.closeSlot('p1', 'a.one', 's1')
+      await flush()
+      expect(hostEvents).toContainEqual({ event: 'slot.close', params: { pluginId: 'a.one', id: 's1' } })
+      // No host: nothing to tell.
+      slotted.closeSlot('p2', 'a.one', 's1')
+    })
+  })
+
   describe('devReload (linked dev plugin changed, Task 29)', () => {
     /** Host handlers that record the plugin.* calls and answer like a healthy loader. */
     const reloadHandlers = (calls: { method: string; params: unknown }[], reloadState?: () => unknown): (() => Record<string, RpcHandler>) =>

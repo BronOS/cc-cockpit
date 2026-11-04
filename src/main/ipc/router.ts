@@ -348,6 +348,43 @@ export function registerPanelHandlers(router: IpcRouter, deps: PanelHandlerDeps)
   })
 }
 
+/** What the slot frame handlers need (panel-ports.ts, layout-service.ts). */
+export interface SlotHandlerDeps {
+  /** Connect a slot frame of the sender's window (PanelPortHub.connectSlot); false when refused. */
+  connect(projectId: string, windowId: number, frameId: unknown, nonce: unknown): boolean
+  /** The shell unmounted the frame (PanelPortHub.disconnectSlot). */
+  disconnect(projectId: string, frameId: string): void
+  /** The frame's page asked for a height (LayoutService.setSlotHeight); false when refused. */
+  setHeight(projectId: string, frameId: string, height: number): boolean
+}
+
+/**
+ * Slot frames (design-next §2): the shell asks for a frame's port, says when it unmounted one,
+ * and passes on a page's `ccPanel.slot.setHeight`. The project and window are the sender's; the
+ * frame id is renderer input, capped here and only looked up in that project's frames by main.
+ */
+export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): void {
+  const frameIdOf = (channel: string, payload: unknown): string => {
+    const { frameId } = fields(channel, payload)
+    if (typeof frameId !== 'string' || frameId.length > 40) throw new Error(`${channel}: frameId must be a short string`)
+    return frameId
+  }
+  router.handleProject('slots.connect', (ctx, payload) => {
+    const frameId = frameIdOf('slots.connect', payload)
+    return deps.connect(ctx.projectId, ctx.windowId, frameId, fields('slots.connect', payload).nonce)
+  })
+  router.handleProject('slots.disconnect', (ctx, payload) => {
+    deps.disconnect(ctx.projectId, frameIdOf('slots.disconnect', payload))
+    return null
+  })
+  router.handleProject('slots.height', (ctx, payload) => {
+    const frameId = frameIdOf('slots.height', payload)
+    const { height } = fields('slots.height', payload)
+    if (typeof height !== 'number' || !Number.isFinite(height)) throw new Error('slots.height: height must be a number')
+    return deps.setHeight(ctx.projectId, frameId, height)
+  })
+}
+
 /**
  * What the settings handlers need (SettingsService implements it). Every method takes renderer
  * input as `unknown` and checks it itself; the router only passes fields on, with the sender's

@@ -294,16 +294,35 @@
   `src/main/ipc/router.ts` (renderer asks for a frame's port, reports `setHeight`)
 - Modify: `test/unit/host-api.test.ts`, `layout-service.test.ts`, `panel-ports.test.ts`, `plugin-protocol.test.ts`
 
-- [ ] HostApi checks of design-next §2 "Main enforces": type in that panel's manifest `slots`, not an app type, the
+- [x] HostApi checks of design-next §2 "Main enforces": type in that panel's manifest `slots`, not an app type, the
   panel is the calling plugin's (never trust ids), placements ≤ 4, height clamp, `params` ≤ 4 KiB plain JSON
-- [ ] resolve the provider per placement (task 4 rule); main tells the provider's host `slot.open { id, type, host,
+- [x] resolve the provider per placement (task 4 rule); main tells the provider's host `slot.open { id, type, host,
   params }` / `slot.close`; the frame's port goes to the provider only (the host panel gets no handle); ≤ 8 frames per
   window (extra placements are not drawn, logged in the host plugin's log)
-- [ ] re-send the layout on a pick change, a provider enable/disable/reload (frames remount: close then open)
-- [ ] app placement `{ kind: 'app', place: 'top-bar' }` for `sessions-strip` (no host plugin; main places it itself)
-- [ ] write tests: each refusal, the clamp, the cap of 8, provider resolution, clear on host plugin reload/stop,
+- [x] re-send the layout on a pick change, a provider enable/disable/reload (frames remount: close then open)
+- [x] app placement `{ kind: 'app', place: 'top-bar' }` for `sessions-strip` (no host plugin; main places it itself)
+- [x] write tests: each refusal, the clamp, the cap of 8, provider resolution, clear on host plugin reload/stop,
   remount on provider reload, removal on provider disable, port routed to the provider only
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ decided: the host learns of a frame with its port in ONE message, `{ "slotOpen": { pluginId, id, type, host,
+  params } }` (HostManager.sendSlotPort, like `panelPort`), so an open never arrives without its port; the frame goes
+  with the event `slot.close { pluginId, id }`. Open and close follow the shell's mount: `slots.connect` (renderer,
+  frame id + nonce) opens, `slots.disconnect` (unmount) or the frame leaving the layout closes (once; a reconnect of
+  the same id closes the old instance first). Task 6 parses both host-side; until then the host closes the port.
+- ➕ decided: the renderer end comes back on `PANEL_PORT_CHANNEL` under the key `@slot/<frameId>` (`slotPortKey`), so
+  the preload and `panel-port-bus.ts` need no change. Frame ids are main's (`s<n>`, `SLOT_FRAME_ID_PATTERN`), kept
+  while host, position, index, type, params, provider and the provider's copy (an epoch bumped on every ready) are
+  unchanged: a reload or a restart of the provider gives new ids, i.e. a remount.
+- ➕ decided: the frame types live in `src/shared/ipc.ts` next to `PanelInfo` (`SlotFrameInfo`, `PanelInfo.slots`,
+  `LayoutView.appSlots`), not in `layout.ts`/`types.ts`; `params` never go to the renderer. A provider draws only
+  while it runs (activated, not reloading); `HostManager.onSlotsChanged` → `LayoutService.refreshSlots` publishes only
+  when the frames changed. The cap of 8 counts per project (one window per project), app frames first, then panels
+  in order; a placement over it is logged once in the host plugin's log.
+- ➕ decided: heights are rounded and clamped to 24-600 by `parseSlotPlacements` (shared, for task 6 too), then to the
+  provider's min/max by the layout service. `slots.height` (the page's `setHeight`, passed on by the renderer) is
+  kept in main as `SlotFrameInfo.pageHeight` within `[minHeight, height]`; refused for the top bar. Router handlers
+  are a new `registerSlotHandlers`; `plugin-protocol.ts` needed no change (a slot entry is a plugin file, already
+  served with the panel CSP; a test pins it).
 
 ### Task 6: Slots in the plugin host and SDK [model: sonnet] [SYNC]
 

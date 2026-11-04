@@ -23,10 +23,29 @@
 // sandbox allows it) and the shell asks again on every load; each connect costs MAIN a channel, a
 // port transfer to the host and the page's files re-read, not only the plugin's own host.
 //
+// Slot frames (design-next §2) get a port the same way, to the PROVIDER's host (the plugin drawing
+// the frame), never the host panel's:
+//
+//   connectSlot     a slot frame loaded (`slots.connect` with main's frame id): the frame is looked
+//                   up in the layout service's records for the asking window's project (who
+//                   provides it, what it sits in, the placement's params), the host's end goes to
+//                   the provider with all of that (`slotOpen`, HostManager.sendSlotPort), the
+//                   window's end comes back on the panels' channel under `@slot/<id>`. The host
+//                   panel gets no handle on it, and the provider sees nothing of the panel but
+//                   `params`. A frame that connects again (its page reloaded) is closed first.
+//   disconnectSlot  the shell unmounted the frame (`slots.disconnect`: the host panel was hidden or
+//                   collapsed): the provider hears `slot.close`.
+//   slotFramesChanged  the layout's set of frames changed: every open frame that is no longer in it
+//                   (placement removed, provider changed, reloaded or stopped) is closed the same way.
+// Each frame is closed once; a close for a frame the provider's host never opened is harmless.
+//
 // No Electron import: the channel factory (MessageChannelMain) and the two senders are injected
 // by index.ts; unit tests pass fakes.
 
 import { errorText } from '../../shared/error-text'
+import { SLOT_FRAME_ID_PATTERN, slotPortKey, type SlotHost } from '../../shared/slots'
+import type { JsonValue } from '../../sdk/types'
+import type { SlotFrameRecord } from '../layout/layout-service'
 
 /** Two entangled ends; P is Electron's MessagePortMain in the app, a fake in tests. */
 export interface PanelChannel<P> {
@@ -48,6 +67,16 @@ export interface PanelPortDeps<P> {
   /** Tell the project's window to reload these plugins' panels (`panels.reload`). */
   reload(projectId: string, pluginIds: string[]): void
   close(port: P): void
+  /** A slot frame the project draws now (LayoutService.slotFrame): main's own record. Absent: no slots. */
+  slotFrame?(projectId: string, frameId: string): SlotFrameRecord | undefined
+  /** Hand the provider's host its end with what onOpen gets (HostManager.sendSlotPort); false when it does not run. */
+  slotToHost?(
+    projectId: string,
+    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue },
+    port: P
+  ): boolean
+  /** The frame is gone: tell the provider's host (HostManager.closeSlot). */
+  slotClosed?(projectId: string, pluginId: string, frameId: string): void
   log?: (message: string) => void
   /** Clock for the connect cap (tests); Date.now by default. */
   now?: () => number
@@ -69,6 +98,8 @@ export class PanelPortHub<P> {
   private readonly now: () => number
   /** Recent connect times per `<projectId>\n<windowId>\n<pluginId>/<panelId>` (main's own ids). */
   private readonly recent = new Map<string, { times: number[]; logged: boolean }>()
+  /** `<projectId>\n<frameId>` -> the provider of a slot frame whose port went out and is not closed yet. */
+  private readonly openSlots = new Map<string, { projectId: string; pluginId: string; frameId: string }>()
 
   constructor(private readonly deps: PanelPortDeps<P>) {
     this.log = deps.log ?? ((m) => console.warn(m))
@@ -114,6 +145,78 @@ export class PanelPortHub<P> {
       return false
     }
     return true
+  }
+
+  /**
+   * Connect one slot frame of the asking window (see the top of the file). `projectId` and
+   * `windowId` are what main resolved from the sender; `frameId` and `nonce` are renderer input and
+   * only looked up. False when refused: no such frame now, the provider not running, over the cap.
+   */
+  connectSlot(projectId: string, windowId: number, frameId: unknown, nonce: unknown): boolean {
+    if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
+    if (typeof frameId !== 'string' || !SLOT_FRAME_ID_PATTERN.test(frameId)) return false
+    const frame = this.deps.slotFrame?.(projectId, frameId)
+    if (!frame || !this.deps.slotToHost) return false
+    // From here on the ids are main's own strings (the record's), not the renderer's.
+    const id = frame.info.id
+    const pluginId = frame.info.pluginId
+    if (!this.withinCap(projectId, windowId, pluginId, slotPortKey(id))) return false
+    // Its page loaded again: the provider's instance for the old load goes first.
+    this.disconnectSlot(projectId, id)
+
+    const channel = this.deps.createChannel()
+    let sent = false
+    try {
+      sent = this.deps.slotToHost(
+        projectId,
+        { pluginId, id, type: frame.info.type, host: frame.host, ...(frame.params !== undefined ? { params: frame.params } : {}) },
+        channel.host
+      )
+    } catch (err) {
+      this.log(`slot ${frame.info.type} of ${pluginId}: handing the host its port failed: ${errorText(err)}`)
+    }
+    if (!sent) {
+      this.closeQuietly(channel.host)
+      this.closeQuietly(channel.renderer)
+      return false
+    }
+    this.openSlots.set(`${projectId}\n${id}`, { projectId, pluginId, frameId: id })
+    try {
+      this.deps.toRenderer(windowId, { panelKey: slotPortKey(id), nonce }, channel.renderer)
+    } catch (err) {
+      this.log(`slot ${frame.info.type} of ${pluginId}: posting the window its port failed: ${errorText(err)}`)
+      this.closeQuietly(channel.renderer)
+      this.disconnectSlot(projectId, id)
+      return false
+    }
+    return true
+  }
+
+  /** The shell unmounted a slot frame of the project: its provider hears the close (once). */
+  disconnectSlot(projectId: string, frameId: unknown): void {
+    if (typeof frameId !== 'string') return
+    const key = `${projectId}\n${frameId}`
+    const open = this.openSlots.get(key)
+    if (!open) return
+    this.openSlots.delete(key)
+    this.tellClosed(open)
+  }
+
+  /** The project's slot frames are now `ids` (LayoutService framesChanged): every other open one closes. */
+  slotFramesChanged(projectId: string, ids: ReadonlySet<string>): void {
+    for (const [key, open] of [...this.openSlots]) {
+      if (open.projectId !== projectId || ids.has(open.frameId)) continue
+      this.openSlots.delete(key)
+      this.tellClosed(open)
+    }
+  }
+
+  private tellClosed(open: { projectId: string; pluginId: string; frameId: string }): void {
+    try {
+      this.deps.slotClosed?.(open.projectId, open.pluginId, open.frameId)
+    } catch (err) {
+      this.log(`slot frame ${open.frameId} of ${open.pluginId}: telling the host it closed failed: ${errorText(err)}`)
+    }
   }
 
   /** A host (re)started and these plugins run in it: their panels reload and connect again. */

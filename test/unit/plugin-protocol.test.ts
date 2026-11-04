@@ -86,6 +86,18 @@ describe('servePluginRequest', () => {
     expect(await (await get('cc-plugin://acme.board/alias.html')).text()).toBe('<p>board</p>')
   })
 
+  it("serves a slot entry (design-next §2) like a panel page: the provider's file, with the panel CSP", async () => {
+    mkdirSync(join(pluginDir, 'slots'))
+    writeFileSync(join(pluginDir, 'slots', 'agenda.html'), '<p>agenda</p>')
+    // The URL the layout service builds for a frame (SlotFrameInfo.src).
+    const res = await get(pluginFileUrl('acme.board', 'slots/agenda.html'))
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<p>agenda</p>')
+    expect(res.headers.get('content-security-policy')).toBe(pluginCsp('acme.board'))
+    expect(res.headers.get('content-security-policy')).toContain('sandbox allow-scripts')
+    expect(res.headers.get('content-security-policy')).toContain("frame-src 'none'")
+  })
+
   it('serves the panel SDK inside every served plugin, and only there', async () => {
     const res = await get(`cc-plugin://acme.board${PANEL_SDK_PATH}`)
     expect(res.status).toBe(200)

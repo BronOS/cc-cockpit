@@ -15,6 +15,7 @@ import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-bac
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
+import type { SlotPosition } from './slots'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -253,6 +254,37 @@ export interface PanelInfo {
    * `webviews.placement`. Absent: an html panel (or a core one).
    */
   kind?: 'webview'
+  /**
+   * The slot frames drawn in this panel's column (ctx.panels.slots, design-next §2), in the order
+   * placed: main resolved each placement's provider, clamped its height and left out what is not
+   * drawn (no provider, the project's pick is "None", over the window's frame cap). Absent: none.
+   */
+  slots?: SlotFrameInfo[]
+}
+
+/**
+ * One slot frame as the shell draws it: a sandboxed iframe of the PROVIDER's page, with its own
+ * port to the provider's backend (`slots.connect` with `id`). The host panel's `params` are not
+ * here: they go to the provider only (`slot.open`).
+ */
+export interface SlotFrameInfo {
+  /** Main's opaque id for this frame (SLOT_FRAME_ID_PATTERN). A new id is a new frame: remount. */
+  id: string
+  type: string
+  /** The plugin whose page this is. */
+  pluginId: string
+  /** `cc-plugin://<pluginId>/<entry>`. */
+  src: string
+  /** In a panel's column: above or below the panel's frame; `top-bar`: the app's top bar. */
+  position: SlotPosition | 'top-bar'
+  /**
+   * Px: the placement's height clamped to the provider's min/max (in the top bar, which has a fixed
+   * height, the provider's minHeight). The page sizes itself within [minHeight, height].
+   */
+  height: number
+  minHeight: number
+  /** What the page asked for with `ccPanel.slot.setHeight` (`slots.height`), already clamped. Absent: `height`. */
+  pageHeight?: number
 }
 
 /** What a webview panel's view shows (`webviews.current`, `webviews.navigated`). Empty: no view yet. */
@@ -609,6 +641,8 @@ export interface LayoutView {
    * it back. A show that changes nothing in the layout still publishes, for this.
    */
   reveal?: string
+  /** Slot frames the app places itself (the top bar's `sessions-strip`). Absent: none. */
+  appSlots?: SlotFrameInfo[]
 }
 
 export type OverlayKind = 'terminal' | 'url' | 'html'
@@ -734,6 +768,21 @@ export interface IpcInvokeMap {
    * disabled; false when it was dropped (the header changed under the click, the host is gone).
    */
   'panels.action': { req: { panelKey: string; actionId: string }; res: boolean }
+  // Slot frames (design-next §2). The project is the sender's; frame ids are main's, looked up in it.
+  /**
+   * A slot frame's iframe loaded: main makes a MessageChannel, hands one end to the PROVIDER's host
+   * with what its onOpen gets, and posts the other to this window on PANEL_PORT_CHANNEL under
+   * `@slot/<frameId>` (slotPortKey) with the same `nonce`. False (no port follows) when the frame is
+   * not one this window draws now or its provider is not running.
+   */
+  'slots.connect': { req: { frameId: string; nonce: number }; res: boolean }
+  /** The shell unmounted a slot frame (host panel hidden or collapsed): the provider hears onClose. */
+  'slots.disconnect': { req: { frameId: string }; res: null }
+  /**
+   * A slot page's `ccPanel.slot.setHeight`: main keeps it within [minHeight, the frame's height] and
+   * publishes it as `SlotFrameInfo.pageHeight`. False for a frame not drawn now or one in the top bar.
+   */
+  'slots.height': { req: { frameId: string; height: number }; res: boolean }
 
   // Settings overlay. Any project window may call these; the data is app-wide.
   /** Every known project, most recently opened first. */
@@ -1091,6 +1140,9 @@ export const INVOKE_CHANNELS = [
   'panels.connect',
   'plugins.restart',
   'panels.action',
+  'slots.connect',
+  'slots.disconnect',
+  'slots.height',
   'settings.projects',
   'settings.projectOpen',
   'settings.projectRelink',

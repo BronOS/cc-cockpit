@@ -290,3 +290,76 @@ describe('the host side of a panel port', () => {
     expect(panelPortTag(`{"panelPort":{"pluginId":"${'a'.repeat(2000)}","panelId":"b"}}`)).toBeUndefined()
   })
 })
+
+describe('PanelPortHub slot frames (design-next §2)', () => {
+  type Open = { pluginId: string; id: string; type: string; host: unknown; params?: unknown }
+  const frame = {
+    info: { id: 's1', type: 'agenda', pluginId: 'a.cal', src: 'cc-plugin://a.cal/agenda.html', position: 'top' as const, height: 100, minHeight: 48 },
+    host: { kind: 'panel' as const, pluginId: 'a.inbox', panelId: 'main' },
+    params: { day: 'today' }
+  }
+  function slotHub(running = true): { hub: PanelPortHub<FakePort>; sent: Sent; opened: { projectId: string; open: Open; port: FakePort }[]; closed: string[] } {
+    const opened: { projectId: string; open: Open; port: FakePort }[] = []
+    const closed: string[] = []
+    const made = hub({
+      slotFrame: (projectId, frameId) => (projectId === 'p1' && frameId === 's1' ? frame : undefined),
+      slotToHost: (projectId, open, port) => {
+        if (!running) return false
+        opened.push({ projectId, open, port })
+        return true
+      },
+      slotClosed: (projectId, pluginId, frameId) => void closed.push(`${projectId}:${pluginId}:${frameId}`)
+    })
+    return { ...made, opened, closed }
+  }
+
+  it("hands the provider's host its end with main's record, the window its end under @slot/<id>", () => {
+    const { hub: h, sent, opened } = slotHub()
+    expect(h.connectSlot('p1', 1, 's1', 5)).toBe(true)
+    const ch = sent.channels[0]!
+    // The provider gets the port, the host panel's place and the params; never the host panel's host.
+    expect(opened).toEqual([
+      { projectId: 'p1', open: { pluginId: 'a.cal', id: 's1', type: 'agenda', host: frame.host, params: { day: 'today' } }, port: ch.host }
+    ])
+    expect(sent.host).toEqual([])
+    expect(sent.renderer).toEqual([{ windowId: 1, payload: { panelKey: '@slot/s1', nonce: 5 }, port: ch.renderer }])
+  })
+
+  it('refuses a frame the project does not draw, junk ids and nonces, and a provider that is not running', () => {
+    const { hub: h, sent } = slotHub()
+    for (const [projectId, id, nonce] of [
+      ['p2', 's1', 1],
+      ['p1', 's2', 1],
+      ['p1', 'a.cal/agenda', 1],
+      ['p1', 7, 1],
+      ['p1', 's1', '1']
+    ] as const) {
+      expect(h.connectSlot(projectId, 1, id, nonce), String(id)).toBe(false)
+    }
+    expect(sent.channels).toEqual([])
+    const stopped = slotHub(false)
+    expect(stopped.hub.connectSlot('p1', 1, 's1', 1)).toBe(false)
+    expect(stopped.sent.channels[0]!.host.closed && stopped.sent.channels[0]!.renderer.closed).toBe(true)
+    expect(stopped.sent.renderer).toEqual([])
+  })
+
+  it('closes a frame once: on unmount, when the layout drops it, and before it opens again', () => {
+    const { hub: h, closed } = slotHub()
+    h.connectSlot('p1', 1, 's1', 1)
+    h.disconnectSlot('p1', 's1')
+    h.disconnectSlot('p1', 's1')
+    expect(closed).toEqual(['p1:a.cal:s1'])
+    // Its page reloaded: the old instance closes before the new one opens.
+    h.connectSlot('p1', 1, 's1', 2)
+    h.connectSlot('p1', 1, 's1', 3)
+    expect(closed).toEqual(['p1:a.cal:s1', 'p1:a.cal:s1'])
+    // Still drawn: nothing. Gone from the layout (another project's change touches nothing): closed.
+    h.slotFramesChanged('p1', new Set(['s1']))
+    h.slotFramesChanged('p2', new Set())
+    expect(closed).toHaveLength(2)
+    h.slotFramesChanged('p1', new Set())
+    expect(closed).toHaveLength(3)
+    h.disconnectSlot('p1', 's1')
+    expect(closed).toHaveLength(3)
+  })
+})

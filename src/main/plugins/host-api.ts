@@ -13,6 +13,12 @@
 //   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
 //                                                                declares (any kind), checked again here
 //                                                                (shared/panel-header.ts); null clears it
+//   panels.slots    { pluginId, panelId, placements } -> null    slot placements in the column of a panel the
+//                                                                plugin itself declares, each type one that
+//                                                                panel's manifest `slots` lists and not an
+//                                                                app slot type, checked again here
+//                                                                (shared/slots.ts); null clears them. The
+//                                                                layout service resolves the providers.
 //   overlay.open    { pluginId, spec, handle? } -> OverlayResult on this project's window; `handle`
 //                                                                (ctx.overlay.start) names the overlay
 //                                                                in the three calls below
@@ -52,8 +58,8 @@
 //                                                                (panelAction: current, not busy/disabled)
 // and one event the host sends (host-manager routes it to contextDisposed):
 //   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls,
-//                                                                its webviews, its overlays and its panel
-//                                                                headers go
+//                                                                its webviews, its overlays, its panel
+//                                                                headers and its slot placements go
 //
 // `pluginId` must be one of the plugins this host process runs. Plugins sharing a host can post in
 // each other's name (host-manager.ts says why that is accepted); the boundary is the project.
@@ -113,6 +119,7 @@ import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, Ses
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
 import { isPanelHeaderIcon, parsePanelHeader, type CleanPanelHeader } from '../../shared/panel-header'
+import { isAppSlotType, parseSlotPlacements, type SlotPlacement } from '../../shared/slots'
 import {
   MAX_OVERLAY_MESSAGE_LENGTH,
   OverlayOutbox,
@@ -219,6 +226,11 @@ export interface HostApiDeps {
    */
   setPanelHeader?(projectId: string, panelKey: string, header: PanelHeaderInfo | null): boolean
   /**
+   * LayoutService.setSlots (ctx.panels.slots): false for a panel the project does not have.
+   * Without it the request is refused.
+   */
+  setPanelSlots?(projectId: string, panelKey: string, placements: SlotPlacement[] | null): boolean
+  /**
    * LayoutService.show (ctx.panels.show): unhide, open, expand its zone; false for a panel the
    * project does not have. Without it the request is refused.
    */
@@ -269,6 +281,8 @@ export interface HostApiPlugin {
   panels: readonly string[]
   /** The ids in `panels` of kind `webview`: the only ones ctx.webview may drive. Absent is none. */
   webviewPanels?: readonly string[]
+  /** Panel id -> its manifest `slots`: the only types ctx.panels.slots may place there. Absent is none. */
+  panelSlots?: Readonly<Record<string, readonly string[]>>
 }
 
 /** Who is asking: fixed when main spawned the host process. */
@@ -444,6 +458,12 @@ export class HostApi {
    * left up with nobody to hear it.
    */
   private readonly headers = new Map<string, CleanPanelHeader>()
+  /**
+   * Panel keys this host placed slots on: cleared, like headers, when the plugin's ctx or the host
+   * goes. A placement has no listener of its own, but the frames in it are the host panel's (the
+   * design: they live and die with it), and a dead plugin's agenda must not stay drawn.
+   */
+  private readonly slotted = new Set<string>()
   /** Aborted at dispose: the oauth refreshes in flight end (overlays: `overlayCopies`). */
   private readonly gone = new AbortController()
   private readonly unsubscribe: () => void
@@ -474,6 +494,7 @@ export class HostApi {
       badge: (params) => this.badge(params),
       'panels.show': (params) => this.showPanel(params),
       'panels.header': (params) => this.panelHeader(params),
+      'panels.slots': (params) => this.panelSlots(params),
       'overlay.open': (params) => this.overlay(params),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
@@ -533,6 +554,7 @@ export class HostApi {
       }
     }
     this.clearHeaders((key) => key.startsWith(`${next.id}/`))
+    this.clearSlots((key) => key.startsWith(`${next.id}/`))
   }
 
   /**
@@ -565,6 +587,9 @@ export class HostApi {
     // set again, a stale button would take clicks for nobody. Not once revoked: dispose() clears
     // them then, sparing what a newer host of the project may have set on the same keys.
     if (!this.revoked) this.clearHeaders((key) => key.startsWith(`${pluginId}/`))
+    // Its slot placements too: the new copy places its own (design-next §2, "cleared when the host
+    // plugin's ctx ends"). Not once revoked, for the same reason.
+    if (!this.revoked) this.clearSlots((key) => key.startsWith(`${pluginId}/`))
   }
 
   /** Whether this host set a badge on `panelKey` that is still showing. */
@@ -575,6 +600,11 @@ export class HostApi {
   /** Whether this host set a header on `panelKey` that is still showing. */
   hasHeader(panelKey: string): boolean {
     return this.headers.has(panelKey)
+  }
+
+  /** Whether this host placed slots on `panelKey` that are still placed. */
+  hasSlots(panelKey: string): boolean {
+    return this.slotted.has(panelKey)
   }
 
   /**
@@ -615,11 +645,15 @@ export class HostApi {
 
   /**
    * The host process is gone (exit, stop, app quit). Stop the sessions events, dismiss the
-   * overlays it opened, clear its badges and headers, except the ones `keep` (badges) and
-   * `keepHeader` name: a newer host of the same project (its window reopened while this one was
-   * deactivating) owns those now. Idempotent.
+   * overlays it opened, clear its badges, headers and slot placements, except the ones `keep`
+   * (badges), `keepHeader` and `keepSlots` name: a newer host of the same project (its window
+   * reopened while this one was deactivating) owns those now. Idempotent.
    */
-  dispose(keep?: (panelKey: string) => boolean, keepHeader?: (panelKey: string) => boolean): void {
+  dispose(
+    keep?: (panelKey: string) => boolean,
+    keepHeader?: (panelKey: string) => boolean,
+    keepSlots?: (panelKey: string) => boolean
+  ): void {
     if (this.disposed) return
     this.revoke()
     this.disposed = true
@@ -643,6 +677,20 @@ export class HostApi {
     }
     this.badged.clear()
     this.clearHeaders((key) => !keepHeader?.(key))
+    this.clearSlots((key) => !keepSlots?.(key))
+  }
+
+  /** Clear the slot placements this host set on the keys `which` picks (each one also leaves `slotted`). */
+  private clearSlots(which: (panelKey: string) => boolean): void {
+    for (const key of [...this.slotted]) {
+      if (!which(key)) continue
+      this.slotted.delete(key)
+      try {
+        this.deps.setPanelSlots?.(this.scope.projectId, key, null)
+      } catch (err) {
+        this.log(`plugin host ${this.scope.projectId}: clearing slots ${key} failed: ${errorText(err)}`)
+      }
+    }
   }
 
   /** Clear the headers this host set on the keys `which` picks (each one also leaves `headers`). */
@@ -783,6 +831,38 @@ export class HostApi {
     if (!this.deps.setPanelHeader(this.scope.projectId, key, info)) throw new Error(`panels.header: no panel ${key} in this window`)
     if (clean) this.headers.set(key, clean)
     else this.headers.delete(key)
+    return null
+  }
+
+  /**
+   * ctx.panels.slots: placements in the column of one of the plugin's own declared panels, in this
+   * host's project (design-next §2 "Main enforces"). The host checked them already (ui.ts); checked
+   * again here with the same rule (shared/slots.ts parseSlotPlacements: the cap of 4, the height
+   * clamp, `params` plain JSON of at most 4 KiB), and each type against the panel's manifest
+   * `slots`, which never lists an app slot type (validate.ts) but is refused here by name all the
+   * same: the top bar is the app's. Who draws each placement is the layout service's question,
+   * asked at every view, so a pick made later needs no new call. No budget, as for headers: the
+   * same placements again publish nothing.
+   */
+  private panelSlots(params: unknown): null {
+    this.alive()
+    const { pluginId, panelId, placements } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'panels.slots')
+    // Only the plugin's own declared panels, as for headers: never another plugin's or a core panel.
+    if (typeof panelId !== 'string' || !plugin.panels.includes(panelId)) {
+      throw new Error(`panels.slots: ${plugin.id} declares no panel "${String(panelId)}"`)
+    }
+    if (!this.deps.setPanelSlots) throw new Error('panels.slots: slots are not available')
+    const clean = parseSlotPlacements(placements)
+    const declared = Object.hasOwn(plugin.panelSlots ?? {}, panelId) ? (plugin.panelSlots?.[panelId] ?? []) : []
+    for (const p of clean ?? []) {
+      if (isAppSlotType(p.type)) throw new Error(`panels.slots: "${p.type}" is placed by the app, not by a panel`)
+      if (!declared.includes(p.type)) throw new Error(`panels.slots: panel ${panelId} of ${plugin.id} does not list slot "${p.type}" in its manifest`)
+    }
+    const key = `${plugin.id}/${panelId}`
+    if (!this.deps.setPanelSlots(this.scope.projectId, key, clean)) throw new Error(`panels.slots: no panel ${key} in this window`)
+    if (clean && clean.length > 0) this.slotted.add(key)
+    else this.slotted.delete(key)
     return null
   }
 

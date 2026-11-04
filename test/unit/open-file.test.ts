@@ -477,6 +477,7 @@ describe('ServiceChoices: slot picks (design-next §2)', () => {
   function setup() {
     const picks: Record<string, string> = {}
     const restarts: string[] = []
+    const refreshed: string[] = []
     const agenda = [{ type: 'agenda', entry: 'slots/agenda.html' }]
     const choices = new ServiceChoices({
       plugins: async () => [{ id: 'a.cal', slots: agenda }, { id: 'b.cal', slots: agenda }, { id: 'a.plain' }],
@@ -486,13 +487,14 @@ describe('ServiceChoices: slot picks (design-next §2)', () => {
         else picks[key] = pluginId
         return true
       },
-      restart: async (projectId) => void restarts.push(projectId)
+      restart: async (projectId) => void restarts.push(projectId),
+      slotsChanged: (projectId) => void refreshed.push(projectId)
     })
-    return { choices, picks, restarts }
+    return { choices, picks, restarts, refreshed }
   }
 
   it('stores a candidate or @none under @slot:<type>, with no host restart', async () => {
-    const { choices, picks, restarts } = setup()
+    const { choices, picks, restarts, refreshed } = setup()
     expect((await choices.status(P)).slots).toEqual([{ type: 'agenda', candidates: ['a.cal', 'b.cal'], selected: null }])
     await choices.setProvider(P, '@slot:agenda', 'b.cal')
     expect(picks).toEqual({ '@slot:agenda': 'b.cal' })
@@ -502,6 +504,8 @@ describe('ServiceChoices: slot picks (design-next §2)', () => {
     await choices.setProvider(P, '@slot:agenda', null)
     expect(picks).toEqual({})
     expect(restarts).toEqual([])
+    // Each change re-sends the layout instead (main resolves the frames again).
+    expect(refreshed).toEqual([P, P, P])
   })
 
   it('refuses a plugin not declaring the type, a bad type and a non-string', async () => {

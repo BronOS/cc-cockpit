@@ -1,7 +1,9 @@
 // Slots (design-next §2): a place in one plugin's panel (or in the app's chrome) where another
 // plugin draws its own page. The rules every side shares live here: the type name, the caps, the
-// app's own slot types and the pick key. Pure and import-free on purpose: the manifest check, the
-// Plugins page, main's placement checks and the plugin host all read these, and a copy would drift.
+// app's own slot types and the pick key. Pure, with no runtime import, on purpose: the manifest
+// check, the Plugins page, main's placement checks and the plugin host all read these, and a copy
+// would drift.
+import type { JsonValue } from '../sdk/types'
 
 /**
  * A slot type: a plain lower-case word, like a service name. It is part of a pick key
@@ -65,4 +67,86 @@ export interface SlotContribution {
   /** Px; the placement's height is clamped to these. Defaults: SLOT_HEIGHT_MIN and SLOT_HEIGHT_MAX. */
   minHeight?: number
   maxHeight?: number
+}
+
+// ---------------------------------------------------------------------------------------------
+// Placements (`ctx.panels.slots`) and frames. The host side checks a call with parseSlotPlacements
+// for a fast error; main checks it again with the same function (HostApi `panels.slots`), because
+// a host is not trusted to have used ctx.
+
+/** Where a placement goes in its panel's column: above or below the panel's own frame. */
+export type SlotPosition = 'top' | 'bottom'
+
+/** A placement as checked: a known position, a whole height in range, `params` a clean JSON copy. */
+export interface SlotPlacement {
+  type: string
+  position: SlotPosition
+  /** Px, a whole number in [SLOT_HEIGHT_MIN, SLOT_HEIGHT_MAX]; main clamps it to the provider's min/max too. */
+  height: number
+  /** Plain JSON (a parsed copy), at most MAX_SLOT_PARAMS_BYTES as JSON; handed to the provider only. */
+  params?: JsonValue
+}
+
+/** What a slot frame sits in, as the provider sees it (`SlotInstance.host`). */
+export type SlotHost = { kind: 'panel'; pluginId: string; panelId: string } | { kind: 'app'; place: 'top-bar' }
+
+/**
+ * `raw` (a `ctx.panels.slots` argument) checked: null (clear), or at most MAX_SLOT_PLACEMENTS
+ * placements. A height outside the range is clamped, not refused (the design's "clamped"; a
+ * fraction is rounded), but it must be a finite number. `params` goes through JSON once: what is
+ * kept is the parsed copy, so a getter, a prototype or a function cannot ride along, and the byte
+ * count is that of the text the provider will get. Throws an Error naming `panels.slots` and the
+ * rule. Which types a panel may place is the caller's check (the manifest, the app slot types).
+ */
+export function parseSlotPlacements(raw: unknown): SlotPlacement[] | null {
+  if (raw === null) return null
+  if (!Array.isArray(raw)) throw new Error('panels.slots: placements must be an array or null')
+  if (raw.length > MAX_SLOT_PLACEMENTS) throw new Error(`panels.slots: at most ${MAX_SLOT_PLACEMENTS} placements`)
+  return raw.map((p: unknown, i): SlotPlacement => {
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) throw new Error(`panels.slots: placement ${i} must be an object`)
+    const { type, position, height, params } = p as Record<string, unknown>
+    if (typeof type !== 'string' || !SLOT_TYPE_PATTERN.test(type)) {
+      throw new Error(`panels.slots: placement ${i}: type must match ${SLOT_TYPE_PATTERN.source}`)
+    }
+    if (position !== 'top' && position !== 'bottom') throw new Error(`panels.slots: placement ${i}: position must be "top" or "bottom"`)
+    if (typeof height !== 'number' || !Number.isFinite(height)) throw new Error(`panels.slots: placement ${i}: height must be a number`)
+    const out: SlotPlacement = { type, position, height: clampSlotHeight(height, SLOT_HEIGHT_MIN, SLOT_HEIGHT_MAX) }
+    if (params !== undefined) out.params = slotParamsOf(params, i)
+    return out
+  })
+}
+
+/** `height` rounded and kept within [min, max]. */
+export function clampSlotHeight(height: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(height)))
+}
+
+function slotParamsOf(params: unknown, i: number): JsonValue {
+  let text: string | undefined
+  try {
+    text = JSON.stringify(params)
+  } catch {
+    // A cycle or a BigInt: the same answer as a function, without the engine's text.
+    text = undefined
+  }
+  if (text === undefined) throw new Error(`panels.slots: placement ${i}: params must be plain JSON`)
+  if (new TextEncoder().encode(text).length > MAX_SLOT_PARAMS_BYTES) {
+    throw new Error(`panels.slots: placement ${i}: params are larger than ${MAX_SLOT_PARAMS_BYTES} bytes as JSON`)
+  }
+  return JSON.parse(text) as JsonValue
+}
+
+/**
+ * A frame's id: main makes it (`s<n>`), the renderer and the provider only pass it back. Checked
+ * against this before any lookup, so junk from a renderer is not carried any further.
+ */
+export const SLOT_FRAME_ID_PATTERN = /^s[0-9]{1,15}$/
+
+/**
+ * Slot frames get their MessagePort on the panels' channel (PANEL_PORT_CHANNEL, the preload and
+ * the renderer's port bus unchanged), under this key instead of a panel key: `@` never starts a
+ * plugin id, so it cannot collide with one.
+ */
+export function slotPortKey(frameId: string): string {
+  return `@slot/${frameId}`
 }

@@ -32,6 +32,10 @@
 // Panel ports (Task 28): main hands the host one end of a panel's channel next to the RPC, as a
 // `{ panelPort: { pluginId, panelId } }` message with the port in its transfer list; the ids are
 // main's (panel-ports.ts checks them against `runningPanels`), never the renderer's.
+// Slot frames (design-next §2) the same way: `{ slotOpen: { pluginId, id, type, host, params } }`
+// with the frame's port, to the PROVIDER's host only (sendSlotPort), and the event
+// `slot.close { pluginId, id }` when the frame goes (closeSlot). Who provides a type is
+// slotProvider: the project's pick among the plugins of the last launch, running now.
 // Plugin CLI commands (`ccc <name>`, plan B Task 5): runCli hands a call to the host serving the
 // project, only for a plugin of the last launch that declares the name and activated in the
 // current process, with a 30 s limit (exit 124) and at most MAX_CLI_IN_FLIGHT calls per plugin.
@@ -51,11 +55,14 @@ import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
 import type { CliContribution, OpenFileContribution, PluginManifest, SlotContribution } from '../../shared/manifest'
 import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
 import { capText } from '../../shared/text'
+import { selectSlotProvider } from '../../shared/services'
+import { SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, type SlotHost } from '../../shared/slots'
+import type { JsonValue } from '../../sdk/types'
 import { MAX_NOTIFY_TEXT, parseNotifyOptions, type NotifyOutcome } from '../../shared/notify'
 import type { PluginNotice } from '../notifications/notifier'
 import type { PluginCommandDef } from '../commands/command-registry'
 import type { Env } from '../env/login-env'
-import type { LayoutService, PluginPanelDef } from '../layout/layout-service'
+import type { LayoutService, PluginPanelDef, SlotProviderInfo } from '../layout/layout-service'
 import { STORAGE_FILE_NAME } from '../paths'
 import { realPathOf } from '../projects/registry'
 import { callCli } from './cli-call'
@@ -335,6 +342,11 @@ export interface HostManagerDeps {
    * connect to it (panel-ports.ts hostReady). Not called for a launch that failed or was replaced.
    */
   onPluginsReady?(projectId: string, pluginIds: string[]): void
+  /**
+   * Which plugins run in the project's host may have changed (a launch, a reload, a take-down, the
+   * process gone): the slot frames are resolved again (LayoutService.refreshSlots).
+   */
+  onSlotsChanged?(projectId: string): void
   activateTimeoutMs?: number
   /** Test knob (default CLI_CALL_TIMEOUT_MS). */
   cliTimeoutMs?: number
@@ -381,6 +393,11 @@ interface HostRecord {
   reloading: Map<string, boolean>
   /** Plugins whose activate() succeeded in the current process (they can take panel ports). */
   ran: Set<string>
+  /**
+   * Plugin id -> how many times it became ready in this record (SlotProviderInfo.epoch): a reloaded
+   * or restarted provider's frames get new ids, so the shell remounts them for the new copy.
+   */
+  slotEpochs: Map<string, number>
   /**
    * launch() and restart() calls under way (nested: a restart's own launch counts twice). While
    * one runs, a plugin of this host is on its way in, not gone: runCli waits for it (see there).
@@ -454,6 +471,7 @@ export class HostManager {
       reloads: Promise.resolve(),
       reloading: new Map(),
       ran: new Set(),
+      slotEpochs: new Map(),
       starting: 0,
       registered: new Set(),
       cliInFlight: new Map(),
@@ -823,6 +841,58 @@ export class HostManager {
     return true
   }
 
+  /**
+   * Who draws slots of `type` in the project now: the pick (selectSlotProvider) among the plugins
+   * of the host's last launch that declare it, host code and settings valid (the Plugins page's
+   * set, HostManager.servicePlugins), and only while that plugin runs: a frame of a provider that
+   * is starting, reloading or failed would have no backend to talk to. Undefined otherwise.
+   */
+  slotProvider(projectId: string, type: string): SlotProviderInfo | undefined {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.proc || rec.stopping) return undefined
+    const candidates = rec.plugins.filter((p) => typeof p.main === 'string' && p.main !== '' && !rec.disabled.has(p.id))
+    let picks: Record<string, string>
+    try {
+      picks = this.deps.serviceProviders?.(projectId) ?? {}
+    } catch {
+      picks = {}
+    }
+    const id = selectSlotProvider(type, candidates, picks)
+    if (id === null || !rec.ran.has(id) || rec.reloading.has(id)) return undefined
+    const slot = candidates.find((p) => p.id === id)?.slots?.find((sl) => sl.type === type)
+    if (!slot) return undefined
+    return {
+      pluginId: id,
+      entry: slot.entry,
+      minHeight: slot.minHeight ?? SLOT_HEIGHT_MIN,
+      maxHeight: slot.maxHeight ?? SLOT_HEIGHT_MAX,
+      epoch: rec.slotEpochs.get(id) ?? 0
+    }
+  }
+
+  /**
+   * Hand the provider's host one end of a slot frame's channel with what its `ctx.slots.onOpen`
+   * listener gets (the caller took it from the layout service's frame record, main's own). Only a
+   * plugin running in the host now; false otherwise.
+   */
+  sendSlotPort(
+    projectId: string,
+    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue },
+    port: unknown
+  ): boolean {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.proc || rec.stopping || !rec.ran.has(open.pluginId) || rec.reloading.has(open.pluginId)) return false
+    rec.proc.transferPort(JSON.stringify({ slotOpen: open }), port)
+    return true
+  }
+
+  /** Tell the provider's host a slot frame is gone (`slot.close`); nothing when there is no host. */
+  closeSlot(projectId: string, pluginId: string, id: string): void {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.rpc || rec.stopping) return
+    rec.rpc.emit('slot.close', { pluginId, id })
+  }
+
   /** App quitting: kill every host now (no deactivate; main is about to exit). */
   disposeAll(): void {
     for (const rec of [...this.hosts.values(), ...this.closing]) {
@@ -963,7 +1033,13 @@ export class HostManager {
             projectId: rec.projectId,
             windowId: rec.windowId,
             projectDir,
-            plugins: specs.map((s) => ({ id: s.id, dir: s.dir, panels: s.panels, webviewPanels: s.webviewPanels ?? [] }))
+            plugins: specs.map((s) => ({
+              id: s.id,
+              dir: s.dir,
+              panels: s.panels,
+              webviewPanels: s.webviewPanels ?? [],
+              panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id))
+            }))
           },
           (event, params) => rpc.emit(event, params)
         )
@@ -1029,11 +1105,7 @@ export class HostManager {
       }
       if (rec.proc !== proc || rec.stopping) return
       this.applyStates(rec, ids, states)
-      try {
-        this.deps.onPluginsReady?.(rec.projectId, [...ids])
-      } catch (err) {
-        this.log(`plugin host ${rec.projectId}: ${errorText(err)}`)
-      }
+      this.signalReady(rec, [...ids])
     } finally {
       doneActivating()
     }
@@ -1172,7 +1244,7 @@ export class HostManager {
     }
     rec.status.set(id, { id, state: 'starting' })
     this.setPanelError(rec, id, undefined)
-    rec.api?.updatePlugin({ id, dir: next.dir, panels: spec.panels, webviewPanels: spec.webviewPanels ?? [] })
+    rec.api?.updatePlugin({ id, dir: next.dir, panels: spec.panels, webviewPanels: spec.webviewPanels ?? [], panelSlots: panelSlotsOf(next) })
     let state: unknown
     try {
       state = await rec.rpc?.call('plugin.reload', { plugin: spec }, {
@@ -1226,6 +1298,7 @@ export class HostManager {
     this.dropCommands(rec, id)
     rec.status.set(id, { id, state: 'errored', error })
     this.setPanelError(rec, id, error)
+    this.slotsChanged(rec)
   }
 
   /**
@@ -1243,6 +1316,7 @@ export class HostManager {
       if (rec.proc === proc && err instanceof RpcTimeoutError) proc?.kill()
     }
     rec.ran.delete(id)
+    this.slotsChanged(rec)
   }
 
   /** The plugin's commands leave the registry; the host registers them again when it activates. */
@@ -1254,8 +1328,23 @@ export class HostManager {
   }
 
   private signalReady(rec: HostRecord, ids: string | string[]): void {
+    const list = typeof ids === 'string' ? [ids] : ids
+    // A new copy of each: its slot frames get new ids (remount), then the frames are resolved again.
+    for (const id of list) rec.slotEpochs.set(id, (rec.slotEpochs.get(id) ?? 0) + 1)
     try {
-      this.deps.onPluginsReady?.(rec.projectId, typeof ids === 'string' ? [ids] : ids)
+      this.deps.onPluginsReady?.(rec.projectId, list)
+    } catch (err) {
+      this.log(`plugin host ${rec.projectId}: ${errorText(err)}`)
+    }
+    this.slotsChanged(rec)
+  }
+
+  /** The running set may have changed: the project's slot frames are resolved again. */
+  private slotsChanged(rec: HostRecord): void {
+    // A closed record's project may be a reopened window's by now; its own host says for it.
+    if (rec.closed || this.hosts.get(rec.projectId) !== rec) return
+    try {
+      this.deps.onSlotsChanged?.(rec.projectId)
     } catch (err) {
       this.log(`plugin host ${rec.projectId}: ${errorText(err)}`)
     }
@@ -1300,6 +1389,8 @@ export class HostManager {
     rec.rpc = undefined
     // The host's commands die with it: the palette must not offer what nobody can run.
     this.clearCommands(rec)
+    // And the frames of the slots its plugins drew.
+    this.slotsChanged(rec)
     if (rec.stopping || rec.closed) return
 
     const now = Date.now()
@@ -1361,6 +1452,7 @@ export class HostManager {
       this.disposeApi(rec)
       rec.proc = undefined
       rec.rpc = undefined
+      this.slotsChanged(rec)
     }
     this.clearCommands(rec)
   }
@@ -1573,7 +1665,8 @@ export class HostManager {
     try {
       rec.api?.dispose(
         newer ? (key) => newer.api?.hasBadged(key) === true : undefined,
-        newer ? (key) => newer.api?.hasHeader(key) === true : undefined
+        newer ? (key) => newer.api?.hasHeader(key) === true : undefined,
+        newer ? (key) => newer.api?.hasSlots(key) === true : undefined
       )
     } catch (err) {
       this.log(`plugin host ${rec.projectId}: ${errorText(err)}`)
@@ -1585,6 +1678,13 @@ export class HostManager {
     if (rec.restartTimer !== undefined) clearTimeout(rec.restartTimer)
     rec.restartTimer = undefined
   }
+}
+
+/** A plugin's panel id -> its manifest `slots` (HostApiPlugin.panelSlots); panels without any are left out. */
+function panelSlotsOf(plugin: HostPlugin | undefined): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const panel of plugin?.panels ?? []) if (panel.slots && panel.slots.length > 0) out[panel.id] = [...panel.slots]
+  return out
 }
 
 /**

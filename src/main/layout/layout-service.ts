@@ -5,8 +5,28 @@
 // Panels come from two places: the core ones below and, per project, those of its enabled plugins
 // (Task 25 and later call `setPluginPanels`). A panel's badge, error and header (ctx.panels.header)
 // are plugin-reported state kept here, not in the persisted layout.
+//
+// Slots (design-next §2) follow the header's path: a panel's placements (ctx.panels.slots, checked
+// by HostApi) are kept here per project and panel, and every view resolves them into the frames the
+// shell draws (`PanelInfo.slots`, `LayoutView.appSlots`): the provider is asked for at each view
+// (`slotProvider`: the project's pick among the running plugins that declare the type), the height
+// clamped to the provider's min/max, and at most MAX_SLOT_FRAMES_PER_WINDOW frames drawn (one
+// window per project, so per project here), the app's own first. A frame's id is kept for as long
+// as what it shows is the same (host, position, type, params, provider and the provider's copy):
+// a new id is a new frame, which the shell remounts and the provider's host hears as close + open.
+// `refreshSlots` is how a pick change or a provider starting, reloading or stopping reaches the
+// window: it publishes only when the frames changed.
+import type { JsonValue } from '../../sdk/types'
 import type { PanelKind } from '../../shared/manifest'
-import type { LayoutView, PanelBadge, PanelHeaderInfo, PanelInfo } from '../../shared/ipc'
+import type { LayoutView, PanelBadge, PanelHeaderInfo, PanelInfo, SlotFrameInfo } from '../../shared/ipc'
+import {
+  APP_SLOT_TYPES,
+  clampSlotHeight,
+  MAX_SLOT_FRAMES_PER_WINDOW,
+  type SlotHost,
+  type SlotPlacement,
+  type SlotPosition
+} from '../../shared/slots'
 import {
   ZONE_IDS,
   isZoneId,
@@ -44,6 +64,26 @@ export interface PluginPanelDef {
   entry?: string
   /** The manifest's `kind`; absent is `html`. A `webview` panel has no `entry` (webview-manager.ts). */
   kind?: PanelKind
+  /** The manifest's `slots`: the slot types this panel may place (HostApi checks a placement against it). */
+  slots?: string[]
+}
+
+/** Who draws slots of a type in a project now (HostManager.slotProvider). */
+export interface SlotProviderInfo {
+  pluginId: string
+  /** The `contributes.slots` entry's page, relative to the plugin folder. */
+  entry: string
+  minHeight: number
+  maxHeight: number
+  /** Bumped each time the plugin is (re)activated: a new copy gets new frames (remount). */
+  epoch: number
+}
+
+/** A drawn frame as main keeps it: what the shell gets, plus what only the provider gets. */
+export interface SlotFrameRecord {
+  info: SlotFrameInfo
+  host: SlotHost
+  params?: JsonValue
 }
 
 export interface PanelStatus {
@@ -64,6 +104,12 @@ export interface LayoutServiceDeps {
    * not declared its panels yet is kept in place by `set` (see there). Absent: none are.
    */
   enabledPlugins?(projectId: string): readonly string[]
+  /** Who draws slots of `type` in the project now, or undefined (none, "None", ambiguous, not running). Absent: no slots. */
+  slotProvider?(projectId: string, type: string): SlotProviderInfo | undefined
+  /** The project's set of frame ids changed (PanelPortHub.slotFramesChanged closes the ones that went). */
+  framesChanged?(projectId: string, ids: ReadonlySet<string>): void
+  /** A placement of `pluginId`'s panel is not drawn (over the frame cap): a line for that plugin's log. */
+  slotLog?(projectId: string, pluginId: string, text: string): void
 }
 
 const MAX_BADGE_COUNT = 99_999
@@ -74,6 +120,19 @@ export class LayoutService {
   private readonly plugin = new Map<string, Map<string, PluginPanelDef[]>>()
   /** projectId -> panelKey -> reported badge/error. */
   private readonly status = new Map<string, Map<string, PanelStatus>>()
+  /** projectId -> panelKey -> the placements its plugin set (ctx.panels.slots, checked by HostApi). */
+  private readonly placements = new Map<string, Map<string, SlotPlacement[]>>()
+  /** projectId -> frame identity (see frameIdentity) -> its id, as of the last view. */
+  private readonly frameIds = new Map<string, Map<string, string>>()
+  /** projectId -> frame id -> the frame, as of the last view (what a connect is looked up in). */
+  private readonly frames = new Map<string, Map<string, SlotFrameRecord>>()
+  /** projectId -> frame id -> the height its page asked for (`slots.height`), clamped. */
+  private readonly pageHeights = new Map<string, Map<string, number>>()
+  /** projectId -> identities over the frame cap already logged (once each, not on every view). */
+  private readonly dropped = new Map<string, Set<string>>()
+  /** projectId -> the slot frames of the last view sent to the window, as JSON (refreshSlots). */
+  private readonly sentSlots = new Map<string, string>()
+  private nextFrame = 1
 
   constructor(private readonly deps: LayoutServiceDeps) {}
 
@@ -87,7 +146,7 @@ export class LayoutService {
   view(projectId: string): LayoutView | undefined {
     const stored = this.deps.getLayout(projectId)
     if (!stored) return undefined
-    return { layout: reconcile(stored, this.available(projectId)), panels: this.infos(projectId) }
+    return this.viewOf(projectId, reconcile(stored, this.available(projectId)))
   }
 
   /**
@@ -108,7 +167,7 @@ export class LayoutService {
     const layout = reconcile(next, [...this.available(projectId), ...pendingAvailable])
     this.deps.setLayout(projectId, layout)
     // The page gets the layout of the panels it can show, as from view().
-    return { layout: reconcile(layout, this.available(projectId)), panels: this.infos(projectId) }
+    return this.viewOf(projectId, reconcile(layout, this.available(projectId)))
   }
 
   /**
@@ -136,12 +195,12 @@ export class LayoutService {
     const stored = this.deps.getLayout(projectId)
     if (!stored) return undefined
     const current = reconcile(stored, this.available(projectId))
-    if (zoneOf(current, panelKey) === zone) return { layout: current, panels: this.infos(projectId) }
+    if (zoneOf(current, panelKey) === zone) return this.viewOf(projectId, current)
     const next = movePanel(current, panelKey, zone)
     // movePanel leaves a layout alone when the panel is neither placed nor hidden.
     if (next === current) throw new Error('unknown panel')
     const view = this.set(projectId, next)
-    if (view) this.deps.publish(projectId, view)
+    if (view) this.send(projectId, view)
     return view
   }
 
@@ -160,7 +219,7 @@ export class LayoutService {
     const fallback = this.available(projectId).find((p) => p.panelKey === panelKey)?.defaultZone ?? 'left'
     const next = showPanel(current, panelKey, fallback)
     const view = next === current ? this.view(projectId) : this.set(projectId, next)
-    if (view) this.deps.publish(projectId, { ...view, reveal: panelKey })
+    if (view) this.send(projectId, { ...view, reveal: panelKey })
     return true
   }
 
@@ -230,10 +289,66 @@ export class LayoutService {
     return this.patch(projectId, panelKey, { error })
   }
 
-  /** Forget a closed project's panels and statuses (the stored layout stays). */
+  /**
+   * Set (null clears) the slot placements of a plugin panel (ctx.panels.slots). HostApi checked
+   * them (the panel is the caller's, the types are in its manifest `slots` and none is an app
+   * type, the caps); stored as given. False for a panel the project does not have, or a core one.
+   * The same placements again publish nothing.
+   */
+  setSlots(projectId: string, panelKey: string, placements: readonly SlotPlacement[] | null): boolean {
+    if (!this.hasKey(projectId, panelKey) || CORE_PANELS.some((p) => p.panelKey === panelKey)) return false
+    const map = this.placements.get(projectId) ?? new Map<string, SlotPlacement[]>()
+    const before = JSON.stringify(map.get(panelKey) ?? null)
+    if (placements === null || placements.length === 0) map.delete(panelKey)
+    else map.set(panelKey, placements.map((p) => ({ ...p })))
+    if (map.size === 0) this.placements.delete(projectId)
+    else this.placements.set(projectId, map)
+    if (JSON.stringify(map.get(panelKey) ?? null) !== before) this.publish(projectId)
+    return true
+  }
+
+  /**
+   * A slot page's `ccPanel.slot.setHeight` (`slots.height`, from the project's window): kept within
+   * [minHeight, the frame's height] and published. False for a frame the project does not draw now
+   * or one in the top bar (its height is the bar's). An unchanged height publishes nothing.
+   */
+  setSlotHeight(projectId: string, frameId: string, height: unknown): boolean {
+    const frame = this.frames.get(projectId)?.get(frameId)
+    if (!frame || frame.info.position === 'top-bar') return false
+    if (typeof height !== 'number' || !Number.isFinite(height)) return false
+    const px = clampSlotHeight(height, frame.info.minHeight, frame.info.height)
+    const map = this.pageHeights.get(projectId) ?? new Map<string, number>()
+    if (map.get(frameId) === px) return true
+    map.set(frameId, px)
+    this.pageHeights.set(projectId, map)
+    this.publish(projectId)
+    return true
+  }
+
+  /** A frame the project draws now (as of the last view), for its port (PanelPortHub.connectSlot). */
+  slotFrame(projectId: string, frameId: string): SlotFrameRecord | undefined {
+    return this.frames.get(projectId)?.get(frameId)
+  }
+
+  /**
+   * Who draws a slot may have changed (a pick, a provider started, reloaded, stopped or was turned
+   * off): send the view when its frames differ from the ones the window has. Nothing otherwise.
+   */
+  refreshSlots(projectId: string): void {
+    const view = this.view(projectId)
+    if (view && slotsJson(view) !== this.sentSlots.get(projectId)) this.send(projectId, view)
+  }
+
+  /** Forget a closed project's panels, statuses and slots (the stored layout stays). */
   closeProject(projectId: string): void {
     this.plugin.delete(projectId)
     this.status.delete(projectId)
+    this.placements.delete(projectId)
+    this.frameIds.delete(projectId)
+    this.pageHeights.delete(projectId)
+    this.dropped.delete(projectId)
+    this.sentSlots.delete(projectId)
+    if (this.frames.delete(projectId)) this.deps.framesChanged?.(projectId, new Set())
   }
 
   /** Replace the fields `change` names (an undefined value clears one) and keep the others. */
@@ -260,19 +375,27 @@ export class LayoutService {
 
   private publish(projectId: string): void {
     const view = this.view(projectId)
-    if (view) this.deps.publish(projectId, view)
+    if (view) this.send(projectId, view)
+  }
+
+  /** Every view to the window goes here: what it was sent of the slots is what refreshSlots compares. */
+  private send(projectId: string, view: LayoutView): void {
+    this.sentSlots.set(projectId, slotsJson(view))
+    this.deps.publish(projectId, view)
   }
 
   private hasKey(projectId: string, panelKey: string): boolean {
     return this.available(projectId).some((p) => p.panelKey === panelKey)
   }
 
-  /** A panel that is gone must not come back with the badge (or header) it had when its plugin returns. */
+  /** A panel that is gone must not come back with the badge (or header, or slots) it had when its plugin returns. */
   private dropStaleStatus(projectId: string): void {
-    const map = this.status.get(projectId)
-    if (!map) return
-    for (const key of [...map.keys()]) if (!this.hasKey(projectId, key)) map.delete(key)
-    if (map.size === 0) this.status.delete(projectId)
+    for (const store of [this.status, this.placements] as Map<string, Map<string, unknown>>[]) {
+      const map = store.get(projectId)
+      if (!map) continue
+      for (const key of [...map.keys()]) if (!this.hasKey(projectId, key)) map.delete(key)
+      if (map.size === 0) store.delete(projectId)
+    }
   }
 
   private available(projectId: string): AvailablePanel[] {
@@ -292,11 +415,21 @@ export class LayoutService {
     return out
   }
 
-  private infos(projectId: string): PanelInfo[] {
+  /** A view of `layout` with the project's panels and slot frames. */
+  private viewOf(projectId: string, layout: LayoutState): LayoutView {
+    const { panels, app } = this.infosAndSlots(projectId)
+    return app.length > 0 ? { layout, panels, appSlots: app } : { layout, panels }
+  }
+
+  /** The panels with their status and slot frames, and the app's own frames. */
+  private infosAndSlots(projectId: string): { panels: PanelInfo[]; app: SlotFrameInfo[] } {
+    const slots = this.resolveSlots(projectId)
     const status = this.status.get(projectId)
     const withStatus = (info: PanelInfo): PanelInfo => {
       const s = status?.get(info.panelKey)
-      return s ? { ...info, ...s } : info
+      const frames = slots.byPanel.get(info.panelKey)
+      const out = s ? { ...info, ...s } : info
+      return frames ? { ...out, slots: frames } : out
     }
     const out: PanelInfo[] = CORE_PANELS.map((p) =>
       withStatus({ panelKey: p.panelKey, title: p.title, icon: p.icon })
@@ -314,8 +447,104 @@ export class LayoutService {
         )
       }
     }
-    return out
+    return { panels: out, app: slots.app }
   }
+
+  /**
+   * The project's slot frames: the app's own (each app slot type with a provider, in the top bar),
+   * then each plugin panel's placements in panel order, each with the provider drawing it now. Only
+   * the first MAX_SLOT_FRAMES_PER_WINDOW are drawn; a placement over the cap is logged once in its
+   * host plugin's log. Records the frames for connects, keeps the ids of frames that did not
+   * change, and tells `framesChanged` when the set of ids did.
+   */
+  private resolveSlots(projectId: string): { app: SlotFrameInfo[]; byPanel: Map<string, SlotFrameInfo[]> } {
+    const app: SlotFrameInfo[] = []
+    const byPanel = new Map<string, SlotFrameInfo[]>()
+    const resolve = this.deps.slotProvider
+    const before = this.frames.get(projectId)
+    if (!resolve) return { app, byPanel }
+    const oldIds = this.frameIds.get(projectId)
+    const ids = new Map<string, string>()
+    const records = new Map<string, SlotFrameRecord>()
+    const loggedBefore = this.dropped.get(projectId)
+    const dropped = new Set<string>()
+    const heights = this.pageHeights.get(projectId)
+    const add = (hostKey: string, host: SlotHost, index: number, p: { type: string; position: SlotPosition | 'top-bar'; height?: number; params?: JsonValue }): SlotFrameInfo | undefined => {
+      let provider: SlotProviderInfo | undefined
+      try {
+        provider = resolve(projectId, p.type)
+      } catch {
+        provider = undefined
+      }
+      if (!provider) return undefined
+      const identity = [hostKey, p.position, index, p.type, p.params === undefined ? '' : JSON.stringify(p.params), provider.pluginId, provider.epoch].join('\n')
+      if (records.size >= MAX_SLOT_FRAMES_PER_WINDOW) {
+        dropped.add(identity)
+        if (host.kind === 'panel' && !loggedBefore?.has(identity)) {
+          this.deps.slotLog?.(
+            projectId,
+            host.pluginId,
+            `slot "${p.type}" of panel ${host.panelId} is not drawn: at most ${MAX_SLOT_FRAMES_PER_WINDOW} slot frames per window`
+          )
+        }
+        return undefined
+      }
+      const id = oldIds?.get(identity) ?? `s${this.nextFrame++}`
+      ids.set(identity, id)
+      // A top-bar frame has the bar's fixed height; the provider's minHeight stands in for it.
+      const height = p.height === undefined ? provider.minHeight : clampSlotHeight(p.height, provider.minHeight, provider.maxHeight)
+      const page = heights?.get(id)
+      const info: SlotFrameInfo = {
+        id,
+        type: p.type,
+        pluginId: provider.pluginId,
+        src: pluginFileUrl(provider.pluginId, provider.entry),
+        position: p.position,
+        height,
+        minHeight: provider.minHeight,
+        ...(page !== undefined ? { pageHeight: clampSlotHeight(page, provider.minHeight, height) } : {})
+      }
+      records.set(id, { info, host, ...(p.params !== undefined ? { params: p.params } : {}) })
+      return info
+    }
+    for (const type of APP_SLOT_TYPES) {
+      const info = add('@app/top-bar', { kind: 'app', place: 'top-bar' }, 0, { type, position: 'top-bar' })
+      if (info) app.push(info)
+    }
+    const placed = this.placements.get(projectId)
+    for (const [pluginId, panels] of this.plugin.get(projectId) ?? []) {
+      for (const panel of panels) {
+        const key = `${pluginId}/${panel.id}`
+        const frames: SlotFrameInfo[] = []
+        ;(placed?.get(key) ?? []).forEach((p, i) => {
+          const info = add(key, { kind: 'panel', pluginId, panelId: panel.id }, i, p)
+          if (info) frames.push(info)
+        })
+        if (frames.length > 0) byPanel.set(key, frames)
+      }
+    }
+    setOrDelete(this.frameIds, projectId, ids)
+    setOrDelete(this.frames, projectId, records)
+    if (dropped.size > 0) this.dropped.set(projectId, dropped)
+    else this.dropped.delete(projectId)
+    if (heights) {
+      for (const id of [...heights.keys()]) if (!records.has(id)) heights.delete(id)
+      if (heights.size === 0) this.pageHeights.delete(projectId)
+    }
+    const same = (before?.size ?? 0) === records.size && [...records.keys()].every((id) => before?.has(id))
+    if (!same) this.deps.framesChanged?.(projectId, new Set(records.keys()))
+    return { app, byPanel }
+  }
+}
+
+function setOrDelete<V>(store: Map<string, Map<string, V>>, projectId: string, map: Map<string, V>): void {
+  if (map.size > 0) store.set(projectId, map)
+  else store.delete(projectId)
+}
+
+/** The slot frames of a view (app and panels), as JSON: what refreshSlots compares. */
+function slotsJson(view: LayoutView): string {
+  return JSON.stringify([view.appSlots ?? [], view.panels.map((p) => p.slots ?? [])])
 }
 
 /**

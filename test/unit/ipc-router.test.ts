@@ -6,6 +6,7 @@ import {
   registerLayoutHandlers,
   registerOverlayHandlers,
   registerPanelHandlers,
+  registerSlotHandlers,
   registerCccCommandHandlers,
   registerUpdateHandlers,
   registerProjectSettingsHandlers,
@@ -740,6 +741,38 @@ describe('registerLayoutHandlers', () => {
     registerLayoutHandlers(router, { view: () => undefined, set: () => undefined })
     await expect(ipc.invoke('layout.get', 11)).rejects.toThrow('record is gone')
     await expect(ipc.invoke('layout.set', 11, [{ layout: {} }])).rejects.toThrow('record is gone')
+  })
+})
+
+describe('registerSlotHandlers', () => {
+  it("passes the sender's project and window on with the frame id, refusing junk first", async () => {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerSlotHandlers(router, {
+      connect: (projectId, windowId, frameId, nonce) => {
+        calls.push(['connect', projectId, windowId, frameId, nonce])
+        return frameId === 's1'
+      },
+      disconnect: (projectId, frameId) => void calls.push(['disconnect', projectId, frameId]),
+      setHeight: (projectId, frameId, height) => {
+        calls.push(['height', projectId, frameId, height])
+        return true
+      }
+    })
+    await expect(ipc.invoke('slots.connect', 12, [{ frameId: 's1', nonce: 3, projectId: PROJECT_A }])).resolves.toBe(true)
+    await expect(ipc.invoke('slots.disconnect', 11, [{ frameId: 's1' }])).resolves.toBeNull()
+    await expect(ipc.invoke('slots.height', 11, [{ frameId: 's1', height: 90 }])).resolves.toBe(true)
+    expect(calls).toEqual([
+      ['connect', PROJECT_B, 2, 's1', 3],
+      ['disconnect', PROJECT_A, 's1'],
+      ['height', PROJECT_A, 's1', 90]
+    ])
+    await expect(ipc.invoke('slots.connect', 11, [{ frameId: 'x'.repeat(41), nonce: 1 }])).rejects.toThrow(/short string/)
+    await expect(ipc.invoke('slots.disconnect', 11, [{ frameId: 7 }])).rejects.toThrow(/short string/)
+    await expect(ipc.invoke('slots.height', 11, [{ frameId: 's1', height: '90' }])).rejects.toThrow(/must be a number/)
+    await expect(ipc.invoke('slots.height', 11, ['nope'])).rejects.toThrow(/bad payload/)
+    await expect(ipc.invoke('slots.connect', 13, [{ frameId: 's1', nonce: 1 }])).rejects.toThrow(/not a project window/)
+    expect(calls).toHaveLength(3)
   })
 })
 

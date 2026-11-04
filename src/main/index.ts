@@ -44,6 +44,7 @@ import {
   registerLayoutHandlers,
   registerOverlayHandlers,
   registerPanelHandlers,
+  registerSlotHandlers,
   registerSessionHandlers,
   registerCccCommandHandlers,
   registerProjectSettingsHandlers,
@@ -54,7 +55,7 @@ import {
   registerWebviewHandlers,
   summary
 } from './ipc/router'
-import { LayoutService, type PanelStatus, type PluginPanelDef } from './layout/layout-service'
+import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
 import { AppMenu, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'
 import { ChimeGate, Notifier, NotifySounds, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
@@ -577,11 +578,21 @@ function start(): void {
 
   // Zone layout: the project's stored layout reconciled with the panels that exist (core ones now,
   // plugin ones from Task 25). Changes reach the project's window as `layout.updated`.
-  const layouts = new LayoutService({
+  const layouts: LayoutService = new LayoutService({
     getLayout: (projectId) => registry.get(projectId)?.layout,
     setLayout: (projectId, next) => registry.setLayout(projectId, next),
     publish: (projectId, view) => sendToProject(projectId, 'layout.updated', view),
-    enabledPlugins: enabledIds
+    enabledPlugins: enabledIds,
+    // Slots (design-next §2): who draws a type is the project's pick among the plugins its host
+    // runs now; a frame that goes is closed in its provider's host; a placement over the frame cap
+    // is a line in the host plugin's own log. Functions: `hosts`, `panelPorts` and `pluginLogs`
+    // are defined below, and these run only once a window has a layout.
+    slotProvider: (projectId, type): SlotProviderInfo | undefined => hosts.slotProvider(projectId, type),
+    framesChanged: (projectId, ids) => panelPorts.slotFramesChanged(projectId, ids),
+    slotLog: (projectId, pluginId, text) => {
+      console.warn(`plugin ${pluginId} (${projectId}) warn: ${text}`)
+      pluginLogs.write({ pluginId, projectId, level: 'warn', text })
+    }
   })
   /**
    * The project's enabled plugins that loaded and validated. Ids come from main's own project
@@ -620,7 +631,8 @@ function start(): void {
           defaultZone: p.defaultZone ?? 'left',
           ...(p.entry !== undefined ? { entry: p.entry } : {}),
           ...(p.kind !== undefined ? { kind: p.kind } : {}),
-          ...(p.icon !== undefined ? { icon: p.icon } : {})
+          ...(p.icon !== undefined ? { icon: p.icon } : {}),
+          ...(p.slots !== undefined ? { slots: p.slots } : {})
         }))
       })
     }
@@ -718,6 +730,8 @@ function start(): void {
     },
     // The plugins' panel pages reload and connect to the host that just started (panel-ports.ts).
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
+    // A provider started, reloaded or stopped: the window's slot frames follow (layout-service.ts).
+    onSlotsChanged: (projectId) => layouts.refreshSlots(projectId),
     notify: (notice, source, signal) => {
       // Sounds off: not even the folder listing a plugin's system id would cost. The gate reads
       // the setting again at the ring.
@@ -753,6 +767,7 @@ function start(): void {
       },
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
+      setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
       showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey),
       openOverlay,
       postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
@@ -800,7 +815,11 @@ function start(): void {
       win.webContents.postMessage(PANEL_PORT_CHANNEL, payload, [port])
     },
     reload: (projectId, pluginIds) => sendToProject(projectId, 'panels.reload', { pluginIds }),
-    close: (port) => port.close()
+    close: (port) => port.close(),
+    // Slot frames: looked up in the layout's own records, the port to the provider's host only.
+    slotFrame: (projectId, frameId) => layouts.slotFrame(projectId, frameId),
+    slotToHost: (projectId, open, port) => hosts.sendSlotPort(projectId, open, port),
+    slotClosed: (projectId, pluginId, frameId) => hosts.closeSlot(projectId, pluginId, frameId)
   })
   /**
    * The folder `cc-plugin://<pluginId>/` serves from: an installed, valid plugin enabled in at
@@ -1251,7 +1270,8 @@ function start(): void {
     plugins: (projectId) => hosts.servicePlugins(projectId),
     choices: (projectId) => registry.serviceProviders(projectId),
     setChoice: (projectId, service, pluginId) => registry.setServiceProvider(projectId, service, pluginId),
-    restart: (projectId) => hosts.restart(projectId)
+    restart: (projectId) => hosts.restart(projectId),
+    slotsChanged: (projectId) => layouts.refreshSlots(projectId)
   })
   registerSettingsHandlers(router, settings)
   registerServiceHandlers(router, serviceChoices)
@@ -1539,6 +1559,11 @@ function start(): void {
     connect: (projectId, windowId, panelKey, nonce) => panelPorts.connect(projectId, windowId, panelKey, nonce),
     restartHost: (projectId) => hosts.restartStopped(projectId),
     panelAction: (projectId, panelKey, actionId) => hosts.panelAction(projectId, panelKey, actionId)
+  })
+  registerSlotHandlers(router, {
+    connect: (projectId, windowId, frameId, nonce) => panelPorts.connectSlot(projectId, windowId, frameId, nonce),
+    disconnect: (projectId, frameId) => panelPorts.disconnectSlot(projectId, frameId),
+    setHeight: (projectId, frameId, height) => layouts.setSlotHeight(projectId, frameId, height)
   })
 
   // Webview panels' toolbar and placeholder: the panel key is looked up in main's own layout (a

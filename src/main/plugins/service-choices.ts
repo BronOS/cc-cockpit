@@ -36,6 +36,8 @@ export interface ServiceChoicesDeps {
   setChoice(projectId: string, service: string, pluginId: string | null): boolean
   /** Restart the project's host: the picks travel with `activate`, so a change needs a new launch. */
   restart(projectId: string): Promise<void>
+  /** A slot pick changed: the window's slot frames are resolved again (LayoutService.refreshSlots). */
+  slotsChanged?(projectId: string): void
 }
 
 export class ServiceChoices {
@@ -98,6 +100,7 @@ export class ServiceChoices {
         throw new Error(`${pluginId} does not provide slot "${type}" in this project`)
       }
     }
-    this.deps.setChoice(projectId, key, pluginId)
+    // No restart, but the window draws the new provider's frames (or none) right away.
+    if (this.deps.setChoice(projectId, key, pluginId)) this.deps.slotsChanged?.(projectId)
   }
 }
