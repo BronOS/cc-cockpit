@@ -483,8 +483,11 @@ export interface PluginContext {
     /**
      * A new Claude tab in this window; `cwd` must resolve inside the project folder, `prompt` is
      * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute.
+     * `focus: true` also selects the new tab in this window (for a click the person made, such as
+     * "Discuss in a new session"); without it the tab opens beside the one they are in, unselected.
+     * An older app ignores `focus`.
      */
-    open(options: { cwd?: string; prompt?: string }): Promise<{ tabId: string }>
+    open(options: { cwd?: string; prompt?: string; focus?: boolean }): Promise<{ tabId: string }>
   }
 
   // commands

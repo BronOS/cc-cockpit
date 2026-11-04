@@ -147,7 +147,9 @@ with full Node access.
   included (at most 4 a second).
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
-- `ctx.sessions.open({ cwd, prompt })`: a new Claude tab; the prompt is an argument, never typed.
+- `ctx.sessions.open({ cwd, prompt, focus })`: a new Claude tab; the prompt is an argument, never typed.
+  The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
+  window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores it.
 
 ## Files
 

@@ -80,14 +80,16 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         }
         return (await call('sessions.send', { pluginId, tabId, text })) as SendResult
       }),
-    open: (options: { cwd?: string; prompt?: string } = {}) =>
+    open: (options: { cwd?: string; prompt?: string; focus?: boolean } = {}) =>
       guardAsync(async () => {
-        const { cwd, prompt } = (options ?? {}) as { cwd?: unknown; prompt?: unknown }
+        const { cwd, prompt, focus } = (options ?? {}) as { cwd?: unknown; prompt?: unknown; focus?: unknown }
         if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.open: cwd must be a string')
         if (prompt !== undefined && typeof prompt !== 'string') {
           throw new TypeError('sessions.open: prompt must be a string')
         }
-        return (await call('sessions.open', { pluginId, cwd, prompt })) as { tabId: string }
+        if (focus !== undefined && typeof focus !== 'boolean') throw new TypeError('sessions.open: focus must be a boolean')
+        // Sent only when asked for: a request without it is the same as before the option existed.
+        return (await call('sessions.open', { pluginId, cwd, prompt, ...(focus ? { focus: true } : {}) })) as { tabId: string }
       })
   })
 }

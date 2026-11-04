@@ -6,7 +6,8 @@
 //
 //   sessions.list   {}                         -> SessionInfo[]  this project's Claude tabs only
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
-//   sessions.open   { pluginId, cwd?, prompt? }-> { tabId }      a new Claude tab in this project
+//   sessions.open   { pluginId, cwd?, prompt?, focus? } -> { tabId }  a new Claude tab in this project;
+//                                                                `focus: true` selects it in the window
 //   badge           { pluginId, panelId, value}-> null           a panel the plugin itself declares
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
 //   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
@@ -201,9 +202,15 @@ export interface HostApiDeps {
    * Start a Claude tab in the project and tell its window (TabManager.create after the login env).
    * The tab manager realpaths `cwd` inside the project folder and passes `prompt` as one argv
    * element after `--` (claude-argv.ts); it throws for anything else. `windowId` is the host's
-   * window: the tab is refused when that window closed while the login env was awaited.
+   * window: the tab is refused when that window closed while the login env was awaited. `focus`:
+   * select the tab in that window too (ctx.sessions.open's `focus: true`); else it is only added.
    */
-  openTab(projectId: string, options: { cwd?: string; prompt?: string }, windowId: number): Promise<{ id: string }>
+  openTab(
+    projectId: string,
+    options: { cwd?: string; prompt?: string },
+    windowId: number,
+    focus?: boolean
+  ): Promise<{ id: string }>
   /** LayoutService.setBadge: false for a panel the project does not have. */
   setBadge(projectId: string, panelKey: string, badge: PanelBadge | null): boolean
   /**
@@ -691,9 +698,10 @@ export class HostApi {
 
   private async open(params: unknown): Promise<{ tabId: string }> {
     this.alive()
-    const { pluginId, cwd, prompt } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, cwd, prompt, focus } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.open')
     if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.open: cwd must be a string')
+    if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.open: focus must be a boolean')
     // Checked here too, before the budget is spent, so a bad cwd costs nothing; the tab manager
     // checks it again (same rule) when it spawns.
     try {
@@ -722,7 +730,10 @@ export class HostApi {
         ...(cwd !== undefined && cwd !== '' ? { cwd } : {}),
         ...(text !== undefined ? { prompt: text } : {})
       },
-      this.scope.windowId
+      this.scope.windowId,
+      // Only the host's own window, the one the tab opens in, is ever told to select it: a plugin
+      // can move the selection there (as its Discuss click means to), never in another project.
+      focus === true
     )
     return { tabId: tab.id }
   }

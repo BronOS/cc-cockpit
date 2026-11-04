@@ -738,12 +738,16 @@ function start(): void {
       // The send gate, as for every programmatic text (send-gate.ts).
       send: (tabId, text) => sessions.send(tabId, text),
       onSessionsChange: (listener) => sessions.onChange(listener),
-      openTab: async (projectId, options, windowId) => {
+      openTab: async (projectId, options, windowId, focus) => {
         await spawnReady
         requireWindow(projectId, windowId)
         const tab = tabs.create(projectId, { kind: 'claude', ...options })
         // The window did not ask for it: tell it, or the tab gets no view and no output acks.
         sendToProject(projectId, 'tabs.added', tab)
+        // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made
+        // (Discuss in a new session), so the window shows it. Sent after `tabs.added` on the same
+        // webContents, so the page already has the tab when it selects it.
+        if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
         return tab
       },
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),

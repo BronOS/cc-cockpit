@@ -1003,12 +1003,16 @@ export interface IpcEventMap {
   'project.updated': ProjectSummary
   /** Picker only: a listed project changed (its colour); read the recent list again. */
   'projects.changed': void
-  /** Select this tab (the user clicked its entry in another window's top strip). */
+  /**
+   * Select this tab: the user clicked its entry in another window's top strip, or a plugin opened it
+   * with `ctx.sessions.open({ focus: true })`.
+   */
   'tabs.select': { tabId: string }
   /**
    * main started a tab the page did not ask for (a plugin's ctx.sessions.open): add it to the
    * bar. Not selected: it starts in `starting`, where a key the user meant for the tab they are
-   * typing in could answer Claude's trust dialog.
+   * typing in could answer Claude's trust dialog. Only `ctx.sessions.open({ focus: true })`, a
+   * plugin acting on the person's own click, follows it with a `tabs.select`.
    */
   'tabs.added': TabInfo
   /**

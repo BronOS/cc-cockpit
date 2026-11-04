@@ -56,6 +56,15 @@ describe('tabsReducer', () => {
     expect(run([{ type: 'announced', tab: tab('c') }]).activeId).toBe('c')
   })
 
+  it('selects an announced tab when main follows it with tabs.select (ctx.sessions.open focus)', () => {
+    const s = run([
+      { type: 'added', tab: tab('a') },
+      { type: 'announced', tab: tab('b', { kind: 'claude' }) },
+      { type: 'selected', tabId: 'b' }
+    ])
+    expect(s.activeId).toBe('b')
+  })
+
   describe('the list (page load)', () => {
     it('selects the first tab, or none for an empty list', () => {
       const base = run([{ type: 'loaded', tabs: [tab('a'), tab('b')] }])

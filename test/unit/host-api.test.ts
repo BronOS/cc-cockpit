@@ -58,7 +58,7 @@ let overlays: OverlayManager
 /** What the overlay manager sent to each window's renderer. */
 let emitted: { windowId: number; channel: string; payload: unknown }[]
 /** What main told each window about tabs it did not ask for (`tabs.added`). */
-let announced: { projectId: string; tab: TabInfo; windowId: number }[]
+let announced: { projectId: string; tab: TabInfo; windowId: number; focus?: boolean }[]
 let deps: HostApiDeps
 let apis: HostApi[]
 
@@ -129,9 +129,9 @@ beforeEach(() => {
     activeTab: (projectId) => registry.activeTab(projectId),
     send: (tabId, text) => registry.send(tabId, text),
     onSessionsChange: (listener) => registry.onChange(listener),
-    openTab: async (projectId, options, windowId) => {
+    openTab: async (projectId, options, windowId, focus) => {
       const tab = tabs.create(projectId, { kind: 'claude', ...options })
-      announced.push({ projectId, tab, windowId })
+      announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
       return tab
     },
     setBadge: (projectId, key, badge) => layouts.setBadge(projectId, key, badge),
@@ -325,6 +325,22 @@ describe('sessions.open', () => {
     await expect(open('sessions.open', { pluginId: 'a.one', prompt: 5 })).rejects.toThrow('text must be a string')
     const plain = (await open('sessions.open', { pluginId: 'a.one', prompt: '' })) as { tabId: string }
     expect(ptyOf(plain.tabId).argv).toEqual(['claude', '--settings', '/data/hooks.json'])
+  })
+
+  it('selects the new tab only with focus: true, in the host\'s own window', async () => {
+    // Discuss in a new session opened a tab the person then had to find (real-work feedback 10).
+    const open = hostA()
+    const plain = (await open('sessions.open', { pluginId: 'a.one', prompt: 'x' })) as { tabId: string }
+    const shown = (await open('sessions.open', { pluginId: 'a.one', prompt: 'y', focus: true })) as { tabId: string }
+    const off = (await open('sessions.open', { pluginId: 'a.one', focus: false })) as { tabId: string }
+    expect(announced.map((a) => [a.tab.id, a.windowId, a.focus])).toEqual([
+      [plain.tabId, WIN_A, undefined],
+      [shown.tabId, WIN_A, true],
+      [off.tabId, WIN_A, undefined]
+    ])
+    // A wrong type is refused before a tab starts or the budget is spent.
+    await expect(open('sessions.open', { pluginId: 'a.one', focus: 'yes' })).rejects.toThrow('focus must be a boolean')
+    expect(tabsBackend.spawned).toHaveLength(3)
   })
 
   it('refuses a prompt that is a slash command or bash line, and caps the rate', async () => {

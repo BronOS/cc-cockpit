@@ -69,7 +69,16 @@ describe('ctx.sessions', () => {
     ])
     await expect(ctx.sessions.send('t1', 5 as unknown as string)).rejects.toThrow('needs a tab id and text')
     await expect(ctx.sessions.open({ prompt: ['x'] as unknown as string })).rejects.toThrow('prompt must be a string')
+    await expect(ctx.sessions.open({ focus: 1 as unknown as boolean })).rejects.toThrow('focus must be a boolean')
     expect(calls).toHaveLength(3)
+    // focus goes to main only when true: a request without it is what an older host sent.
+    await ctx.sessions.open({ prompt: 'go', focus: true })
+    await ctx.sessions.open({ prompt: 'go', focus: false })
+    expect(calls.slice(3)).toEqual([
+      { method: 'sessions.open', params: { pluginId: 'a.one', cwd: undefined, prompt: 'go', focus: true } },
+      { method: 'sessions.open', params: { pluginId: 'a.one', cwd: undefined, prompt: 'go' } }
+    ])
+    expect('focus' in (calls[4]?.params as object)).toBe(false)
   })
 
   it("delivers main's sessions event to every plugin's listeners, each its own copy", () => {
