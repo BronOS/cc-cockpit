@@ -18,7 +18,7 @@ footer { border-top: 1px solid var(--cc-border); }
 /* annotate's "Open in browser" (its url): an icon, not the URL's text. The page puts it at the end of
    the document's first h1 (.in-title), else at the top right of the HTML document (.float) or of the
    text pane (.corner). */
-button.icon { height: auto; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; padding: 2px 4px; background: none; border-color: transparent; color: var(--cc-fg-muted); }
+button.icon { font-weight: inherit; line-height: inherit; height: auto; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; padding: 2px 4px; background: none; border-color: transparent; color: var(--cc-fg-muted); }
 button.icon:hover:not(:disabled) { color: var(--cc-fg); background: var(--cc-surface-2); }
 button.icon[hidden] { display: none; }
 #open-url.in-title { margin-left: .35em; font-size: 14px; position: relative; top: -.1em; }
@@ -64,7 +64,7 @@ button.link.quote:hover { color: var(--cc-fg); text-decoration: underline; }
 .note-text { flex: 1 1 16em; min-width: 10em; min-height: 24px; max-height: 6.5em; resize: none; font: inherit; color: inherit; background: var(--cc-bg); border: 1px solid transparent; border-radius: 3px; padding: 2px 6px; }
 .note-text:hover { border-color: var(--cc-border); }
 .note-text:placeholder-shown { border-color: var(--cc-border); }
-.note-del { flex: none; height: auto; padding: 1px 6px; font-size: 11px; line-height: 1.4; background: none; border-color: transparent; color: var(--cc-fg-subtle); }
+.note-del { flex: none; font-weight: inherit; height: auto; padding: 1px 6px; font-size: 11px; line-height: 1.4; background: none; border-color: transparent; color: var(--cc-fg-subtle); }
 .note-del:hover:not(:disabled) { color: var(--cc-status-ended); background: var(--cc-surface-2); }
 /* annotate's `aside`: the details column, ~240px, scrolling on its own; under the document when narrow. */
 #details { width: 240px; flex: none; overflow-y: auto; border-left: 1px solid var(--cc-border); background: var(--cc-bg-bar); }
@@ -95,7 +95,7 @@ button.link.quote:hover { color: var(--cc-fg); text-decoration: underline; }
 .col-head { min-width: 0; max-height: 40vh; overflow-y: auto; display: flex; flex-direction: column; background: var(--cc-bg-bar); border-bottom: 1px solid var(--cc-border); }
 .col-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--cc-bg-bar); }
 .col-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.col-open { flex: none; padding: 2px 8px; font-size: 12px; }
+.col-open { flex: none; font-weight: inherit; line-height: inherit; padding: 2px 8px; font-size: 12px; }
 /* The facts fill the rest of the cell, on the cell's own background (no box of their own), so the
    shorter header looks as tall as the other. */
 .doc-body.col-facts { flex: 1; max-width: none; margin: 0; padding: 0 12px 8px; font-size: 13px; }
@@ -120,7 +120,7 @@ button.link.quote:hover { color: var(--cc-fg); text-decoration: underline; }
 /* Buttons, select, textarea and focus rings are the SDK's component sheet (`ccc guide style`); only
    the page's own variants are below. `button.link` sets a colour and no border, and the layer's
    border would show under it, so it clears the border, background and height itself. */
-button.link { background: none; border: none; padding: 0; height: auto; color: var(--cc-accent); }
+button.link { display: inline-block; font-weight: inherit; line-height: inherit; background: none; border: none; padding: 0; height: auto; color: var(--cc-accent); }
 button.link.danger { color: var(--cc-status-ended); }
 select { max-width: 320px; }
 
