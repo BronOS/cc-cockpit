@@ -15,5 +15,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*", "src/themes/**/*", "src/preload/**/*", "src/sdk/panel.ts"]
+  "include": ["src/renderer/**/*", "src/shared/**/*", "src/themes/**/*", "src/preload/**/*", "src/sdk/panel.ts", "src/cli/raw.d.ts"]
 }

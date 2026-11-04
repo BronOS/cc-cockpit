@@ -42,9 +42,22 @@ export interface ThemeRoot {
   colorScheme: string
 }
 
-/** Where the base stylesheet goes: a constructable stylesheet adopted by the document in the browser. */
+/**
+ * Where the SDK's stylesheets go: in the browser, each `install` is a constructable sheet adopted
+ * after the SDK's earlier ones and before the page's own (`sdkSheetsFirst`), so the order is the
+ * components, then the scrollbars, then whatever the page adopts.
+ */
 export interface BaseStyles {
   install(css: string): void
+}
+
+/**
+ * The document's adopted sheets with the SDK's in front, in the order they were installed. A sheet
+ * the page adopted itself keeps its place after them (and is not duplicated when the page had put
+ * an SDK sheet in its own list). Generic so tests run it without a CSSOM.
+ */
+export function sdkSheetsFirst<T>(sdk: readonly T[], current: readonly T[]): T[] {
+  return [...sdk, ...current.filter((sheet) => !sdk.includes(sheet))]
 }
 
 /**
@@ -101,10 +114,17 @@ export class PanelClient {
   private baseStyled = false
   readonly api: PanelApi
 
+  /**
+   * `componentsCss` is the app's component stylesheet (src/sdk/components.css), installed at once:
+   * unlike the scrollbars it does not wait for the theme message (it is on macOS too, and a page
+   * should not draw its first frame with bare controls). Its colours are theme variables, which
+   * resolve when the theme lands on `:root`.
+   */
   constructor(
     private readonly root: ThemeRoot,
     private readonly warn: (message: string) => void = () => {},
-    private readonly styles?: BaseStyles
+    private readonly styles?: BaseStyles,
+    componentsCss?: string
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -120,6 +140,13 @@ export class PanelClient {
       enumerable: true,
       get: (): PanelTheme | undefined => this.theme && { kind: this.theme.kind, vars: { ...this.theme.vars } }
     })
+    if (styles && componentsCss) {
+      try {
+        styles.install(componentsCss)
+      } catch (err) {
+        this.warn(`could not install the component styles: ${errorText(err)}`)
+      }
+    }
     this.api = Object.freeze({
       post: (message: JsonValue) => this.post(message),
       onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),

@@ -8,7 +8,9 @@
 // refuses a manifest whose `api` major it does not know (src/shared/manifest.ts).
 //
 // The phase-1 host implements every member (src/host/ctx/). The page side of panels is the panel SDK
-// (src/sdk/panel.ts, loaded as `/__sdk/panel.js`).
+// (src/sdk/panel.ts, loaded as `/__sdk/panel.js`). A page that loads it also gets the app theme on
+// `:root` and the app's component stylesheet (`.cc-btn`, `.cc-row`, `.cc-field`, ...; `ccc guide
+// style`), adopted first and inside `@layer cc`, so any rule of the page's own wins over it.
 
 export const PLUGIN_API_VERSION = 1
 

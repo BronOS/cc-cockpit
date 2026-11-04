@@ -1,5 +1,12 @@
 /* Minimal shell layout for the tabs UI. Colours are theme variables (--cc-*), set on :root from main's active theme (src/themes). */
 
+/* The app's component stylesheet (design-next §1), the same file the panel SDK adopts in plugin
+   pages: `.cc-btn`, `.cc-row`, `.cc-field`, ... are the same controls here and there. All of it is
+   in `@layer cc`, so every unlayered rule below wins over it. Its bare-element defaults (button,
+   input) skip the shell (`cc-shell` on <html>, index.html): the shell's controls are styled one by
+   one and would pick up a padding or a height they never set. An @import must come first. */
+@import '../sdk/components.css';
+
 /* Non-colour tokens. Not per theme: the theme validator accepts colours only (its values land in
    style properties, so anything else is refused), and a radius or a font stack is not something a
    colour theme should be able to move. Plugin panels do not get these; they get the colour vars. */

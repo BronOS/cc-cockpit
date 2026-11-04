@@ -195,21 +195,28 @@
 - Modify: `src/sdk/types.ts` (doc comment: the page gets the components) → copy to `examples/plugin/sdk/types.ts`
 - Modify: `test/unit/panel-sdk.test.ts`
 
-- [ ] write `components.css` per design-next §1 "What is in it": fixed tokens (`--cc-space-1..6`, radii, text sizes,
+- [x] write `components.css` per design-next §1 "What is in it": fixed tokens (`--cc-space-1..6`, radii, text sizes,
   `--cc-control-h`, `--cc-row-h` and compact), colours only through existing theme tokens, every rule inside
   `@layer cc`, every component of the table (button + variants, inputs, `.cc-field`, `.cc-card`, `.cc-list`/`.cc-row`
   with hover/focus actions, `.cc-group` incl. `details.cc-group`, `.cc-chip` with `aria-pressed`, `.cc-badge` with the
   six palette names, `.cc-toolbar`, `.cc-tabs`, `.cc-empty`, `.cc-spinner`, `.cc-error-line`, `.cc-muted`, `.cc-kbd`)
-- [ ] `panel.ts` takes the text through a `?raw` import (inlined string, no shared chunk: check `out/sdk/panel.js` has
+- [x] `panel.ts` takes the text through a `?raw` import (inlined string, no shared chunk: check `out/sdk/panel.js` has
   no `require` after `npm run build`), builds a second constructable sheet and installs it **first** in
   `adoptedStyleSheets` (components, then scrollbars, then the page's own)
-- [ ] the shell's `styles.css` imports the file so shell forms and plugin pages are the same controls; check the
+- [x] the shell's `styles.css` imports the file so shell forms and plugin pages are the same controls; check the
   settings screen, overlays and panels still look right (no layout regressions in e2e screenshots-free specs)
-- [ ] write tests: the SDK installs the sheets in order; every rule of the components sheet is inside `@layer cc`
+- [x] write tests: the SDK installs the sheets in order; every rule of the components sheet is inside `@layer cc`
   (parse the text); a plugin rule outside the layer wins (unit with a CSSOM stub or a string check of the layer)
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/panels.spec.ts
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/panels.spec.ts
   test/e2e/settings-form.spec.ts test/e2e/overlays.spec.ts` — done when all green and `out/sdk/panel.js` has no `require`
+- ➕ decided: the bare-element defaults (`button`, `input`, `select`, `textarea`) are scoped to
+  `:where(:root:not(.cc-shell) …)` and the shell's `<html>` carries `class="cc-shell"`: the shell's own controls are
+  styled by unlayered rules that set some properties but not all, so element defaults would leak a height or padding
+  into icon buttons and menu rows. The shell gets the tokens and every `.cc-*` class; no shell rule was identical, so
+  none was removed. Components install at SDK load (macOS too), the scrollbars still on the first theme; the order is
+  kept by `sdkSheetsFirst` (panel-core.ts). No page background in the layer (see-through panels stay transparent).
+  `tsconfig.web.json` includes `src/cli/raw.d.ts` for the `*.css?raw` declaration.
 
 ### Task 2: `ccc guide style` and the review rule [model: sonnet]
 

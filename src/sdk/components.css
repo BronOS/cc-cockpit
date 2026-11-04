@@ -1,0 +1,508 @@
+/* The app's component stylesheet (design-next §1; `ccc guide style` documents every class).
+
+   One copy, two readers: the panel SDK adopts this text as the first constructable sheet of every
+   plugin page that loads /__sdk/panel.js (src/sdk/panel.ts, a `?raw` import), and the shell's
+   styles.css imports it, so a plugin page and a shell form are the same controls.
+
+   Every rule is inside `@layer cc`. Unlayered CSS beats any layer whatever its specificity, so a
+   plugin's own rule always wins and nothing here needs `!important` to be overridden (a unit test
+   parses this file and refuses a rule outside the layer). Colours only through the theme tokens the
+   app sets on :root (src/themes/*.json): themes stay colour-only, the sizes below are fixed.
+
+   The bare-element defaults (`button`, `input`, `select`, `textarea`) are for plugin pages only:
+   the shell's <html> carries `cc-shell`, and its own controls are already styled field by field by
+   unlayered rules that set some properties but not all (a height here, no gap there). Under those,
+   element defaults would leak padding or a height into icon buttons and menu rows. The shell takes
+   the classes (`.cc-btn`, `.cc-row`, ...) where it uses them. */
+
+@layer cc {
+  /* Fixed tokens. In the layer, so a page (or the shell, which defines its own radii and fonts
+     unlayered) can still set its own values. */
+  :root {
+    --cc-space-1: 4px;
+    --cc-space-2: 8px;
+    --cc-space-3: 12px;
+    --cc-space-4: 16px;
+    --cc-space-5: 24px;
+    --cc-space-6: 32px;
+    --cc-radius-s: 4px;
+    --cc-radius-m: 6px;
+    --cc-text-s: 11px;
+    --cc-text-m: 13px;
+    --cc-text-l: 15px;
+    --cc-control-h: 26px;
+    --cc-row-h: 36px;
+    --cc-row-h-compact: 28px;
+    /* The shell's stacks (styles.css), for pages, which get only the colour tokens otherwise. */
+    --cc-font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Inter, 'Segoe UI', system-ui, sans-serif;
+    --cc-font-mono: ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', 'DejaVu Sans Mono', Consolas, monospace;
+  }
+
+  /* A plugin page's base: the app's font and text colour. Zero specificity, like everything below.
+     No background: a page that leaves its own transparent shows the panel under it (the shell's
+     see-through glass included). */
+  :where(:root:not(.cc-shell)) {
+    font-family: var(--cc-font-ui);
+    font-size: var(--cc-text-m);
+    color: var(--cc-fg);
+  }
+
+  /* The one keyboard focus ring (the shell's own is unlayered in styles.css). */
+  :where(:focus-visible) {
+    outline: 2px solid var(--cc-focus);
+    outline-offset: 1px;
+  }
+
+  /* ---- Buttons ---------------------------------------------------------------------------- */
+
+  :where(:root:not(.cc-shell) button),
+  :where(.cc-btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--cc-space-1);
+    box-sizing: border-box;
+    height: var(--cc-control-h);
+    padding: 0 10px;
+    border: 1px solid var(--cc-border-strong);
+    border-radius: var(--cc-radius-m);
+    background: var(--cc-surface-2);
+    color: var(--cc-fg);
+    font: inherit;
+    font-size: var(--cc-text-m);
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  :where(:root:not(.cc-shell) button:hover:not(:disabled)),
+  :where(.cc-btn:hover:not(:disabled, [aria-disabled='true'])) {
+    background: var(--cc-surface-3);
+  }
+  :where(:root:not(.cc-shell) button:disabled),
+  :where(.cc-btn:disabled, .cc-btn[aria-disabled='true']) {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* One per view: the action the page is for. */
+  :where(.cc-primary) {
+    border-color: transparent;
+    background: var(--cc-accent);
+    color: var(--cc-accent-fg);
+  }
+  :where(.cc-primary:hover:not(:disabled, [aria-disabled='true'])) {
+    background: var(--cc-accent-hover);
+  }
+  :where(.cc-danger) {
+    border-color: color-mix(in srgb, var(--cc-status-ended) 45%, transparent);
+    background: transparent;
+    color: var(--cc-status-ended);
+  }
+  :where(.cc-danger:hover:not(:disabled, [aria-disabled='true'])) {
+    background: var(--cc-bg-error);
+  }
+  :where(.cc-ghost) {
+    border-color: transparent;
+    background: transparent;
+    color: var(--cc-fg-muted);
+  }
+  :where(.cc-ghost:hover:not(:disabled, [aria-disabled='true'])) {
+    background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+    color: var(--cc-fg);
+  }
+  /* Square, icon only: the `title` is its name (the guide asks for one). */
+  :where(.cc-icon) {
+    width: var(--cc-control-h);
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+    color: var(--cc-fg-subtle);
+  }
+  :where(.cc-icon:hover:not(:disabled, [aria-disabled='true'])) {
+    background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+    color: var(--cc-fg);
+  }
+  :where(.cc-icon > svg, .cc-icon > img) {
+    width: 16px;
+    height: 16px;
+    flex: none;
+  }
+
+  /* ---- Inputs ----------------------------------------------------------------------------- */
+
+  :where(
+      :root:not(.cc-shell)
+        :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']), select, textarea)
+    ) {
+    box-sizing: border-box;
+    height: var(--cc-control-h);
+    padding: 0 var(--cc-space-2);
+    border: 1px solid var(--cc-border-strong);
+    border-radius: var(--cc-radius-m);
+    background: var(--cc-bg);
+    color: var(--cc-fg);
+    font: inherit;
+    font-size: var(--cc-text-m);
+  }
+  :where(:root:not(.cc-shell) textarea) {
+    height: auto;
+    padding: 6px var(--cc-space-2);
+    line-height: 1.4;
+  }
+  :where(:root:not(.cc-shell) :is(input, textarea)::placeholder) {
+    color: var(--cc-fg-subtle);
+  }
+  :where(:root:not(.cc-shell) :is(input, select, textarea):hover:not(:disabled, :focus)) {
+    border-color: color-mix(in srgb, var(--cc-fg) 28%, transparent);
+  }
+  /* A field shows focus on a click too (typing goes there): the accent border and a soft halo in
+     place of the ring, which on a field reads as a second border. As the shell's settings fields. */
+  :where(:root:not(.cc-shell) :is(input:not([type='checkbox'], [type='radio']), select, textarea):focus) {
+    outline: none;
+    border-color: var(--cc-focus);
+    box-shadow: 0 0 0 3px var(--cc-accent-soft);
+  }
+  :where(:root:not(.cc-shell) :is(input, select, textarea):disabled) {
+    opacity: 0.55;
+  }
+  :where(:root:not(.cc-shell) :is(input[type='checkbox'], input[type='radio'])) {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--cc-accent);
+    cursor: pointer;
+  }
+
+  /* ---- Field (label, control, help, error): the settings form's layout ---------------------- */
+
+  :where(.cc-field) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cc-space-1);
+    margin: 0 0 var(--cc-space-3);
+  }
+  :where(.cc-field > label) {
+    font-size: var(--cc-text-m);
+    font-weight: 500;
+    color: var(--cc-fg);
+  }
+  /* A checkbox field: the box before its label, on one line. */
+  :where(.cc-field > label:has(> input[type='checkbox'], > input[type='radio'])) {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cc-space-2);
+  }
+  :where(.cc-help) {
+    font-size: var(--cc-text-s);
+    color: var(--cc-fg-muted);
+  }
+  :where(.cc-error) {
+    font-size: var(--cc-text-s);
+    color: var(--cc-status-ended);
+  }
+
+  /* ---- Card: a framed block that is not a list item ----------------------------------------- */
+
+  :where(.cc-card) {
+    box-sizing: border-box;
+    padding: var(--cc-space-3) var(--cc-space-4);
+    border: 1px solid var(--cc-border);
+    border-radius: var(--cc-radius-m);
+    background: var(--cc-surface-1);
+  }
+  :where(.cc-card-title) {
+    margin: 0 0 var(--cc-space-2);
+    font-size: var(--cc-text-m);
+    font-weight: 600;
+    color: var(--cc-fg);
+  }
+
+  /* ---- List and rows: every item list -------------------------------------------------------- */
+
+  :where(.cc-list) {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  :where(.cc-row) {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--cc-space-2);
+    box-sizing: border-box;
+    min-height: var(--cc-row-h);
+    padding: var(--cc-space-1) var(--cc-space-3);
+    border-radius: var(--cc-radius-s);
+    color: var(--cc-fg);
+    cursor: default;
+  }
+  /* Compact rows: on the list or on one row. */
+  :where(.cc-list.cc-compact > .cc-row, .cc-row.cc-compact) {
+    min-height: var(--cc-row-h-compact);
+    padding-block: 2px;
+  }
+  :where(.cc-row:hover) {
+    background: color-mix(in srgb, var(--cc-fg) 5%, transparent);
+  }
+  :where(.cc-row:focus-visible) {
+    outline-offset: -2px;
+  }
+  :where(.cc-row[aria-selected='true']) {
+    background: var(--cc-accent-soft);
+  }
+  :where(.cc-row-main) {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  :where(.cc-row-title) {
+    overflow: hidden;
+    color: var(--cc-fg);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :where(.cc-row-meta) {
+    overflow: hidden;
+    font-size: var(--cc-text-s);
+    color: var(--cc-fg-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Unread: the title in bold and an accent dot at the row's left edge. */
+  :where(.cc-row.cc-unread .cc-row-title) {
+    font-weight: 600;
+  }
+  :where(.cc-row.cc-unread)::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 3px;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    border-radius: 50%;
+    background: var(--cc-accent);
+  }
+  /* The row's actions show under the pointer and while focus is in the row (keyboard users reach
+     them by tabbing): hidden by visibility, so they keep their room and the row does not jump. */
+  :where(.cc-row-actions) {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    visibility: hidden;
+  }
+  :where(.cc-row:hover .cc-row-actions, .cc-row:focus-within .cc-row-actions) {
+    visibility: visible;
+  }
+
+  /* ---- Group header: lanes, Inbox groups; `details.cc-group` collapses ----------------------- */
+
+  :where(.cc-group) {
+    margin: 0 0 var(--cc-space-2);
+  }
+  :where(.cc-group-title) {
+    display: flex;
+    align-items: center;
+    gap: var(--cc-space-2);
+    padding: var(--cc-space-1) var(--cc-space-3);
+    font-size: var(--cc-text-s);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--cc-fg-muted);
+    text-transform: uppercase;
+    user-select: none;
+  }
+  :where(details.cc-group > summary) {
+    list-style: none;
+    cursor: pointer;
+  }
+  :where(details.cc-group > summary::-webkit-details-marker) {
+    display: none;
+  }
+  /* The disclosure chevron, drawn with borders (no icon font in a page). */
+  :where(details.cc-group > summary.cc-group-title)::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg);
+    transition: transform 0.12s;
+  }
+  :where(details.cc-group[open] > summary.cc-group-title)::before {
+    transform: rotate(45deg);
+  }
+  :where(.cc-count) {
+    font-weight: 500;
+    color: var(--cc-fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Chip (a filter or toggle) and badge (a short tag) ------------------------------------- */
+
+  :where(.cc-chip) {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cc-space-1);
+    box-sizing: border-box;
+    height: 22px;
+    padding: 0 var(--cc-space-2);
+    border: 1px solid var(--cc-border-strong);
+    border-radius: 11px;
+    background: transparent;
+    color: var(--cc-fg-muted);
+    font: inherit;
+    font-size: var(--cc-text-s);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  :where(.cc-chip:hover:not(:disabled)) {
+    color: var(--cc-fg);
+    background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
+  }
+  :where(.cc-chip[aria-pressed='true']) {
+    border-color: transparent;
+    background: var(--cc-accent-soft);
+    color: var(--cc-accent);
+  }
+  :where(.cc-badge) {
+    --cc-badge-color: var(--cc-fg-muted);
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: var(--cc-radius-s);
+    background: color-mix(in srgb, var(--cc-badge-color) 16%, transparent);
+    color: var(--cc-badge-color);
+    font-size: var(--cc-text-s);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  :where(.cc-badge.green) {
+    --cc-badge-color: var(--cc-project-green);
+  }
+  :where(.cc-badge.red) {
+    --cc-badge-color: var(--cc-project-red);
+  }
+  :where(.cc-badge.blue) {
+    --cc-badge-color: var(--cc-project-blue);
+  }
+  :where(.cc-badge.amber) {
+    --cc-badge-color: var(--cc-project-orange);
+  }
+  :where(.cc-badge.violet) {
+    --cc-badge-color: var(--cc-project-purple);
+  }
+  :where(.cc-badge.grey) {
+    --cc-badge-color: var(--cc-project-grey);
+  }
+
+  /* ---- Toolbar and tabs ------------------------------------------------------------------- */
+
+  :where(.cc-toolbar) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--cc-space-2);
+    padding: var(--cc-space-2) var(--cc-space-3);
+    border-bottom: 1px solid var(--cc-border);
+  }
+  :where(.cc-toolbar > input:not([type='checkbox'], [type='radio'])) {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+  :where(.cc-tabs) {
+    display: flex;
+    gap: var(--cc-space-1);
+    padding: 0 var(--cc-space-3);
+    border-bottom: 1px solid var(--cc-border);
+  }
+  /* A tab: a button with role="tab"; the selected one is underlined in the accent. */
+  :where(.cc-tabs > [role='tab']) {
+    height: 30px;
+    margin-bottom: -1px;
+    padding: 0 var(--cc-space-2);
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--cc-fg-muted);
+    font: inherit;
+    font-size: var(--cc-text-m);
+    cursor: pointer;
+  }
+  :where(.cc-tabs > [role='tab']:hover) {
+    background: transparent;
+    color: var(--cc-fg);
+  }
+  :where(.cc-tabs > [role='tab'][aria-selected='true']) {
+    border-bottom-color: var(--cc-accent);
+    color: var(--cc-fg);
+  }
+
+  /* ---- States ----------------------------------------------------------------------------- */
+
+  /* Says why the view is empty and what to do; a button inside it is the way out. */
+  :where(.cc-empty) {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--cc-space-2);
+    padding: var(--cc-space-6) var(--cc-space-4);
+    color: var(--cc-fg-muted);
+    text-align: center;
+  }
+  :where(.cc-spinner) {
+    display: inline-block;
+    box-sizing: border-box;
+    width: 16px;
+    height: 16px;
+    border: 2px solid color-mix(in srgb, var(--cc-fg) 18%, transparent);
+    border-top-color: var(--cc-accent);
+    border-radius: 50%;
+    animation: cc-spin 0.8s linear infinite;
+  }
+  @keyframes cc-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :where(.cc-spinner) {
+      animation-duration: 2.4s;
+    }
+  }
+  /* One line that something failed, in the theme's error colours. */
+  :where(.cc-error-line) {
+    box-sizing: border-box;
+    padding: 6px var(--cc-space-3);
+    border-radius: var(--cc-radius-s);
+    background: var(--cc-bg-error);
+    color: var(--cc-fg);
+    font-size: var(--cc-text-m);
+  }
+  :where(.cc-muted) {
+    color: var(--cc-fg-muted);
+  }
+  :where(.cc-kbd) {
+    display: inline-block;
+    min-width: 1.4em;
+    padding: 0 4px;
+    border: 1px solid var(--cc-border-strong);
+    border-bottom-width: 2px;
+    border-radius: var(--cc-radius-s);
+    background: var(--cc-surface-1);
+    color: var(--cc-fg-muted);
+    font-family: var(--cc-font-mono);
+    font-size: var(--cc-text-s);
+    line-height: 1.5;
+    text-align: center;
+  }
+}

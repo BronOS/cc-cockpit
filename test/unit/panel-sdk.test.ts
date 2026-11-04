@@ -1,6 +1,8 @@
 // Task 28: the panel SDK a plugin page loads (src/sdk/panel-core.ts, wired to the page by
 // src/sdk/panel.ts) and the shell's side of a plugin frame (renderer/plugins/frame-messages.ts).
 // Ports and the page's :root are fakes; the real ones are covered by test/e2e/panels.spec.ts.
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   MAX_PANEL_MESSAGE_LENGTH,
@@ -8,6 +10,7 @@ import {
   BASE_SCROLLBAR_CSS,
   PanelClient,
   PORT_MESSAGE,
+  sdkSheetsFirst,
   THEME_MESSAGE,
   type PortLike,
   type ThemeRoot
@@ -209,6 +212,155 @@ describe('panel SDK: base scrollbar style', () => {
     expect(b.sheets).toEqual([BASE_SCROLLBAR_CSS])
   })
 })
+
+const COMPONENTS_CSS = readFileSync(resolve(__dirname, '../../src/sdk/components.css'), 'utf8')
+
+/**
+ * The top-level statements of a stylesheet, comments removed: each is `prelude { body }` (or an
+ * at-rule ending in `;`). A small brace scanner; the component sheet has no braces in strings.
+ */
+function topLevel(css: string): { prelude: string; body: string }[] {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const out: { prelude: string; body: string }[] = []
+  let depth = 0
+  let start = 0
+  let open = -1
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '{') {
+      if (depth === 0) open = i
+      depth++
+    } else if (ch === '}') {
+      depth--
+      if (depth < 0) throw new Error(`unbalanced } at ${i}`)
+      if (depth === 0) {
+        out.push({ prelude: text.slice(start, open).trim(), body: text.slice(open + 1, i) })
+        start = i + 1
+      }
+    } else if (ch === ';' && depth === 0) {
+      out.push({ prelude: text.slice(start, i).trim(), body: '' })
+      start = i + 1
+    }
+  }
+  if (depth !== 0) throw new Error('unbalanced {')
+  if (text.slice(start).trim() !== '') out.push({ prelude: text.slice(start).trim(), body: '' })
+  return out
+}
+
+describe('panel SDK: the component stylesheet', () => {
+  const withStyles = (): { c: PanelClient; sheets: string[] } => {
+    const sheets: string[] = []
+    const c = new PanelClient(fakeRoot(), () => {}, { install: (css) => void sheets.push(css) }, COMPONENTS_CSS)
+    return { c, sheets }
+  }
+  const theme = (mac: boolean): unknown => ({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} }, mac })
+
+  it('installs the components at once, before the scrollbars (which wait for the first theme)', () => {
+    const { c, sheets } = withStyles()
+    expect(sheets).toEqual([COMPONENTS_CSS])
+    c.receive(theme(false), [])
+    c.receive(theme(false), [])
+    expect(sheets).toEqual([COMPONENTS_CSS, BASE_SCROLLBAR_CSS])
+  })
+
+  it('installs the components on macOS too, where the scrollbars are left out', () => {
+    const { c, sheets } = withStyles()
+    c.receive(theme(true), [])
+    expect(sheets).toEqual([COMPONENTS_CSS])
+  })
+
+  it('warns and goes on when the sheet cannot be installed', () => {
+    const warnings: string[] = []
+    const failing = {
+      install: () => {
+        throw new Error('no CSSOM')
+      }
+    }
+    const c = new PanelClient(fakeRoot(), (m) => warnings.push(m), failing, COMPONENTS_CSS)
+    expect(warnings).toEqual(['could not install the component styles: no CSSOM'])
+    expect(() => c.api.post(1)).not.toThrow()
+  })
+
+  it("adopts the SDK's sheets first, in install order, and keeps the page's own after them", () => {
+    // What panel.ts does on each install: [components], then [components, scrollbars], with the
+    // page's own sheets ('p1', 'p2', adopted in between) kept after them and not duplicated.
+    expect(sdkSheetsFirst(['components'], [])).toEqual(['components'])
+    expect(sdkSheetsFirst(['components', 'scrollbars'], ['components', 'p1', 'p2'])).toEqual([
+      'components',
+      'scrollbars',
+      'p1',
+      'p2'
+    ])
+    expect(sdkSheetsFirst(['components', 'scrollbars'], ['p1', 'scrollbars', 'components'])).toEqual([
+      'components',
+      'scrollbars',
+      'p1'
+    ])
+  })
+
+  it('has every rule inside @layer cc, so a page rule outside the layer always wins', () => {
+    const statements = topLevel(COMPONENTS_CSS)
+    expect(statements).toEqual([{ prelude: '@layer cc', body: expect.any(String) }])
+    // Unlayered beats layered only while nothing in the layer is !important (an important layered
+    // declaration would beat the page's normal ones instead).
+    expect(statements[0]!.body).not.toMatch(/!important/)
+    // No nested @layer either: a named sub-layer is still inside cc, but keep the one layer simple.
+    expect(statements[0]!.body).not.toMatch(/@layer/)
+  })
+
+  it('scopes every selector to zero specificity, so the order inside the layer stays the variants over the base', () => {
+    const body = topLevel(COMPONENTS_CSS)[0]!.body
+    const rules = topLevel(body).flatMap(({ prelude, body: inner }) =>
+      prelude.startsWith('@media') ? topLevel(inner).map((r) => r.prelude) : prelude.startsWith('@') ? [] : [prelude]
+    )
+    expect(rules.length).toBeGreaterThan(40)
+    for (const prelude of rules) {
+      if (prelude === ':root') continue
+      for (const selector of splitSelectors(prelude)) {
+        // `:where(...)` alone, optionally followed by a pseudo-element.
+        expect(selector, prelude).toMatch(/^:where\([\s\S]*\)(::?[a-z-]+)?$/)
+      }
+    }
+  })
+
+  it('keeps the bare-element defaults out of the shell, which marks its root cc-shell', () => {
+    const shellHtml = readFileSync(resolve(__dirname, '../../src/renderer/index.html'), 'utf8')
+    expect(shellHtml).toMatch(/<html lang="en" class="cc-shell">/)
+    const shellCss = readFileSync(resolve(__dirname, '../../src/renderer/styles.css'), 'utf8')
+    expect(shellCss).toContain("@import '../sdk/components.css';")
+    const body = topLevel(COMPONENTS_CSS)[0]!.body
+    for (const { prelude } of topLevel(body)) {
+      if (/(^|[\s(,])(button|input|select|textarea)\b/.test(prelude) && !/\.cc-|\[role=/.test(prelude)) {
+        expect(prelude).toContain(':root:not(.cc-shell)')
+      }
+    }
+  })
+
+  it('draws colours only from theme variables', () => {
+    const declarations = COMPONENTS_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    // No hex, rgb() or named colours: the only colours are var(--cc-*) (and transparent).
+    expect(declarations).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(declarations).not.toMatch(/\brgba?\(|\bhsla?\(/)
+  })
+})
+
+/** A selector list split on its top-level commas (not the ones inside `:where(...)` / `:not(...)`). */
+function splitSelectors(prelude: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < prelude.length; i++) {
+    const ch = prelude[i]
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') depth--
+    else if (ch === ',' && depth === 0) {
+      out.push(prelude.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  out.push(prelude.slice(start).trim())
+  return out
+}
 
 describe('frame messages (the shell side)', () => {
   it('tells plugin pages from inline overlay pages', () => {
