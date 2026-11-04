@@ -32,11 +32,13 @@ import type {
   BadgeValue,
   Disposer,
   JsonValue,
+  OverlayButton,
   OverlayHandle,
   OverlayResult,
   OverlaySpec,
   PluginContext
 } from '../../sdk/types'
+import { parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
 import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
@@ -276,6 +278,10 @@ interface OverlayLink {
   readonly pluginId: string
   readonly handle: string
   readonly listeners: Set<MessageListener>
+  /** Button id -> click handlers (main's click event reaches them; wired with the toolbar). */
+  readonly buttonHandlers: Map<string, Set<() => unknown>>
+  /** The Discuss context answerers; the first to return text wins (main asks over RPC). */
+  readonly discussHandlers: Set<() => unknown>
   ended: boolean
 }
 
@@ -289,7 +295,7 @@ export class OverlayLinks {
   constructor(private readonly log: (pluginId: string, message: string) => void) {}
 
   open(pluginId: string): OverlayLink {
-    const link: OverlayLink = { pluginId, handle: randomUUID(), listeners: new Set(), ended: false }
+    const link: OverlayLink = { pluginId, handle: randomUUID(), listeners: new Set(), buttonHandlers: new Map(), discussHandlers: new Set(), ended: false }
     this.links.set(`${pluginId}/${link.handle}`, link)
     return link
   }
@@ -298,6 +304,8 @@ export class OverlayLinks {
   end(link: OverlayLink): void {
     link.ended = true
     link.listeners.clear()
+    link.buttonHandlers.clear()
+    link.discussHandlers.clear()
     const key = `${link.pluginId}/${link.handle}`
     if (this.links.get(key) === link) this.links.delete(key)
   }
@@ -409,6 +417,8 @@ export function createUiApi(
     let link: OverlayLink | undefined
     const result = deps.guardAsync(async () => {
       if (typeof spec !== 'object' || spec === null) throw new TypeError('overlay.open needs a spec object')
+      // type, buttons, ready, discuss: the plugin gets the TypeError here; main checks them again.
+      parseOverlayExtras(spec as unknown as Record<string, unknown>, String((spec as { kind?: unknown }).kind))
       link = overlays.open(pluginId)
       try {
         // No timeout: the overlay is open until the user (or its program) ends it. A host that
@@ -461,6 +471,37 @@ export function createUiApi(
         if (!link || link.ended) return
         deps.alive()
         send('overlay.focus', { pluginId, handle: link.handle })
+      },
+      onButton: (id: string, handler: () => unknown): Disposer => {
+        if (typeof id !== 'string' || typeof handler !== 'function') throw new TypeError('overlay onButton needs an id and a function')
+        const current = link
+        if (!current || current.ended) return () => {}
+        deps.alive()
+        const entry = (): unknown => handler()
+        const set = current.buttonHandlers.get(id) ?? new Set()
+        set.add(entry)
+        current.buttonHandlers.set(id, set)
+        return () => {
+          set.delete(entry)
+        }
+      },
+      setButtons: (buttons: OverlayButton[]): void => {
+        // Checked even when the overlay ended or is not up yet: a bad call fails where it is made.
+        parseOverlayButtons(buttons)
+        if (!link || link.ended) return
+        deps.alive()
+        // Sent to main with the toolbar (the overlay.setButtons request).
+      },
+      onDiscuss: (handler: () => unknown): Disposer => {
+        if (typeof handler !== 'function') throw new TypeError('overlay onDiscuss needs a function')
+        const current = link
+        if (!current || current.ended) return () => {}
+        deps.alive()
+        const entry = (): unknown => handler()
+        current.discussHandlers.add(entry)
+        return () => {
+          current.discussHandlers.delete(entry)
+        }
       }
     })
   }

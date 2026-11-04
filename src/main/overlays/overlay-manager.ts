@@ -36,20 +36,24 @@ import {
   type OverlaySize
 } from '../../shared/ipc'
 import { chordFromEvent } from '../../shared/keys'
+import { parseOverlayExtras, type CleanOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { PLUGIN_SCHEME } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
 
+/** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
+type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
+
 export type OverlaySpec =
-  | { kind: 'terminal'; argv: string[]; cwd: string; title?: string; size?: OverlaySize }
-  | { kind: 'url'; url: string; title?: string; size?: OverlaySize }
-  | { kind: 'html'; html: string; title?: string; size?: OverlaySize }
+  | ({ kind: 'terminal'; argv: string[]; cwd: string } & OverlayBase)
+  | ({ kind: 'url'; url: string } & OverlayBase)
+  | ({ kind: 'html'; html: string } & OverlayBase)
   /**
    * A plugin's own page at its `cc-plugin://` URL (host-api.ts builds it after checking the file
    * is inside the plugin's folder). Loaded like a panel, with the plugin's CSP and the panel SDK.
    */
-  | { kind: 'html'; src: string; title?: string; size?: OverlaySize }
+  | ({ kind: 'html'; src: string } & OverlayBase)
 
 export type OverlayResult =
   | { kind: 'exit'; code: number }
@@ -701,8 +705,11 @@ export function parseOverlaySpec(spec: unknown): OverlaySpec {
   if (size !== undefined && !OVERLAY_SIZES.includes(size as OverlaySize)) {
     throw new Error(`overlay: size must be ${OVERLAY_SIZES.join(', ')}`)
   }
+  // An unknown kind is refused by the switch below.
+  const extras = s.kind === 'terminal' || s.kind === 'url' || s.kind === 'html' ? parseOverlayExtras(s, s.kind) : {}
   const withTitle = <T extends object>(o: T): T => {
-    const withSize = size === undefined ? o : { ...o, size: size as OverlaySize }
+    const withExtras = { ...o, ...extras }
+    const withSize = size === undefined ? withExtras : { ...withExtras, size: size as OverlaySize }
     return title === undefined ? withSize : { ...withSize, title }
   }
   switch (s.kind) {

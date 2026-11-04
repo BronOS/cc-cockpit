@@ -721,6 +721,83 @@ describe('spec validation', () => {
     }
   })
 
+  it('accepts type, buttons, ready and discuss, and returns a clean copy of them', () => {
+    const spec = parseOverlaySpec({
+      kind: 'html',
+      src: 'cc-plugin://a.one/p.html',
+      type: { name: 'inbox-item', data: { source: 'a.one', id: 'm1' }, extra: 1 },
+      buttons: [
+        { id: 'read', label: ' Mark read\n', icon: 'check', primary: true, extra: 1 },
+        { id: 'own', label: 'Own', icon: 'icons/own.svg', disabled: false, busy: true }
+      ],
+      ready: 'manual',
+      discuss: { tabId: 't1', extra: 1 },
+      unknown: 1
+    })
+    expect(spec).toEqual({
+      kind: 'html',
+      src: 'cc-plugin://a.one/p.html',
+      type: { name: 'inbox-item', data: { source: 'a.one', id: 'm1' } },
+      buttons: [
+        { id: 'read', label: 'Mark read', icon: 'check', primary: true },
+        { id: 'own', label: 'Own', icon: 'icons/own.svg', busy: true }
+      ],
+      ready: 'manual',
+      discuss: { tabId: 't1' }
+    })
+    expect(parseOverlaySpec({ kind: 'url', url: 'https://example.com/', discuss: false })).toMatchObject({ discuss: false })
+    expect(parseOverlaySpec({ kind: 'terminal', argv: ['ls'], cwd: dir, discuss: {}, type: { name: 'f', data: null } })).toMatchObject({
+      discuss: {},
+      type: { name: 'f', data: null }
+    })
+    expect(parseOverlaySpec({ kind: 'html', html: '<p>x</p>', ready: 'load' })).toMatchObject({ ready: 'load' })
+    for (const key of ['type', 'buttons', 'ready', 'discuss']) {
+      expect(key in parseOverlaySpec({ kind: 'html', html: '<p>x</p>' })).toBe(false)
+    }
+  })
+
+  it('refuses a bad type, button list, ready or discuss', () => {
+    const base = { kind: 'html', html: '<p>x</p>' }
+    const btn = (b: object): object => ({ buttons: [{ id: 'a', label: 'A', ...b }] })
+    const bad: [string, object, RegExp][] = [
+      ['type not object', { type: 'file' }, /type/],
+      ['type name caps', { type: { name: 'File', data: null } }, /type name/],
+      ['type name digit first', { type: { name: '1a', data: null } }, /type name/],
+      ['type name too long', { type: { name: `a${'b'.repeat(64)}`, data: null } }, /type name/],
+      ['type no data', { type: { name: 'file' } }, /plain JSON/],
+      ['type data function', { type: { name: 'file', data: () => 1 } }, /plain JSON/],
+      ['type data too big', { type: { name: 'file', data: 'x'.repeat(4096) } }, /4096/],
+      ['five buttons', { buttons: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, label: id })) }, /at most 4/],
+      ['buttons not array', { buttons: {} }, /array/],
+      ['button not object', { buttons: ['x'] }, /object/],
+      ['id empty', btn({ id: '' }), /button id/],
+      ['id space', btn({ id: 'a b' }), /button id/],
+      ['id too long', btn({ id: 'a'.repeat(41) }), /button id/],
+      ['duplicate id', { buttons: [{ id: 'a', label: 'A' }, { id: 'a', label: 'B' }] }, /used twice/],
+      ['label empty', btn({ label: ' ' }), /label/],
+      ['label too long', btn({ label: 'x'.repeat(41) }), /longer than 40/],
+      ['icon unknown', btn({ icon: 'nope' }), /svg/],
+      ['icon absolute', btn({ icon: '/etc/x.svg' }), /icon/],
+      ['icon dotdot', btn({ icon: '../x.svg' }), /icon/],
+      ['icon not string', btn({ icon: 5 }), /icon/],
+      ['primary not boolean', btn({ primary: 'yes' }), /primary/],
+      ['disabled not boolean', btn({ disabled: 1 }), /disabled/],
+      ['busy not boolean', btn({ busy: null }), /busy/],
+      ['ready other', { ready: 'now' }, /ready/],
+      ['discuss true', { discuss: true }, /discuss/],
+      ['discuss tab number', { discuss: { tabId: 5 } }, /tabId/],
+      ['discuss tab empty', { discuss: { tabId: '' } }, /tabId/]
+    ]
+    for (const [name, extra, pattern] of bad) {
+      expect(() => parseOverlaySpec({ ...base, ...extra }), name).toThrow(pattern)
+    }
+  })
+
+  it('refuses ready on a terminal or url overlay', () => {
+    expect(() => parseOverlaySpec({ kind: 'url', url: 'https://example.com/', ready: 'manual' })).toThrow(/html overlays only/)
+    expect(() => parseOverlaySpec({ kind: 'terminal', argv: ['ls'], cwd: dir, ready: 'load' })).toThrow(/html overlays only/)
+  })
+
   it('keeps only the known fields', () => {
     expect(
       parseOverlaySpec({ kind: 'terminal', argv: ['ls', '-la'], cwd: dir, title: 'T', extra: 1 })

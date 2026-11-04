@@ -127,6 +127,8 @@ function activate(ctx) {
         return `html overlay answered ${JSON.stringify(result.value)}`;
       case "dismissed":
         return "overlay dismissed";
+      case "discussed":
+        return "overlay discussed with Claude";
     }
   };
   const openOverlay = async (kind) => {

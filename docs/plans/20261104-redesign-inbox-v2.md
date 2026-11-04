@@ -407,10 +407,10 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   `OverlayTypeButton`, `OverlayInfo`, handle `onButton` / `setButtons` / `onDiscuss`, result `discussed`)
 - Modify: `test/unit/overlay-manager.test.ts`, `test/unit/ctx-ui.test.ts`
 
-- [ ] parse per Technical Details "Overlay extras"; `ready` refused on non-html kinds; `discuss: false | { tabId? }`
-- [ ] SDK types and doc comments in the file's style; `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] write tests both sides: each cap and refusal, clean copy drops unknown keys, the icon rule shared
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] parse per Technical Details "Overlay extras"; `ready` refused on non-html kinds; `discuss: false | { tabId? }`
+- [x] SDK types and doc comments in the file's style; `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] write tests both sides: each cap and refusal, clean copy drops unknown keys, the icon rule shared
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
 
 ### Task 10: The app's overlay toolbar and loader [model: opus]
 

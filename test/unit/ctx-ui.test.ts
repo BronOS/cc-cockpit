@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ctx'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
-import type { PluginContext } from '../../src/sdk/types'
+import type { OverlaySpec, PluginContext } from '../../src/sdk/types'
 import { hostSpec } from '../fakes/host-spec'
 import { memoryPortPair, type MemoryPort } from '../fakes/memory-port'
 
@@ -289,6 +289,47 @@ describe('ctx.overlay', () => {
       }
     ])
     await expect(ctx.overlay.open(null as never)).rejects.toThrow('needs a spec object')
+  })
+})
+
+describe('ctx.overlay extras', () => {
+  it('rejects a bad type, button list, ready or discuss before main is asked', async () => {
+    const { ctx, calls } = setup()
+    const html = { kind: 'html', file: 'p.html' } as const
+    await expect(ctx.overlay.open({ ...html, type: { name: 'Bad', data: null } })).rejects.toThrow(/type name/)
+    await expect(ctx.overlay.open({ ...html, buttons: [{ id: 'a b', label: 'A' }] })).rejects.toThrow(/button id/)
+    await expect(ctx.overlay.open({ ...html, buttons: [{ id: 'a', label: 'A', icon: 'nope' }] })).rejects.toThrow(/svg/)
+    await expect(ctx.overlay.open({ ...html, ready: 'soon' as never })).rejects.toThrow(/ready/)
+    await expect(ctx.overlay.open({ kind: 'url', url: 'https://example.com/', ready: 'manual' })).rejects.toThrow(/html overlays only/)
+    await expect(ctx.overlay.open({ ...html, discuss: true as never })).rejects.toThrow(/discuss/)
+    expect(calls).toEqual([])
+  })
+
+  it('sends a good spec to main as given', async () => {
+    const { ctx, calls } = setup(() => ({ kind: 'dismissed' }))
+    const spec: OverlaySpec = {
+      kind: 'html',
+      file: 'p.html',
+      type: { name: 'file', data: { path: 'a.ts' } },
+      buttons: [{ id: 'edit', label: 'Edit', icon: 'settings' }],
+      ready: 'manual',
+      discuss: { tabId: 't1' }
+    }
+    await ctx.overlay.open(spec)
+    expect(calls[0]?.params).toMatchObject({ spec })
+  })
+
+  it('setButtons checks the list where it is called; onButton and onDiscuss take functions only', () => {
+    const { ctx } = setup(() => new Promise(() => {}))
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'p.html' })
+    expect(() => overlay.setButtons([{ id: 'a', label: '' }])).toThrow(/label/)
+    expect(() => overlay.setButtons(Array.from({ length: 5 }, (_, i) => ({ id: `b${i}`, label: 'B' })))).toThrow(/at most 4/)
+    expect(() => overlay.setButtons([{ id: 'a', label: 'A' }])).not.toThrow()
+    expect(() => overlay.onButton('a', 5 as never)).toThrow(TypeError)
+    expect(() => overlay.onDiscuss('x' as never)).toThrow(TypeError)
+    const off = overlay.onButton('a', () => {})
+    expect(() => off()).not.toThrow()
+    expect(() => overlay.onDiscuss(() => null)()).not.toThrow()
   })
 })
 

@@ -55,9 +55,28 @@ export function isPanelHeaderIcon(icon: string): icon is PanelHeaderIconName {
  * show as a box): each becomes a space. Bidi and other format characters stay: the text is drawn
  * as text, in its own span, and cannot reach past it.
  */
-function plain(text: string): string {
+export function plain(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+}
+
+/**
+ * Why `icon` is not a usable icon (the tail of an error message), or null when it is: a core name
+ * or a relative `.svg` path inside the plugin folder (the manifest's `icon` rule). One rule for the
+ * panel header and the overlay buttons (shared/overlay-buttons.ts).
+ */
+export function panelHeaderIconProblem(icon: string): string | null {
+  if (isPanelHeaderIcon(icon)) return null
+  // A plugin's own file, by the manifest's rule (no absolute path, no "..", "/" only), and an
+  // SVG: it is drawn as a mask over the header's colour, which only a vector shape survives.
+  // Where it really leads (a symlink out) is checked when it is fetched: cc-plugin:// serves
+  // only files inside the plugin folder (plugin-protocol.ts).
+  const problem = icon.length > MAX_ICON_PATH ? 'is too long' : relativePathProblem(icon)
+  if (problem !== null) return `icon "${icon.slice(0, 80)}" ${problem}`
+  if (!icon.toLowerCase().endsWith('.svg')) {
+    return `icon must be one of ${PANEL_HEADER_ICONS.join(', ')} or a path to an .svg file`
+  }
+  return null
 }
 
 function fail(message: string): never {
@@ -99,17 +118,8 @@ export function parsePanelHeader(value: unknown): CleanPanelHeader | null {
       if (typeof title !== 'string' || plain(title).trim() === '') fail(`action "${id}": title must be a non-empty string`)
       if (title.length > MAX_PANEL_HEADER_TITLE) fail(`action "${id}": title is longer than ${MAX_PANEL_HEADER_TITLE} characters`)
       if (typeof icon !== 'string') fail(`action "${id}": icon must be a string`)
-      if (!isPanelHeaderIcon(icon)) {
-        // A plugin's own file, by the manifest's rule (no absolute path, no "..", "/" only), and an
-        // SVG: it is drawn as a mask over the header's colour, which only a vector shape survives.
-        // Where it really leads (a symlink out) is checked when it is fetched: cc-plugin:// serves
-        // only files inside the plugin folder (plugin-protocol.ts).
-        const problem = icon.length > MAX_ICON_PATH ? 'is too long' : relativePathProblem(icon)
-        if (problem !== null) fail(`action "${id}": icon "${icon.slice(0, 80)}" ${problem}`)
-        if (!icon.toLowerCase().endsWith('.svg')) {
-          fail(`action "${id}": icon must be one of ${PANEL_HEADER_ICONS.join(', ')} or a path to an .svg file`)
-        }
-      }
+      const iconProblem = panelHeaderIconProblem(icon)
+      if (iconProblem !== null) fail(`action "${id}": ${iconProblem}`)
       if (busy !== undefined && typeof busy !== 'boolean') fail(`action "${id}": busy must be a boolean`)
       if (disabled !== undefined && typeof disabled !== 'boolean') fail(`action "${id}": disabled must be a boolean`)
       const action: CleanHeaderAction = { id, icon, title: plain(title).trim() }

@@ -1126,7 +1126,13 @@ export class HostApi {
     const s = spec as Record<string, unknown>
     const title = {
       ...(s.title === undefined ? {} : { title: s.title }),
-      ...(s.size === undefined ? {} : { size: s.size })
+      ...(s.size === undefined ? {} : { size: s.size }),
+      // The extras (type, buttons, ready, discuss) go to the manager as sent: parseOverlaySpec
+      // checks them and keeps only the known keys.
+      ...(s.type === undefined ? {} : { type: s.type }),
+      ...(s.buttons === undefined ? {} : { buttons: s.buttons }),
+      ...(s.ready === undefined ? {} : { ready: s.ready }),
+      ...(s.discuss === undefined ? {} : { discuss: s.discuss })
     }
     switch (s.kind) {
       case 'terminal': {

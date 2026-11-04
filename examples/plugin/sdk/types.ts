@@ -180,21 +180,76 @@ export interface PanelHeaderAction {
  */
 export type OverlaySize = 'default' | 'large' | 'full'
 
+/**
+ * What an overlay says about itself, on top of its kind (every kind takes these). An older app
+ * ignores keys it does not know, so check `typeof ctx.overlay.buttons === 'function'` before you
+ * rely on buttons from other plugins.
+ */
+export interface OverlayExtras {
+  /**
+   * What the overlay shows: `name` a plain noun (`^[a-z][a-z0-9-]{0,63}$`), `data` plain JSON of at
+   * most 4,096 characters. Other plugins' buttons are chosen by the name, and Discuss with Claude
+   * names it. Well-known: `file` `{ path, mime? }` (path relative to the project folder) and
+   * `inbox-item` `{ source, id }` (`source` the providing plugin's id).
+   */
+  type?: { name: string; data: JsonValue }
+  /** The opener's own buttons in the overlay's toolbar, at most 4; clicks reach `onButton`. */
+  buttons?: OverlayButton[]
+  /**
+   * html only (refused for another kind): when the loader goes. `'load'` (default): once the page
+   * has loaded and its port is up. `'manual'`: when the page calls `ccPanel.ready()`, for an opener
+   * that fetches first and posts the content after.
+   */
+  ready?: 'load' | 'manual'
+  /**
+   * Discuss with Claude: `{ tabId }` preselects that Claude tab of this window; `false` hides the
+   * button on this overlay. Absent: shown for an overlay with a `type` or an `onDiscuss` handler.
+   */
+  discuss?: { tabId?: string } | false
+}
+
+/** A button in an overlay's toolbar. `id` 1-40 of `A-Z a-z 0-9 . _ -`; `label` 1-40 characters of plain text. */
+export interface OverlayButton {
+  id: string
+  label: string
+  /** A core icon name (as for `PanelHeaderAction`) or a plugin-relative `.svg` path. */
+  icon?: string
+  primary?: boolean
+  disabled?: boolean
+  /** Shown as under way; clicks are ignored. */
+  busy?: boolean
+}
+
+/** What a plugin that adds buttons for an overlay type is told about the overlay. */
+export interface OverlayInfo {
+  readonly type: { readonly name: string; readonly data: JsonValue }
+  readonly title: string
+  /** The opening plugin's id, `'core'` or `'cli'`. */
+  readonly opener: string
+}
+
+/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info on a click. */
+export interface OverlayTypeButton extends OverlayButton {
+  run: (overlay: OverlayInfo) => unknown | Promise<{ close?: true } | void>
+}
+
 export type OverlaySpec =
-  | { kind: 'terminal'; argv: string[]; cwd?: string; title?: string; size?: OverlaySize }
-  | { kind: 'url'; url: string; title?: string; size?: OverlaySize }
+  | ({ kind: 'terminal'; argv: string[]; cwd?: string; title?: string; size?: OverlaySize } & OverlayExtras)
+  | ({ kind: 'url'; url: string; title?: string; size?: OverlaySize } & OverlayExtras)
   /**
    * One of the plugin's own pages (plugin-relative path), loaded like a panel: the plugin's CSP,
    * the app theme and the panel SDK. The page answers with `ccPanel.post({ result: value })`,
    * which closes the overlay and resolves `open` with `{ kind: 'value', value }`. With
    * `overlay.start`, anything else it posts (no `result` key) goes to the handle's `onMessage`.
    */
-  | { kind: 'html'; file: string; title?: string; size?: OverlaySize }
+  | ({ kind: 'html'; file: string; title?: string; size?: OverlaySize } & OverlayExtras)
 
 export type OverlayResult =
   | { kind: 'exit'; code: number }
   | { kind: 'value'; value: JsonValue }
   | { kind: 'dismissed' }
+  /** The person used Discuss with Claude: the text went to Claude tab `tabId` (`queued`: it waits for the tab to be ready). */
+  | { kind: 'discussed'; tabId: string; queued: boolean }
 
 /** Options of `ctx.notify(text, options)`. Unknown keys are ignored. */
 export interface NotifyOptions {
@@ -250,6 +305,15 @@ export interface OverlayHandle {
    * once it ended.
    */
   focus(): void
+  /** A click on one of the buttons the spec (or `setButtons`) gave, by its `id`. Dropped when the overlay ends. */
+  onButton(id: string, handler: () => unknown): Disposer
+  /** Replace the opener's buttons (a "Mark read" that became "Mark unread"). Same rules as `buttons` in the spec. A no-op once the overlay ended. */
+  setButtons(buttons: OverlayButton[]): void
+  /**
+   * Answer Discuss with Claude with the context text to send (within 5 s), or `null` for none. A
+   * throw or a timeout shows its error to the person and sends nothing.
+   */
+  onDiscuss(handler: () => Promise<{ text: string } | null> | { text: string } | null): Disposer
 }
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
