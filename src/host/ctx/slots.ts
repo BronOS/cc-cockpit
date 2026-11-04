@@ -116,7 +116,11 @@ export class SlotHub {
     }
     this.frames.set(key, frame)
     const slot = this.instanceOf(frame, tag)
-    for (const listener of [...(this.openers.get(`${tag.pluginId}/${tag.type}`) ?? [])]) {
+    const listeners = [...(this.openers.get(`${tag.pluginId}/${tag.type}`) ?? [])]
+    // An open that lands before activate() registered slots.onOpen (runtimes exist before activate
+    // finishes) would leave the frame open with nobody serving it, silently: say so.
+    if (listeners.length === 0) this.log(tag.pluginId, `a "${tag.type}" slot opened but no slots.onOpen listener is registered for it (yet)`)
+    for (const listener of listeners) {
       try {
         listener(slot)
       } catch (err) {
