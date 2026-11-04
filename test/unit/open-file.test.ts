@@ -20,6 +20,7 @@ import {
   type OpenFileRouteDeps
 } from '../../src/main/sessions/open-file'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, openFileStatus, selectOpenFile, type OpenFilePlugin } from '../../src/shared/services'
+import { SLOT_NONE } from '../../src/shared/slots'
 import { hostSpec } from '../fakes/host-spec'
 
 const P = 'aaaaaaaaaaaaaaaa'
@@ -468,6 +469,48 @@ describe('ServiceChoices: the open-file pick', () => {
     await expect(choices.setProvider(P, OPEN_FILE_PICK, 'a.plain')).rejects.toThrow('does not open files')
     await expect(choices.setProvider(P, OPEN_FILE_PICK, 'x.other')).rejects.toThrow('does not open files')
     await expect(choices.setProvider(P, OPEN_FILE_PICK, 5)).rejects.toThrow('string or null')
+    expect(picks).toEqual({})
+  })
+})
+
+describe('ServiceChoices: slot picks (design-next §2)', () => {
+  function setup() {
+    const picks: Record<string, string> = {}
+    const restarts: string[] = []
+    const agenda = [{ type: 'agenda', entry: 'slots/agenda.html' }]
+    const choices = new ServiceChoices({
+      plugins: async () => [{ id: 'a.cal', slots: agenda }, { id: 'b.cal', slots: agenda }, { id: 'a.plain' }],
+      choices: () => ({ ...picks }),
+      setChoice: (_p, key, pluginId) => {
+        if (pluginId === null) delete picks[key]
+        else picks[key] = pluginId
+        return true
+      },
+      restart: async (projectId) => void restarts.push(projectId)
+    })
+    return { choices, picks, restarts }
+  }
+
+  it('stores a candidate or @none under @slot:<type>, with no host restart', async () => {
+    const { choices, picks, restarts } = setup()
+    expect((await choices.status(P)).slots).toEqual([{ type: 'agenda', candidates: ['a.cal', 'b.cal'], selected: null }])
+    await choices.setProvider(P, '@slot:agenda', 'b.cal')
+    expect(picks).toEqual({ '@slot:agenda': 'b.cal' })
+    expect((await choices.status(P)).slots[0]?.selected).toBe('b.cal')
+    await choices.setProvider(P, '@slot:agenda', SLOT_NONE)
+    expect((await choices.status(P)).slots[0]?.selected).toBe(SLOT_NONE)
+    await choices.setProvider(P, '@slot:agenda', null)
+    expect(picks).toEqual({})
+    expect(restarts).toEqual([])
+  })
+
+  it('refuses a plugin not declaring the type, a bad type and a non-string', async () => {
+    const { choices, picks } = setup()
+    await expect(choices.setProvider(P, '@slot:agenda', 'a.plain')).rejects.toThrow('does not provide slot "agenda"')
+    await expect(choices.setProvider(P, '@slot:weather', 'a.cal')).rejects.toThrow('does not provide slot "weather"')
+    await expect(choices.setProvider(P, '@slot:Bad', 'a.cal')).rejects.toThrow('bad slot type')
+    await expect(choices.setProvider(P, '@slot:', null)).rejects.toThrow('bad slot type')
+    await expect(choices.setProvider(P, '@slot:agenda', 5)).rejects.toThrow('string or null')
     expect(picks).toEqual({})
   })
 })

@@ -3,6 +3,9 @@
 // every string that ends up in a path, an id or a command line is constrained here, before
 // `src/main/plugins/validate.ts` (ajv, file containment, settings schemas) accepts it.
 import type { ZoneId } from './layout'
+import { MAX_PANEL_SLOT_TYPES, MAX_PROVIDER_SLOTS, SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, SLOT_TYPE_PATTERN, type SlotContribution } from './slots'
+
+export type { SlotContribution } from './slots'
 
 /** The plugin API major this app implements; any other major is refused. */
 export const SUPPORTED_PLUGIN_API = 1
@@ -125,6 +128,11 @@ export interface PanelContribution {
    */
   entry?: string
   defaultZone?: ZoneId
+  /**
+   * Slot types this panel may place above or below its own frame (`ctx.panels.slots`, design-next
+   * §2). Another plugin draws each; main refuses a placement of a type not listed here.
+   */
+  slots?: string[]
 }
 
 export interface CommandContribution {
@@ -191,6 +199,8 @@ export interface PluginManifest {
     skills?: SkillContribution[]
     cli?: CliContribution[]
     openFile?: OpenFileContribution
+    /** Slots this plugin can draw in other plugins' panels (or the app's chrome), design-next §2. */
+    slots?: SlotContribution[]
   }
   /**
    * Named APIs this plugin offers (`provides`) and calls (`uses`), each with a major version. A
@@ -209,6 +219,8 @@ const contributionId = { type: 'string', pattern: CONTRIBUTION_ID_PATTERN.source
 // The settings schemas themselves are checked (meta-schema, limits) in validate.ts; here they only
 // have to be objects.
 const settingsSchema = { type: 'object' }
+const slotType = { type: 'string', pattern: SLOT_TYPE_PATTERN.source }
+const slotHeight = { type: 'integer', minimum: SLOT_HEIGHT_MIN, maximum: SLOT_HEIGHT_MAX }
 // name -> major version. `propertyNames` (draft-07) pins the key syntax; the cap keeps a hostile
 // manifest from making the status computation (run in main per project) large.
 const serviceMap = {
@@ -261,7 +273,9 @@ export const MANIFEST_SCHEMA = {
               kind: { enum: ['html', 'webview'] },
               icon: relativePath,
               entry: relativePath,
-              defaultZone: { enum: ['left', 'right', 'bottom'] }
+              defaultZone: { enum: ['left', 'right', 'bottom'] },
+              // App slot types are refused in validate.ts, with the reason.
+              slots: { type: 'array', maxItems: MAX_PANEL_SLOT_TYPES, uniqueItems: true, items: slotType }
             },
             // A conditional, not `entry` dropped from `required`: an html panel (kind absent or
             // "html") still must name its page. The `if` needs `required: ['kind']`: `properties`
@@ -319,7 +333,17 @@ export const MANIFEST_SCHEMA = {
         },
         // An object, not `true`: the title is what the person reads when picking the plugin that
         // opens files, and a later field (file kinds, say) has room here.
-        openFile: { type: 'object', required: ['title'], properties: { title } }
+        openFile: { type: 'object', required: ['title'], properties: { title } },
+        // Duplicate types, `min > max`, the `.html` entry and `main` are checked in validate.ts.
+        slots: {
+          type: 'array',
+          maxItems: MAX_PROVIDER_SLOTS,
+          items: {
+            type: 'object',
+            required: ['type', 'entry'],
+            properties: { type: slotType, entry: relativePath, title, minHeight: slotHeight, maxHeight: slotHeight }
+          }
+        }
       }
     }
   }

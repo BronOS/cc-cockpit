@@ -509,3 +509,93 @@ describe('services', () => {
     expect((await errorsOf(withServices({ uses: 'x' }))).join()).toMatch(/services\/uses/)
   })
 })
+
+describe('slots (design-next §2)', () => {
+  beforeEach(() => {
+    mkdirSync(join(dir, 'slots'))
+    writeFileSync(join(dir, 'slots/agenda.html'), '<!doctype html>')
+    writeFileSync(join(dir, 'slots/agenda.txt'), 'x')
+  })
+  const agenda = { type: 'agenda', entry: 'slots/agenda.html', title: "Today's agenda", minHeight: 48, maxHeight: 320 }
+  const withSlots = (slots: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> =>
+    manifest({ contributes: { slots, ...extra } })
+  const withPanelSlots = (slots: unknown): Record<string, unknown> =>
+    manifest({ contributes: { panels: [{ id: 'main', title: 'Inbox', entry: 'panels/board.html', slots }] } })
+
+  it('accepts a provider and a host panel (an unknown key inside a slot is ignored)', async () => {
+    const r = await validateManifest(
+      manifest({
+        contributes: {
+          slots: [{ ...agenda, later: true }, { type: 'sessions-strip', entry: 'slots/agenda.html' }],
+          panels: [{ id: 'main', title: 'Inbox', entry: 'panels/board.html', slots: ['agenda', 'weather'] }]
+        }
+      }),
+      dir
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.manifest.contributes?.slots?.[0]).toMatchObject(agenda)
+      expect(r.manifest.contributes?.panels?.[0]?.slots).toEqual(['agenda', 'weather'])
+    }
+  })
+
+  it('accepts equal min and max heights and either bound alone', async () => {
+    for (const s of [{ minHeight: 100, maxHeight: 100 }, { minHeight: 600 }, { maxHeight: 24 }]) {
+      expect((await validateManifest(withSlots([{ type: 'agenda', entry: 'slots/agenda.html', ...s }]), dir)).ok).toBe(true)
+    }
+  })
+
+  it.each(['Agenda', '1agenda', 'agenda_x', '', 'a'.repeat(65), 5])('refuses the provider type %j', async (type) => {
+    expect((await errorsOf(withSlots([{ ...agenda, type }]))).join()).toMatch(/\/contributes\/slots\/0\/type/)
+  })
+
+  it.each([{ minHeight: 23 }, { maxHeight: 601 }, { minHeight: 40.5 }, { maxHeight: '100' }])('refuses the height %j', async (h) => {
+    expect((await errorsOf(withSlots([{ ...agenda, ...h }]))).join()).toMatch(/\/contributes\/slots\/0\/(min|max)Height/)
+  })
+
+  it('refuses a slot without type or entry, and a non-array', async () => {
+    expect((await errorsOf(withSlots([{ type: 'agenda' }]))).join()).toMatch(/entry/)
+    expect((await errorsOf(withSlots([{ entry: 'slots/agenda.html' }]))).join()).toMatch(/type/)
+    expect((await errorsOf(withSlots({ agenda: true }))).join()).toMatch(/\/contributes\/slots/)
+  })
+
+  it('refuses more than 10 slots per plugin', async () => {
+    const eleven = Array.from({ length: 11 }, (_, i) => ({ type: `t${i}`, entry: 'slots/agenda.html' }))
+    expect((await errorsOf(withSlots(eleven))).join()).toMatch(/\/contributes\/slots must NOT have more than 10 items/)
+    expect((await validateManifest(withSlots(eleven.slice(0, 10)), dir)).ok).toBe(true)
+  })
+
+  it('refuses a duplicate type and min above max', async () => {
+    const errors = await errorsOf(withSlots([agenda, { type: 'agenda', entry: 'slots/agenda.html', minHeight: 300, maxHeight: 200 }]))
+    expect(errors).toContain('duplicate slot type "agenda"')
+    expect(errors).toContain('slot "agenda": minHeight 300 is larger than maxHeight 200')
+  })
+
+  it('needs an .html entry inside the plugin folder', async () => {
+    expect(await errorsOf(withSlots([{ ...agenda, entry: 'slots/agenda.txt' }]))).toContain(
+      'slot "agenda" entry "slots/agenda.txt" must be an .html page'
+    )
+    expect((await errorsOf(withSlots([{ ...agenda, entry: 'slots/gone.html' }]))).join()).toContain('slot "agenda" entry "slots/gone.html": file not found')
+    expect((await errorsOf(withSlots([{ ...agenda, entry: '../x.html' }]))).join()).toContain('must not contain ".." segments')
+  })
+
+  it('needs main: the page talks to ctx.slots.onOpen in the host', async () => {
+    const raw = withSlots([agenda])
+    delete raw.main
+    expect(await errorsOf(raw)).toContain('contributes.slots needs "main": a slot\'s page talks to ctx.slots.onOpen in the plugin\'s host')
+  })
+
+  it.each([['Agenda'], ['a', 'a'], ['a', 'b', 'c', 'd', 'e'], 'agenda', [5]])('refuses the panel slots %j', async (slots) => {
+    expect((await errorsOf(withPanelSlots(slots))).join()).toMatch(/\/contributes\/panels\/0\/slots/)
+  })
+
+  it('accepts four panel slot types', async () => {
+    expect((await validateManifest(withPanelSlots(['a', 'b', 'c', 'd']), dir)).ok).toBe(true)
+  })
+
+  it('refuses an app slot type in a panel', async () => {
+    expect(await errorsOf(withPanelSlots(['agenda', 'sessions-strip']))).toEqual([
+      'panel "main": slot type "sessions-strip" is placed by the app; a panel cannot place it'
+    ])
+  })
+})

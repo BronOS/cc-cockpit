@@ -269,12 +269,20 @@
   `host-manager.test.ts`; if `manifest.ts`/`services.ts` feed `marketplace/tools`, `npm run build:marketplace-tools`
   and commit the dist
 
-- [ ] manifest forms of design-next §2 (provider and host), lenient top level as today
-- [ ] `selectProvider` over the project's enabled plugins declaring the type; one → it; several with no valid pick →
+- [x] manifest forms of design-next §2 (provider and host), lenient top level as today
+- [x] `selectProvider` over the project's enabled plugins declaring the type; one → it; several with no valid pick →
   none + problem row; `@none` → off; stale pick (plugin gone) → as services do
-- [ ] write tests: accepted / refused manifests (bad type names, caps, app type in a panel, missing `main`), picks with
+- [x] write tests: accepted / refused manifests (bad type names, caps, app type in a panel, missing `main`), picks with
   0/1/2 candidates, `@none`, a stale pick, the registry round-trip of `@slot:` keys, host-manager ignoring them
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ decided: a provider slot needs `type` and `entry`; `title` is optional (1-100); `minHeight`/`maxHeight` are
+  integers in 24-600 (defaults 24 and 600), `min ≤ max`; duplicate types in one plugin are refused; `entry` must end
+  in `.html`. A provider may declare an app slot type (`sessions-strip`: that is how the sessions plugin fills it);
+  only a panel's `slots` refuses it. Panel `slots` are unique.
+- ➕ decided: `HostPlugin` and `HostManager.servicePlugins` carry `slots` (from `main/index.ts`), so the pick rows and
+  `ServiceChoices.setProvider('@slot:<type>', id | '@none' | null)` see the same set as services. A slot pick does not
+  restart the host; re-sending the layout on a pick change is task 5. `PluginServicesView.slots` (`slotStatus`)
+  lists every type with a candidate (`selected`: id, `@none`, or null when ambiguous) for task 7's rows.
 
 ### Task 5: Slots in main: placements, frames, ports [model: opus]
 

@@ -1662,6 +1662,34 @@ describe('HostManager', () => {
       await expect(withPicks.servicePlugins('p1')).resolves.toEqual([{ id: 'a.one', openFile: { title: 'Review' } }, { id: 'a.two' }])
       withPicks.disposeAll()
     })
+
+    it('keeps every @ key (slot picks too) out of the picks sent to the host; servicePlugins carries the slots', async () => {
+      const agenda = { type: 'agenda', entry: 'slots/agenda.html' }
+      enabled.p1 = [plugin('a.one', { slots: [agenda] }), plugin('a.two', { slots: [] })]
+      let activateParams: unknown
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) => {
+          activateParams = p
+          return okHandlers().activate!(p)
+        }
+      })
+      const withPicks = new HostManager({
+        factory,
+        plugins: async (projectId) => enabled[projectId] ?? [],
+        env: async () => ({}),
+        projectPath: (projectId) => `/projects/${projectId}`,
+        layouts,
+        pluginDataDir: (projectId, pluginId) => `/data/${projectId}/${pluginId}`,
+        pluginAppDataDir: (pluginId) => `/data/_app/${pluginId}`,
+        serviceProviders: () => ({ greet: 'a.two', '@slot:agenda': 'a.one', '@slot:weather': '@none', '@later': 'a.one' })
+      })
+      await withPicks.open('p1', 1)
+      expect((activateParams as { serviceProviders: Record<string, string> }).serviceProviders).toEqual({ greet: 'a.two' })
+      // An empty list is no slots: the pick rows list only plugins that draw one.
+      await expect(withPicks.servicePlugins('p1')).resolves.toEqual([{ id: 'a.one', slots: [agenda] }, { id: 'a.two' }])
+      withPicks.disposeAll()
+    })
   })
 
   describe('panel ports', () => {

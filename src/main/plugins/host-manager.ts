@@ -48,9 +48,8 @@ import { errorText } from '../../shared/error-text'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
-import type { CliContribution, OpenFileContribution, PluginManifest } from '../../shared/manifest'
+import type { CliContribution, OpenFileContribution, PluginManifest, SlotContribution } from '../../shared/manifest'
 import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
-import { OPEN_FILE_PICK } from '../../shared/services'
 import { capText } from '../../shared/text'
 import { MAX_NOTIFY_TEXT, parseNotifyOptions, type NotifyOutcome } from '../../shared/notify'
 import type { PluginNotice } from '../notifications/notifier'
@@ -197,6 +196,8 @@ export interface HostPlugin {
   services?: PluginManifest['services']
   /** The manifest's `contributes.openFile`: the plugin can take a Sessions panel file click. */
   openFile?: OpenFileContribution
+  /** The manifest's `contributes.slots`: the slots this plugin can draw (design-next §2). */
+  slots?: SlotContribution[]
 }
 
 /**
@@ -850,7 +851,9 @@ export class HostManager {
    * (buildSpec's checks, without its side effects). A plugin dropped for invalid settings is in
    * neither this set nor the host's, so the Plugins page's warnings and a call's error agree.
    */
-  async servicePlugins(projectId: string): Promise<{ id: string; services?: HostPlugin['services']; openFile?: OpenFileContribution }[]> {
+  async servicePlugins(
+    projectId: string
+  ): Promise<{ id: string; services?: HostPlugin['services']; openFile?: OpenFileContribution; slots?: SlotContribution[] }[]> {
     const plugins = await this.deps.plugins(projectId)
     return plugins
       .filter((p) => typeof p.main === 'string' && p.main !== '')
@@ -859,12 +862,14 @@ export class HostManager {
         if (current?.dir !== p.dir || current.commit !== p.commit) return false
         return this.settingsOf(projectId, p.id).ok
       })
-      // `openFile` rides along: the open-file pick (selectOpenFile) is chosen over this same set, so the
-      // Plugins page and a click agree on the candidates.
+      // `openFile` and `slots` ride along: the open-file pick (selectOpenFile) and the slot picks
+      // (selectSlotProvider) are chosen over this same set, so the Plugins page, a click and a slot's
+      // layout agree on the candidates.
       .map((p) => ({
         id: p.id,
         ...(p.services !== undefined ? { services: p.services } : {}),
-        ...(p.openFile !== undefined ? { openFile: p.openFile } : {})
+        ...(p.openFile !== undefined ? { openFile: p.openFile } : {}),
+        ...(p.slots !== undefined && p.slots.length > 0 ? { slots: p.slots } : {})
       }))
   }
 
@@ -1080,9 +1085,11 @@ export class HostManager {
   /** The project's provider picks; a throwing dependency means none (logged), not a failed launch. */
   private serviceProvidersOf(projectId: string): Record<string, string> {
     try {
-      // The open-file pick shares the record's map but is main's alone (a click is routed here, not
-      // in the host), so the host gets only the service picks.
-      const picks = Object.entries(this.deps.serviceProviders?.(projectId) ?? {}).filter(([k]) => k !== OPEN_FILE_PICK)
+      // The reserved picks (`@open-file`, `@slot:<type>`) share the record's map but are main's alone
+      // (a click is routed and a slot laid out here, not in the host), so the host gets only the
+      // service picks. Every `@` key goes: no service name starts with one, and a reserved key added
+      // later must not reach the host's registry as a service.
+      const picks = Object.entries(this.deps.serviceProviders?.(projectId) ?? {}).filter(([k]) => !k.startsWith('@'))
       return Object.fromEntries(picks)
     } catch (err) {
       this.log(`plugin host ${projectId}: reading service providers failed: ${errorText(err)}`)

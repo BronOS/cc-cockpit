@@ -611,6 +611,7 @@ function start(): void {
         cli: plugin.manifest.contributes?.cli ?? [],
         ...(plugin.manifest.services !== undefined ? { services: plugin.manifest.services } : {}),
         ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
+        ...(plugin.manifest.contributes?.slots !== undefined ? { slots: plugin.manifest.contributes.slots } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({

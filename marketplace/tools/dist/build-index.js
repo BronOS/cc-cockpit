@@ -48,6 +48,14 @@ function isPlainObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// ../../src/shared/slots.ts
+var SLOT_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+var MAX_PROVIDER_SLOTS = 10;
+var MAX_PANEL_SLOT_TYPES = 4;
+var SLOT_HEIGHT_MIN = 24;
+var SLOT_HEIGHT_MAX = 600;
+var MAX_SLOT_PARAMS_BYTES = 4 * 1024;
+
 // ../../src/shared/manifest.ts
 var PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.[a-z][a-z0-9-]*$/;
 var PLUGIN_ID_MAX_LENGTH = 100;
@@ -74,6 +82,8 @@ var relativePath = { type: "string", minLength: 1, maxLength: MAX_PATH_LENGTH };
 var title = { type: "string", minLength: 1, maxLength: 100 };
 var contributionId = { type: "string", pattern: CONTRIBUTION_ID_PATTERN.source };
 var settingsSchema = { type: "object" };
+var slotType = { type: "string", pattern: SLOT_TYPE_PATTERN.source };
+var slotHeight = { type: "integer", minimum: SLOT_HEIGHT_MIN, maximum: SLOT_HEIGHT_MAX };
 var serviceMap = {
   type: "object",
   maxProperties: MAX_SERVICES,
@@ -118,7 +128,9 @@ var MANIFEST_SCHEMA = {
               kind: { enum: ["html", "webview"] },
               icon: relativePath,
               entry: relativePath,
-              defaultZone: { enum: ["left", "right", "bottom"] }
+              defaultZone: { enum: ["left", "right", "bottom"] },
+              // App slot types are refused in validate.ts, with the reason.
+              slots: { type: "array", maxItems: MAX_PANEL_SLOT_TYPES, uniqueItems: true, items: slotType }
             },
             // A conditional, not `entry` dropped from `required`: an html panel (kind absent or
             // "html") still must name its page. The `if` needs `required: ['kind']`: `properties`
@@ -176,7 +188,17 @@ var MANIFEST_SCHEMA = {
         },
         // An object, not `true`: the title is what the person reads when picking the plugin that
         // opens files, and a later field (file kinds, say) has room here.
-        openFile: { type: "object", required: ["title"], properties: { title } }
+        openFile: { type: "object", required: ["title"], properties: { title } },
+        // Duplicate types, `min > max`, the `.html` entry and `main` are checked in validate.ts.
+        slots: {
+          type: "array",
+          maxItems: MAX_PROVIDER_SLOTS,
+          items: {
+            type: "object",
+            required: ["type", "entry"],
+            properties: { type: slotType, entry: relativePath, title, minHeight: slotHeight, maxHeight: slotHeight }
+          }
+        }
       }
     }
   }

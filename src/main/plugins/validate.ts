@@ -18,6 +18,7 @@ import {
   type JsonSchema,
   type PluginManifest
 } from '../../shared/manifest'
+import { SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, isAppSlotType } from '../../shared/slots'
 import { within } from '../path-within'
 import { readVerified, verifiedProblemText, type VerifiedProblem } from '../verified-read'
 import { readSkillFiles } from './skill-files'
@@ -200,6 +201,34 @@ function duplicates(ids: readonly string[]): string[] {
 }
 
 /**
+ * The slot rules a schema cannot say (design-next §2); the schema already pinned the type names,
+ * the caps and the height range. File containment of `entry` is checked with the other refs.
+ */
+function slotErrors(manifest: PluginManifest): string[] {
+  const errors: string[] = []
+  const slots = manifest.contributes?.slots ?? []
+  // The frame's page talks only to the provider's backend (ctx.slots.onOpen): no host, no slot.
+  if (slots.length > 0 && manifest.main === undefined) {
+    errors.push('contributes.slots needs "main": a slot\'s page talks to ctx.slots.onOpen in the plugin\'s host')
+  }
+  // One onOpen listener per type: two entries of one type would leave main to guess the page.
+  for (const type of duplicates(slots.map((sl) => sl.type))) errors.push(`duplicate slot type "${type}"`)
+  for (const sl of slots) {
+    // The shell draws it as a sandboxed iframe served by cc-plugin://, like an html panel's page.
+    if (!sl.entry.endsWith('.html')) errors.push(`slot "${sl.type}" entry "${sl.entry}" must be an .html page`)
+    const min = sl.minHeight ?? SLOT_HEIGHT_MIN
+    const max = sl.maxHeight ?? SLOT_HEIGHT_MAX
+    if (min > max) errors.push(`slot "${sl.type}": minHeight ${min} is larger than maxHeight ${max}`)
+  }
+  for (const p of manifest.contributes?.panels ?? []) {
+    for (const type of p.slots ?? []) {
+      if (isAppSlotType(type)) errors.push(`panel "${p.id}": slot type "${type}" is placed by the app; a panel cannot place it`)
+    }
+  }
+  return errors
+}
+
+/**
  * Check untrusted `plugin.json` content against the plugin folder it came from. Returns every
  * problem found (a plugin author fixes them in one go) or the typed manifest. `pluginDir` is
  * resolved here, so a relative or symlinked path is fine.
@@ -262,6 +291,7 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
   if (c.openFile !== undefined && manifest.main === undefined) {
     errors.push('contributes.openFile needs "main": the click is handled by ctx.files.onOpen in the plugin\'s host')
   }
+  errors.push(...slotErrors(manifest))
   for (const cmd of c.commands ?? []) {
     if (cmd.key !== undefined && normalizeChord(cmd.key, 'darwin') === null) {
       errors.push(`command "${cmd.id}": "${cmd.key}" is not a valid key chord`)
@@ -284,6 +314,7 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
     if (p.icon !== undefined) refs.push({ label: `panel "${p.id}" icon`, file: p.icon })
   }
   for (const t of c.themes ?? []) refs.push({ label: `theme "${t.id}" file`, file: t.file })
+  for (const sl of c.slots ?? []) refs.push({ label: `slot "${sl.type}" entry`, file: sl.entry })
 
   let realRoot: string | null = null
   try {

@@ -3,6 +3,7 @@
 // (Plugins page warnings) both call these over the same list of plugins, so a warning on the page
 // and the error a call throws cannot disagree. Neither keeps its own copy of the rule.
 import type { PluginManifest } from './manifest'
+import { SLOT_NONE, slotPickKey } from './slots'
 
 /** What the rule needs from a plugin: its id and the manifest's `services` field. */
 export interface ServicePlugin {
@@ -186,9 +187,10 @@ export interface OpenFileStatus {
   selected: string | null
 }
 
-/** The Plugins page's view of the project's picks: the services and the open-file pick. */
+/** The Plugins page's view of the project's picks: the services, the open-file pick and the slot picks. */
 export interface PluginServicesView extends ServicesStatus {
   openFile: OpenFileStatus
+  slots: SlotPickStatus[]
 }
 
 /** The open-file selection in selectProvider's terms (a candidate provides OPEN_FILE_PICK v1). */
@@ -217,4 +219,62 @@ export function openFileStatus(plugins: readonly OpenFilePlugin[], choices: Serv
   if (candidates.length === 0 || pickedBuiltin(choices)) return { candidates, selected: BUILTIN_VIEWER }
   const sel = openFileSelection(plugins, choices)
   return { candidates, selected: sel.ok ? sel.provider : null }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Slots (design-next §2): which plugin draws the slots of a type in this project. Like the
+// open-file pick, not a service but the same question, so it goes through selectProvider with the
+// plugins that declare the type in `contributes.slots` standing in as providers of the reserved
+// name `@slot:<type>`, which is also the pick's key in `serviceProviders`. One candidate draws;
+// several with no valid pick draw nothing (the Plugins page shows the row as a problem, decided
+// question 4); SLOT_NONE turns the type off for the project; a stale pick counts as none.
+
+/** What the rule needs from a plugin: its id and the types of its `contributes.slots`. */
+export interface SlotPlugin {
+  id: string
+  slots?: readonly { type: string }[]
+}
+
+export interface SlotPickStatus {
+  type: string
+  /** The plugins that declare the type, in plugin order. */
+  candidates: string[]
+  /**
+   * Who draws: a candidate's id, SLOT_NONE (the project turned the type off), or null (several
+   * candidates and no valid pick: nothing draws until one is picked).
+   */
+  selected: string | null
+}
+
+const declaresSlot = (p: SlotPlugin, type: string): boolean => Array.isArray(p.slots) && p.slots.some((sl) => sl.type === type)
+
+const pickedNone = (type: string, choices: ServiceChoices): boolean => {
+  const key = slotPickKey(type)
+  return Object.hasOwn(choices, key) && choices[key] === SLOT_NONE
+}
+
+/** The slot selection in selectProvider's terms (a candidate provides `@slot:<type>` v1). */
+function slotSelection(type: string, plugins: readonly SlotPlugin[], choices: ServiceChoices): ProviderSelection {
+  const key = slotPickKey(type)
+  const asProviders = plugins.map((p): ServicePlugin => (declaresSlot(p, type) ? { id: p.id, services: { provides: { [key]: 1 } } } : { id: p.id }))
+  return selectProvider(key, asProviders, choices)
+}
+
+/** The plugin that draws slots of `type` in this project, or null: none declares it, it is off, or several and no valid pick. */
+export function selectSlotProvider(type: string, plugins: readonly SlotPlugin[], choices: ServiceChoices): string | null {
+  if (pickedNone(type, choices)) return null
+  const sel = slotSelection(type, plugins, choices)
+  return sel.ok ? sel.provider : null
+}
+
+/** One row per slot type some plugin of the set provides, sorted by type (plain data, sent over IPC). */
+export function slotStatus(plugins: readonly SlotPlugin[], choices: ServiceChoices): SlotPickStatus[] {
+  const types = new Set<string>()
+  for (const p of plugins) for (const sl of Array.isArray(p.slots) ? p.slots : []) types.add(sl.type)
+  return [...types].sort().map((type): SlotPickStatus => {
+    const candidates = plugins.filter((p) => declaresSlot(p, type)).map((p) => p.id)
+    if (pickedNone(type, choices)) return { type, candidates, selected: SLOT_NONE }
+    const sel = slotSelection(type, plugins, choices)
+    return { type, candidates, selected: sel.ok ? sel.provider : null }
+  })
 }

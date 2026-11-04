@@ -525,6 +525,19 @@ describe('service providers', () => {
     reg.flushAll()
     expect(registry().serviceProviders(id)).toEqual({ [OPEN_FILE_PICK]: BUILTIN_VIEWER })
   })
+
+  it('keeps @slot:<type> picks across a reload; a slot key with a bad type goes', () => {
+    const reg = registry()
+    const id = reg.openPath(folder('a')).id
+    expect(reg.setServiceProvider(id, '@slot:agenda', 'a.one')).toBe(true)
+    expect(reg.setServiceProvider(id, '@slot:sessions-strip', '@none')).toBe(true)
+    reg.update(id, (r) => void (r.serviceProviders = { ...r.serviceProviders, '@slot:Bad': 'a.one', '@slot:': 'a.one', '@slot:x': '' }))
+    reg.flushAll()
+    const fresh = registry()
+    expect(fresh.serviceProviders(id)).toEqual({ '@slot:agenda': 'a.one', '@slot:sessions-strip': '@none' })
+    expect(fresh.setServiceProvider(id, '@slot:agenda', null)).toBe(true)
+    expect(fresh.serviceProviders(id)).toEqual({ '@slot:sessions-strip': '@none' })
+  })
 })
 
 describe('data dir containment', () => {

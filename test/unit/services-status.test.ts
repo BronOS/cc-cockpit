@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { selectProvider, serviceProblemMessage, serviceStatus, type ServicePlugin } from '../../src/shared/services'
+import { selectProvider, selectSlotProvider, serviceProblemMessage, serviceStatus, slotStatus, type ServicePlugin, type SlotPlugin } from '../../src/shared/services'
+import { SLOT_NONE, slotPickKey, slotTypeOfPickKey } from '../../src/shared/slots'
 
 const prov = (id: string, provides: Record<string, number>): ServicePlugin => ({ id, services: { provides } })
 const cons = (id: string, uses: Record<string, number>): ServicePlugin => ({ id, services: { uses } })
@@ -125,5 +126,59 @@ describe('serviceStatus with collectors (services.collects)', () => {
 
   it('a name nobody uses is not collectedOnly', () => {
     expect(serviceStatus([prov('chat', { 'inbox-feed': 1 })], {}).services[0]?.collectedOnly).toBe(false)
+  })
+})
+
+describe('slot picks (selectSlotProvider / slotStatus)', () => {
+  const slotsOf = (id: string, ...types: string[]): SlotPlugin => ({ id, slots: types.map((type) => ({ type })) })
+  const plain: SlotPlugin = { id: 'x.plain' }
+
+  it('the key helpers round-trip a valid type only', () => {
+    expect(slotPickKey('agenda')).toBe('@slot:agenda')
+    expect(slotTypeOfPickKey('@slot:agenda')).toBe('agenda')
+    for (const key of ['agenda', '@slot:', '@slot:Agenda', '@open-file', '@slotagenda']) expect(slotTypeOfPickKey(key)).toBeUndefined()
+  })
+
+  it('no candidate: nothing draws and there is no row', () => {
+    expect(selectSlotProvider('agenda', [plain, slotsOf('x.other', 'weather')], {})).toBeNull()
+    expect(slotStatus([plain], {})).toEqual([])
+  })
+
+  it('one candidate draws without a pick; @none turns it off', () => {
+    const plugins = [plain, slotsOf('a.cal', 'agenda')]
+    expect(selectSlotProvider('agenda', plugins, {})).toBe('a.cal')
+    expect(slotStatus(plugins, {})).toEqual([{ type: 'agenda', candidates: ['a.cal'], selected: 'a.cal' }])
+    const off = { [slotPickKey('agenda')]: SLOT_NONE }
+    expect(selectSlotProvider('agenda', plugins, off)).toBeNull()
+    expect(slotStatus(plugins, off)).toEqual([{ type: 'agenda', candidates: ['a.cal'], selected: SLOT_NONE }])
+  })
+
+  it('two candidates draw none until one is picked; a stale pick counts as none', () => {
+    const plugins = [slotsOf('a.cal', 'agenda'), slotsOf('b.cal', 'agenda', 'weather')]
+    expect(selectSlotProvider('agenda', plugins, {})).toBeNull()
+    expect(slotStatus(plugins, {})).toEqual([
+      { type: 'agenda', candidates: ['a.cal', 'b.cal'], selected: null },
+      { type: 'weather', candidates: ['b.cal'], selected: 'b.cal' }
+    ])
+    const picked = { '@slot:agenda': 'b.cal' }
+    expect(selectSlotProvider('agenda', plugins, picked)).toBe('b.cal')
+    expect(slotStatus(plugins, picked)[0]?.selected).toBe('b.cal')
+    // Gone, or a plugin that does not declare the type.
+    for (const stale of [{ '@slot:agenda': 'c.gone' }, { '@slot:agenda': 'x.plain' }]) {
+      expect(selectSlotProvider('agenda', [...plugins, plain], stale)).toBeNull()
+      expect(slotStatus([...plugins, plain], stale)[0]?.selected).toBeNull()
+    }
+    // The pick of one type does not choose for another, and a service pick of the bare name is not a slot pick.
+    expect(selectSlotProvider('agenda', plugins, { '@slot:weather': 'a.cal', agenda: 'b.cal' })).toBeNull()
+  })
+
+  it('reads only own keys of the picks', () => {
+    const plugins = [slotsOf('a.cal', 'agenda'), slotsOf('b.cal', 'agenda')]
+    expect(selectSlotProvider('agenda', plugins, Object.create({ '@slot:agenda': 'a.cal' }) as Record<string, string>)).toBeNull()
+  })
+
+  it('slot picks are not services: serviceStatus ignores slot declarations and keys', () => {
+    const plugins: (ServicePlugin & SlotPlugin)[] = [{ ...slotsOf('a.cal', 'agenda'), services: { provides: { mail: 1 } } }]
+    expect(serviceStatus(plugins, { '@slot:agenda': 'a.cal' }).services.map((s) => s.service)).toEqual(['mail'])
   })
 })
