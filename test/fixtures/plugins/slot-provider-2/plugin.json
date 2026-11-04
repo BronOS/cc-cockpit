@@ -1,0 +1,10 @@
+{
+  "id": "test.slottwo",
+  "name": "Slot provider two",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "slots": [{ "type": "agenda", "entry": "agenda.html", "title": "Agenda two", "minHeight": 40, "maxHeight": 200 }]
+  }
+}

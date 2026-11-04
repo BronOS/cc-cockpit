@@ -388,10 +388,11 @@
   `src/cli/guide/panels.md`, `docs/design.md` (§4 Panels column, §5 manifest, Host API table, reserved-key note next to
   Open file, §6 This project slot picks)
 
-- [ ] e2e: two `agenda` providers → none drawn + pick row; pick one → its page draws with `params`; messages both ways;
+- [x] e2e: two `agenda` providers → none drawn + pick row; pick one → its page draws with `params`; messages both ways;
   hide the host panel → `onClose`; disable the provider mid-session → frame gone; `@none` → no slot
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/slots.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/slots.spec.ts
   test/e2e/panel-header.spec.ts test/e2e/panels.spec.ts` — done when green
+- ➕ decided: the e2e uses three fixtures (`slot-host`, `slot-provider` = `test.slotone`, `slot-provider-2` = `test.slottwo`); the first provider also declares `sessions-strip`, and a second test in `slots.spec.ts` pins the top bar as it is today: a provider's frame replaces the built-in entries of other windows' tabs as soon as it exists, "None" brings them back (task 36 removes the built-in strip). Picks go through the Plugins page's slot rows. design.md got a "Panel column and slots" paragraph in §4, the manifest, Host API table, "Slots" and "Which provider draws a slot type" in §5, and the picks in §6; the guide got the known slot types (api.md) and a Slots section (panels.md).
 
 ### Phase C — Overlay toolbar, types, buttons, loader, Discuss (repo `~/Projects/cc-cockpit`)
 

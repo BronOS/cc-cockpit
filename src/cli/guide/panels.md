@@ -134,3 +134,30 @@ ctx.panels.onAction('board', async (id) => {
   try { await load() } finally { header(false) }
 })
 ```
+
+## Slots
+
+A slot is a place where another plugin draws its page. Two roles, both in the manifest.
+
+Host (your panel places it): list the types in the panel, `"slots": ["agenda"]` (at most 4), then
+`ctx.panels.slots('main', [{ type: 'agenda', position: 'top', height: 90, params: { day: 'mon' } }])`.
+The shell draws the provider's frame above (`top`) or below (`bottom`) your own page, in your
+panel's column, and no frame at all when no plugin of the project provides the type or the user
+picked "None". You never get a handle on the frame; `params` (plain JSON, 4 KiB) go to the provider
+only. `ctx.slots.available('agenda')` says whether a placement would draw now. A hidden panel
+unmounts its frames.
+
+Provider (you draw it): `"contributes": { "slots": [{ "type": "agenda", "entry": "slots/agenda.html",
+"title": "Agenda", "minHeight": 48, "maxHeight": 320 }] }` (the manifest needs `main`). Hear a frame
+in the host with `ctx.slots.onOpen('agenda', (slot) => …)`: `slot.params`, `slot.host`,
+`slot.post(message)`, `slot.onMessage(fn)`, `slot.onClose(fn)`. The page is a normal panel page
+(SDK, theme, `ccPanel.post` / `onMessage`) talking only to your host; `ccPanel.slot.setHeight(px)`
+sizes it within `[minHeight, placement height]`. A slot page is untrusted by your host as any
+panel page is, and `params` are untrusted by the provider.
+
+```js
+// provider host
+ctx.slots.onOpen('agenda', (slot) => {
+  slot.onMessage((m) => { if (m === 'ready') slot.post({ events: todaysEvents(slot.params) }) })
+})
+```

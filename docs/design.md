@@ -364,6 +364,8 @@ left / right / bottom, or hide) opens from the "…" button in a panel's header 
 its icon. Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
 keeps its strip, captioned "Bottom zone collapsed" with its key.
 
+**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and the width left: while a plugin draws it the built-in entries of the other windows' tabs are not shown (both list the same tabs), and with no provider, or "None", they stay.
+
 **Auto-hide.** The terminal is the priority. When the window narrows so the centre would be under
 the minimum terminal width (Settings › Appearance and keys › Side panels; `app.json` › `zoneAutoHide`,
 default on, and `minTerminalWidth`, default 720 px, 400 to 2000), the right zone's panel area hides
@@ -589,7 +591,9 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
     "themes":   [{ "id": "solar", "file": "themes/solar.json" }],
     "cli":      [{ "name": "jira", "summary": "…", "usage": "jira [issue]", "stdin": false }],
     "skills":   [{ "id": "jira", "dir": "skills/jira" }],
-    "openFile": { "title": "Jira viewer" }   // takes a click on a changed file in the Sessions panel
+    "openFile": { "title": "Jira viewer" },  // takes a click on a changed file in the Sessions panel
+    "slots":    [{ "type": "agenda", "entry": "slots/agenda.html", "title": "Agenda", "minHeight": 48, "maxHeight": 320 }]
+    // a panel may list the slot types it places: {"id", "title", "entry", "slots": ["agenda"]}
     // a panel may instead be {"id", "title", "kind": "webview", "defaultZone"}: no "entry"
   },
   "services": { "provides": { "triage": 1 }, "uses": { "mail-index": 2 } }
@@ -605,6 +609,10 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
   another way whose id a bundled plugin already holds is skipped (the bundled one wins). Clash
   losers keep their manifest in the loaded map, so they win the name back once the owner is removed.
 - `skills[]`: see Skills below.
+- `slots[]` (provider) and `panels[].slots` (host): see Slots below. A provider needs `main`, `type`
+  (`^[a-z][a-z0-9-]{0,63}$`) and an `entry` ending in `.html`; `title` 1 to 100 characters; `minHeight` and `maxHeight`
+  integers 24 to 600 (defaults 24 and 600, min not above max); at most 10 per plugin, a type once per plugin. A panel
+  lists at most 4 distinct types and may not list an app slot type (`sessions-strip`).
 - `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars }`). The plugin may
   take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
 - A panel's `icon` (an SVG or PNG in the plugin folder) is drawn as a mask in the strip's text colour,
@@ -629,7 +637,8 @@ that project.
 | data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir`; `ctx.appStorage` (the same KV, app-wide, with an atomic `increment`), `ctx.appDataDir` |
 | work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
-| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
+| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.panels.slots(id, placements \| null)` (Slots, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
+| slots | `ctx.slots.onOpen(type, fn)` → disposer (provider side; the type must be in `contributes.slots`), a `SlotInstance` `{id, type, host, params, post, onMessage, onClose}`, `ctx.slots.available(type)` → `Promise<boolean>` (Slots, below) |
 | files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
@@ -680,11 +689,36 @@ caps are `ctx.storage`'s (`src/shared/plugin-storage.ts`), except a value is cap
 fits one RPC message. Like the per-project data, both folders stay after uninstall and after forgetting a
 project (only a plugin's secrets are deleted), and a reinstall finds them again.
 
+**Slots** (`ctx.panels.slots`, `ctx.slots`, `contributes.slots`; `src/shared/slots.ts`, design-next §2). A slot is a place in
+one plugin's panel (or the app's top bar) where another plugin draws its own page: the Inbox places an `agenda` slot,
+the Calendar fills it. The host plugin only places it, `ctx.panels.slots(panelId, [{ type, position: 'top' | 'bottom',
+height, params? }] | null)` (at most 4; the type must be in that panel's manifest `slots`; `params` plain JSON of at
+most 4 KiB that only the provider sees). The page is the provider's, isolated like a panel and talking only to the
+provider's backend over a `MessagePort` main hands out per frame (`panel-ports.ts`); plugin code never runs in
+another plugin's page, and the shell draws the frame (§4). The provider's backend hears a frame with
+`ctx.slots.onOpen(type, (slot) => …)`; the page uses the panel SDK plus `ccPanel.slot` (`{ type, setHeight(px) }`).
+Known types: `agenda` (today's events, a compact strip) and `sessions-strip` (an app slot type: the Claude sessions
+of other windows, one line, drawn in the top bar). Main enforces: the call names a panel of the calling plugin,
+never a host-supplied id; the type is in that panel's `slots` and is not an app slot type; heights are rounded and
+clamped to 24-600, then to the provider's range; the provider is enabled in the project, declares the type and is the
+project's pick; at most 8 frames per project (app frames first; an extra placement is not drawn and is logged once in
+the host plugin's log). Placements follow the panel header's path: kept per project and panel in the layout service,
+pushed with `PanelInfo` (frames carry no `params`), cleared when the host plugin's ctx ends, it reloads, or the host
+stops. A provider reload gives its frames new ids (`onClose`, then `onOpen` in the new copy), a disabled provider
+removes them, a hidden or collapsed host panel unmounts them.
+
+**Which provider draws a slot type.** The project's enabled plugins that declare the type, through `selectProvider` as
+providers of one reserved name, as `@open-file` does (`slotStatus` in `src/shared/services.ts`). The pick is stored in
+`serviceProviders` under `@slot:<type>` (a plugin id or `@none`, which turns the type off for the project). One
+candidate draws; several with no valid pick (a stale pick counts as none) draw nothing and the Plugins page shows a
+"pick a provider" row; no candidate, no slot. A pick change needs no host restart: main re-sends the layout. Code that
+walks `serviceProviders` as services skips every `@` key.
+
 **Open file**: core's Sessions panel offers a click on a changed file to a plugin before its own viewer
 (`src/main/sessions/open-file.ts`). Which plugin: the plugins of the project's host that declare
 `contributes.openFile`, run through `selectProvider` as providers of one reserved name (`selectOpenFile`,
 `openFileStatus` in `src/shared/services.ts`, the rule the Plugins page shares). The pick is stored in
-`serviceProviders` under the reserved key `@open-file` (a service name never starts with `@`); its value is
+`serviceProviders` under the reserved key `@open-file` (a service name never starts with `@`, and `@slot:<type>` keys are reserved the same way, Slots above); its value is
 a plugin id or `@builtin` for core's viewer, and changing it needs no host restart (main routes each click).
 With one candidate it gets the clicks; with several and no valid pick (a stale pick counts as none) or with
 `@builtin`, the built-in viewer opens. Main is the authority for what the plugin receives: the tab must
@@ -1035,7 +1069,8 @@ name, not which plugin is asking; installed plugins are trusted code.
 
 - Projects: list, open, relink a moved folder, remove.
 - Plugins: install from git URL, link a local folder, update to a newer tag, uninstall,
-  app-wide settings form.
+  app-wide settings form; the Services group holds this project's picks (a service with several providers, the
+  open-file plugin, and one row per slot type with a candidate: "Plugin drawing the agenda slot", with "None").
 - Marketplace: browse and install from the configured indexes, add or remove an index, refresh;
   see §5 Marketplace.
 - This project: the project's colour (below, Project colour), enable plugins, project settings

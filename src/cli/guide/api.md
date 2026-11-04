@@ -117,6 +117,11 @@ with full Node access.
   page with the panel message rules (JSON, 1 MiB; `ccPanel.post` / `ccPanel.onMessage` on the
   page), `onClose` fires when the frame ends (host panel hidden or reloaded, placement removed,
   provider changed). `available(type)` resolves whether a placement of `type` would draw now.
+  Known slot types: `agenda` (today's events, a compact strip a panel places above or below itself) and
+  `sessions-strip` (an app slot: the Claude sessions of other windows in one line, drawn in the top bar,
+  which a panel may not place; while a provider draws it the built-in entries are hidden). A type is a name
+  `^[a-z][a-z0-9-]{0,63}$`; any plugin defines one by using it. The user picks the provider per type under
+  Settings > Plugins > Services ("None" turns it off).
 - `ctx.webview`: drives the native web view of one of your `"kind": "webview"` panels (`ccc guide
   webview`). `navigate(panelId, target)` shows an http(s) URL or an absolute file path (a local
   file is served read-only with the files next to it); `back(panelId)`, `forward(panelId)`,
