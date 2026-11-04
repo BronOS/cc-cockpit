@@ -17,6 +17,10 @@
 //   files.open { pluginId, path, tabId? }   -> boolean            a Sessions panel file click (or a
 //                                                                  ctx.files.open main routed here) for
 //                                                                  ctx.files.onOpen (true: taken)
+//   overlay.buttons { key, info }           -> button[]           the type buttons for a typed overlay
+//                                                                  (ctx.overlay.buttons, host/overlay-buttons.ts)
+//   overlay.buttonClick { source, ... }     -> { close } | null   a toolbar click: the opener's onButton
+//                                                                  or a type button's run
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
@@ -24,12 +28,14 @@
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 //   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
 //   slot.close { pluginId, id }               a slot frame this host provides ended (SlotInstance.onClose)
+//   overlay.ended { key }                     a typed overlay went: its type buttons' runs go
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text, options? } -> { clicked }
 //   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
 //   slots.available { pluginId, type } -> boolean (ctx.slots.available), panels.slots { pluginId, panelId, placements },
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
+//   overlay.setButtons { pluginId, handle, buttons } (the opener's buttons, checked again in main),
 //   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click),
 //   openExternal { pluginId, url } -> null (ctx.openExternal; main checks the URL and opens the browser)
 // Events to main:
@@ -139,6 +145,8 @@ function start(): void {
       'command.run': (params) => contexts.runCommand(params),
       'cli.run': (params) => contexts.runCli(params),
       'files.open': (params) => contexts.openFile(params),
+      'overlay.buttons': (params) => contexts.overlayButtons(params),
+      'overlay.buttonClick': (params) => contexts.overlayButtonClick(params),
       'plugin.reload': (params) => {
         const [spec] = parsePluginSpecs({ plugins: [(params as { plugin?: unknown } | null)?.plugin] })
         if (!spec) throw new Error('plugin.reload: no plugin')

@@ -67,6 +67,7 @@ import { STORAGE_FILE_NAME } from '../paths'
 import { realPathOf } from '../projects/registry'
 import { callCli } from './cli-call'
 import { HostApi, type HostApiDeps } from './host-api'
+import type { OverlayTypeButtons } from '../overlays/overlay-manager'
 
 /** Time a window's host gets to run every plugin's deactivate() before it is killed. */
 export const DEACTIVATE_GRACE_MS = 5_000
@@ -819,6 +820,18 @@ export class HostManager {
   }
 
   /**
+   * The type buttons of the host running in `windowId` (OverlayManager's typeButtons): undefined
+   * when that window has no running host (none, starting, stopping). Resolved on every ask, so a
+   * restarted host answers for itself.
+   */
+  overlayButtons(windowId: number): OverlayTypeButtons | undefined {
+    for (const rec of this.hosts.values()) {
+      if (rec.windowId === windowId && rec.proc && !rec.stopping && rec.api) return rec.api.overlayButtons
+    }
+    return undefined
+  }
+
+  /**
    * The panel ids `pluginId` declares when it runs in the project's host right now (activated;
    * a scheduled job failing since does not stop it), else undefined: no host, a plugin that is
    * starting, failed to activate the last time it was told, was disabled or given up on, or one
@@ -1041,7 +1054,9 @@ export class HostManager {
               panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id))
             }))
           },
-          (event, params) => rpc.emit(event, params)
+          (event, params) => rpc.emit(event, params),
+          // The toolbar's requests (type buttons, clicks): `rpc` exists by the time any is made.
+          (method, params, options): Promise<unknown> => rpc.call(method, params, options)
         )
       : undefined
     const notices = new NoticeWaits()

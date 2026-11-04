@@ -218,6 +218,71 @@ test.describe('url overlay', () => {
     }
   })
 
+  // design-next §3.2 / §3.3: an opener's four buttons and another plugin's four type buttons fold
+  // into "…". The url overlay's native view paints above the renderer, so it gives way (zero
+  // bounds) while the menu is open and comes back when it closes; type buttons run in their
+  // plugin, show busy, follow its state after a click and can close the overlay.
+  test('type buttons from a plugin: the "…" menu hides the native view while open; clicks run in the plugin', async ({
+    cockpit
+  }) => {
+    const { page, app } = cockpit
+    const PLUGIN = 'test.typebuttons'
+    await cockpit.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', 'overlay-type-buttons'))
+    await cockpit.hook('enablePlugin', cockpit.projectDir, PLUGIN)
+    await expect
+      .poll(() => cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir), { timeout: 15_000 })
+      .toMatchObject({ running: true, plugins: [{ id: PLUGIN, state: 'active' }] })
+    const notes = (): Promise<string[]> => cockpit.hook<string[]>('notifications')
+    /** The width of the window's url-overlay view (its own `overlay-<id>` partition), or null. */
+    const viewWidth = (): Promise<number | null> =>
+      app.evaluate(({ BrowserWindow }, url) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          for (const child of win.contentView.children) {
+            const wc = (child as { webContents?: { getURL(): string } }).webContents
+            if (wc?.getURL() === url) return child.getBounds().width
+          }
+        }
+        return null
+      }, base)
+
+    const handle = await open(cockpit, {
+      kind: 'url',
+      url: base,
+      title: 'A thing',
+      type: { name: 'e2e-thing', data: { id: 't1' } },
+      buttons: ['one', 'two', 'three', 'four'].map((id) => ({ id, label: id }))
+    })
+    const toolbar = page.locator('.overlay[data-kind="url"] .overlay-header')
+    // 8 buttons: the opener's four and "Mark" in the row, the rest behind "…".
+    await expect(toolbar.locator('[data-source="type"]')).toHaveText(['Mark'], { timeout: 15_000 })
+    await expect(toolbar.locator('.overlay-buttons [data-source="opener"]')).toHaveCount(4)
+    await expect.poll(viewWidth, { timeout: 15_000 }).toBeGreaterThan(0)
+
+    const more = toolbar.getByRole('button', { name: 'More buttons' })
+    await more.click()
+    const menu = page.getByRole('menu')
+    await expect(menu.getByRole('menuitem')).toHaveText(['Alpha', 'Beta', 'Close it'])
+    await expect.poll(viewWidth).toBe(0)
+    // Esc closes the menu only; the view is back.
+    await page.keyboard.press('Escape')
+    await expect(menu).toHaveCount(0)
+    await expect.poll(viewWidth).toBeGreaterThan(0)
+    expect(await stack(cockpit)).toHaveLength(1)
+
+    // A click runs in the plugin with the overlay's info, busy until it settles; then main asks
+    // again and the label follows the plugin's state.
+    await toolbar.getByRole('button', { name: 'Mark' }).click()
+    await expect(toolbar.locator('[data-button-id="mark"]')).toHaveAttribute('aria-busy', 'true')
+    await expect(toolbar.locator('[data-source="type"]')).toHaveText(['Unmark'])
+    await expect.poll(notes).toContain('ran mark on {"id":"t1"} from core')
+
+    await more.click()
+    await expect.poll(viewWidth).toBe(0)
+    await menu.getByRole('menuitem', { name: 'Close it' }).click()
+    expect(await outcome(cockpit, handle)).toEqual({ result: { kind: 'dismissed' } })
+    await expect(page.locator('.overlay')).toHaveCount(0)
+  })
+
   test('a file: url is refused and no overlay appears', async ({ cockpit }) => {
     const handle = await open(cockpit, { kind: 'url', url: 'file:///etc/hosts' })
     expect((await outcome(cockpit, handle)).error).toMatch(/only http and https/)

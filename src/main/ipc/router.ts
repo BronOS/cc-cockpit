@@ -36,6 +36,7 @@ import type { PluginServicesView } from '../../shared/services'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
+import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { SenderContext } from '../windows/window-manager'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
@@ -858,6 +859,8 @@ export interface OverlayHandlerDeps {
   ready(windowId: number, overlayId: string): void
   /** The page called `ccPanel.ready()` (OverlayManager.pageLoaded): its loader goes. */
   loaded(windowId: number, overlayId: string): void
+  /** A toolbar button click (OverlayManager.buttonClick checks it is a button it shows now). */
+  button(windowId: number, overlayId: string, click: OverlayButtonClick): boolean
 }
 
 /**
@@ -927,6 +930,16 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
 
   router.handleProject('overlays.loaded', (ctx, payload) => {
     deps.loaded(ctx.windowId, overlayIdOf('overlays.loaded', payload))
+  })
+
+  // Only a button of an overlay of the SENDER's window; the manager checks it is one it shows.
+  router.handleProject('overlays.button', (ctx, payload) => {
+    const { source, pluginId, buttonId } = fields('overlays.button', payload)
+    if (typeof buttonId !== 'string') throw new Error('overlays.button: buttonId must be a string')
+    const overlayId = overlayIdOf('overlays.button', payload)
+    if (source === 'opener') return deps.button(ctx.windowId, overlayId, { source, buttonId })
+    if (source === 'type' && typeof pluginId === 'string') return deps.button(ctx.windowId, overlayId, { source, pluginId, buttonId })
+    throw new Error('overlays.button: source must be opener, or type with a pluginId')
   })
 }
 

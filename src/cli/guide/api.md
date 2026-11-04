@@ -146,6 +146,18 @@ with full Node access.
   overlay ended, `post`, `close` and `focus` do nothing and the listeners are dropped. Esc, the close button
   and Cmd+Shift+W resolve `result` as `{ kind: 'dismissed' }` without asking the page, so a page
   that keeps a draft should post it as it goes (each change, or debounced), not only on submit.
+  The handle's `onButton(id, fn)` hears a click on one of the spec's `buttons` (any kind of
+  overlay; the button shows busy until `fn` settles, at most 30 s), and `setButtons(list)` replaces
+  them (same rules: at most 4, ids 1-40 of `A-Z a-z 0-9 . _ -`, labels 1-40 characters).
+- `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
+  window, whoever opened it. `provider(info)` gets `{ type: { name, data }, title, opener }` and
+  answers up to 4 buttons, each with a `run(info)`; it is asked when such an overlay opens, after
+  every click on its buttons and when the opener calls `setButtons`, and has 500 ms (a slower or
+  throwing one is skipped and logged in your plugin's log). `data` came from the opener: check it
+  (an id is yours, a path resolves inside the project). A click shows the button busy until `run`
+  settles (at most 30 s); `{ close: true }` closes the overlay. A click never reaches the
+  overlay's page. Returns a disposer; dropped when the plugin stops. Check
+  `typeof ctx.overlay.buttons === 'function'` first: an older app has none.
 
 ## Sessions
 

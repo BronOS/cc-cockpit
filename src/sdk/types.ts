@@ -591,6 +591,21 @@ export interface PluginContext {
      * without asking the page, so a page that keeps a draft should post it as it goes.
      */
     start(spec: OverlaySpec): OverlayHandle
+    /**
+     * Add buttons to every overlay of type `typeName` in this window, whoever opened it (an "Edit"
+     * on a `file`, a "Mark read" on your own `inbox-item`). When such an overlay opens, and again
+     * after each click on any of its buttons and when its opener replaces its own, `provider` is
+     * asked with the overlay's info and answers the buttons to show now (at most 4; `[]` for none).
+     * It has 500 ms: a slower or throwing provider is skipped (logged in your plugin's log). The
+     * info's data came from the opener, so check it (that an id is yours, that a path is inside the
+     * project). A click calls that button's `run` (it shows busy until it settles, at most 30 s);
+     * `{ close: true }` closes the overlay. Never reaches the overlay's page. Dropped when the plugin
+     * stops. Check `typeof ctx.overlay.buttons === 'function'` first: an older app has none.
+     */
+    buttons(
+      typeName: string,
+      provider: (overlay: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>
+    ): Disposer
   }
 
   // sessions

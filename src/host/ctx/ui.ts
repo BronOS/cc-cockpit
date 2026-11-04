@@ -5,7 +5,9 @@
 //   overlay.open(spec)                 terminal (argv only), url (http/https), html (a file of the
 //                                      plugin's own folder, read by main); resolves when it closes
 //   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
-//                                      focus }; open(spec) is start(spec).result
+//                                      focus, onButton, setButtons, onDiscuss }; open(spec) is
+//                                      start(spec).result
+//   overlay.buttons(type, provider)    buttons on every overlay of that type (host/overlay-buttons.ts)
 //   panels.post / panels.onMessage     over the panel's MessagePort
 //   panels.slots                       slot placements in the panel's column (shared/slots.ts rules,
 //                                      checked here for a fast error and again in main)
@@ -34,8 +36,10 @@ import type {
   JsonValue,
   OverlayButton,
   OverlayHandle,
+  OverlayInfo,
   OverlayResult,
   OverlaySpec,
+  OverlayTypeButton,
   PluginContext
 } from '../../sdk/types'
 import { parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
@@ -43,6 +47,7 @@ import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
 import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
 import { errorText } from '../../shared/error-text'
+import type { OverlayButtonRegistry } from '../overlay-buttons'
 
 /** Longest panel message, as JSON text (the RPC cap). */
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
@@ -278,7 +283,7 @@ interface OverlayLink {
   readonly pluginId: string
   readonly handle: string
   readonly listeners: Set<MessageListener>
-  /** Button id -> click handlers (main's click event reaches them; wired with the toolbar). */
+  /** Button id -> click handlers (main's `overlay.buttonClick` for an opener button runs them, `click`). */
   readonly buttonHandlers: Map<string, Set<() => unknown>>
   /** The Discuss context answerers; the first to return text wins (main asks over RPC). */
   readonly discussHandlers: Set<() => unknown>
@@ -322,6 +327,28 @@ export class OverlayLinks {
   /** The plugin's ctx ended: its handles end with it (main dismisses the overlays on `plugin.disposed`). */
   removePlugin(pluginId: string): void {
     for (const link of [...this.links.values()]) if (link.pluginId === pluginId) this.end(link)
+  }
+
+  /**
+   * main's `overlay.buttonClick { pluginId, handle, buttonId }` for one of the opener's own buttons:
+   * every `onButton` handler of that id runs, and the answer comes once all have settled (main shows
+   * the button busy until then, bounded to 30 s there). A handler that throws is logged in the
+   * plugin's log; the click still answers. Main only sends a click on a button it shows on that
+   * plugin's overlay; one for an ended handle runs nothing.
+   */
+  async click(params: unknown): Promise<null> {
+    const { pluginId, handle, buttonId } = (params ?? {}) as Record<string, unknown>
+    if (typeof pluginId !== 'string' || typeof handle !== 'string' || typeof buttonId !== 'string') {
+      throw new Error('overlay.buttonClick: bad button')
+    }
+    const link = this.links.get(`${pluginId}/${handle}`)
+    if (!link || link.ended) return null
+    const handlers = [...(link.buttonHandlers.get(buttonId) ?? [])]
+    const outcomes = await Promise.allSettled(handlers.map((h) => Promise.resolve().then(h)))
+    for (const o of outcomes) {
+      if (o.status === 'rejected') this.log(pluginId, `an overlay onButton("${buttonId}") handler threw: ${errorText(o.reason)}`)
+    }
+    return null
   }
 
   /** main's `overlay.message`; anything malformed or for an ended handle is dropped. */
@@ -368,6 +395,10 @@ export interface UiApiDeps {
   ports: PanelPorts
   /** The host's overlay handles (ctx.overlay.start). */
   overlays: OverlayLinks
+  /** The host's type-button providers (ctx.overlay.buttons). */
+  typeButtons: OverlayButtonRegistry
+  /** The plugin added type buttons: its dispose must tell main (`plugin.disposed`), which asks the toolbars again. */
+  typeButtonsUsed?(): void
   /** The host's header action listeners (ctx.panels.onAction). */
   actions: PanelActions
   /**
@@ -487,10 +518,12 @@ export function createUiApi(
       },
       setButtons: (buttons: OverlayButton[]): void => {
         // Checked even when the overlay ended or is not up yet: a bad call fails where it is made.
-        parseOverlayButtons(buttons)
+        const clean = parseOverlayButtons(buttons)
         if (!link || link.ended) return
         deps.alive()
-        // Sent to main with the toolbar (the overlay.setButtons request).
+        // Fire and forget like post; main checks the list again and applies it to this plugin's
+        // overlay of this handle only (held until the overlay exists). The port keeps order.
+        send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean })
       },
       onDiscuss: (handler: () => unknown): Disposer => {
         if (typeof handler !== 'function') throw new TypeError('overlay onDiscuss needs a function')
@@ -578,7 +611,13 @@ export function createUiApi(
     },
     overlay: Object.freeze({
       open: (spec: OverlaySpec): Promise<OverlayResult> => start(spec).result,
-      start
+      start,
+      buttons: (type: string, provider: (o: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>): Disposer => {
+        deps.alive()
+        const off = deps.typeButtons.register(pluginId, type, provider)
+        deps.typeButtonsUsed?.()
+        return off
+      }
     })
   }
 }

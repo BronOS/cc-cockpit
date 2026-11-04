@@ -42,6 +42,7 @@ import { createSlotsApi, SlotHub, type SlotOpenTag } from './slots'
 import { SettingsHolder } from './settings'
 import { createStorage, type StorageHandle } from './storage'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
+import { OverlayButtonRegistry } from '../overlay-buttons'
 import { createWebviewApi, WebviewHub } from './webview'
 
 export type LogLevel = 'info' | 'warn' | 'error'
@@ -118,6 +119,8 @@ interface Runtime {
   headerUsed: boolean
   /** This ctx called ctx.panels.slots: main has placements of it to clear at dispose. */
   slotsUsed: boolean
+  /** This ctx called ctx.overlay.buttons: main shows its buttons on open overlays, to ask again at dispose. */
+  typeButtonsUsed: boolean
   dataDirReady: boolean
   appDataDirReady: boolean
   disposed: boolean
@@ -136,6 +139,7 @@ export class HostContexts {
   private readonly sessions: SessionsHub
   private readonly ports: PanelPorts
   private readonly overlays: OverlayLinks
+  private readonly typeButtons: OverlayButtonRegistry
   private readonly actions: PanelActions
   private readonly webviews: WebviewHub
   private readonly slots: SlotHub
@@ -144,6 +148,7 @@ export class HostContexts {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.typeButtons = new OverlayButtonRegistry((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m))
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m))
@@ -187,6 +192,7 @@ export class HostContexts {
       webviewUsed: false,
       headerUsed: false,
       slotsUsed: false,
+      typeButtonsUsed: false,
       dataDirReady: false,
       appDataDirReady: false,
       disposed: false
@@ -370,6 +376,10 @@ export class HostContexts {
       slotsUsed: () => {
         rt.slotsUsed = true
       },
+      typeButtons: this.typeButtons,
+      typeButtonsUsed: () => {
+        rt.typeButtonsUsed = true
+      },
       logError: (m) => logAs('error', m)
     })
 
@@ -489,6 +499,7 @@ export class HostContexts {
       rt.webviewUsed ||
       rt.headerUsed ||
       rt.slotsUsed ||
+      rt.typeButtonsUsed ||
       (rt.spec.webviewPanels?.length ?? 0) > 0 ||
       this.overlays.has(pluginId)
     ) {
@@ -501,7 +512,9 @@ export class HostContexts {
       // tells, since its panel reports placements before any navigate and main keeps them. A ctx
       // that set a panel header tells too: main clears it, or its buttons would stay up with no
       // onAction listener behind them (an unload for bad settings keeps the host running). So does a
-      // ctx with a notification waiting for a click: main closes it (HostManager, NoticeWaits).
+      // ctx with a notification waiting for a click: main closes it (HostManager, NoticeWaits). And
+      // one that added overlay type buttons: main asks the window's typed overlays again, so its
+      // buttons leave their toolbars (their runs are gone with it).
       this.deps.emit?.('plugin.disposed', { pluginId })
     }
     if (rt.oauthCalls.size > 0) {
@@ -523,6 +536,7 @@ export class HostContexts {
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
     this.overlays.removePlugin(pluginId)
+    this.typeButtons.removePlugin(pluginId)
     this.actions.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
     this.slots.removePlugin(pluginId)
@@ -614,6 +628,10 @@ export class HostContexts {
     }
     if (event === 'sessions') {
       this.sessions.handleEvent(params)
+      return
+    }
+    if (event === 'overlay.ended') {
+      this.typeButtons.ended(params)
       return
     }
     if (event === 'overlay.message') {
@@ -714,6 +732,25 @@ export class HostContexts {
     const rt = this.runtimes.get(req.pluginId)
     if (!rt || rt.disposed) return false
     return runOpenListeners(rt.openListeners, req, (m) => this.deps.log(req.pluginId, 'error', m))
+  }
+
+  /**
+   * main's `overlay.buttons { key, info }`: the buttons this host's plugins add to a typed overlay
+   * (host/overlay-buttons.ts). Plugins are not filtered here: a disposed copy's providers are gone.
+   */
+  overlayButtons(params: unknown): Promise<unknown> {
+    return this.typeButtons.list(params)
+  }
+
+  /**
+   * main's `overlay.buttonClick`: `{ source: 'opener', pluginId, handle, buttonId }` runs the opener's
+   * `onButton` handlers, `{ source: 'type', key, pluginId, buttonId, info }` a type button's `run`.
+   */
+  overlayButtonClick(params: unknown): Promise<unknown> {
+    const source = (params as { source?: unknown } | null)?.source
+    if (source === 'opener') return this.overlays.click(params)
+    if (source === 'type') return this.typeButtons.click(params)
+    return Promise.reject(new Error('overlay.buttonClick: source must be opener or type'))
   }
 
   /** Main asks to run a command a plugin registered: `{ pluginId, id }`. */

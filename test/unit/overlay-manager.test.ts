@@ -14,12 +14,16 @@ import {
   overlayUrlOf,
   parseOverlaySpec,
   sameSite,
+  type OverlayChannel,
   type OverlayResult,
+  type OverlayTypeButtons,
+  type OverlayTypeQuery,
   type UrlView,
   type UrlViewFactory,
   type ViewBounds
 } from '../../src/main/overlays/overlay-manager'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
+import { OVERLAY_CLICK_TIMEOUT_MS, type CleanTypeButton } from '../../src/shared/overlay-buttons'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const W1 = 1
@@ -1230,5 +1234,242 @@ describe('toolbar buttons in the info', () => {
     void m.open(W1, html(), 'cli')
     expect(m.infos(W1)[1]).not.toHaveProperty('buttons')
     expect(m.infos(W1)[2]).not.toHaveProperty('buttons')
+  })
+})
+
+describe('toolbar clicks and type buttons (design-next §3.3)', () => {
+  /** A fake window host: answers `list` from `answer`, records every call. */
+  function fakeHost(): {
+    source: OverlayTypeButtons
+    lists: { key: string; query: OverlayTypeQuery }[]
+    clicks: { key: string; pluginId: string; buttonId: string; query: OverlayTypeQuery; settle: (v: { close: boolean }) => void; fail: (e: Error) => void }[]
+    ended: string[]
+    answer: CleanTypeButton[]
+  } {
+    const host = {
+      lists: [] as { key: string; query: OverlayTypeQuery }[],
+      clicks: [] as {
+        key: string
+        pluginId: string
+        buttonId: string
+        query: OverlayTypeQuery
+        settle: (v: { close: boolean }) => void
+        fail: (e: Error) => void
+      }[],
+      ended: [] as string[],
+      answer: [] as CleanTypeButton[],
+      source: undefined as unknown as OverlayTypeButtons
+    }
+    host.source = {
+      list: (key, query) => {
+        host.lists.push({ key, query })
+        return Promise.resolve(host.answer.map((b) => ({ ...b })))
+      },
+      click: (key, pluginId, buttonId, query) =>
+        new Promise((settle, fail) => host.clicks.push({ key, pluginId, buttonId, query, settle, fail })),
+      ended: (key) => host.ended.push(key)
+    }
+    return host
+  }
+
+  function typed(host: ReturnType<typeof fakeHost>, hostWindow = W1): OverlayManager {
+    return new OverlayManager({
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: <C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]) => {
+        events.push({ windowId, channel, payload })
+      },
+      commandForChord: () => undefined,
+      typeButtons: (windowId) => (windowId === hostWindow ? host.source : undefined),
+      pluginTitle: (id) => ({ 'p.edit': 'Editor', 'p.mail': 'Gmail' })[id] ?? id,
+      log: () => {}
+    })
+  }
+
+  const fileSpec = { ...html(), title: 'src/x.ts', type: { name: 'file', data: { path: 'src/x.ts' } } }
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await flush()
+  }
+
+  it('asks the window host once when a typed overlay opens; the answer shows with plugin titles and icons', async () => {
+    const host = fakeHost()
+    host.answer = [
+      { pluginId: 'p.mail', id: 'read', label: 'Mark read', icon: 'icons/read.svg' },
+      { pluginId: 'p.edit', id: 'edit', label: 'Edit', icon: 'check' }
+    ]
+    const m = typed(host)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    void m.open(W1, html(), 'cli')
+    expect(host.lists).toHaveLength(1)
+    expect(host.lists[0]!.query).toEqual({ type: { name: 'file', data: { path: 'src/x.ts' } }, title: 'src/x.ts', opener: 'p.rev' })
+    await settle()
+    expect(m.infos(W1)[0]!.typeButtons).toEqual([
+      { id: 'read', label: 'Mark read', iconSrc: 'cc-plugin://p.mail/icons/read.svg', pluginId: 'p.mail', pluginTitle: 'Gmail' },
+      { id: 'edit', label: 'Edit', icon: 'check', pluginId: 'p.edit', pluginTitle: 'Editor' }
+    ])
+    expect(m.infos(W1)[1]).not.toHaveProperty('typeButtons')
+    // The opener as a provider sees it: the CLI and core have no plugin id.
+    void m.open(W1, { ...fileSpec }, 'cli')
+    void m.open(W1, { ...fileSpec }, 'new-tab menu')
+    expect(host.lists.slice(1).map((l) => l.query.opener)).toEqual(['cli', 'core'])
+    // Each overlay has its own key, which is not its id.
+    const ids = m.infos(W1).map((o) => o.id)
+    expect(new Set(host.lists.map((l) => l.key)).size).toBe(3)
+    for (const l of host.lists) expect(ids).not.toContain(l.key)
+  })
+
+  it('a type click runs on the host with the info, shows busy until it settles, then asks again', async () => {
+    const host = fakeHost()
+    host.answer = [{ pluginId: 'p.mail', id: 'read', label: 'Mark read' }]
+    const m = typed(host)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    await settle()
+    const id = m.infos(W1)[0]!.id
+    expect(m.buttonClick(W1, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' })).toBe(true)
+    expect(host.clicks).toHaveLength(1)
+    expect(host.clicks[0]).toMatchObject({ key: host.lists[0]!.key, pluginId: 'p.mail', buttonId: 'read', query: host.lists[0]!.query })
+    expect(m.infos(W1)[0]!.typeButtons?.[0]).toMatchObject({ id: 'read', busy: true })
+    // Busy: a second click (a renderer that raced the update) is refused.
+    expect(m.buttonClick(W1, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' })).toBe(false)
+    host.answer = [{ pluginId: 'p.mail', id: 'unread', label: 'Mark unread' }]
+    host.clicks[0]!.settle({ close: false })
+    await settle()
+    expect(host.lists).toHaveLength(2)
+    expect(m.infos(W1)[0]!.typeButtons).toEqual([{ id: 'unread', label: 'Mark unread', pluginId: 'p.mail', pluginTitle: 'Gmail' }])
+  })
+
+  it('refuses a click on a button main does not show, a busy or disabled one, another window, no host', async () => {
+    const host = fakeHost()
+    host.answer = [
+      { pluginId: 'p.mail', id: 'read', label: 'Mark read' },
+      { pluginId: 'p.mail', id: 'wait', label: 'Wait', busy: true },
+      { pluginId: 'p.mail', id: 'off', label: 'Off', disabled: true }
+    ]
+    const m = typed(host)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    void m.open(W2, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    await settle()
+    const id = m.infos(W1)[0]!.id
+    for (const click of [
+      { source: 'type' as const, pluginId: 'p.edit', buttonId: 'read' },
+      { source: 'type' as const, pluginId: 'p.mail', buttonId: 'nope' },
+      { source: 'type' as const, pluginId: 'p.mail', buttonId: 'wait' },
+      { source: 'type' as const, pluginId: 'p.mail', buttonId: 'off' },
+      // The opener has no buttons and no channel.
+      { source: 'opener' as const, buttonId: 'read' }
+    ]) {
+      expect(m.buttonClick(W1, id, click), JSON.stringify(click)).toBe(false)
+    }
+    expect(m.buttonClick(W2, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' })).toBe(false)
+    // Window 2 has no running host: it got no type buttons and takes no type click.
+    const id2 = m.infos(W2)[0]!.id
+    expect(m.infos(W2)[0]).not.toHaveProperty('typeButtons')
+    expect(m.buttonClick(W2, id2, { source: 'type', pluginId: 'p.mail', buttonId: 'read' })).toBe(false)
+    expect(host.clicks).toEqual([])
+  })
+
+  it('{ close: true } dismisses the overlay; the host forgets its key when it ends', async () => {
+    const host = fakeHost()
+    host.answer = [{ pluginId: 'p.mail', id: 'done', label: 'Done' }]
+    const m = typed(host)
+    const t = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev'))
+    await settle()
+    expect(m.buttonClick(W1, m.infos(W1)[0]!.id, { source: 'type', pluginId: 'p.mail', buttonId: 'done' })).toBe(true)
+    host.clicks[0]!.settle({ close: true })
+    await settle()
+    expect(t.results).toEqual([{ kind: 'dismissed' }])
+    expect(m.infos(W1)).toEqual([])
+    expect(host.ended).toEqual([host.lists[0]!.key])
+    // No second ask for an overlay that is gone.
+    expect(host.lists).toHaveLength(1)
+  })
+
+  it('a click that fails or passes 30 s leaves the button idle again (and the overlay open)', async () => {
+    const host = fakeHost()
+    host.answer = [{ pluginId: 'p.mail', id: 'read', label: 'Mark read' }]
+    const m = typed(host)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    await settle()
+    const id = m.infos(W1)[0]!.id
+    m.buttonClick(W1, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' })
+    host.clicks[0]!.fail(new Error('boom'))
+    await settle()
+    expect(m.infos(W1)[0]!.typeButtons?.[0]).not.toHaveProperty('busy')
+    m.buttonClick(W1, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' })
+    await vi.advanceTimersByTimeAsync(OVERLAY_CLICK_TIMEOUT_MS - 1)
+    expect(m.infos(W1)[0]!.typeButtons?.[0]).toMatchObject({ busy: true })
+    await vi.advanceTimersByTimeAsync(1)
+    await settle()
+    expect(m.infos(W1)[0]!.typeButtons?.[0]).not.toHaveProperty('busy')
+    expect(m.infos(W1)).toHaveLength(1)
+  })
+
+  it('only the newest answer applies, and none after the overlay ended', async () => {
+    const host = fakeHost()
+    let release: Array<(b: CleanTypeButton[]) => void> = []
+    host.source.list = (key, query) => {
+      host.lists.push({ key, query })
+      return new Promise((resolve) => release.push(resolve))
+    }
+    const m = typed(host)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    m.refreshTypeButtons(W1)
+    release[1]!([{ pluginId: 'p.mail', id: 'new', label: 'New' }])
+    await settle()
+    release[0]!([{ pluginId: 'p.mail', id: 'old', label: 'Old' }])
+    await settle()
+    expect(m.infos(W1)[0]!.typeButtons?.map((b) => b.id)).toEqual(['new'])
+    release = []
+    m.refreshTypeButtons(W1)
+    m.close(W1, id)
+    release[0]!([{ pluginId: 'p.mail', id: 'late', label: 'Late' }])
+    await settle()
+    expect(m.infos(W1)).toEqual([])
+  })
+
+  it("an opener click goes to the opener's channel only; setButtons replaces them and asks again", async () => {
+    const host = fakeHost()
+    const m = typed(host)
+    const clicks: string[] = []
+    let finishClick!: () => void
+    const channel: OverlayChannel = {
+      onMessage: () => {},
+      onButton: (buttonId) => {
+        clicks.push(buttonId)
+        return new Promise<void>((resolve) => (finishClick = resolve))
+      }
+    }
+    // A url overlay: the opener's buttons work on every kind, and nothing reaches a page.
+    void m.open(W1, { ...url(), type: fileSpec.type, buttons: [{ id: 'star', label: 'Star' }] }, 'plugin p.rev', undefined, channel, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    expect(m.buttonClick(W1, id, { source: 'opener', buttonId: 'star' })).toBe(true)
+    expect(clicks).toEqual(['star'])
+    expect(m.infos(W1)[0]!.buttons).toEqual([{ id: 'star', label: 'Star', busy: true }])
+    expect(m.buttonClick(W1, id, { source: 'opener', buttonId: 'star' })).toBe(false)
+    expect(m.buttonClick(W1, id, { source: 'opener', buttonId: 'other' })).toBe(false)
+    finishClick()
+    await settle()
+    expect(m.infos(W1)[0]!.buttons).toEqual([{ id: 'star', label: 'Star' }])
+    expect(host.lists).toHaveLength(2)
+    expect(events.some((e) => e.channel === 'overlays.message')).toBe(false)
+
+    expect(m.setButtons(W1, id, [{ id: 'unstar', label: 'Unstar', icon: 'x.svg' }])).toBe(true)
+    expect(m.infos(W1)[0]!.buttons).toEqual([{ id: 'unstar', label: 'Unstar', iconSrc: 'cc-plugin://p.rev/x.svg' }])
+    expect(host.lists).toHaveLength(3)
+    expect(() => m.setButtons(W1, id, [{ id: 'a b', label: 'x' }])).toThrow(/button id/)
+    expect(m.setButtons(W2, id, [])).toBe(false)
+    expect(m.setButtons(W1, id, [])).toBe(true)
+    expect(m.infos(W1)[0]).not.toHaveProperty('buttons')
+  })
+
+  it("a channel's messaging stays html-only: post to a url overlay with a channel is refused", () => {
+    const m = typed(fakeHost())
+    void m.open(W1, url(), 'plugin p.rev', undefined, { onMessage: () => {} }, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    expect(m.post(W1, id, '"x"')).toBe(false)
+    expect(m.pageMessage(W1, id, '"x"')).toBe(false)
   })
 })

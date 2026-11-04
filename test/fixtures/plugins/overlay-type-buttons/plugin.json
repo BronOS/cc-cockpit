@@ -1,0 +1,7 @@
+{
+  "id": "test.typebuttons",
+  "name": "Type buttons",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js"
+}

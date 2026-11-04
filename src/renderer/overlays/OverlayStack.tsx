@@ -6,7 +6,7 @@ import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { domOrder, followOverlays } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
-import { urlViewBounds } from './overlay-toolbar'
+import { urlViewBounds, type ToolbarEntry } from './overlay-toolbar'
 import { TerminalOverlay } from './TerminalOverlay'
 
 /** A terminal overlay's keystrokes, acks and size, through the overlay channels. */
@@ -29,10 +29,17 @@ function closeOverlay(overlayId: string): void {
 }
 
 /**
- * A toolbar button click. The host side of the opener's and the type buttons (`onButton`, the
- * providers' `run`) is not wired yet, so a click goes nowhere for now; main will check and route it.
+ * A toolbar button click: main checks it is a button it shows on this overlay now (not busy or
+ * disabled) and routes it to the opener's `onButton` or the type button's plugin; the button shows
+ * busy (main's next update) until that settles. Never to the overlay's page.
  */
-function buttonClicked(): void {}
+function buttonClicked(overlayId: string, entry: ToolbarEntry): void {
+  const click =
+    entry.source === 'opener'
+      ? { overlayId, source: 'opener' as const, buttonId: entry.button.id }
+      : { overlayId, source: 'type' as const, pluginId: entry.pluginId, buttonId: entry.button.id }
+  window.cockpit.invoke('overlays.button', click).catch(() => {})
+}
 
 /**
  * `overlays.list` resets terminal overlays' flow control in main, so it runs once per page load
@@ -164,7 +171,7 @@ export function OverlayStack(props: {
               overlay={overlay}
               closeSide={tabCloseSide}
               onClose={() => closeOverlay(overlay.id)}
-              onButton={buttonClicked}
+              onButton={(entry) => buttonClicked(overlay.id, entry)}
               onMenuOpenChange={(open) =>
                 setMenuOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
               }

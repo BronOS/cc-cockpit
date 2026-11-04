@@ -37,7 +37,15 @@ import {
   type OverlaySize
 } from '../../shared/ipc'
 import { chordFromEvent } from '../../shared/keys'
-import { parseOverlayExtras, type CleanOverlayButton, type CleanOverlayExtras } from '../../shared/overlay-buttons'
+import {
+  OVERLAY_CLICK_TIMEOUT_MS,
+  parseOverlayButtons,
+  parseOverlayExtras,
+  type CleanOverlayButton,
+  type CleanOverlayExtras,
+  type CleanOverlayType,
+  type CleanTypeButton
+} from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPanelHeaderIcon } from '../../shared/panel-header'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
@@ -127,8 +135,41 @@ export interface OverlayManagerOptions {
    * so `overlay.pop` / `overlay.closeTop` follow a rebinding in keys typed into a url view.
    */
   commandForChord(windowId: number, chord: string): string | undefined
+  /**
+   * The buttons other plugins add for an overlay's type (design-next §3.3): the window's plugin
+   * host (HostApi.overlayButtons), resolved on every ask, since the host may have restarted. Absent
+   * or undefined: a typed overlay shows only its opener's buttons.
+   */
+  typeButtons?(windowId: number): OverlayTypeButtons | undefined
+  /** A plugin's title, which orders the type buttons' groups in the toolbar. Default: the id. */
+  pluginTitle?(pluginId: string): string
   log?: (message: string) => void
 }
+
+/** What a type-button provider is told about an overlay (the SDK's OverlayInfo). */
+export interface OverlayTypeQuery {
+  type: CleanOverlayType
+  title: string
+  /** The opening plugin's id, `cli` or `core`. */
+  opener: string
+}
+
+/**
+ * The window's host side of type buttons. `key` is the overlay's buttons key (minted here, not its
+ * id, which never leaves main). Each answer was checked by HostApi: plugins of that host only.
+ */
+export interface OverlayTypeButtons {
+  list(key: string, query: OverlayTypeQuery): Promise<CleanTypeButton[]>
+  /** Run one; `close` when its run answered `{ close: true }`. */
+  click(key: string, pluginId: string, buttonId: string, query: OverlayTypeQuery): Promise<{ close: boolean }>
+  /** The overlay went: the host forgets its runs. */
+  ended(key: string): void
+}
+
+/** A toolbar click as the renderer reports it: whose button, by id. */
+export type OverlayButtonClick =
+  | { source: 'opener'; buttonId: string }
+  | { source: 'type'; pluginId: string; buttonId: string }
 
 /** Limits on what a caller may put in a spec. Generous for real use, small enough for IPC. */
 export const MAX_URL_LENGTH = 8192
@@ -189,6 +230,11 @@ export interface OverlayChannel {
   onCreated?(overlayId: string): void
   /** The page posted a message without a `result` key: plain JSON data, parsed from its text. */
   onMessage(message: unknown): void
+  /**
+   * A click on one of the opener's own buttons (any kind of overlay): settles when its handlers
+   * have. Absent: the opener cannot hear clicks, and they are refused.
+   */
+  onButton?(buttonId: string): Promise<unknown>
 }
 
 /** Re-exported: a dismissed terminal overlay's program gets SIGKILL after this (PtyService.terminate). */
@@ -239,7 +285,10 @@ interface Overlay {
    * overlay Node warns MaxListenersExceededWarning (task 27 review).
    */
   unlinkPeer?: () => void
-  /** An html overlay's opener that talks with its page (ctx.overlay.start); absent for the CLI's. */
+  /**
+   * The opener's channel (ctx.overlay.start); absent for the CLI's. Kept for every kind: its
+   * buttons' clicks go there. Only an html overlay's page messages use the rest.
+   */
   channel?: OverlayChannel
   /**
    * The renderer reported the page's port up (`pageReady`): posts go straight out. Until then they
@@ -253,6 +302,33 @@ interface Overlay {
    * page says so (`manual`). Unused by the other kinds, whose loader follows their view or program.
    */
   ready: 'load' | 'manual'
+  /** The opening plugin (its `.svg` icons, its id in OverlayTypeQuery); absent for the CLI and core. */
+  pluginId?: string
+  /** What the overlay shows (spec `type`): other plugins' buttons are asked for it. */
+  type?: CleanOverlayType
+  /** The key the host knows this overlay's type buttons by; set with `type`. */
+  buttonsKey?: string
+  /** The opener's buttons (spec, then setButtons) and the type buttons, as checked. */
+  openerButtons: CleanOverlayButton[]
+  typeButtons: CleanTypeButton[]
+  /** Clicks running now (`opener/<id>`, `type/<pluginId>/<id>`): shown busy, no second click. */
+  running: Set<string>
+  /** Bumped by every type-button ask: only the newest answer is applied. */
+  typeAsk: number
+}
+
+/** A click's key in `running`. */
+function clickKey(click: OverlayButtonClick): string {
+  return click.source === 'opener' ? `opener/${click.buttonId}` : `type/${click.pluginId}/${click.buttonId}`
+}
+
+/** `promise`, or a rejection after `ms`; the timer never outlives the race. */
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms / 1000} s`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 export class OverlayManager {
@@ -343,11 +419,20 @@ export class OverlayManager {
       settle,
       pageReady: false,
       outbox: new OverlayOutbox(),
-      ready: parsed.ready ?? 'load'
+      ready: parsed.ready ?? 'load',
+      openerButtons: parsed.buttons ?? [],
+      typeButtons: [],
+      running: new Set(),
+      typeAsk: 0
+    }
+    if (pluginId !== undefined) overlay.pluginId = pluginId
+    if (parsed.type) {
+      overlay.type = parsed.type
+      overlay.buttonsKey = randomUUID()
     }
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
-    // Only an html page has anyone to talk to; a terminal or url overlay ignores the messaging part.
-    if (parsed.kind === 'html' && channel) overlay.channel = channel
+    // Every kind keeps it (its buttons' clicks go there); only an html page uses the messaging part.
+    if (channel) overlay.channel = channel
     // A failed spawn or view throws out of here (open turns it into a rejection), before the
     // overlay is anywhere: nothing to undo.
     if (parsed.kind === 'terminal') {
@@ -379,6 +464,8 @@ export class OverlayManager {
     stack.push(overlay)
     this.stacks.set(windowId, stack)
     this.changed(windowId)
+    // The window's host is asked once now, and again after each click and on setButtons.
+    this.askTypeButtons(overlay)
     // Before the peerGone check below may end it: an opener that queued posts or a close before the
     // overlay existed learns its id here, and a finish() right after makes those posts no-ops.
     try {
@@ -570,7 +657,7 @@ export class OverlayManager {
    */
   post(windowId: number, overlayId: string, text: string): boolean {
     const overlay = this.find(windowId, overlayId)
-    if (!overlay?.channel) return false
+    if (!overlay?.channel || overlay.info.kind !== 'html') return false
     if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       throw new RangeError(`overlay post: message exceeds ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
     }
@@ -610,7 +697,7 @@ export class OverlayManager {
    */
   pageMessage(windowId: number, overlayId: string, text: unknown): boolean {
     const overlay = this.find(windowId, overlayId)
-    if (!overlay?.channel) return false
+    if (!overlay?.channel || overlay.info.kind !== 'html') return false
     if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       this.log(`overlay ${overlay.id}: dropped a page message: not a JSON string of at most ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
       return false
@@ -628,6 +715,82 @@ export class OverlayManager {
       this.log(`overlay ${overlay.id}: delivering a page message failed: ${String(err)}`)
     }
     return true
+  }
+
+  /**
+   * A toolbar click from the window's renderer (design-next §3.3, §3.6). Only a button main shows on
+   * that overlay now, not busy (its own flag or a click still running) and not disabled: the
+   * renderer drops those too, but it is not trusted, and a click can race the update that made the
+   * button busy. An opener button goes to the opener's channel only, a type button to the window's
+   * host, with the overlay's info; neither ever reaches the overlay's page. The button shows busy
+   * until the click settles or OVERLAY_CLICK_TIMEOUT_MS passed; a type button's `{ close: true }`
+   * dismisses the overlay. After it, the type buttons are asked again (labels follow state). True
+   * when the click went out.
+   */
+  buttonClick(windowId: number, overlayId: string, click: OverlayButtonClick): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return false
+    const key = clickKey(click)
+    if (overlay.running.has(key)) return false
+    let run: () => Promise<unknown>
+    if (click.source === 'opener') {
+      const button = overlay.openerButtons.find((b) => b.id === click.buttonId)
+      const onButton = overlay.channel?.onButton
+      if (!button || button.busy || button.disabled || !onButton) return false
+      run = () => onButton.call(overlay.channel, click.buttonId)
+    } else {
+      const button = overlay.typeButtons.find((b) => b.pluginId === click.pluginId && b.id === click.buttonId)
+      const source = this.options.typeButtons?.(windowId)
+      const query = this.typeQuery(overlay)
+      if (!button || button.busy || button.disabled || !source || !query || overlay.buttonsKey === undefined) return false
+      const buttonsKey = overlay.buttonsKey
+      run = () => source.click(buttonsKey, click.pluginId, click.buttonId, query)
+    }
+    overlay.running.add(key)
+    this.publishButtons(overlay)
+    const what = `overlay ${overlay.id}: button ${key}`
+    // Sent now, in this call (a run that throws at once is a failed click like any other).
+    let sent: Promise<unknown>
+    try {
+      sent = Promise.resolve(run())
+    } catch (err) {
+      sent = Promise.reject(toError(err))
+    }
+    void within(sent, OVERLAY_CLICK_TIMEOUT_MS, what)
+      .then((answer) => {
+        const close = click.source === 'type' && (answer as { close?: unknown } | null)?.close === true
+        if (close) this.finish(overlay, { kind: 'dismissed' })
+      })
+      .catch((err: unknown) => this.log(`${what} failed: ${toError(err).message}`))
+      .finally(() => {
+        overlay.running.delete(key)
+        if (this.byId.get(overlay.id) !== overlay) return
+        this.publishButtons(overlay)
+        this.askTypeButtons(overlay)
+      })
+    return true
+  }
+
+  /**
+   * The opener replaces its buttons (handle.setButtons; HostApi found the overlay by plugin and
+   * handle). Checked again here, as in a spec. False for an overlay that is gone or of another
+   * window; throws for a bad list. The type buttons are asked again after it.
+   */
+  setButtons(windowId: number, overlayId: string, buttons: unknown): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return false
+    overlay.openerButtons = parseOverlayButtons(buttons)
+    this.publishButtons(overlay)
+    this.askTypeButtons(overlay)
+    return true
+  }
+
+  /**
+   * Ask the window's host again for the type buttons of every typed overlay of the window (a
+   * plugin's ctx ended: its buttons leave the toolbars).
+   */
+  refreshTypeButtons(windowId: number): void {
+    for (const overlay of this.stacks.get(windowId) ?? []) this.askTypeButtons(overlay)
   }
 
   /** The window closed: every overlay it had is dismissed. */
@@ -661,6 +824,57 @@ export class OverlayManager {
     if (overlay.view && top === overlay) overlay.view.focus()
   }
 
+  /** The overlay as a type-button provider sees it; undefined for an overlay without a type. */
+  private typeQuery(overlay: Overlay): OverlayTypeQuery | undefined {
+    if (!overlay.type) return undefined
+    const opener = overlay.pluginId ?? (overlay.opener === 'cli' ? 'cli' : 'core')
+    return { type: overlay.type, title: overlay.info.title, opener }
+  }
+
+  /**
+   * Ask the window's host for a typed overlay's type buttons. Only the newest answer is applied,
+   * and only while the overlay is open; a failed ask keeps what shows (logged).
+   */
+  private askTypeButtons(overlay: Overlay): void {
+    const query = this.typeQuery(overlay)
+    const source = this.options.typeButtons?.(overlay.windowId)
+    if (!query || !source || overlay.buttonsKey === undefined) return
+    const ask = ++overlay.typeAsk
+    let pending: Promise<CleanTypeButton[]>
+    try {
+      pending = source.list(overlay.buttonsKey, query)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: asking for type buttons failed: ${String(err)}`)
+      return
+    }
+    pending.then(
+      (buttons) => {
+        if (this.byId.get(overlay.id) !== overlay || overlay.typeAsk !== ask) return
+        overlay.typeButtons = buttons
+        this.publishButtons(overlay)
+      },
+      (err: unknown) => this.log(`overlay ${overlay.id}: asking for type buttons failed: ${toError(err).message}`)
+    )
+  }
+
+  /** Rebuild the overlay's button infos (a running click shows busy) and tell the renderer. */
+  private publishButtons(overlay: Overlay): void {
+    const busy = (b: CleanOverlayButton, key: string): CleanOverlayButton => (overlay.running.has(key) ? { ...b, busy: true } : b)
+    const info = { ...overlay.info }
+    const opener = overlay.openerButtons.map((b) => busy(b, `opener/${b.id}`))
+    if (opener.length > 0) info.buttons = buttonInfos(opener, overlay.pluginId)
+    else delete info.buttons
+    if (overlay.typeButtons.length > 0) {
+      info.typeButtons = overlay.typeButtons.map((b) => {
+        const { pluginId, ...button } = b
+        const [shown] = buttonInfos([busy(button, `type/${pluginId}/${b.id}`)], pluginId)
+        return { ...shown!, pluginId, pluginTitle: this.options.pluginTitle?.(pluginId) ?? pluginId }
+      })
+    } else delete info.typeButtons
+    overlay.info = info
+    this.changed(overlay.windowId)
+  }
+
   private find(windowId: number, overlayId: unknown): Overlay | undefined {
     if (typeof overlayId !== 'string') return undefined
     const overlay = this.byId.get(overlayId)
@@ -679,6 +893,14 @@ export class OverlayManager {
     // Posts still waiting for a page that never loaded go nowhere; the opener hears the result.
     overlay.outbox.drain()
     overlay.channel = undefined
+    // The host forgets the type buttons' runs (a click still running there finds the overlay gone).
+    if (overlay.buttonsKey !== undefined) {
+      try {
+        this.options.typeButtons?.(overlay.windowId)?.ended(overlay.buttonsKey)
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: telling the host it ended failed: ${String(err)}`)
+      }
+    }
     const stack = this.stacks.get(overlay.windowId)
     if (stack) {
       const i = stack.indexOf(overlay)

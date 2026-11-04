@@ -1264,3 +1264,125 @@ describe('RateWindow', () => {
     expect([rate.take('a', 1001), rate.take('a', 1002), rate.take('a', 1003)]).toEqual([true, true, false])
   })
 })
+
+describe('overlay toolbar (design-next §3.3, §3.6)', () => {
+  const H = '1f6c2c4e-1111-4222-8333-944455556666'
+  interface HostCall {
+    method: string
+    params: Record<string, unknown>
+    timeoutMs?: number
+  }
+
+  /** A host of project A whose requests to the host process are `answer`ed and recorded. */
+  function toolbarHost(answer: (c: HostCall) => unknown = () => null): {
+    api: HostApi
+    call: (method: string, params?: unknown) => Promise<unknown>
+    hostCalls: HostCall[]
+    events: { event: string; params: unknown }[]
+  } {
+    const hostCalls: HostCall[] = []
+    const events: { event: string; params: unknown }[] = []
+    deps.setOverlayButtons = (windowId, overlayId, buttons) => overlays.setButtons(windowId, overlayId, buttons)
+    const api = new HostApi(
+      deps,
+      scopeA(),
+      (event, params) => events.push({ event, params }),
+      async (method, params, options) => {
+        const c: HostCall = { method, params: params as Record<string, unknown>, ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) }
+        hostCalls.push(c)
+        return answer(c)
+      }
+    )
+    apis.push(api)
+    const handlers = api.handlers
+    return { api, call: (method, params) => Promise.resolve().then(() => handlers[method]!(params)), hostCalls, events }
+  }
+
+  const query = { type: { name: 'file', data: { path: 'a.ts' } }, title: 'a.ts', opener: 'a.one' }
+
+  it("setButtons reaches only the opening plugin's overlay of that handle, checked again; one sent early waits", async () => {
+    const { call } = toolbarHost()
+    const result = call('overlay.open', {
+      pluginId: 'a.one',
+      spec: { kind: 'url', url: 'https://example.com/', buttons: [{ id: 'star', label: 'Star' }] },
+      handle: H
+    })
+    // Before the overlay exists: held by the handle, the last one applied.
+    await expect(call('overlay.setButtons', { pluginId: 'a.one', handle: H, buttons: [{ id: 'early', label: 'Early' }] })).resolves.toBe(true)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    expect(overlays.infos(WIN_A)[0]!.buttons).toEqual([{ id: 'early', label: 'Early' }])
+    await expect(call('overlay.setButtons', { pluginId: 'a.one', handle: H, buttons: [{ id: 'read', label: 'Mark read' }] })).resolves.toBe(true)
+    expect(overlays.infos(WIN_A)[0]!.buttons).toEqual([{ id: 'read', label: 'Mark read' }])
+    // Another plugin of the host, a plugin it does not run, a bad list.
+    await expect(call('overlay.setButtons', { pluginId: 'a.two', handle: H, buttons: [] })).resolves.toBe(false)
+    await expect(call('overlay.setButtons', { pluginId: 'b.one', handle: H, buttons: [] })).rejects.toThrow('unknown plugin')
+    await expect(call('overlay.setButtons', { pluginId: 'a.one', handle: H, buttons: [{ id: 'x', label: '' }] })).rejects.toThrow(/label/)
+    expect(overlays.infos(WIN_A)[0]!.buttons).toEqual([{ id: 'read', label: 'Mark read' }])
+    overlays.close(WIN_A, overlays.infos(WIN_A)[0]!.id)
+    await result
+    await expect(call('overlay.setButtons', { pluginId: 'a.one', handle: H, buttons: [] })).resolves.toBe(false)
+  })
+
+  it("an opener click goes to this host for that plugin and handle, with the 30 s bound", async () => {
+    const { call, hostCalls } = toolbarHost()
+    void call('overlay.open', {
+      pluginId: 'a.one',
+      spec: { kind: 'html', file: 'page.html', buttons: [{ id: 'star', label: 'Star' }] },
+      handle: H
+    })
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    expect(overlays.buttonClick(WIN_A, overlays.infos(WIN_A)[0]!.id, { source: 'opener', buttonId: 'star' })).toBe(true)
+    expect(hostCalls).toEqual([
+      { method: 'overlay.buttonClick', params: { source: 'opener', pluginId: 'a.one', handle: H, buttonId: 'star' }, timeoutMs: 30_000 }
+    ])
+  })
+
+  it('type buttons: only plugins of this host, each plugin checked with the opener rule; a click names it', async () => {
+    const { api, hostCalls, events } = toolbarHost((c) => {
+      if (c.method === 'overlay.buttons') {
+        return [
+          { pluginId: 'a.two', id: 'edit', label: 'Edit' },
+          { pluginId: 'b.one', id: 'steal', label: 'Steal' },
+          { id: 'anon', label: 'No plugin' },
+          // a.one's group is broken (an id twice): all of it is refused, a.two's still shows.
+          { pluginId: 'a.one', id: 'x', label: 'X' },
+          { pluginId: 'a.one', id: 'x', label: 'Y' }
+        ]
+      }
+      return { close: true, extra: 1 }
+    })
+    const buttons = api.overlayButtons
+    await expect(buttons.list('key-1', query)).resolves.toEqual([{ pluginId: 'a.two', id: 'edit', label: 'Edit' }])
+    expect(hostCalls[0]).toEqual({ method: 'overlay.buttons', params: { key: 'key-1', info: query }, timeoutMs: 2_000 })
+    await expect(buttons.click('key-1', 'a.two', 'edit', query)).resolves.toEqual({ close: true })
+    expect(hostCalls[1]).toEqual({
+      method: 'overlay.buttonClick',
+      params: { source: 'type', key: 'key-1', pluginId: 'a.two', buttonId: 'edit', info: query },
+      timeoutMs: 30_000
+    })
+    await expect(buttons.click('key-1', 'b.one', 'steal', query)).rejects.toThrow('unknown plugin')
+    expect(hostCalls).toHaveLength(2)
+    buttons.ended('key-1')
+    expect(events).toContainEqual({ event: 'overlay.ended', params: { key: 'key-1' } })
+    // A stopping host is asked nothing more.
+    api.revoke()
+    await expect(buttons.list('key-2', query)).rejects.toThrow(/not available/)
+    buttons.ended('key-2')
+    expect(events.filter((e) => e.event === 'overlay.ended')).toHaveLength(1)
+  })
+
+  it('a host answer that is not a list is refused; a plugin ctx ending asks the toolbars again', async () => {
+    const refreshed: number[] = []
+    deps.refreshOverlayButtons = (windowId) => refreshed.push(windowId)
+    const { api } = toolbarHost(() => ({ not: 'a list' }))
+    await expect(api.overlayButtons.list('k', query)).rejects.toThrow(/did not answer a list/)
+    api.contextDisposed({ pluginId: 'a.one' })
+    expect(refreshed).toEqual([WIN_A])
+  })
+
+  it('without a host call (an older wiring) clicks and asks are refused, not hung', async () => {
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    await expect(api.overlayButtons.list('k', query)).rejects.toThrow(/not available/)
+  })
+})

@@ -64,7 +64,13 @@ import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager } from './webview/webview-manager'
-import { chordOfInput, OverlayManager, type OverlayChannel, type OverlayResult } from './overlays/overlay-manager'
+import {
+  chordOfInput,
+  OverlayManager,
+  type OverlayChannel,
+  type OverlayResult,
+  type OverlayTypeButtons
+} from './overlays/overlay-manager'
 import { handleOverlayScheme, handlePluginScheme, registerAppSchemes } from './overlays/overlay-protocol'
 import { dataPaths, fallbackSocketDir, pluginAppDataDir, pluginDataDir, resolveDataDir, socketPath } from './paths'
 import { createFolderWatcher, DevWatcher } from './plugins/dev-watch'
@@ -460,7 +466,7 @@ function start(): void {
   // The overlay stack of every project window. Terminal overlays get the login env like tabs do,
   // with the overlay's own window token (minted by the manager; never a session token: an
   // overlay's program is not a Claude tab) and the socket while main listens on it.
-  const overlays = new OverlayManager({
+  const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
     views: new ElectronUrlViewFactory(),
     // main's own table, not BrowserWindow.fromId: the picker is a window too, and a closing
@@ -475,7 +481,10 @@ function start(): void {
       if (channel === 'overlays.updated') webviews.setWindowCovered(windowId, (payload as OverlayInfo[]).length > 0)
       sendToWindow(windowId, channel, payload)
     },
-    commandForChord
+    commandForChord,
+    // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
+    typeButtons: (windowId): OverlayTypeButtons | undefined => hosts.overlayButtons(windowId),
+    pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId
   })
   /**
    * After awaiting the login env (seconds at launch), check that the window that asked is still
@@ -775,6 +784,8 @@ function start(): void {
       postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
       closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
       focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
+      setOverlayButtons: (windowId, overlayId, buttons) => overlays.setButtons(windowId, overlayId, buttons),
+      refreshOverlayButtons: (windowId) => overlays.refreshTypeButtons(windowId),
       secrets: pluginSecrets,
       oauth: pluginOAuth,
       appStorage,
@@ -1651,7 +1662,8 @@ function start(): void {
     result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value),
     message: (windowId, overlayId, text) => overlays.pageMessage(windowId, overlayId, text),
     ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId),
-    loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId)
+    loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId),
+    button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.

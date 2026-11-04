@@ -451,15 +451,29 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   and on `setButtons`), `src/main/ipc/router.ts` (renderer click), `src/renderer/overlays/OverlayToolbar.tsx` (busy state)
 - Modify: tests `test/unit/host-api.test.ts`, `overlay-manager.test.ts`, new `test/unit/host-overlay-buttons.test.ts`
 
-- [ ] host: call every provider for the type with `OverlayInfo`, each bounded to 500 ms (slow or throwing skipped and
+- [x] host: call every provider for the type with `OverlayInfo`, each bounded to 500 ms (slow or throwing skipped and
   logged in that plugin's log), keep `run` keyed by overlay, plugin and button id, answer plain data with plugin ids
   from the registering ctx; dispose on plugin reload/ctx end
-- [ ] main: `setButtons` and opener clicks only for the opening plugin's overlay (looked up by plugin and handle);
+- [x] main: `setButtons` and opener clicks only for the opening plugin's overlay (looked up by plugin and handle);
   a type-button click only for a button main currently shows, not busy or disabled; refuse a plugin id that is not one
   of that host's plugins; 30 s busy bound; `{ close: true }` dismisses the overlay
-- [ ] a click never reaches the overlay's page
-- [ ] write tests: timeouts, attribution, refresh after click, dispose on reload, each main refusal, `close: true`
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] a click never reaches the overlay's page
+- [x] write tests: timeouts, attribution, refresh after click, dispose on reload, each main refusal, `close: true`
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ decided: each plugin's type buttons follow the opener's rule (at most 4 per plugin across its providers, unique ids;
+  a later duplicate dropped and logged, a malformed group refused whole by main); main bounds the whole ask to 2 s
+  (`TYPE_BUTTONS_ASK_MS`; the host already bounds each provider to 500 ms). The host keys runs by a per-overlay
+  `buttonsKey` main mints, not the overlay id (which never leaves main); `overlay.ended { key }` drops them.
+  `OverlayInfo.opener` is the plugin id, `cli` for `ccc overlay`, `core` for everything else.
+- ➕ decided: opener clicks go main → host as `overlay.buttonClick { source: 'opener', pluginId, handle, buttonId }`
+  (a request, so the button shows busy until the `onButton` handlers settle, 30 s bound, like type buttons); the
+  opener's channel is now kept for every overlay kind (page messaging stays html-only). A plugin ctx that added type
+  buttons sends `plugin.disposed` and main asks the window's typed overlays again, so its buttons leave the toolbars.
+  `ctx.overlay.buttons` and the handle's `onButton`/`setButtons` got short guide text in `api.md` now (guide drift
+  rule); task 14 writes the full overlay guide.
+- ➕ done from task 10's review: e2e `overlays.spec.ts` "type buttons from a plugin…" opens a url overlay with 4 opener
+  and 4 type buttons (fixture `test/fixtures/plugins/overlay-type-buttons`) and checks the native view has zero width
+  while "…" is open, Esc closes the menu only, a click is busy then relabelled, and `{ close: true }` dismisses.
 
 ### Task 12: Discuss with Claude in core [model: opus]
 

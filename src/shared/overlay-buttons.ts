@@ -19,6 +19,11 @@ const MAX_DISCUSS_TAB_ID = 100
 const BUTTON_ID_RE = /^[A-Za-z0-9._-]{1,40}$/
 const TYPE_NAME_RE = /^[a-z][a-z0-9-]{0,63}$/
 
+/** An overlay type name: a lower-case noun of letters, digits and "-", at most 64 (ctx.overlay.buttons checks it too). */
+export function isOverlayTypeName(name: unknown): name is string {
+  return typeof name === 'string' && TYPE_NAME_RE.test(name)
+}
+
 /** One button as the host sends it and main stores it. */
 export interface CleanOverlayButton {
   id: string
@@ -28,6 +33,12 @@ export interface CleanOverlayButton {
   disabled?: true
   busy?: true
 }
+
+/** A button another plugin adds for the overlay's type, as the host answers it and main keeps it. */
+export type CleanTypeButton = CleanOverlayButton & { pluginId: string }
+
+/** How long a toolbar click may run (design-next §3.3): the button is idle again after this. */
+export const OVERLAY_CLICK_TIMEOUT_MS = 30_000
 
 export interface CleanOverlayType {
   name: string
@@ -91,7 +102,7 @@ export function parseOverlayButtons(value: unknown, what = 'buttons'): CleanOver
 function parseType(value: unknown): CleanOverlayType {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) fail('type must be an object { name, data }')
   const { name, data } = value as Record<string, unknown>
-  if (typeof name !== 'string' || !TYPE_NAME_RE.test(name)) {
+  if (!isOverlayTypeName(name)) {
     fail(`type name ${JSON.stringify(String(name)).slice(0, 60)} must be a lower-case noun of letters, digits and "-" (at most 64)`)
   }
   let text: string | undefined

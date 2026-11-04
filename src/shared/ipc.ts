@@ -1003,6 +1003,15 @@ export interface IpcInvokeMap {
    * page's port): the loader of a `ready: 'manual'` overlay goes.
    */
   'overlays.loaded': { req: { overlayId: string }; res: void }
+  /**
+   * A click on a toolbar button: the opener's (`source: 'opener'`) or one another plugin added for
+   * the overlay's type (`'type'`, with its `pluginId`). False when main dropped it (not a button it
+   * shows now, busy, disabled).
+   */
+  'overlays.button': {
+    req: { overlayId: string; source: 'opener' | 'type'; pluginId?: string; buttonId: string }
+    res: boolean
+  }
 
   // Webview panels (PanelInfo.kind 'webview'). The panel key must name a webview panel of a
   // plugin of the sender's project; the view is the one in the sender's window.
@@ -1239,6 +1248,7 @@ export const INVOKE_CHANNELS = [
   'overlays.message',
   'overlays.ready',
   'overlays.loaded',
+  'overlays.button',
   'webviews.placement',
   'webviews.step',
   'webviews.current',

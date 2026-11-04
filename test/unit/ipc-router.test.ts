@@ -1363,6 +1363,10 @@ describe('registerOverlayHandlers', () => {
       },
       loaded: (windowId, overlayId) => {
         calls.push(['loaded', windowId, overlayId])
+      },
+      button: (windowId, overlayId, click) => {
+        calls.push(['button', windowId, overlayId, click])
+        return true
       }
     })
     return { ipc, calls }
@@ -1380,6 +1384,8 @@ describe('registerOverlayHandlers', () => {
     await ipc.invoke('overlays.message', 12, [{ overlayId: 'o2', message: '{"n":1}', windowId: 1 }])
     await ipc.invoke('overlays.ready', 11, [{ overlayId: 'o1', windowId: 2 }])
     await ipc.invoke('overlays.loaded', 12, [{ overlayId: 'o2', windowId: 1 }])
+    await ipc.invoke('overlays.button', 11, [{ overlayId: 'o1', source: 'opener', buttonId: 'b', pluginId: 'x', windowId: 2 }])
+    await ipc.invoke('overlays.button', 12, [{ overlayId: 'o2', source: 'type', pluginId: 'p.one', buttonId: 'edit' }])
     expect(calls).toEqual([
       ['list', 1],
       ['close', 2, 'o1'],
@@ -1390,7 +1396,10 @@ describe('registerOverlayHandlers', () => {
       ['result', 2, 'o2', { a: 1 }],
       ['message', 2, 'o2', '{"n":1}'],
       ['ready', 1, 'o1'],
-      ['loaded', 2, 'o2']
+      ['loaded', 2, 'o2'],
+      // An opener click carries no plugin id: the opener is the overlay's own.
+      ['button', 1, 'o1', { source: 'opener', buttonId: 'b' }],
+      ['button', 2, 'o2', { source: 'type', pluginId: 'p.one', buttonId: 'edit' }]
     ])
   })
 
@@ -1412,7 +1421,11 @@ describe('registerOverlayHandlers', () => {
       ['overlays.message', [{ message: '{}' }]],
       ['overlays.ready', [{ overlayId: 7 }]],
       ['overlays.loaded', [{ overlayId: 7 }]],
-      ['overlays.loaded', []]
+      ['overlays.loaded', []],
+      ['overlays.button', [{ overlayId: 'o', source: 'opener', buttonId: 5 }]],
+      ['overlays.button', [{ overlayId: 'o', source: 'type', buttonId: 'b' }]],
+      ['overlays.button', [{ overlayId: 'o', source: 'page', buttonId: 'b' }]],
+      ['overlays.button', [{ source: 'opener', buttonId: 'b' }]]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()

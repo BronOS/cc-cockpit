@@ -27,6 +27,8 @@
 //   overlay.post    { pluginId, handle, message } -> boolean     to that html overlay's page
 //   overlay.close   { pluginId, handle }       -> boolean        dismiss it (false: it already ended)
 //   overlay.focus   { pluginId, handle }       -> boolean        bring it to the top of the window's stack
+//   overlay.setButtons { pluginId, handle, buttons } -> boolean  replace that overlay's opener buttons
+//                                                                (checked again, shared/overlay-buttons.ts)
 //   secrets.get     { pluginId, key }          -> string | null  the plugin's app-wide secret store
 //   secrets.set     { pluginId, key, value }   -> null           (plugin-secrets.ts: limits, the
 //   secrets.delete  { pluginId, key }          -> null            reserved `setting:` prefix,
@@ -58,6 +60,13 @@
 //   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
 //   panel.action    { pluginId, panelId, actionId }              a click on a header action this host set
 //                                                                (panelAction: current, not busy/disabled)
+// requests main makes of the host (overlay toolbar, design-next §3.3; `overlayButtons`, channel onButton):
+//   overlay.buttons { key, info }              -> button[]       the type buttons of a typed overlay
+//                                                                (each with its plugin id: one of this
+//                                                                host's, or the button is refused)
+//   overlay.buttonClick { source: 'opener', pluginId, handle, buttonId } | { source: 'type', key,
+//                         pluginId, buttonId, info } -> { close } | null   a click, 30 s bound
+//   overlay.ended   { key } (event)                              that typed overlay went
 // and one event the host sends (host-manager routes it to contextDisposed):
 //   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls,
 //                                                                its webviews, its overlays, its panel
@@ -126,8 +135,17 @@ import {
   MAX_OVERLAY_MESSAGE_LENGTH,
   OverlayOutbox,
   type OverlayChannel,
-  type OverlayResult
+  type OverlayResult,
+  type OverlayTypeButtons,
+  type OverlayTypeQuery
 } from '../overlays/overlay-manager'
+import {
+  MAX_OVERLAY_BUTTONS,
+  OVERLAY_CLICK_TIMEOUT_MS,
+  parseOverlayButtons,
+  type CleanOverlayButton,
+  type CleanTypeButton
+} from '../../shared/overlay-buttons'
 import { checkWebUrl, MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
 import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
@@ -263,6 +281,10 @@ export interface HostApiDeps {
   closeOverlay?(windowId: number, overlayId: string): boolean
   /** OverlayManager.focus. Without it ctx.overlay.start's focus is refused. */
   focusOverlay?(windowId: number, overlayId: string): boolean
+  /** OverlayManager.setButtons (handle.setButtons). Without it the request is refused. */
+  setOverlayButtons?(windowId: number, overlayId: string, buttons: CleanOverlayButton[]): boolean
+  /** OverlayManager.refreshTypeButtons: a plugin's ctx ended, its type buttons leave the window's toolbars. */
+  refreshOverlayButtons?(windowId: number): void
   /** ctx.secrets (PluginSecrets). */
   secrets: PluginSecretsApi
   /** ctx.oauth (PluginOAuth). */
@@ -308,6 +330,12 @@ export interface HostScope {
   plugins: readonly HostApiPlugin[]
 }
 
+/**
+ * How long main waits for a window's type buttons: the host asks every provider at once, each
+ * bounded to 500 ms (host/overlay-buttons.ts), so this only covers a host that does not answer.
+ */
+export const TYPE_BUTTONS_ASK_MS = 2_000
+
 /** A host-chosen overlay handle: a UUID in practice; short and plain so it cannot bloat a key. */
 const HANDLE_RE = /^[A-Za-z0-9-]{1,64}$/
 
@@ -319,6 +347,8 @@ interface OverlayLink {
   pending: OverlayOutbox
   /** close() came before the overlay existed: it is dismissed as soon as it does. */
   closing: boolean
+  /** setButtons() came before the overlay existed: applied as soon as it does (the last one). */
+  buttons?: CleanOverlayButton[]
 }
 
 /** A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. */
@@ -493,7 +523,12 @@ export class HostApi {
     private readonly deps: HostApiDeps,
     private scope: HostScope,
     /** A one-way event to this host (its RpcEndpoint.emit). */
-    private readonly emit: (event: string, params: unknown) => void
+    private readonly emit: (event: string, params: unknown) => void,
+    /**
+     * A request to this host (its RpcEndpoint.call): the toolbar's clicks and the type-button asks.
+     * Absent: overlay buttons take no clicks and typed overlays get no type buttons.
+     */
+    private readonly call?: (method: string, params: unknown, options?: { timeoutMs?: number }) => Promise<unknown>
   ) {
     this.interval = deps.sessionsIntervalMs ?? SESSIONS_EVENT_INTERVAL_MS
     this.log = deps.log ?? ((m) => console.warn(m))
@@ -515,6 +550,7 @@ export class HostApi {
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
       'overlay.focus': (params) => this.overlayFocus(params),
+      'overlay.setButtons': (params) => this.overlaySetButtons(params),
       'secrets.get': (params) => this.secretsGet(params),
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
@@ -598,6 +634,9 @@ export class HostApi {
     const overlays = this.overlayCopies.get(pluginId)
     this.overlayCopies.delete(pluginId)
     overlays?.abort()
+    // Its type buttons on other plugins' overlays: their runs went with the ctx, so the window's
+    // toolbars are asked again (a reloaded copy's providers answer the next ask).
+    if (!this.revoked) this.deps.refreshOverlayButtons?.(this.scope.windowId)
     // And its panel headers (the host sends this for a ctx that set one): their actions had
     // onAction listeners in that ctx only. Unlike a badge, which is a count the next copy will
     // set again, a stale button would take clicks for nobody. Not once revoked: dispose() clears
@@ -1009,8 +1048,18 @@ export class HostApi {
               this.log(`plugin ${pid}: a queued overlay post failed: ${errorText(err)}`)
             }
           }
+          if (link.buttons) {
+            try {
+              this.deps.setOverlayButtons?.(this.scope.windowId, overlayId, link.buttons)
+            } catch (err) {
+              this.log(`plugin ${pid}: queued overlay buttons failed: ${errorText(err)}`)
+            }
+            link.buttons = undefined
+          }
           if (link.closing) this.deps.closeOverlay?.(this.scope.windowId, overlayId)
         },
+        // A click on one of its own buttons: to this host, this plugin and this handle only.
+        onButton: (buttonId) => this.hostCall('overlay.buttonClick', { source: 'opener', pluginId: pid, handle, buttonId }),
         // A dying host (revoked) gets nothing more; the overlay is dismissed when it is gone.
         onMessage: (message) => {
           if (!this.revoked) this.emit('overlay.message', { pluginId: pid, handle, message })
@@ -1114,6 +1163,78 @@ export class HostApi {
     if (!this.deps.focusOverlay) throw new Error('overlay.focus: not available')
     if (link.overlayId === undefined) return true
     return this.deps.focusOverlay(this.scope.windowId, link.overlayId)
+  }
+
+  /**
+   * handle.setButtons: the opener's buttons of that overlay, checked again (the host checked them
+   * at the call). Held until the overlay exists, like a post. False for an overlay that ended or
+   * that this plugin did not open.
+   */
+  private overlaySetButtons(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.setButtons')
+    const buttons = parseOverlayButtons(rest.buttons)
+    if (!link) return false
+    if (!this.deps.setOverlayButtons) throw new Error('overlay.setButtons: not available')
+    if (link.overlayId === undefined) {
+      link.buttons = buttons
+      return true
+    }
+    return this.deps.setOverlayButtons(this.scope.windowId, link.overlayId, buttons)
+  }
+
+  /** A request to the host; refused once it is stopping, or when main wired no `call`. */
+  private hostCall(method: string, params: unknown, timeoutMs = OVERLAY_CLICK_TIMEOUT_MS): Promise<unknown> {
+    if (this.revoked || !this.call) return Promise.reject(new Error(`${method}: the plugin host is not available`))
+    return this.call(method, params, { timeoutMs })
+  }
+
+  /**
+   * The type buttons of this host's window (OverlayManager's typeButtons, design-next §3.3). The
+   * host attributes each button to the plugin whose ctx registered it; main still refuses a
+   * plugin id that is not one of this host's plugins, and checks each plugin's list with the
+   * opener's rule (at most 4, plain labels, unique ids). A bad group is dropped and logged, the
+   * rest shows.
+   */
+  get overlayButtons(): OverlayTypeButtons {
+    return {
+      list: async (key, query) => {
+        // The host bounds each provider to 500 ms and asks them together; this bounds the whole.
+        const raw = await this.hostCall('overlay.buttons', { key, info: query }, TYPE_BUTTONS_ASK_MS)
+        return this.typeButtonsOf(raw, query)
+      },
+      click: async (key, pluginId, buttonId, query) => {
+        const plugin = this.plugin(pluginId, 'overlay.buttonClick')
+        const answer = await this.hostCall('overlay.buttonClick', { source: 'type', key, pluginId: plugin.id, buttonId, info: query })
+        return { close: (answer as { close?: unknown } | null)?.close === true }
+      },
+      ended: (key) => {
+        if (!this.revoked) this.emit('overlay.ended', { key })
+      }
+    }
+  }
+
+  private typeButtonsOf(raw: unknown, query: OverlayTypeQuery): CleanTypeButton[] {
+    if (!Array.isArray(raw)) throw new Error('overlay.buttons: the host did not answer a list')
+    const groups = new Map<string, unknown[]>()
+    for (const item of raw.slice(0, MAX_OVERLAY_BUTTONS * this.scope.plugins.length) as unknown[]) {
+      const pluginId = (item as { pluginId?: unknown } | null)?.pluginId
+      if (typeof pluginId !== 'string' || !this.scope.plugins.some((p) => p.id === pluginId)) {
+        this.log(`plugin host ${this.scope.projectId}: an overlay type button of an unknown plugin is refused`)
+        continue
+      }
+      const group = groups.get(pluginId) ?? []
+      group.push(item)
+      groups.set(pluginId, group)
+    }
+    const out: CleanTypeButton[] = []
+    for (const [pluginId, group] of groups) {
+      try {
+        for (const button of parseOverlayButtons(group, `overlay.buttons(${query.type.name})`)) out.push({ ...button, pluginId })
+      } catch (err) {
+        this.log(`plugin ${pluginId}: its buttons for ${query.type.name} are refused: ${errorText(err)}`)
+      }
+    }
+    return out
   }
 
   /**
