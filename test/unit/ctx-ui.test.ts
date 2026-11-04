@@ -391,6 +391,67 @@ describe('ctx.overlay.start', () => {
     await expect(term.result).resolves.toEqual({ kind: 'dismissed' })
   })
 
+  it('onDiscuss tells main on the first handler and when the last goes; ended, it sends nothing', async () => {
+    const { ctx, calls, end } = pending()
+    const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })
+    const handle = handleOf(calls)
+    const offA = overlay.onDiscuss(() => null)
+    const offB = overlay.onDiscuss(() => ({ text: 'b' }))
+    offA()
+    offA()
+    offB()
+    expect(calls.slice(1)).toEqual([
+      { method: 'overlay.discussable', params: { pluginId: 'a.one', handle, on: true } },
+      { method: 'overlay.discussable', params: { pluginId: 'a.one', handle, on: false } }
+    ])
+    const offC = overlay.onDiscuss(() => null)
+    expect(calls).toHaveLength(4)
+    end({ kind: 'discussed', tabId: 't1', queued: false })
+    await expect(overlay.result).resolves.toEqual({ kind: 'discussed', tabId: 't1', queued: false })
+    offC()
+    overlay.onDiscuss(() => null)
+    expect(calls).toHaveLength(4)
+  })
+
+  it("main's overlay.discuss: the first handler with text wins, null passes, a throw or a bad answer fails", async () => {
+    const { contexts, ctx, calls, logs } = pending()
+    const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })
+    const handle = handleOf(calls)
+    const ask = (): Promise<unknown> => contexts.overlayDiscuss({ pluginId: 'a.one', handle })
+    await expect(ask()).resolves.toBeNull()
+    const order: string[] = []
+    overlay.onDiscuss(() => {
+      order.push('a')
+      return null
+    })
+    const offB = overlay.onDiscuss(async () => {
+      order.push('b')
+      return { text: 'x'.repeat(30_000) }
+    })
+    overlay.onDiscuss(() => {
+      order.push('c')
+      return { text: 'never asked' }
+    })
+    // Cut to the message cap here already, so a huge answer never crosses the port.
+    await expect(ask()).resolves.toEqual({ text: 'x'.repeat(20_000) })
+    expect(order).toEqual(['a', 'b'])
+    offB()
+    await expect(ask()).resolves.toEqual({ text: 'never asked' })
+    // Another plugin's id with this handle names nothing.
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.two', handle })).resolves.toBeNull()
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one' })).rejects.toThrow(/bad handle/)
+    const second = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })
+    const handle2 = (calls.filter((c) => c.method === 'overlay.open')[1]?.params as { handle: string }).handle
+    const offThrow = second.onDiscuss(() => {
+      throw new Error('no draft')
+    })
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle: handle2 })).rejects.toThrow('no draft')
+    expect(logs).toContainEqual({ pluginId: 'a.one', level: 'error', text: 'an overlay onDiscuss handler threw: no draft' })
+    offThrow()
+    second.onDiscuss(() => ({ txt: 'x' }) as never)
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle: handle2 })).rejects.toThrow(/\{ text \} or null/)
+  })
+
   it('focus asks main to bring it to the front, for any kind', async () => {
     const { ctx, calls, end } = pending()
     const term = ctx.overlay.start({ kind: 'terminal', argv: ['micro', 'a.ts'] })

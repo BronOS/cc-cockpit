@@ -14,6 +14,7 @@ import {
   overlayUrlOf,
   parseOverlaySpec,
   sameSite,
+  type DiscussSessions,
   type OverlayChannel,
   type OverlayResult,
   type OverlayTypeButtons,
@@ -1471,5 +1472,247 @@ describe('toolbar clicks and type buttons (design-next §3.3)', () => {
     const id = m.infos(W1)[0]!.id
     expect(m.post(W1, id, '"x"')).toBe(false)
     expect(m.pageMessage(W1, id, '"x"')).toBe(false)
+  })
+})
+
+describe('Discuss with Claude (design-next §3.5)', () => {
+  /** Fake sessions: Claude tabs per window, the gate's answers, the tabs opened and selected. */
+  function fakeSessions() {
+    const s = {
+      claude: new Map<number, Set<string>>([[W1, new Set(['t1', 't2'])], [W2, new Set(['t9'])]]),
+      sent: [] as { tabId: string; text: string }[],
+      opened: [] as { windowId: number; prompt: string }[],
+      selected: [] as { windowId: number; tabId: string }[],
+      delivered: true,
+      sendError: undefined as Error | undefined,
+      openError: undefined as Error | undefined,
+      next: 1,
+      deps: undefined as unknown as DiscussSessions
+    }
+    s.deps = {
+      isClaudeTab: (windowId, tabId) => s.claude.get(windowId)?.has(tabId) === true,
+      send: (tabId, text) => {
+        if (s.sendError) throw s.sendError
+        s.sent.push({ tabId, text })
+        return { delivered: s.delivered }
+      },
+      openSession: (windowId, prompt) => {
+        if (s.openError) return Promise.reject(s.openError)
+        s.opened.push({ windowId, prompt })
+        return Promise.resolve({ tabId: `new${s.next++}` })
+      },
+      selectTab: (windowId, tabId) => s.selected.push({ windowId, tabId })
+    }
+    return s
+  }
+
+  function withDiscuss(sessions: ReturnType<typeof fakeSessions>): OverlayManager {
+    return new OverlayManager({
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: <C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]) => {
+        events.push({ windowId, channel, payload })
+      },
+      commandForChord: () => undefined,
+      pluginTitle: (id) => ({ 'p.rev': 'Reviewer' })[id] ?? id,
+      discuss: sessions.deps,
+      log: () => {}
+    })
+  }
+
+  /** An opener channel whose onDiscuss answers `answer()`. */
+  function opener(answer: () => Promise<unknown>): OverlayChannel & { asks: number } {
+    const ch = {
+      asks: 0,
+      onMessage: () => {},
+      onDiscuss: () => {
+        ch.asks++
+        return answer()
+      }
+    }
+    return ch
+  }
+
+  const fileSpec = { ...html(), title: 'Review src/x.ts', type: { name: 'file', data: { path: 'src/x.ts' } } }
+
+  it('shows on a typed overlay or once the opener has a handler; never with discuss: false or on a bare one', () => {
+    const m = withDiscuss(fakeSessions())
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    void m.open(W1, { ...fileSpec, discuss: { tabId: 't2' } }, 'plugin p.rev', undefined, undefined, 'p.rev')
+    void m.open(W1, { ...fileSpec, discuss: false }, 'plugin p.rev', undefined, undefined, 'p.rev')
+    void m.open(W1, html(), 'cli')
+    const [typed, preferred, off, bare] = m.infos(W1)
+    expect(typed!.discuss).toEqual({})
+    expect(preferred!.discuss).toEqual({ tabId: 't2' })
+    expect(off).not.toHaveProperty('discuss')
+    expect(bare).not.toHaveProperty('discuss')
+    // A handler brings it to an untyped overlay, and takes it away again; discuss: false stays off.
+    expect(m.setDiscussHandler(W1, bare!.id, true)).toBe(true)
+    expect(m.infos(W1)[3]!.discuss).toEqual({})
+    expect(lastStack(W1)[3]!.discuss).toEqual({})
+    m.setDiscussHandler(W1, bare!.id, false)
+    expect(m.infos(W1)[3]).not.toHaveProperty('discuss')
+    m.setDiscussHandler(W1, off!.id, true)
+    expect(m.infos(W1)[2]).not.toHaveProperty('discuss')
+    // Another window's id is unknown.
+    expect(m.setDiscussHandler(W2, bare!.id, true)).toBe(false)
+  })
+
+  it('sends to an existing tab through the gate, closes as discussed and selects the tab', async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    const ch = opener(() => Promise.resolve({ text: 'The review so far' }))
+    const r = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev'))
+    const id = m.infos(W1)[0]!.id
+    m.setDiscussHandler(W1, id, true)
+    const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't2' }, 'Is this right?')
+    expect(answer).toEqual({ ok: true, tabId: 't2', queued: false })
+    expect(ch.asks).toBe(1)
+    expect(sessions.sent).toEqual([
+      { tabId: 't2', text: 'About: Review src/x.ts\nFile: src/x.ts\n\nThe review so far\n\nIs this right?' }
+    ])
+    await flush()
+    expect(r.results).toEqual([{ kind: 'discussed', tabId: 't2', queued: false }])
+    expect(m.infos(W1)).toEqual([])
+    expect(sessions.selected).toEqual([{ windowId: W1, tabId: 't2' }])
+  })
+
+  it('a busy tab queues it: the result says queued', async () => {
+    const sessions = fakeSessions()
+    sessions.delivered = false
+    const m = withDiscuss(sessions)
+    const r = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev'))
+    const answer = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'tab', tabId: 't1' }, '')
+    expect(answer).toEqual({ ok: true, tabId: 't1', queued: true })
+    // No handler: no ask, no context; the empty note adds nothing.
+    expect(sessions.sent[0]!.text).toBe('About: Review src/x.ts\nFile: src/x.ts')
+    await flush()
+    expect(r.results).toEqual([{ kind: 'discussed', tabId: 't1', queued: true }])
+  })
+
+  it('New session opens a tab with the text as its first prompt, at most 5 a minute per window', async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    for (let i = 0; i < 5; i++) {
+      void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+      const answer = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' }, `note ${i}`)
+      expect(answer).toEqual({ ok: true, tabId: `new${i + 1}`, queued: false })
+    }
+    expect(sessions.opened).toHaveLength(5)
+    expect(sessions.opened[0]).toEqual({ windowId: W1, prompt: 'About: Review src/x.ts\nFile: src/x.ts\n\nnote 0' })
+    expect(sessions.selected.map((s) => s.tabId)).toEqual(['new1', 'new2', 'new3', 'new4', 'new5'])
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    const sixth = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' }, '')
+    expect(sixth.ok).toBe(false)
+    expect(m.infos(W1)).toHaveLength(1)
+    // Another window has its own budget; the minute passing gives this one its budget back.
+    void m.open(W2, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    expect((await m.discuss(W2, m.infos(W2)[0]!.id, { kind: 'new' }, '')).ok).toBe(true)
+    vi.advanceTimersByTime(60_000)
+    expect((await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' }, '')).ok).toBe(true)
+  })
+
+  it('a refused new tab gives its budget back and leaves the overlay open', async () => {
+    const sessions = fakeSessions()
+    sessions.openError = new Error('the project window was closed')
+    const m = withDiscuss(sessions)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    for (let i = 0; i < 6; i++) {
+      expect(await m.discuss(W1, id, { kind: 'new' }, '')).toEqual({ ok: false, error: 'No new session: the project window was closed' })
+    }
+    sessions.openError = undefined
+    expect((await m.discuss(W1, id, { kind: 'new' }, '')).ok).toBe(true)
+  })
+
+  it("an onDiscuss that throws or times out is the popover's error, and nothing is sent", async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    const thrower = opener(() => Promise.reject(new Error('no draft')))
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, thrower, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    m.setDiscussHandler(W1, id, true)
+    expect(await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, '')).toEqual({
+      ok: false,
+      error: 'Reviewer could not give its context: no draft'
+    })
+    const slow = opener(() => new Promise(() => {}))
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, slow, 'p.rev')
+    const slowId = m.infos(W1)[1]!.id
+    m.setDiscussHandler(W1, slowId, true)
+    const pending = m.discuss(W1, slowId, { kind: 'tab', tabId: 't1' }, '')
+    // A second Send while the first waits is refused.
+    expect(await m.discuss(W1, slowId, { kind: 'tab', tabId: 't1' }, '')).toEqual({ ok: false, error: 'Already sending' })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await pending).toEqual({ ok: false, error: 'Reviewer could not give its context: onDiscuss took longer than 5 s' })
+    const odd = opener(() => Promise.resolve({ txt: 'x' }))
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, odd, 'p.rev')
+    const oddId = m.infos(W1)[2]!.id
+    m.setDiscussHandler(W1, oddId, true)
+    expect((await m.discuss(W1, oddId, { kind: 'tab', tabId: 't1' }, '')).ok).toBe(false)
+    expect(sessions.sent).toEqual([])
+    expect(m.infos(W1)).toHaveLength(3)
+  })
+
+  it('null from onDiscuss means no extra context', async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    const ch = opener(() => Promise.resolve(null))
+    void m.open(W1, { ...html(), title: 'Notes' }, 'plugin p.rev', undefined, ch, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    m.setDiscussHandler(W1, id, true)
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, 'look')).ok).toBe(true)
+    expect(sessions.sent[0]!.text).toBe('About: Notes\n\nlook')
+  })
+
+  it("refuses a tab that is not this window's Claude tab, now and again just before the send", async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    let release!: (v: unknown) => void
+    const ch = opener(() => new Promise((resolve) => (release = resolve)))
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    // Another window's tab, or a shell tab id, is refused before the opener is asked.
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't9' }, '')).ok).toBe(false)
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 'shell1' }, '')).ok).toBe(false)
+    m.setDiscussHandler(W1, id, true)
+    expect(ch.asks).toBe(0)
+    // The tab closes while the opener is asked: checked again, nothing sent.
+    const pending = m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, '')
+    await flush()
+    sessions.claude.get(W1)!.delete('t1')
+    release({ text: 'ctx' })
+    expect(await pending).toEqual({ ok: false, error: 'That Claude tab is gone; pick another' })
+    expect(sessions.sent).toEqual([])
+    expect(m.infos(W1)).toHaveLength(1)
+  })
+
+  it('refuses a bare overlay, a too long note, another window and an overlay that closed meanwhile', async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    void m.open(W1, html(), 'cli')
+    const bare = m.infos(W1)[0]!.id
+    expect((await m.discuss(W1, bare, { kind: 'tab', tabId: 't1' }, '')).ok).toBe(false)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    const id = m.infos(W1)[1]!.id
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, 'x'.repeat(4_001))).ok).toBe(false)
+    expect((await m.discuss(W2, id, { kind: 'tab', tabId: 't9' }, '')).ok).toBe(false)
+    let release!: (v: unknown) => void
+    const ch = opener(() => new Promise((resolve) => (release = resolve)))
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev')
+    const third = m.infos(W1)[2]!.id
+    m.setDiscussHandler(W1, third, true)
+    const pending = m.discuss(W1, third, { kind: 'tab', tabId: 't1' }, '')
+    await flush()
+    m.close(W1, third)
+    release(null)
+    expect(await pending).toEqual({ ok: false, error: 'The overlay closed' })
+    expect(sessions.sent).toEqual([])
+    // Without main's sessions wired, Send is an error too.
+    const plain = manager()
+    void plain.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    expect((await plain.discuss(W1, plain.infos(W1)[0]!.id, { kind: 'new' }, '')).ok).toBe(false)
   })
 })

@@ -21,6 +21,7 @@
 //                                                                  (ctx.overlay.buttons, host/overlay-buttons.ts)
 //   overlay.buttonClick { source, ... }     -> { close } | null   a toolbar click: the opener's onButton
 //                                                                  or a type button's run
+//   overlay.discuss { pluginId, handle }    -> { text } | null    Discuss with Claude: the handle's onDiscuss
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
@@ -36,6 +37,7 @@
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
 //   overlay.setButtons { pluginId, handle, buttons } (the opener's buttons, checked again in main),
+//   overlay.discussable { pluginId, handle, on } (the handle has an onDiscuss handler: Discuss shows),
 //   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click),
 //   openExternal { pluginId, url } -> null (ctx.openExternal; main checks the URL and opens the browser)
 // Events to main:
@@ -147,6 +149,7 @@ function start(): void {
       'files.open': (params) => contexts.openFile(params),
       'overlay.buttons': (params) => contexts.overlayButtons(params),
       'overlay.buttonClick': (params) => contexts.overlayButtonClick(params),
+      'overlay.discuss': (params) => contexts.overlayDiscuss(params),
       'plugin.reload': (params) => {
         const [spec] = parsePluginSpecs({ plugins: [(params as { plugin?: unknown } | null)?.plugin] })
         if (!spec) throw new Error('plugin.reload: no plugin')

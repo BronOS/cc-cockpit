@@ -29,6 +29,8 @@
 //   overlay.focus   { pluginId, handle }       -> boolean        bring it to the top of the window's stack
 //   overlay.setButtons { pluginId, handle, buttons } -> boolean  replace that overlay's opener buttons
 //                                                                (checked again, shared/overlay-buttons.ts)
+//   overlay.discussable { pluginId, handle, on } -> boolean      that overlay's opener has an onDiscuss
+//                                                                handler now (on) or no more: Discuss shows
 //   secrets.get     { pluginId, key }          -> string | null  the plugin's app-wide secret store
 //   secrets.set     { pluginId, key, value }   -> null           (plugin-secrets.ts: limits, the
 //   secrets.delete  { pluginId, key }          -> null            reserved `setting:` prefix,
@@ -67,6 +69,7 @@
 //   overlay.buttonClick { source: 'opener', pluginId, handle, buttonId } | { source: 'type', key,
 //                         pluginId, buttonId, info } -> { close } | null   a click, 30 s bound
 //   overlay.ended   { key } (event)                              that typed overlay went
+//   overlay.discuss { pluginId, handle }       -> { text } | null  Discuss asks the opener for context, 5 s
 // and one event the host sends (host-manager routes it to contextDisposed):
 //   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls,
 //                                                                its webviews, its overlays, its panel
@@ -127,6 +130,7 @@ import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler } from '../../host/rpc'
 import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, SessionInfo } from '../../sdk/types'
+import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
 import { isPanelHeaderIcon, parsePanelHeader, type CleanPanelHeader } from '../../shared/panel-header'
@@ -283,6 +287,8 @@ export interface HostApiDeps {
   focusOverlay?(windowId: number, overlayId: string): boolean
   /** OverlayManager.setButtons (handle.setButtons). Without it the request is refused. */
   setOverlayButtons?(windowId: number, overlayId: string, buttons: CleanOverlayButton[]): boolean
+  /** OverlayManager.setDiscussHandler (handle.onDiscuss). Without it the request is refused. */
+  setOverlayDiscuss?(windowId: number, overlayId: string, on: boolean): boolean
   /** OverlayManager.refreshTypeButtons: a plugin's ctx ended, its type buttons leave the window's toolbars. */
   refreshOverlayButtons?(windowId: number): void
   /** ctx.secrets (PluginSecrets). */
@@ -349,6 +355,8 @@ interface OverlayLink {
   closing: boolean
   /** setButtons() came before the overlay existed: applied as soon as it does (the last one). */
   buttons?: CleanOverlayButton[]
+  /** onDiscuss() came before the overlay existed: applied as soon as it does (the last state). */
+  discuss?: boolean
 }
 
 /** A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. */
@@ -551,6 +559,7 @@ export class HostApi {
       'overlay.close': (params) => this.overlayClose(params),
       'overlay.focus': (params) => this.overlayFocus(params),
       'overlay.setButtons': (params) => this.overlaySetButtons(params),
+      'overlay.discussable': (params) => this.overlayDiscussable(params),
       'secrets.get': (params) => this.secretsGet(params),
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
@@ -1056,10 +1065,17 @@ export class HostApi {
             }
             link.buttons = undefined
           }
+          if (link.discuss !== undefined) {
+            this.deps.setOverlayDiscuss?.(this.scope.windowId, overlayId, link.discuss)
+            link.discuss = undefined
+          }
           if (link.closing) this.deps.closeOverlay?.(this.scope.windowId, overlayId)
         },
         // A click on one of its own buttons: to this host, this plugin and this handle only.
         onButton: (buttonId) => this.hostCall('overlay.buttonClick', { source: 'opener', pluginId: pid, handle, buttonId }),
+        // Discuss with Claude's context: to this host, this plugin and this handle only (the
+        // manager bounds it to 5 s too and checks the answer's shape).
+        onDiscuss: () => this.hostCall('overlay.discuss', { pluginId: pid, handle }, DISCUSS_ASK_MS),
         // A dying host (revoked) gets nothing more; the overlay is dismissed when it is gone.
         onMessage: (message) => {
           if (!this.revoked) this.emit('overlay.message', { pluginId: pid, handle, message })
@@ -1180,6 +1196,23 @@ export class HostApi {
       return true
     }
     return this.deps.setOverlayButtons(this.scope.windowId, link.overlayId, buttons)
+  }
+
+  /**
+   * handle.onDiscuss: the opener of that overlay has a handler now (`on: true`) or disposed its last
+   * one. Held until the overlay exists, like setButtons. False for an overlay that ended or that this
+   * plugin did not open.
+   */
+  private overlayDiscussable(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.discussable')
+    if (typeof rest.on !== 'boolean') throw new Error('overlay.discussable: on must be a boolean')
+    if (!link) return false
+    if (!this.deps.setOverlayDiscuss) throw new Error('overlay.discussable: not available')
+    if (link.overlayId === undefined) {
+      link.discuss = rest.on
+      return true
+    }
+    return this.deps.setOverlayDiscuss(this.scope.windowId, link.overlayId, rest.on)
   }
 
   /** A request to the host; refused once it is stopping, or when main wired no `call`. */

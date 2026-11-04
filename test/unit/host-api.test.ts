@@ -12,6 +12,7 @@ import {
   MAX_OVERLAY_MESSAGE_LENGTH,
   MAX_QUEUED_OVERLAY_MESSAGES,
   OverlayManager,
+  type OverlayChannel,
   type OverlayResult,
   type UrlView
 } from '../../src/main/overlays/overlay-manager'
@@ -1384,5 +1385,42 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     const api = new HostApi(deps, scopeA(), () => {})
     apis.push(api)
     await expect(api.overlayButtons.list('k', query)).rejects.toThrow(/not available/)
+  })
+
+  it("onDiscuss: discussable reaches only the opener's overlay (held until it exists); the ask goes to that handle, 5 s", async () => {
+    deps.setOverlayDiscuss = (windowId, overlayId, on) => overlays.setDiscussHandler(windowId, overlayId, on)
+    const { call, hostCalls } = toolbarHost((c) => (c.method === 'overlay.discuss' ? { text: 'ctx' } : null))
+    const result = call('overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com/' }, handle: H })
+    // Sent before the overlay exists: held by the handle.
+    await expect(call('overlay.discussable', { pluginId: 'a.one', handle: H, on: true })).resolves.toBe(true)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    expect(overlays.infos(WIN_A)[0]!.discuss).toEqual({})
+    // Another plugin of the host, a plugin it does not run, a bad flag.
+    await expect(call('overlay.discussable', { pluginId: 'a.two', handle: H, on: false })).resolves.toBe(false)
+    await expect(call('overlay.discussable', { pluginId: 'b.one', handle: H, on: false })).rejects.toThrow('unknown plugin')
+    await expect(call('overlay.discussable', { pluginId: 'a.one', handle: H, on: 'yes' })).rejects.toThrow(/boolean/)
+    expect(overlays.infos(WIN_A)[0]!.discuss).toEqual({})
+    // This manager has no sessions wired: Send is refused before the opener is asked.
+    const answer = await overlays.discuss(WIN_A, overlays.infos(WIN_A)[0]!.id, { kind: 'new' }, '')
+    expect(answer.ok).toBe(false)
+    await expect(call('overlay.discussable', { pluginId: 'a.one', handle: H, on: false })).resolves.toBe(true)
+    expect(overlays.infos(WIN_A)[0]).not.toHaveProperty('discuss')
+    overlays.close(WIN_A, overlays.infos(WIN_A)[0]!.id)
+    await result
+    expect(hostCalls.filter((c) => c.method === 'overlay.discuss')).toEqual([])
+  })
+
+  it('the opener channel asks its own host for the Discuss context with the 5 s bound', async () => {
+    deps.setOverlayDiscuss = (windowId, overlayId, on) => overlays.setDiscussHandler(windowId, overlayId, on)
+    let channel: OverlayChannel | undefined
+    deps.openOverlay = (windowId, spec, opener, peerGone, ch, pluginId) => {
+      channel = ch
+      return overlays.open(windowId, spec, opener, peerGone, ch, pluginId)
+    }
+    const { call, hostCalls } = toolbarHost((c) => (c.method === 'overlay.discuss' ? { text: 'ctx' } : null))
+    void call('overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com/' }, handle: H })
+    await vi.waitFor(() => expect(channel).toBeDefined())
+    await expect(channel!.onDiscuss!()).resolves.toEqual({ text: 'ctx' })
+    expect(hostCalls).toEqual([{ method: 'overlay.discuss', params: { pluginId: 'a.one', handle: H }, timeoutMs: 5_000 }])
   })
 })

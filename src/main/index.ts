@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
-import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type UpdateState } from '../shared/ipc'
+import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type TabInfo, type UpdateState } from '../shared/ipc'
 import { notificationSoundOf } from '../shared/notify-sound'
 import { liveChildren } from './child-registry'
 import { ClaudePlugins, ClaudePluginsBuilds, type SkillSource } from './claude-plugins/claude-plugins'
@@ -109,6 +109,7 @@ import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
+import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
@@ -484,8 +485,29 @@ function start(): void {
     commandForChord,
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
     typeButtons: (windowId): OverlayTypeButtons | undefined => hosts.overlayButtons(windowId),
-    pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId
+    pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId,
+    // Discuss with Claude (design-next §3.5): the window's own project's Claude tabs only, the send
+    // gate, and main's own new-tab path (`sessions`, `tabs` are defined below; these run on a click).
+    discuss: {
+      isClaudeTab: (windowId, tabId) => {
+        const projectId = projectOfWindow(windowId)
+        const entry = sessions.get(tabId)
+        return projectId !== undefined && entry?.projectId === projectId && entry.status !== 'ended'
+      },
+      send: (tabId, text) => sessions.send(tabId, text),
+      openSession: async (windowId, prompt) => {
+        const projectId = projectOfWindow(windowId)
+        if (projectId === undefined) throw new Error('the window is gone')
+        // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &.
+        const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
+        return { tabId: tab.id }
+      },
+      selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId })
+    }
   })
+  /** The project a project window shows, from main's own table. */
+  const projectOfWindow = (windowId: number): string | undefined =>
+    windows.projectWindows().find((w) => w.windowId === windowId)?.projectId
   /**
    * After awaiting the login env (seconds at launch), check that the window that asked is still
    * the project's window. Closing it already ran tabs.closeProject, so a tab spawned now would be
@@ -494,6 +516,27 @@ function start(): void {
    */
   const requireWindow = (projectId: string, windowId: number): void => {
     if (windows.windowIdOf(projectId) !== windowId) throw new Error('the project window was closed')
+  }
+  /**
+   * Start a Claude tab main was asked for (a plugin's ctx.sessions.open, Discuss's New session) and
+   * tell its window, which did not ask for it. The tab manager realpaths `cwd` inside the project
+   * and passes `prompt` as one argv element after `--`. `focus`: select it in the window too.
+   */
+  const openClaudeTab = async (
+    projectId: string,
+    options: { cwd?: string; prompt?: string },
+    windowId: number,
+    focus: boolean
+  ): Promise<TabInfo> => {
+    await spawnReady
+    requireWindow(projectId, windowId)
+    const tab = tabs.create(projectId, { kind: 'claude', ...options })
+    // The window did not ask for it: tell it, or the tab gets no view and no output acks.
+    sendToProject(projectId, 'tabs.added', tab)
+    // Sent after `tabs.added` on the same webContents, so the page already has the tab when it
+    // selects it.
+    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    return tab
   }
   /** Open an overlay once the login env is known (a terminal overlay's PATH depends on it). */
   const openOverlay = async (
@@ -764,18 +807,9 @@ function start(): void {
       // The send gate, as for every programmatic text (send-gate.ts).
       send: (tabId, text) => sessions.send(tabId, text),
       onSessionsChange: (listener) => sessions.onChange(listener),
-      openTab: async (projectId, options, windowId, focus) => {
-        await spawnReady
-        requireWindow(projectId, windowId)
-        const tab = tabs.create(projectId, { kind: 'claude', ...options })
-        // The window did not ask for it: tell it, or the tab gets no view and no output acks.
-        sendToProject(projectId, 'tabs.added', tab)
-        // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made
-        // (Discuss in a new session), so the window shows it. Sent after `tabs.added` on the same
-        // webContents, so the page already has the tab when it selects it.
-        if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-        return tab
-      },
+      // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
+      // "new session" button), so the window shows it.
+      openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
@@ -786,6 +820,7 @@ function start(): void {
       closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
       focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
       setOverlayButtons: (windowId, overlayId, buttons) => overlays.setButtons(windowId, overlayId, buttons),
+      setOverlayDiscuss: (windowId, overlayId, on) => overlays.setDiscussHandler(windowId, overlayId, on),
       refreshOverlayButtons: (windowId) => overlays.refreshTypeButtons(windowId),
       secrets: pluginSecrets,
       oauth: pluginOAuth,
@@ -1664,7 +1699,8 @@ function start(): void {
     message: (windowId, overlayId, text) => overlays.pageMessage(windowId, overlayId, text),
     ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId),
     loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId),
-    button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click)
+    button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click),
+    discuss: (windowId, overlayId, target, note) => overlays.discuss(windowId, overlayId, target, note)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.

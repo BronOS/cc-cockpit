@@ -149,6 +149,13 @@ with full Node access.
   The handle's `onButton(id, fn)` hears a click on one of the spec's `buttons` (any kind of
   overlay; the button shows busy until `fn` settles, at most 30 s), and `setButtons(list)` replaces
   them (same rules: at most 4, ids 1-40 of `A-Z a-z 0-9 . _ -`, labels 1-40 characters).
+  The toolbar's Discuss with Claude shows on an overlay with a `type` or an `onDiscuss` handler
+  (`discuss: false` in the spec hides it; `discuss: { tabId }` preselects that Claude tab). The
+  person picks a Claude tab of the window or New session and may add a note; `onDiscuss(fn)` answers
+  `{ text }` (the context, within 5 s) or `null` for none, and a throw shows its error and sends
+  nothing. The app sends `About: <title>`, the type, your text and the note (20,000 characters at
+  most, your text cut first), closes the overlay with `{ kind: 'discussed', tabId, queued }` and
+  shows the tab.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
   window, whoever opened it. `provider(info)` gets `{ type: { name, data }, title, opener }` and
   answers up to 4 buttons, each with a `run(info)`; it is asked when such an overlay opens, after

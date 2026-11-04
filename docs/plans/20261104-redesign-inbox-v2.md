@@ -484,20 +484,33 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   (the one `ctx.sessions.open` uses, its own 5 a minute per window budget), `src/main/ipc/router.ts`
 - Modify: tests new `test/unit/discuss.test.ts`, `overlay-manager.test.ts`, `send-gate.test.ts` if touched
 
-- [ ] shown on overlays with a `type` or an `onDiscuss` handler unless `discuss: false`; hidden on bare overlays
-- [ ] popover per design-next §3.5: target list (this window's Claude tabs with status, and New session; preselect
+- [x] shown on overlays with a `type` or an `onDiscuss` handler unless `discuss: false`; hidden on bare overlays
+- [x] popover per design-next §3.5: target list (this window's Claude tabs with status, and New session; preselect
   `discuss.tabId` → active Claude tab → New session), optional note ≤ 4,000, Send (Enter in the list, Cmd/Ctrl+Enter in
   the note), Esc closes the popover only
-- [ ] composition: `About: <title>`, the type line (`File: …`, `Item: <source> …`, unknown as `name: k=v` ≤ 500), the
+- [x] composition: `About: <title>`, the type line (`File: …`, `Item: <source> …`, unknown as `name: k=v` ≤ 500), the
   opener's text, the note; ≤ 20,000 with the context cut first; `onDiscuss` throw/timeout → error in the popover, nothing
   sent; `null` → no extra context
-- [ ] existing tab through the send gate (queued chip as today; target re-checked as a Claude tab of the overlay's
+- [x] existing tab through the send gate (queued chip as today; target re-checked as a Claude tab of the overlay's
   window just before the send); New session opens a Claude tab in the project folder with the text as first prompt
-- [ ] close with `{ kind: 'discussed', tabId, queued }` and select the tab in the window. Build on the in-flight
+- [x] close with `{ kind: 'discussed', tabId, queued }` and select the tab in the window. Build on the in-flight
   "Discuss without a note" and "select the new tab" fixes; remove any duplicate path they leave
-- [ ] write tests: composition caps and ordering, preselection, the `/`-refusal never firing, throw/timeout/null
+- [x] write tests: composition caps and ordering, preselection, the `/`-refusal never firing, throw/timeout/null
   answers, target re-check, the per-window new-session budget
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ decided: Discuss shows from `OverlayInfo.discuss` (main computes it: a `type`, or the opener's handle told main it
+  has an `onDiscuss` handler through the new host→main `overlay.discussable { pluginId, handle, on }`, held until the
+  overlay exists like `setButtons`; `discuss: false` always hides). Send is the renderer IPC `overlays.discuss
+  { overlayId, target: { kind: 'tab', tabId } | { kind: 'new' }, note }`, answering `{ ok, tabId, queued }` or
+  `{ ok: false, error }` (shown in the popover, never a rejection); main asks the host with `overlay.discuss
+  { pluginId, handle }` (5 s, both sides), the first handler answering `{ text }` wins, `null` passes to the next.
+  Composition (`src/main/overlays/discuss.ts`): `About: <title>` / type line, blank line, context, blank line, note;
+  a cut context ends with `[… cut to fit]`; `Item: <source> <id>` for `inbox-item`. The limits and the preselection
+  rule live in `src/shared/discuss.ts` (renderer and main). A tab target counts when it is a Claude tab of the
+  window's project whose session has not ended; New session is main's `openClaudeTab` (index.ts, now shared with
+  `ctx.sessions.open`, so there is one new-tab path), its prompt through `prepareText`, and the tab is selected by one
+  `tabs.select` after `discussed`. The popover hides a url overlay's native view like the "…" menu does. The
+  reviewer's own Discuss / New session buttons stay until task 13 removes them.
 
 ### Task 13: Reviewer and editor on the toolbar [model: opus]
 

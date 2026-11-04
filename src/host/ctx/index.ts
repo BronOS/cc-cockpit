@@ -753,6 +753,11 @@ export class HostContexts {
     return Promise.reject(new Error('overlay.buttonClick: source must be opener or type'))
   }
 
+  /** main's `overlay.discuss { pluginId, handle }`: that handle's onDiscuss answer (host/ctx/ui.ts). */
+  overlayDiscuss(params: unknown): Promise<unknown> {
+    return this.overlays.discuss(params)
+  }
+
   /** Main asks to run a command a plugin registered: `{ pluginId, id }`. */
   async runCommand(params: unknown): Promise<null> {
     const { pluginId, id } = (params ?? {}) as { pluginId?: unknown; id?: unknown }

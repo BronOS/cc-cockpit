@@ -3,6 +3,8 @@ import type { OverlayInfo } from '../../shared/ipc'
 import { registerHandlers } from '../commands/keybindings'
 import { usePrefs } from '../prefs/prefs-store'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
+import { DiscussButton } from './DiscussPopover'
+import type { DiscussTab } from './discuss-tabs'
 import { domOrder, followOverlays } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
@@ -64,11 +66,17 @@ function listOverlays(): Promise<OverlayInfo[]> {
 export function OverlayStack(props: {
   /** The stack's size changed (0 when the last overlay closed). */
   onChange: (count: number) => void
+  /** This window's Claude tabs, for Discuss with Claude's target list. */
+  discussTabs: readonly DiscussTab[]
+  /** The window's selected tab: Discuss preselects it when it is a Claude tab. */
+  activeTabId: string | null
 }): React.JSX.Element {
   const [{ stack, order }, setView] = useState<{ stack: OverlayInfo[]; order: string[] }>({ stack: [], order: [] })
   const { tabCloseSide } = usePrefs()
   /** The overlay whose toolbar "…" menu is open, if any: a url overlay hides its view meanwhile. */
   const [menuOpenFor, setMenuOpenFor] = useState<string | undefined>(undefined)
+  /** The overlay whose Discuss popover is open, if any: the same reason. */
+  const [discussOpenFor, setDiscussOpenFor] = useState<string | undefined>(undefined)
   const [terms] = useState(() => new SessionRegistry(overlayIo))
   /** Terminal overlays that have a session here, to dispose it once main drops the overlay. */
   const seen = useRef(new Set<string>())
@@ -175,6 +183,19 @@ export function OverlayStack(props: {
               onMenuOpenChange={(open) =>
                 setMenuOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
               }
+              discuss={
+                overlay.discuss && (
+                  <DiscussButton
+                    overlayId={overlay.id}
+                    preferredTabId={overlay.discuss.tabId}
+                    tabs={props.discussTabs}
+                    activeTabId={props.activeTabId}
+                    onOpenChange={(open) =>
+                      setDiscussOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
+                    }
+                  />
+                )
+              }
             />
             <div className="overlay-body" data-loading={overlay.loading ? 'true' : undefined}>
               {overlay.kind === 'terminal' && (
@@ -184,7 +205,11 @@ export function OverlayStack(props: {
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
               )}
               {overlay.kind === 'url' && (
-                <UrlBody overlayId={overlay.id} url={overlay.url} menuOpen={menuOpenFor === overlay.id} />
+                <UrlBody
+                  overlayId={overlay.id}
+                  url={overlay.url}
+                  menuOpen={menuOpenFor === overlay.id || discussOpenFor === overlay.id}
+                />
               )}
               <OverlayLoader loading={overlay.loading === true} />
             </div>

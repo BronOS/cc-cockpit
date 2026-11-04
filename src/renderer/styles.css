@@ -1870,6 +1870,68 @@ iframe:focus-visible {
   top: calc(100% + 6px);
   right: 0;
 }
+/* Discuss with Claude (DiscussPopover.tsx): the button before the ✕ and its popover under it. */
+.overlay-discuss {
+  position: relative;
+  flex: none;
+}
+.discuss-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  padding: 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-menu);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  color: var(--cc-fg);
+  font-weight: 400;
+  font-size: var(--cc-text-md);
+}
+.discuss-caption {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+}
+.discuss-targets {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.discuss-target {
+  gap: 8px;
+  cursor: pointer;
+}
+.discuss-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.discuss-note textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-bg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+}
+.discuss-note textarea:focus {
+  outline: none;
+  border-color: var(--cc-accent);
+}
+.discuss-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
 /* The body's loader: over the page, taking no pointer events, so a click still reaches it. */
 .overlay-loader {
   position: absolute;

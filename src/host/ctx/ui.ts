@@ -42,6 +42,7 @@ import type {
   OverlayTypeButton,
   PluginContext
 } from '../../sdk/types'
+import { MAX_DISCUSS_TEXT } from '../../shared/discuss'
 import { parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
@@ -285,7 +286,7 @@ interface OverlayLink {
   readonly listeners: Set<MessageListener>
   /** Button id -> click handlers (main's `overlay.buttonClick` for an opener button runs them, `click`). */
   readonly buttonHandlers: Map<string, Set<() => unknown>>
-  /** The Discuss context answerers; the first to return text wins (main asks over RPC). */
+  /** The Discuss context answerers, in the order added; the first to return text wins (main asks over RPC). */
   readonly discussHandlers: Set<() => unknown>
   ended: boolean
 }
@@ -347,6 +348,38 @@ export class OverlayLinks {
     const outcomes = await Promise.allSettled(handlers.map((h) => Promise.resolve().then(h)))
     for (const o of outcomes) {
       if (o.status === 'rejected') this.log(pluginId, `an overlay onButton("${buttonId}") handler threw: ${errorText(o.reason)}`)
+    }
+    return null
+  }
+
+  /**
+   * main's `overlay.discuss { pluginId, handle }` (Discuss with Claude's Send): the handle's
+   * `onDiscuss` handlers are asked in the order they were added, and the first that answers
+   * `{ text }` wins; `null` (or nothing) passes to the next, and all null means "no extra context".
+   * A handler that throws, or answers anything else, fails the ask: main shows the error in the
+   * popover and sends nothing (it also bounds the ask to 5 s). The text is cut to the whole
+   * message's cap here, so a huge answer never crosses the port; main cuts it to fit again.
+   */
+  async discuss(params: unknown): Promise<{ text: string } | null> {
+    const { pluginId, handle } = (params ?? {}) as Record<string, unknown>
+    if (typeof pluginId !== 'string' || typeof handle !== 'string') throw new Error('overlay.discuss: bad handle')
+    const link = this.links.get(`${pluginId}/${handle}`)
+    if (!link || link.ended) return null
+    for (const handler of [...link.discussHandlers]) {
+      let answer: unknown
+      try {
+        answer = await handler()
+      } catch (err) {
+        this.log(pluginId, `an overlay onDiscuss handler threw: ${errorText(err)}`)
+        throw err
+      }
+      if (answer === null || answer === undefined) continue
+      const text = (answer as { text?: unknown }).text
+      if (typeof answer !== 'object' || typeof text !== 'string') {
+        this.log(pluginId, 'an overlay onDiscuss handler answered something other than { text } or null')
+        throw new TypeError('onDiscuss must answer { text } or null')
+      }
+      return { text: text.slice(0, MAX_DISCUSS_TEXT) }
     }
     return null
   }
@@ -531,9 +564,14 @@ export function createUiApi(
         if (!current || current.ended) return () => {}
         deps.alive()
         const entry = (): unknown => handler()
+        // Main shows Discuss on an untyped overlay only while it has a handler: told on the first
+        // one and when the last goes (fire and forget, held in main until the overlay exists).
+        const first = current.discussHandlers.size === 0
         current.discussHandlers.add(entry)
+        if (first) send('overlay.discussable', { pluginId, handle: current.handle, on: true })
         return () => {
-          current.discussHandlers.delete(entry)
+          if (!current.discussHandlers.delete(entry) || current.ended) return
+          if (current.discussHandlers.size === 0) send('overlay.discussable', { pluginId, handle: current.handle, on: false })
         }
       }
     })

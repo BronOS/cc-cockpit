@@ -10,6 +10,7 @@ import type {
   AppearanceView,
   CccCommandView,
   CommandsView,
+  DiscussAnswer,
   InvokeChannel,
   IpcInvokeMap,
   LayoutView,
@@ -37,6 +38,7 @@ import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
+import type { DiscussTarget } from '../../shared/discuss'
 import type { SenderContext } from '../windows/window-manager'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
@@ -861,6 +863,8 @@ export interface OverlayHandlerDeps {
   loaded(windowId: number, overlayId: string): void
   /** A toolbar button click (OverlayManager.buttonClick checks it is a button it shows now). */
   button(windowId: number, overlayId: string, click: OverlayButtonClick): boolean
+  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay, note and target again). */
+  discuss(windowId: number, overlayId: string, target: DiscussTarget, note: string): Promise<DiscussAnswer>
 }
 
 /**
@@ -940,6 +944,18 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     if (source === 'opener') return deps.button(ctx.windowId, overlayId, { source, buttonId })
     if (source === 'type' && typeof pluginId === 'string') return deps.button(ctx.windowId, overlayId, { source, pluginId, buttonId })
     throw new Error('overlays.button: source must be opener, or type with a pluginId')
+  })
+
+  // Discuss on an overlay of the SENDER's window; a tab target is checked there to be a Claude tab
+  // of that window (twice: now and just before the send).
+  router.handleProject('overlays.discuss', (ctx, payload) => {
+    const { target, note } = fields('overlays.discuss', payload)
+    if (typeof note !== 'string') throw new Error('overlays.discuss: note must be a string')
+    const overlayId = overlayIdOf('overlays.discuss', payload)
+    const t = (target ?? {}) as Record<string, unknown>
+    if (t.kind === 'new') return deps.discuss(ctx.windowId, overlayId, { kind: 'new' }, note)
+    if (t.kind === 'tab' && typeof t.tabId === 'string') return deps.discuss(ctx.windowId, overlayId, { kind: 'tab', tabId: t.tabId }, note)
+    throw new Error('overlays.discuss: target must be { kind: "tab", tabId } or { kind: "new" }')
   })
 }
 

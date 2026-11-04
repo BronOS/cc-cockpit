@@ -16,6 +16,7 @@ import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, T
 import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
+import type { DiscussTarget } from './discuss'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -683,12 +684,22 @@ export interface OverlayTypeButtonInfo extends OverlayButtonInfo {
   pluginTitle: string
 }
 
+/** What Discuss's Send answered: where the text went, or why nothing was sent. */
+export type DiscussAnswer = { ok: true; tabId: string; queued: boolean } | { ok: false; error: string }
+
 export type OverlayInfo = OverlayInfoBody & {
   size: OverlaySize
   /** The opener's own buttons (spec `buttons`); absent: none. */
   buttons?: OverlayButtonInfo[]
   /** Buttons other plugins registered for the overlay's type; absent: none. */
   typeButtons?: OverlayTypeButtonInfo[]
+  /**
+   * Present when the toolbar shows Discuss with Claude (design-next §3.5): the overlay has a `type`
+   * or its opener an `onDiscuss` handler, and its spec did not say `discuss: false`. `tabId` is the
+   * opener's preselected Claude tab (`discuss.tabId`), which the popover uses only when it is one of
+   * this window's Claude tabs.
+   */
+  discuss?: { tabId?: string }
   /**
    * Present while the body is not ready yet (design-next §3.4), so the renderer draws a loader over
    * it: html until the page's port is up (`ready: 'load'`, the default) or until it calls
@@ -1012,6 +1023,16 @@ export interface IpcInvokeMap {
     req: { overlayId: string; source: 'opener' | 'type'; pluginId?: string; buttonId: string }
     res: boolean
   }
+  /**
+   * Discuss with Claude's Send (design-next §3.5): main asks the opener's `onDiscuss` for context,
+   * builds the text, checks the target is a Claude tab of the sender's window again (or opens a new
+   * session there, 5 a minute per window), sends it through the send gate, closes the overlay as
+   * `discussed` and selects the tab. `{ error }` when nothing was sent (shown in the popover).
+   */
+  'overlays.discuss': {
+    req: { overlayId: string; target: DiscussTarget; note: string }
+    res: DiscussAnswer
+  }
 
   // Webview panels (PanelInfo.kind 'webview'). The panel key must name a webview panel of a
   // plugin of the sender's project; the view is the one in the sender's window.
@@ -1249,6 +1270,7 @@ export const INVOKE_CHANNELS = [
   'overlays.ready',
   'overlays.loaded',
   'overlays.button',
+  'overlays.discuss',
   'webviews.placement',
   'webviews.step',
   'webviews.current',

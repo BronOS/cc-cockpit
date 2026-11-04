@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { CccCommandView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
@@ -15,6 +15,7 @@ import {
   tabCommandHandlers
 } from '../commands/keybindings'
 import { ipcErrorMessage } from '../ipc-error'
+import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
@@ -83,6 +84,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
   const { snapshot, own } = useSessions()
+  // Discuss with Claude's targets on an overlay's toolbar (OverlayStack).
+  const discussTabs = useMemo(() => discussTabsOf(state.tabs, own), [state.tabs, own])
   const [paletteCommands, setPaletteCommands] = useState<CommandInfo[] | null>(null)
   // The settings screen (Cmd+,): a core overlay drawn by the renderer itself (SettingsOverlay).
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -713,7 +716,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       )}
       {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}
       {settingsOpen && <SettingsOverlay rootRef={settingsRoot} onClose={closeSettings} inert={covered} />}
-      <OverlayStack onChange={overlaysChanged} />
+      <OverlayStack onChange={overlaysChanged} discussTabs={discussTabs} activeTabId={state.activeId} />
     </div>
   )
 }

@@ -6,6 +6,7 @@
 //   html      { kind: 'value', value }  the page posted a result through its MessagePort (inline
 //                                        pages; a plugin's page posts `{ result }` with panel.js)
 //   any       { kind: 'dismissed' }     ✕, Esc, Cmd+Shift+W, the window closed, the app quit
+//   any       { kind: 'discussed', tabId, queued }  Discuss with Claude sent its text (see `discuss`)
 //
 // Messages (ctx.overlay.start, friction round 1 Task 13): an opener that passes an OverlayChannel
 // talks to an html overlay's page while it is open. `post` goes to the page (queued here until the
@@ -25,9 +26,11 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
+import { DISCUSS_ASK_MS, MAX_DISCUSS_NOTE, type DiscussTarget } from '../../shared/discuss'
 import { toError } from '../../shared/error-text'
 import {
   OVERLAY_SIZES,
+  type DiscussAnswer,
   type EventChannel,
   type IpcEventMap,
   type OverlayButtonInfo,
@@ -50,6 +53,7 @@ import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPanelHeaderIcon } from '../../shared/panel-header'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
+import { composeDiscuss, DiscussSessionBudget } from './discuss'
 import { PtyService } from '../pty/pty-service'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
@@ -69,6 +73,7 @@ export type OverlayResult =
   | { kind: 'exit'; code: number }
   | { kind: 'value'; value: unknown }
   | { kind: 'dismissed' }
+  | { kind: 'discussed'; tabId: string; queued: boolean }
 
 /** Where an overlay's page sits in the window, in DIPs (= CSS px at zoom 1). */
 export interface ViewBounds {
@@ -143,6 +148,8 @@ export interface OverlayManagerOptions {
   typeButtons?(windowId: number): OverlayTypeButtons | undefined
   /** A plugin's title, which orders the type buttons' groups in the toolbar. Default: the id. */
   pluginTitle?(pluginId: string): string
+  /** Where Discuss with Claude sends (design-next §3.5). Absent: Send always answers an error. */
+  discuss?: DiscussSessions
   log?: (message: string) => void
 }
 
@@ -164,6 +171,24 @@ export interface OverlayTypeButtons {
   click(key: string, pluginId: string, buttonId: string, query: OverlayTypeQuery): Promise<{ close: boolean }>
   /** The overlay went: the host forgets its runs. */
   ended(key: string): void
+}
+
+/**
+ * main's sessions as Discuss needs them, all scoped to the overlay's window: the tab ids it names
+ * came from a renderer and are checked here (isClaudeTab) before every use.
+ */
+export interface DiscussSessions {
+  /** `tabId` is a Claude tab of `windowId`'s project that has not ended. */
+  isClaudeTab(windowId: number, tabId: string): boolean
+  /** The send gate (SessionRegistry.send): typed now when the tab waits for input, else queued. Throws when refused. */
+  send(tabId: string, text: string): { delivered: boolean }
+  /**
+   * Open a Claude tab in the window's project folder with `prompt` as its first prompt (main's own
+   * open path, the ctx.sessions.open argument rule) and tell the window. Throws when refused.
+   */
+  openSession(windowId: number, prompt: string): Promise<{ tabId: string }>
+  /** Select the tab in the window (the person sees where the text went). */
+  selectTab(windowId: number, tabId: string): void
 }
 
 /** A toolbar click as the renderer reports it: whose button, by id. */
@@ -235,6 +260,11 @@ export interface OverlayChannel {
    * have. Absent: the opener cannot hear clicks, and they are refused.
    */
   onButton?(buttonId: string): Promise<unknown>
+  /**
+   * Discuss with Claude asks the opener's `onDiscuss` handlers for the context (`{ text }` or null).
+   * Asked only once the opener said it has a handler (setDiscussHandler).
+   */
+  onDiscuss?(): Promise<unknown>
 }
 
 /** Re-exported: a dismissed terminal overlay's program gets SIGKILL after this (PtyService.terminate). */
@@ -315,6 +345,12 @@ interface Overlay {
   running: Set<string>
   /** Bumped by every type-button ask: only the newest answer is applied. */
   typeAsk: number
+  /** The spec's `discuss`: false hides Discuss, `{ tabId }` preselects a tab. */
+  discussSpec?: false | { tabId?: string }
+  /** The opener has an `onDiscuss` handler now (setDiscussHandler). */
+  discussHandler: boolean
+  /** A Send is under way: a second one is refused until it ends. */
+  discussing: boolean
 }
 
 /** A click's key in `running`. */
@@ -340,6 +376,8 @@ export class OverlayManager {
   private readonly pty: PtyService
   private readonly options: OverlayManagerOptions
   private readonly log: (message: string) => void
+  /** Discuss's New session budget, per window. */
+  private readonly discussSessions = new DiscussSessionBudget()
 
   constructor(options: OverlayManagerOptions) {
     this.options = options
@@ -423,13 +461,18 @@ export class OverlayManager {
       openerButtons: parsed.buttons ?? [],
       typeButtons: [],
       running: new Set(),
-      typeAsk: 0
+      typeAsk: 0,
+      discussHandler: false,
+      discussing: false
     }
+    if (parsed.discuss !== undefined) overlay.discussSpec = parsed.discuss
     if (pluginId !== undefined) overlay.pluginId = pluginId
     if (parsed.type) {
       overlay.type = parsed.type
       overlay.buttonsKey = randomUUID()
     }
+    // Discuss shows for a typed overlay from the start; an onDiscuss handler adds it later.
+    overlay.info = withDiscuss(overlay.info, overlay)
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
     // Every kind keeps it (its buttons' clicks go there); only an html page uses the messaging part.
     if (channel) overlay.channel = channel
@@ -793,6 +836,101 @@ export class OverlayManager {
     for (const overlay of this.stacks.get(windowId) ?? []) this.askTypeButtons(overlay)
   }
 
+  /**
+   * The opener registered its first `onDiscuss` handler (`on`), or disposed its last one (HostApi
+   * found the overlay by plugin and handle). Discuss shows or goes with it, unless the overlay has a
+   * type (shown anyway) or its spec said `discuss: false` (never). False for an overlay that is gone.
+   */
+  setDiscussHandler(windowId: number, overlayId: string, on: boolean): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return false
+    if (overlay.discussHandler === (on === true)) return true
+    overlay.discussHandler = on === true
+    overlay.info = withDiscuss(overlay.info, overlay)
+    this.changed(windowId)
+    return true
+  }
+
+  /**
+   * Discuss with Claude's Send, from the window's renderer (design-next §3.5, §3.6). The renderer
+   * is not trusted: the overlay must show Discuss, the note is at most MAX_DISCUSS_NOTE, and a tab
+   * target must be a Claude tab of this window, checked when the request arrives and again just
+   * before the send (the context ask may take seconds, the tab may close meanwhile). The opener's
+   * `onDiscuss` answers within DISCUSS_ASK_MS; a throw or a timeout is the answer's error and nothing
+   * is sent. Then the text (discuss.ts) goes through the send gate, or opens a new session in the
+   * project folder (DiscussSessionBudget: 5 a minute per window), the overlay closes as
+   * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window. Never rejects.
+   */
+  async discuss(windowId: number, overlayId: string, target: DiscussTarget, note: unknown): Promise<DiscussAnswer> {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay?.info.discuss) return { ok: false, error: 'Discuss is not available on this overlay' }
+    const sessions = this.options.discuss
+    if (!sessions) return { ok: false, error: 'Discuss is not available' }
+    if (typeof note !== 'string') return { ok: false, error: 'The note must be text' }
+    if (note.length > MAX_DISCUSS_NOTE) return { ok: false, error: `The note is longer than ${MAX_DISCUSS_NOTE} characters` }
+    const targetProblem = (): string | undefined =>
+      target.kind === 'tab' && !sessions.isClaudeTab(windowId, target.tabId) ? 'That Claude tab is gone; pick another' : undefined
+    const early = targetProblem()
+    if (early) return { ok: false, error: early }
+    if (overlay.discussing) return { ok: false, error: 'Already sending' }
+    overlay.discussing = true
+    try {
+      let context: string | undefined
+      if (overlay.discussHandler && overlay.channel?.onDiscuss) {
+        const ask = overlay.channel.onDiscuss.bind(overlay.channel)
+        let answer: unknown
+        try {
+          answer = await within(Promise.resolve().then(ask), DISCUSS_ASK_MS, 'onDiscuss')
+        } catch (err) {
+          return { ok: false, error: `${this.openerName(overlay)} could not give its context: ${toError(err).message}` }
+        }
+        if (answer !== null && answer !== undefined) {
+          const text = (answer as { text?: unknown }).text
+          if (typeof answer !== 'object' || typeof text !== 'string') {
+            return { ok: false, error: `${this.openerName(overlay)} answered Discuss with something other than { text } or null` }
+          }
+          context = text
+        }
+      }
+      // The overlay may have closed while the opener was asked: nothing to discuss any more.
+      if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
+      const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, note })
+      const late = targetProblem()
+      if (late) return { ok: false, error: late }
+      let tabId: string
+      let queued: boolean
+      if (target.kind === 'tab') {
+        try {
+          queued = !sessions.send(target.tabId, text).delivered
+        } catch (err) {
+          return { ok: false, error: `Not sent: ${toError(err).message}` }
+        }
+        tabId = target.tabId
+      } else {
+        if (!this.discussSessions.take(windowId)) {
+          return { ok: false, error: 'Too many new sessions from Discuss in the last minute; try again shortly' }
+        }
+        try {
+          tabId = (await sessions.openSession(windowId, text)).tabId
+        } catch (err) {
+          this.discussSessions.refund(windowId)
+          return { ok: false, error: `No new session: ${toError(err).message}` }
+        }
+        // The prompt is the tab's first argv: it waits for Claude to start, never in the gate.
+        queued = false
+      }
+      this.finish(overlay, { kind: 'discussed', tabId, queued })
+      try {
+        sessions.selectTab(windowId, tabId)
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: selecting tab ${tabId} failed: ${String(err)}`)
+      }
+      return { ok: true, tabId, queued }
+    } finally {
+      overlay.discussing = false
+    }
+  }
+
   /** The window closed: every overlay it had is dismissed. */
   closeWindow(windowId: number): void {
     for (const overlay of [...(this.stacks.get(windowId) ?? [])].reverse()) {
@@ -800,6 +938,13 @@ export class OverlayManager {
     }
     this.stacks.delete(windowId)
     this.lastTop.delete(windowId)
+    this.discussSessions.forget(windowId)
+  }
+
+  /** Who opened it, for an error the person reads: the plugin's title, else "The opener". */
+  private openerName(overlay: Overlay): string {
+    if (overlay.pluginId === undefined) return 'The opener'
+    return this.options.pluginTitle?.(overlay.pluginId) ?? overlay.pluginId
   }
 
   /** App quit: dismiss everything and kill every program. */
@@ -942,6 +1087,19 @@ export class OverlayManager {
       else if (before?.view) this.options.views.focusWindow(windowId)
     }
   }
+}
+
+/**
+ * `info` with `discuss` as the overlay's state says (design-next §3.5): shown for an overlay with a
+ * type or an onDiscuss handler, unless its spec said `discuss: false`; a bare overlay has none.
+ */
+function withDiscuss(info: OverlayInfo, overlay: Pick<Overlay, 'type' | 'discussHandler' | 'discussSpec'>): OverlayInfo {
+  const next = { ...info }
+  delete next.discuss
+  if (overlay.discussSpec === false || (!overlay.type && !overlay.discussHandler)) return next
+  const tabId = overlay.discussSpec?.tabId
+  next.discuss = tabId === undefined ? {} : { tabId }
+  return next
 }
 
 /** The renderer's view of an overlay; an html page stays in main and is served at `src`. */
