@@ -344,6 +344,12 @@ export interface HostManagerDeps {
    */
   onPluginsReady?(projectId: string, pluginIds: string[]): void
   /**
+   * A plugin of the window's host became ready (launch, restart or reload): typed overlays already
+   * open there are asked for type buttons again, since the old host's answers are stale and an
+   * overlay opened while no host ran never had any.
+   */
+  onHostReady?(windowId: number): void
+  /**
    * Which plugins run in the project's host may have changed (a launch, a reload, a take-down, the
    * process gone): the slot frames are resolved again (LayoutService.refreshSlots).
    */
@@ -1351,6 +1357,7 @@ export class HostManager {
     for (const id of list) rec.slotEpochs.set(id, (rec.slotEpochs.get(id) ?? 0) + 1)
     try {
       this.deps.onPluginsReady?.(rec.projectId, list)
+      this.deps.onHostReady?.(rec.windowId)
     } catch (err) {
       this.log(`plugin host ${rec.projectId}: ${errorText(err)}`)
     }

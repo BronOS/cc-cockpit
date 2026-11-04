@@ -740,6 +740,7 @@ function start(): void {
     },
     // The plugins' panel pages reload and connect to the host that just started (panel-ports.ts).
     onPluginsReady: (projectId, pluginIds) => panelPorts.hostReady(projectId, pluginIds),
+    onHostReady: (windowId) => overlays.refreshTypeButtons(windowId),
     // A provider started, reloaded or stopped: the window's slot frames follow (layout-service.ts).
     onSlotsChanged: (projectId) => layouts.refreshSlots(projectId),
     notify: (notice, source, signal) => {

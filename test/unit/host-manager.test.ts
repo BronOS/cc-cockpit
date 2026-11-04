@@ -161,6 +161,7 @@ describe('HostManager', () => {
   let pluginLines: PluginLogEntry[]
   /** Launches that finished activating (onPluginsReady: their panel pages reload). */
   let ready: { projectId: string; pluginIds: string[] }[]
+  let readyWindows: number[]
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -174,6 +175,7 @@ describe('HostManager', () => {
     notifyAnswer = () => new Promise(() => {})
     pluginLines = []
     ready = []
+    readyWindows = []
     sink = {
       added: [],
       removed: [],
@@ -204,6 +206,7 @@ describe('HostManager', () => {
       },
       pluginLog: (entry) => void pluginLines.push(entry),
       onPluginsReady: (projectId, pluginIds) => void ready.push({ projectId, pluginIds }),
+      onHostReady: (windowId) => void readyWindows.push(windowId),
       log
     })
   })
@@ -263,6 +266,11 @@ describe('HostManager', () => {
     expect(factory.spawned).toHaveLength(0)
     expect(layouts.panels.get('p3:a.static')).toEqual([panel('main')])
     expect(manager.status('p3')).toEqual({ running: false, stopped: false, plugins: [] })
+  })
+
+  it('tells the window when its host is ready (typed overlays ask for type buttons again)', async () => {
+    await manager.open('p1', 1)
+    expect(readyWindows).toContain(1)
   })
 
   it('reloads the panels of a static-only plugin after an update or a re-enable (no host to signal it)', async () => {
