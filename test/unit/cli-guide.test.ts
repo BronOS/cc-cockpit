@@ -35,6 +35,7 @@ describe('ccc guide', () => {
       'plugins',
       'api',
       'panels',
+      'style',
       'settings-secrets',
       'dev-loop',
       'webview',
@@ -231,5 +232,34 @@ describe('guide drift guards', () => {
     for (const member of ['ccPanel.post', 'ccPanel.onMessage', 'theme.current', 'theme.onChange']) {
       expect(topic('panels')).toContain(member)
     }
+  })
+})
+
+describe('style topic drift guard', () => {
+  const classes = (text: string): Set<string> =>
+    new Set(Array.from(text.matchAll(/\.(cc-[a-z][a-z-]*)/g), (m) => m[1] as string))
+  // The comments name classes in prose (`cc-shell` is the shell's own marker, not a component).
+  const css = readFileSync(join(__dirname, '..', '..', 'src', 'sdk', 'components.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const cssClasses = classes(css)
+  cssClasses.delete('cc-shell')
+  // In the guide a class appears as `.cc-x` in prose and as `class="cc-x ..."` in the examples.
+  const guide = topic('style')
+  const guideClasses = classes(guide)
+  for (const m of guide.matchAll(/class="([^"]+)"/g)) {
+    for (const c of (m[1] as string).split(/\s+/)) if (c.startsWith('cc-')) guideClasses.add(c)
+  }
+
+  it('documents every class of components.css', () => {
+    expect(cssClasses.size).toBeGreaterThan(20)
+    for (const c of cssClasses) expect(guideClasses, c).toContain(c)
+  })
+
+  it('names no class that components.css lacks', () => {
+    for (const c of guideClasses) expect(cssClasses, c).toContain(c)
+  })
+
+  it('prints through ccc guide style', () => {
+    expect(guideText('style')).toContain('# Style: the component stylesheet')
+    expect(guideText()).toContain('  style')
   })
 })

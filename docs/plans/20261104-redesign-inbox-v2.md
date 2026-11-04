@@ -227,14 +227,14 @@
 - Modify: `test/unit/cli-guide.test.ts` (drift test), `test/unit/claude-plugins.test.ts` if it checks the skill text
 - Modify: `docs/design.md` (§4 Panels: the second sheet; §5 Panel side; §7 guide topic list)
 
-- [ ] `style.md`: each component with a short HTML example, the spacing scale and sizes, the rules of design-next §1
+- [x] `style.md`: each component with a short HTML example, the spacing scale and sizes, the rules of design-next §1
   (rows for items, cards for non-items, one primary, destructive asks or offers undo, empty/loading/error always
   drawn, sentence case, `title` on icon-only controls, keyboard and visible focus, no settings forms in a panel, own
   controls only where none fits, still with the tokens)
-- [ ] drift test: every `.cc-*` class in `components.css` appears in `style.md` and every `.cc-*` in `style.md` exists in
+- [x] drift test: every `.cc-*` class in `components.css` appears in `style.md` and every `.cc-*` in `style.md` exists in
   the CSS
-- [ ] design.md changes listed in design-next §1
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green and `ccc guide style` prints the topic
+- [x] design.md changes listed in design-next §1
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green and `ccc guide style` prints the topic
   (cli unit test)
 
 ### Task 3: Bundled pages, hello and the example on the components [model: sonnet] [SYNC]

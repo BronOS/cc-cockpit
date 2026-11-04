@@ -284,6 +284,12 @@ nothing of the app ends up in the bundle. See the `dev-loop` topic for linking a
 `plugins/hello` in the cc-cockpit repo uses every contribution point; copy it as a starting
 point.
 
+## Before you publish
+
+Read your pages against `ccc guide style`: the app's components (`.cc-btn`, `.cc-row`, `.cc-card`, `.cc-empty`, ...)
+instead of home-made buttons and lists, one primary button per view, empty, loading and error states drawn,
+a `title` on every icon-only control.
+
 ## Publishing in the Marketplace
 
 Commit the built `main` file, tag the commit, then open a PR on the index repo adding `plugins/<id>.json`

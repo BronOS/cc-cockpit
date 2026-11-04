@@ -16,6 +16,7 @@ when the app is closed. Read the topic that matches the task before acting:
 | Writing a plugin: manifest, host, build | `ccc guide plugins` |
 | The full `ctx` reference for a plugin host | `ccc guide api` |
 | Panel pages and the `ccPanel` SDK | `ccc guide panels` |
+| Component stylesheet and style rules for plugin pages | `ccc guide style` |
 | Settings forms, secret fields, `ctx.secrets`, OAuth | `ccc guide settings-secrets` |
 | Linking, rebuilding and debugging a plugin | `ccc guide dev-loop` |
 | Webview panels: web pages and local files in a panel | `ccc guide webview` |
@@ -30,3 +31,5 @@ Rules:
 - Never type into another tab's session; other tabs and windows are not yours.
 - A plugin runs with full Node access: linking or installing one is the user's decision, never
   yours alone.
+- Reviewing or writing a plugin page: check it uses the components and follows the rules of `ccc guide style`
+  (rows for items, one primary button, empty/loading/error states drawn, a `title` on icon-only controls).

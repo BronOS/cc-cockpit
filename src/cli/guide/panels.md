@@ -26,7 +26,8 @@ load, the strip shows the title's first letter.
 - A panel or overlay page cannot submit a `<form>`: the frame is sandboxed without
   `allow-forms`, so its `submit` event never fires (Enter in a field included). Use buttons
   (`type="button"`) and act on their `click`.
-- Include the SDK first: `<script src="/__sdk/panel.js"></script>`. It defines `ccPanel`.
+- Include the SDK first: `<script src="/__sdk/panel.js"></script>`. It defines `ccPanel` and gives the page the
+  app's component stylesheet (buttons, inputs, rows, cards, ...): see `ccc guide style`.
 
 ## `ccPanel`
 

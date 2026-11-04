@@ -13,6 +13,7 @@ import overview from './guide/overview.md?raw'
 import panels from './guide/panels.md?raw'
 import plugins from './guide/plugins.md?raw'
 import settingsSecrets from './guide/settings-secrets.md?raw'
+import style from './guide/style.md?raw'
 import webview from './guide/webview.md?raw'
 // The SDK types are the one topic that is source code, not markdown: `ccc guide types` prints the
 // file itself (verbatim, so a copy is byte for byte what the app ships). Bundled like the others.
@@ -33,6 +34,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
   { name: 'plugins', summary: 'writing a plugin: manifest, host, build', text: plugins },
   { name: 'api', summary: 'the full ctx reference for the plugin host', text: api },
   { name: 'panels', summary: 'panel pages and the ccPanel SDK', text: panels },
+  { name: 'style', summary: 'the component stylesheet: buttons, rows, cards and the rules for plugin pages', text: style },
   { name: 'settings-secrets', summary: 'settings forms, secret fields, ctx.secrets, OAuth', text: settingsSecrets },
   { name: 'dev-loop', summary: 'linking, rebuilding and debugging a plugin', text: devLoop },
   { name: 'webview', summary: 'webview panels: showing web pages and local files', text: webview },

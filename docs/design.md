@@ -403,7 +403,9 @@ not abbreviated to `~`.
 from the plugin's files, talking to their plugin backend through a `MessagePort` that main hands
 over. The core injects the theme's CSS variables into every panel. The SDK also adopts a constructable
 stylesheet with thin themed scrollbars (`:where()`, zero specificity, so a plugin's CSS wins; a constructable
-sheet needs no CSP change); the theme message carries `mac` and the rule is skipped on macOS, where overlay
+sheet needs no CSP change), and, installed first, the component stylesheet `src/sdk/components.css` (`?raw` import,
+every rule in `@layer cc` so a plugin's own rule wins; the shell's `styles.css` imports the same file; `ccc guide style`);
+the theme message carries `mac` and the rule is skipped on macOS, where overlay
 scrollbars already fit. The shell has the same rule in `styles.css`, scoped by `html[data-platform]`.
 
 **Overlay stack.** Opened by plugins (API), the CLI and the user's overlay entries of the new-tab
@@ -819,7 +821,7 @@ dispatched inside the host with no round trip to main.
   security boundary (one JS realm); it guards against honest mistakes. A service call reaches no limits: no rate,
   size or time cap, since it never leaves the host; a provider that must protect itself counts its callers.
 
-**Panel side**: a small `panel.js` SDK (`post`, `onMessage`, `theme`). Panels have no direct
+**Panel side**: a small `panel.js` SDK (`post`, `onMessage`, `theme`) that also installs the component stylesheet (§4 Panels). Panels have no direct
 API; everything goes through their own plugin backend, so the plugin decides what its panel may do.
 
 **Skills**: a plugin brings Claude skills with `contributes.skills`. Main keeps a generated tree
@@ -836,7 +838,7 @@ key (`allowed-tools`, `model`, `hooks`) refuses the plugin, since those change w
 do. Copy limits per plugin: 50 files, 50 folders, 1000 directory entries (dot ones too), 1 MiB, 8 folders deep, regular files only (dot entries skipped, never copied), no `SKILL.md` (any case) below the top one, re-checked
 while copied.
 
-**Telling Claude about the app**: `ccc guide [topic]` prints docs bundled into the CLI (Vite
+**Telling Claude about the app**: `ccc guide [topic]` (topics: overview, cli, plugins, api, panels, style, settings-secrets, dev-loop, webview, types) prints docs bundled into the CLI (Vite
 `?raw` imports; works with the app closed), and `ccc hook SessionStart` prints one line before
 delivering the event ("You are inside cc-cockpit; run `ccc guide` …"), produced locally so it
 cannot fail the hook. Two ways in, so one failing does not leave Claude blind. Drift tests tie
