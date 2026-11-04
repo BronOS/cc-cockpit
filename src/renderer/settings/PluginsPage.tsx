@@ -1,6 +1,7 @@
 import { useId, useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
+import { SLOT_NONE, slotPickKey } from '../../shared/slots'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
@@ -58,6 +59,9 @@ export function PluginsPage(props: {
   // plugin offers to open files, since the built-in viewer is always the other choice.
   const openFile = services.data?.openFile
   const showOpenFile = openFile !== undefined && openFile.candidates.length > 0
+  // Slot picks (design-next §2) sit here too, under `@slot:<type>`: a row as soon as one plugin
+  // draws the type, since "None" (turn it off for the project) is always the other choice.
+  const slots = (services.data?.slots ?? []).filter((sl) => sl.candidates.length > 0)
   const pickProvider = (service: string, pluginId: string | null): void => {
     void run('provider', () => window.cockpit.invoke('settings.pluginServiceProvider', { service, pluginId })).then(reload)
   }
@@ -130,7 +134,7 @@ export function PluginsPage(props: {
           </div>
         </form>
       </Group>
-      {(shared.length > 0 || showOpenFile) && (
+      {(shared.length > 0 || showOpenFile || slots.length > 0) && (
         <Group title="Services" description="Where this project has a choice of plugin, the one picked answers.">
           <div className="settings-card" data-testid="service-picks">
             {showOpenFile && (
@@ -171,6 +175,34 @@ export function PluginsPage(props: {
                       {nameOf(id)}
                     </option>
                   ))}
+                </Select>
+              </Row>
+            ))}
+            {slots.map((sl) => (
+              <Row
+                key={sl.type}
+                label={`Plugin drawing the ${sl.type} slot`}
+                help={
+                  sl.selected === null
+                    ? 'Several plugins draw this slot: nothing is drawn until one is picked.'
+                    : 'Where a panel (or the app) places this slot, the plugin picked draws it.'
+                }
+                htmlFor={`slot-pick-${sl.type}`}
+              >
+                <Select
+                  id={`slot-pick-${sl.type}`}
+                  wide
+                  disabled={busy !== null}
+                  value={sl.selected ?? ''}
+                  onChange={(e) => pickProvider(slotPickKey(sl.type), e.target.value === '' ? null : e.target.value)}
+                >
+                  {sl.selected === null && <option value="">Pick one (nothing drawn until then)</option>}
+                  {sl.candidates.map((id) => (
+                    <option key={id} value={id}>
+                      {nameOf(id)}
+                    </option>
+                  ))}
+                  <option value={SLOT_NONE}>None</option>
                 </Select>
               </Row>
             ))}

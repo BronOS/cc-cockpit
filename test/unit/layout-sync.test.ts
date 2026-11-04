@@ -154,4 +154,25 @@ describe('LayoutSync', () => {
     sync.start()
     expect(fake.listeners).toBe(1)
   })
+
+  it('carries the app slot frames, also while a local edit is unanswered', async () => {
+    const { sync, fake } = await started()
+    expect(sync.get().appSlots).toEqual([])
+    const frame = {
+      id: 's1',
+      type: 'sessions-strip',
+      pluginId: 'example.strip',
+      src: 'cc-plugin://example.strip/slots/strip.html',
+      position: 'top-bar' as const,
+      height: 24,
+      minHeight: 24
+    }
+    sync.preview((l) => resizeZone(l, 'left', 520))
+    fake.emit({ ...storedView(), appSlots: [frame] })
+    expect(sync.get().appSlots).toEqual([frame])
+    expect(sync.get().layout.zones.left.size).toBe(520)
+    // A view without them clears them.
+    fake.emit(storedView())
+    expect(sync.get().appSlots).toEqual([])
+  })
 })

@@ -2,7 +2,7 @@
 // in step with main. Split from use-layout.ts (the React wrapper) so unit tests, which run in
 // plain Node, can play out the races between local edits, `layout.set` answers and
 // `layout.updated` events with a fake bridge.
-import type { CockpitApi, LayoutView, PanelInfo } from '../../shared/ipc'
+import type { CockpitApi, LayoutView, PanelInfo, SlotFrameInfo } from '../../shared/ipc'
 import { defaultLayout, type LayoutState } from '../../shared/layout'
 
 /** The part of `window.cockpit` this needs; structural so tests can pass a fake. */
@@ -11,7 +11,11 @@ export type LayoutBridge = Pick<CockpitApi, 'invoke' | 'on'>
 export interface LayoutSnapshot {
   layout: LayoutState
   panels: PanelInfo[]
+  /** The app's own slot frames (`LayoutView.appSlots`: the top bar's `sessions-strip`); empty for none. */
+  appSlots: SlotFrameInfo[]
 }
+
+const NO_SLOTS: SlotFrameInfo[] = []
 
 /**
  * main owns the stored layout and the list of panels that exist; this keeps a working copy so a
@@ -28,7 +32,7 @@ export interface LayoutSnapshot {
  *    that, losing the drag; the answer to the edit's `layout.set` brings main's reconciled layout.
  */
 export class LayoutSync {
-  private snapshot: LayoutSnapshot = { layout: defaultLayout(), panels: [] }
+  private snapshot: LayoutSnapshot = { layout: defaultLayout(), panels: [], appSlots: NO_SLOTS }
   private ready = false
   /** Bumped by every local edit. */
   private edits = 0
@@ -114,13 +118,14 @@ export class LayoutSync {
 
   /** A view main sent on its own (an event, or the `layout.get` answer). */
   private onView(view: LayoutView): void {
-    if (this.ready && this.edits !== this.acked) this.set({ ...this.snapshot, panels: view.panels })
+    // The app's slot frames are not the layout: like the panels, they follow main at once.
+    if (this.ready && this.edits !== this.acked) this.set({ ...this.snapshot, panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })
     else this.take(view)
   }
 
   private take(view: LayoutView): void {
     this.ready = true
-    this.set({ layout: view.layout, panels: view.panels })
+    this.set({ layout: view.layout, panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })
   }
 
   private set(next: LayoutSnapshot): void {

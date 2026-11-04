@@ -1345,6 +1345,54 @@ iframe:focus-visible {
   width: 100%;
   border: 0;
 }
+/* Slot frames (renderer/zones/SlotFrame.tsx, design-next §2): other plugins' pages the shell draws
+   above and below a panel's own frame, each at its own height (inline style); the panel's frame
+   keeps the rest. A webview panel sits in the same column (.panel-slot-column). */
+.panel-slot-column {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.slot-frames {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+.slot-frames-top {
+  border-bottom: 1px solid var(--cc-border);
+}
+.slot-frames-bottom {
+  border-top: 1px solid var(--cc-border);
+}
+.slot-frame-wrap {
+  flex: none;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+.slot-frame-wrap + .slot-frame-wrap {
+  border-top: 1px solid var(--cc-border);
+}
+.slot-frame {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+/* The top bar's slot: the bar's height, the width left between the project name and the "+". */
+.strip-nav.has-slot {
+  align-self: stretch;
+}
+.slot-frame-top-bar {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+.top-strip.title-bar .slot-frame-top-bar {
+  -webkit-app-region: no-drag;
+}
 .plugin-panel-error {
   flex: none;
   margin: 0;

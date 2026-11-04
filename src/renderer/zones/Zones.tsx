@@ -4,7 +4,7 @@ import { registerHandlers } from '../commands/keybindings'
 import type { SideZone } from './auto-hide'
 import { useAutoHide } from './use-auto-hide'
 import { Zone } from './Zone'
-import { useLayout } from './use-layout'
+import type { LayoutController } from './use-layout'
 
 /**
  * The window below the top strip (design §4): left, right and bottom zones around the centre,
@@ -13,10 +13,12 @@ import { useLayout } from './use-layout'
  */
 export function Zones(props: {
   children: React.ReactNode
+  /** The window's layout (useLayout, made by TabsPane: the top bar reads its app slots too). */
+  controller: LayoutController
   /** A modal screen covers the window (settings): nothing here may take the focus or a key. */
   inert?: boolean
 }): React.JSX.Element {
-  const controller = useLayout()
+  const { controller } = props
   const upper = useRef<HTMLDivElement>(null)
   // Side zones the window hid for a narrow terminal (auto-hide.ts): drawn collapsed, stored as they are.
   const autoHide = useAutoHide(upper, controller.layout, controller.panels)

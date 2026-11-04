@@ -23,6 +23,7 @@ import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
 import { UpdateNotice } from '../updates/UpdateNotice'
+import { useLayout } from '../zones/use-layout'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
 import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
@@ -72,6 +73,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [fullScreen, setFullScreen] = useState(props.fullScreen === true)
   useEffect(() => window.cockpit.on('window.state', (s) => setFullScreen(s.fullScreen)), [])
   const [state, dispatch] = useReducer(tabsReducer, initialTabsState)
+  // The window's zone layout, here rather than in Zones: the top bar draws the app's slot frames
+  // (`appSlots`) that come with the same view.
+  const layout = useLayout()
   // A see-through window's tab terminals let its glass through; overlays keep their own registry,
   // opaque (OverlayStack).
   const [sessions] = useState(() => new SessionRegistry(tabIo, { seeThrough: isSeeThrough() }))
@@ -642,9 +646,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         {...(props.project ? { project: props.project } : {})}
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
-        entries={otherWindowsEntries(snapshot.strip, [...own.values()])} onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+        entries={otherWindowsEntries(snapshot.strip, [...own.values()])}
+        slots={layout.appSlots}
+        onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
       <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
-      <Zones inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
+      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
         <TabBar
           tabs={state.tabs}
           activeId={state.activeId}

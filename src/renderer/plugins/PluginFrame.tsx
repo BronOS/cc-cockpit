@@ -14,19 +14,40 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  * its port: a panel's comes from main (its plugin's host on the other end), an overlay's is local.
  * `connect` returns the clean-up for that load. The page (src/sdk/panel.ts) takes both only from
  * this window, its parent.
+ *
+ * A slot frame (SlotFrame) also passes `intro`, posted on every load just before the port (the
+ * SDK's `cc-plugin.slot`: the page is a slot of that type), and `onPageMessage` for what the page
+ * posts to its parent (`ccPanel.slot.setHeight`). Only messages whose source is this frame's own
+ * window reach it, so another frame cannot speak for this one.
  */
 export function PluginFrame(props: {
   src: string
   title: string
   className: string
   connect: (deliver: (port: MessagePort) => void) => () => void
+  intro?: object
+  onPageMessage?: (data: unknown) => void
 }): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null)
   const cleanup = useRef<(() => void) | undefined>(undefined)
   const connect = useRef(props.connect)
+  const intro = useRef(props.intro)
+  const onPageMessage = useRef(props.onPageMessage)
   useEffect(() => {
     connect.current = props.connect
+    intro.current = props.intro
+    onPageMessage.current = props.onPageMessage
   })
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent): void => {
+      const own = frame.current?.contentWindow
+      if (!own || event.source !== own) return
+      onPageMessage.current?.(event.data)
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [])
 
   useEffect(() => {
     // '*': a sandboxed frame's origin is opaque, there is no origin to name; only this frame's
@@ -49,7 +70,10 @@ export function PluginFrame(props: {
     cleanup.current = connect.current((port) => {
       // The frame may have loaded yet another page meanwhile; the port is for whatever is there.
       const now = frame.current?.contentWindow
-      if (now) now.postMessage(portMessage, '*', [port])
+      if (now) {
+        if (intro.current) now.postMessage(intro.current, '*')
+        now.postMessage(portMessage, '*', [port])
+      }
       else port.close()
     })
   }

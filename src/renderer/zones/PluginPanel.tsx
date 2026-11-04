@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { PLUGIN_STOPPED_TEXT, type PanelInfo } from '../../shared/ipc'
 import { requestPanelPort } from '../plugins/panel-port-bus'
 import { PluginFrame } from '../plugins/PluginFrame'
+import { slotColumn } from './slot-layout'
+import { SlotFrames } from './SlotFrame'
 import { WebviewPanel } from './WebviewPanel'
 
 /** `<pluginId>/<panelId>` -> the plugin id (plugin ids hold no slash, so the last one splits). */
@@ -21,6 +23,9 @@ function pluginOf(panelKey: string): string {
  *   the port of the old one is dead and the page asks for what it shows when it connects.
  * - A `"kind": "webview"` panel has no page of ours: its toolbar and placeholder (WebviewPanel),
  *   mounted again on a host (re)start so it reports its placement to the plugin's new views.
+ * - Slot frames the plugin placed (ctx.panels.slots, `info.slots`) are drawn by the shell above and
+ *   below the panel's own frame, in the panel's column (slotColumn); each is another plugin's page.
+ *   They live and die with the panel: a closed panel or a collapsed zone unmounts this, and them.
  */
 export function PluginPanel(props: { info: PanelInfo }): React.JSX.Element {
   const { panelKey, src, error, title } = props.info
@@ -57,10 +62,22 @@ export function PluginPanel(props: { info: PanelInfo }): React.JSX.Element {
   // their placements), so the new copy's view would get no report until the placeholder moved or
   // its visibility changed (review finding: invisible after a dev reload). A fresh mount reports
   // where the placeholder is at once.
-  if (props.info.kind === 'webview') return <WebviewPanel key={generation} info={props.info} />
+  const column = slotColumn(props.info.slots)
+  if (props.info.kind === 'webview') {
+    // Always in the column wrapper: a slot placed later must not change the tree above the view,
+    // which would remount it (and its plugin's native view would lose its placement report).
+    return (
+      <div className="panel-slot-column">
+        <SlotFrames frames={column.top} position="top" />
+        <WebviewPanel key={generation} info={props.info} />
+        <SlotFrames frames={column.bottom} position="bottom" />
+      </div>
+    )
+  }
 
   return (
     <div className="panel-body plugin-panel" data-panel-body={panelKey}>
+      <SlotFrames frames={column.top} position="top" />
       {error && (
         <p className="plugin-panel-error" role="status" title={error}>
           ⚠ {error}
@@ -77,6 +94,7 @@ export function PluginPanel(props: { info: PanelInfo }): React.JSX.Element {
       ) : (
         <p className="panel-placeholder">{title} has no page</p>
       )}
+      <SlotFrames frames={column.bottom} position="bottom" />
     </div>
   )
 }

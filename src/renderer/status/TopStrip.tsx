@@ -1,7 +1,8 @@
 import { useMemo, type CSSProperties } from 'react'
-import type { ProjectSummary, SessionStripEntry } from '../../shared/ipc'
+import type { ProjectSummary, SessionStripEntry, SlotFrameInfo } from '../../shared/ipc'
 import { projectColorCss } from '../../shared/project-color'
 import { FolderGlyph, GearGlyph, PlusGlyph } from '../window-icons'
+import { SlotFrame } from '../zones/SlotFrame'
 import { ProjectDot } from './ProjectDot'
 import { StatusDot } from './StatusDot'
 import { orderStrip, stripText, topStripClass } from './strip-order'
@@ -28,6 +29,12 @@ import { orderStrip, stripText, topStripClass } from './strip-order'
  * entry has a dot in its project's colour (from the snapshot, so a change there arrives live).
  * The bar carries the colour as `--cc-project-color` with `data-project-color` set (styles.css);
  * with no colour neither is set and the bar is as it always was.
+ *
+ * The app slot `sessions-strip` (design-next §2, §4): when a plugin draws it (main sends the frame
+ * in `LayoutView.appSlots`), its page takes the place of the built-in entries, between the project
+ * name and the "+", with the bar's height and the width left. Both show the other windows' Claude
+ * tabs, so drawing the two would list them twice. With no provider (or the pick "None") the
+ * built-in entries stay.
  */
 export function TopStrip(props: {
   /** The window's project: its name and folder lead the bar. Absent in nothing but a test page. */
@@ -38,6 +45,8 @@ export function TopStrip(props: {
   fullScreen?: boolean
   /** Other windows' Claude tabs only (the caller filters; this window's own are in its tab bar). */
   entries: readonly SessionStripEntry[]
+  /** The app's slot frames (`LayoutView.appSlots`); the top bar draws the `top-bar` one. */
+  slots?: readonly SlotFrameInfo[]
   onFocus: (tabId: string) => void
   /** The "+": show (or focus) the project picker. */
   onOpenProject: () => void
@@ -47,6 +56,7 @@ export function TopStrip(props: {
   inert?: boolean
 }): React.JSX.Element {
   const ordered = useMemo(() => orderStrip(props.entries), [props.entries])
+  const slot = props.slots?.find((f) => f.position === 'top-bar')
   const { project } = props
   const color = project?.color
   return (
@@ -68,9 +78,10 @@ export function TopStrip(props: {
           <span className="titlebar-project-path">{project.path}</span>
         </div>
       )}
-      <nav className="strip-nav" aria-label="Claude sessions">
+      <nav className={slot ? 'strip-nav has-slot' : 'strip-nav'} aria-label="Claude sessions">
+        {slot && <SlotFrame key={slot.id} frame={slot} />}
         <div className="strip-list">
-          {ordered.map((entry) => {
+          {(slot ? [] : ordered).map((entry) => {
             const text = stripText(entry)
             return (
               <button

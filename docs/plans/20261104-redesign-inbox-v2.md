@@ -363,10 +363,22 @@
   PluginsPage.tsx` and/or `ProjectPage.tsx` (slot pick rows like `@open-file`)
 - Modify: `test/unit/` a new `slot-layout.test.ts` for the pure column/height logic; `styles.css` with tokens
 
-- [ ] column layout and height clamp in a pure function (unit-tested), `setHeight` within `[minHeight, placement height]`
-- [ ] hidden or collapsed host panel unmounts its slot frames; the top-bar slot takes the bar's height and the space left
-- [ ] pick rows: per slot type with candidates, plugin titles plus "None"
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] column layout and height clamp in a pure function (unit-tested), `setHeight` within `[minHeight, placement height]`
+- [x] hidden or collapsed host panel unmounts its slot frames; the top-bar slot takes the bar's height and the space left
+- [x] pick rows: per slot type with candidates, plugin titles plus "None"
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ decided: the pure rules are `src/renderer/zones/slot-layout.ts` (`slotColumn`, `slotFrameHeight`,
+  `slotHeightRequest`, `slotIntro`, `SlotHeightRelay`: one `slots.height` call out at a time, only the latest waits).
+  `PluginFrame` gained `intro` (posted before the port on every load: `cc-plugin.slot`) and `onPageMessage` (only
+  from its own frame's window); the port comes from `requestSlotPort` in `panel-port-bus.ts` (`slots.connect`).
+  `SlotFrame` unmounting sends `slots.disconnect`. A webview panel always sits in a `.panel-slot-column` wrapper so
+  a later placement does not remount its view.
+- ➕ decided: `useLayout` moved from `Zones` to `TabsPane` (one sync per window); `LayoutSnapshot`/`LayoutController`
+  carry `appSlots`, which go to `TopStrip`. A `sessions-strip` frame there takes the place of the built-in entries
+  (both list the other windows' tabs), between the project name and the "+"; with no provider the entries stay.
+- ➕ decided: the slot pick rows are on the Plugins page's Services group (with the open-file pick), one per slot
+  type with at least one candidate (a single candidate still gets a row: "None" turns it off), options the plugin
+  names, "None" (`@none`) and, when ambiguous, "Pick one (nothing drawn until then)".
 
 ### Task 8: Slots e2e, guide and design.md [model: sonnet]
 

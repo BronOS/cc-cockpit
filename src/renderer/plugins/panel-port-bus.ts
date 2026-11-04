@@ -1,9 +1,10 @@
 // Panel ports arriving from main. The preload re-posts each one into this window as
 // `{ type: PANEL_PORT_MESSAGE, panelKey, nonce }` with the port transferred (src/preload/index.ts);
 // this module takes them off the window and hands each to the panel that asked for it with that
-// nonce (PluginPanel). A port nobody waits for (the panel reloaded or went away meanwhile) is
+// nonce (PluginPanel; a slot frame, SlotFrame, under its `@slot/<id>` key). A port nobody waits for (the panel reloaded or went away meanwhile) is
 // closed, so the host's end hears the close.
 import { PANEL_PORT_MESSAGE } from '../../shared/ipc'
+import { slotPortKey } from '../../shared/slots'
 
 type Waiter = { nonce: number; take: (port: MessagePort) => void }
 
@@ -33,24 +34,36 @@ function onMessage(event: MessageEvent): void {
  * latest request for that panel. Returns the cancel (the panel's page unloaded).
  */
 export function requestPanelPort(panelKey: string, take: (port: MessagePort) => void): () => void {
+  return request(panelKey, take, (nonce) => window.cockpit.invoke('panels.connect', { panelKey, nonce }))
+}
+
+/**
+ * The same for a slot frame (design-next §2): main hands one end to the slot's PROVIDER and posts
+ * this one on the panels' channel under `@slot/<frameId>` (slotPortKey), so it lands here like a
+ * panel's. `slots.connect` is refused (false, no port) for a frame main no longer draws.
+ */
+export function requestSlotPort(frameId: string, take: (port: MessagePort) => void): () => void {
+  return request(slotPortKey(frameId), take, (nonce) => window.cockpit.invoke('slots.connect', { frameId, nonce }))
+}
+
+function request(key: string, take: (port: MessagePort) => void, connect: (nonce: number) => Promise<boolean>): () => void {
   if (!listening) {
     listening = true
     window.addEventListener('message', onMessage)
   }
   const nonce = nextNonce++
   const waiter: Waiter = { nonce, take }
-  waiting.set(panelKey, waiter)
-  window.cockpit
-    .invoke('panels.connect', { panelKey, nonce })
+  waiting.set(key, waiter)
+  connect(nonce)
     .then((ok) => {
       // Refused (the plugin is not running yet): no port follows; `panels.reload` comes when it is.
-      if (!ok && waiting.get(panelKey) === waiter) waiting.delete(panelKey)
+      if (!ok && waiting.get(key) === waiter) waiting.delete(key)
     })
     .catch((err: unknown) => {
-      if (waiting.get(panelKey) === waiter) waiting.delete(panelKey)
-      console.warn(`panels.connect ${panelKey} failed`, err)
+      if (waiting.get(key) === waiter) waiting.delete(key)
+      console.warn(`connecting ${key} failed`, err)
     })
   return () => {
-    if (waiting.get(panelKey) === waiter) waiting.delete(panelKey)
+    if (waiting.get(key) === waiter) waiting.delete(key)
   }
 }
