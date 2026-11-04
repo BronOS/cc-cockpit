@@ -1627,6 +1627,23 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect((await m.discuss(W1, id, { kind: 'new' }, '')).ok).toBe(true)
   })
 
+  it('an overlay dismissed while its new session opens: the session stays and is selected, the opener heard dismissed', async () => {
+    const sessions = fakeSessions()
+    let release!: (v: { tabId: string }) => void
+    sessions.deps.openSession = () => new Promise((resolve) => (release = resolve))
+    const m = withDiscuss(sessions)
+    const r = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev'))
+    const id = m.infos(W1)[0]!.id
+    const pending = m.discuss(W1, id, { kind: 'new' }, 'note')
+    await flush()
+    m.close(W1, id)
+    release({ tabId: 'new1' })
+    expect(await pending).toEqual({ ok: true, tabId: 'new1', queued: false })
+    await flush()
+    expect(r.results).toEqual([{ kind: 'dismissed' }])
+    expect(sessions.selected).toEqual([{ windowId: W1, tabId: 'new1' }])
+  })
+
   it("an onDiscuss that throws or times out is the popover's error, and nothing is sent", async () => {
     const sessions = fakeSessions()
     const m = withDiscuss(sessions)

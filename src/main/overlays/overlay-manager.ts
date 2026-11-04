@@ -859,7 +859,8 @@ export class OverlayManager {
    * `onDiscuss` answers within DISCUSS_ASK_MS; a throw or a timeout is the answer's error and nothing
    * is sent. Then the text (discuss.ts) goes through the send gate, or opens a new session in the
    * project folder (DiscussSessionBudget: 5 a minute per window), the overlay closes as
-   * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window. Never rejects.
+   * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window (an overlay
+   * dismissed while the new session opens has already answered `dismissed`). Never rejects.
    */
   async discuss(windowId: number, overlayId: string, target: DiscussTarget, note: unknown): Promise<DiscussAnswer> {
     const overlay = this.find(windowId, overlayId)
@@ -918,6 +919,13 @@ export class OverlayManager {
         }
         // The prompt is the tab's first argv: it waits for Claude to start, never in the gate.
         queued = false
+        // The person may dismiss the overlay while the tab opens. The session already has the
+        // text and cannot be taken back, so it is still selected and the answer is still ok, but
+        // the opener has heard `dismissed` (finish below is a no-op): a reviewer-style opener keeps
+        // a draft it would have cleared on `discussed`. Logged so the mismatch is traceable.
+        if (this.byId.get(overlay.id) !== overlay) {
+          this.log(`overlay ${overlay.id}: closed while its Discuss session ${tabId} opened; the opener heard dismissed`)
+        }
       }
       this.finish(overlay, { kind: 'discussed', tabId, queued })
       try {
