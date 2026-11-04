@@ -29,7 +29,9 @@ export function slotColumn(frames: readonly SlotFrameInfo[] | undefined): SlotCo
 /**
  * The bounds a frame's page may size itself within: [minHeight, placement height]. Main sends
  * both clamped already; this keeps a frame drawable even if they arrived crossed (min over max),
- * in which case the placement height wins (the host panel's room is the harder limit).
+ * in which case the placement height wins. The host panel's room is the harder limit still: the
+ * column caps each side's frames to a share of the panel and shrinks them within it (styles.css,
+ * `.slot-frames`), so a frame may be drawn shorter than this.
  */
 function boundsOf(frame: SlotFrameInfo): { min: number; max: number } {
   const max = Math.max(1, Math.round(frame.height))

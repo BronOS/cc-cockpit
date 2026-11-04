@@ -11,7 +11,8 @@ import { SlotHeightRelay, slotFrameHeight, slotHeightRequest, slotIntro } from '
  * it; the shell does, so a sandboxed panel page never has to frame anything.
  *
  * - Every load tells the page it is a slot of its type (`cc-plugin.slot`) just before the port.
- * - A column frame is `slotFrameHeight` tall; the page's `ccPanel.slot.setHeight` goes to main
+ * - A column frame is `slotFrameHeight` tall (less when the panel is short: styles.css caps the
+ *   column's share); the page's `ccPanel.slot.setHeight` goes to main
  *   (`slots.height`, SlotHeightRelay), which publishes the clamped `pageHeight` back.
  * - The top bar's frame has the bar's height (CSS) and no height requests: main refuses them.
  * - Unmounting (the host panel hidden, its zone collapsed, the placement gone) tells main, and the

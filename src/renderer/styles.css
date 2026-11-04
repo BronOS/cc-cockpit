@@ -1347,7 +1347,12 @@ iframe:focus-visible {
 }
 /* Slot frames (renderer/zones/SlotFrame.tsx, design-next §2): other plugins' pages the shell draws
    above and below a panel's own frame, each at its own height (inline style); the panel's frame
-   keeps the rest. A webview panel sits in the same column (.panel-slot-column). */
+   keeps the rest. A webview panel sits in the same column (.panel-slot-column).
+   The host panel's room is the harder limit: up to 4 placements of 600px each would otherwise
+   squeeze the panel's own frame (flex: 1, min-height: 0) to nothing in a short zone and clip the
+   slots past the panel's edge (review finding). So each side may take at most 40% of the panel,
+   leaving the panel's frame at least a fifth, and its frames shrink within that in proportion to
+   their heights (flex-basis is the inline height), each page clipped to what it is given. */
 .panel-slot-column {
   flex: 1;
   min-height: 0;
@@ -1356,7 +1361,10 @@ iframe:focus-visible {
   overflow: hidden;
 }
 .slot-frames {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -1367,7 +1375,7 @@ iframe:focus-visible {
   border-top: 1px solid var(--cc-border);
 }
 .slot-frame-wrap {
-  flex: none;
+  flex: 0 1 auto;
   display: flex;
   min-height: 0;
   overflow: hidden;
