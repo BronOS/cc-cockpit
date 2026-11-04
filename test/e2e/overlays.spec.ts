@@ -123,7 +123,19 @@ test.describe('url overlay', () => {
   let server: Server
   let base: string
   test.beforeAll(async () => {
-    server = createServer((_req, res) => {
+    server = createServer((req, res) => {
+      // A first load redirected to a non-http scheme: the view cancels it (will-redirect).
+      // A first load with nothing to show.
+      if (req.url === '/empty') {
+        res.writeHead(204)
+        res.end()
+        return
+      }
+      if (req.url === '/to-mailto') {
+        res.writeHead(302, { location: 'mailto:someone@example.com' })
+        res.end()
+        return
+      }
       res.writeHead(200, { 'content-type': 'text/html' })
       res.end('<!doctype html><title>overlay page</title><p>hello from the page</p>')
     })
@@ -191,6 +203,19 @@ test.describe('url overlay', () => {
       )
       .toBe(true)
     expect(await outcome(cockpit, handle)).toEqual({ result: { kind: 'dismissed' } })
+  })
+
+  test('a first load that ends with no load event still ends the loader', async ({ cockpit }) => {
+    // Neither fires did-finish-load or did-fail-load, only did-stop-loading: without it the
+    // loader stayed up (and the view hidden) for good.
+    for (const path of ['to-mailto', 'empty']) {
+      const handle = await open(cockpit, { kind: 'url', url: `${base}${path}` })
+      await expect(cockpit.page.locator('.overlay[data-kind="url"]')).toBeVisible()
+      await expect.poll(async () => (await stack(cockpit))[0]?.loading ?? false).toBe(false)
+      await expect(cockpit.page.locator('.overlay-loader')).toHaveCount(0)
+      await cockpit.page.keyboard.press('Escape')
+      expect(await outcome(cockpit, handle)).toEqual({ result: { kind: 'dismissed' } })
+    }
   })
 
   test('a file: url is refused and no overlay appears', async ({ cockpit }) => {

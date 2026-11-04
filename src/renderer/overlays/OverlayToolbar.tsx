@@ -4,7 +4,8 @@
 // buttons fold into a "…" menu (overlay-toolbar.ts decides which). Everything is React text from
 // main's clean copy (overlay-manager.ts), every control a real button, so Tab reaches each one;
 // there are no chords for them, and Esc keeps its meaning (it pops the overlay; with the "…" menu
-// open it closes the menu only).
+// open it closes the menu only). A url overlay's native view is hidden while the menu is open
+// (OverlayStack UrlBody): it paints above the renderer and would cover the menu.
 //
 // Also the loader of the overlay's body (§3.4): drawn over the body while main says the overlay is
 // loading, with "Still loading…" after 10 s. It takes no pointer events, so a click or a key still
@@ -69,10 +70,20 @@ function ToolbarButton(props: { entry: ToolbarEntry; onClick: (entry: ToolbarEnt
 }
 
 /** "…" and the buttons that did not fit in the row. */
-function MoreMenu(props: { entries: ToolbarEntry[]; onClick: (entry: ToolbarEntry) => void }): React.JSX.Element {
+function MoreMenu(props: {
+  entries: ToolbarEntry[]
+  onClick: (entry: ToolbarEntry) => void
+  onOpenChange?: (open: boolean) => void
+}): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
+  const toggle = useRef<HTMLButtonElement>(null)
+  const wasOpen = useRef(false)
+  const onOpenChange = useRef(props.onOpenChange)
+  useEffect(() => {
+    onOpenChange.current = props.onOpenChange
+  })
 
   useEffect(() => {
     if (!open) return
@@ -87,10 +98,28 @@ function MoreMenu(props: { entries: ToolbarEntry[]; onClick: (entry: ToolbarEntr
 
   // Esc closes the menu only: the latest handler of `overlay.pop` wins (keybindings.ts), and
   // removing it gives Esc back to the overlay. A layout effect, so it is in place before the next key.
+  // The owner hears open and close here (a url overlay hides its native view meanwhile, which
+  // would cover the menu), the cleanup included: a menu that goes while open (its buttons
+  // changed, the overlay closed) must not leave the view hidden.
   useLayoutEffect(() => {
-    if (!open) return
+    if (!open) {
+      // Closed by Esc, a chosen item or a click on nothing focusable: the focused item went with
+      // the menu and the focus fell to the body, so the next Tab would start from the top of the
+      // window. Give it back to "…". A click on another control keeps the focus it took.
+      if (wasOpen.current && (document.activeElement === null || document.activeElement === document.body)) {
+        toggle.current?.focus()
+      }
+      wasOpen.current = false
+      return
+    }
+    wasOpen.current = true
+    onOpenChange.current?.(true)
     list.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
-    return registerHandlers({ 'overlay.pop': () => setOpen(false) })
+    const off = registerHandlers({ 'overlay.pop': () => setOpen(false) })
+    return () => {
+      off()
+      onOpenChange.current?.(false)
+    }
   }, [open])
 
   return (
@@ -102,6 +131,7 @@ function MoreMenu(props: { entries: ToolbarEntry[]; onClick: (entry: ToolbarEntr
         title="More"
         aria-haspopup="menu"
         aria-expanded={open}
+        ref={toggle}
         onClick={() => setOpen((v) => !v)}
       >
         <MoreGlyph size={14} />
@@ -142,6 +172,8 @@ export function OverlayToolbar(props: {
   onButton: (entry: ToolbarEntry) => void
   /** Discuss with Claude, drawn just before the ✕ when present. */
   discuss?: React.ReactNode
+  /** The "…" menu opened or closed (closed also when it goes while open). */
+  onMenuOpenChange?: (open: boolean) => void
 }): React.JSX.Element {
   const { overlay, closeSide } = props
   const layout = toolbarLayout(overlay.buttons, overlay.typeButtons)
@@ -171,7 +203,9 @@ export function OverlayToolbar(props: {
           ))}
         </div>
       )}
-      {layout.menu.length > 0 && <MoreMenu entries={layout.menu} onClick={props.onButton} />}
+      {layout.menu.length > 0 && (
+        <MoreMenu entries={layout.menu} onClick={props.onButton} onOpenChange={props.onMenuOpenChange} />
+      )}
       {props.discuss}
       {closeSide === 'right' && <OverlayClose onClose={props.onClose} />}
     </header>

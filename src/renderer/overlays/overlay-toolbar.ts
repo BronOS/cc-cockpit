@@ -71,3 +71,18 @@ export function stillLoadingTimer(onStill: () => void, ms = STILL_LOADING_MS): (
   const timer = setTimeout(onStill, ms)
   return () => clearTimeout(timer)
 }
+
+/**
+ * The bounds a url overlay's body reports for its native view. While the toolbar's "…" menu is
+ * open they are zero: the view paints above the whole renderer, so the menu (which drops over the
+ * body) would be invisible and unclickable under it, Enter on its focused first item would run an
+ * action the user cannot see, and a click or Esc in the page would never reach the menu. Zero
+ * bounds are how main hides a new view too; the real rect comes back when the menu closes.
+ */
+export function urlViewBounds(
+  rect: { left: number; top: number; width: number; height: number },
+  menuOpen: boolean
+): { x: number; y: number; width: number; height: number } {
+  if (menuOpen) return { x: 0, y: 0, width: 0, height: 0 }
+  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+}

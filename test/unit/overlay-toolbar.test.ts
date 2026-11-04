@@ -5,7 +5,8 @@ import {
   inert,
   orderTypeButtons,
   stillLoadingTimer,
-  toolbarLayout
+  toolbarLayout,
+  urlViewBounds
 } from '../../src/renderer/overlays/overlay-toolbar'
 import type { OverlayButtonInfo, OverlayTypeButtonInfo } from '../../src/shared/ipc'
 
@@ -89,5 +90,20 @@ describe('stillLoadingTimer', () => {
     cancel()
     vi.advanceTimersByTime(STILL_LOADING_MS)
     expect(still).not.toHaveBeenCalled()
+  })
+})
+
+describe('urlViewBounds', () => {
+  it('follows the body while the "…" menu is closed', () => {
+    expect(urlViewBounds({ left: 10, top: 46, width: 800, height: 500 }, false)).toEqual({
+      x: 10,
+      y: 46,
+      width: 800,
+      height: 500
+    })
+  })
+
+  it('is zero while the menu is open, so the native view does not cover it', () => {
+    expect(urlViewBounds({ left: 10, top: 46, width: 800, height: 500 }, true)).toEqual({ x: 0, y: 0, width: 0, height: 0 })
   })
 })

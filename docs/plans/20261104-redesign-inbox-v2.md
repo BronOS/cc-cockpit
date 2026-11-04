@@ -438,7 +438,8 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - ➕ decided: with more than 6 buttons the first 5 show and "…" takes the 6th place; Esc with "…" open closes the menu only
   (a pushed `overlay.pop` handler). The opener plugin id is passed to `OverlayManager.open/start` so a button's `.svg` icon
   becomes its `cc-plugin://` URL (the CLI's `.svg` icon is dropped). Clicks are a no-op stub until task 11 routes them.
-  ⚠️ the "…" menu of a url overlay sits under its native view (no shell-layer hiding for overlay views yet).
+  A url overlay's native view gets zero bounds while its "…" menu is open (it would cover the menu); focus goes back to
+  "…" when the menu closes. The view's loader ends on `did-stop-loading` too and skips ERR_ABORTED (review fix).
 
 ### Task 11: Opener and by-type buttons through the host [model: opus]
 

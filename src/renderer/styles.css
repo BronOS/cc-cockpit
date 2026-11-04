@@ -1777,8 +1777,9 @@ iframe:focus-visible {
   top: var(--cc-titlebar-h);
 }
 .overlay-header {
-  /* Above the body, so the "…" menu opens over the page (not under a url overlay's native view,
-     which paints above the whole renderer). */
+  /* Above the body, so the "…" menu opens over an html or terminal body and the loader. No
+     z-index lifts it over a url overlay's native view, which paints above the whole renderer:
+     that view is hidden while the menu is open instead (OverlayStack UrlBody). */
   position: relative;
   z-index: 1;
   flex: none;

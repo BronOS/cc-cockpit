@@ -6,6 +6,7 @@ import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { domOrder, followOverlays } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
+import { urlViewBounds } from './overlay-toolbar'
 import { TerminalOverlay } from './TerminalOverlay'
 
 /** A terminal overlay's keystrokes, acks and size, through the overlay channels. */
@@ -59,6 +60,8 @@ export function OverlayStack(props: {
 }): React.JSX.Element {
   const [{ stack, order }, setView] = useState<{ stack: OverlayInfo[]; order: string[] }>({ stack: [], order: [] })
   const { tabCloseSide } = usePrefs()
+  /** The overlay whose toolbar "…" menu is open, if any: a url overlay hides its view meanwhile. */
+  const [menuOpenFor, setMenuOpenFor] = useState<string | undefined>(undefined)
   const [terms] = useState(() => new SessionRegistry(overlayIo))
   /** Terminal overlays that have a session here, to dispose it once main drops the overlay. */
   const seen = useRef(new Set<string>())
@@ -162,6 +165,9 @@ export function OverlayStack(props: {
               closeSide={tabCloseSide}
               onClose={() => closeOverlay(overlay.id)}
               onButton={buttonClicked}
+              onMenuOpenChange={(open) =>
+                setMenuOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
+              }
             />
             <div className="overlay-body" data-loading={overlay.loading ? 'true' : undefined}>
               {overlay.kind === 'terminal' && (
@@ -170,7 +176,9 @@ export function OverlayStack(props: {
               {overlay.kind === 'html' && (
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
               )}
-              {overlay.kind === 'url' && <UrlBody overlayId={overlay.id} url={overlay.url} />}
+              {overlay.kind === 'url' && (
+                <UrlBody overlayId={overlay.id} url={overlay.url} menuOpen={menuOpenFor === overlay.id} />
+              )}
               <OverlayLoader loading={overlay.loading === true} />
             </div>
             </div>
@@ -183,21 +191,22 @@ export function OverlayStack(props: {
 
 /**
  * The area a url overlay's page fills. The page is a native view main lays over the window, so
- * this only reports where it is, again whenever it moves or resizes.
+ * this only reports where it is, again whenever it moves or resizes. While the toolbar's "…" menu
+ * is open it reports zero bounds instead (urlViewBounds): the view would cover the menu.
  */
-function UrlBody(props: { overlayId: string; url: string }): React.JSX.Element {
-  const { overlayId } = props
+function UrlBody(props: { overlayId: string; url: string; menuOpen: boolean }): React.JSX.Element {
+  const { overlayId, menuOpen } = props
   const el = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const node = el.current
     if (!node) return
     const report = (): void => {
-      const r = node.getBoundingClientRect()
-      window.cockpit
-        .invoke('overlays.bounds', { overlayId, x: r.left, y: r.top, width: r.width, height: r.height })
-        .catch(() => {})
+      const bounds = urlViewBounds(node.getBoundingClientRect(), menuOpen)
+      window.cockpit.invoke('overlays.bounds', { overlayId, ...bounds }).catch(() => {})
     }
+    // Also at once: opening or closing the menu changes what is reported, not the body's size.
+    report()
     const observer = new ResizeObserver(report)
     observer.observe(node)
     // The size can stay the same while the position changes (the window resized around it).
@@ -206,7 +215,7 @@ function UrlBody(props: { overlayId: string; url: string }): React.JSX.Element {
       observer.disconnect()
       window.removeEventListener('resize', report)
     }
-  }, [overlayId])
+  }, [overlayId, menuOpen])
 
   return <div ref={el} className="overlay-url" data-url={props.url} />
 }

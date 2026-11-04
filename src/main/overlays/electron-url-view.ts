@@ -22,6 +22,8 @@ import { lockDownSession, NO_APP_PAGE } from '../windows/permissions'
 
 /** Partitions already locked down (a session outlives the views that use it). */
 const hardened = new WeakSet<Session>()
+/** Chromium's net::ERR_ABORTED: the navigation was cancelled, often because another replaced it. */
+const ERR_ABORTED = -3
 
 function harden(session: Session): void {
   if (hardened.has(session)) return
@@ -80,11 +82,17 @@ export class ElectronUrlViewFactory implements UrlViewFactory {
     wc.on('destroyed', () => onGone())
     // The first load ended, either way: the overlay's loader goes and the view shows (the manager
     // keeps it hidden until then; it ignores the calls after the first). A failed load leaves
-    // Electron's empty page, which the user then sees and closes.
+    // Electron's empty page, which the user then sees and closes. ERR_ABORTED (-3) is not an end:
+    // the main frame gets it when another navigation replaced the first one, and showing the view
+    // then would flash a blank page mid-redirect; the navigation that replaced it ends the loader.
+    // `did-stop-loading` (the spinner stopped, nothing more is coming) ends it whatever happened:
+    // a first load that ends with no load event at all, a 204 or a redirect our will-redirect
+    // cancels (to a non-http scheme), only fires that one, and left the loader up for good.
     wc.on('did-finish-load', () => onLoaded())
-    wc.on('did-fail-load', (_event, _code, _description, _url, isMainFrame) => {
-      if (isMainFrame) onLoaded()
+    wc.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+      if (isMainFrame && code !== ERR_ABORTED) onLoaded()
     })
+    wc.on('did-stop-loading', () => onLoaded())
     // The page's own links and script navigations: same site (http(s) only, see sameSite)
     // stays, anything else leaves.
     wc.on('will-navigate', (event) => {
