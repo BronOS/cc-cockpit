@@ -30,15 +30,17 @@ import {
   OVERLAY_SIZES,
   type EventChannel,
   type IpcEventMap,
+  type OverlayButtonInfo,
   type OverlayInfo,
   type OverlayInfoBody,
   type OverlayKind,
   type OverlaySize
 } from '../../shared/ipc'
 import { chordFromEvent } from '../../shared/keys'
-import { parseOverlayExtras, type CleanOverlayExtras } from '../../shared/overlay-buttons'
+import { parseOverlayExtras, type CleanOverlayButton, type CleanOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
-import { PLUGIN_SCHEME } from '../plugins/plugin-protocol'
+import { isPanelHeaderIcon } from '../../shared/panel-header'
+import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
 
@@ -87,12 +89,16 @@ export interface UrlViewFactory {
    * `onGone` fires when the page goes away by itself (its renderer crashed or was killed, the
    * page closed itself), so the overlay does not stay up over a dead view with its opener waiting.
    * It also fires after `destroy()`; the manager ignores that one (the overlay is already gone).
+   * `onLoaded` fires when the first load ends, loaded or failed (`did-finish-load` /
+   * `did-fail-load`): the overlay's loader goes then. Later loads may call it again; only the first
+   * counts.
    */
   create(
     windowId: number,
     url: string,
     onChord: (chord: string) => boolean,
-    onGone: () => void
+    onGone: () => void,
+    onLoaded: () => void
   ): UrlView
   /** Hand the keyboard back to the window's own page (a url overlay on top just went away). */
   focusWindow(windowId: number): void
@@ -242,6 +248,11 @@ interface Overlay {
    */
   pageReady: boolean
   outbox: OverlayOutbox
+  /**
+   * When an html overlay's loader goes (spec `ready`): at the port (`load`, the default) or when the
+   * page says so (`manual`). Unused by the other kinds, whose loader follows their view or program.
+   */
+  ready: 'load' | 'manual'
 }
 
 export class OverlayManager {
@@ -262,7 +273,11 @@ export class OverlayManager {
       sink: {
         data: (id, data) => {
           const overlay = this.byId.get(id)
-          if (overlay) this.options.emit(overlay.windowId, 'overlays.data', { overlayId: id, data })
+          if (!overlay) return
+          this.options.emit(overlay.windowId, 'overlays.data', { overlayId: id, data })
+          // The program's first output: its loader goes (after the data, so the frame never shows
+          // an empty terminal between the two).
+          this.loaded(overlay)
         },
         exit: (id, code, signal) => {
           // Killed by a signal: report it the way a shell does (128 + n), so a program the user
@@ -284,10 +299,11 @@ export class OverlayManager {
     spec: unknown,
     opener: string,
     peerGone?: AbortSignal,
-    channel?: OverlayChannel
+    channel?: OverlayChannel,
+    pluginId?: string
   ): Promise<OverlayResult> {
     try {
-      return this.start(windowId, spec, opener, peerGone, channel)
+      return this.start(windowId, spec, opener, peerGone, channel, pluginId)
     } catch (err) {
       return Promise.reject(toError(err))
     }
@@ -298,13 +314,18 @@ export class OverlayManager {
    * instead of rejecting the result. For an opener that does not wait for the result (a new-tab menu
    * entry opened as an overlay, design §3 Custom commands) yet must still tell the user it failed:
    * the promise of `open` settles only when the overlay closes, much too late to answer the click.
+   *
+   * `pluginId` is the plugin that opened it (absent for the CLI and core): its buttons' `.svg` icons
+   * are files of that plugin's folder. The overlay goes on the stack here, at once, with a loader
+   * (`info.loading`) until its body is ready (design-next §3.4; see `loaded`).
    */
   start(
     windowId: number,
     spec: unknown,
     opener: string,
     peerGone?: AbortSignal,
-    channel?: OverlayChannel
+    channel?: OverlayChannel,
+    pluginId?: string
   ): Promise<OverlayResult> {
     const parsed = parseOverlaySpec(spec)
     // Before anything is created: no program, no view, no stack for a window that is gone.
@@ -317,11 +338,12 @@ export class OverlayManager {
     const overlay: Overlay = {
       id,
       windowId,
-      info: infoOf(id, parsed),
+      info: infoOf(id, parsed, pluginId),
       opener,
       settle,
       pageReady: false,
-      outbox: new OverlayOutbox()
+      outbox: new OverlayOutbox(),
+      ready: parsed.ready ?? 'load'
     }
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
     // Only an html page has anyone to talk to; a terminal or url overlay ignores the messaging part.
@@ -348,7 +370,8 @@ export class OverlayManager {
         windowId,
         parsed.url,
         (chord) => this.handleChord(windowId, chord),
-        () => this.finish(overlay, { kind: 'dismissed' })
+        () => this.finish(overlay, { kind: 'dismissed' }),
+        () => this.loaded(overlay)
       )
     }
     this.byId.set(id, overlay)
@@ -397,8 +420,13 @@ export class OverlayManager {
     const stack = this.stacks.get(windowId) ?? []
     // The old page never acked what it was sent; a paused PTY would otherwise stay paused.
     for (const o of stack) if (o.info.kind === 'terminal') this.pty.resetFlow(o.id)
-    // Its html pages reload with it: an opener's posts wait again until each one's port is up.
-    for (const o of stack) o.pageReady = false
+    // Its html pages reload with it: an opener's posts wait again until each one's port is up, and
+    // the loader is back until the page is ready again (a `manual` page calls ready() once more).
+    // A url view and a PTY live in main and do not reload with the renderer.
+    for (const o of stack) {
+      o.pageReady = false
+      if (o.info.kind === 'html') o.info = { ...o.info, loading: true }
+    }
     return this.infos(windowId)
   }
 
@@ -557,9 +585,22 @@ export class OverlayManager {
    */
   pageReady(windowId: number, overlayId: string): void {
     const overlay = this.find(windowId, overlayId)
-    if (!overlay?.channel) return
+    if (overlay?.info.kind !== 'html') return
+    // The page loaded and has its port: a `ready: 'load'` overlay is ready (an inline page reports
+    // its load here too, with no channel behind it).
+    if (overlay.ready === 'load') this.loaded(overlay)
+    if (!overlay.channel) return
     overlay.pageReady = true
     for (const message of overlay.outbox.drain()) this.options.emit(windowId, 'overlays.message', { overlayId, message })
+  }
+
+  /**
+   * An html overlay's page says it has drawn (`ccPanel.ready()`): the loader goes, whatever its
+   * `ready` mode (a `load` page calling it early changes nothing worse than an early port).
+   */
+  pageLoaded(windowId: number, overlayId: string): void {
+    const overlay = this.find(windowId, overlayId)
+    if (overlay?.info.kind === 'html') this.loaded(overlay)
   }
 
   /**
@@ -602,6 +643,22 @@ export class OverlayManager {
   disposeAll(): void {
     for (const windowId of [...this.stacks.keys()]) this.closeWindow(windowId)
     this.pty.disposeAll()
+  }
+
+  /**
+   * The overlay's body is ready: its loader goes. Once; a no-op for an overlay that already ended
+   * (a url view's late load event, output of a program being ended).
+   */
+  private loaded(overlay: Overlay): void {
+    if (this.byId.get(overlay.id) !== overlay || !overlay.info.loading) return
+    const info = { ...overlay.info }
+    delete info.loading
+    overlay.info = info
+    // A url view stays hidden while it loads (it would paint a blank page over the loader, a native
+    // view is always above the renderer): show it now if it is on top, and give it the keyboard.
+    const top = this.stacks.get(overlay.windowId)?.at(-1)
+    this.changed(overlay.windowId)
+    if (overlay.view && top === overlay) overlay.view.focus()
   }
 
   private find(windowId: number, overlayId: unknown): Overlay | undefined {
@@ -647,7 +704,8 @@ export class OverlayManager {
   private changed(windowId: number): void {
     const stack = this.stacks.get(windowId) ?? []
     const top = stack.at(-1)
-    for (const o of stack) o.view?.setVisible(o === top)
+    // A url view still loading stays hidden: its blank page would cover the renderer's loader.
+    for (const o of stack) o.view?.setVisible(o === top && !o.info.loading)
     const before = this.lastTop.get(windowId)
     if (top) this.lastTop.set(windowId, top)
     else this.lastTop.delete(windowId)
@@ -665,9 +723,25 @@ export class OverlayManager {
 }
 
 /** The renderer's view of an overlay; an html page stays in main and is served at `src`. */
-function infoOf(id: string, spec: OverlaySpec): OverlayInfo {
+function infoOf(id: string, spec: OverlaySpec, pluginId: string | undefined): OverlayInfo {
   const size = spec.size ?? 'default'
-  return { ...infoBody(id, spec), size }
+  const info: OverlayInfo = { ...infoBody(id, spec), size, loading: true }
+  if (spec.buttons && spec.buttons.length > 0) info.buttons = buttonInfos(spec.buttons, pluginId)
+  return info
+}
+
+/**
+ * Buttons as the renderer draws them: a core icon by name, a plugin `.svg` as that plugin's
+ * `cc-plugin://` URL (the panel header's rule). An opener with no plugin (the CLI) has no folder,
+ * so its `.svg` icon is dropped and the label shows alone.
+ */
+export function buttonInfos(buttons: readonly CleanOverlayButton[], pluginId: string | undefined): OverlayButtonInfo[] {
+  return buttons.map((b) => {
+    const { icon, ...rest } = b
+    if (icon === undefined) return { ...rest }
+    if (isPanelHeaderIcon(icon)) return { ...rest, icon }
+    return pluginId === undefined ? { ...rest } : { ...rest, iconSrc: pluginFileUrl(pluginId, icon) }
+  })
 }
 
 function infoBody(id: string, spec: OverlaySpec): OverlayInfoBody {

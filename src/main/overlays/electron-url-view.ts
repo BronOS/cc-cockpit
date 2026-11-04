@@ -48,7 +48,8 @@ export class ElectronUrlViewFactory implements UrlViewFactory {
     windowId: number,
     url: string,
     onChord: (chord: string) => boolean,
-    onGone: () => void
+    onGone: () => void,
+    onLoaded: () => void
   ): UrlView {
     const win = BrowserWindow.fromId(windowId)
     if (!win || win.isDestroyed()) throw new Error('overlay: the window is gone')
@@ -77,6 +78,13 @@ export class ElectronUrlViewFactory implements UrlViewFactory {
     // overlay must not stay up over a dead view. Also fires after our own destroy(); harmless.
     wc.on('render-process-gone', () => onGone())
     wc.on('destroyed', () => onGone())
+    // The first load ended, either way: the overlay's loader goes and the view shows (the manager
+    // keeps it hidden until then; it ignores the calls after the first). A failed load leaves
+    // Electron's empty page, which the user then sees and closes.
+    wc.on('did-finish-load', () => onLoaded())
+    wc.on('did-fail-load', (_event, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) onLoaded()
+    })
     // The page's own links and script navigations: same site (http(s) only, see sameSite)
     // stays, anything else leaves.
     wc.on('will-navigate', (event) => {

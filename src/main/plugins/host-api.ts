@@ -245,13 +245,17 @@ export interface HostApiDeps {
    * project does not have. Without it the request is refused.
    */
   showPanel?(projectId: string, panelKey: string): boolean
-  /** OverlayManager.open (after the login env); `peerGone` dismisses it, `channel` talks with its page. */
+  /**
+   * OverlayManager.open (after the login env); `peerGone` dismisses it, `channel` talks with its page,
+   * `pluginId` is the opener, in whose folder its buttons' `.svg` icons resolve.
+   */
   openOverlay(
     windowId: number,
     spec: unknown,
     opener: string,
     peerGone?: AbortSignal,
-    channel?: OverlayChannel
+    channel?: OverlayChannel,
+    pluginId?: string
   ): Promise<OverlayResult>
   /** OverlayManager.post. Without it (and closeOverlay) ctx.overlay.start's post/close are refused. */
   postOverlay?(windowId: number, overlayId: string, text: string): boolean
@@ -1030,7 +1034,8 @@ export class HostApi {
           managerSpec,
           `plugin ${plugin.id}`,
           peerGone,
-          channel
+          channel,
+          plugin.id
         )
       } catch (err) {
         // The manager rejects only before it creates anything (a bad argv or url, a program that

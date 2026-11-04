@@ -661,7 +661,42 @@ export type OverlayInfoBody =
   | { id: string; kind: 'terminal'; title: string }
   | { id: string; kind: 'url'; title: string; url: string }
   | { id: string; kind: 'html'; title: string; src: string }
-export type OverlayInfo = OverlayInfoBody & { size: OverlaySize }
+/**
+ * A toolbar button as the renderer draws it (design-next §3.2): main's clean copy of the spec's
+ * (shared/overlay-buttons.ts), with a plugin `.svg` icon turned into its `cc-plugin://` URL, as for a
+ * panel header action. Every string is drawn as React text.
+ */
+export interface OverlayButtonInfo {
+  id: string
+  label: string
+  icon?: PanelHeaderIconName
+  iconSrc?: string
+  primary?: true
+  disabled?: true
+  busy?: true
+}
+
+/** A button another plugin registered for the overlay's type (`ctx.overlay.buttons`). */
+export interface OverlayTypeButtonInfo extends OverlayButtonInfo {
+  pluginId: string
+  /** That plugin's title: the toolbar orders the plugins' groups by it. */
+  pluginTitle: string
+}
+
+export type OverlayInfo = OverlayInfoBody & {
+  size: OverlaySize
+  /** The opener's own buttons (spec `buttons`); absent: none. */
+  buttons?: OverlayButtonInfo[]
+  /** Buttons other plugins registered for the overlay's type; absent: none. */
+  typeButtons?: OverlayTypeButtonInfo[]
+  /**
+   * Present while the body is not ready yet (design-next §3.4), so the renderer draws a loader over
+   * it: html until the page's port is up (`ready: 'load'`, the default) or until it calls
+   * `ccPanel.ready()` (`ready: 'manual'`); url until the view's first load ends (loaded or failed);
+   * terminal until the program's first output.
+   */
+  loading?: true
+}
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
 export interface IpcInvokeMap {
@@ -963,6 +998,11 @@ export interface IpcInvokeMap {
   'overlays.message': { req: { overlayId: string; message: string }; res: boolean }
   /** That page has its port now (every page load): main sends the opener's queued posts. */
   'overlays.ready': { req: { overlayId: string }; res: void }
+  /**
+   * That page says it has drawn its content (`ccPanel.ready()`, or `{ type: 'ready' }` on an inline
+   * page's port): the loader of a `ready: 'manual'` overlay goes.
+   */
+  'overlays.loaded': { req: { overlayId: string }; res: void }
 
   // Webview panels (PanelInfo.kind 'webview'). The panel key must name a webview panel of a
   // plugin of the sender's project; the view is the one in the sender's window.
@@ -1198,6 +1238,7 @@ export const INVOKE_CHANNELS = [
   'overlays.result',
   'overlays.message',
   'overlays.ready',
+  'overlays.loaded',
   'webviews.placement',
   'webviews.step',
   'webviews.current',

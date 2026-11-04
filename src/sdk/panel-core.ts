@@ -11,8 +11,10 @@
 //                                                 `mac` is the shell's platform (no scrollbar rule there)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
 //                                                 the port); from then on `ccPanel.slot` exists
-// and the other way, to the parent only, from a slot page:
+// and the other way, to the parent only:
 //   { type: 'cc-plugin.slot-height', height }      `ccPanel.slot.setHeight(px)`: the shell sizes the frame
+//   { type: 'cc-plugin.ready' }                    `ccPanel.ready()`: an html overlay's page has drawn, its
+//                                                 loader goes (spec `ready: 'manual'`); ignored elsewhere
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
@@ -26,6 +28,7 @@ export const PORT_MESSAGE = 'cc-plugin.port'
 export const THEME_MESSAGE = 'cc-plugin.theme'
 export const SLOT_MESSAGE = 'cc-plugin.slot'
 export const SLOT_HEIGHT_MESSAGE = 'cc-plugin.slot-height'
+export const READY_MESSAGE = 'cc-plugin.ready'
 
 // A copy of the bounds in src/shared/slots.ts, on purpose (see errorText below): the shell and
 // main clamp to the provider's min/max again, this only keeps a page's number sane.
@@ -105,6 +108,11 @@ export interface PanelApi {
   }
   /** Set (a frozen object) once the shell says the page is a slot; undefined for a panel or an overlay. */
   readonly slot: SlotPageApi | undefined
+  /**
+   * An html overlay's page has drawn what it shows: the app's loader over it goes. Needed only for
+   * an overlay opened with `ready: 'manual'` (the default loader goes at load); harmless elsewhere.
+   */
+  ready(): void
 }
 
 const VAR_NAME = /^--[A-Za-z][A-Za-z0-9_-]*$/
@@ -151,8 +159,8 @@ export class PanelClient {
     private readonly warn: (message: string) => void = () => {},
     private readonly styles?: BaseStyles,
     componentsCss?: string,
-    /** Where a slot page's height request goes: the parent window (the shell), in the browser. */
-    private readonly toParent?: (message: { type: string; height: number }) => void
+    /** Where a slot page's height request and `ready()` go: the parent window (the shell), in the browser. */
+    private readonly toParent?: (message: { type: string; height?: number }) => void
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -178,7 +186,8 @@ export class PanelClient {
     const api = {
       post: (message: JsonValue) => this.post(message),
       onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),
-      theme: Object.freeze(theme) as PanelApi['theme']
+      theme: Object.freeze(theme) as PanelApi['theme'],
+      ready: (): void => this.toParent?.({ type: READY_MESSAGE })
     }
     // A getter: the page learns it is a slot after load, and `slot` must then appear on the same object.
     Object.defineProperty(api, 'slot', { enumerable: true, get: (): SlotPageApi | undefined => this.slotApi })

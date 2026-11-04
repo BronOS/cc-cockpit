@@ -856,6 +856,8 @@ export interface OverlayHandlerDeps {
   message(windowId: number, overlayId: string, text: string): boolean
   /** The page's port is up (OverlayManager.pageReady). */
   ready(windowId: number, overlayId: string): void
+  /** The page called `ccPanel.ready()` (OverlayManager.pageLoaded): its loader goes. */
+  loaded(windowId: number, overlayId: string): void
 }
 
 /**
@@ -921,6 +923,10 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
 
   router.handleProject('overlays.ready', (ctx, payload) => {
     deps.ready(ctx.windowId, overlayIdOf('overlays.ready', payload))
+  })
+
+  router.handleProject('overlays.loaded', (ctx, payload) => {
+    deps.loaded(ctx.windowId, overlayIdOf('overlays.loaded', payload))
   })
 }
 

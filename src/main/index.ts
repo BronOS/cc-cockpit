@@ -492,10 +492,11 @@ function start(): void {
     spec: unknown,
     opener: string,
     peerGone?: AbortSignal,
-    channel?: OverlayChannel
+    channel?: OverlayChannel,
+    pluginId?: string
   ): Promise<OverlayResult> => {
     await loginEnvReady
-    return overlays.open(windowId, spec, opener, peerGone, channel)
+    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId)
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
@@ -1649,7 +1650,8 @@ function start(): void {
     setBounds: (windowId, overlayId, bounds) => overlays.setBounds(windowId, overlayId, bounds),
     result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value),
     message: (windowId, overlayId, text) => overlays.pageMessage(windowId, overlayId, text),
-    ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId)
+    ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId),
+    loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.

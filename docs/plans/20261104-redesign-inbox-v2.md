@@ -421,14 +421,24 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   (first `did-finish-load` / `did-fail-load`), `src/sdk/panel-core.ts` (`ccPanel.ready()`), `src/renderer/styles.css`
 - Modify: `test/unit/overlay-manager.test.ts`, a new `test/unit/overlay-toolbar.test.ts` (pure fold/order logic)
 
-- [ ] one row per design-next §3.2: title (ellipsis + tooltip), opener buttons, divider, type buttons (plugin-title
+- [x] one row per design-next §3.2: title (ellipsis + tooltip), opener buttons, divider, type buttons (plugin-title
   order), Discuss slot (wired in task 12), ✕ placed by the tab close side setting; > 6 buttons fold into "…"; React
   text, keyboard reachable, no chords; Esc unchanged; terminal overlays get the same toolbar
-- [ ] loader §3.4: `.cc-spinner` until html `pageReady` (default) or `ccPanel.ready()` with `ready: 'manual'`, url first
+- [x] loader §3.4: `.cc-spinner` until html `pageReady` (default) or `ccPanel.ready()` with `ready: 'manual'`, url first
   load or fail, terminal first PTY output; "Still loading…" after 10 s; ✕ always works. Build on the in-flight loader fix
-- [ ] write tests: fold and order logic, ready transitions per kind, the 10 s text (fake timers)
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/overlays.spec.ts
+- [x] write tests: fold and order logic, ready transitions per kind, the 10 s text (fake timers)
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/overlays.spec.ts
   test/e2e/tab-close-side.spec.ts` — done when green
+- ➕ decided: main holds the loader state as `OverlayInfo.loading` (cleared by the first PTY output, the url view's first
+  `did-finish-load`/main-frame `did-fail-load`, html `overlays.ready` for `ready: 'load'`, the new `overlays.loaded` IPC for
+  `ccPanel.ready()`); a renderer reload brings the html loader back. `ccPanel.ready()` goes to the parent window as
+  `{ type: 'cc-plugin.ready' }` (not on the port, which is the opener's line); an inline page posts `{ type: 'ready' }` on
+  its port, and now reports its load (`overlays.ready`) too. A url view stays hidden while it loads (its native view would
+  paint over the loader) but has the keyboard from the start.
+- ➕ decided: with more than 6 buttons the first 5 show and "…" takes the 6th place; Esc with "…" open closes the menu only
+  (a pushed `overlay.pop` handler). The opener plugin id is passed to `OverlayManager.open/start` so a button's `.svg` icon
+  becomes its `cc-plugin://` URL (the CLI's `.svg` icon is dropped). Clicks are a no-op stub until task 11 routes them.
+  ⚠️ the "…" menu of a url overlay sits under its native view (no shell-layer hiding for overlay views yet).
 
 ### Task 11: Opener and by-type buttons through the host [model: opus]
 

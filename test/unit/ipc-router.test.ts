@@ -1360,6 +1360,9 @@ describe('registerOverlayHandlers', () => {
       },
       ready: (windowId, overlayId) => {
         calls.push(['ready', windowId, overlayId])
+      },
+      loaded: (windowId, overlayId) => {
+        calls.push(['loaded', windowId, overlayId])
       }
     })
     return { ipc, calls }
@@ -1376,6 +1379,7 @@ describe('registerOverlayHandlers', () => {
     await ipc.invoke('overlays.result', 12, [{ overlayId: 'o2', value: { a: 1 } }])
     await ipc.invoke('overlays.message', 12, [{ overlayId: 'o2', message: '{"n":1}', windowId: 1 }])
     await ipc.invoke('overlays.ready', 11, [{ overlayId: 'o1', windowId: 2 }])
+    await ipc.invoke('overlays.loaded', 12, [{ overlayId: 'o2', windowId: 1 }])
     expect(calls).toEqual([
       ['list', 1],
       ['close', 2, 'o1'],
@@ -1385,7 +1389,8 @@ describe('registerOverlayHandlers', () => {
       ['bounds', 2, 'o2', { x: 0, y: 30, width: 10, height: 20 }],
       ['result', 2, 'o2', { a: 1 }],
       ['message', 2, 'o2', '{"n":1}'],
-      ['ready', 1, 'o1']
+      ['ready', 1, 'o1'],
+      ['loaded', 2, 'o2']
     ])
   })
 
@@ -1405,7 +1410,9 @@ describe('registerOverlayHandlers', () => {
       ['overlays.result', [{ value: 1 }]],
       ['overlays.message', [{ overlayId: 'o', message: { n: 1 } }]],
       ['overlays.message', [{ message: '{}' }]],
-      ['overlays.ready', [{ overlayId: 7 }]]
+      ['overlays.ready', [{ overlayId: 7 }]],
+      ['overlays.loaded', [{ overlayId: 7 }]],
+      ['overlays.loaded', []]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()

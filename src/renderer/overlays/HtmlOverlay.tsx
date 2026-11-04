@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { MAX_QUEUED_MESSAGES } from '../../sdk/panel-core'
+import { MAX_QUEUED_MESSAGES, READY_MESSAGE } from '../../sdk/panel-core'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
 import { PluginFrame } from '../plugins/PluginFrame'
@@ -12,6 +12,16 @@ interface ResultMessage {
 
 function isResult(data: unknown): data is ResultMessage {
   return typeof data === 'object' && data !== null && (data as { type?: unknown }).type === 'result'
+}
+
+/** The type of a message (an object with a string `type`), else undefined. */
+function typeOf(data: unknown): unknown {
+  return typeof data === 'object' && data !== null ? (data as { type?: unknown }).type : undefined
+}
+
+/** The page has drawn (`ccPanel.ready()`, or `{ type: 'ready' }` on an inline page's port): its loader goes. */
+function pageDrawn(overlayId: string): void {
+  window.cockpit.invoke('overlays.loaded', { overlayId }).catch(() => {})
 }
 
 /**
@@ -45,6 +55,9 @@ function sendResult(overlayId: string, value: unknown, onRefused: () => void): v
  *   (`overlays.message`), which hands it to the plugin that opened the overlay, if it opened it with
  *   `ctx.overlay.start`; what that plugin posts comes back as the `overlays.message` event and goes
  *   down the port. main holds those posts until this page's port is up (`overlays.ready`).
+ *   `ccPanel.ready()` reaches this window as `cc-plugin.ready` (not on the port, which is the
+ *   opener's line) and tells main the page has drawn (`overlays.loaded`): the loader of a
+ *   `ready: 'manual'` overlay goes then; a `load` one's goes at `overlays.ready`.
  * Either runs in a sandboxed iframe (`allow-scripts` only, never `allow-same-origin`), so in an
  * opaque origin with no access to this window, its storage or the preload bridge.
  *
@@ -89,6 +102,9 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
       src={props.src}
       title={props.title}
       className="overlay-html"
+      onPageMessage={(data) => {
+        if (typeOf(data) === READY_MESSAGE) pageDrawn(overlayId)
+      }}
       connect={(deliver) => {
         const ch = new MessageChannel()
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
@@ -142,6 +158,11 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
     channel.current = ch
     let answered = false
     ch.port1.onmessage = (event: MessageEvent<unknown>) => {
+      // An inline page has no SDK: it says it has drawn with `{ type: 'ready' }` on its port.
+      if (typeOf(event.data) === 'ready') {
+        pageDrawn(overlayId)
+        return
+      }
       if (answered || !isResult(event.data)) return
       answered = true
       sendResult(overlayId, event.data.value, () => {
@@ -151,6 +172,8 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
     // '*': a sandboxed frame's origin is opaque, so there is no origin to name. The port is the
     // only thing sent, and only this frame's window receives it.
     target.postMessage({ type: 'cc-overlay.port' }, '*', [ch.port2])
+    // The page has loaded: main takes the loader away (a `ready: 'load'` overlay, the default).
+    window.cockpit.invoke('overlays.ready', { overlayId }).catch(() => {})
   }
 
   return (

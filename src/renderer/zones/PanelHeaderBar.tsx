@@ -18,8 +18,8 @@ import {
 } from '../window-icons'
 import { MaskIcon } from './IconStrip'
 
-/** The core icon set (shared/panel-header.ts PANEL_HEADER_ICONS), in the window's stroke style. */
-const GLYPHS: Record<PanelHeaderIconName, (props: { size?: number }) => React.JSX.Element> = {
+/** The core icon set (shared/panel-header.ts PANEL_HEADER_ICONS), in the window's stroke style; the overlay toolbar draws it too. */
+export const GLYPHS: Record<PanelHeaderIconName, (props: { size?: number }) => React.JSX.Element> = {
   refresh: ReloadGlyph,
   add: PlusGlyph,
   search: SearchGlyph,

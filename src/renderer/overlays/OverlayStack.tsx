@@ -5,7 +5,7 @@ import { usePrefs } from '../prefs/prefs-store'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { domOrder, followOverlays } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
-import { CloseGlyph } from '../window-icons'
+import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
 import { TerminalOverlay } from './TerminalOverlay'
 
 /** A terminal overlay's keystrokes, acks and size, through the overlay channels. */
@@ -27,19 +27,11 @@ function closeOverlay(overlayId: string): void {
   window.cockpit.invoke('overlays.close', { overlayId }).catch(() => {})
 }
 
-function OverlayClose(props: { overlayId: string }): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      className="overlay-close"
-      aria-label="Close overlay"
-      title="Close"
-      onClick={() => closeOverlay(props.overlayId)}
-    >
-      <CloseGlyph size={14} />
-    </button>
-  )
-}
+/**
+ * A toolbar button click. The host side of the opener's and the type buttons (`onButton`, the
+ * providers' `run`) is not wired yet, so a click goes nowhere for now; main will check and route it.
+ */
+function buttonClicked(): void {}
 
 /**
  * `overlays.list` resets terminal overlays' flow control in main, so it runs once per page load
@@ -164,13 +156,14 @@ export function OverlayStack(props: {
           >
             <div className="overlay-frame">
             {/* The ✕ follows the tabs' close-side setting, so it sits where the user's hand already
-                goes for a tab's ✕. Moved in the DOM (not CSS order) so focus order matches. */}
-            <header className="overlay-header" data-close-side={tabCloseSide}>
-              {tabCloseSide === 'left' && <OverlayClose overlayId={overlay.id} />}
-              <span className="overlay-title">{overlay.title}</span>
-              {tabCloseSide === 'right' && <OverlayClose overlayId={overlay.id} />}
-            </header>
-            <div className="overlay-body">
+                goes for a tab's ✕. */}
+            <OverlayToolbar
+              overlay={overlay}
+              closeSide={tabCloseSide}
+              onClose={() => closeOverlay(overlay.id)}
+              onButton={buttonClicked}
+            />
+            <div className="overlay-body" data-loading={overlay.loading ? 'true' : undefined}>
               {overlay.kind === 'terminal' && (
                 <TerminalOverlay overlayId={overlay.id} active={active} sessions={terms} />
               )}
@@ -178,6 +171,7 @@ export function OverlayStack(props: {
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
               )}
               {overlay.kind === 'url' && <UrlBody overlayId={overlay.id} url={overlay.url} />}
+              <OverlayLoader loading={overlay.loading === true} />
             </div>
             </div>
           </div>

@@ -136,7 +136,8 @@ beforeEach(() => {
     },
     setBadge: (projectId, key, badge) => layouts.setBadge(projectId, key, badge),
     setPanelHeader: (projectId, key, header) => layouts.setHeader(projectId, key, header),
-    openOverlay: async (windowId, spec, opener, peerGone, channel) => overlays.open(windowId, spec, opener, peerGone, channel),
+    openOverlay: async (windowId, spec, opener, peerGone, channel, pluginId) =>
+      overlays.open(windowId, spec, opener, peerGone, channel, pluginId),
     postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
     closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
     focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
@@ -796,13 +797,27 @@ describe('overlay.open', () => {
     expect(t.results).toEqual([{ kind: 'dismissed' }])
   })
 
+  it("resolves the opener's .svg button icons in that plugin's own folder", async () => {
+    const call = hostA()
+    void call('overlay.open', {
+      pluginId: 'a.one',
+      spec: { kind: 'html', file: 'page.html', buttons: [{ id: 'star', label: 'Star', icon: 'star.svg' }, { id: 'ok', label: 'OK', icon: 'check' }] }
+    })
+    await waitOpen(WIN_A, 1)
+    expect(overlays.infos(WIN_A)[0]!.buttons).toEqual([
+      { id: 'star', label: 'Star', iconSrc: 'cc-plugin://a.one/star.svg' },
+      { id: 'ok', label: 'OK', icon: 'check' }
+    ])
+    overlays.close(WIN_A, overlays.infos(WIN_A)[0]!.id)
+  })
+
   it("shows one of the plugin's own pages from its cc-plugin:// URL; the page's { result } resolves it", async () => {
     const call = hostA()
     const t = track(call('overlay.open', { pluginId: 'a.one', spec: { kind: 'html', file: 'page.html', title: 'Pick' } }))
     await waitOpen(WIN_A, 1)
     const info = overlays.infos(WIN_A)[0]!
     // Loaded like a panel (the plugin's origin and CSP, the panel SDK), not copied into memory.
-    expect(info).toEqual({ id: info.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/page.html', size: 'default' })
+    expect(info).toEqual({ id: info.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/page.html', size: 'default', loading: true })
     expect(info.kind === 'html' && overlays.pageHtml(info.src)).toBeUndefined()
     // What the renderer relays when the page posts `{ result: { picked: 2 } }` (HtmlOverlay).
     expect(overlays.result(WIN_A, info.id, { picked: 2 })).toBe(true)

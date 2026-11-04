@@ -9,6 +9,8 @@
 //   ccPanel.theme.onChange(fn)           a new theme (applied before fn runs)
 //   ccPanel.slot                         only when the page is drawn as a slot (contributes.slots):
 //                                        { type, setHeight(px) }; undefined in a panel or an overlay
+//   ccPanel.ready()                      an html overlay's page has drawn: the app's loader goes
+//                                        (needed with `ready: 'manual'`; harmless elsewhere)
 //
 // Built to out/sdk/panel.js by the main build (electron.vite.config.ts) and served by the
 // cc-plugin:// handler for every plugin (src/main/plugins/plugin-protocol.ts). It is a classic
@@ -37,7 +39,7 @@ const client = new PanelClient(
     }
   },
   componentsCss,
-  // Only the shell frames this page, and only the shell hears this: the message is a height.
+  // Only the shell frames this page, and only the shell hears this: a height or `ready`.
   (message) => {
     if (window.parent !== window) window.parent.postMessage(message, '*')
   }

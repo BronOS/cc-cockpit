@@ -34,7 +34,9 @@ class FakeView implements UrlView {
     readonly windowId: number,
     readonly url: string,
     readonly onChord: (chord: string) => boolean,
-    readonly onGone: () => void
+    readonly onGone: () => void,
+    /** The page's first load ended (did-finish-load / did-fail-load in the real view). */
+    readonly onLoaded: () => void = () => {}
   ) {}
   setBounds(bounds: ViewBounds): void {
     this.bounds.push(bounds)
@@ -57,9 +59,10 @@ class FakeViews implements UrlViewFactory {
     windowId: number,
     url: string,
     onChord: (chord: string) => boolean,
-    onGone: () => void
+    onGone: () => void,
+    onLoaded?: () => void
   ): FakeView {
-    const view = new FakeView(windowId, url, onChord, onGone)
+    const view = new FakeView(windowId, url, onChord, onGone, onLoaded)
     this.created.push(view)
     return view
   }
@@ -178,6 +181,8 @@ describe('stack', () => {
     const b = track(m.open(W1, { ...html(), title: 'b' }, 'test'))
     void m.open(W1, { ...html(), title: 'c' }, 'test')
     void m.open(W2, html(), 'test')
+    // Loaded while covered: it stays hidden and the keyboard stays where it is.
+    a.onLoaded()
     const [first, second] = m.infos(W1)
     expect(a.visible).toBe(false)
     // Another window's id is unknown here.
@@ -220,8 +225,12 @@ describe('stack', () => {
     const m = manager()
     void m.open(W1, url('https://a.example/'), 'test')
     const a = views.last
-    expect(a.visible).toBe(true)
+    // Hidden while it loads (it would cover the loader), but it has the keyboard already.
+    expect(a.visible).toBe(false)
     expect(a.focused).toBe(1)
+    a.onLoaded()
+    expect(a.visible).toBe(true)
+    expect(a.focused).toBe(2)
     // A terminal overlay over it must not be covered by the native view.
     void m.open(W1, terminal(['cat']), 'test')
     expect(a.visible).toBe(false)
@@ -229,7 +238,7 @@ describe('stack', () => {
     // It ends: the url view is the top again.
     backend.last.exit(0)
     expect(a.visible).toBe(true)
-    expect(a.focused).toBe(2)
+    expect(a.focused).toBe(3)
     expect(m.pop(W1)).toBe(true)
     expect(a.destroyed).toBe(1)
     expect(views.windowFocus).toEqual([W1, W1])
@@ -440,7 +449,7 @@ describe('results per kind', () => {
     expect(m.infos(W1)).toEqual([])
     // A good one is on the stack at once; its result comes when the program exits.
     const r = track(m.start(W1, { ...terminal(['lazygit']), title: 'Git' }, 'test'))
-    expect(m.infos(W1)).toEqual([{ id: expect.any(String), kind: 'terminal', title: 'Git', size: 'default' }])
+    expect(m.infos(W1)).toEqual([{ id: expect.any(String), kind: 'terminal', title: 'Git', size: 'default', loading: true }])
     backend.last.exit(3)
     await flush()
     expect(r.results).toEqual([{ kind: 'exit', code: 3 }])
@@ -830,7 +839,14 @@ describe('html page', () => {
     const m = manager()
     const result = m.open(W1, { kind: 'html', src: 'cc-plugin://a.one/pick.html', title: 'Pick' }, 'plugin a.one')
     const [page] = m.infos(W1)
-    expect(page).toEqual({ id: page!.id, kind: 'html', title: 'Pick', src: 'cc-plugin://a.one/pick.html', size: 'default' })
+    expect(page).toEqual({
+      id: page!.id,
+      kind: 'html',
+      title: 'Pick',
+      src: 'cc-plugin://a.one/pick.html',
+      size: 'default',
+      loading: true
+    })
     expect(m.pageHtml(`cc-overlay://${page!.id}/`)).toBeUndefined()
     expect(m.result(W1, page!.id, { picked: 'b' })).toBe(true)
     await expect(result).resolves.toEqual({ kind: 'value', value: { picked: 'b' } })
@@ -1090,5 +1106,129 @@ describe('exactly one result', () => {
     expect(pty.paused).toBe(true)
     m.list(W1)
     expect(pty.paused).toBe(false)
+  })
+})
+
+// design-next §3.4: the overlay is on the stack at once and `loading` until its body is ready.
+describe('loader state per kind', () => {
+  const loadingOf = (windowId = W1): Array<boolean> => m0.infos(windowId).map((o) => o.loading === true)
+  let m0: OverlayManager
+  beforeEach(() => {
+    m0 = manager()
+  })
+
+  it('terminal: loading until the first output, which reaches the renderer before the update', () => {
+    void m0.open(W1, terminal(['cat']), 'test')
+    expect(loadingOf()).toEqual([true])
+    expect(lastStack(W1)[0]!.loading).toBe(true)
+    events.length = 0
+    backend.last.emit('hello')
+    // Output is batched (PtyService) and goes out on its timer.
+    vi.advanceTimersByTime(20)
+    expect(loadingOf()).toEqual([false])
+    expect(events.map((e) => e.channel)).toEqual(['overlays.data', 'overlays.updated'])
+    expect(lastStack(W1)[0]).not.toHaveProperty('loading')
+    // More output changes nothing more.
+    events.length = 0
+    backend.last.emit('again')
+    vi.advanceTimersByTime(20)
+    expect(events.map((e) => e.channel)).toEqual(['overlays.data'])
+  })
+
+  it('url: loading and its view hidden until the first load ends; later loads and a closed one are no-ops', () => {
+    void m0.open(W1, url(), 'test')
+    const view = views.last
+    expect(loadingOf()).toEqual([true])
+    expect(view.visible).toBe(false)
+    view.onLoaded()
+    expect(loadingOf()).toEqual([false])
+    expect(view.visible).toBe(true)
+    events.length = 0
+    view.onLoaded()
+    expect(events).toEqual([])
+    // A second one closes before its page loads: the late event finds nothing.
+    void m0.open(W1, url('https://b.example/'), 'test')
+    const late = views.last
+    expect(m0.closeTop(W1)).toBe(true)
+    events.length = 0
+    late.onLoaded()
+    expect(events).toEqual([])
+    expect(late.visible).toBe(false)
+  })
+
+  it('html (ready: load, the default): the port coming up ends it, for a plugin page and an inline one', () => {
+    void m0.open(W1, html(), 'test')
+    void m0.open(W1, { kind: 'html', src: 'cc-plugin://a.one/p.html' }, 'plugin a.one', undefined, { onMessage: () => {} })
+    const [inline, page] = m0.infos(W1)
+    expect(loadingOf()).toEqual([true, true])
+    m0.pageReady(W1, inline!.id)
+    expect(loadingOf()).toEqual([false, true])
+    m0.pageReady(W1, page!.id)
+    expect(loadingOf()).toEqual([false, false])
+  })
+
+  it('html (ready: manual): only the page saying it has drawn ends it; another window cannot', () => {
+    void m0.open(W1, { kind: 'html', src: 'cc-plugin://a.one/p.html', ready: 'manual' }, 'plugin a.one')
+    const [page] = m0.infos(W1)
+    m0.pageReady(W1, page!.id)
+    expect(loadingOf()).toEqual([true])
+    m0.pageLoaded(W2, page!.id)
+    m0.pageLoaded(W1, 'nope')
+    expect(loadingOf()).toEqual([true])
+    m0.pageLoaded(W1, page!.id)
+    expect(loadingOf()).toEqual([false])
+    expect(lastStack(W1)[0]).not.toHaveProperty('loading')
+  })
+
+  it('pageLoaded on a terminal or url overlay changes nothing (their loader follows the program or view)', () => {
+    void m0.open(W1, terminal(['cat']), 'test')
+    void m0.open(W1, url(), 'test')
+    for (const o of m0.infos(W1)) m0.pageLoaded(W1, o.id)
+    m0.pageReady(W1, m0.infos(W1)[0]!.id)
+    expect(loadingOf()).toEqual([true, true])
+  })
+
+  it('a renderer reload (list) brings back the loader of html overlays only', () => {
+    void m0.open(W1, html(), 'test')
+    void m0.open(W1, terminal(['cat']), 'test')
+    const [page] = m0.infos(W1)
+    m0.pageReady(W1, page!.id)
+    backend.last.emit('x')
+    vi.advanceTimersByTime(20)
+    expect(loadingOf()).toEqual([false, false])
+    expect(m0.list(W1).map((o) => o.loading === true)).toEqual([true, false])
+    m0.pageReady(W1, page!.id)
+    expect(loadingOf()).toEqual([false, false])
+  })
+})
+
+describe('toolbar buttons in the info', () => {
+  const withButtons = {
+    ...{ kind: 'html', src: 'cc-plugin://a.one/p.html' },
+    buttons: [
+      { id: 'read', label: 'Mark read', icon: 'check', primary: true },
+      { id: 'star', label: 'Star', icon: 'icons/star.svg', busy: true },
+      { id: 'plain', label: 'Plain', disabled: true }
+    ]
+  }
+
+  it("a core icon stays a name, a plugin .svg becomes that plugin's cc-plugin:// URL", () => {
+    const m = manager()
+    void m.open(W1, withButtons, 'plugin a.one', undefined, undefined, 'a.one')
+    expect(m.infos(W1)[0]!.buttons).toEqual([
+      { id: 'read', label: 'Mark read', icon: 'check', primary: true },
+      { id: 'star', label: 'Star', iconSrc: 'cc-plugin://a.one/icons/star.svg', busy: true },
+      { id: 'plain', label: 'Plain', disabled: true }
+    ])
+  })
+
+  it('without an opener plugin a .svg icon is dropped (no folder to read it from); no buttons, no key', () => {
+    const m = manager()
+    void m.open(W1, withButtons, 'cli')
+    expect(m.infos(W1)[0]!.buttons?.[1]).toEqual({ id: 'star', label: 'Star', busy: true })
+    void m.open(W1, { ...html(), buttons: [] }, 'cli')
+    void m.open(W1, html(), 'cli')
+    expect(m.infos(W1)[1]).not.toHaveProperty('buttons')
+    expect(m.infos(W1)[2]).not.toHaveProperty('buttons')
   })
 })

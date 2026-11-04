@@ -45,6 +45,9 @@ load, the strip shows the title's first letter.
   the slot's `[minHeight, placement height]`); without it the frame has the placement's height.
   `undefined` in a panel or an overlay. It appears once the app has said what the page is, so
   read it after load, not at script start.
+- `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
+  its content, so the app's loader over it goes (without `ready: 'manual'` the loader goes when the
+  page has loaded). Harmless in a panel or a slot.
 - The SDK also gives the page thin themed scrollbars (`scrollbar-width: thin`, a `--cc-fg` tinted
   thumb) at zero specificity, so any `scrollbar-*` rule of your own overrides it. Not on macOS,
   whose overlay scrollbars are left alone.

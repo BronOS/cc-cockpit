@@ -10,6 +10,7 @@ import {
   BASE_SCROLLBAR_CSS,
   PanelClient,
   PORT_MESSAGE,
+  READY_MESSAGE,
   SLOT_HEIGHT_MESSAGE,
   SLOT_MESSAGE,
   sdkSheetsFirst,
@@ -400,8 +401,8 @@ describe('frame messages (the shell side)', () => {
 })
 
 describe('panel SDK: ccPanel.slot', () => {
-  function slotClient(): { c: PanelClient; up: { type: string; height: number }[] } {
-    const up: { type: string; height: number }[] = []
+  function slotClient(): { c: PanelClient; up: { type: string; height?: number }[] } {
+    const up: { type: string; height?: number }[] = []
     return { c: new PanelClient(fakeRoot(), () => {}, undefined, undefined, (m) => up.push(m)), up }
   }
 
@@ -447,5 +448,13 @@ describe('panel SDK: ccPanel.slot', () => {
     const c = new PanelClient(fakeRoot())
     c.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
     expect(() => c.api.slot?.setHeight(80)).not.toThrow()
+  })
+
+  it('ready() tells the parent, every call, and does not fail without one', () => {
+    const { c, up } = slotClient()
+    c.api.ready()
+    c.api.ready()
+    expect(up).toEqual([{ type: READY_MESSAGE }, { type: READY_MESSAGE }])
+    expect(() => new PanelClient(fakeRoot()).api.ready()).not.toThrow()
   })
 })

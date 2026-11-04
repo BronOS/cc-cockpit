@@ -1777,6 +1777,10 @@ iframe:focus-visible {
   top: var(--cc-titlebar-h);
 }
 .overlay-header {
+  /* Above the body, so the "…" menu opens over the page (not under a url overlay's native view,
+     which paints above the whole renderer). */
+  position: relative;
+  z-index: 1;
   flex: none;
   display: flex;
   align-items: center;
@@ -1817,6 +1821,66 @@ iframe:focus-visible {
 .overlay-close:hover {
   background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
   color: var(--cc-fg);
+}
+/* The toolbar's buttons (OverlayToolbar.tsx): the opener's, a divider, the type buttons, "…". */
+.overlay-buttons {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.overlay-button {
+  --cc-control-h: 26px;
+  max-width: 180px;
+}
+.overlay-button-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.overlay-button-img {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  pointer-events: none;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+}
+.overlay-button-spinner {
+  width: 12px;
+  height: 12px;
+}
+.overlay-divider {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  background: var(--cc-border);
+}
+.overlay-more {
+  position: relative;
+  flex: none;
+}
+.overlay-more-button {
+  --cc-control-h: 26px;
+}
+.overlay-more-menu {
+  top: calc(100% + 6px);
+  right: 0;
+}
+/* The body's loader: over the page, taking no pointer events, so a click still reaches it. */
+.overlay-loader {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--cc-bg);
+  color: var(--cc-fg-muted);
+  pointer-events: none;
 }
 .overlay-body {
   position: relative;
