@@ -823,6 +823,9 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - [ ] write tests with the fake ctx: two sources then a third, a source leaving, rules applied, Jev move, Done via the
   overlay button, agenda placement per setting, badge, act failure message, missing app members → the message
 - [ ] run `npm test` — done when green
+- ➕ drop `doneMarksRead` and its `markRead` call from `dist/host.js` (task 28 left it live in the v1 host; design-v2: Done
+  never calls the source); add a test that Done (row, `e`, overlay button) makes no source call. Task 30 rewrites the
+  panel side (`panels/main.js`) and must not carry it over
 - ➕ delete `dist/lib/v1.js` (v1 ranking and settings kept for the v1 host by task 26) and move `test/settings-view.test.js` off it
 - ➕ run every full placement (start, rules change, a source joining or leaving) inside `jev.sweep(() => …)` so queued Jev
   requests of items gone or questions edited are dropped; re-place the refs `onAnswer` hands over (answers, the 10-minute
