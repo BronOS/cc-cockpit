@@ -30,7 +30,7 @@ What the index does give you:
      "tag": "v1.0.0",
      "commit": "<the full 40-character commit the tag points at>",
      "api": 1,
-     "category": "tools",
+     "category": "developer",
      "owners": [12345678]
    }
    ```
