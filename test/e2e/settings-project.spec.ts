@@ -180,6 +180,8 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   await expect(ui.getByLabel('Board')).toHaveValue('global-board')
   await expect(useGlobal('board')).toBeChecked()
   await expect(ui.getByLabel('Page size')).toHaveValue('50')
+  // A stored override reads as overridden on a fresh mount, not "Use global".
+  await expect(useGlobal('pageSize')).not.toBeChecked()
   expect(projectFiles()).not.toContain('global-board')
 
   // Appearance: the theme picker reaches the page (and so the panels and terminals that follow it).

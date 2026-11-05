@@ -376,6 +376,9 @@ export function PluginSettingsForm(props: {
   /** What a save sends: every field, or for a project its overrides only ("Use global" clears one). */
   const toSend = (formData: Record<string, unknown>): { values: Record<string, unknown>; secrets: SecretEdits } => {
     if (project === undefined) return { values: formData, secrets: secretsToSend(edits) }
+    // Known limits: an overridden optional field the user emptied (rjsf drops the key) is not sent, so it
+    // becomes "Use global" after the save; and a stored override of a key the schema no longer declares is
+    // dropped by the first save (the save replaces the overrides). Neither touches a secret.
     const values = Object.fromEntries(Object.entries(formData).filter(([k]) => overridden.has(k) && !secretNames.has(k)))
     const secrets: SecretEdits = {}
     for (const [name, edit] of Object.entries(secretsToSend(edits))) if (overridden.has(name)) secrets[name] = edit
