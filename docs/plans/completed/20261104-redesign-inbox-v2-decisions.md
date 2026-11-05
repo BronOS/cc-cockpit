@@ -1,0 +1,181 @@
+# Run notes: 20261104-redesign-inbox-v2
+
+Autonomous decisions and deviations logged by the plan run's subagents (from the progress log, one per line, cut to 200 characters).
+
+- [decision] orchestrator: ran in-place on a feature branch without asking the worktree question — the user is away and asked for an autonomous run; the plan spans several sibling repos a worktree would
+- [decision] task 1: bare-element defaults (button/input/select/textarea) scoped to :root:not(.cc-shell) with class=cc-shell on the shell's <html>; shell gets tokens and .cc-* classes only — shell contr
+- [decision] task 1: components install at SDK load (also on macOS), scrollbars still on first theme; no page background in the layer — avoids a bare first frame, keeps see-through panels transparent
+- [decision] task 1: tsconfig.web.json includes src/cli/raw.d.ts for the *.css?raw declaration — the web typecheck covers panel.ts but did not see raw.d.ts
+- [deviation] task 1: no shell rules removed from styles.css — none were identical to the components (plan: remove only where identical)
+- [decision] task 2: plugins.md and core-skill.md had no 'before you publish' / plugin-review section, so I added a short 'Before you publish' section and one Rules bullet — plan says they must name the
+- [deviation] task 3: e2e reviewer-annotate companion test fails — it also fails without my change (stash check)
+- [decision] task 4: slot title optional, min/maxHeight integers 24-600, duplicate types refused, entry must end in .html, providers may declare app slot types (only panels refuse them) — design-next §2
+- [decision] task 4: HostPlugin and servicePlugins carry slots (populated in main/index.ts) so pick rows and ServiceChoices see the host set — same pattern as openFile
+- [deviation] task 4: slot pick tests for ServiceChoices live in open-file.test.ts (where ServiceChoices is tested), and main/index.ts was touched though not listed — needed to feed slots to HostPlugin
+- [decision] task 5: slot open travels with its port as one {slotOpen:{pluginId,id,type,host,params}} port message; close is the event slot.close {pluginId,id}; open/close follow the renderer mount (slo
+- [decision] task 5: frame ports reuse PANEL_PORT_CHANNEL under key @slot/<frameId> — preload and panel-port-bus unchanged
+- [decision] task 5: frame types put in src/shared/ipc.ts next to PanelInfo (not layout.ts/types.ts as the plan listed) — PanelInfo and LayoutView live there
+- [decision] task 5: setHeight is kept in main as SlotFrameInfo.pageHeight clamped to [minHeight, height] via slots.height; refused for the top bar — plan says the router reports setHeight
+- [decision] task 5: a provider draws only while running (activated, not reloading); epoch bumped on every ready gives new frame ids (remount); frame cap counted per project, app frames first
+- [deviation] task 5: plugin-protocol.ts unchanged — slot entries are plugin files already served with the panel CSP; a test pins it
+- [deviation] task 6: ctx.slots.available returns Promise<boolean>, not boolean — only main knows the pick; new RPC slots.available
+- [decision] task 6: short guide text for the new members added now — cli-guide drift test fails otherwise; task 8 writes the full section
+- [decision] task 7: useLayout lifted from Zones to TabsPane and appSlots added to LayoutSnapshot — the top bar (outside Zones) needs the app slot frames from the same view; one sync per window
+- [decision] task 7: a sessions-strip frame in the top bar replaces the built-in strip entries (the + stays) — both list other windows' tabs; drawing both would duplicate them before task 36 removes the
+- [decision] task 7: slot pick rows shown for every slot type with >= 1 candidate on the Plugins page Services group — None is always a real choice (turn off), same as the open-file pick row
+- [decision] task 7: renderer coalesces setHeight into one slots.height call in flight (latest wins, same value not resent); webview panels always wrapped in .panel-slot-column so a later placement does
+- [decision] fixer: each side's slot frames capped at 40% of the panel and shrunk proportionally (CSS only) — leaves the host frame at least a fifth; no renderer logic change
+- [decision] fixer: TopStrip keeps dropping built-in entries as soon as a top-bar frame arrives (not waiting for the port) — reviewer marked it acceptable per the plan; a connected-state fallback needs 
+- [decision] task 8: second e2e test pins top-bar sessions-strip (frame replaces other windows' built-in entries; None restores them) — per previous review note; slot pick row for sessions-strip not exe
+- [decision] task 8: design.md §6 slot picks documented under Plugins page Services group — that is where task 7 put the rows, not This project
+- [decision] task 9: host onButton/onDiscuss only register handlers and setButtons only validates; the RPCs to main come with tasks 10-12 — main has no handler for them yet
+- [decision] task 9: added 'discussed' case to plugins/hello describe() and rebuilt its dist — the widened OverlayResult broke its exhaustive switch
+- [decision] task 10: loader state lives in main as OverlayInfo.loading; ccPanel.ready() goes to the parent as {type:'cc-plugin.ready'}, inline pages post {type:'ready'} on their port and now send overl
+- [decision] task 10: a url overlay's view stays hidden until its first load ends (focused from the start) — a native view paints over the renderer's loader
+- [decision] task 10: >6 buttons: first 5 in the row, '…' takes the 6th place; Esc with the menu open closes the menu only — simplest reading of 'more than 6 fold'
+- [decision] task 10: OverlayManager.open/start take the opener pluginId (6th arg) so .svg button icons become cc-plugin:// URLs; the CLI's .svg icons are dropped — panel header rule
+- [deviation] task 10: button clicks are a no-op stub until task 11 wires the host; the '…' menu of a url overlay draws under its native view (known limitation, noted in the plan)
+- [decision] fixer: added an unconditional did-stop-loading end for a url view's loader besides skipping ERR_ABORTED — traced in Electron: a 204 or a redirect our will-redirect cancels (to mailto:) fire
+- [decision] fixer: focus goes back to '…' on close only when it fell to the body (Esc, chosen item, click on nothing focusable) — a click on another control keeps the focus it took
+- [decision] fixer: no e2e for the hidden-view menu — opener buttons max 4, so no fold is reachable until task 11 makes type buttons real; covered by a urlViewBounds unit test; task 11 should add the e2
+- [decision] fixer: 'focus() brings a lower html overlay to the top' in overlays.spec is flaky before this change too (2/10 failed on the stashed tree with --repeat-each 10) — not touched
+- [decision] task 11: type buttons capped at 4 per plugin (opener rule), dup ids dropped; main bounds the whole ask to 2 s — plan silent; reuse parseOverlayButtons rule
+- [decision] task 11: host keys type-button runs by a main-minted buttonsKey, not the overlay id — host-api.ts invariant that the overlay id never leaves main
+- [decision] task 11: opener clicks are a host request (busy until onButton handlers settle, 30 s) and the opener channel is kept for every overlay kind — design says buttons on any kind; page messaging
+- [decision] task 11: plugin.disposed from a ctx that registered type buttons makes main re-ask the window's typed overlays — 'dispose on reload' would otherwise leave dead buttons shown
+- [deviation] task 11: added short guide text for ctx.overlay.buttons/onButton/setButtons in api.md now (task 14 owns the full guide) — CLAUDE.md guide-drift rule
+- [deviation] task 11: added the task-10-review e2e (url overlay '…' menu hides native view) in overlays.spec.ts with a new fixture plugin
+- [decision] task 12: Discuss visibility for an untyped overlay is reported by a new host->main request overlay.discussable { pluginId, handle, on } (first handler / last disposed), held until the overl
+- [decision] task 12: Send is a renderer IPC overlays.discuss answering { ok, tabId, queued } | { ok: false, error } rather than rejecting — the popover shows the error text as is
+- [decision] task 12: limits and preselection in src/shared/discuss.ts (renderer + main), composition in src/main/overlays/discuss.ts; renderer target list built by src/renderer/overlays/discuss-tabs.ts
+- [decision] task 12: index.ts openTab factored into openClaudeTab, shared by ctx.sessions.open and Discuss New session (the 'remove any duplicate path' item); the reviewer's own Discuss buttons are lef
+- [decision] task 12: composed text: About line + type line, blank line, context, blank line, note; a cut context ends '[… cut to fit]'; inbox-item reads 'Item: <source> <id>'; title and type line flatt
+- [decision] fixer: task 12 review - an overlay dismissed while Discuss's new session opens is accepted and documented (logged, tab still selected, answer still ok) rather than refused or deferring the 
+- [decision] task 13: onDiscuss text capped at 15,000 (MAX_CONTEXT) — core cuts the context first under its 20,000 with a 4,000 note, so the reviewer keeps the cut (and the kept-draft notice) on its sid
+- [decision] task 13: a queued Discuss keeps the draft and the old watch matches the review's start anywhere in the tab's next prompt — core prefixes About:/type lines, and the earlier keep-until-delive
+- [decision] task 13: prepare() also takes type and tabId, features() adds 'type' — overlay extras are fixed at start, so a prepared overlay could not get the caller's type otherwise
+- [deviation] task 13: reviewer manifest drops 'uses: editor' and the toolbar Edit opens micro at line 1 (no cursor line) — the reviewer no longer calls the editor; a type button has no page state
+- [decision] task 13: also updated src/cli/guide/plugins.md (reviewer service) and the features assertion in test/e2e/reviewer-annotate.spec.ts — both described the old buttons / features list
+- [decision] task 14: reviewer Edit tested through annotate-caller with a file type and a fake micro in test/fixtures/bin — cheaper than a git-diff review flow; same toolbar path
+- [decision] task 15: renderer asks settingsPage.info {pluginId, scope} for the page URL and whether the plugin is enabled in the window's project; views carry only settingsPage?: true — PluginView is a
+- [decision] task 15: one page per plugin keyed per project host (one window per project); a new connect closes the older page (main) and the host also ends it; port key @settings/<pluginId> in new src/
+- [decision] task 15: This project shows the Settings button for a plugin with a project-scope page even when not enabled, so the 'Enable … in this project' note is reachable; the frame is a fixed 480 p
+- [deviation] task 15: host-api.ts and host-api.test.ts unchanged (the page port is not a host RPC); tests went to host-manager, panel-ports, ipc-router, plugin-protocol and a new ctx-settings-page.test
+- [deviation] task 15: marketplace/tools/dist rebuilt (the tools bundle src/shared/manifest.ts, which gained the page key)
+- [decision] task 16: new problem kind 'collected-major' (PluginsPage renders it via serviceProblemMessage, no TSX change) — shared rule in services.ts
+- [decision] task 17: v1 functions (itemsOf, calDayOf, featuresOf...) kept beside the v2 ones, v1 itemOf renamed itemV1Of internally — host.js still uses them until the host task; deleting them would br
+- [decision] task 17: item return shape is { item, refused }; bad optional fields are dropped, bad required ones (id, rev, title, time) refuse the item; read of wrong type becomes null
+- [decision] task 18: buffer of a pending snapshot capped at 2000 events; overflow drops it and asks a second snapshot — bounded memory against a flooding provider, the newer snapshot covers dropped eve
+- [decision] task 18: gone ids past 500 in one event are added to the source's refused count (not overCap) — overCap stays the 1000-items cap count shown on the line
+- [decision] task 18: an event from a provider listed by providers() but not yet joined (before onChange) joins it and buffers behind its snapshot; events from unlisted ids are dropped — design 'Missed 
+- [decision] task 18: any answered sync/snapshot clears the error line; stale = items present and (state non-ok or error) — simplest consistent reading of 'non-ok keeps the last list marked stale'
+- [decision] task 18: sources.js has its own withTimeout (10 s default, opts.callMs) rather than importing from host.js — the host is rewired in a later task
+- [decision] task 19: sync emitted on every Sync-state change and sign-in, scope line added to the panel footer — plan said same line in panel; settings description kept static
+- [decision] task 20: the early reader start applies only when no reviewer with annotate is available; a reviewer that turns out to lack annotate falls back to the late start — the overlay choice is unk
+- [decision] fixer task 20: a failed overlay button run sets the panel notice and throws (the app only logs a throwing run; there is no overlay-side error surface for type buttons)
+- [decision] fixer task 20: fixed the reader page's sparse parts array (pre-existing, found by the new page test) since it made ready fire with half the mail
+- [decision] fixer task 20: prepare still gets no tabId (annotate's Discuss tab is lost on a prepared overlay, pre-existing); left as is, it needs an async sessions.list before prepare
+- [decision] task 21: alert group conversations become items via convRows on buildView alert rows, and rowOf finds them — plan: each conversation its own item, markRead must work on it
+- [decision] task 21: markRead/markUnread offered only on rows with a mark target (thread replies get open only) — an action is a promise and markRow refuses those rows
+- [decision] task 21: to = direct for DMs, group for group chats and spaces; mentionsMe only on unread rows (mention info is computed for unread only) — design table
+- [decision] task 23: added assignee:<name> / unassigned labels for Mentioned-lane issues and a mentioned label (plus mentionsMe) on assigned issues mentioned within mentionDays — the caller asked for a
+- [decision] task 23: asked Jira for the labels field in searches and kept them on the issue header, with poll.current dropping stale labels/dueAt — design needs label:<name> and the cache held none
+- [decision] task 23: a sync is emitted when the state kind or message changes, and after a settings change the list is diffed at once — lessons from tasks 19/21
+- [decision] fixer: uncached-issue title is the bare key instead of updating later — no ctx.overlay retitle API exists
+- [decision] task 25: compact horizontal timeline in the slot instead of the panel's vertical hour timeline — 48-320 px height; logic reused from timeline.js
+- [deviation] task 26: default groups are Now, Chat, Mail, Jira, Rest and rules are read->Rest, Chat mentionsMe->Now, Chat to:direct->Now, then sourceKind chat/mail/issues (plan said groups Chat, Mail, 
+- [decision] task 26: mentions/direct -> Now limited to Chat; Jira mentions and Gmail to:direct stay in their groups — every assigned Jira issue is to:direct and most mail is, so a source-wide rule woul
+- [deviation] task 26: rank.js and v1 settings were moved into a temporary dist/lib/v1.js instead of only deleted — the v1 host and its settings view still use them until task 29 (plan task 29 gained a 
+- [decision] task 26: a rule with any invalid condition is dropped whole, an unknown group sends the rule to Rest, a rule with empty when and no jev is dropped — dropping a single condition would widen 
+- [decision] fixer: kept the chat-mention/chat-direct rules and updated design-v2 instead — smaller change, rules were deliberate
+- [decision] fixer: an unknown newer settings version is read as v2 keeping valid lists, not defaulted — so a save after downgrade does not wipe rules
+- [decision] task 27: cache value adds a 'seen' field (bumped at most once a day) beside {rev, score, at} — the key is hashed, so pruning '14 days after last seen' like Done needs a last-use date in the
+- [decision] task 27: only one grid in flight per question (the next waits for it and the 2 s pace) and a failure blocks question+item for 10 min even for a new rev — simplest reading of 'every 2 s at m
+- [decision] task 27: cachedAnswer (settings Test) returns 'pending' for an uncached item and 'unavailable' only with no jev provider; onAnswer also fires when an item turns unavailable so the host can 
+- [decision] fixer: no global calls-per-minute cap across questions — kept the design's per-question 2 s pace; cost is bounded by sweep (live items only) and the 2000 queue cap
+- [decision] fixer: provider-appeared detection is a 60 s availability poll (free, no call), not 10 min — services.available has no change event for a non-collected service
+- [decision] fixer: a full question queue returns 'unavailable' and parks the item (re-offered by the minute check) instead of 'pending'
+- [deviation] fixer: plan task 29 gained a line to wrap full placements in jev.sweep and re-place onAnswer refs — task 29's host re-places only on events/answers, so the retry needs onAnswer
+- [deviation] task 28: v1's done-also-marks-read left in v1 host (dist/host.js) — host is rewritten in task 29, v1 host tests still depend on it
+- [decision] task 29: settings/index.html created as a placeholder page — the manifest names it and the app checks entry files exist; task 31 replaces it
+- [decision] task 29: v1 feed/calendar parsers (itemsOf, calDayOf, calUpcomingOf, eventOf, httpsUrl) removed from lib/feed.js with their tests — the v2 host was their only user (Inbox no longer reads th
+- [decision] task 29: snooze times fixed at v1 defaults 14:00/09:00 and woken-snooze notifications always on — v2 settings have no such fields and design-v2 keeps snooze unchanged
+- [decision] task 29: badge counts read === false only (read: null, no read state, not counted); panel rows/done/search capped at 200 and previews at 200 chars to stay under the 1 MiB post limit
+- [decision] task 29: Jev cache re-read from app storage every 10 minutes (not every 60 s tick) — one storage call per cached answer
+- [decision] task 29: ccc inbox keeps the v1 commands over the v2 groups (group name in the level column) until task 32; settings page backend (ctx.settingsPage) left to task 31, the host exposes saveSe
+- [decision] task 30: group open state remembered in page memory only — panel pages have no localStorage and the task's file list excludes the host
+- [decision] task 30: source line also drawn for an ok source with refused/over-cap items — design-v2 says refusals are counted on the source's line so they are visible
+- [decision] task 30: rows keep a Snooze button after Done — decided Q2 keeps the v1 snooze menu
+- [decision] task 31: draft + explicit Save (with Discard changes, Reset to defaults filling the draft) instead of saving each edit — a half-typed condition would be refused or applied mid-edit; one pri
+- [decision] task 31: added strict checkSettings to lib/settings.js beside the lenient readSettings — readSettings silently drops bad rules, the plan needs a refused save to show its reason
+- [decision] task 31: the host sends the field table (FIELDS, kinds, to, caps) with the settings — no copy of the table in the page to drift
+- [decision] task 31: Test reports placed (where the rule stands), holds (alone) and no-cached-Jev counts over visible items; a disabled rule is tried as enabled — design says only 'how many it would pl
+- [decision] task 31: 'in' text values are one per line, new rules are added at the top — names can hold commas; design-v2 says the person adds rules above the defaults
+- [decision] task 31: fixed the plan-exec commit script's missing Co-Authored-By line by amending the plan-tick commit (517a3c3) — session constraint requires it on every commit
+- [decision] task 32: undo honours the panel toast's 6 s window and why uses cached Jev answers only — matches the panel and keeps a read from asking Jev
+- [decision] task 32: README rewritten whole, it still described v1 — the plan only asked for 0.2.0 content
+- [decision] task 33: SessionSummary has no name yet — name only exists with rename, task 34 adds it to SessionInfo and SessionSummary together
+- [decision] task 33: SessionSummary.project.color is a CSS value (var(--cc-project-x) or #rrggbb) — palette names are theme tokens; a plugin page can use the value directly
+- [decision] task 33: close raises the window only when the tab is running and confirmTabClose is on; main waits up to 5 min for the window's answer (closed:false on timeout or window close) — the dialo
+- [deviation] task 33: the access declaration shows on the Settings › Plugins row only, not the marketplace install confirmation — a listing has no manifest before the clone
+- [deviation] task 33: validate.ts, window-manager.ts, open-file.ts and open-file.test.ts unchanged — the schema covers access, focusProject exists, routeOpenFile already checks recorded files (tested)
+- [decision] task 33: guide text for scope/focus/close/openFile/access written in this task (api.md, plugins.md) — drift-test rule; task 34 adds rename
+- [decision] task 34: names are trimmed before the 1-60 check, and the core Rename's empty input clears the name — plan silent; matches null semantics
+- [decision] fixer: session names refuse an explicit list of bidi/separator/invisible characters, not all of \p{Cf} — ZWJ/ZWNJ (emoji sequences, Persian/Indic words) and flag tag characters are legitima
+- [decision] task 35: card/strip rules in one UMD file dist/lib/view.js shared by host and pages; node tests run on the card model rather than a DOM — no DOM in node:test, keeps rules in one place
+- [decision] task 35: eslint lints plugins/sessions like plugins/files (no ignore) — newest plain-JS bundled plugin pattern, lint passes
+- [decision] task 35: migration drops sessionFilesShown even when not copied (invalid value or plugin already has filesShown) — the plugin setting is the only authority afterwards
+- [deviation] task 35: added SessionInfo.gist to the plugin API (types, sessionInfoOf, guide, example types) — design-next 4.1 lists it and the cards need it; Task 33/34 had not added it
+- [deviation] task 35: updated test/e2e/bundled-plugins.spec.ts running-id lists to include cockpit.sessions — the spec failed with a new default-on bundled plugin
+- [decision] fixer: MINOR migration finding fixed by comment only, old key still deleted — keeping it would re-migrate every start and contradicts the documented contract
+- [decision] task 36: removed the renderer IPCs sessions.focus and sessions.openFile and SessionRegistry.refresh() — nothing in the renderer uses them after the strip and panel left; plugins go through 
+- [decision] task 36: layout key migration applied in normalizeLayout on every read; the old key is dropped when the layout already has cockpit.sessions/sessions — idempotent, covers record load and ren
+- [decision] task 36: top-bar fallback (task 7 review) = slot frame takes no room until main hands its page a port, and the + sits at the bar end while a slot exists so it does not jump — bar is always 
+- [deviation] task 36: project-color.spec no longer checks other windows' strip dots live (now the plugin's, refreshed on the next session change per task 33); project-color.spec:63 fails here before an
+- [decision] task 37: side panels (auto-hide, min terminal width) put on General — design-next 5.1 names no page for them; they are behaviour, not looks
+- [decision] task 37: settings screen opens on General (was Projects) — General is the first page of 5.1's order
+- [decision] task 37: section renamed This Project (capital P), also in Enable in This Project, the ccc plugin config refusal and the services 'pick one in Settings > This Project' message — design-next
+- [decision] task 37: General, Appearance and Keybindings all read the one settings.appearance view — no new main handler needed
+- [decision] task 38: a global save must also validate alone (what a project with no overrides gets), besides each open project's merged values — design names only open projects; closed projects without
+- [decision] task 38: a project key without --scope stays this project's override (old default); --use-global is repeatable, goes alone and refuses secret fields — smallest CLI change; secrets never thr
+- [decision] task 38: onSettingsChange fan-out compares a fingerprint of the host settings before/after a global save — HostManager.settingsChanged pushes unconditionally
+- [deviation] task 38: until task 39 the This Project form sends every field, so a form save makes all fields overrides — the UI for Use global is task 39; registry.ts unchanged (pluginProjectDefaults w
+- [decision] task 39: the 'Use global' switch's accessible name is 'Use global' alone (field title in title attr) — a name containing the field title made getByLabel(<title>) ambiguous in existing e2e s
+- [decision] task 39: the global values form has its own Save label 'Save global values' and the app form a data-testid wrapper — two forms on one row would otherwise collide in existing specs' locators
+- [deviation] task 39: test/e2e/settings-plugins.spec.ts also changed (secret-state locator scoped to the app form) — not in the task's file list, needed since the global form adds a second secret field
+- [decision] fixer: documented the empty-override and undeclared-key behaviour with a comment instead of changing it — smaller, reversible, no trust impact
+- [decision] task 40: gear target 'project' whenever a project schema or a project-scope page exists, else 'app' — design-next §5.3
+- [decision] task 40: gear request travels as a window CustomEvent to TabsPane — avoids a prop chain through Zones/Zone/PanelArea
+- [decision] task 41: previews are fetched by a new check-entry --fetch-previews mode in a token-less 'previews' job of publish-index.yml, handed over as an artifact; <commit>.none markers stop hourly r
+- [decision] task 41: a missing/bad published preview is a build-index warning, never a problem; the fetch step and artifact download are continue-on-error and publish runs if !cancelled() — a cosmetic 
+- [decision] task 41: app parseEntry drops a malformed preview instead of the entry; category always present on parsed entries — preview is cosmetic, matches unknown category -> other
+- [decision] task 41: workflows read the date via jq from preview-policy.json; an empty/invalid value is refused (fails closed) — plan names the parameter, not the plumbing
+- [decision] fixer: failure backoff is a committed previews/<id>/<commit>.failed marker with a fixed 24h retry, not counting failures — simplest stateless-on-runner option; the publish job already commi
+- [decision] fixer: README fixed to say any added or changed entry is refused after requiredFrom, rather than relaxing the check to commit changes — matches the hint and keeps the code as is
+- [decision] fixer: kept the previews job at timeout-minutes 20 and shrank the tool instead (60s clone timeout, 10 min budget); worst case about 12 min plus setup
+- [decision] task 42: cache keyed by sha256 (not id/commit) and pruned on each write to the hashes current indexes list; failed fetch retried after 10 min — the design is silent on cache bounds and retr
+- [decision] task 42: the preview thumbnail replaces the blocks glyph in today's Marketplace and Plugins rows (96x60); task 43 builds the real cards — smallest change that shows previews before the page
+- [decision] task 42: an installed plugin's own preview.png is flagged by main (lstat regular file) and loaded via cc-plugin://, which only serves plugins on in an open window; otherwise the placeholder
+- [decision] task 43: an installed card merges the listing of its recorded index (added PluginView.marketplace), else the first listing of its id; other indexes' listings of an installed id add no card 
+- [decision] task 43: "Add plugin…" and index management are folded toggles; Refresh and a failing-index count stay in the index section's heading — design-next §6.3 calls the index section collapsible,
+- [decision] task 43: index notices and management split into MarketplaceIndexes.tsx — keeps PluginsPage.tsx manageable after MarketplacePage.tsx was deleted
+- [decision] task 43: Refresh, adding an index and the on-open refresh now also reload the installed list — a fetch can revoke an installed plugin, and its merged card showed stale state (found by the e
+- [deviation] task 43: the marketplace-note 'Version X is available' line is gone (the card's Update button and 'listed X' replace it); the revoked-move button reads 'Move to safe version'; settings-for
+- [deviation] task 44: the Update all loop is in SettingsService (settings-service.ts) and its unit tests in settings-marketplace.test.ts, not marketplace-service.ts / marketplace-service.test.ts — the 
+- [decision] task 44: cap of 100 items per Update all call and duplicate ids refuse the whole call — plan names no cap; CLAUDE.md asks untrusted renderer input be bounded
+- [deviation] task 45: e2e project-color.spec.ts:63 fails (3px vs 2.99805px computed height), not in the plan's known list — fractional display scale in this Linux session; left unfixed, flagged with wa
+- [decision] task 46: most design.md 'Changes' lines were already applied by tasks 8, 14, 36, 40, 43, 44; I added only the missing ones (global values/overrides, plugin config scopes, projectDefault sec
+- [decision] task 46: Inbox README already stated 0.10.0 and its scope; no change there (no commit in cc-cockpit-inbox)
+- [decision] fixer: Inbox fits an over-limit snapshot by dropping previews then halving rows per group (min 5) under an 800 KiB budget, with a persistent 'limited' line; a notice only if even that fails
+- [decision] fixer: state.js write/remove take the memory change back when the store call fails — a Done that was never stored no longer hides the item until the next load
+- [decision] fixer: source act(id,'open') resolves once prepare/startReader ran (even when the reviewer has no prepare); failures after that go to the source panel's notice, not to Inbox
+- [decision] fixer: group open state stored app-wide in Inbox app storage key ui:groupsOpen (not project storage), only ids of existing groups
+- [decision] fixer: refresh header retitled 'Reload from the sources' instead of adding a refresh() to the feed contract
+- [decision] fixer: overlay button providers now share one deep-frozen info object (test updated from 'own copy' to 'one frozen copy')
+- [decision] fixer: no 'pending' reply or late item event for Inbox; the no-prepare path just awaits the whole open (10 s act limit applies) — smallest change, Inbox already keeps the back mark on a ref
+- [decision] fixer: a reviewer refusing annotate still ends as a panel notice with act ok (unchanged, pre-existing) — out of the finding's scope
+- [decision] fixer: the refusal message is the error notice set during the open (S.notice identity changed and kind error), else a generic 'could not be shown' — one guard in openStarted instead of thre
+- [decision] fixer: no ready/started signal exists in the public overlay API (src/host/ctx/ui.ts, guide api.md); 'up' means handle.result did not reject within 500 ms, the reviewer's existing OPEN_SETTL
+- [decision] fixer: with our early reader page, act open now answers after the 500 ms settle; a read failing inside that window is the act's refusal (gmail test 'act open settles once the reader is up' 
+- [decision] fixer: the old start-throws refusal tests stay (they cover startReader's catch); new tests use a handle whose result rejects, as the real app does
+- orchestrator: finalize skipped the rebase (origin/master has no new commits) and the squash (73 local commits; squashing would rewrite the hashes the progress log names; the user can squash at merge)
