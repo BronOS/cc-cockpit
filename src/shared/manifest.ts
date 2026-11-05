@@ -106,6 +106,14 @@ export interface CliContribution {
   summary: string
   usage?: string
   stdin?: boolean
+  /**
+   * With `stdin`: read it only when an argument is exactly `-`, so the subcommands that take no
+   * input never wait on an open, silent pipe (a script's inherited stdin: friction from the Inbox
+   * rules CLI, whose `list` waited 40 s). A separate key, not `"stdin": "dash"`: apps before
+   * 0.10.1 refuse a non-boolean `stdin` but ignore unknown keys here, so a plugin using it still
+   * loads there and only reads stdin as before.
+   */
+  stdinDash?: boolean
 }
 
 /**
@@ -375,7 +383,8 @@ export const MANIFEST_SCHEMA = {
               name: { type: 'string', pattern: CLI_NAME_PATTERN.source },
               summary: { type: 'string', minLength: 1, maxLength: 200 },
               usage: { type: 'string', minLength: 1, maxLength: 500 },
-              stdin: { type: 'boolean' }
+              stdin: { type: 'boolean' },
+              stdinDash: { type: 'boolean' }
             }
           }
         },

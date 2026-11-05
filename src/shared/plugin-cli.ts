@@ -59,6 +59,8 @@ export interface PluginCliSpec {
   summary: string
   usage?: string
   stdin: boolean
+  /** Present (true) only for a `stdinDash` command: stdin is read only when an argument is `-`. */
+  stdinDash?: true
 }
 
 /** UTF-8 bytes `text` takes as a JSON string literal (quotes included). */

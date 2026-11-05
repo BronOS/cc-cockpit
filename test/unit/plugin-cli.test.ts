@@ -286,6 +286,21 @@ describe.skipIf(!POSIX)('the CLI client', () => {
     expect(received[1]?.args).toEqual({ name: 'demo', argv: [], cwd: CWD, stdin: 'piped text' })
   })
 
+  it('a stdinDash command without a - argument ignores an open, silent pipe and sends empty stdin', async () => {
+    app(spec({ stdin: true, stdinDash: true }), { stdout: 'ok' })
+    const silent = new PassThrough() // a script's inherited stdin: never written, never ended
+    const started = Date.now()
+    expect(await run(['demo', 'list'], env(), silent, out().io, CWD)).toBe(0)
+    expect(Date.now() - started).toBeLessThan(1500)
+    expect(received[1]?.args).toEqual({ name: 'demo', argv: ['list'], cwd: CWD, stdin: '' })
+  })
+
+  it('a stdinDash command with a - argument reads stdin', async () => {
+    app(spec({ stdin: true, stdinDash: true }), { stdout: 'ok' })
+    expect(await run(['demo', 'import', '-'], env(), Readable.from([Buffer.from('{"a":1}')]), out().io, CWD)).toBe(0)
+    expect(received[1]?.args).toEqual({ name: 'demo', argv: ['import', '-'], cwd: CWD, stdin: '{"a":1}' })
+  })
+
   it('a stdin read error after partial input is exit 1 and the plugin is not called (review finding)', async () => {
     app(spec({ stdin: true }), { stdout: 'ok' })
     const failing = new PassThrough()
@@ -448,6 +463,8 @@ describe.skipIf(!POSIX)('the CLI client', () => {
 describe('socket handlers', () => {
   const demo: CliContribution = { name: 'demo', summary: 'Echo', usage: 'demo echo' }
   const piped: CliContribution = { name: 'pipe', summary: 'Pipe', stdin: true }
+  const dashed: CliContribution = { name: 'dashed', summary: 'Dashed', stdin: true, stdinDash: true }
+  const loose: CliContribution = { name: 'loose', summary: 'Loose', stdinDash: true }
   let calls: { projectId: string; pluginId: string; call: HostCliCall }[]
   let enabled: Set<string>
   let windowOpen: boolean
@@ -480,6 +497,16 @@ describe('socket handlers', () => {
       stdin: false
     })
     expect(calls).toEqual([])
+  })
+
+  it('spec: stdinDash goes to the CLI only with stdin: true', async () => {
+    const h = pluginCliSpecHandler({
+      ...options,
+      cliContributions: () => [piped, dashed, loose].map((cli) => ({ pluginId: 'test.hostcli', cli }))
+    })
+    expect(await h({ name: 'dashed' }, tab)).toMatchObject({ stdin: true, stdinDash: true })
+    expect(await h({ name: 'pipe' }, tab)).not.toHaveProperty('stdinDash')
+    expect(await h({ name: 'loose' }, tab)).toEqual({ name: 'loose', pluginId: 'test.hostcli', summary: 'Loose', stdin: false })
   })
 
   it('routes a call to the owner in the caller\'s project', async () => {

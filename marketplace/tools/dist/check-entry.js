@@ -245,7 +245,8 @@ var MANIFEST_SCHEMA = {
               name: { type: "string", pattern: CLI_NAME_PATTERN.source },
               summary: { type: "string", minLength: 1, maxLength: 200 },
               usage: { type: "string", minLength: 1, maxLength: 500 },
-              stdin: { type: "boolean" }
+              stdin: { type: "boolean" },
+              stdinDash: { type: "boolean" }
             }
           }
         },

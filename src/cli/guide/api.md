@@ -272,7 +272,7 @@ with full Node access.
 - `ctx.commands.register(id, run)`: `id` must be declared in `contributes.commands`.
 - `ctx.cli.register(name, handler)`: implements `ccc <name> …`; `name` must be declared in
   `contributes.cli`, one handler per name. `handler(argv, { stdin, cwd, signal })` gets the words
-  after the name verbatim, the caller's stdin (only with `"stdin": true`, else `''`), the caller's
+  after the name verbatim, the caller's stdin (only with `"stdin": true`, else `''`; with `"stdinDash": true` too, `''` unless an argument is `-`), the caller's
   cwd (resolve relative paths against it) and an AbortSignal (Ctrl+C, the 30 s limit, deactivate).
   It returns `{ stdout?, stderr?, code? }` (code 0-255, default 0); each output is cut at 256 KiB
   once JSON-encoded. A throw is exit 1 with the message on stderr, 30 s without an answer is exit

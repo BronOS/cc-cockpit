@@ -583,7 +583,8 @@ function isTTY(stream: Readable): boolean {
  * the plugin's host; stdout and stderr are printed as the plugin returned them, and the exit code
  * is the plugin's.
  *
- * stdin is read only for a command that declares `stdin: true`, and only when it is not a
+ * stdin is read only for a command that declares `stdin: true` (with `stdinDash`, only when an
+ * argument is exactly `-`), and only when it is not a
  * terminal (nobody would type EOF): reading whenever it is not a TTY would hang a `ccc` started
  * with an open but silent pipe (a tool runner's usual setup), and even then the read ends after
  * STDIN_READ_TIMEOUT_MS with exit 124. Over MAX_CLI_IO_BYTES once JSON-encoded it is refused here,
@@ -624,7 +625,10 @@ export async function runPlugin(
   }
 
   let input = ''
-  if (spec.stdin === true && !isTTY(stdin)) {
+  // A `stdinDash` command reads only for a `-` argument: its other subcommands (`inbox list`) must
+  // not wait on a script's inherited, never-closed stdin. Without a `-` it gets '' like a terminal.
+  const wantsInput = spec.stdin === true && (spec.stdinDash !== true || command.argv.includes('-'))
+  if (wantsInput && !isTTY(stdin)) {
     // One byte over the cap is enough to know: the encoded size is never below the raw one.
     // Bounded like the call itself: an open pipe nobody closes (a tool runner that leaves stdin
     // attached, `sleep 999 | ccc …`) would otherwise keep `ccc` waiting forever with no output,

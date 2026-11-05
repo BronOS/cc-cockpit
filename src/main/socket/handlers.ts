@@ -274,6 +274,7 @@ export function specOf(owner: CliOwner): PluginCliSpec {
     stdin: owner.cli.stdin === true
   }
   if (owner.cli.usage !== undefined) spec.usage = owner.cli.usage
+  if (owner.cli.stdin === true && owner.cli.stdinDash === true) spec.stdinDash = true
   return spec
 }
 

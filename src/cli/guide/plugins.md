@@ -46,7 +46,7 @@ so a person chooses to install or link it.
   `services` and `access` reject them.
 - Fields per contribution: panel `id`, `title`, `kind`, `icon`, `entry`, `defaultZone`; command
   `id`, `title`, `key`; theme `id`, `file`; skill `id`, `dir`; cli `name`, `summary`, `usage`,
-  `stdin`; openFile `title`. There is no `description` field on a command or a cli entry: a command is one palette
+  `stdin`, `stdinDash`; openFile `title`. There is no `description` field on a command or a cli entry: a command is one palette
   line (`title`), a cli entry is a `summary` (200 chars) and a `usage` (500 chars).
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may
@@ -101,6 +101,9 @@ needs `main`.
   usage|balance|ask [args]; jev help for details`, and handle `help` and `<sub> --help` in the
   handler, which gets those words verbatim.
 - `stdin`: `true` to receive the caller's stdin; without it, stdin is never read.
+- `stdinDash`: with `stdin`, read it only when an argument is exactly `-` (`… | ccc mytool import -`).
+  Use it when only some subcommands take input: the others then never wait on a script's open, silent
+  stdin. Apps before 0.10.1 ignore the key and read stdin for every call.
 
 ## Walkthrough: a plugin in five files
 

@@ -34,7 +34,7 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   running with exit 1 and the reason; otherwise the plugin's stdout, stderr and exit code are
   passed through (124: it did not answer within 30 s). A plugin that is reloading or still
   starting is waited for within the same 30 s, then the command runs in its new copy (124 if it
-  is not active by then). Its stdin is read only when the plugin declares it and it is not a terminal (at most 256 KiB);
+  is not active by then). Its stdin is read only when the plugin declares it (with `stdinDash`, only for a `-` argument) and it is not a terminal (at most 256 KiB);
   stdin not closed within 40 s is exit 124, so pipe the input or redirect `</dev/null`.
 - `ccc plugin new <dir> [--id <id>] [--panel] [--cli <name>] [--skill]` scaffolds a plain-JS plugin
   into a new folder, or one where no file it writes exists yet (no app needed). `ccc plugin link [--project <path>] <dir>` links it and
