@@ -142,8 +142,11 @@ exports.activate = (ctx) => {
 
   /**
    * The overlay of a coming annotate, opened now with the page's loader (it shows until the init).
-   * Resolves at once: a refused overlay only drops the entry, and the annotate then starts its own
-   * overlay, which reports the refusal. A key already open (or loading) is brought to the front.
+   * Resolves once the overlay is up and throws main's refusal (3 open, 10 a minute): it used to
+   * resolve at once, so prepare answered `{ opened: true }` for a refused overlay and a source
+   * counted its open as shown (round-4 review). start() gives no "shown" signal, so this waits
+   * OPEN_SETTLE_MS for `result` to reject, as showReview does. A key already open (or loading) is
+   * brought to the front.
    */
   async function prepareAnnotation(options) {
     const { key, title, type, tabId } = review.prepareInput(options)
@@ -179,6 +182,10 @@ exports.activate = (ctx) => {
         ctx.log.warn(`the loading overlay did not open (${key}): ${e.message}`)
       },
     )
+    // Wired first, so an annotate taking the entry during the wait finds it. A person closing the
+    // loader within the wait is a shown overlay (its annotate then answers { opened: false }).
+    const ended = await earlyEnd(handle.result)
+    if (ended && ended.error) throw new Error(`the loading overlay did not open: ${ended.error.message}`)
   }
 
   /** Closes a loading overlay no annotate filled; false when there is none (filled, or never prepared). */

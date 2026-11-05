@@ -21,7 +21,8 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     the same check as main's (name `^[a-z][a-z0-9-]{0,63}$`, data plain JSON of at most 4,096 characters). A source
     passes its own `inbox-item { source, id }`, so its buttons (Mark read, …) show on the review too.
   - `prepare({ key, title, type?, tabId? })`: the overlay of an annotate still to come, shown at once with a loader
-    while the caller fetches; the annotate with the same `key` fills it. An overlay's type and Discuss tab are set when
+    while the caller fetches; the annotate with the same `key` fills it. It resolves once the loader is up and rejects
+    when the app refuses the overlay. An overlay's type and Discuss tab are set when
     it starts, so pass them here: the filling annotate's own `type` and `tabId` are not used then. `cancel({ key })` closes one no annotate filled (a no-op
     after the fill, so call it in a `finally`). An older reviewer has no `prepare` (rejects with "has no method").
   - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type']`); an older reviewer has no such

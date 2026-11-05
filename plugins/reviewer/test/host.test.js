@@ -979,6 +979,22 @@ test('prepare: the overlay opens at once; the annotate with the same key fills i
   host.deactivate()
 })
 
+test('prepare: a refused loading overlay rejects, so a source never counts it as shown', async () => {
+  // start() returns a handle even when main refuses the overlay (3 open, 10 a minute); prepare
+  // answered { opened: true } at once, and the source's act open then reported success.
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => {
+    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, onDiscuss() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
+    f.handles.push(h)
+    return h
+  }
+  host.activate(f.ctx)
+  await assert.rejects(f.provided.reviewer.prepare({ key: 'gmail:9', title: 'Lunch' }), /^Error: reviewer: the loading overlay did not open: overlay: at most 3 open/)
+  // Nothing is left prepared: the annotate starts its own overlay (and reports that one's refusal).
+  assert.deepEqual(await f.provided.reviewer.cancel({ key: 'gmail:9' }), { closed: false })
+  host.deactivate()
+})
+
 test('prepare: a loading overlay the person closed is not reopened by its annotate; bad input is refused', async () => {
   const f = setup({ editorAvailable: false })
   f.ctx.overlay.start = () => pageHandle(f)

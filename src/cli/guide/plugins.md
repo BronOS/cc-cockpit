@@ -264,7 +264,8 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   checks it and passed through, so your buttons for it (`ctx.overlay.buttons`) show on the review: a source passes its
   own `inbox-item { source, id }`. An older reviewer ignores it.
 - `prepare({ key, title, type?, tabId? })` (feature `'prepare'`): opens the overlay of an annotate still to come at once, with a
-  loader, so a click on a mail or an issue shows something while you fetch it. The `annotate` with the same `key`
+  loader, so a click on a mail or an issue shows something while you fetch it. It resolves once the loader is up and
+  rejects when the app refuses the overlay (3 open, 10 a minute), so count the open as shown only then. The `annotate` with the same `key`
   then fills that overlay (its title, `type` and `tabId` stay the ones `prepare` gave: set them there) instead of
   starting another. Call
   `cancel({ key })` when no annotate follows (the fetch failed, you show your own page): it closes a loader never
