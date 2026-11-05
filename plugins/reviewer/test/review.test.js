@@ -125,7 +125,7 @@ test('the page enforces the note count and draft size caps of the host', () => {
 test('annotateInput: checks and caps every field', () => {
   const { annotateInput, MAX_ANNOTATE_TITLE, MAX_ANNOTATE_TEXT, MAX_ANNOTATE_KEY } = require('../dist/lib/review')
   const ok = annotateInput({ title: '  PROJ-1:\n Fix\tlogin ', text: '', url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
-  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null, start: 'top' })
+  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null, start: 'top', type: null })
   // start: where the main document opens; 'top' (default) or 'end'.
   assert.equal(annotateInput({ title: 't', html: '<p>x</p>', start: 'end' }).start, 'end')
   assert.equal(annotateInput({ title: 't', html: '<p>x</p>', start: null }).start, 'top')
@@ -161,6 +161,18 @@ test('annotateInput: checks and caps every field', () => {
   assert.equal(annotateInput({ title: 'Same', text: 'other' }).key, a)
   assert.notEqual(annotateInput({ title: 'Other', text: '' }).key, a)
   assert.throws(() => annotateInput({ title: 't', text: '', tabId: 7 }), /tabId must be a string/)
+  // type: the caller's overlay type, checked as main checks it, a clean copy.
+  const data = { source: 'example.mail', id: 't-1' }
+  const typed = annotateInput({ title: 't', text: '', type: { name: 'inbox-item', data } })
+  assert.deepEqual(typed.type, { name: 'inbox-item', data })
+  assert.notEqual(typed.type.data, data)
+  assert.deepEqual(annotateInput({ title: 't', text: '', type: { name: 'x' } }).type, { name: 'x', data: null })
+  for (const bad of ['file', [], { name: '' }, { name: '1a' }, { name: 'A' }, { name: 'a'.repeat(65) }]) {
+    assert.throws(() => annotateInput({ title: 't', text: '', type: bad }), /type/)
+  }
+  assert.throws(() => annotateInput({ title: 't', text: '', type: { name: 'a', data: 'x'.repeat(4095) } }), /type\.data is over 4096/)
+  assert.equal(annotateInput({ title: 't', text: '', type: { name: 'a', data: 'x'.repeat(4094) } }).type.data.length, 4094)
+  assert.throws(() => annotateInput({ title: 't', text: '', type: { name: 'a', data: () => 1 } }), /type\.data must be plain JSON/)
   assert.throws(() => annotateInput('PROJ-1'), /annotate takes/)
 })
 

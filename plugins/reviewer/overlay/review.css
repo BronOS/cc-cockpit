@@ -117,12 +117,11 @@ button.link.quote:hover { color: var(--cc-fg); text-decoration: underline; }
   .split > .col-head-companion { border-top: 1px solid var(--cc-border); }
   .split .divider { display: none; }
 }
-/* Buttons, select, textarea and focus rings are the SDK's component sheet (`ccc guide style`); only
+/* Buttons, textarea and focus rings are the SDK's component sheet (`ccc guide style`); only
    the page's own variants are below. `button.link` sets a colour and no border, and the layer's
    border would show under it, so it clears the border, background and height itself. */
 button.link { display: inline-block; font-weight: inherit; line-height: inherit; background: none; border: none; padding: 0; height: auto; color: var(--cc-accent); }
 button.link.danger { color: var(--cc-status-ended); }
-select { max-width: 320px; }
 
 /* annotate's HTML mode: the caller's document, sanitized (src/page/sanitize.mjs). Only the class
    names its allow-list keeps are styled here, all under .doc-body, so content cannot reach the

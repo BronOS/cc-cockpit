@@ -19,9 +19,6 @@
   "services": {
     "provides": {
       "reviewer": 1
-    },
-    "uses": {
-      "editor": 1
     }
   }
 }

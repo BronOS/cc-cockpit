@@ -40,7 +40,7 @@ function setup({ editorAvailable }) {
     cli: { register() {} },
     overlay: {
       start: () => {
-        const h = { posts: [], focused: 0, post: (m) => h.posts.push(m), focus: () => h.focused++, onMessage() {}, close() {}, result: new Promise(() => {}) }
+        const h = { posts: [], focused: 0, post: (m) => h.posts.push(m), focus: () => h.focused++, onMessage() {}, onDiscuss() {}, close() {}, result: new Promise(() => {}) }
         handles.push(h)
         return h
       },
@@ -51,15 +51,20 @@ function setup({ editorAvailable }) {
   return { ctx, provided, handles, execs }
 }
 
-test('no pwd: the folder is ctx.projectDir; Edit follows services.available', async () => {
-  for (const editorAvailable of [true, false]) {
-    const f = setup({ editorAvailable })
-    host.activate(f.ctx)
-    await f.provided.reviewer.open('a.js')
-    assert.equal(f.handles[0].posts[0].canEdit, editorAvailable)
-    assert.ok(!f.execs.some((a) => a[0] === 'pwd'))
-    host.deactivate()
-  }
+test('no pwd: the folder is ctx.projectDir; a file review is the `file` type with no page buttons of its own', async () => {
+  const f = setup({ editorAvailable: true })
+  const starts = []
+  const start = f.ctx.overlay.start
+  f.ctx.overlay.start = (spec) => (starts.push(spec), start(spec))
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  // The editor's "Edit" comes by this type (ctx.overlay.buttons), not from the page.
+  assert.deepEqual(starts[0].type, { name: 'file', data: { path: 'a.js' } })
+  assert.equal(starts[0].discuss, undefined) // no tab named: the app preselects the active one
+  const init = f.handles[0].posts[0]
+  for (const k of ['canEdit', 'tabs', 'tabId']) assert.equal(k in init, false, k)
+  assert.ok(!f.execs.some((a) => a[0] === 'pwd'))
+  host.deactivate()
 })
 
 test('a second open of the same file focuses the first overlay', async () => {
@@ -109,7 +114,7 @@ test('a refused overlay fails the open, so a click falls back and the service an
   f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
   f.ctx.cli.register = (n, fn) => (review = fn)
   f.ctx.overlay.start = () => {
-    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
+    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, onDiscuss() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
     f.handles.push(h)
     return h
   }
@@ -127,7 +132,7 @@ test('a refused overlay fails the open, so a click falls back and the service an
 test('concurrent opens share a refusal: the second does not report success for a refused overlay', async () => {
   const f = setup({ editorAvailable: false })
   f.ctx.overlay.start = () => {
-    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
+    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, onDiscuss() {}, close() {}, result: Promise.reject(new Error('overlay: at most 3 open')) }
     f.handles.push(h)
     return h
   }
@@ -143,45 +148,38 @@ test('concurrent opens share a refusal: the second does not report success for a
 
 test('a review cut for length is sent but its full draft is kept, and the person is told', async () => {
   const f = setup({ editorAvailable: false })
-  const store = new Map()
-  const notices = []
-  const sent = []
-  f.ctx.storage = { get: async (k) => store.get(k) ?? null, set: async (k, v) => store.set(k, v), delete: async (k) => store.delete(k) }
-  f.ctx.notify = (m) => notices.push(m)
-  f.ctx.sessions.open = async (o) => sent.push(o.prompt)
-  let finish
-  f.ctx.overlay.start = () => {
-    const h = { posts: [], post: (m) => h.posts.push(m), focus() {}, onMessage() {}, close() {}, result: new Promise((r) => (finish = r)) }
-    f.handles.push(h)
-    return h
-  }
-  let onOpen
-  f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
+  const { store, notices } = storeFake(f)
+  f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
   const notes = Array.from({ length: 10 }, (_, i) => ({ id: String(i), from: 1, to: 1, text: 'x'.repeat(4000), quote: '' }))
-  const clicked = onOpen({ path: 'a.js' })
-  await new Promise((r) => setTimeout(r, 600)) // past the open wait
-  finish({ kind: 'value', value: { action: 'new', draft: { global: '', notes } } })
-  await clicked
-  assert.equal(sent.length, 1)
-  assert.match(sent[0], /\(review cut: too long\)$/)
-  const kept = [...store.values()][0]
+  h.say({ type: 'draft', draft: { global: '', notes } })
+  const { text } = await h.discussFn()
+  // Under what the app's Discuss leaves for the context, so the app never cuts it again.
+  assert.ok(text.length <= review.MAX_CONTEXT)
+  assert.match(text, /\(review cut: too long\)$/)
+  h.end({ kind: 'discussed', tabId: 'new', queued: false })
+  await wait(50)
+  const kept = store.get('draft:a.js')
   assert.equal(kept.notes.length, 10)
   assert.equal(kept.notes[9].text.length, 4000)
-  assert.ok(notices.some((m) => /too long and was cut/.test(m)))
+  assert.ok(notices.some((m) => /too long and was cut at 15000 characters\. The full draft is kept/.test(m)))
 
-  // A review that fits still clears the draft once sent.
-  const clicked2 = onOpen({ path: 'a.js' })
-  await new Promise((r) => setTimeout(r, 600))
-  finish({ kind: 'value', value: { action: 'new', draft: { global: 'short', notes: [] } } })
-  await clicked2
+  // A review that fits clears the draft once sent.
+  await f.provided.reviewer.open('a.js')
+  const h2 = f.handles[1]
+  h2.say({ type: 'draft', draft: { global: 'short', notes: [] } })
+  await h2.discussFn()
+  h2.end({ kind: 'discussed', tabId: 'new', queued: false })
+  await wait(50)
   assert.equal(store.size, 0)
   host.deactivate()
 })
 
 test('a page message sent right after init is handled, not lost to the open wait', async () => {
-  // The listener was registered after the 500 ms "did it open" wait, so a draft or an Edit click
-  // the page sent as soon as it loaded was dropped.
+  // The listener was registered after the 500 ms "did it open" wait, so a draft the page sent as
+  // soon as it loaded was dropped.
   const f = setup({ editorAvailable: true })
   const saved = []
   f.ctx.storage.set = async (k, v) => saved.push([k, v])
@@ -196,6 +194,7 @@ test('a page message sent right after init is handled, not lost to the open wait
         if (m.type === 'init') for (const l of h.listeners) l({ type: 'draft', draft: { global: 'early note', notes: [] } })
       },
       focus() {},
+      onDiscuss() {},
       close() {},
       result: new Promise(() => {}),
     }
@@ -219,16 +218,30 @@ test('a long path is cut from the left to fit the overlay title limit', async ()
   assert.ok(t.startsWith('Review: …') && t.endsWith('/file.js'))
 })
 
-// A handle whose page we drive: `say` posts as the page, `end` settles result.
+// A handle whose page we drive: `say` posts as the page, `end` settles result. The page answers a
+// draft request (Discuss) with the draft it last said, or `draft-unsaved` once `pageDraft` is null;
+// with `answers` false it stays silent. `discussFn` is the host's onDiscuss handler.
 function pageHandle(f) {
   let end
   const h = {
     listeners: [],
     posts: [],
     closed: 0,
+    answers: true,
+    pageDraft: { global: '', notes: [] },
+    discussFn: null,
     onMessage: (l) => (h.listeners.push(l), () => {}),
-    post: (m) => h.posts.push(m),
-    say: (m) => h.listeners.forEach((l) => l(m)),
+    onDiscuss: (fn) => ((h.discussFn = fn), () => {}),
+    post: (m) => {
+      h.posts.push(m)
+      if (m.type === 'draft-request' && h.answers) {
+        setTimeout(() => h.say(h.pageDraft ? { type: 'draft', draft: h.pageDraft } : { type: 'draft-unsaved' }), 0)
+      }
+    },
+    say: (m) => {
+      if (m.type === 'draft') h.pageDraft = m.draft
+      h.listeners.forEach((l) => l(m))
+    },
     focus() {},
     close: () => h.closed++,
     result: new Promise((r) => (end = r)),
@@ -302,29 +315,25 @@ test('Esc right after a change still stores it: the coalesced write is flushed a
   host.deactivate()
 })
 
-test('Edit does not close the review while the draft is unsaved', async () => {
-  const f = setup({ editorAvailable: true })
-  storeFake(f, { failSet: () => true })
-  const opened = []
-  f.ctx.services.use = () => ({ open: async (p) => opened.push(p) })
+test('Discuss sends nothing while the page cannot post its draft (too large to store)', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
   const h = f.handles[0]
-  h.say({ type: 'draft', draft: { global: 'unsaved', notes: [] } })
-  h.say({ type: 'edit', line: 1 })
-  await wait(50)
-  assert.equal(opened.length, 0)
-  assert.equal(h.closed, 0)
-  assert.ok(h.posts.some((m) => m.type === 'error' && /draft is not saved/.test(m.message)))
+  h.say({ type: 'draft', draft: { global: 'older', notes: [] } })
+  await wait(SAVE_WAIT)
+  h.pageDraft = null // the page's own size check refuses the newest draft
+  await assert.rejects(h.discussFn(), /the draft is too large to send/)
+  assert.ok(h.posts.some((m) => m.type === 'draft-request'))
+  assert.equal(store.get('draft:a.js').global, 'older')
   host.deactivate()
 })
 
 test('a draft cleanDraft would cut is neither stored nor sent; the last good draft stays', async () => {
   const f = setup({ editorAvailable: false })
   const { store, notices } = storeFake(f)
-  const sent = []
-  f.ctx.sessions.open = async (o) => sent.push(o.prompt)
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
@@ -337,28 +346,57 @@ test('a draft cleanDraft would cut is neither stored nor sent; the last good dra
   await wait(SAVE_WAIT)
   assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['kept'])
   assert.ok(h.posts.some((m) => m.type === 'draft-error' && /more than 200 notes/.test(m.message)))
-  h.end({ kind: 'value', value: { action: 'new', draft: tooMany } })
-  await wait(50)
-  assert.equal(sent.length, 0)
+  // Discuss refuses it (the popover shows why) and nothing is sent.
+  await assert.rejects(h.discussFn(), /not sent: there are more than 200 notes/)
   assert.ok(store.has('draft:a.js'))
-  assert.ok(notices.some((m) => /not sent: there are more than 200 notes/.test(m)))
+  assert.equal(notices.length, 0)
   host.deactivate()
 })
 
-test('a send that fails with the store failing too says the draft was not saved', async () => {
+test('a cut review whose draft cannot be stored says so, never "the draft is kept"', async () => {
   const f = setup({ editorAvailable: false })
   const { notices } = storeFake(f, { failSet: () => true })
-  f.ctx.sessions.open = async () => {
-    throw new Error('sessions: too many tabs')
-  }
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
-  f.handles[0].end({ kind: 'value', value: { action: 'new', draft: { global: 'g', notes: [] } } })
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: '', notes: Array.from({ length: 10 }, (_, i) => note('x'.repeat(4000), i)) } })
+  await h.discussFn()
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
   await wait(50)
-  assert.equal(notices.length, 1)
-  assert.match(notices[0], /not sent: sessions: too many tabs\. The draft could not be saved: storage: the store is full/)
-  assert.doesNotMatch(notices[0], /draft is kept/)
+  const n = notices.find((m) => /was too long/.test(m))
+  assert.match(n, /The draft could not be saved: storage: the store is full/)
+  assert.doesNotMatch(n, /draft is kept/)
+  host.deactivate()
+})
+
+test('a page that does not answer the draft request: Discuss uses the host\'s newest draft', async () => {
+  const f = setup({ editorAvailable: false })
+  storeFake(f)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: 'last posted', notes: [] } })
+  h.answers = false
+  const { text } = await h.discussFn()
+  assert.match(text, /\n\nlast posted$/)
+  host.deactivate()
+})
+
+test('a discussed result with no context asked keeps the draft; a dismissal keeps it too', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  for (const result of [{ kind: 'discussed', tabId: 't1', queued: false }, { kind: 'dismissed' }]) {
+    await f.provided.reviewer.open('a.js')
+    const h = f.handles[f.handles.length - 1]
+    h.say({ type: 'draft', draft: { global: 'mine', notes: [] } })
+    h.end(result)
+    await wait(50)
+    assert.equal(store.get('draft:a.js').global, 'mine')
+  }
   host.deactivate()
 })
 
@@ -368,17 +406,19 @@ test('a queued review keeps its draft until the tab takes it, and says so when t
     const { store, notices } = storeFake(f)
     let tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
     const changes = []
-    let sentText
     f.ctx.sessions.list = async () => [tab]
     f.ctx.sessions.onChange = (l) => (changes.push(l), () => changes.splice(changes.indexOf(l), 1))
-    f.ctx.sessions.send = async (id, text) => ((sentText = text), { queued: true, itemId: 'q1' })
     f.ctx.overlay.start = () => pageHandle(f)
     host.activate(f.ctx)
     await f.provided.reviewer.open('a.js')
-    f.handles[0].end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft: { global: 'please check', notes: [] } } })
+    const h = f.handles[0]
+    h.say({ type: 'draft', draft: { global: 'please check', notes: [] } })
+    const { text } = await h.discussFn()
+    // The app's own message: its About and type lines, the review, the person's note.
+    const sentText = `About: Review: a.js\nFile: a.js\n\n${text}\n\nA note.`
+    h.end({ kind: 'discussed', tabId: 't1', queued: true })
     await wait(50)
     assert.equal(store.get('draft:a.js').global, 'please check', 'kept while queued')
-    assert.ok(notices.some((m) => /queued.*kept until Claude gets it/.test(m)))
     assert.equal(changes.length, 1)
 
     // Another prompt first (not ours): still queued.
@@ -407,53 +447,42 @@ test('a review delivered at once clears its draft', async () => {
   const f = setup({ editorAvailable: false })
   const { store } = storeFake(f)
   store.set('draft:a.js', { global: 'old', notes: [] })
-  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: '' }]
-  f.ctx.sessions.send = async () => ({ delivered: true })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
-  f.handles[0].end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft: { global: 'go', notes: [] } } })
+  f.handles[0].say({ type: 'draft', draft: { global: 'go', notes: [] } })
+  await f.handles[0].discussFn()
+  f.handles[0].end({ kind: 'discussed', tabId: 't1', queued: false })
   await wait(50)
   assert.equal(store.has('draft:a.js'), false)
   host.deactivate()
 })
 
-test('defaultTab: the caller\'s live tab, else the tab the window shows, else none', () => {
-  const tabs = [
-    { tabId: 't1', active: false },
-    { tabId: 't2', active: true },
-  ]
-  assert.equal(host.defaultTab(tabs, 't1'), 't1')
-  // A gone, foreign or mistyped id is only a wish: the shown tab wins over it.
-  assert.equal(host.defaultTab(tabs, 'gone'), 't2')
-  assert.equal(host.defaultTab(tabs, 5), 't2')
-  assert.equal(host.defaultTab(tabs, undefined), 't2')
-  assert.equal(host.defaultTab([{ tabId: 't1', active: false }], undefined), null)
-  assert.equal(host.defaultTab([], 't1'), null)
+test('overlayExtras: the type, and the caller\'s tab as Discuss\'s preselection when main would take it', () => {
+  const t = { name: 'file', data: { path: 'a.js' } }
+  assert.deepEqual(host.overlayExtras(t, 't1'), { type: t, discuss: { tabId: 't1' } })
+  assert.deepEqual(host.overlayExtras(null, undefined), {})
+  // main refuses an empty or a long tab id, or a non-string: dropped here, not a refused overlay.
+  for (const bad of ['', 'x'.repeat(101), 5]) assert.deepEqual(host.overlayExtras(null, bad), {})
 })
 
-test('a file review starts its picker on the shown tab when the caller names none', async () => {
+test('a click\'s tab goes to the overlay as Discuss\'s preselected tab', async () => {
   const f = setup({ editorAvailable: true })
-  f.ctx.sessions.list = async () => [
-    { tabId: 't1', status: 'waiting', lastPrompt: 'a' },
-    { tabId: 't2', status: 'working', lastPrompt: 'b', active: true },
-    { tabId: 't3', status: 'ended', lastPrompt: 'c' },
-  ]
+  const starts = []
+  let onOpen
+  f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
+  f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
   host.activate(f.ctx)
-  await f.provided.reviewer.open('a.js')
-  const init = f.handles[0].posts[0]
-  assert.equal(init.tabId, 't2')
-  assert.deepEqual(init.tabs.map((t) => [t.tabId, t.active]), [['t1', false], ['t2', true]])
+  onOpen({ path: 'a.js', tabId: 't2' })
+  await wait(50)
+  assert.deepEqual(starts[0].discuss, { tabId: 't2' })
+  assert.deepEqual(starts[0].type, { name: 'file', data: { path: 'a.js' } })
   host.deactivate()
 })
 
 test('annotate: a text overlay with no file and no Edit, one per key, its own draft namespace', async () => {
   const f = setup({ editorAvailable: true })
   const { store } = storeFake(f)
-  f.ctx.sessions.list = async () => [
-    { tabId: 't1', status: 'waiting', lastPrompt: 'a' },
-    { tabId: 't2', status: 'waiting', lastPrompt: 'b', active: true },
-  ]
   const starts = []
   f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
   host.activate(f.ctx)
@@ -465,9 +494,10 @@ test('annotate: a text overlay with no file and no Edit, one per key, its own dr
   assert.equal(init.sides.path, 'PROJ-1 Fix login')
   assert.equal(init.sides.new, 'line one\nline two')
   assert.equal(init.sides.url, opts.url)
-  assert.equal(init.canEdit, false)
   assert.equal(init.canOpenUrl, false) // this fake ctx has no openExternal: no button
-  assert.equal(init.tabId, 't1')
+  assert.deepEqual(starts[0].discuss, { tabId: 't1' })
+  assert.equal(starts[0].type, undefined) // no type given: none (Discuss still shows, by onDiscuss)
+  assert.equal(typeof h.discussFn, 'function')
   assert.equal(starts[0].title, 'Notes: PROJ-1 Fix login')
   // No git ran: it is not a file.
   assert.ok(!f.execs.some((a) => a[0] === 'git'))
@@ -476,9 +506,8 @@ test('annotate: a text overlay with no file and no Edit, one per key, its own dr
   assert.equal(f.handles.length, 1)
   await f.provided.reviewer.annotate({ ...opts, key: 'jira:PROJ-2', tabId: undefined })
   assert.equal(f.handles.length, 2)
-  assert.equal(f.handles[1].posts[0].tabId, 't2') // no tab named: the shown one
-  // Edit is ignored for a text; the draft goes under annotate:<key>.
-  h.say({ type: 'edit', line: 1 })
+  assert.equal(starts[1].discuss, undefined) // no tab named: the app preselects the active one
+  // The draft goes under annotate:<key>.
   h.say({ type: 'draft', draft: { global: 'g', notes: [note('n')] } })
   await wait(SAVE_WAIT)
   assert.deepEqual([...store.keys()], ['annotate:jira:PROJ-1'])
@@ -489,9 +518,6 @@ test('annotate: a text overlay with no file and no Edit, one per key, its own dr
 test('annotate: Discuss sends "About <title> (<url>)" with notes as a file review has them, then clears the draft', async () => {
   const f = setup({ editorAvailable: false })
   const { store } = storeFake(f)
-  const sent = []
-  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
-  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.annotate({ title: 'PROJ-1 Fix login', text: 'a\nb\nc', url: 'https://x/browse/PROJ-1', key: 'jira:PROJ-1' })
@@ -500,9 +526,9 @@ test('annotate: Discuss sends "About <title> (<url>)" with notes as a file revie
   h.say({ type: 'draft', draft })
   await wait(SAVE_WAIT)
   assert.ok(store.has('annotate:jira:PROJ-1'))
-  h.end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft } })
+  assert.deepEqual(await h.discussFn(), { text: 'About PROJ-1 Fix login (https://x/browse/PROJ-1)\n\nStart here.\n\n1. Lines 2-3:\n   > b\n   > c\n   Unclear.' })
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
   await wait(50)
-  assert.deepEqual(sent, [['t1', 'About PROJ-1 Fix login (https://x/browse/PROJ-1)\n\nStart here.\n\n1. Lines 2-3:\n   > b\n   > c\n   Unclear.']])
   assert.equal(store.size, 0)
   host.deactivate()
 })
@@ -640,7 +666,6 @@ test('annotate html: the init names the parts and assets; the page asks, then ge
   assert.equal(h.posts.length, 1) // only the init until the page has loaded and asks
   const init = h.posts[0]
   assert.equal(init.sides.mode, 'html')
-  assert.equal(init.canEdit, false)
   assert.ok(init.sides.htmlParts >= 2)
   assert.deepEqual(init.sides.assets, [{ id: 'shot-1', name: 'shot.png', mime: 'image/png' }, { id: 'photo', name: null, mime: 'image/jpeg' }])
   assert.ok(JSON.stringify(init).length < 10000) // no HTML and no image data in it
@@ -699,9 +724,6 @@ test('annotate html: a text annotation never answers a content request; bad asse
 test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: note" notes', async () => {
   const f = setup({ editorAvailable: false })
   const { store } = storeFake(f)
-  const sent = []
-  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
-  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.annotate({ title: 'PROJ-1 Fix login', html: '<p>Redirect to /home after login.</p>', url: 'https://x/browse/PROJ-1', key: 'jira:PROJ-1' })
@@ -713,9 +735,9 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
   h.say({ type: 'draft', draft })
   await wait(SAVE_WAIT)
   assert.deepEqual(store.get('annotate:jira:PROJ-1').notes[0].anchor, draft.notes[0].anchor)
-  h.end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft } })
+  assert.deepEqual(await h.discussFn(), { text: 'About PROJ-1 Fix login (https://x/browse/PROJ-1)\n\nStart here.\n\n1. On «Redirect to /home»: Which home?' })
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
   await wait(50)
-  assert.deepEqual(sent, [['t1', 'About PROJ-1 Fix login (https://x/browse/PROJ-1)\n\nStart here.\n\n1. On «Redirect to /home»: Which home?']])
   assert.equal(store.size, 0)
   host.deactivate()
 })
@@ -723,11 +745,11 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare'])
-  assert.deepEqual(host.FEATURES, ['companion', 'prepare'])
+  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare', 'type'])
+  assert.deepEqual(host.FEATURES, ['companion', 'prepare', 'type'])
   // A copy: a caller changing the answer changes nothing here.
   ;(await f.provided.reviewer.features()).push('x')
-  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare'])
+  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare', 'type'])
   host.deactivate()
 })
 
@@ -832,9 +854,6 @@ test('annotate companion: its icon opens its own url, its links join the allow-s
 test('annotate companion: Discuss names the companion and says which notes are in it', async () => {
   const f = setup({ editorAvailable: false })
   const { store } = storeFake(f)
-  const sent = []
-  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
-  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.annotate({ title: 'Re: login', html: '<p>Is it fixed?</p>', key: 'mail:1', companion: { title: 'PROJ-1: Fix login', html: '<p>Redirect to /home.</p>', url: 'https://x.example/browse/PROJ-1' } })
@@ -849,9 +868,7 @@ test('annotate companion: Discuss names the companion and says which notes are i
   h.say({ type: 'draft', draft })
   await wait(SAVE_WAIT)
   assert.equal(store.get('annotate:mail:1').notes[0].doc, 'companion')
-  h.end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft } })
-  await wait(50)
-  assert.deepEqual(sent, [['t1', 'About Re: login, with PROJ-1: Fix login (https://x.example/browse/PROJ-1) beside it\n\n1. On «fixed»: Not yet.\n\n2. In PROJ-1: Fix login, on «Redirect»: Which one?']])
+  assert.deepEqual(await h.discussFn(), { text: 'About Re: login, with PROJ-1: Fix login (https://x.example/browse/PROJ-1) beside it\n\n1. On «fixed»: Not yet.\n\n2. In PROJ-1: Fix login, on «Redirect»: Which one?' })
   host.deactivate()
 })
 
@@ -868,9 +885,6 @@ test('annotate companion: bad input is refused before any overlay', async () => 
 test('annotate: Discuss with no note and no comment sends the text and asks Claude to discuss it', async () => {
   const f = setup({ editorAvailable: false })
   storeFake(f)
-  const sent = []
-  f.ctx.sessions.list = async () => [{ tabId: 't1', status: 'waiting', lastPrompt: 'a' }]
-  f.ctx.sessions.send = async (tabId, text) => (sent.push([tabId, text]), { delivered: true })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.annotate({
@@ -880,48 +894,57 @@ test('annotate: Discuss with no note and no comment sends the text and asks Clau
     url: 'https://mail.example.com/t/1',
     key: 'gmail:1',
   })
-  f.handles[0].end({ kind: 'value', value: { action: 'discuss', tabId: 't1', draft: { global: '  ', notes: [] } } })
-  await wait(50)
-  assert.equal(sent.length, 1)
+  f.handles[0].say({ type: 'draft', draft: { global: '  ', notes: [] } })
+  const { text } = await f.handles[0].discussFn()
   assert.equal(
-    sent[0][1],
+    text,
     'About Lunch on Friday (https://mail.example.com/t/1)\n\nDiscuss this with me: what it is about, what matters in it, and what I should do about it, if anything. Its text follows.\n\nFrom: Sam <sam@example.com>\n\nLunch on Friday\n\nCan we move it to 1 pm?\nThanks',
   )
   host.deactivate()
 })
 
-// Real-work feedback 10: New session opened a tab the person then had to look for.
-test('New session with an empty draft opens a focused tab with the discuss request; a long text is cut to fit', async () => {
+test('an empty draft on a long text: the discuss request with the text cut to what Discuss leaves', async () => {
   const f = setup({ editorAvailable: false })
   storeFake(f)
-  const opened = []
-  f.ctx.sessions.open = async (o) => (opened.push(o), { tabId: 'new' })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.annotate({ title: 'Long', text: 'word '.repeat(10000), key: 'k:1' })
-  f.handles[0].end({ kind: 'value', value: { action: 'new', draft: { global: '', notes: [] } } })
-  await wait(50)
-  assert.equal(opened.length, 1)
-  assert.equal(opened[0].focus, true)
-  assert.ok(opened[0].prompt.startsWith('About Long\n\nDiscuss this with me'))
-  assert.ok(opened[0].prompt.endsWith('(text cut: too long)'))
-  assert.ok(opened[0].prompt.length <= review.MAX_MESSAGE)
+  const { text } = await f.handles[0].discussFn()
+  assert.ok(text.startsWith('About Long\n\nDiscuss this with me'))
+  assert.ok(text.endsWith('(text cut: too long)'))
+  assert.ok(text.length <= review.MAX_CONTEXT)
   host.deactivate()
 })
 
 test('a file review with an empty draft asks Claude to read the file and its diff', async () => {
   const f = setup({ editorAvailable: false })
   storeFake(f)
-  const opened = []
-  f.ctx.sessions.open = async (o) => (opened.push(o), { tabId: 'new' })
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
-  f.handles[0].end({ kind: 'value', value: { action: 'new', draft: { global: '', notes: [] } } })
-  await wait(50)
-  assert.equal(opened.length, 1)
-  assert.match(opened[0].prompt, /^Review of a\.js \(changes since the last commit [0-9a-f]{12}\)\n\nDiscuss these changes with me: read the file and its diff/)
-  assert.equal(opened[0].focus, true)
+  const { text } = await f.handles[0].discussFn()
+  assert.match(text, /^Review of a\.js \(changes since the last commit [0-9a-f]{12}\)\n\nDiscuss these changes with me: read the file and its diff/)
+  host.deactivate()
+})
+
+test('annotate and prepare pass a caller\'s overlay type through; a bad one is refused before any overlay', async () => {
+  const f = setup({ editorAvailable: false })
+  const starts = []
+  f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
+  host.activate(f.ctx)
+  const type = { name: 'inbox-item', data: { source: 'example.mail', id: 't-1' } }
+  await f.provided.reviewer.annotate({ title: 'Lunch', text: 'x', key: 'mail:1', type })
+  assert.deepEqual(starts[0].type, type)
+  // prepare fixes the type (and the Discuss tab) when the overlay starts; its annotate fills it.
+  await f.provided.reviewer.prepare({ key: 'mail:2', title: 'Other', type, tabId: 't1' })
+  assert.deepEqual(starts[1].type, type)
+  assert.deepEqual(starts[1].discuss, { tabId: 't1' })
+  await f.provided.reviewer.annotate({ title: 'Other', text: 'y', key: 'mail:2', type: { name: 'other', data: null } })
+  assert.equal(starts.length, 2)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', type: { name: 'Bad Name', data: {} } }), /^Error: reviewer: type\.name must be/)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 't', text: 'x', type: { name: 'big', data: 'x'.repeat(5000) } }), /^Error: reviewer: type\.data is over 4096/)
+  await assert.rejects(f.provided.reviewer.prepare({ key: 'k', title: 't', type: 'file' }), /^Error: reviewer: type must be \{ name, data \}/)
+  assert.equal(starts.length, 2)
   host.deactivate()
 })
 

@@ -7,8 +7,8 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
 - `ccc review`: a command this plugin adds, handled in `dist/host.js`.
 - The `reviewer` service (v1), for other plugins (`"uses": { "reviewer": 1 }`):
   - `open(path, { tabId? })`: the review overlay for a project file (diff against the last commit).
-  - `annotate({ title, text, url?, key?, tabId? })`: the same overlay on a text of the caller's (a ticket, a mail):
-    one read-only pane, notes on selections, one comment, Discuss / New session / Close; no diff, no file, no Edit.
+  - `annotate({ title, text, url?, key?, tabId?, type? })`: the same overlay on a text of the caller's (a ticket, a
+    mail): one read-only pane, notes on selections, one comment, Close; no diff, no file.
   - `annotate({ title, html, assets?, url?, key?, tabId? })`: the same with HTML in place of `text` (exactly one of
     the two), rendered as a document; see "HTML mode" below.
   - `aside` (either form, optional): HTML of at most 100,000 characters for a details column at the right of the
@@ -17,15 +17,21 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     for a thread whose newest messages are last. It stays at the end while pictures load, until the person scrolls.
   - `companion` (HTML form only, optional, app 0.9.3+): `{ title, html, assets?, url?, facts?, label?, urlLabel? }`,
     a second document beside the first, with `label` / `urlLabel` for the main column's header; see "Companion" below.
-  - `prepare({ key, title })`: the overlay of an annotate still to come, shown at once with a loader while the caller
-    fetches; the annotate with the same `key` fills it. `cancel({ key })` closes one no annotate filled (a no-op
+  - `type` (either form, optional): the overlay's type (`ccc guide api`, `OverlayExtras.type`), passed through after
+    the same check as main's (name `^[a-z][a-z0-9-]{0,63}$`, data plain JSON of at most 4,096 characters). A source
+    passes its own `inbox-item { source, id }`, so its buttons (Mark read, …) show on the review too.
+  - `prepare({ key, title, type?, tabId? })`: the overlay of an annotate still to come, shown at once with a loader
+    while the caller fetches; the annotate with the same `key` fills it. An overlay's type and Discuss tab are set when
+    it starts, so pass them here: the filling annotate's own `type` and `tabId` are not used then. `cancel({ key })` closes one no annotate filled (a no-op
     after the fill, so call it in a `finally`). An older reviewer has no `prepare` (rejects with "has no method").
-  - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare']`); an older reviewer has no such
+  - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type']`); an older reviewer has no such
     method (the call rejects with `has no method "features"`: read it as none).
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
-  for the same file or `key` brings the open overlay to the front. The tab picker starts on `tabId` when it is a live
-  Claude tab of the window, else on the tab the window shows (`SessionInfo.active`), else on the only tab, or asks.
+  for the same file or `key` brings the open overlay to the front. Sending to Claude is the app's **Discuss with
+  Claude** button on the overlay's toolbar (a Claude tab of the window, or New session): `tabId` is its preselected
+  tab (`discuss: { tabId }`), and the reviewer answers its `onDiscuss` with the review text (notes, comment, caps) built
+  from the page's newest draft. A file review has the type `file { path }`, so the editor's **Edit** shows there.
   See `docs/design.md` "annotate" for the limits and what Claude receives. From a Jira plugin:
 
   ```js

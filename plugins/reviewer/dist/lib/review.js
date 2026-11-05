@@ -8,7 +8,12 @@ const MAX_NOTES = 200
 const MAX_GLOBAL = 20000
 const MAX_NOTE_TEXT = 4000 // the page's note and comment inputs carry the same caps as maxlength
 const MAX_QUOTE = 500 // per note, as stored; the message may shorten it further
-const MAX_MESSAGE = 20000 // what one Discuss / New session sends; quotes are shortened first
+const MAX_MESSAGE = 20000 // the most one review text may take; quotes are shortened first
+// What the reviewer hands the app's Discuss with Claude (its onDiscuss answer). The app sends at most
+// 20,000 characters in all: `About: <title>`, the type line (at most 500), this text, then the
+// person's note (at most 4,000), and it cuts this text first. Kept under what that leaves, so the
+// app never cuts the person's notes (a cut there would lose them silently; a cut here is reported).
+const MAX_CONTEXT = 15000
 // The whole draft as JSON. Under ctx.storage's 1 MiB value and the 1,040,384-char page message
 // (a bigger draft message is dropped by core with only a console warning), with room left for the
 // file's two sides in the init message that brings the draft back on the next open.
@@ -189,7 +194,7 @@ const CUT_MARK = '\n\n(review cut: too long)'
  * which Claude can read itself. `cut`: true when even with no quotes it passed MAX_MESSAGE and its
  * tail was dropped; the host keeps the draft then, since what Claude got is not the whole review.
  */
-function buildMessage(head, draft, sided, companionTitle = null) {
+function buildMessage(head, draft, sided, companionTitle = null, max = MAX_MESSAGE) {
   const d = cleanDraft(draft)
   const notes = d.notes.filter((n) => n.text.trim()).sort(noteOrder)
 
@@ -217,9 +222,9 @@ function buildMessage(head, draft, sided, companionTitle = null) {
 
   for (const quoteMax of [MAX_QUOTE, 200, 80, 0]) {
     const text = build(quoteMax)
-    if (text.length <= MAX_MESSAGE) return { text, cut: false }
+    if (text.length <= max) return { text, cut: false }
   }
-  return { text: build(0).slice(0, MAX_MESSAGE - CUT_MARK.length) + CUT_MARK, cut: true }
+  return { text: build(0).slice(0, max - CUT_MARK.length) + CUT_MARK, cut: true }
 }
 
 /**
@@ -231,8 +236,8 @@ function formatReview(draft, sides) {
   return buildReview(draft, sides).text
 }
 
-/** formatReview, plus `cut` (see buildMessage). */
-function buildReview(draft, sides) {
+/** formatReview, plus `cut` (see buildMessage); `max` the text's cap (MAX_CONTEXT for Discuss). */
+function buildReview(draft, sides, max = MAX_MESSAGE) {
   const commit = sides.head ? ` ${sides.head.slice(0, 12)}` : ''
   const unchanged = sides.mode === 'diff' && !sides.oldMissing && !sides.newMissing && sides.old === sides.new
   // Sides only mean something when there is a diff: an unchanged file is one text.
@@ -245,7 +250,7 @@ function buildReview(draft, sides) {
     const ask = sided || sides.mode === 'diff' ? DISCUSS_DIFF : DISCUSS_FILE
     return { text: `${head}\n\n${ask}`, cut: false }
   }
-  return buildMessage(head, draft, sided)
+  return buildMessage(head, draft, sided, null, max)
 }
 
 const DISCUSS_DIFF = 'Discuss these changes with me: read the file and its diff against the last commit, then tell me what you see.'
@@ -294,7 +299,7 @@ function htmlText(html) {
  * to read a mail or a ticket handed to the reviewer. The text is cut to fit MAX_MESSAGE; `cut` stays
  * false, as nothing of the person's is lost.
  */
-function discussAnnotation(head, a) {
+function discussAnnotation(head, a, max = MAX_MESSAGE) {
   const c = a.companion || null
   const doc = (aside, body) => [htmlText(aside), body].filter((s) => s).join('\n\n')
   const main = doc(a.aside, a.html !== null && a.html !== undefined ? htmlText(a.html) : typeof a.text === 'string' ? a.text.trim() : '')
@@ -303,7 +308,7 @@ function discussAnnotation(head, a) {
   const lead = `${head}\n\n${DISCUSS_TEXT}`
   let body = parts.join('\n\n')
   if (!body) return { text: `${head}\n\nDiscuss this with me.`, cut: false }
-  const room = MAX_MESSAGE - lead.length - 2
+  const room = max - lead.length - 2
   if (body.length > room) body = body.slice(0, Math.max(0, room - TEXT_CUT_MARK.length)).replace(/\s+\S*$/, '') + TEXT_CUT_MARK
   return { text: `${lead}\n\n${body}`, cut: false }
 }
@@ -315,13 +320,13 @@ function discussAnnotation(head, a) {
  * notes read `N. On «quote»: note`, with no line numbers. With a companion the head names it too
  * (`, with <title> (<url>) beside it`) and its notes read `N. In <title>, on «quote»: note`.
  */
-function buildAnnotation(draft, a) {
+function buildAnnotation(draft, a, max = MAX_MESSAGE) {
   const { title, url, companion } = a
   const named = (t, u) => `${t}${u ? ` (${u})` : ''}`
   const c = companion || null
   const head = `About ${named(title, url)}${c ? `, with ${named(c.title, c.url)} beside it` : ''}`
-  if (isEmpty(cleanDraft(draft))) return discussAnnotation(head, a)
-  return buildMessage(head, draft, false, c ? c.title : null)
+  if (isEmpty(cleanDraft(draft))) return discussAnnotation(head, a, max)
+  return buildMessage(head, draft, false, c ? c.title : null, max)
 }
 
 const DRAFT_PREFIX = 'draft:'
@@ -371,6 +376,29 @@ function checkTitle(v, name) {
   if (!title) throw new ReviewError(`${name} must not be empty`)
   if (title.length > MAX_ANNOTATE_TITLE) throw new ReviewError(`${name} is over ${MAX_ANNOTATE_TITLE} characters`)
   return title
+}
+
+// An overlay type (the app's OverlayExtras.type, `ccc guide api`): what the review shows, so other
+// plugins add their buttons for it (Gmail's on its own `inbox-item`) and Discuss names it. The same
+// rule as main's (src/shared/overlay-buttons.ts), checked here so a bad one is refused with the
+// reviewer's own message before any overlay starts, not as a refused overlay.
+const TYPE_NAME = /^[a-z][a-z0-9-]{0,63}$/
+const MAX_TYPE_DATA = 4096 // characters of JSON
+
+/** An overlay type { name, data }: absent (null), or a clean copy; a ReviewError otherwise. */
+function checkType(v) {
+  if (v === undefined || v === null) return null
+  if (!isObj(v)) throw new ReviewError('type must be { name, data }')
+  if (typeof v.name !== 'string' || !TYPE_NAME.test(v.name)) throw new ReviewError('type.name must be a lower-case noun of letters, digits and - (at most 64)')
+  let json
+  try {
+    json = JSON.stringify(v.data === undefined ? null : v.data)
+  } catch {
+    throw new ReviewError('type.data must be plain JSON')
+  }
+  if (json === undefined) throw new ReviewError('type.data must be plain JSON')
+  if (json.length > MAX_TYPE_DATA) throw new ReviewError(`type.data is over ${MAX_TYPE_DATA} characters of JSON`)
+  return { name: v.name, data: JSON.parse(json) }
 }
 
 /** A plain-text label: absent (null), or 1-`max` chars once made one line; a ReviewError naming `name` otherwise. */
@@ -478,7 +506,7 @@ function checkCompanion(c, budget) {
  * checkCompanion's answer.
  */
 function annotateInput(o) {
-  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start? }')
+  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start?, type? }')
   const title = checkTitle(o.title, 'title')
   // The main column's header bar, shown only beside a companion (the title cut, when not given).
   const label = checkLabel(o.label, 'label', MAX_ANNOTATE_LABEL) || shorten(title, MAX_ANNOTATE_LABEL)
@@ -513,7 +541,10 @@ function annotateInput(o) {
   // messages are last (a long Chat thread, a mail thread): the reader wants the end, not the start.
   if (given(o.start) && o.start !== 'top' && o.start !== 'end') throw new ReviewError("start must be 'top' or 'end'")
   const start = o.start === 'end' ? 'end' : 'top'
-  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start }
+  // The caller's overlay type (a mail thread as `inbox-item { source, id }`): the overlay gets it, so
+  // the caller's buttons for its own items show here too. Absent: no type (Discuss still shows).
+  const type = checkType(o.type)
+  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start, type }
 }
 
 /** An annotate key: 1-MAX_ANNOTATE_KEY chars of ANNOTATE_KEY_CHARS. */
@@ -525,14 +556,18 @@ function checkKey(v) {
 }
 
 /**
- * prepare({ key, title }) and cancel({ key }): the overlay of an annotate still to come, opened at
- * once with a loader while the caller fetches. `key` is required (it is how the annotate that fills
- * the overlay finds it) and checked as annotate's; `title` as annotate's (prepare only).
+ * prepare({ key, title, type?, tabId? }) and cancel({ key }): the overlay of an annotate still to
+ * come, opened at once with a loader while the caller fetches. `key` is required (it is how the
+ * annotate that fills the overlay finds it) and checked as annotate's; `title`, `type` and `tabId` as
+ * annotate's (prepare only). An overlay's type and Discuss tab are fixed when it starts, so a caller
+ * that prepares passes them here: the annotate filling it cannot change them.
  */
 function prepareInput(o, { title: withTitle = true } = {}) {
-  if (!isObj(o)) throw new ReviewError(withTitle ? 'prepare takes { key, title }' : 'cancel takes { key }')
+  if (!isObj(o)) throw new ReviewError(withTitle ? 'prepare takes { key, title, type?, tabId? }' : 'cancel takes { key }')
   const key = checkKey(o.key)
-  return withTitle ? { key, title: checkTitle(o.title, 'title') } : { key }
+  if (!withTitle) return { key }
+  if (o.tabId !== undefined && o.tabId !== null && typeof o.tabId !== 'string') throw new ReviewError('tabId must be a string')
+  return { key, title: checkTitle(o.title, 'title'), type: checkType(o.type), tabId: typeof o.tabId === 'string' ? o.tabId : undefined }
 }
 
 /**
@@ -690,6 +725,7 @@ module.exports = {
   buildReview,
   annotateInput,
   prepareInput,
+  checkType,
   annotationKey,
   buildAnnotation,
   htmlText,
@@ -698,6 +734,8 @@ module.exports = {
   linkSet,
   linkVerdict,
   MAX_MESSAGE,
+  MAX_CONTEXT,
+  MAX_TYPE_DATA,
   MAX_NOTE_TEXT,
   MAX_GLOBAL,
   MAX_NOTES,

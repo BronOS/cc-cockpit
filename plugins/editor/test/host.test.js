@@ -97,3 +97,85 @@ test('a long path is cut from the left to fit the overlay title limit', async ()
   assert.ok(t.startsWith('Edit: …') && t.endsWith('/file.js'))
   assert.equal(host.overlayTitle('Edit: ', 'a.js'), 'Edit: a.js')
 })
+
+// A project folder for the Edit button's file checks.
+function project() {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edhost-')))
+  fs.mkdirSync(path.join(root, 'src'))
+  fs.writeFileSync(path.join(root, 'src/a.ts'), 'const a = 1\n')
+  fs.writeFileSync(path.join(root, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]))
+  fs.writeFileSync(path.join(root, 'empty.txt'), '')
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edout-')))
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'x\n')
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))
+  fs.symlinkSync(path.join(root, 'src/a.ts'), path.join(root, 'inside-link.ts'))
+  return root
+}
+
+test('editableFile: only a text file inside the project, never an escape', () => {
+  const { editableFile } = require('../dist/host.js')
+  const root = project()
+  assert.equal(editableFile(root, { path: 'src/a.ts' }), 'src/a.ts')
+  assert.equal(editableFile(root, { path: './src//a.ts', mime: 'text/plain' }), 'src/a.ts')
+  assert.equal(editableFile(root, { path: 'empty.txt' }), 'empty.txt')
+  assert.equal(editableFile(root, { path: 'inside-link.ts' }), 'inside-link.ts')
+  for (const data of [
+    { path: '../x' },
+    { path: 'src/../../x' },
+    { path: '/etc/hosts' },
+    { path: root + '/src/a.ts' },
+    { path: 'link.txt' }, // a symlink out of the project
+    { path: 'img.png' }, // binary
+    { path: 'src' }, // a folder
+    { path: 'missing.txt' },
+    { path: 5 },
+    null,
+    'src/a.ts',
+  ]) {
+    assert.equal(editableFile(root, data), null, JSON.stringify(data))
+  }
+})
+
+test('"Edit" on a file overlay: only for an editable file; run opens micro on top', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const providers = {}
+  f.ctx.overlay.buttons = (type, fn) => ((providers[type] = fn), () => {})
+  host.activate(f.ctx)
+  assert.deepEqual(Object.keys(providers), ['file'])
+  const info = (p) => ({ type: { name: 'file', data: { path: p } }, title: `Review: ${p}`, opener: 'cockpit.reviewer' })
+  for (const p of ['../x', '/etc/hosts', 'img.png', 'link.txt']) assert.deepEqual(providers.file(info(p)), [], p)
+  const [b, ...rest] = providers.file(info('src/a.ts'))
+  assert.equal(rest.length, 0)
+  assert.equal(b.id, 'edit')
+  assert.equal(b.label, 'Edit')
+  await b.run(info('src/a.ts'))
+  assert.equal(f.started.length, 1)
+  assert.equal(f.started[0].kind, 'terminal')
+  assert.deepEqual(f.started[0].argv.slice(-1), ['src/a.ts'])
+  assert.equal(f.started[0].title, 'Edit: src/a.ts')
+})
+
+test('"Edit" run that fails tells the person; an app without overlay.buttons registers nothing', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: new Error('spawn micro ENOENT') })
+  f.ctx.projectDir = project()
+  const notices = []
+  f.ctx.notify = (m) => notices.push(m)
+  let provider
+  f.ctx.overlay.buttons = (_t, fn) => ((provider = fn), () => {})
+  host.activate(f.ctx)
+  const [b] = provider({ type: { name: 'file', data: { path: 'src/a.ts' } }, title: 't', opener: 'core' })
+  await b.run()
+  assert.equal(f.started.length, 0)
+  assert.match(notices[0], /^Edit src\/a\.ts: micro is not installed/)
+
+  // An older app: no ctx.overlay.buttons, and activate still works.
+  const g = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  host.activate(g.ctx)
+  assert.equal(typeof g.provided.editor.open, 'function')
+})

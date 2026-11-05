@@ -5,9 +5,14 @@
 //   const editor = ctx.services.use('editor')
 //   await editor.open(path, { line? })   // path relative to the project folder; resolves once shown
 //
-// The reviewer's Edit button and `ccc edit <file> [line]` use it. Any plugin that provides
-// "editor" v1 can replace this one (Settings > Plugins, "Plugin used for editor").
+// `ccc edit <file> [line]` uses it. Any plugin that provides "editor" v1 can replace this one
+// (Settings > Plugins, "Plugin used for editor").
+//
+// It also adds "Edit" to every overlay of the well-known type `file` { path } (a review, a file
+// shown by another plugin) for a text file of the project: micro opens on top, the overlay under it
+// stays.
 
+const fs = require('node:fs')
 const path = require('node:path')
 
 const INSTALL_HINT =
@@ -41,6 +46,45 @@ function relativePath(p) {
   return norm.replace(/^\.\//, '')
 }
 
+// The Edit button's file check: what the button provider may read (it has 500 ms), and what counts
+// as a text file micro can open: a regular file, no NUL byte in its first BINARY_SNIFF_BYTES.
+const BINARY_SNIFF_BYTES = 8000
+const MAX_EDIT_BYTES = 64 * 1024 * 1024
+
+/**
+ * The project-relative path of a `file` overlay's data when it names a text file of the project
+ * micro can open, else null. The data came from the overlay's opener (any plugin), so it is
+ * checked as `editor.open` checks a path (relativePath), and after following symlinks the file must
+ * still lie inside the project folder: a link to ~/.ssh/config gets no Edit. Exported for tests.
+ */
+function editableFile(root, data) {
+  if (!data || typeof data !== 'object' || typeof data.path !== 'string') return null
+  let rel
+  try {
+    rel = relativePath(data.path)
+  } catch {
+    return null
+  }
+  let fd
+  try {
+    const realRoot = fs.realpathSync(root)
+    const real = fs.realpathSync(path.join(realRoot, rel))
+    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null
+    const st = fs.statSync(real)
+    // A FIFO or a device would block the read (and the whole plugin host): regular files only.
+    if (!st.isFile() || st.size > MAX_EDIT_BYTES) return null
+    fd = fs.openSync(real, 'r')
+    const buf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, st.size))
+    const n = fs.readSync(fd, buf, 0, buf.length, 0)
+    if (buf.subarray(0, n).includes(0)) return null
+  } catch {
+    return null // missing, unreadable: nothing to edit
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+  return rel
+}
+
 /** micro's argv: options first, then the file, then +LINE. Exported for tests. */
 function microArgv(app, rel, line) {
   const argv = [app.microPath || 'micro']
@@ -71,6 +115,7 @@ async function earlyEnd(result) {
 
 exports.microArgv = microArgv
 exports.relativePath = relativePath
+exports.editableFile = editableFile
 exports.overlayTitle = overlayTitle
 exports.INSTALL_HINT = INSTALL_HINT
 
@@ -124,6 +169,30 @@ exports.activate = (ctx) => {
       }
     },
   })
+
+  // "Edit" on a `file` overlay (the reviewer's file review, among others). An older app has no
+  // ctx.overlay.buttons: the editor then only serves `editor.open` and `ccc edit`.
+  if (typeof ctx.overlay.buttons === 'function') {
+    ctx.overlay.buttons('file', (o) => {
+      const rel = editableFile(ctx.projectDir, o.type.data)
+      if (rel === null) return []
+      return [
+        {
+          id: 'edit',
+          label: 'Edit',
+          run: async () => {
+            // A failure (micro missing, the overlay refused) is told: the click otherwise just ends.
+            try {
+              await openEditor(rel)
+            } catch (e) {
+              ctx.log.warn(`Edit ${rel}: ${e.message}`)
+              Promise.resolve(ctx.notify(`Edit ${rel}: ${e.message}`)).catch(() => {})
+            }
+          },
+        },
+      ]
+    })
+  }
 
   ctx.cli.register('edit', async (argv, { cwd }) => {
     if (!argv.length || argv[0] === 'help' || argv.includes('--help')) {

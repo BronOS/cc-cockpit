@@ -8,7 +8,7 @@
 // no header row), `url` an optional link (an "Open in browser" icon in the document, when the init
 // says `canOpenUrl`; the click posts { type: 'open-url' } and the host opens the URL its caller gave,
 // never one from here), and
-// `new` the one read-only pane, with no diff, no layout toggle and no Edit. 'html' is annotate's
+// `new` the one read-only pane, with no diff and no layout toggle. 'html' is annotate's
 // HTML mode: no pane at all but the caller's HTML, sanitized (sanitize.mjs) and rendered as a
 // document; it comes after the init in `htmlParts` { type: 'html', index, part } messages the page
 // asks for with { type: 'content' }, followed by one { type: 'asset', id, dataUrl } per image and
@@ -27,8 +27,13 @@
 // one set for both. A note on the companion has `doc: 'companion'`; its button posts { type:
 // 'open-url', doc: 'companion' }.
 // The page shows the two sides, collects notes and the global comment, and posts
-//   { type: 'draft', draft }                          on every change;
-//   { result: { action: 'discuss'|'new'|'close', tabId?, draft } }   from the buttons.
+//   { type: 'draft', draft }                          on every change, and when the host asks
+//                                                     ({ type: 'draft-request' }: Discuss with Claude);
+//   { type: 'draft-unsaved' }                         for a request while the draft is too large;
+//   { result: { action: 'close' } }                   from Close.
+// Discuss with Claude, New session and Edit are the app's overlay toolbar now (the host answers
+// Discuss with the review text; the editor adds "Edit" for the overlay's `file` type), so the page
+// has no tab picker and no send buttons.
 // Esc closes the overlay without asking the page, so drafts are posted as they change, at once (a
 // debounce here lost the last keystrokes to an Esc pressed within it; the host coalesces writes).
 // The host answers { type: 'draft-error', message } when a draft could not be stored and
@@ -181,8 +186,6 @@ function notedDecorations(doc, notes) {
 const state = {
   sides: null,
   draft: { global: '', notes: [] },
-  tabs: [],
-  tabId: null,
   layout: 'split', // 'split' | 'unified'
   views: { old: null, new: null }, // EditorViews by side
   merge: null,
@@ -257,8 +260,8 @@ function extensionsFor(side, path) {
     highlightActiveLine(),
     drawSelection(),
     highlightSelectionMatches(),
-    EditorState.readOnly.of(true), // the reviewer only reads; Edit opens the editor
-    keymap.of([...searchKeymap, { key: 'a', run: () => (addNote(side), true) }, { key: 'e', run: () => (edit(), true) }, { key: 'j', run: goToNextChunk }, { key: 'k', run: goToPreviousChunk }]),
+    EditorState.readOnly.of(true), // the reviewer only reads; the toolbar's Edit opens the editor
+    keymap.of([...searchKeymap, { key: 'a', run: () => (addNote(side), true) }, { key: 'j', run: goToNextChunk }, { key: 'k', run: goToPreviousChunk }]),
     isText() ? [markdown(), EditorView.lineWrapping] : languageFor(path),
     baseTheme,
     themeCompartment.of(syntaxFor()),
@@ -1069,79 +1072,19 @@ document.addEventListener('keydown', (e) => {
   addNote()
 })
 
-// ---- tabs and buttons ----
-
-const STATUS = { waiting: 'waiting', working: 'working', 'needs-permission': 'needs you', idle: 'idle', starting: 'starting' }
-
-function renderTabs() {
-  const sel = $('target')
-  sel.replaceChildren()
-  if (!state.tabs.length) {
-    sel.append(el('option', null, 'No Claude tab in this window'))
-    sel.disabled = true
-    $('discuss').disabled = true
-    return
-  }
-  sel.disabled = false
-  $('discuss').disabled = false
-  if (!state.tabId || !state.tabs.some((t) => t.tabId === state.tabId)) {
-    state.tabId = state.tabs.length === 1 ? state.tabs[0].tabId : null
-  }
-  if (!state.tabId) {
-    const o = el('option', null, 'Choose a Claude tab…')
-    o.value = ''
-    sel.append(o)
-  }
-  for (const t of state.tabs) {
-    const o = el('option', null, `${STATUS[t.status] || t.status} · ${t.lastPrompt || t.tabId}`)
-    o.value = t.tabId
-    sel.append(o)
-  }
-  sel.value = state.tabId || ''
-  updateQueuedHint()
-}
-
-function updateQueuedHint() {
-  const t = state.tabs.find((x) => x.tabId === state.tabId)
-  $('queued').textContent = t && t.status !== 'waiting' ? 'Claude is busy: the review is queued until it waits for input.' : ''
-}
-
-/** Asks the host to open the editor at the new side's cursor line (the old side has no file). */
-function edit() {
-  // An annotated text is no file: there is nothing to edit (the button is hidden; this is the `e` key).
-  if (state.sides.newMissing || isText() || isHtml()) return
-  const v = state.views.new
-  const line = v ? v.state.doc.lineAt(v.state.selection.main.head).number : 1
-  // Edit closes the review: not while the draft is unsaved, or the unsaved part is gone.
-  if (!postDraft()) {
-    $('status').textContent = 'Not opening the editor: the draft is not saved.'
-    return
-  }
-  $('status').textContent = 'Opening the editor…'
-  ccPanel.post({ type: 'edit', line })
-}
+// ---- buttons ----
 
 function finish(action) {
-  // Post the draft before any check below can return: a refusal (no tab chosen) that skipped the
-  // save let a following Esc or ✕ lose the text.
-  const posted = postDraft()
-  if (action === 'close') {
-    // No draft in the result: the host has the last one that fit, and a draft too large for a
-    // message would be dropped with the result, leaving Close doing nothing.
-    ccPanel.post({ result: { action } })
-    return
-  }
-  if (!posted) {
-    $('status').textContent = 'Not sent: the draft is too large. Shorten or delete a note first.'
-    return
-  }
-  // No comment and no note is fine: the host then asks Claude to discuss the file or the text.
-  if (action === 'discuss' && !state.tabId) {
-    $('status').textContent = 'Choose the Claude tab to send the review to.'
-    $('target').focus()
-    return
-  }
-  ccPanel.post({ result: { action, tabId: state.tabId, draft: state.draft } })
+  // Close: the draft goes first, so a page message lost with the result loses nothing. No draft in
+  // the result: the host has the last one that fit, and a draft too large for a message would be
+  // dropped with the result, leaving Close doing nothing.
+  postDraft()
+  ccPanel.post({ result: { action } })
+}
+
+/** Discuss with Claude asks for the newest draft: posted, or `draft-unsaved` when it is too large to store. */
+function answerDraftRequest() {
+  if (!postDraft()) ccPanel.post({ type: 'draft-unsaved' })
 }
 
 // ---- init ----
@@ -1152,8 +1095,6 @@ function init(m) {
   document.body.classList.remove('loading')
   state.sides = m.sides
   state.draft = m.draft || { global: '', notes: [] }
-  state.tabs = m.tabs || []
-  state.tabId = m.tabId || null
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
   state.canOpenLinks = m.canOpenLinks === true
   state.split = clampSplit(m.split)
@@ -1181,13 +1122,9 @@ function init(m) {
   $('note').hidden = !s.note
   $('global').value = state.draft.global
   limitInput($('global'), $('global-limit'), GLOBAL_MAX)
-  $('edit').hidden = m.canEdit === false || isText() || isHtml() // no plugin provides the editor service, or no file
   if (isHtml()) startHtml(s)
-  $('edit').disabled = !!s.newMissing
-  $('edit').title = s.newMissing ? 'The file is deleted: nothing to edit' : $('edit').title
   buildEditors()
   renderNotes()
-  renderTabs()
   if (isHtml()) htmlView.scroller.focus()
   else (state.views.new || state.views.old).focus()
   // The host sends the details column, the HTML parts and the images now.
@@ -1207,14 +1144,6 @@ $('layout').addEventListener('click', () => {
   ccPanel.post({ type: 'layout', layout: state.layout }) // remembered for the next review
   buildEditors()
 })
-$('target').addEventListener('change', (e) => {
-  state.tabId = e.target.value || null
-  updateQueuedHint()
-})
-$('target').addEventListener('focus', () => ccPanel.post({ type: 'tabs' }))
-$('discuss').addEventListener('click', () => finish('discuss'))
-$('new-session').addEventListener('click', () => finish('new'))
-$('edit').addEventListener('click', () => edit())
 $('close').addEventListener('click', () => finish('close'))
 $('open-url').addEventListener('click', (e) => {
   // Inside the document: not a link click of the document's (an h1 inside an <a>) as well.
@@ -1235,10 +1164,8 @@ ccPanel.onMessage((m) => {
     saveState.hostError = ''
     showSaveState()
   }
-  else if (m.type === 'tabs') {
-    state.tabs = m.tabs || []
-    renderTabs()
-  } else if (m.type === 'html') htmlPart(m)
+  else if (m.type === 'draft-request') answerDraftRequest()
+  else if (m.type === 'html') htmlPart(m)
   else if (m.type === 'aside') renderAside(m)
   else if (m.type === 'asset') htmlAsset(m)
   else if (m.type === 'assets-done') htmlAssetsDone()

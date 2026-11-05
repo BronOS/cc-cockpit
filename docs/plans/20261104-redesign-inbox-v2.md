@@ -521,16 +521,26 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `plugins/editor/dist/host.js` (`ctx.overlay.buttons('file', …)`), `plugins/editor/README.md`
 - Modify: `plugins/reviewer/test/*.test.js`, `plugins/editor/test/host.test.js`, `test/unit/reviewer-plugin.test.ts`
 
-- [ ] reviewer: a file review is `type: { name: 'file', data: { path } }`, `discuss: { tabId }` from the click,
+- [x] reviewer: a file review is `type: { name: 'file', data: { path } }`, `discuss: { tabId }` from the click,
   `onDiscuss` returns the review text it builds today (notes, comment, caps; asks the page for its draft); clears the
   draft on `discussed`; `annotate({ …, type })` passes a caller's type through (checked shape) so Gmail's thread there is
   an `inbox-item`
-- [ ] editor: "Edit" for a `file` whose `path` resolves inside the project as `editor.open` does and is a text file it
+- [x] editor: "Edit" for a `file` whose `path` resolves inside the project as `editor.open` does and is a text file it
   can open; `run` opens micro on top (the review stays under it)
-- [ ] `npm run build:reviewer`; commit the bundle
-- [ ] write tests: type and discuss passed, onDiscuss text, draft cleared, annotate `type` checked; editor button only for
+- [x] `npm run build:reviewer`; commit the bundle
+- [x] write tests: type and discuss passed, onDiscuss text, draft cleared, annotate `type` checked; editor button only for
   in-project text files, refused for `..`/absolute paths
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins` — done when green
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins` — done when green
+- ➕ decided: `onDiscuss` asks the page for its draft (`{ type: 'draft-request' }`, answered by a `draft` message or
+  `draft-unsaved` when the page's size check refused it; after 1.5 s the host's last copy goes) and answers the review
+  text capped at 15,000 (`MAX_CONTEXT`), so core's `About:`/type lines and a 4,000 note never cut the person's notes; a
+  draft the host would cut throws (shown in the popover). On `discussed`: a cut review keeps the full draft (notice), a
+  queued one keeps it until the tab's next prompt contains the review's start (the old watch, now `includes`), else the
+  draft is deleted. `prepare` takes `type` and `tabId` too (an overlay's extras are fixed at start); `features()` adds
+  `'type'`. The reviewer no longer `uses` the `editor` service (manifest); the page's `e` key went with Edit, and the
+  toolbar's Edit opens micro at the first line. The editor's button checks the path with `relativePath`, realpath inside
+  the project, a regular file of at most 64 MiB with no NUL in its first 8,000 bytes; a failed `run` is a notification.
+  Guide `plugins.md` (reviewer service) updated; the e2e features assertion in `reviewer-annotate.spec.ts` updated.
 
 ### Task 14: Overlay e2e, guide and design.md [model: sonnet]
 

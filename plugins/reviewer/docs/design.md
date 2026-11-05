@@ -6,6 +6,12 @@ Status (2026-11-02): milestones 1-3 built and tried in the app; now bundled with
 unchanged file shows as one plain pane; in unified, a click on a removed block picks it for a note on the old side;
 a second click on a file already under review brings its overlay to the front. Every FRICTION.md entry has its outcome.
 
+Update (2026-11-04, the overlay toolbar of the app's redesign): Discuss, New session, Edit and the tab picker left the
+page for the app's overlay toolbar. A file review is the overlay type `file { path }`; the app's **Discuss with
+Claude** (target list with New session, an optional note) asks the reviewer's `onDiscuss` for the review text, and
+`cockpit.editor` adds **Edit** to every `file` overlay. The reviewer no longer uses the `editor` service. See
+"Buttons" below; the older text in "Which tab the picker starts on" and "Core API" describes the first version.
+
 ## Goal
 
 When Claude changes a file, the person reviews it in a diff view. They select text and attach notes to it,
@@ -19,8 +25,8 @@ Two plugins, joined only through plugin services:
 
 | Plugin | Provides | Uses | Job |
 |---|---|---|---|
-| reviewer | `reviewer` v1 | `editor` v1 | diff view against the last commit, annotations, global comment, Discuss / New session / Edit |
-| editor | `editor` v1 | | the real editor: micro in a terminal overlay (below) |
+| reviewer | `reviewer` v1 | | diff view against the last commit, annotations, global comment; the review text for Discuss with Claude |
+| editor | `editor` v1 | | the real editor: micro in a terminal overlay (below); "Edit" on every `file` overlay |
 | file tree (later) | | `reviewer` v1, `editor` v1 | opens a file for review or editing |
 
 Which editor the reviewer uses is not a reviewer setting. When several enabled plugins provide
@@ -68,11 +74,13 @@ the whole app, not only per project.
 
 ```js
 // reviewer v1
-open(path, { tabId? })  // show the review overlay for a file; tabId: the Claude tab the review goes to
+open(path, { tabId? })  // show the review overlay for a file; tabId: Discuss's preselected Claude tab
 annotate({ title, text, url?, key?, tabId? })  // the same overlay on a plain text (below)
 annotate({ title, html, assets?, url?, key?, tabId? })  // ... or on sanitized HTML (below)
 annotate({ title, html, ..., label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })  // with a second document beside it (below)
-features()  // the optional annotate features: ['companion'] (app 0.9.3+)
+annotate({ ..., type? })  // the overlay's type, passed through (a source's own inbox-item { source, id })
+prepare({ key, title, type?, tabId? }), cancel({ key })  // a loading overlay an annotate fills
+features()  // the optional annotate features: ['companion', 'prepare', 'type']
 // editor v1 (implemented by the editor plugin)
 open(path, { line? })
 ```
@@ -89,8 +97,8 @@ annotate({ title, text, url?, key?, tabId? })  // -> { opened: true } once the o
 
 The review overlay on a text another plugin hands over (a Jira issue, a mail), not a file: one
 read-only pane with `text` (markdown colouring, wrapped lines), the same notes on selections, the
-same comment, the same Discuss / New session / Close and tab picker. No diff, no layout toggle, no
-git, no Edit (the `e` key does nothing). No header row either (2026-11-03): the overlay's title bar already shows
+same comment, the same toolbar Discuss with Claude and Close. No diff, no layout toggle, no
+git, no `file` type (so no Edit) unless the caller passes a `type`. No header row either (2026-11-03): the overlay's title bar already shows
 `title`, and a Jira issue's HTML names it a third time. For a `url` a small "Open in browser" icon button (the URL in
 its tooltip) sits in the document: at the end of the HTML's first `h1`, placed by the page after sanitizing (its own
 element, never the caller's markup), else floated to the top right of the HTML document or in the top right corner
@@ -239,11 +247,11 @@ the first instead.
   would show the mail alone, silently), so a caller asks first; the older one has no `features` and the call
   rejects with "has no method", read as none.
 
-### Which tab the picker starts on
+### Which tab Discuss starts on
 
-For `open`, `annotate` and a click alike: `tabId` when it is one of the window's live Claude tabs
-(a click names the clicked tab), else the tab the window shows (`SessionInfo.active`, core since
-2026-11-02), else the only tab when there is one; otherwise the page asks.
+For `open`, `annotate` and a click alike, `tabId` goes to the overlay as `discuss: { tabId }` (a click names the
+clicked tab). The app preselects it when it is a Claude tab of the window, else the active tab when it is Claude,
+else New session.
 
 ## Diff base: the last commit
 
@@ -254,7 +262,7 @@ with `git show HEAD:<path>` and the working-tree file, and the view computes the
 |---|---|
 | changed file | the changes since HEAD, including the person's own uncommitted edits |
 | untracked file | the whole file as added |
-| deleted file | the HEAD content as removed; Edit is disabled |
+| deleted file | the HEAD content as removed; no Edit (the editor's button needs the file) |
 | no git repo, or no commits yet | the plain file with a note that there is no diff |
 
 ## The review overlay
@@ -272,20 +280,22 @@ with `git show HEAD:<path>` and the working-tree file, and the view computes the
   stores the side (old or new), the line range, the selected text (up to about 500 characters) and the
   note. A note shows as a highlight with a margin marker and can be edited or deleted in the list. Any number of
   notes.
-- **Buttons:**
-  - **Discuss** sends the review to `tabId`, the Claude tab whose file was clicked, through
-    `ctx.sessions.send`. If the tab is busy, the text is queued and the button says "Queued, sends when
-    Claude is waiting". Without a `tabId`, for example when opened from the file tree, Discuss asks
-    which tab to use, or is hidden when the window has no Claude tab.
-  - **New session** opens a new Claude tab in the project folder, with the review as its first
-    prompt, through `ctx.sessions.open({ cwd, prompt, focus: true })`, and the window selects it.
-  - Discuss and New session need no note and no comment: with neither, Claude is asked to discuss the file (read
-    it and its diff) or, for an annotated text, gets the text itself (as plain text, cut to fit) with that request.
-  - **Edit** closes the review and calls `editor.open(path, { line })`, using the line of the selected
-    note when there is one.
-  - **Close** sends nothing.
+- **Buttons** (2026-11-04: on the app's overlay toolbar, not the page):
+  - **Discuss with Claude** is the app's: a target list (this window's Claude tabs, and New session; preselected as
+    above) and an optional note. On Send the app asks the reviewer's `onDiscuss` (5 s). The host asks the page for
+    its newest draft (`{ type: 'draft-request' }`, answered by a `draft` message, or `draft-unsaved` when the page's
+    own size check refused it; after 1.5 s the host's last copy goes), and answers `{ text }`: the review text below,
+    at most 15,000 characters so the app's `About:` and type lines and the note (4,000) fit its 20,000 without
+    cutting the review. A draft the host would cut, or one the page could not post, throws: the popover shows why and
+    nothing is sent. The app then sends through the send gate (queued while busy, its queued chip) or opens a new
+    session, closes the overlay with `{ kind: 'discussed', tabId, queued }` and selects that tab.
+  - No note and no comment is fine: Claude is asked to discuss the file (read it and its diff) or, for an annotated
+    text, gets the text itself (as plain text, cut to fit) with that request.
+  - **Edit** is `cockpit.editor`'s button for the `file` type: shown for a text file inside the project, it opens
+    micro on top, and the review stays under it. It opens at the first line (a type button has no page state).
+  - **Close** (the page's, and Esc / ✕) sends nothing.
 - **Drafts:** Close keeps the draft for that file in `ctx.storage` under `draft:<path>`. Reopening the
-  file brings back the global comment and the notes. Discuss and New session clear the draft. A
+  file brings back the global comment and the notes. `discussed` clears the draft. A
   draft whose notes no longer match the file (the selected text is gone) keeps the notes but marks
   them "may be outdated".
 
@@ -315,9 +325,11 @@ goes out cut, with its full draft kept. Note inputs take 4,000 characters, the c
 near the limit), and a review 200 notes ("Add note" turns off there, with a hint), the same caps the
 host applies to a draft; a draft over 400,000 characters as JSON is not saved, and the page says so.
 A draft the store refuses is shown in the review as "Draft not saved" (the last saved one stays),
-Edit then keeps the review open, and closing it with the failure unresolved ends in a notice. A
-review queued in a busy tab keeps its draft until the tab's next prompt is that review; when the
-tab ends first, a notice says it may not have reached Claude.
+and closing it with the failure unresolved ends in a notice. A review queued in a busy tab keeps its
+draft until the tab's next prompt has that review in it (after the app's `About:` lines); when the
+tab ends first, a notice says it may not have reached Claude. The text here is what the reviewer
+hands Discuss; the app puts `About: <title>` and the type line (`File: src/x.ts`) before it and the
+person's note after it.
 
 ## Technology
 
@@ -326,7 +338,8 @@ tab ends first, a notice says it may not have reached Claude.
   CDN. esbuild runs at development time and the bundle is committed.
 - Syntax highlighting comes from the CodeMirror language packages, chosen by file extension. The theme
   comes from `ccPanel.theme` (the app's CSS variables).
-- Keys: `a` add a note on the selection, `j`/`k` next/previous change, `e` Edit, `Esc` Close.
+- Keys: `a` add a note on the selection, `j`/`k` next/previous change, `Esc` Close. (`e` for Edit went with the
+  page's Edit button: the toolbar has no chords.)
 - Overlay limits from `ccc guide api`: at most 3 open and 10 per minute. A second `open` of the same file
   focuses the existing overlay rather than opening a new one.
 

@@ -201,8 +201,10 @@ project or everywhere) and yours is the only provider, used without a pick.
 ### The reviewer service
 
 The built-in `reviewer` service (v1): `"uses": { "reviewer": 1 }`, then `ctx.services.use('reviewer')`. Both methods
-resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; the tab picker starts on
-`tabId` when it is a live Claude tab of the window, else on the shown tab (`SessionInfo.active`).
+resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise. Sending to Claude is the
+overlay toolbar's Discuss with Claude (a Claude tab of the window, or New session): `tabId` is its preselected tab
+when it is a Claude tab of the window, else the active one. A file review has the type `file { path }`, so the
+editor's Edit (and any plugin's `file` buttons) show on it.
 
 - `open(path, { tabId? })`: a project file's diff against the last commit, with notes and a comment.
 - `annotate({ title, text, url?, key?, tabId? })`: a text of yours (a ticket, a mail) in the same overlay, one
@@ -251,16 +253,20 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
   1-30 characters): the header bars beside a companion, e.g. `label: 'Mail', urlLabel: 'Gmail'` and
   `companion: { label: 'Jira · PROJ-123', urlLabel: 'Jira', ... }`. A label defaults to the title, cut. Without a
   companion they are checked but not shown.
-- `prepare({ key, title })` (feature `'prepare'`): opens the overlay of an annotate still to come at once, with a
+- `type: { name, data }` (optional, either form; feature `'type'`): the overlay's type, checked as `overlay.start`
+  checks it and passed through, so your buttons for it (`ctx.overlay.buttons`) show on the review: a source passes its
+  own `inbox-item { source, id }`. An older reviewer ignores it.
+- `prepare({ key, title, type?, tabId? })` (feature `'prepare'`): opens the overlay of an annotate still to come at once, with a
   loader, so a click on a mail or an issue shows something while you fetch it. The `annotate` with the same `key`
-  then fills that overlay (its title stays the one `prepare` gave) instead of starting another. Call
+  then fills that overlay (its title, `type` and `tabId` stay the ones `prepare` gave: set them there) instead of
+  starting another. Call
   `cancel({ key })` when no annotate follows (the fetch failed, you show your own page): it closes a loader never
   filled and resolves `{ closed: false }` otherwise, so call it in a `finally`. A loader the person closes makes the
   next annotate of that key resolve `{ opened: false }` with nothing shown; one left unfilled closes after 60 s. An
   older reviewer rejects `prepare` with "has no method": just annotate when ready. The pattern:
   `const p = await reviewer.prepare({ key, title }).then(() => true, () => false)`, fetch, annotate, and
   `finally { if (p) await reviewer.cancel({ key }).catch(() => {}) }`.
-- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare']`. An older
+- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall
@@ -269,9 +275,10 @@ resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <wh
 Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
 `On «quote»: note` for HTML. With a companion the head adds `, with <title> (<url>) beside it` and a note on it reads
 `In <title>, on «quote»: note`. With no comment and no note Discuss still sends: the head, a request to discuss it,
-then the text itself (your `aside` and `html` as plain text, the companion after; cut to 20,000 characters in all),
-since Claude cannot read your mail or ticket otherwise; a file review asks Claude to read the file and its diff. New
-session selects the tab it opens. The reviewer README has the details and a Jira example.
+then the text itself (your `aside` and `html` as plain text, the companion after; cut to 15,000 characters, the
+reviewer's share of Discuss's 20,000), since Claude cannot read your mail or ticket otherwise; a file review asks
+Claude to read the file and its diff. Discuss puts its `About: <title>` and type lines before that and the person's
+note after it, and selects the tab it went to. The reviewer README has the details and a Jira example.
 
 ## Build and ship
 
