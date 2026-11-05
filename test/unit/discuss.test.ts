@@ -136,12 +136,13 @@ describe('orderDiscussTabs', () => {
   // The first row is the initial target: a preselected tab that cannot take a send is not it.
   it('does not put a not-ready preselected tab first', () => {
     expect(orderDiscussTabs(tabs, 'c').map((x) => x.tabId)).toEqual(['b', 'd', 'a', 'c'])
-    expect(orderDiscussTabs([t('s', 'starting'), t('i', 'idle')], 'i').map((x) => x.tabId)).toEqual(['s', 'i'])
+    expect(orderDiscussTabs([t('i', 'idle'), t('s', 'starting')], 'i').map((x) => x.tabId)).toEqual(['s', 'i'])
   })
-  it('sends now only to waiting, queues for a running turn, and calls idle and starting not ready', () => {
+  // starting frees itself: SessionStart makes it waiting (send-gate settle window); idle does not.
+  it('sends now only to waiting, queues for a running turn or a starting tab, and calls idle not ready', () => {
     expect(tabs.map(discussReadiness)).toEqual(['queued', 'now', 'not-ready', 'now'])
     expect(discussReadiness({ status: 'needs-permission' })).toBe('queued')
-    expect(discussReadiness({ status: 'starting' })).toBe('not-ready')
+    expect(discussReadiness({ status: 'starting' })).toBe('queued')
     expect(discussRowMeta(t('x', 'waiting'), 'waiting')).toBe('waiting')
     expect(discussRowMeta(t('x', 'working'), 'working')).toMatch(/queued/)
     expect(discussRowMeta(t('x', 'idle'), 'idle')).toMatch(/not ready/)

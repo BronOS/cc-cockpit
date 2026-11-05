@@ -172,6 +172,20 @@ describe('SessionStart session_id validation', () => {
   })
 })
 
+// Claude 2.1.318: the trust and MCP-approval dialogs come before SessionStart and a resume goes
+// straight to the prompt, so these sources mean the tab is at its prompt (status-reducer.ts).
+describe('SessionStart at the prompt', () => {
+  it.each(['startup', 'resume', 'clear'])('source %j makes the tab waiting, from any live status', (source) => {
+    for (const from of ['starting', 'idle', 'working', 'waiting', 'needs-permission'] as TabStatus[]) {
+      const out = reduce(withStatus(from, { tool: 'Bash' }), hook('SessionStart', { source, session_id: 's' }))
+      expect(out).toMatchObject({ status: 'waiting', tool: undefined, sessionId: 's' })
+    }
+  })
+  it('/clear after its SessionEnd comes back waiting', () => {
+    expect(reduce(withStatus('ended'), hook('SessionStart', { source: 'clear' })).status).toBe('waiting')
+  })
+})
+
 describe('SessionStart from compaction', () => {
   it('leaves a working tab working with its tool: auto-compaction happens mid-turn', () => {
     const out = reduce(
@@ -189,7 +203,7 @@ describe('SessionStart from compaction', () => {
     }
   )
 
-  it.each(['startup', 'resume', 'clear', undefined])('source %j moves a working tab to idle', (source) => {
+  it.each(['fork', 'later', 42, undefined])('source %j (not known to be at the prompt) moves a working tab to idle', (source) => {
     const out = reduce(withStatus('working', { tool: 'Bash' }), hook('SessionStart', { source }))
     expect(out).toMatchObject({ status: 'idle', tool: undefined })
   })

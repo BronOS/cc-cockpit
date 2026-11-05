@@ -28,17 +28,18 @@ export function discussTabsOf(tabs: readonly TabInfo[], own: ReadonlyMap<string,
 
 /**
  * How a send to the tab goes. `now`: it waits for input, typed at once. `queued`: a turn (or a
- * permission prompt) is running, the send gate holds the text until that turn's Stop. `not-ready`:
- * idle or starting, i.e. no turn since SessionStart (a fresh, resumed or /clear-ed session): idle is
- * not sendable (a startup dialog may be up) and no Stop comes until the person runs a prompt, so a
- * queued text would wait there indefinitely. The incident: a tab resumed by an app restart took a
- * Discuss as "queued 1" and nothing happened. Main refuses the same targets (overlay-manager).
+ * permission prompt) is running, or Claude is still starting; the send gate holds the text until
+ * that turn's Stop, or until Claude is at its prompt (SessionStart, then a one-second settle
+ * window). `not-ready`: idle, an unclear SessionStart (a compact outside a turn, a fork): idle is
+ * not sendable and no Stop comes until the person runs a prompt, so a queued text would wait there
+ * indefinitely. The incident: a tab resumed by an app restart took a Discuss as "queued 1" and
+ * nothing happened (SessionStart used to mean idle). Main refuses the same targets (overlay-manager).
  */
 export type DiscussReadiness = 'now' | 'queued' | 'not-ready'
 
 export function discussReadiness(tab: Pick<DiscussTab, 'status'>): DiscussReadiness {
   if (tab.status === 'waiting') return 'now'
-  return tab.status === 'idle' || tab.status === 'starting' ? 'not-ready' : 'queued'
+  return tab.status === 'idle' ? 'not-ready' : 'queued'
 }
 
 /**

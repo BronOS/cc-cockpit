@@ -231,10 +231,11 @@ the main part also opens it; disabled when the window has no Claude tab) opens a
 
 - **Target**: a list of this window's existing Claude tabs (name, status): the preselected one first (`discuss.tabId`
   when it is a Claude tab of this window, else the active tab when it is Claude), then the waiting ones, then the busy
-  ones, marked "queued — sent when it is free", then the idle and starting ones, marked "not ready — run a prompt in
-  it first" with Send off (main refuses them too): no turn has run since SessionStart (a fresh, resumed or `/clear`-ed
-  session), idle is not sendable and no Stop comes until the person runs a prompt, so a queued text would wait there
-  indefinitely. A not-ready preselected tab is not put first. No "remember last choice".
+  ones, marked "queued — sent when it is free", then the idle ones, marked "not ready — run a prompt in
+  it first" with Send off (main refuses them too). A starting tab is queued like a busy one: SessionStart (startup,
+  resume, clear) makes it waiting after a one-second settle window, which delivers the text. Idle is only left for an
+  unclear SessionStart (a compact outside a turn, a fork): not sendable, and no Stop comes until the person runs a
+  prompt, so a queued text would wait there indefinitely. A not-ready preselected tab is not put first. No "remember last choice".
 - **No note field**: it duplicated the reviewer's own comment and the person can type follow-ups in the session. A page that wants the person's words first keeps its own field and returns them from `onDiscuss`.
 - **Send** (Enter in the target list) / Cancel (Esc closes the popover only).
 

@@ -1726,16 +1726,16 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(m.infos(W1)).toHaveLength(1)
   })
 
-  // The incident: a tab resumed by an app restart sits idle; a Discuss to it was queued as
+  // The incident: a tab resumed by an app restart sat idle; a Discuss to it was queued as
   // "queued 1" and never delivered (no Stop comes until the person runs a prompt).
-  it('refuses a tab with no turn since it started, and the overlay stays open', async () => {
+  it('refuses an idle tab (no Stop would deliver it), and the overlay stays open', async () => {
     const sessions = fakeSessions()
     sessions.notReady.add('t1')
     const m = withDiscuss(sessions)
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, opener(() => Promise.resolve(null)), 'p.rev')
     const id = m.infos(W1)[0]!.id
     const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't1' })
-    expect(answer).toEqual({ ok: false, error: expect.stringMatching(/not answered since it started/) })
+    expect(answer).toEqual({ ok: false, error: expect.stringMatching(/is idle and would not take the text/) })
     expect(sessions.sent).toEqual([])
     expect(m.infos(W1)).toHaveLength(1)
     // A new session is not a tab target: unaffected.

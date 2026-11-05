@@ -4,14 +4,16 @@
 // THE core safety rule of the app (CLAUDE.md): never type into a Claude session unless its status
 // is *waiting for input*. Any other screen may be a dialog that a keystroke answers: the
 // permission prompt or a question / plan-approval dialog (needs-permission; a dialog tool's
-// PreToolUse enters it, status-reducer.ts), the trust-folder dialog right after start (starting,
-// idle: "Idle is not sendable" in the plan), a turn in progress (working). So:
+// PreToolUse enters it, status-reducer.ts), the trust-folder or MCP-approval dialog at start
+// (starting: both come before SessionStart), a turn in progress (working), an unclear SessionStart
+// (idle: "Idle is not sendable" in the plan). So:
 //   - the ONLY state that may receive text is `waiting`, and only while no earlier paste is still
-//     in flight (`delivering`);
-//   - a delivery happens on exactly two occasions: a `send` that finds the tab sendable, and a
-//     `Stop` (one queue item per Stop; the rest wait for later Stops);
+//     in flight (`delivering`) and not in the settle window right after SessionStart (`settling`);
+//   - a delivery happens on exactly three occasions: a `send` that finds the tab sendable, a
+//     `Stop` (one queue item per Stop; the rest wait for later Stops), and the end of the settle
+//     window (`settled`, one item: text sent while the tab was starting);
 //   - nothing else delivers: not an idle Notification that promotes a tab to waiting, not the
-//     `delivering` timeout, not a restart.
+//     `delivering` timeout, not a restart (a restart's SessionStart only opens a settle window).
 //
 // `delivering` closes the window between our paste and Claude's UserPromptSubmit for it. The
 // status is still `waiting` then, so without the flag a second Stop (or a second send) would type
@@ -150,9 +152,17 @@ export function prepareText(text: unknown): string {
   return clean
 }
 
+/**
+ * How long after the SessionStart that made a tab `waiting` the gate still holds text. The hook
+ * runs as Claude starts its prompt, and a paste written before the input box is mounted could be
+ * lost or half-read; a second is far below a person's reaction time, so only a plugin sending the
+ * moment a session opens ever waits for it, and its text is delivered when the window ends.
+ */
+export const SESSION_START_SETTLE_MS = 1_000
+
 /** The one question that guards every PTY write of this module. */
 export function maySend(entry: SessionEntry): boolean {
-  return entry.status === 'waiting' && !entry.delivering && entry.exitCode === undefined
+  return entry.status === 'waiting' && !entry.delivering && !entry.settling && entry.exitCode === undefined
 }
 
 /**
@@ -177,6 +187,7 @@ export function cancel(entry: SessionEntry, itemId: string): GateStep | undefine
  * Gate step after the reducer applied `event` (`entry` is the reduced entry). In order:
  *   - an ended session drops its queue and any delivery in flight (reported as `dropped`);
  *     `ended` covers a PTY exit and a SessionEnd (plan: "queue cleared when the tab ends"),
+ *   - SessionStart opens the settle window when it left the tab waiting; any other hook closes it,
  *   - UserPromptSubmit closes the delivery in flight,
  *   - Stop delivers the queue head when the tab may take text.
  * Every other event only passes the entry through: a Notification never delivers, even when it
@@ -190,6 +201,15 @@ export function afterEvent(entry: SessionEntry, event: ReducerEvent): GateStep {
     return step
   }
   if (event.type !== 'hook') return { entry }
+  // SessionStart put the tab at its prompt (status-reducer.ts): hold text until settled().
+  if (event.event === 'SessionStart') {
+    if (entry.status === 'waiting') return { entry: { ...entry, settling: true } }
+    return entry.settling ? { entry: { ...entry, settling: undefined } } : { entry }
+  }
+  // Any later hook ends the window: Claude is past its start (the person ran a prompt, a Stop put
+  // it back at the prompt). The e2e incident: a turn run and stopped within the first second left
+  // the tab waiting but still settling, so a send right after it was queued.
+  if (entry.settling) entry = { ...entry, settling: undefined }
   if (event.event === 'UserPromptSubmit') {
     return entry.delivering ? { entry: { ...entry, delivering: false } } : { entry }
   }
@@ -205,6 +225,17 @@ export function afterEvent(entry: SessionEntry, event: ReducerEvent): GateStep {
  */
 export function deliveringTimedOut(entry: SessionEntry): SessionEntry {
   return entry.delivering ? { ...entry, delivering: false } : entry
+}
+
+/**
+ * The settle window after SessionStart ended (the registry's timer): the flag clears and the
+ * queue head goes in if the tab is still waiting, as a Stop would deliver it. Text sent to a tab
+ * that was still starting arrives here. A tab that moved on meanwhile (the person typed a prompt)
+ * gets nothing now; its next Stop delivers.
+ */
+export function settled(entry: SessionEntry): GateStep {
+  if (!entry.settling) return { entry }
+  return deliverHead({ ...entry, settling: false })
 }
 
 function deliverHead(entry: SessionEntry): GateStep {

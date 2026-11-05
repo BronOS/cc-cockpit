@@ -244,7 +244,7 @@ touched; Claude outside the app is never seen.
 
 | Event | Status |
 |---|---|
-| `SessionStart` | idle (a working tab stays working when `source` is `compact`: auto-compaction mid-turn); `session_id` stored for `--resume` |
+| `SessionStart` | waiting for `source` startup, resume or clear (Claude is at its prompt: the trust and MCP-approval dialogs come before the hook, checked in claude 2.1.318; text is held for a one-second settle window, then the queue head goes in); idle for any other source (a working tab stays working when `source` is `compact`: auto-compaction mid-turn); `session_id` stored for `--resume` |
 | `UserPromptSubmit`, `PreToolUse` | working (current tool shown) |
 | `PreToolUse` of a dialog tool (AskUserQuestion, ExitPlanMode) | needs permission, shown as "needs you · question" / "needs you · plan approval" |
 | `Notification` (permission) | needs permission |
@@ -275,7 +275,8 @@ on screen, still not sendable.
 - Sent as a bracketed paste (`ESC[200~ … ESC[201~`) followed by Enter, so multi-line text
   arrives as one message.
 - If busy, the text is queued and shown as a "queued" chip on the tab; delivered on the next
-  `Stop`, cancellable from the chip.
+  `Stop` (or, for a tab still starting, when the settle window after its SessionStart ends),
+  cancellable from the chip.
 - Never sent while *needs permission*: a keystroke must never answer a permission prompt, a
   question or a plan approval.
 
@@ -1376,7 +1377,10 @@ All decided in phase 1:
   dialog is answered (and `PostToolUse` only when the tool ends), so an answer key typed into a
   needs-permission tab is what moves it back to working; widening the `PostToolUse` matcher would
   not cover a long-running approved tool and would cost ~90 ms per tool call.
-- Idle is not sendable: text is delivered only while a session is waiting for input.
+- Idle is not sendable: text is delivered only while a session is waiting for input. Since the
+  redesign, SessionStart with source startup, resume or clear means waiting, not idle (the plan's
+  reason, the trust dialog still being up after SessionStart, does not hold in claude 2.1.318:
+  that dialog and the MCP approval come before the hook), after a one-second settle window.
 
 ### Implementation notes (differences from the sections above)
 

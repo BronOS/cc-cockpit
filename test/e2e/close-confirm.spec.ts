@@ -80,12 +80,12 @@ test('a Claude tab’s question names its status; the tab menu’s Close asks to
     await c.waitForTerminalText('FAKE-CLAUDE banner')
     await expect
       .poll(async () => (await c.hook<Array<{ status: string }>>('sessions', c.projectDir))[0]?.status)
-      .toBe('idle')
+      .toBe('waiting')
 
     await page.getByRole('tab').click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Close' }).click()
     await expect(dialog(page)).toContainText('Close “Claude · project”?')
-    await expect(dialog(page)).toContainText('Claude is idle in this tab')
+    await expect(dialog(page)).toContainText('Claude is waiting for input in this tab')
     await dialog(page).getByRole('button', { name: 'Close', exact: true }).click()
     await expect(page.getByRole('tab')).toHaveCount(0)
   } finally {

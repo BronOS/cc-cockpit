@@ -237,7 +237,7 @@ with full Node access.
   another window rejects as unknown; at most 30 a minute per plugin. The tab menu's Rename does the same
   for the person. An older app has no `rename`: check `typeof ctx.sessions.rename === 'function'`.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
-  otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
+  otherwise (a just-opened tab takes it about a second after Claude is at its prompt). Refuses text starting with `/`, `!`, `#` or `&`.
 - `ctx.sessions.open({ cwd, prompt, focus })`: a new Claude tab; the prompt is an argument, never typed.
   The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
   window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores it.

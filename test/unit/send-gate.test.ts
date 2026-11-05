@@ -13,6 +13,8 @@ import {
   pasteBytes,
   prepareText,
   send,
+  SESSION_START_SETTLE_MS,
+  settled,
   stripControls,
   stripMarkers
 } from '../../src/main/sessions/send-gate'
@@ -29,6 +31,27 @@ const entryIn = (status: TabStatus, extra: Partial<SessionEntry> = {}): SessionE
 })
 const item = (id: string, text = id): { id: string; text: string } => ({ id, text })
 const hook = (event: HookEvent) => ({ type: 'hook', event, payload: {} }) as const
+
+describe('settled (end of the SessionStart window)', () => {
+  it('is not sendable while settling; settled clears it and delivers the head', () => {
+    const e = entryIn('waiting', { settling: true, queue: [item('a'), item('b')] })
+    expect(maySend(e)).toBe(false)
+    expect(send(e, item('c')).write).toBeUndefined()
+    const step = settled(e)
+    expect(step).toMatchObject({ write: pasteBytes('a'), delivered: item('a') })
+    expect(step.entry).toMatchObject({ settling: false, delivering: true, queue: [item('b')] })
+  })
+  it('does nothing without the flag, and delivers nothing to a tab that moved on', () => {
+    const plain = entryIn('waiting', { queue: [item('a')] })
+    expect(settled(plain)).toEqual({ entry: plain })
+    expect(settled(entryIn('working', { settling: true, queue: [item('a')] })).write).toBeUndefined()
+  })
+  it('SessionStart sets the flag only when the reducer made the tab waiting', () => {
+    expect(afterEvent(entryIn('waiting'), hook('SessionStart')).entry.settling).toBe(true)
+    expect(afterEvent(entryIn('idle'), hook('SessionStart')).entry.settling).toBeUndefined()
+    expect(afterEvent(entryIn('idle', { settling: true }), hook('SessionStart')).entry.settling).toBeFalsy()
+  })
+})
 
 describe('markers', () => {
   it('frames text as one bracketed paste followed by Enter', () => {
@@ -270,6 +293,81 @@ describe('registry wiring', () => {
     reg.send('t1', 'd') // needs-permission
     expect(writes).toEqual([])
     expect(reg.get('t1')?.queue.map((q) => q.text)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  // The incident: a fresh or resumed tab sat idle after SessionStart and a Discuss to it stayed
+  // queued until the person typed. startup/resume/clear now mean waiting, after a settle window.
+  describe('SessionStart at the prompt', () => {
+    it.each(['startup', 'resume', 'clear'])('source %s: held for the settle window, then sendable', (source) => {
+      ev('SessionStart', { source })
+      expect(reg.get('t1')).toMatchObject({ status: 'waiting', settling: true })
+      expect(reg.send('t1', 'early').delivered).toBe(false)
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS - 1)
+      expect(writes).toEqual([])
+      vi.advanceTimersByTime(1)
+      // The end of the window delivers the head, like a Stop.
+      expect(texts()).toEqual([paste('early')])
+      expect(reg.get('t1')).toMatchObject({ settling: false, delivering: true })
+    })
+
+    it('text sent while starting goes in when the window ends; one item, the rest on Stops', () => {
+      reg.send('t1', 'a')
+      reg.send('t1', 'b')
+      ev('SessionStart', { source: 'startup' })
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(texts()).toEqual([paste('a')])
+      ev('UserPromptSubmit')
+      ev('Stop')
+      expect(texts()).toEqual([paste('a'), paste('b')])
+    })
+
+    it('a prompt and its Stop inside the window end it: a send right after goes in', () => {
+      ev('SessionStart', { source: 'startup' })
+      ev('UserPromptSubmit')
+      ev('Stop')
+      expect(reg.get('t1')?.settling).toBeFalsy()
+      expect(reg.send('t1', 'next').delivered).toBe(true)
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(texts()).toEqual([paste('next')])
+    })
+
+    it('a send after the window goes straight in', () => {
+      ev('SessionStart', { source: 'resume' })
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(writes).toEqual([])
+      expect(reg.send('t1', 'now').delivered).toBe(true)
+    })
+
+    it('the person typed a prompt during the window: nothing is typed when it ends', () => {
+      ev('SessionStart', { source: 'startup' })
+      reg.send('t1', 'later')
+      ev('UserPromptSubmit')
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(writes).toEqual([])
+      ev('Stop')
+      expect(texts()).toEqual([paste('later')])
+    })
+
+    it('an exit or a close during the window: the timer writes nothing', () => {
+      ev('SessionStart', { source: 'startup' })
+      reg.send('t1', 'x')
+      reg.tabExited('t1', 1)
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(writes).toEqual([])
+      reg.tabStarted({ tabId: 't1', projectId: 'p1', kind: 'claude', cwd: '/proj' })
+      ev('SessionStart', { source: 'startup' })
+      reg.tabClosed('t1')
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(writes).toEqual([])
+    })
+
+    it('compact, fork or no source stays the non-sendable idle, with no window', () => {
+      for (const payload of [{ source: 'compact' }, { source: 'fork' }, {}]) {
+        ev('SessionStart', payload)
+        expect(reg.get('t1')).toMatchObject({ status: 'idle' })
+        expect(reg.get('t1')?.settling).toBeUndefined()
+      }
+    })
   })
 
   it('never writes in needs-permission, even with a non-empty queue on a Notification', () => {

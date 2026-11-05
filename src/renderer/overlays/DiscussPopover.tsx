@@ -2,7 +2,7 @@
 // discusses in a new Claude session straight away (no picker); the ▾ part opens a popover
 // listing only this window's existing Claude tabs (name, status), the preselected one first (the
 // opener's `discuss.tabId`, else the active Claude tab: shared/discuss.ts), then waiting, then busy
-// ones marked queued, then not-ready ones (no turn since start: Send is off for them). Send asks main (`overlays.discuss`), which builds
+// ones marked queued, then not-ready (idle) ones, Send off for them. Send asks main (`overlays.discuss`), which builds
 // the text, checks the target again, sends it through the send gate or opens the new session,
 // closes the overlay as `discussed` and selects the tab; an error comes back as text and is shown
 // here, nothing sent. No "remember last choice": the main part always means a new session.
@@ -234,7 +234,7 @@ function DiscussPopover(props: {
           Cancel
         </button>
         <button type="button" className="cc-btn cc-primary discuss-send" disabled={sending || notReady}
-          title={notReady ? 'This session has not answered since it started; run a prompt in it first' : undefined}
+          title={notReady ? 'This session is idle and would not take the text until you run a prompt in it' : undefined}
           aria-busy={sending || undefined}
           onClick={send}
         >

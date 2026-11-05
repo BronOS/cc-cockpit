@@ -128,7 +128,7 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
   await cockpit.newTab('claude')
   await expect
     .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status, { timeout: 15_000 })
-    .toBe('idle')
+    .toBe('waiting')
   await cockpit.typeLine('/prompt first')
   await cockpit.typeLine('/stop')
   await expect
@@ -199,7 +199,7 @@ test('Discuss menu keys: Alt+ArrowDown opens it, Esc closes it and gives focus b
   await cockpit.newTab('claude')
   await expect
     .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status, { timeout: 15_000 })
-    .toBe('idle')
+    .toBe('waiting')
   await cockpit.typeLine('/prompt first')
   await cockpit.typeLine('/stop')
   await expect

@@ -31,8 +31,8 @@ test('hook events from the fake claude drive the tab status', async ({ cockpit }
   })
 
   await cockpit.newTab('claude')
-  // SessionStart arrives on its own once the fake has printed its banner.
-  await expectEntry(cockpit, { status: 'idle' })
+  // SessionStart (source startup) arrives on its own once the fake has printed its banner: at the prompt.
+  await expectEntry(cockpit, { status: 'waiting' })
   const [first] = await entries(cockpit)
   expect(first?.sessionId).toMatch(/^fake-session-\d+$/)
 

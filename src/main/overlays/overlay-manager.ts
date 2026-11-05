@@ -186,8 +186,9 @@ export interface DiscussSessions {
   /** `tabId` is a Claude tab of `windowId`'s project that has not ended. */
   isClaudeTab(windowId: number, tabId: string): boolean
   /**
-   * The tab has run no turn since SessionStart (idle or starting): the gate would queue the text and
-   * no Stop comes to deliver it until the person runs a prompt (renderer discuss-tabs.ts, `not-ready`).
+   * The tab is idle (an unclear SessionStart: compact outside a turn, fork): the gate would queue
+   * the text and no Stop comes to deliver it until the person runs a prompt (renderer
+   * discuss-tabs.ts, `not-ready`). A starting tab is not: SessionStart makes it sendable.
    */
   notReady(tabId: string): boolean
   /** The send gate (SessionRegistry.send): typed now when the tab waits for input, else queued. Throws when refused. */
@@ -888,7 +889,7 @@ export class OverlayManager {
     const targetProblem = (): string | undefined => {
       if (target.kind !== 'tab') return undefined
       if (!sessions.isClaudeTab(windowId, target.tabId)) return 'That Claude tab is gone; pick another'
-      if (sessions.notReady(target.tabId)) return 'That session has not answered since it started; run a prompt in it first, or pick another'
+      if (sessions.notReady(target.tabId)) return 'That session is idle and would not take the text until you run a prompt in it; pick another'
       return undefined
     }
     const early = targetProblem()

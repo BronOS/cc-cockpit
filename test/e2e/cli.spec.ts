@@ -126,7 +126,7 @@ test('inside a Claude tab, session note and steps reach the session; sessions --
     notes: ['hi there'],
     steps: { done: 3, total: 5 }
   })
-  expect(list[0]?.status).toMatch(/^(starting|idle)$/)
+  expect(list[0]?.status).toMatch(/^(starting|waiting)$/)
   // The plain form: project, status, tool, tab id, tab-separated.
   const plain = await ccc(cockpit, ['sessions'])
   expect(plain.out.split('\t')).toHaveLength(4)

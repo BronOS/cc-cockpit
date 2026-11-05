@@ -84,6 +84,12 @@ export interface SessionEntry {
    * (send-gate.ts). The reducer never touches it; the gate step after each event does.
    */
   delivering: boolean
+  /**
+   * SessionStart just made the tab `waiting`: nothing may be typed until the registry's settle
+   * timer clears it (send-gate.ts SESSION_START_SETTLE_MS), since the hook can run a moment before
+   * Claude's input box takes a paste. Like `delivering`, the reducer never touches it; the gate does.
+   */
+  settling?: boolean
   /** Set by a PTY exit; an ended entry with an exit code is final (see reduce). */
   exitCode?: number
 }
@@ -174,8 +180,22 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
       // TabManager.sessionStarted sees a repeat (no resume-id change). Only `working` is kept:
       // when a manual `/compact` fires it relative to the prompt is not established, so other
       // statuses go to the non-sendable `idle` as before.
+      //
+      // startup, resume and clear leave Claude at its input prompt: `waiting`, the sendable state
+      // (the gate still holds text through a short settle window, send-gate.ts). Checked in claude
+      // 2.1.318 with logging hooks in a real terminal: the trust-folder dialog and the project
+      // MCP-server approval (.mcp.json) both come BEFORE SessionStart (it fires only once they are
+      // answered), and `--resume <id>` goes straight to the prompt. The incident: SessionStart used
+      // to set the non-sendable `idle`, on the old belief that the trust dialog could still be up,
+      // and a session with no turn yet never left it (no idle_prompt Notification came in 100+ s),
+      // so a send to a fresh or resumed tab sat queued until the person typed a prompt. Any other
+      // source (compact outside a turn, fork, a future or missing one) stays `idle`: where it lands
+      // relative to the prompt is not established.
       const compactMidTurn = payload.source === 'compact' && entry.status === 'working'
-      const next: SessionEntry = compactMidTurn ? { ...entry } : { ...entry, status: 'idle', tool: undefined }
+      const atPrompt = payload.source === 'startup' || payload.source === 'resume' || payload.source === 'clear'
+      const next: SessionEntry = compactMidTurn
+        ? { ...entry }
+        : { ...entry, status: atPrompt ? 'waiting' : 'idle', tool: undefined }
       const id = payload.session_id
       // Same check as claude-argv: a bad id stored here would make the tab impossible to restart.
       if (typeof id === 'string' && SESSION_ID.test(id)) next.sessionId = id

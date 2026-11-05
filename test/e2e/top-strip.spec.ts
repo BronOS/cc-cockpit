@@ -76,12 +76,12 @@ withSessions('a tab needing permission in window B leads window A’s strip, and
 
     // Window A: one working tab. Window B: two tabs, the first one needing permission.
     await cockpit.newTab('claude')
-    await expectStatus(cockpit, cockpit.projectDir, 0, 'idle')
+    await expectStatus(cockpit, cockpit.projectDir, 0, 'waiting')
     await cockpit.typeLine('/prompt work in a')
     await expectStatus(cockpit, cockpit.projectDir, 0, 'working')
 
     await newClaudeTab(pageB)
-    await expectStatus(cockpit, dirB, 0, 'idle')
+    await expectStatus(cockpit, dirB, 0, 'waiting')
     await typeIn(pageB, '/prompt secret-b-prompt')
     await expectStatus(cockpit, dirB, 0, 'working')
     await typeIn(pageB, '/permission')
@@ -89,7 +89,7 @@ withSessions('a tab needing permission in window B leads window A’s strip, and
     const [tabB1] = await entries(cockpit, dirB)
 
     await newClaudeTab(pageB)
-    await expectStatus(cockpit, dirB, 1, 'idle')
+    await expectStatus(cockpit, dirB, 1, 'waiting')
     // The new tab is the selected one in B.
     await expect(pageB.getByRole('tab', { selected: true })).toContainText('Claude')
     const selectedBefore = await pageB.getByRole('tab').evaluateAll((tabs) =>
@@ -98,13 +98,13 @@ withSessions('a tab needing permission in window B leads window A’s strip, and
     expect(selectedBefore).toEqual(['false', 'true'])
 
     // Window A's strip lists only the OTHER window's tabs (its own working tab is in its tab bar
-    // and Sessions panel): B's permission tab first, then B's idle tab.
+    // and Sessions panel): B's permission tab first, then B's new tab, waiting for input.
     await expect(pageA.locator('.top-strip [data-slot-frame][data-slot-plugin="cockpit.sessions"]')).toHaveCount(1, { timeout: 15_000 })
     const strip = stripOf(pageA)
     await expect(strip).toHaveCount(2, { timeout: 15_000 })
     await expect(strip.nth(0)).toHaveAttribute('data-status', 'needs-permission')
     await expect(strip.nth(0)).toContainText(`${nameB} · needs permission`)
-    await expect(strip.nth(1)).toHaveAttribute('data-status', 'idle')
+    await expect(strip.nth(1)).toHaveAttribute('data-status', 'waiting')
     await expect(strip.filter({ hasText: 'working' })).toHaveCount(0)
     // The status dot of A's own tab.
     await expect(pageA.locator('.tab .status-dot')).toHaveAttribute('data-status', 'working')
@@ -198,7 +198,7 @@ withSessions('with cockpit.sessions off there is no strip and no Sessions panel;
 
   // A Claude tab works as before: its dot follows the hooks, the registry and the CLI list it.
   await cockpit.newTab('claude')
-  await expectStatus(cockpit, projectDir, 0, 'idle')
+  await expectStatus(cockpit, projectDir, 0, 'waiting')
   await cockpit.typeLine('/prompt work without the plugin')
   await expectStatus(cockpit, projectDir, 0, 'working')
   await expect(page.locator('.tab .status-dot')).toHaveAttribute('data-status', 'working')
@@ -212,11 +212,13 @@ withSessions('with cockpit.sessions off there is no strip and no Sessions panel;
 
 test('a queued text shows as a chip on its tab and can be cancelled', async ({ cockpit }) => {
   await cockpit.newTab('claude')
-  await expectStatus(cockpit, cockpit.projectDir, 0, 'idle')
+  await expectStatus(cockpit, cockpit.projectDir, 0, 'waiting')
+  await cockpit.typeLine('/prompt busy')
+  await expectStatus(cockpit, cockpit.projectDir, 0, 'working')
   const [first] = await entries(cockpit, cockpit.projectDir)
   const tabId = first!.tabId
 
-  // Idle is not sendable: the text waits in the queue.
+  // Working is not sendable: the text waits in the queue.
   const sent = await cockpit.hook<{ id: string; delivered: boolean }>('send', tabId, 'queue me please')
   expect(sent.delivered).toBe(false)
   const chip = cockpit.page.locator('.queued-chip-button')

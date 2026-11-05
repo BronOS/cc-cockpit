@@ -70,6 +70,8 @@ export interface SessionRegistryOptions {
   intervalMs?: number
   /** How long a delivery waits for its UserPromptSubmit (default send-gate.ts). */
   deliveringTimeoutMs?: number
+  /** Tests only: the settle window after SessionStart (default send-gate.ts SESSION_START_SETTLE_MS). */
+  settleMs?: number
   log?: (message: string) => void
 }
 
@@ -84,6 +86,9 @@ export class SessionRegistry {
   /** tabId -> the timer of the delivery in flight (at most one per tab: `delivering`). */
   private readonly deliveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly deliveringTimeout: number
+  /** The settle window after SessionStart (send-gate.ts settled), per tab. */
+  private readonly settleTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly settleMs: number
   /**
    * tabId -> the terminal-title parser of its current process. Per process, not per entry: a
    * sequence half-read when the process died must not run into the next one's output.
@@ -101,6 +106,7 @@ export class SessionRegistry {
   constructor(private readonly options: SessionRegistryOptions) {
     this.interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
     this.deliveringTimeout = options.deliveringTimeoutMs ?? gate.DELIVERING_TIMEOUT_MS
+    this.settleMs = options.settleMs ?? gate.SESSION_START_SETTLE_MS
     this.log = options.log ?? ((m) => console.warn(m))
   }
 
@@ -115,6 +121,7 @@ export class SessionRegistry {
     if (tab.kind !== 'claude') return
     const prev = this.entries.get(tab.tabId)
     this.clearDeliveryTimer(tab.tabId)
+    this.clearSettleTimer(tab.tabId)
     this.titles.set(tab.tabId, new TitleParser())
     this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId }))
   }
@@ -202,6 +209,7 @@ export class SessionRegistry {
     const prev = this.entries.get(tabId)
     if (!prev) return
     this.clearDeliveryTimer(tabId)
+    this.clearSettleTimer(tabId)
     this.titles.delete(tabId)
     this.entries.delete(tabId)
     const change: SessionChange = { tabId, entry: undefined, prev }
@@ -364,6 +372,8 @@ export class SessionRegistry {
     this.timer = undefined
     for (const timer of this.deliveryTimers.values()) clearTimeout(timer)
     this.deliveryTimers.clear()
+    for (const timer of this.settleTimers.values()) clearTimeout(timer)
+    this.settleTimers.clear()
     this.listeners.clear()
   }
 
@@ -395,6 +405,9 @@ export class SessionRegistry {
       }
     }
     if (!entry.delivering) this.clearDeliveryTimer(entry.tabId)
+    // A SessionStart opened the settle window; one already running is not restarted by later events.
+    if (entry.settling && !this.settleTimers.has(entry.tabId)) this.startSettleTimer(entry.tabId)
+    if (!entry.settling) this.clearSettleTimer(entry.tabId)
     if (step.dropped) {
       this.log(`session ${entry.tabId}: session ended, dropped ${step.dropped.length} queued text(s)`)
     }
@@ -418,6 +431,25 @@ export class SessionRegistry {
     }, this.deliveringTimeout)
     timer.unref?.()
     this.deliveryTimers.set(tabId, timer)
+  }
+
+  /** Ends the settle window: send-gate.ts settled delivers the queue head if the tab still waits. */
+  private startSettleTimer(tabId: string): void {
+    this.clearSettleTimer(tabId)
+    const timer = setTimeout(() => {
+      this.settleTimers.delete(tabId)
+      const prev = this.entries.get(tabId)
+      if (prev?.settling) this.commit(prev, gate.settled(prev))
+    }, this.settleMs)
+    timer.unref?.()
+    this.settleTimers.set(tabId, timer)
+  }
+
+  private clearSettleTimer(tabId: string): void {
+    const timer = this.settleTimers.get(tabId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.settleTimers.delete(tabId)
   }
 
   private clearDeliveryTimer(tabId: string): void {

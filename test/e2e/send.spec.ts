@@ -24,7 +24,7 @@ async function expectEntry(c: Cockpit, fields: Partial<Entry>): Promise<void> {
 
 test('a send while working is queued and delivered on Stop as one bracketed paste', async ({ cockpit }) => {
   await cockpit.newTab('claude')
-  await expectEntry(cockpit, { status: 'idle' })
+  await expectEntry(cockpit, { status: 'waiting' })
 
   await cockpit.typeLine('/prompt first task')
   await expectEntry(cockpit, { status: 'working' })
@@ -62,7 +62,7 @@ test('a send while working is queued and delivered on Stop as one bracketed past
 
 test('a question dialog holds a send until the turn ends; Enter typed into it is no answer', async ({ cockpit }) => {
   await cockpit.newTab('claude')
-  await expectEntry(cockpit, { status: 'idle' })
+  await expectEntry(cockpit, { status: 'waiting' })
   await cockpit.typeLine('/prompt plan the refactor')
   // Claude asks: blocked on the user, like a permission prompt, never waiting for input.
   await cockpit.typeLine('/tool AskUserQuestion')
@@ -89,7 +89,7 @@ test('a question dialog holds a send until the turn ends; Enter typed into it is
 
 test('a queued text can be cancelled and is never typed', async ({ cockpit }) => {
   await cockpit.newTab('claude')
-  await expectEntry(cockpit, { status: 'idle' })
+  await expectEntry(cockpit, { status: 'waiting' })
   const { tabId } = await entry(cockpit)
 
   // Idle is not sendable (a trust dialog may be on screen): queued.
@@ -106,7 +106,7 @@ test('a queued text can be cancelled and is never typed', async ({ cockpit }) =>
 
 test('the queued list closes when the queue empties and when another menu opens', async ({ cockpit }) => {
   await cockpit.newTab('claude')
-  await expectEntry(cockpit, { status: 'idle' })
+  await expectEntry(cockpit, { status: 'waiting' })
   const { tabId } = await entry(cockpit)
   const page = cockpit.page
   const list = page.locator('.queued-list')
@@ -131,4 +131,16 @@ test('the queued list closes when the queue empties and when another menu opens'
   await cockpit.hook('send', tabId, 'second')
   await expect(page.getByRole('button', { name: /^queued 1$/ })).toBeVisible()
   await expect(list).toHaveCount(0)
+})
+
+// The incident: SessionStart used to mean idle, so a send to a new (or resumed) tab stayed queued
+// until the person typed a prompt. Now startup puts the tab at its prompt, and text sent while it
+// was still starting goes in when the settle window ends, with nothing typed in the tab.
+test('a send to a just-opened tab is delivered once Claude is at its prompt, with no prompt typed', async ({ cockpit }) => {
+  await cockpit.newTab('claude')
+  await expect.poll(async () => (await cockpit.hook<Entry[]>('sessions', cockpit.projectDir)).length).toBe(1)
+  const { tabId } = await entry(cockpit)
+  await cockpit.hook('send', tabId, 'right away')
+  await expect.poll(() => cockpit.pastes()).toEqual(['\x1b[200~right away\x1b[201~'])
+  await expectEntry(cockpit, { lastPrompt: 'right away' })
 })
