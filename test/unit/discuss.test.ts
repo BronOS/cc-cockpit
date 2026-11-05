@@ -7,7 +7,7 @@ import {
   MAX_DISCUSS_TYPE_LINE,
   preselectDiscussTarget
 } from '../../src/shared/discuss'
-import { discussQueues, discussTabsOf, existingMenuTitle, orderDiscussTabs, type DiscussTab } from '../../src/renderer/overlays/discuss-tabs'
+import { discussReadiness, discussRowMeta, discussTabsOf, existingMenuTitle, orderDiscussTabs, type DiscussTab } from '../../src/renderer/overlays/discuss-tabs'
 import type { SessionDetail, TabInfo } from '../../src/shared/ipc'
 
 describe('composeDiscuss', () => {
@@ -131,14 +131,24 @@ describe('discussTabsOf', () => {
 describe('orderDiscussTabs', () => {
   const t = (tabId: string, status: DiscussTab['status']): DiscussTab => ({ tabId, label: tabId, status })
   const tabs = [t('a', 'working'), t('b', 'waiting'), t('c', 'idle'), t('d', 'waiting')]
-  it('puts the preselected tab first, then waiting, then busy, in tab order', () => {
-    expect(orderDiscussTabs(tabs, 'c').map((x) => x.tabId)).toEqual(['c', 'b', 'd', 'a'])
+  it('puts the preselected tab first, then waiting, then busy, then not ready, in tab order', () => {
+    expect(orderDiscussTabs(tabs, 'a').map((x) => x.tabId)).toEqual(['a', 'b', 'd', 'c'])
     expect(orderDiscussTabs(tabs, undefined).map((x) => x.tabId)).toEqual(['b', 'd', 'a', 'c'])
     expect(orderDiscussTabs(tabs, 'gone').map((x) => x.tabId)).toEqual(['b', 'd', 'a', 'c'])
     expect(orderDiscussTabs([], 'a')).toEqual([])
   })
-  it('marks every status but waiting as queued', () => {
-    expect(tabs.map(discussQueues)).toEqual([true, false, true, false])
+  // The first row is the initial target: a preselected tab that cannot take a send is not it.
+  it('does not put a not-ready preselected tab first', () => {
+    expect(orderDiscussTabs(tabs, 'c').map((x) => x.tabId)).toEqual(['b', 'd', 'a', 'c'])
+    expect(orderDiscussTabs([t('s', 'starting'), t('i', 'idle')], 'i').map((x) => x.tabId)).toEqual(['s', 'i'])
+  })
+  it('sends now only to waiting, queues for a running turn, and calls idle and starting not ready', () => {
+    expect(tabs.map(discussReadiness)).toEqual(['queued', 'now', 'not-ready', 'now'])
+    expect(discussReadiness({ status: 'needs-permission' })).toBe('queued')
+    expect(discussReadiness({ status: 'starting' })).toBe('not-ready')
+    expect(discussRowMeta(t('x', 'waiting'), 'waiting')).toBe('waiting')
+    expect(discussRowMeta(t('x', 'working'), 'working')).toMatch(/queued/)
+    expect(discussRowMeta(t('x', 'idle'), 'idle')).toMatch(/not ready/)
   })
   it('says why the menu is disabled with no session', () => {
     expect(existingMenuTitle([])).toMatch(/No Claude session/)

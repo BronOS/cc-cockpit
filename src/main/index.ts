@@ -551,6 +551,10 @@ function start(): void {
         const entry = sessions.get(tabId)
         return projectId !== undefined && entry?.projectId === projectId && entry.status !== 'ended'
       },
+      notReady: (tabId) => {
+        const status = sessions.get(tabId)?.status
+        return status === 'idle' || status === 'starting'
+      },
       send: (tabId, text) => sessions.send(tabId, text),
       openSession: async (windowId, prompt) => {
         const projectId = projectOfWindow(windowId)

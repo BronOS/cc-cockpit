@@ -2,7 +2,7 @@
 // discusses in a new Claude session straight away (no picker, no note); the ▾ part opens a popover
 // listing only this window's existing Claude tabs (name, status), the preselected one first (the
 // opener's `discuss.tabId`, else the active Claude tab: shared/discuss.ts), then waiting, then busy
-// ones marked queued, and takes an optional note. Send asks main (`overlays.discuss`), which builds
+// ones marked queued, then not-ready ones (no turn since start: Send is off for them), and takes an optional note. Send asks main (`overlays.discuss`), which builds
 // the text, checks the target again, sends it through the send gate or opens the new session,
 // closes the overlay as `discussed` and selects the tab; an error comes back as text and is shown
 // here, nothing sent. No "remember last choice": the main part always means a new session.
@@ -16,7 +16,7 @@ import { MAX_DISCUSS_NOTE, preselectDiscussTarget, type DiscussTarget } from '..
 import { registerHandlers } from '../commands/keybindings'
 import { StatusDot } from '../status/StatusDot'
 import { statusText } from '../status/strip-order'
-import { discussQueues, existingMenuTitle, orderDiscussTabs, type DiscussTab } from './discuss-tabs'
+import { discussReadiness, discussRowMeta, existingMenuTitle, orderDiscussTabs, type DiscussTab } from './discuss-tabs'
 
 type Answer = { ok: true } | { ok: false; error: string }
 
@@ -145,7 +145,6 @@ export function DiscussButton(props: {
       {shown && (
         <DiscussPopover
           overlayId={props.overlayId}
-          initial={preselected.kind === 'tab' ? preselected.tabId : undefined}
           tabs={orderDiscussTabs(props.tabs, preselected.kind === 'tab' ? preselected.tabId : undefined)}
           onClose={() => {
             setOpen(false)
@@ -159,13 +158,12 @@ export function DiscussButton(props: {
 
 function DiscussPopover(props: {
   overlayId: string
-  initial: string | undefined
-  /** At least one, in menu order (orderDiscussTabs). */
+  /** At least one, in menu order (orderDiscussTabs): the first is the initial target. */
   tabs: readonly DiscussTab[]
   onClose: () => void
 }): React.JSX.Element {
   const { tabs } = props
-  const [selected, setSelected] = useState(props.initial ?? tabs[0]!.tabId)
+  const [selected, setSelected] = useState(tabs[0]!.tabId)
   const [note, setNote] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -174,13 +172,14 @@ function DiscussPopover(props: {
   // back to the first listed (main would refuse it anyway).
   const keys = tabs.map((t) => t.tabId)
   const current = keys.includes(selected) ? selected : keys[0]!
+  const notReady = discussReadiness(tabs.find((t) => t.tabId === current)!) === 'not-ready'
 
   useLayoutEffect(() => {
     list.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus()
   }, [])
 
   const send = (): void => {
-    if (sending) return
+    if (sending || notReady) return
     setSending(true)
     setError(null)
     void askDiscuss(props.overlayId, { kind: 'tab', tabId: current }, note).then((err) => {
@@ -221,7 +220,7 @@ function DiscussPopover(props: {
               <span className="cc-row-title">{tab.label}</span>
             </span>
             <span className="cc-row-meta">
-              {discussQueues(tab) ? `${statusText(tab.status, tab.tool)} · queued — sent when it is free` : statusText(tab.status, tab.tool)}
+              {discussRowMeta(tab, statusText(tab.status, tab.tool))}
             </span>
           </div>
         ))}
@@ -251,7 +250,11 @@ function DiscussPopover(props: {
         <button type="button" className="cc-btn" onClick={props.onClose}>
           Cancel
         </button>
-        <button type="button" className="cc-btn cc-primary discuss-send" disabled={sending} aria-busy={sending || undefined} onClick={send}>
+        <button type="button" className="cc-btn cc-primary discuss-send" disabled={sending || notReady}
+          title={notReady ? 'This session has not answered since it started; run a prompt in it first' : undefined}
+          aria-busy={sending || undefined}
+          onClick={send}
+        >
           {sending && <span className="cc-spinner overlay-button-spinner" aria-hidden="true" />}
           Send
         </button>

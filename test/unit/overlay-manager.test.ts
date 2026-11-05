@@ -1483,6 +1483,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
       sent: [] as { tabId: string; text: string }[],
       opened: [] as { windowId: number; prompt: string }[],
       selected: [] as { windowId: number; tabId: string }[],
+      notReady: new Set<string>(),
       delivered: true,
       sendError: undefined as Error | undefined,
       openError: undefined as Error | undefined,
@@ -1491,6 +1492,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     }
     s.deps = {
       isClaudeTab: (windowId, tabId) => s.claude.get(windowId)?.has(tabId) === true,
+      notReady: (tabId) => s.notReady.has(tabId),
       send: (tabId, text) => {
         if (s.sendError) throw s.sendError
         s.sent.push({ tabId, text })
@@ -1722,6 +1724,22 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(await pending).toEqual({ ok: false, error: 'That Claude tab is gone; pick another' })
     expect(sessions.sent).toEqual([])
     expect(m.infos(W1)).toHaveLength(1)
+  })
+
+  // The incident: a tab resumed by an app restart sits idle; a Discuss to it was queued as
+  // "queued 1" and never delivered (no Stop comes until the person runs a prompt).
+  it('refuses a tab with no turn since it started, and the overlay stays open', async () => {
+    const sessions = fakeSessions()
+    sessions.notReady.add('t1')
+    const m = withDiscuss(sessions)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, opener(() => Promise.resolve(null)), 'p.rev')
+    const id = m.infos(W1)[0]!.id
+    const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, 'look')
+    expect(answer).toEqual({ ok: false, error: expect.stringMatching(/not answered since it started/) })
+    expect(sessions.sent).toEqual([])
+    expect(m.infos(W1)).toHaveLength(1)
+    // A new session is not a tab target: unaffected.
+    expect((await m.discuss(W1, id, { kind: 'new' }, '')).ok).toBe(true)
   })
 
   it('refuses a bare overlay, a too long note, another window and an overlay that closed meanwhile', async () => {

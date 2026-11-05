@@ -231,7 +231,10 @@ the main part also opens it; disabled when the window has no Claude tab) opens a
 
 - **Target**: a list of this window's existing Claude tabs (name, status): the preselected one first (`discuss.tabId`
   when it is a Claude tab of this window, else the active tab when it is Claude), then the waiting ones, then the busy
-  ones, marked "queued — sent when it is free". No "remember last choice".
+  ones, marked "queued — sent when it is free", then the idle and starting ones, marked "not ready — run a prompt in
+  it first" with Send off (main refuses them too): no turn has run since SessionStart (a fresh, resumed or `/clear`-ed
+  session), idle is not sendable and no Stop comes until the person runs a prompt, so a queued text would wait there
+  indefinitely. A not-ready preselected tab is not put first. No "remember last choice".
 - **Note**: an optional text area (4,000 characters). Empty is fine: the old "needs a note or a comment" rule is gone.
 - **Send** (Enter in the target list, Cmd+Enter in the note) / Cancel (Esc closes the popover only).
 

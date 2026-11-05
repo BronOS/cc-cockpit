@@ -185,6 +185,11 @@ export interface OverlayTypeButtons {
 export interface DiscussSessions {
   /** `tabId` is a Claude tab of `windowId`'s project that has not ended. */
   isClaudeTab(windowId: number, tabId: string): boolean
+  /**
+   * The tab has run no turn since SessionStart (idle or starting): the gate would queue the text and
+   * no Stop comes to deliver it until the person runs a prompt (renderer discuss-tabs.ts, `not-ready`).
+   */
+  notReady(tabId: string): boolean
   /** The send gate (SessionRegistry.send): typed now when the tab waits for input, else queued. Throws when refused. */
   send(tabId: string, text: string): { delivered: boolean }
   /**
@@ -881,8 +886,13 @@ export class OverlayManager {
     if (!sessions) return { ok: false, error: 'Discuss is not available' }
     if (typeof note !== 'string') return { ok: false, error: 'The note must be text' }
     if (note.length > MAX_DISCUSS_NOTE) return { ok: false, error: `The note is longer than ${MAX_DISCUSS_NOTE} characters` }
-    const targetProblem = (): string | undefined =>
-      target.kind === 'tab' && !sessions.isClaudeTab(windowId, target.tabId) ? 'That Claude tab is gone; pick another' : undefined
+    // Checked again after the opener answered: the tab may have closed (or restarted) meanwhile.
+    const targetProblem = (): string | undefined => {
+      if (target.kind !== 'tab') return undefined
+      if (!sessions.isClaudeTab(windowId, target.tabId)) return 'That Claude tab is gone; pick another'
+      if (sessions.notReady(target.tabId)) return 'That session has not answered since it started; run a prompt in it first, or pick another'
+      return undefined
+    }
     const early = targetProblem()
     if (early) return { ok: false, error: early }
     if (overlay.discussing) return { ok: false, error: 'Already sending' }
