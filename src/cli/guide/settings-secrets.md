@@ -68,6 +68,8 @@ For what a form cannot hold (a rules editor, a list with drag and drop), declare
   (`/__sdk/panel.js`: `ccPanel.post` / `ccPanel.onMessage`, the theme and the component sheet). Its
   port goes to your backend in this window's host: `ctx.settingsPage.onOpen((page) => …)` with
   `page.scope`, `post`, `onMessage`, `onClose` (`api` topic). One page of a plugin is open at a time.
+- Draw it with the settings classes (`style` topic, "Settings page"): group titles above cards,
+  one row per setting, so it matches the app's form above it.
 - The page has no settings API of its own. Store what it edits yourself, `ctx.appStorage` for the
   app scope and `ctx.storage` for the project scope, and validate every message (the page is
   untrusted input). `ctx.settings` stays the schema form's.

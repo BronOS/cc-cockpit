@@ -356,6 +356,74 @@ describe('panel SDK: the component stylesheet', () => {
     expect(declarations).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     expect(declarations).not.toMatch(/\brgba?\(|\bhsla?\(/)
   })
+
+  it("draws a settings page with the app's own settings numbers (styles.css .settings-*)", () => {
+    // A plugin's html settings page sits under the app's schema form: it looked like another app
+    // (titles inside cc-card frames, loose controls). Each cc-settings rule must keep the shell
+    // rule's values, tokens resolved, so a change on one side shows here.
+    const shellCss = readFileSync(resolve(__dirname, '../../src/renderer/styles.css'), 'utf8')
+    const layer = topLevel(COMPONENTS_CSS)[0]!.body
+    const decls = (body: string): Map<string, string> =>
+      new Map(
+        body
+          .split(';')
+          .map((d) => d.trim())
+          .filter((d) => d.includes(':'))
+          .map((d) => [d.slice(0, d.indexOf(':')).trim(), d.slice(d.indexOf(':') + 1).trim()] as [string, string])
+      )
+    const shellRules = topLevel(shellCss)
+    const layerRules = topLevel(layer)
+    const tokens = new Map([
+      ...decls(shellRules.find((r) => r.prelude === ':root')!.body),
+      ...decls(layerRules.find((r) => r.prelude === ':root')!.body)
+    ])
+    const resolveVars = (v: string): string =>
+      v.replace(/var\((--[a-z0-9-]+)\)/g, (m, name: string) => (tokens.has(name) ? resolveVars(tokens.get(name)!) : m))
+    const shellRule = (selector: string): Map<string, string> => {
+      const r = shellRules.find((x) => splitSelectors(x.prelude).includes(selector))
+      expect(r, selector).toBeDefined()
+      return decls(r!.body)
+    }
+    const layerRule = (selector: string): Map<string, string> => {
+      const r = layerRules.find((x) => splitSelectors(x.prelude.replace(/^:where\(([\s\S]*)\)$/, '$1')).includes(selector))
+      expect(r, selector).toBeDefined()
+      return decls(r!.body)
+    }
+    const pairs: [string, string, string[]][] = [
+      ['.cc-settings-group + .cc-settings-group', '.settings-group + .settings-group', ['margin-top']],
+      ['.cc-settings-head', '.settings-group-head', ['margin']],
+      ['.cc-settings-head > h3', '.settings-group-head h3', ['margin', 'font-size', 'font-weight']],
+      ['.cc-settings-desc', '.settings-group-desc', ['margin', 'max-width', 'font-size', 'line-height', 'color']],
+      ['.cc-settings-actions', '.settings-group-actions', ['display', 'gap']],
+      ['.cc-settings-card', '.settings-card', ['margin', 'border', 'border-radius', 'background', 'overflow']],
+      ['.cc-settings-card > * + *', '.settings-card > * + *', ['border-top']],
+      ['.cc-settings-card-head', '.settings-card-head', ['display', 'align-items', 'gap', 'padding', 'background']],
+      ['.cc-settings-list', '.settings-list', ['list-style', 'margin', 'padding']],
+      ['.cc-settings-row', '.settings-row', ['display', 'align-items', 'justify-content', 'gap', 'min-height', 'padding']],
+      ['.cc-settings-row-text', '.settings-row-text', ['flex', 'min-width', 'display', 'flex-direction', 'gap']],
+      ['.cc-settings-label', '.settings-row-label', ['display', 'align-items', 'gap', 'font-weight']],
+      ['.cc-settings-help', '.settings-row-help', ['max-width', 'font-size', 'line-height', 'color']],
+      ['.cc-settings-control', '.settings-row-control', ['flex', 'display', 'align-items', 'gap']]
+    ]
+    for (const [mine, shell, props] of pairs) {
+      const a = layerRule(mine)
+      const b = shellRule(shell)
+      for (const p of props) {
+        expect(b.get(p), `${shell} ${p}`).toBeDefined()
+        expect(resolveVars(a.get(p) ?? ''), `${mine} ${p}`).toBe(resolveVars(b.get(p)!))
+      }
+    }
+    // The radius token the card uses is the shell's large radius.
+    expect(tokens.get('--cc-radius-l')).toBe(resolveVars('var(--cc-radius-lg)'))
+  })
+
+  it('lines up editable settings items in shared columns, and spans any other child of the grid', () => {
+    const layerRules = topLevel(topLevel(COMPONENTS_CSS)[0]!.body)
+    const body = (prelude: string): string => layerRules.find((r) => r.prelude === prelude)?.body ?? ''
+    expect(body(':where(.cc-settings-grid)')).toMatch(/grid-template-columns:\s*var\(--cc-settings-cols,/)
+    expect(body(':where(.cc-settings-grid > *)')).toMatch(/grid-column:\s*1 \/ -1/)
+    expect(body(':where(.cc-settings-item)')).toMatch(/grid-template-columns:\s*subgrid/)
+  })
 })
 
 /** A selector list split on its top-level commas (not the ones inside `:where(...)` / `:not(...)`). */

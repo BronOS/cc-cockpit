@@ -16,7 +16,7 @@ colour-only, so sizes are fixed.
 ## Tokens
 
 - Spacing: `--cc-space-1..6` = 4, 8, 12, 16, 24, 32 px.
-- Radii: `--cc-radius-s` 4 px, `--cc-radius-m` 6 px.
+- Radii: `--cc-radius-s` 4 px, `--cc-radius-m` 6 px, `--cc-radius-l` 10 px (a settings card).
 - Text: `--cc-text-s` 11 px, `--cc-text-m` 13 px (the default), `--cc-text-l` 15 px.
 - Sizes: `--cc-control-h` 26 px, `--cc-row-h` 36 px, `--cc-row-h-compact` 28 px.
 - Fonts: `--cc-font-ui`, `--cc-font-mono`.
@@ -57,7 +57,49 @@ Settings screen (`ccc guide settings-secrets`).
 <div class="cc-card"><h3 class="cc-card-title">Account</h3>...</div>
 ```
 
-A framed block that is not a list item.
+A framed block that is not a list item, in a panel or an overlay. Not on a settings page (next).
+
+## Settings page
+
+An html settings page (`ccc guide settings-secrets`) sits under the app's own schema form, so it
+uses the app's settings look: each section is a group, its title and description above a card, and
+inside the card one row per setting, label and help on the left, the control on the right, a hairline
+between rows.
+
+```html
+<section class="cc-settings-group">
+  <div class="cc-settings-head">
+    <h3>Agenda</h3>
+    <p class="cc-settings-desc">Today's events, in a strip of the panel.</p>
+    <div class="cc-settings-actions"><button>Reset</button></div>
+  </div>
+  <div class="cc-settings-card">
+    <div class="cc-settings-card-head">Optional head line</div>
+    <div class="cc-settings-row">
+      <div class="cc-settings-row-text">
+        <label class="cc-settings-label" for="where">Where it goes</label>
+        <span class="cc-settings-help">Above or below the list.</span>
+      </div>
+      <div class="cc-settings-control"><select id="where">...</select></div>
+    </div>
+    <ul class="cc-settings-list"><li class="cc-settings-row">...</li></ul>
+  </div>
+</section>
+```
+
+A list of editable items (names with checkboxes and buttons) is a grid in the card, so every row's
+controls line up: name the columns in `--cc-settings-cols` (one track per control, `minmax(0, 1fr)`
+for the one that takes the room; an `auto` track is as wide as its widest cell in any row), and make
+each row a `.cc-settings-item`. Any other child of the grid (the editor of the open item, an empty
+state) spans the whole width; a cell that should span some columns sets `grid-column` itself. Put
+the add field and button in the card's last row, in the same columns.
+
+```html
+<ul class="cc-settings-grid" style="--cc-settings-cols: minmax(0, 1fr) auto auto">
+  <li class="cc-settings-item"><input aria-label="Name" value="Urgent"><label><input type="checkbox"> Badge</label><button class="cc-danger">Delete</button></li>
+  <li class="cc-settings-item"><input aria-label="New name" placeholder="New name"><button style="grid-column: 2 / -1; justify-self: start">Add</button></li>
+</ul>
+```
 
 ## List and rows
 
@@ -116,6 +158,8 @@ violet grey`.
 ## Rules
 
 - Rows for items, cards for a block that is not an item.
+- An html settings page uses the settings classes (`.cc-settings-group`, `.cc-settings-card`,
+  `.cc-settings-row`), not `.cc-card`: titles above the card, controls in rows.
 - One primary button per view.
 - An overlay has one action bar, the app's toolbar: a page draws no close button and no footer of
   actions. Its actions are overlay `buttons` (`primary: true` for the main one), and ✕ / Esc close.

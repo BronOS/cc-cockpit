@@ -27,6 +27,7 @@
     --cc-space-6: 32px;
     --cc-radius-s: 4px;
     --cc-radius-m: 6px;
+    --cc-radius-l: 10px;
     --cc-text-s: 11px;
     --cc-text-m: 13px;
     --cc-text-l: 15px;
@@ -218,7 +219,128 @@
     color: var(--cc-fg);
   }
 
-  /* ---- List and rows: every item list -------------------------------------------------------- */
+  /* ---- Settings page: the app's own settings look (styles.css `.settings-group`, `-card`, `-row`) -
+     An html settings page sits under the app's schema form, so it takes the same shapes and numbers:
+     the group's title and description above a card, one setting per row inside it, hairlines between
+     the card's children. A list of editable items (groups, rules) is a grid whose rows share columns
+     (`subgrid`), so a name field, its checkboxes and its buttons line up from row to row. */
+
+  :where(.cc-settings-group + .cc-settings-group) {
+    margin-top: var(--cc-space-6);
+  }
+  /* Title and description on the left, `.cc-settings-actions` on the right, level with the bottom. */
+  :where(.cc-settings-head) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    column-gap: var(--cc-space-4);
+    margin: 0 2px 10px;
+  }
+  :where(.cc-settings-head > :not(.cc-settings-actions)) {
+    grid-column: 1;
+  }
+  :where(.cc-settings-head > h3) {
+    margin: 0;
+    font-size: var(--cc-text-m);
+    font-weight: 600;
+    color: var(--cc-fg);
+  }
+  /* 12 px: the shell's --cc-text-sm, which has no token of its own here. */
+  :where(.cc-settings-desc) {
+    max-width: 68ch;
+    margin: 4px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--cc-fg-muted);
+  }
+  :where(.cc-settings-actions) {
+    display: flex;
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    gap: 6px;
+  }
+  :where(.cc-settings-card) {
+    margin: 0;
+    border: 1px solid var(--cc-border);
+    border-radius: var(--cc-radius-l);
+    background: var(--cc-surface-1);
+    overflow: hidden;
+  }
+  /* A hairline between the card's children, and between the rows of a list inside it. */
+  :where(.cc-settings-card > * + *, .cc-settings-card > :is(.cc-settings-list, .cc-settings-grid) > * + *) {
+    border-top: 1px solid var(--cc-border);
+  }
+  :where(.cc-settings-card-head) {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: var(--cc-space-3) var(--cc-space-4);
+    background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
+  }
+  :where(.cc-settings-list) {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  /* A setting: label and help on the left, the control on the right. */
+  :where(.cc-settings-row) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--cc-space-5);
+    min-height: 32px;
+    padding: var(--cc-space-3) var(--cc-space-4);
+  }
+  :where(.cc-settings-row-text) {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  :where(.cc-settings-label) {
+    display: flex;
+    align-items: center;
+    gap: var(--cc-space-2);
+    font-weight: 500;
+    color: var(--cc-fg);
+  }
+  :where(.cc-settings-help) {
+    max-width: 60ch;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--cc-fg-muted);
+  }
+  :where(.cc-settings-control) {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--cc-space-2);
+  }
+  /* Editable items in columns: the page names the columns in --cc-settings-cols (one track per
+     control, `minmax(0, 1fr)` for the one that takes the room), each `.cc-settings-item` is a row on
+     those tracks, and an `auto` track is as wide as its widest cell in any row. Any other child (an
+     editor under its row, an empty state) spans the whole width. Rows: `.settings-reopen`'s 10px 16px,
+     the 16 px inset of a settings row so the columns start under the row labels of other cards. */
+  :where(.cc-settings-grid) {
+    display: grid;
+    grid-template-columns: var(--cc-settings-cols, minmax(0, 1fr) auto);
+    column-gap: var(--cc-space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  :where(.cc-settings-grid > *) {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  :where(.cc-settings-item) {
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: center;
+    min-height: var(--cc-control-h);
+    padding: 10px var(--cc-space-4);
+  }
 
   :where(.cc-list) {
     display: flex;

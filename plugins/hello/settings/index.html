@@ -4,21 +4,36 @@
     <meta charset="utf-8" />
     <title>Hello settings</title>
     <!-- A plugin's html settings page (contributes.settings.page): the panel SDK, theme and
-         components as in a panel, and a port to this plugin's backend (ctx.settingsPage.onOpen). -->
+         components as in a panel, and a port to this plugin's backend (ctx.settingsPage.onOpen).
+         The settings classes (`ccc guide style`, "Settings page") draw it like the app's form above it:
+         the title and description over a card, one row per setting. -->
     <script src="/__sdk/panel.js"></script>
     <script src="index.js"></script>
     <style>
-      body { margin: 0; padding: 12px; font: 13px/1.4 system-ui, sans-serif; background: var(--cc-bg); color: var(--cc-fg); }
-      .row { display: flex; gap: 6px; align-items: center; }
-      input { flex: 1; }
+      body { margin: 0; padding: var(--cc-space-4); background: var(--cc-bg); }
+      #note { width: 220px; }
+      #status:empty { display: none; }
     </style>
   </head>
   <body>
-    <p>A sample settings page: a note kept by the plugin (<span id="scope">…</span> scope).</p>
-    <div class="row">
-      <input id="note" type="text" maxlength="200" aria-label="Note" />
-      <button id="save" type="button">Save note</button>
-    </div>
-    <p id="status" role="status"></p>
+    <section class="cc-settings-group">
+      <div class="cc-settings-head">
+        <h3>Note</h3>
+        <p class="cc-settings-desc">A sample settings page: a note kept by the plugin (<span id="scope">…</span> scope).</p>
+      </div>
+      <div class="cc-settings-card">
+        <div class="cc-settings-row">
+          <div class="cc-settings-row-text">
+            <label class="cc-settings-label" for="note">Note</label>
+            <span class="cc-settings-help">Stored by the backend, at most 200 characters.</span>
+          </div>
+          <div class="cc-settings-control">
+            <input id="note" type="text" maxlength="200" />
+            <button id="save" type="button" class="cc-primary">Save note</button>
+          </div>
+        </div>
+        <div id="status" role="status" class="cc-settings-row cc-muted"></div>
+      </div>
+    </section>
   </body>
 </html>
