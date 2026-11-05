@@ -1197,16 +1197,17 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 ### Phase J — Verification and docs
 
 ### Task 45: Verify acceptance criteria [model: sonnet]
-- [ ] verify decisions 1-15 of `docs/feedback/20261104-real-work.md` are implemented (one line each, with the test or file)
-- [ ] verify design-next §1-§6 "Main enforces" items each have a test; design-v2 "Tests" list covered
-- [ ] edge cases: no slot provider, two providers no pick, Inbox with no source, a source signed out, no `jev` provider,
+- [x] verify decisions 1-15 of `docs/feedback/20261104-real-work.md` are implemented (one line each, with the test or file)
+- [x] verify design-next §1-§6 "Main enforces" items each have a test; design-v2 "Tests" list covered
+- [x] edge cases: no slot provider, two providers no pick, Inbox with no source, a source signed out, no `jev` provider,
   `cockpit.sessions` off, an overlay from an older plugin (no type: ✕ only)
-- [ ] run in `~/Projects/cc-cockpit`: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`,
+- [x] run in `~/Projects/cc-cockpit`: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`,
   `npm run test:e2e` (only the known failures of Development Approach may fail; list any other with ⚠️)
-- [ ] run `npm test` in `~/Projects/cc-cockpit-{inbox,gmail,chat,jira,calendar}`
-- [ ] scan all six repos' changes of this plan for a work email, employer name or real data (`git log -p` since the plan's
+- [x] run `npm test` in `~/Projects/cc-cockpit-{inbox,gmail,chat,jira,calendar}`
+- [x] scan all six repos' changes of this plan for a work email, employer name or real data (`git log -p` since the plan's
   first commit, grep for `@` addresses that are not `example.com`/`example.org`, real names, issue keys other than `PROJ-`)
-- [ ] `diff src/sdk/types.ts examples/plugin/sdk/types.ts` is empty; list the [SYNC] tasks' example changes for the push
+- [x] `diff src/sdk/types.ts examples/plugin/sdk/types.ts` is empty; list the [SYNC] tasks' example changes for the push
+- ➕ verified: decisions 1-15 map to the tests of tasks 1-44 (inbox `node:test` suites for 1-4, 6-8, 15; `slots.spec.ts`, `ctx-slots.test.ts` for 5, 9; `overlay-toolbar` and `discuss` tests for 10; `plugin-sessions.spec.ts` and `plugins/sessions/test` for 11; `settings-*.spec.ts` and `ctx-settings-page.test.ts` for 12; the components drift test for 13; `marketplace-update-all.spec.ts`, `plugin-preview.test.ts` for 14). Edge cases each have a test. Results: `npm test` 3742 passed, typecheck, lint, `test:plugins` (193) clean; inbox 193, gmail 256, chat 186, jira 230, calendar 211 passed. e2e: 188 passed, 4 failed: `tab-command-overlays.spec.ts:51` and both `window-bounds.spec.ts` (known), ⚠️ `project-color.spec.ts:63` (height "2.99805px" vs "3px", a fractional display scale in this Linux session, not a logic failure; not in the known list). Privacy scan of all six repos since the plan commit: no employer name, no non-example email (two false matches in minified bundle bytes). `diff src/sdk/types.ts examples/plugin/sdk/types.ts` is empty; example changes to push: tasks 1, 3, 6, 9, 15, 33, 34, 38 (`examples/plugin` and `sdk/types.ts`).
 
 ### Task 46: [Final] Update documentation [model: sonnet]
 - [ ] `docs/design.md`: every "Changes to design.md" line of design-next §1-§6 applied (check each); `docs/design-next.md`
