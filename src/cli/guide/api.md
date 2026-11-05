@@ -122,6 +122,12 @@ with full Node access.
   which a panel may not place; while a provider draws it the built-in entries are hidden). A type is a name
   `^[a-z][a-z0-9-]{0,63}$`; any plugin defines one by using it. The user picks the provider per type under
   Settings > Plugins > Services ("None" turns it off).
+- `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):
+  `onOpen((page) => …)` is the backend of your html settings page (manifest
+  `contributes.settings.page`, `ccc guide settings-secrets`); it throws when the manifest declares
+  none and returns a disposer. `page` is `{ scope, post(message), onMessage(fn), onClose(fn) }`:
+  `scope` is `'app'` (the Plugins page) or `'project'` (This project), `post` / `onMessage` follow
+  the panel message rules, `onClose` fires when the page goes. One page of a plugin is open at a time.
 - `ctx.webview`: drives the native web view of one of your `"kind": "webview"` panels (`ccc guide
   webview`). `navigate(panelId, target)` shows an http(s) URL or an absolute file path (a local
   file is served read-only with the files next to it); `back(panelId)`, `forward(panelId)`,

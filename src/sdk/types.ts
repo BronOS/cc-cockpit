@@ -445,6 +445,22 @@ export interface SlotInstance {
   onClose(listener: () => void): Disposer
 }
 
+/**
+ * One open html settings page of this plugin (`contributes.settings.page`, `ctx.settingsPage.onOpen`).
+ * The page has no settings API of its own: store what it edits yourself (`ctx.appStorage` for the
+ * app scope, `ctx.storage` for the project scope) and validate it. Never post secret values to it.
+ */
+export interface SettingsPageInstance {
+  /** Which settings page shows it: the plugin's global page (`app`) or This project (`project`). */
+  readonly scope: 'app' | 'project'
+  /** JSON only, at most 1 MiB, to the page (`ccPanel.onMessage`). Dropped once the page closed. */
+  post(message: JsonValue): void
+  /** What the page posts (`ccPanel.post`). */
+  onMessage(listener: (message: JsonValue) => void): Disposer
+  /** The page went: Settings closed or moved on, the page reloaded, or another page of this plugin opened. */
+  onClose(listener: () => void): Disposer
+}
+
 export interface PluginContext {
   /** The API major this context implements. */
   readonly api: typeof PLUGIN_API_VERSION
@@ -539,6 +555,18 @@ export interface PluginContext {
      * picked for this project and running. Asks the app, so it is a promise.
      */
     available(type: string): Promise<boolean>
+  }
+  /**
+   * The backend of the plugin's html settings page (manifest `contributes.settings.page`), shown
+   * under its schema form in Settings. One page of the plugin is open at a time.
+   * Older apps have no `ctx.settingsPage`: check `typeof ctx.settingsPage === 'object'` first.
+   */
+  readonly settingsPage: {
+    /**
+     * The page opened in this project's window (its port is connected). Throws when the manifest
+     * declares no `contributes.settings.page`. Listeners are dropped when the plugin stops.
+     */
+    onOpen(listener: (page: SettingsPageInstance) => void): Disposer
   }
   /**
    * Badge on one of this plugin's own panel icons: a count, a dot, or null to clear. Throws for a

@@ -4,6 +4,7 @@ import { BUILTIN_VIEWER, OPEN_FILE_PICK, serviceProblemMessage, type PluginServi
 import { SLOT_NONE, slotPickKey } from '../../shared/slots'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
+import { PluginSettingsPage } from './PluginSettingsPage'
 import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
 import { useLoaded } from './use-loaded'
@@ -345,7 +346,7 @@ function PluginItem(props: {
               <button type="button" className="quiet" onClick={props.onOpenProject}>
                 Enable in This project
               </button>
-              {plugin.appSettings && (
+              {(plugin.appSettings || plugin.settingsPage) && (
                 <button type="button" aria-expanded={showSettings} onClick={() => setShowSettings((s) => !s)}>
                   Settings
                 </button>
@@ -398,6 +399,8 @@ function PluginItem(props: {
           onSaved={reload}
         />
       )}
+      {/* The plugin's html page for the app scope (design-next §5.4), under its form. */}
+      {plugin.settingsPage && showSettings && <PluginSettingsPage pluginId={plugin.id} pluginName={plugin.name} scope="app" />}
     </li>
   )
 }

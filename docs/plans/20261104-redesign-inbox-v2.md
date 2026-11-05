@@ -571,16 +571,27 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   (`npm run build:hello`), `src/cli/guide/settings-secrets.md`
 - Create: `test/e2e/settings-page.spec.ts`; Modify: `test/unit/manifest.test.ts`, `host-api.test.ts`
 
-- [ ] design-next §5.4: sandboxed iframe from the plugin's folder, panel CSP, SDK with theme and components, one page
+- [x] design-next §5.4: sandboxed iframe from the plugin's folder, panel CSP, SDK with theme and components, one page
   frame per plugin at a time; `ctx.settingsPage.onOpen(page => …)` with `scope`, `post`, `onMessage`, `onClose`
-- [ ] a plugin not enabled in this project: "Enable <plugin> in this project to edit this page" (the form still works)
-- [ ] placement is on today's pages (Plugins = app scope, This project = project scope); task 39 moves it
-- [ ] guide: the page has no settings API, store in `ctx.appStorage` / `ctx.storage`, never post secrets;
+- [x] a plugin not enabled in this project: "Enable <plugin> in this project to edit this page" (the form still works)
+- [x] placement is on today's pages (Plugins = app scope, This project = project scope); task 39 moves it
+- [x] guide: the page has no settings API, store in `ctx.appStorage` / `ctx.storage`, never post secrets;
   `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] write tests: manifest accepted/refused, the port goes to the sender window's host only, served only from the
+- [x] write tests: manifest accepted/refused, the port goes to the sender window's host only, served only from the
   plugin's folder, e2e with hello's page (message round trip, not-enabled message)
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-page.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-page.spec.ts
   test/e2e/settings-plugins.spec.ts test/e2e/hello.spec.ts` — done when green
+- ➕ decided: main side is `settingsPage.info { pluginId, scope }` (null / `{ enabled: false }` / `{ enabled: true, src }`,
+  enabled = in the window's project) plus `settingsPage.connect` / `settingsPage.disconnect`; the port is handed out by
+  `PanelPortHub.connectSettingsPage` (plugin must run in the sender's host with that scope; one page per plugin, the
+  older one closed first; the panel connect cap) under `@settings/<pluginId>` (`src/shared/settings-page.ts`), tagged
+  `settingsPageOpen { pluginId, id, scope }` for the host, closed with `settingsPage.close { pluginId, id }`. Views carry
+  only `settingsPage?: true` (PluginView: app scope, ProjectPluginView: project scope); the page asks for the rest.
+- ➕ decided: `host-api.ts` needed no change (the page port is not an RPC request), so the host-manager, panel-ports,
+  router, protocol and new `ctx-settings-page.test.ts` suites carry the tests instead of `host-api.test.ts`. A page
+  reconnects on `panels.reload` like a panel; the frame is a fixed 480 px box (the page scrolls inside). On This project
+  the Settings button also shows for a not-enabled plugin with a page, so the "Enable …" note is reachable there.
+- ➕ the `page` key in `contributes.settings` changed `src/shared/manifest.ts`, so `marketplace/tools/dist` was rebuilt.
 
 ### Phase E — Feed v2 and the sources
 

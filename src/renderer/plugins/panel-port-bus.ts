@@ -4,6 +4,8 @@
 // nonce (PluginPanel; a slot frame, SlotFrame, under its `@slot/<id>` key). A port nobody waits for (the panel reloaded or went away meanwhile) is
 // closed, so the host's end hears the close.
 import { PANEL_PORT_MESSAGE } from '../../shared/ipc'
+import type { SettingsPageScope } from '../../shared/manifest'
+import { settingsPagePortKey } from '../../shared/settings-page'
 import { slotPortKey } from '../../shared/slots'
 
 type Waiter = { nonce: number; take: (port: MessagePort) => void }
@@ -44,6 +46,15 @@ export function requestPanelPort(panelKey: string, take: (port: MessagePort) => 
  */
 export function requestSlotPort(frameId: string, take: (port: MessagePort) => void): () => void {
   return request(slotPortKey(frameId), take, (nonce) => window.cockpit.invoke('slots.connect', { frameId, nonce }))
+}
+
+/**
+ * The same for a plugin's html settings page (design-next §5.4): main hands one end to that plugin's
+ * backend in this window's host and posts this one under `@settings/<pluginId>` (settingsPagePortKey).
+ * Refused (false, no port) while the plugin does not run here.
+ */
+export function requestSettingsPagePort(pluginId: string, scope: SettingsPageScope, take: (port: MessagePort) => void): () => void {
+  return request(settingsPagePortKey(pluginId), take, (nonce) => window.cockpit.invoke('settingsPage.connect', { pluginId, scope, nonce }))
 }
 
 function request(key: string, take: (port: MessagePort) => void, connect: (nonce: number) => Promise<boolean>): () => void {

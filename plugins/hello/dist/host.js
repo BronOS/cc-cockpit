@@ -199,6 +199,29 @@ function activate(ctx) {
       }
     })
   );
+  if (typeof ctx.settingsPage === "object") {
+    dispose.push(
+      ctx.settingsPage.onOpen((page) => {
+        const store = page.scope === "app" ? ctx.appStorage : ctx.storage;
+        const show = (saved) => {
+          store.get("note").then(
+            (note) => page.post({ scope: page.scope, note: note ?? "", saved }),
+            (err) => page.post({ scope: page.scope, error: errorText(err) })
+          );
+        };
+        page.onMessage((message) => {
+          if (!isObject(message)) return;
+          if (message.type === "ready") show(false);
+          if (message.type === "save" && typeof message.note === "string") {
+            store.set("note", message.note.slice(0, 200)).then(
+              () => show(true),
+              (err) => page.post({ scope: page.scope, error: errorText(err) })
+            );
+          }
+        });
+      })
+    );
+  }
   dispose.push(
     ctx.commands.register("say-hello", () => {
       return ctx.notify(`${state.greeting} from ${ctx.pluginId}`);

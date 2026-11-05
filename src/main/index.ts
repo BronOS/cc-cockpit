@@ -45,6 +45,7 @@ import {
   registerOverlayHandlers,
   registerPanelHandlers,
   registerSlotHandlers,
+  registerSettingsPageHandlers,
   registerSessionHandlers,
   registerCccCommandHandlers,
   registerProjectSettingsHandlers,
@@ -82,7 +83,7 @@ import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
-import { servePluginRequest } from './plugins/plugin-protocol'
+import { pluginFileUrl, servePluginRequest } from './plugins/plugin-protocol'
 import { PluginLogWriter } from './plugins/plugin-log'
 import { PluginIndex } from './plugins/plugin-index'
 import { ProjectRegistry, realPathOf } from './projects/registry'
@@ -676,6 +677,7 @@ function start(): void {
         ...(plugin.manifest.services !== undefined ? { services: plugin.manifest.services } : {}),
         ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
         ...(plugin.manifest.contributes?.slots !== undefined ? { slots: plugin.manifest.contributes.slots } : {}),
+        ...(plugin.manifest.contributes?.settings?.page !== undefined ? { settingsPage: plugin.manifest.contributes.settings.page } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -868,7 +870,11 @@ function start(): void {
     // Slot frames: looked up in the layout's own records, the port to the provider's host only.
     slotFrame: (projectId, frameId) => layouts.slotFrame(projectId, frameId),
     slotToHost: (projectId, open, port) => hosts.sendSlotPort(projectId, open, port),
-    slotClosed: (projectId, pluginId, frameId) => hosts.closeSlot(projectId, pluginId, frameId)
+    slotClosed: (projectId, pluginId, frameId) => hosts.closeSlot(projectId, pluginId, frameId),
+    // Settings pages (design-next §5.4): the plugin's backend in the sender window's host only.
+    settingsPageScopes: (projectId, pluginId) => hosts.runningSettingsPage(projectId, pluginId),
+    settingsPageToHost: (projectId, open, port) => hosts.sendSettingsPagePort(projectId, open, port),
+    settingsPageClosed: (projectId, pluginId, id) => hosts.closeSettingsPage(projectId, pluginId, id)
   })
   /**
    * The folder `cc-plugin://<pluginId>/` serves from: an installed, valid plugin enabled in at
@@ -1608,6 +1614,20 @@ function start(): void {
     connect: (projectId, windowId, panelKey, nonce) => panelPorts.connect(projectId, windowId, panelKey, nonce),
     restartHost: (projectId) => hosts.restartStopped(projectId),
     panelAction: (projectId, panelKey, actionId) => hosts.panelAction(projectId, panelKey, actionId)
+  })
+  // A plugin's html settings page (design-next §5.4): shown only when the plugin is enabled in the
+  // window's project (there is no backend for it otherwise; the page says so). The URL is the
+  // manifest's entry in main's own plugin record, served by cc-plugin:// like a panel's page.
+  registerSettingsPageHandlers(router, {
+    info: (projectId, pluginId, scope) => {
+      const plugin = plugins.get(pluginId)
+      const page = plugin?.state.ok ? plugin.manifest?.contributes?.settings?.page : undefined
+      if (!page || !page.scopes.includes(scope)) return null
+      if (!enabledIds(projectId).includes(pluginId)) return { enabled: false }
+      return { enabled: true, src: pluginFileUrl(pluginId, page.entry) }
+    },
+    connect: (projectId, windowId, pluginId, scope, nonce) => panelPorts.connectSettingsPage(projectId, windowId, pluginId, scope, nonce),
+    disconnect: (projectId, pluginId) => panelPorts.disconnectSettingsPage(projectId, pluginId)
   })
   registerSlotHandlers(router, {
     connect: (projectId, windowId, frameId, nonce) => panelPorts.connectSlot(projectId, windowId, frameId, nonce),

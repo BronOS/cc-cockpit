@@ -23,6 +23,7 @@ import type {
   ProjectSettingsView,
   ProjectSummary,
   SessionsSnapshot,
+  SettingsPageInfo,
   SettingsProject,
   ShellPrefs,
   TabCommandMenu,
@@ -32,6 +33,8 @@ import type {
   WindowInfo
 } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
+import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
+import { isSettingsPageScope } from '../../shared/settings-page'
 import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
@@ -385,6 +388,52 @@ export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): 
     const { height } = fields('slots.height', payload)
     if (typeof height !== 'number' || !Number.isFinite(height)) throw new Error('slots.height: height must be a number')
     return deps.setHeight(ctx.projectId, frameId, height)
+  })
+}
+
+/** What the plugin settings page handlers need (index.ts, panel-ports.ts). */
+export interface SettingsPageHandlerDeps {
+  /** The page's URL for the sender's project, or that the plugin does not run there; null when it has no such page. */
+  info(projectId: string, pluginId: string, scope: SettingsPageScope): SettingsPageInfo | null
+  /** Connect the page of the sender's window (PanelPortHub.connectSettingsPage); false when refused. */
+  connect(projectId: string, windowId: number, pluginId: string, scope: SettingsPageScope, nonce: unknown): boolean
+  /** The shell unmounted the page (PanelPortHub.disconnectSettingsPage). */
+  disconnect(projectId: string, pluginId: string): void
+}
+
+/**
+ * A plugin's html settings page (design-next §5.4): its URL, its port and its unmount. The project
+ * and window are the sender's; the plugin id and scope are renderer input, checked for shape here
+ * and only looked up by main.
+ */
+export function registerSettingsPageHandlers(router: IpcRouter, deps: SettingsPageHandlerDeps): void {
+  const pluginIdOf = (channel: string, payload: unknown): string => {
+    const { pluginId } = fields(channel, payload)
+    if (typeof pluginId !== 'string' || pluginId.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(pluginId)) {
+      throw new Error(`${channel}: pluginId must be a plugin id`)
+    }
+    return pluginId
+  }
+  const scopeOf = (channel: string, payload: unknown): SettingsPageScope => {
+    const { scope } = fields(channel, payload)
+    if (!isSettingsPageScope(scope)) throw new Error(`${channel}: scope must be "app" or "project"`)
+    return scope
+  }
+  router.handleProject('settingsPage.info', (ctx, payload) =>
+    deps.info(ctx.projectId, pluginIdOf('settingsPage.info', payload), scopeOf('settingsPage.info', payload))
+  )
+  router.handleProject('settingsPage.connect', (ctx, payload) =>
+    deps.connect(
+      ctx.projectId,
+      ctx.windowId,
+      pluginIdOf('settingsPage.connect', payload),
+      scopeOf('settingsPage.connect', payload),
+      fields('settingsPage.connect', payload).nonce
+    )
+  )
+  router.handleProject('settingsPage.disconnect', (ctx, payload) => {
+    deps.disconnect(ctx.projectId, pluginIdOf('settingsPage.disconnect', payload))
+    return null
   })
 }
 

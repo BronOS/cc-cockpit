@@ -3,6 +3,7 @@ import type { ProjectPanelView, ProjectPluginView, ProjectSettingsView } from '.
 import { ZONE_IDS, type ZoneId } from '../../shared/layout'
 import { BlocksIcon, PanelIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
+import { PluginSettingsPage } from './PluginSettingsPage'
 import { ProjectColorSettings } from './ProjectColorSettings'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { Empty, Group, PageHeader, Select, Switch } from './ui'
@@ -117,7 +118,7 @@ function ProjectPlugin(props: {
           )}
         </div>
         <div className="settings-item-actions">
-          {plugin.enabled && plugin.projectSettings && (
+          {((plugin.enabled && plugin.projectSettings) || plugin.settingsPage) && (
             <button type="button" aria-expanded={showSettings} onClick={() => setShowSettings((s) => !s)}>
               Settings
             </button>
@@ -146,6 +147,8 @@ function ProjectPlugin(props: {
           onSaved={reload}
         />
       )}
+      {/* The plugin's html page for the project scope (design-next §5.4); off here, it says to enable the plugin. */}
+      {plugin.settingsPage && showSettings && <PluginSettingsPage pluginId={plugin.id} pluginName={plugin.name} scope="project" />}
     </li>
   )
 }

@@ -599,3 +599,54 @@ describe('slots (design-next §2)', () => {
     ])
   })
 })
+
+describe('settings page (design-next §5.4)', () => {
+  beforeEach(() => {
+    mkdirSync(join(dir, 'settings'))
+    writeFileSync(join(dir, 'settings/index.html'), '<!doctype html>')
+    writeFileSync(join(dir, 'settings/index.txt'), 'x')
+  })
+  const withPage = (page: unknown): Record<string, unknown> => manifest({ contributes: { settings: { page } } })
+
+  it.each([[['app']], [['project']], [['app', 'project']]])('accepts the scopes %j', async (scopes) => {
+    const r = await validateManifest(withPage({ entry: 'settings/index.html', scopes }), dir)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.manifest.contributes?.settings?.page).toEqual({ entry: 'settings/index.html', scopes })
+  })
+
+  it('accepts a page beside both schemas', async () => {
+    const raw = manifest()
+    const contributes = raw.contributes as { settings: Record<string, unknown> }
+    contributes.settings.page = { entry: 'settings/index.html', scopes: ['project', 'app'] }
+    expect((await validateManifest(raw, dir)).ok).toBe(true)
+  })
+
+  it.each([[[]], [['global']], [['app', 'app']], ['app'], [['app', 'project', 'app']]])('refuses the scopes %j', async (scopes) => {
+    expect((await errorsOf(withPage({ entry: 'settings/index.html', scopes }))).join()).toMatch(/\/contributes\/settings\/page\/scopes/)
+  })
+
+  it('refuses a page without entry or scopes, an unknown key, and a non-object', async () => {
+    expect((await errorsOf(withPage({ scopes: ['app'] }))).join()).toMatch(/entry/)
+    expect((await errorsOf(withPage({ entry: 'settings/index.html' }))).join()).toMatch(/scopes/)
+    expect((await errorsOf(withPage({ entry: 'settings/index.html', scopes: ['app'], height: 300 }))).join()).toMatch(/additional properties/)
+    expect((await errorsOf(withPage('settings/index.html'))).join()).toMatch(/\/contributes\/settings\/page/)
+  })
+
+  it('needs an .html entry inside the plugin folder', async () => {
+    expect(await errorsOf(withPage({ entry: 'settings/index.txt', scopes: ['app'] }))).toContain(
+      'settings page entry "settings/index.txt" must be an .html page'
+    )
+    expect((await errorsOf(withPage({ entry: 'settings/gone.html', scopes: ['app'] }))).join()).toContain(
+      'settings page entry "settings/gone.html": file not found'
+    )
+    expect((await errorsOf(withPage({ entry: '../x.html', scopes: ['app'] }))).join()).toContain('must not contain ".." segments')
+  })
+
+  it('needs main: the page talks to ctx.settingsPage.onOpen in the host', async () => {
+    const raw = withPage({ entry: 'settings/index.html', scopes: ['app'] })
+    delete raw.main
+    expect(await errorsOf(raw)).toContain(
+      'contributes.settings.page needs "main": the page talks to ctx.settingsPage.onOpen in the plugin\'s host'
+    )
+  })
+})

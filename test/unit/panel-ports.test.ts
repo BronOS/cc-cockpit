@@ -363,3 +363,76 @@ describe('PanelPortHub slot frames (design-next §2)', () => {
     expect(closed).toHaveLength(3)
   })
 })
+
+describe('PanelPortHub settings pages (design-next §5.4)', () => {
+  type Open = { pluginId: string; id: string; scope: 'app' | 'project' }
+  /** p1 (window 1) runs a.one with a page for both scopes and a.app with an app-only page; p2 runs nothing. */
+  function pageHub(running = true): { hub: PanelPortHub<FakePort>; sent: Sent; opened: { projectId: string; open: Open; port: FakePort }[]; closed: string[] } {
+    const opened: { projectId: string; open: Open; port: FakePort }[] = []
+    const closed: string[] = []
+    const scopes: Record<string, Record<string, readonly ('app' | 'project')[]>> = { p1: { 'a.one': ['app', 'project'], 'a.app': ['app'] } }
+    const made = hub({
+      settingsPageScopes: (projectId, pluginId) => scopes[projectId]?.[pluginId],
+      settingsPageToHost: (projectId, open, port) => {
+        if (!running) return false
+        opened.push({ projectId, open, port })
+        return true
+      },
+      settingsPageClosed: (projectId, pluginId, id) => void closed.push(`${projectId}:${pluginId}:${id}`)
+    })
+    return { ...made, opened, closed }
+  }
+
+  it("hands that plugin's backend in the sender's own host its end, the window its end under @settings/<id>", () => {
+    const { hub: h, sent, opened } = pageHub()
+    expect(h.connectSettingsPage('p1', 1, 'a.one', 'project', 4)).toBe(true)
+    const ch = sent.channels[0]!
+    expect(opened).toEqual([{ projectId: 'p1', open: { pluginId: 'a.one', id: 'p1', scope: 'project' }, port: ch.host }])
+    expect(sent.host).toEqual([])
+    expect(sent.renderer).toEqual([{ windowId: 1, payload: { panelKey: '@settings/a.one', nonce: 4 }, port: ch.renderer }])
+  })
+
+  it('refuses a plugin not running in the asking project, an undeclared scope, junk ids, scopes and nonces', () => {
+    const { hub: h, sent } = pageHub()
+    for (const [projectId, pluginId, scope, nonce] of [
+      // Another project's window asks for a.one: its host is not p1's.
+      ['p2', 'a.one', 'app', 1],
+      ['p1', 'a.two', 'app', 1],
+      ['p1', 'a.app', 'project', 1],
+      ['p1', 'a.one', 'global', 1],
+      ['p1', 'A One', 'app', 1],
+      ['p1', 7, 'app', 1],
+      ['p1', 'a.one', 'app', '1'],
+      ['p1', 'a.one', 'app', 1.5]
+    ] as const) {
+      expect(h.connectSettingsPage(projectId, 1, pluginId, scope, nonce), `${String(pluginId)} ${String(scope)}`).toBe(false)
+    }
+    expect(sent.channels).toEqual([])
+    const stopped = pageHub(false)
+    expect(stopped.hub.connectSettingsPage('p1', 1, 'a.one', 'app', 1)).toBe(false)
+    expect(stopped.sent.channels[0]!.host.closed && stopped.sent.channels[0]!.renderer.closed).toBe(true)
+    expect(stopped.sent.renderer).toEqual([])
+  })
+
+  it('keeps one page per plugin: a new connect closes the older one first; unmount closes it once', () => {
+    const { hub: h, opened, closed } = pageHub()
+    h.connectSettingsPage('p1', 1, 'a.one', 'app', 1)
+    h.connectSettingsPage('p1', 1, 'a.app', 'app', 2)
+    // The other scope of the same plugin is still the same plugin's page.
+    h.connectSettingsPage('p1', 1, 'a.one', 'project', 3)
+    expect(opened.map((o) => o.open.id)).toEqual(['p1', 'p2', 'p3'])
+    expect(closed).toEqual(['p1:a.one:p1'])
+    h.disconnectSettingsPage('p1', 'a.one')
+    h.disconnectSettingsPage('p1', 'a.one')
+    h.disconnectSettingsPage('p2', 'a.app')
+    expect(closed).toEqual(['p1:a.one:p1', 'p1:a.one:p3'])
+    h.disconnectSettingsPage('p1', 'a.app')
+    expect(closed).toEqual(['p1:a.one:p1', 'p1:a.one:p3', 'p1:a.app:p2'])
+  })
+
+  it('caps connects per page of a window like a panel', () => {
+    const { hub: h } = pageHub()
+    for (let i = 0; i < MAX_CONNECTS_PER_PANEL; i++) expect(h.connectSettingsPage('p1', 1, 'a.one', 'app', i)).toBe(true)
+    expect(h.connectSettingsPage('p1', 1, 'a.one', 'app', 99)).toBe(false)
+  })
+})

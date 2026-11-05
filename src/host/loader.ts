@@ -16,7 +16,8 @@ import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { JsonValue, PluginContext, PluginModule } from '../sdk/types'
-import type { PluginManifest } from '../shared/manifest'
+import type { PluginManifest, SettingsPageScope } from '../shared/manifest'
+import { isSettingsPageScope } from '../shared/settings-page'
 import { errorText, toError } from '../shared/error-text'
 import { isSettingsRecord } from './ctx/settings'
 import { ServiceRegistry } from './services'
@@ -73,6 +74,11 @@ export interface HostPluginSpec {
    */
   openFile?: boolean
   /**
+   * The scopes of the manifest's `contributes.settings.page` (design-next §5.4): `ctx.settingsPage.onOpen`
+   * accepts a listener, and main may hand this plugin a page's port. Absent is no page.
+   */
+  settingsPage?: SettingsPageScope[]
+  /**
    * Set by `parsePluginSpecs`, never sent by main: why this plugin's spec cannot run (a malformed
    * `services` field). The loader marks only this plugin errored; the rest of the batch activates.
    */
@@ -86,7 +92,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, panelSlots, services, openFile, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, panelSlots, services, openFile, settingsPage, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -129,6 +135,9 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     // throw here would keep every plugin of the project from running.
     const parsed = services === undefined ? undefined : parseServicesField(services)
     if (openFile !== undefined && typeof openFile !== 'boolean') throw new Error(`activate: plugin ${i} openFile must be a boolean`)
+    if (settingsPage !== undefined && (!Array.isArray(settingsPage) || !settingsPage.every(isSettingsPageScope))) {
+      throw new Error(`activate: plugin ${i} settingsPage must be an array of "app" / "project"`)
+    }
     const { project, app } = (settings ?? {}) as Record<string, unknown>
     if (!isSettingsRecord(project) || !isSettingsRecord(app)) {
       throw new Error(`activate: plugin ${i} settings must have project and app objects`)
@@ -150,6 +159,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       ...(parsed?.services !== undefined ? { services: parsed.services } : {}),
       ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),
       ...(openFile === true ? { openFile: true } : {}),
+      ...(settingsPage !== undefined ? { settingsPage: settingsPage as SettingsPageScope[] } : {}),
       settings: { project, app }
     }
   })

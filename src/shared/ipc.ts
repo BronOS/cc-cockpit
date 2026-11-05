@@ -17,6 +17,7 @@ import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { DiscussTarget } from './discuss'
+import type { SettingsPageScope } from './manifest'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -370,6 +371,8 @@ export interface PluginView {
   /** `ok: false` = disabled, with the reason the manifest or settings check gave. */
   state: { ok: true } | { ok: false; reason: string; revoked?: { reason: string; source: string } }
   appSettings?: PluginAppSettingsView
+  /** The plugin has an html settings page for the app scope (`contributes.settings.page`, design-next §5.4). */
+  settingsPage?: true
   /** Bundled plugins only: switched off in every project (`AppSettings.disabledBundled`). Absent for any other source. */
   offInAllProjects?: boolean
 }
@@ -463,7 +466,12 @@ export interface ProjectPluginView {
   problem?: string
   /** The plugin's project-level settings form (same shape as the app-wide one). */
   projectSettings?: PluginAppSettingsView
+  /** The plugin has an html settings page for the project scope (`contributes.settings.page`). */
+  settingsPage?: true
 }
+
+/** `settingsPage.info`: the page's URL when the plugin runs in this project, else only that it does not. */
+export type SettingsPageInfo = { enabled: true; src: string } | { enabled: false }
 
 /** A panel that exists for the project and where it sits ('hidden': under the strip's "..."). */
 export interface ProjectPanelView {
@@ -829,6 +837,22 @@ export interface IpcInvokeMap {
    * publishes it as `SlotFrameInfo.pageHeight`. False for a frame not drawn now or one in the top bar.
    */
   'slots.height': { req: { frameId: string; height: number }; res: boolean }
+  /**
+   * A plugin's html settings page (design-next §5.4) for this window's project: null when the plugin
+   * declares no page for `scope`; `enabled: false` when it does not run in this project (the page
+   * shows "Enable … in this project"); else the page's `cc-plugin://` URL.
+   */
+  'settingsPage.info': { req: { pluginId: string; scope: SettingsPageScope }; res: SettingsPageInfo | null }
+  /**
+   * A settings page's iframe loaded: main hands one end of a new channel to that plugin's backend in
+   * THIS window's host (`ctx.settingsPage.onOpen`, tagged with main's own ids) and posts the other to
+   * this window on PANEL_PORT_CHANNEL under `@settings/<pluginId>` (settingsPagePortKey) with the same
+   * `nonce`. One page per plugin at a time: an older one of the plugin is closed first. False (no
+   * port follows) when the plugin is not running here now; `panels.reload` says when to try again.
+   */
+  'settingsPage.connect': { req: { pluginId: string; scope: SettingsPageScope; nonce: number }; res: boolean }
+  /** The shell unmounted the plugin's settings page: its backend hears onClose. */
+  'settingsPage.disconnect': { req: { pluginId: string }; res: null }
 
   // Settings overlay. Any project window may call these; the data is app-wide.
   /** Every known project, most recently opened first. */
@@ -1213,6 +1237,9 @@ export const INVOKE_CHANNELS = [
   'slots.connect',
   'slots.disconnect',
   'slots.height',
+  'settingsPage.info',
+  'settingsPage.connect',
+  'settingsPage.disconnect',
   'settings.projects',
   'settings.projectOpen',
   'settings.projectRelink',

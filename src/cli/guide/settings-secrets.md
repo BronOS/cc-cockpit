@@ -3,8 +3,8 @@
 ## Settings
 
 `contributes.settings.project` and `.app` are JSON Schemas (objects with `properties`). The app
-renders the forms from them; there are no plugin-owned settings pages. Project settings are per
-project, app settings are shared. The host reads them as `ctx.settings.project` / `.app`, with
+renders the forms from them; for what a form cannot hold, add an html page under them (see
+"Settings page" below). Project settings are per project, app settings are shared. The host reads them as `ctx.settings.project` / `.app`, with
 defaults applied, and hears changes through `ctx.onSettingsChange`.
 
 What the form renders (the app's form is rjsf with main as the only validator; it renders one
@@ -45,6 +45,30 @@ field per property of the root object):
 
 Limits: schemas may not use regular expressions (`pattern`, `patternProperties`), because a
 pathological one would hang the main process. Use `enum`, `minimum`, `maxLength` and friends.
+
+## Settings page
+
+For what a form cannot hold (a rules editor, a list with drag and drop), declare an html page:
+
+```json
+"settings": { "app": { ... }, "project": { ... },
+  "page": { "entry": "settings/index.html", "scopes": ["app", "project"] } }
+```
+
+- It needs `main`, and `entry` is an `.html` file in your folder. `scopes`: `app` shows it under the
+  app form on Settings > Plugins (your plugin's Settings), `project` under the project form on
+  Settings > This project; one or both.
+- It is a sandboxed iframe like a panel: `cc-plugin://`, the panel CSP, the panel SDK
+  (`/__sdk/panel.js`: `ccPanel.post` / `ccPanel.onMessage`, the theme and the component sheet). Its
+  port goes to your backend in this window's host: `ctx.settingsPage.onOpen((page) => …)` with
+  `page.scope`, `post`, `onMessage`, `onClose` (`api` topic). One page of a plugin is open at a time.
+- The page has no settings API of its own. Store what it edits yourself, `ctx.appStorage` for the
+  app scope and `ctx.storage` for the project scope, and validate every message (the page is
+  untrusted input). `ctx.settings` stays the schema form's.
+- Never post a secret value to the page: a page is a web page. Keep secrets in a `"format":
+  "secret"` field or `ctx.secrets`, and tell the page only whether one is set.
+- A plugin not enabled in the window's project has no backend there: the page shows "Enable
+  <plugin> in this project to edit this page" (the schema form still works).
 
 ## Secret fields
 

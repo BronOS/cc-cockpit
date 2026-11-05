@@ -40,6 +40,7 @@ import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
 import { createSlotsApi, SlotHub, type SlotOpenTag } from './slots'
 import { SettingsHolder } from './settings'
+import { createSettingsPageApi, SettingsPageHub, type SettingsPageOpenTag } from './settings-page'
 import { createStorage, type StorageHandle } from './storage'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
 import { OverlayButtonRegistry } from '../overlay-buttons'
@@ -143,6 +144,7 @@ export class HostContexts {
   private readonly actions: PanelActions
   private readonly webviews: WebviewHub
   private readonly slots: SlotHub
+  private readonly settingsPages: SettingsPageHub
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
@@ -152,6 +154,7 @@ export class HostContexts {
     this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m))
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.settingsPages = new SettingsPageHub((pluginId, m) => deps.log(pluginId, 'warn', m))
   }
 
   /** Build the ctx for one plugin (the loader's `makeContext`). */
@@ -430,6 +433,7 @@ export class HostContexts {
       badge: ui.badge,
       overlay: ui.overlay,
       slots: createSlotsApi({ pluginId: spec.id, types: spec.slotTypes ?? [], call, alive, guardAsync, hub: this.slots }),
+      settingsPage: createSettingsPageApi({ pluginId: spec.id, declared: spec.settingsPage !== undefined, alive, hub: this.settingsPages }),
       webview: createWebviewApi({
         pluginId: spec.id,
         webviewPanels: spec.webviewPanels ?? [],
@@ -540,6 +544,7 @@ export class HostContexts {
     this.actions.removePlugin(pluginId)
     this.webviews.removePlugin(pluginId)
     this.slots.removePlugin(pluginId)
+    this.settingsPages.removePlugin(pluginId)
     for (const child of rt.children) killChild(child)
     rt.children.clear()
     // Before the host is killed (main waits at most 5 s for deactivate): the debounce window must
@@ -615,6 +620,26 @@ export class HostContexts {
   }
 
   /**
+   * The plugin's settings page's MessagePort (host/index.ts calls this when main hands the host a
+   * port tagged `settingsPageOpen`). Only for a plugin that runs here and declares a page with that
+   * scope; false (and the port closed) otherwise. It closes with `settingsPage.close` or its port.
+   */
+  attachSettingsPagePort(tag: SettingsPageOpenTag, port: PanelPort): boolean {
+    const rt = this.runtimes.get(tag.pluginId)
+    if (!rt || rt.disposed || !(rt.spec.settingsPage ?? []).includes(tag.scope)) {
+      port.close()
+      return false
+    }
+    this.settingsPages.open(tag, port)
+    return true
+  }
+
+  /** The settings page's end of the port closed (reload, unmount): ends only that port's page. */
+  detachSettingsPagePort(pluginId: string, id: string, port: PanelPort): void {
+    this.settingsPages.close(pluginId, id, port)
+  }
+
+  /**
    * One-way events from main: `settings` `{ pluginId, project, app }` and `sessions`
    * `{ sessions }` (this project's tabs changed).
    */
@@ -649,6 +674,11 @@ export class HostContexts {
     if (event === 'slot.close') {
       const { pluginId, id } = (params ?? {}) as Record<string, unknown>
       if (typeof pluginId === 'string' && typeof id === 'string') this.slots.close(pluginId, id)
+      return
+    }
+    if (event === 'settingsPage.close') {
+      const { pluginId, id } = (params ?? {}) as Record<string, unknown>
+      if (typeof pluginId === 'string' && typeof id === 'string') this.settingsPages.close(pluginId, id)
       return
     }
     if (event === 'webview.navigated') {

@@ -1877,6 +1877,40 @@ describe('HostManager', () => {
       // No host: nothing to tell.
       slotted.closeSlot('p2', 'a.one', 's1')
     })
+
+    it("settings pages (design-next §5.4): the scopes ride in the spec; the port goes to that running plugin only", async () => {
+      const page = { entry: 'settings/index.html', scopes: ['app', 'project'] as ('app' | 'project')[] }
+      enabled.p1 = [plugin('a.one', { settingsPage: page }), plugin('a.two')]
+      let activateParams: unknown
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) => {
+          activateParams = p
+          return okHandlers().activate!(p)
+        }
+      })
+      const open = { pluginId: 'a.one', id: 'p1', scope: 'app' as const }
+      expect(slotted.runningSettingsPage('p1', 'a.one')).toBeUndefined()
+      expect(slotted.sendSettingsPagePort('p1', open, {})).toBe(false)
+      await slotted.open('p1', 1)
+      const params = activateParams as { plugins: { id: string; settingsPage?: string[] }[] }
+      expect(params.plugins.map((p) => [p.id, p.settingsPage])).toEqual([
+        ['a.one', ['app', 'project']],
+        ['a.two', undefined]
+      ])
+      expect(slotted.runningSettingsPage('p1', 'a.one')).toEqual(['app', 'project'])
+      expect(slotted.runningSettingsPage('p1', 'a.two')).toBeUndefined()
+      expect(slotted.runningSettingsPage('p2', 'a.one')).toBeUndefined()
+      const port = { the: 'port' }
+      expect(slotted.sendSettingsPagePort('p1', open, port)).toBe(true)
+      expect(factory.last.ports).toEqual([{ message: JSON.stringify({ settingsPageOpen: open }), port }])
+      expect(slotted.sendSettingsPagePort('p1', { ...open, pluginId: 'evil.other' }, {})).toBe(false)
+      expect(slotted.sendSettingsPagePort('p2', open, {})).toBe(false)
+      slotted.closeSettingsPage('p1', 'a.one', 'p1')
+      await flush()
+      expect(hostEvents).toContainEqual({ event: 'settingsPage.close', params: { pluginId: 'a.one', id: 'p1' } })
+      slotted.closeSettingsPage('p2', 'a.one', 'p1')
+    })
   })
 
   describe('devReload (linked dev plugin changed, Task 29)', () => {

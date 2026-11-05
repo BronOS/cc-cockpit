@@ -39,12 +39,25 @@
 //                   (placement removed, provider changed, reloaded or stopped) is closed the same way.
 // Each frame is closed once; a close for a frame the provider's host never opened is harmless.
 //
+// A plugin's html settings page (design-next §5.4) gets a port the same way, to THAT plugin's
+// backend in the sender window's host (the project resolved from the sender, never a renderer id):
+//
+//   connectSettingsPage     the page loaded (`settingsPage.connect { pluginId, scope }`): refused
+//                           unless the plugin runs in this host now and its manifest page has that
+//                           scope. One page per plugin at a time: an open one of the plugin is closed
+//                           first (its backend hears onClose), then a new main-minted id goes with the
+//                           port (`settingsPageOpen`, HostManager.sendSettingsPagePort); the window's
+//                           end comes back under `@settings/<pluginId>`.
+//   disconnectSettingsPage  the shell unmounted it (`settingsPage.disconnect`): onClose.
+//
 // No Electron import: the channel factory (MessageChannelMain) and the two senders are injected
 // by index.ts; unit tests pass fakes.
 
 import { errorText } from '../../shared/error-text'
 import { SLOT_FRAME_ID_PATTERN, slotPortKey, type SlotHost } from '../../shared/slots'
 import type { JsonValue } from '../../sdk/types'
+import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
+import { isSettingsPageScope, settingsPagePortKey } from '../../shared/settings-page'
 import type { SlotFrameRecord } from '../layout/layout-service'
 
 /** Two entangled ends; P is Electron's MessagePortMain in the app, a fake in tests. */
@@ -77,6 +90,12 @@ export interface PanelPortDeps<P> {
   ): boolean
   /** The frame is gone: tell the provider's host (HostManager.closeSlot). */
   slotClosed?(projectId: string, pluginId: string, frameId: string): void
+  /** The scopes of the plugin's settings page when it runs in the project's host now (HostManager.runningSettingsPage). */
+  settingsPageScopes?(projectId: string, pluginId: string): readonly SettingsPageScope[] | undefined
+  /** Hand the plugin's host its end of a settings page (HostManager.sendSettingsPagePort); false when it does not run. */
+  settingsPageToHost?(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope }, port: P): boolean
+  /** The page is gone: tell the plugin's host (HostManager.closeSettingsPage). */
+  settingsPageClosed?(projectId: string, pluginId: string, id: string): void
   log?: (message: string) => void
   /** Clock for the connect cap (tests); Date.now by default. */
   now?: () => number
@@ -100,6 +119,9 @@ export class PanelPortHub<P> {
   private readonly recent = new Map<string, { times: number[]; logged: boolean }>()
   /** `<projectId>\n<frameId>` -> the provider of a slot frame whose port went out and is not closed yet. */
   private readonly openSlots = new Map<string, { projectId: string; pluginId: string; frameId: string }>()
+  /** `<projectId>\n<pluginId>` -> the id of the plugin's settings page whose port went out and is not closed yet. */
+  private readonly openPages = new Map<string, { projectId: string; pluginId: string; id: string }>()
+  private nextPageId = 1
 
   constructor(private readonly deps: PanelPortDeps<P>) {
     this.log = deps.log ?? ((m) => console.warn(m))
@@ -190,6 +212,61 @@ export class PanelPortHub<P> {
       return false
     }
     return true
+  }
+
+  /**
+   * Connect the plugin's settings page in the asking window (see the top of the file). `projectId`
+   * and `windowId` are what main resolved from the sender; `pluginId`, `scope` and `nonce` are
+   * renderer input and only looked up. False when refused.
+   */
+  connectSettingsPage(projectId: string, windowId: number, pluginId: unknown, scope: unknown, nonce: unknown): boolean {
+    if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
+    if (typeof pluginId !== 'string' || pluginId.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(pluginId)) return false
+    if (!isSettingsPageScope(scope) || !this.deps.settingsPageToHost) return false
+    const scopes = this.deps.settingsPageScopes?.(projectId, pluginId)
+    if (scopes === undefined || !scopes.includes(scope)) return false
+    if (!this.withinCap(projectId, windowId, pluginId, settingsPagePortKey(pluginId))) return false
+    // One page per plugin at a time: the older one (another load, or the other scope) ends first.
+    this.disconnectSettingsPage(projectId, pluginId)
+
+    const id = `p${this.nextPageId++}`
+    const channel = this.deps.createChannel()
+    let sent = false
+    try {
+      sent = this.deps.settingsPageToHost(projectId, { pluginId, id, scope }, channel.host)
+    } catch (err) {
+      this.log(`settings page of ${pluginId}: handing the host its port failed: ${errorText(err)}`)
+    }
+    if (!sent) {
+      this.closeQuietly(channel.host)
+      this.closeQuietly(channel.renderer)
+      return false
+    }
+    const key = `${projectId}\n${pluginId}`
+    this.openPages.set(key, { projectId, pluginId, id })
+    try {
+      this.deps.toRenderer(windowId, { panelKey: settingsPagePortKey(pluginId), nonce }, channel.renderer)
+    } catch (err) {
+      this.log(`settings page of ${pluginId}: posting the window its port failed: ${errorText(err)}`)
+      this.closeQuietly(channel.renderer)
+      this.disconnectSettingsPage(projectId, pluginId)
+      return false
+    }
+    return true
+  }
+
+  /** The shell unmounted the plugin's settings page in the project's window: its backend hears the close (once). */
+  disconnectSettingsPage(projectId: string, pluginId: unknown): void {
+    if (typeof pluginId !== 'string') return
+    const key = `${projectId}\n${pluginId}`
+    const open = this.openPages.get(key)
+    if (!open) return
+    this.openPages.delete(key)
+    try {
+      this.deps.settingsPageClosed?.(open.projectId, open.pluginId, open.id)
+    } catch (err) {
+      this.log(`settings page of ${open.pluginId}: telling the host it closed failed: ${errorText(err)}`)
+    }
   }
 
   /** The shell unmounted a slot frame of the project: its provider hears the close (once). */

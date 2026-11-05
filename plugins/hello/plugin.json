@@ -39,7 +39,8 @@
             "description": "A demo secret field: stored encrypted, never shown. The panel only says whether it is set."
           }
         }
-      }
+      },
+      "page": { "entry": "settings/index.html", "scopes": ["app", "project"] }
     },
     "commands": [{ "id": "say-hello", "title": "Hello: Say hello", "key": "Cmd+Shift+H" }],
     "themes": [{ "id": "hello-dusk", "file": "themes/hello-dusk.json" }]

@@ -13,6 +13,8 @@
 //   overlay         ctx.overlay.open: a terminal overlay and an html overlay that answers
 //   commands        ctx.commands.register + ctx.notify: "Hello: Say hello"
 //   panels          ctx.panels.post / onMessage: all the above, shown by panels/hello.html
+//   settings page   ctx.settingsPage.onOpen: settings/index.html under the forms in Settings, a
+//                   note kept with ctx.appStorage (Plugins page) or ctx.storage (This project)
 //
 // The panel is dumb on purpose: the host keeps one `State`, and every change posts the whole of it.
 // A panel that is not shown drops messages (the API says so), so the panel sends `ready` when it
@@ -296,6 +298,36 @@ export function activate(ctx: PluginContext): void {
       }
     })
   )
+
+  // --- settings page ---------------------------------------------------------------------------
+  // settings/index.html (manifest `contributes.settings.page`) shows under the schema forms. It has
+  // no settings API: this backend keeps what it edits, per scope (app-wide on the Plugins page, per
+  // project on This project), checks it, and answers. Never post a secret to a page. Older apps
+  // have no ctx.settingsPage, hence the check.
+  if (typeof ctx.settingsPage === 'object') {
+    dispose.push(
+      ctx.settingsPage.onOpen((page) => {
+        const store = page.scope === 'app' ? ctx.appStorage : ctx.storage
+        const show = (saved: boolean): void => {
+          store.get<string>('note').then(
+            (note) => page.post({ scope: page.scope, note: note ?? '', saved }),
+            (err) => page.post({ scope: page.scope, error: errorText(err) })
+          )
+        }
+        page.onMessage((message) => {
+          if (!isObject(message)) return
+          if (message.type === 'ready') show(false)
+          if (message.type === 'save' && typeof message.note === 'string') {
+            // The page is untrusted input like any other: capped here, not only by its own field.
+            store.set('note', message.note.slice(0, 200)).then(
+              () => show(true),
+              (err) => page.post({ scope: page.scope, error: errorText(err) })
+            )
+          }
+        })
+      })
+    )
+  }
 
   // --- commands --------------------------------------------------------------------------------
   dispose.push(

@@ -292,6 +292,15 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
     errors.push('contributes.openFile needs "main": the click is handled by ctx.files.onOpen in the plugin\'s host')
   }
   errors.push(...slotErrors(manifest))
+  // The settings page (design-next §5.4) talks only to ctx.settingsPage.onOpen in the plugin's host,
+  // and is drawn as a sandboxed iframe served by cc-plugin://, like a panel's page.
+  const page = c.settings?.page
+  if (page !== undefined) {
+    if (manifest.main === undefined) {
+      errors.push('contributes.settings.page needs "main": the page talks to ctx.settingsPage.onOpen in the plugin\'s host')
+    }
+    if (!page.entry.endsWith('.html')) errors.push(`settings page entry "${page.entry}" must be an .html page`)
+  }
   for (const cmd of c.commands ?? []) {
     if (cmd.key !== undefined && normalizeChord(cmd.key, 'darwin') === null) {
       errors.push(`command "${cmd.id}": "${cmd.key}" is not a valid key chord`)
@@ -315,6 +324,7 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
   }
   for (const t of c.themes ?? []) refs.push({ label: `theme "${t.id}" file`, file: t.file })
   for (const sl of c.slots ?? []) refs.push({ label: `slot "${sl.type}" entry`, file: sl.entry })
+  if (c.settings?.page !== undefined) refs.push({ label: 'settings page entry', file: c.settings.page.entry })
 
   let realRoot: string | null = null
   try {

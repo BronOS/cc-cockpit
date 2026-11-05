@@ -184,6 +184,22 @@ export interface OpenFileContribution {
 /** A JSON Schema as plugins write it; compiled and limited in `validate.ts`. */
 export type JsonSchema = Record<string, unknown>
 
+/** Where a plugin's html settings page shows (design-next §5.4): its global page, its project page, or both. */
+export const SETTINGS_PAGE_SCOPES = ['app', 'project'] as const
+export type SettingsPageScope = (typeof SETTINGS_PAGE_SCOPES)[number]
+
+/**
+ * `contributes.settings.page`: an html page shown under the plugin's schema form, for what a form
+ * cannot hold (a rules editor). It talks only to the plugin's backend (`ctx.settingsPage.onOpen`),
+ * so it needs `main`; it has no settings API of its own.
+ */
+export interface SettingsPageContribution {
+  /** Plugin-relative `.html` page, served from the plugin's folder by `cc-plugin://` like a panel's. */
+  entry: string
+  /** At least one, no duplicates. */
+  scopes: SettingsPageScope[]
+}
+
 export interface PluginManifest {
   id: string
   name: string
@@ -193,7 +209,7 @@ export interface PluginManifest {
   main?: string
   contributes?: {
     panels?: PanelContribution[]
-    settings?: { project?: JsonSchema; app?: JsonSchema }
+    settings?: { project?: JsonSchema; app?: JsonSchema; page?: SettingsPageContribution }
     commands?: CommandContribution[]
     themes?: ThemeContribution[]
     skills?: SkillContribution[]
@@ -288,7 +304,20 @@ export const MANIFEST_SCHEMA = {
         },
         settings: {
           type: 'object',
-          properties: { project: settingsSchema, app: settingsSchema }
+          properties: {
+            project: settingsSchema,
+            app: settingsSchema,
+            // The `.html` entry and `main` are checked in validate.ts, with the reason.
+            page: {
+              type: 'object',
+              required: ['entry', 'scopes'],
+              additionalProperties: false,
+              properties: {
+                entry: relativePath,
+                scopes: { type: 'array', minItems: 1, maxItems: 2, uniqueItems: true, items: { enum: [...SETTINGS_PAGE_SCOPES] } }
+              }
+            }
+          }
         },
         commands: {
           type: 'array',

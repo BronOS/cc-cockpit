@@ -29,6 +29,7 @@
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 //   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
 //   slot.close { pluginId, id }               a slot frame this host provides ended (SlotInstance.onClose)
+//   settingsPage.close { pluginId, id }       the plugin's settings page ended (SettingsPageInstance.onClose)
 //   overlay.ended { key }                     a typed overlay went: its type buttons' runs go
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text, options? } -> { clicked }
@@ -48,7 +49,10 @@
 // RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts). A slot frame the
 // plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params? } }`
 // and ends with the `slot.close { pluginId, id }` event or its port closing (host/ctx/slots.ts).
+// A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope } }`, ended by
+// `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts).
 import { HostContexts, type LogLevel } from './ctx'
+import { settingsPageOpenTag } from './ctx/settings-page'
 import { slotOpenTag } from './ctx/slots'
 import { fromMainPort, panelPortTag, type MainPortLike, type PanelPort } from './ctx/ui'
 import { parsePluginSpecs, parseServiceProviders, PluginLoader } from './loader'
@@ -84,6 +88,13 @@ function start(): void {
       // A slot frame (this plugin provides the page in it); the close of THIS port ends THIS frame.
       const slotPort: PanelPort = fromMainPort(raw, () => contexts.detachSlotPort(slotTag.pluginId, slotTag.id, slotPort))
       contexts.attachSlotPort(slotTag, slotPort)
+      return
+    }
+    const pageTag = settingsPageOpenTag(e.data)
+    if (pageTag) {
+      // The plugin's settings page; the close of THIS port ends THIS page, never a newer one.
+      const pagePort: PanelPort = fromMainPort(raw, () => contexts.detachSettingsPagePort(pageTag.pluginId, pageTag.id, pagePort))
+      contexts.attachSettingsPagePort(pageTag, pagePort)
       return
     }
     const tag = panelPortTag(e.data)

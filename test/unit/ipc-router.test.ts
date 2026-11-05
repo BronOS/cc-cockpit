@@ -7,6 +7,7 @@ import {
   registerOverlayHandlers,
   registerPanelHandlers,
   registerSlotHandlers,
+  registerSettingsPageHandlers,
   registerCccCommandHandlers,
   registerUpdateHandlers,
   registerProjectSettingsHandlers,
@@ -772,6 +773,42 @@ describe('registerSlotHandlers', () => {
     await expect(ipc.invoke('slots.height', 11, [{ frameId: 's1', height: '90' }])).rejects.toThrow(/must be a number/)
     await expect(ipc.invoke('slots.height', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('slots.connect', 13, [{ frameId: 's1', nonce: 1 }])).rejects.toThrow(/not a project window/)
+    expect(calls).toHaveLength(3)
+  })
+})
+
+describe('registerSettingsPageHandlers', () => {
+  it("passes the sender's project and window on with a checked plugin id and scope, refusing junk first", async () => {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerSettingsPageHandlers(router, {
+      info: (projectId, pluginId, scope) => {
+        calls.push(['info', projectId, pluginId, scope])
+        return pluginId === 'a.one' ? { enabled: true, src: 'cc-plugin://a.one/settings/index.html' } : null
+      },
+      connect: (projectId, windowId, pluginId, scope, nonce) => {
+        calls.push(['connect', projectId, windowId, pluginId, scope, nonce])
+        return true
+      },
+      disconnect: (projectId, pluginId) => void calls.push(['disconnect', projectId, pluginId])
+    })
+    // A projectId in the payload is ignored: the sender's own project is used.
+    await expect(ipc.invoke('settingsPage.info', 12, [{ pluginId: 'a.one', scope: 'app', projectId: PROJECT_A }])).resolves.toEqual({
+      enabled: true,
+      src: 'cc-plugin://a.one/settings/index.html'
+    })
+    await expect(ipc.invoke('settingsPage.connect', 11, [{ pluginId: 'a.one', scope: 'project', nonce: 4 }])).resolves.toBe(true)
+    await expect(ipc.invoke('settingsPage.disconnect', 11, [{ pluginId: 'a.one' }])).resolves.toBeNull()
+    expect(calls).toEqual([
+      ['info', PROJECT_B, 'a.one', 'app'],
+      ['connect', PROJECT_A, 1, 'a.one', 'project', 4],
+      ['disconnect', PROJECT_A, 'a.one']
+    ])
+    await expect(ipc.invoke('settingsPage.info', 11, [{ pluginId: 'A One', scope: 'app' }])).rejects.toThrow(/plugin id/)
+    await expect(ipc.invoke('settingsPage.info', 11, [{ pluginId: 'a.one', scope: 'global' }])).rejects.toThrow(/scope/)
+    await expect(ipc.invoke('settingsPage.connect', 11, [{ pluginId: 7, scope: 'app', nonce: 1 }])).rejects.toThrow(/plugin id/)
+    await expect(ipc.invoke('settingsPage.disconnect', 11, ['nope'])).rejects.toThrow(/bad payload/)
+    await expect(ipc.invoke('settingsPage.connect', 13, [{ pluginId: 'a.one', scope: 'app', nonce: 1 }])).rejects.toThrow(/not a project window/)
     expect(calls).toHaveLength(3)
   })
 })

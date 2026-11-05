@@ -76,6 +76,7 @@ var SERVICE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 var SERVICE_VERSION_MIN = 1;
 var SERVICE_VERSION_MAX = 9999;
 var MAX_SERVICES = 32;
+var SETTINGS_PAGE_SCOPES = ["app", "project"];
 var MAX_PATH_LENGTH = 260;
 var MAX_LIST = 100;
 var relativePath = { type: "string", minLength: 1, maxLength: MAX_PATH_LENGTH };
@@ -143,7 +144,20 @@ var MANIFEST_SCHEMA = {
         },
         settings: {
           type: "object",
-          properties: { project: settingsSchema, app: settingsSchema }
+          properties: {
+            project: settingsSchema,
+            app: settingsSchema,
+            // The `.html` entry and `main` are checked in validate.ts, with the reason.
+            page: {
+              type: "object",
+              required: ["entry", "scopes"],
+              additionalProperties: false,
+              properties: {
+                entry: relativePath,
+                scopes: { type: "array", minItems: 1, maxItems: 2, uniqueItems: true, items: { enum: [...SETTINGS_PAGE_SCOPES] } }
+              }
+            }
+          }
         },
         commands: {
           type: "array",

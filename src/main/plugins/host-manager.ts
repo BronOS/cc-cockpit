@@ -36,6 +36,8 @@
 // with the frame's port, to the PROVIDER's host only (sendSlotPort), and the event
 // `slot.close { pluginId, id }` when the frame goes (closeSlot). Who provides a type is
 // slotProvider: the project's pick among the plugins of the last launch, running now.
+// A plugin's html settings page (design-next §5.4) too: `{ settingsPageOpen: { pluginId, id, scope } }`
+// with the page's port (sendSettingsPagePort), `settingsPage.close { pluginId, id }` when it goes.
 // Plugin CLI commands (`ccc <name>`, plan B Task 5): runCli hands a call to the host serving the
 // project, only for a plugin of the last launch that declares the name and activated in the
 // current process, with a 30 s limit (exit 124) and at most MAX_CLI_IN_FLIGHT calls per plugin.
@@ -52,7 +54,7 @@ import { errorText } from '../../shared/error-text'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
-import type { CliContribution, OpenFileContribution, PluginManifest, SlotContribution } from '../../shared/manifest'
+import type { CliContribution, OpenFileContribution, PluginManifest, SettingsPageContribution, SettingsPageScope, SlotContribution } from '../../shared/manifest'
 import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
 import { capText } from '../../shared/text'
 import { selectSlotProvider } from '../../shared/services'
@@ -206,6 +208,8 @@ export interface HostPlugin {
   openFile?: OpenFileContribution
   /** The manifest's `contributes.slots`: the slots this plugin can draw (design-next §2). */
   slots?: SlotContribution[]
+  /** The manifest's `contributes.settings.page`: its html settings page (design-next §5.4). */
+  settingsPage?: SettingsPageContribution
 }
 
 /**
@@ -912,6 +916,34 @@ export class HostManager {
     rec.rpc.emit('slot.close', { pluginId, id })
   }
 
+  /**
+   * The scopes of the plugin's html settings page when it runs in the project's host now (activated
+   * in the current process, not reloading), else undefined: a page without a backend gets no port.
+   */
+  runningSettingsPage(projectId: string, pluginId: string): readonly SettingsPageScope[] | undefined {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return undefined
+    return rec.plugins.find((p) => p.id === pluginId)?.settingsPage?.scopes
+  }
+
+  /**
+   * Hand the plugin's host one end of its settings page's channel, tagged `settingsPageOpen` with
+   * main's own ids (panel-ports.ts took them from runningSettingsPage). False when it does not run.
+   */
+  sendSettingsPagePort(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope }, port: unknown): boolean {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.proc || rec.stopping || !rec.ran.has(open.pluginId) || rec.reloading.has(open.pluginId)) return false
+    rec.proc.transferPort(JSON.stringify({ settingsPageOpen: open }), port)
+    return true
+  }
+
+  /** Tell the plugin's host its settings page is gone (`settingsPage.close`); nothing when there is no host. */
+  closeSettingsPage(projectId: string, pluginId: string, id: string): void {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.rpc || rec.stopping) return
+    rec.rpc.emit('settingsPage.close', { pluginId, id })
+  }
+
   /** App quitting: kill every host now (no deactivate; main is about to exit). */
   disposeAll(): void {
     for (const rec of [...this.hosts.values(), ...this.closing]) {
@@ -1171,6 +1203,7 @@ export class HostManager {
       ...(Object.keys(panelSlotsOf(p)).length > 0 ? { panelSlots: panelSlotsOf(p) } : {}),
       ...(p.services !== undefined ? { services: p.services } : {}),
       ...(p.openFile !== undefined ? { openFile: true } : {}),
+      ...(p.settingsPage !== undefined ? { settingsPage: [...p.settingsPage.scopes] } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']

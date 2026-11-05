@@ -98,6 +98,20 @@ describe('servePluginRequest', () => {
     expect(res.headers.get('content-security-policy')).toContain("frame-src 'none'")
   })
 
+  it('serves a settings page entry (design-next §5.4) from the plugin folder only, with the panel CSP', async () => {
+    mkdirSync(join(pluginDir, 'settings'))
+    writeFileSync(join(pluginDir, 'settings', 'index.html'), '<p>rules</p>')
+    // The URL `settingsPage.info` answers (index.ts).
+    const res = await get(pluginFileUrl('acme.board', 'settings/index.html'))
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<p>rules</p>')
+    expect(res.headers.get('content-security-policy')).toBe(pluginCsp('acme.board'))
+    // Nothing next to the folder, however the path is spelt.
+    for (const url of ['cc-plugin://acme.board/settings/%2e%2e/%2e%2e/sibling.txt', 'cc-plugin://acme.board/escape.txt', 'cc-plugin://other.plugin/settings/index.html']) {
+      expect((await get(url)).status, url).toBe(404)
+    }
+  })
+
   it('serves the panel SDK inside every served plugin, and only there', async () => {
     const res = await get(`cc-plugin://acme.board${PANEL_SDK_PATH}`)
     expect(res.status).toBe(200)

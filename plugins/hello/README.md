@@ -38,6 +38,7 @@ app's code ends up in the bundle.
 | `src/host.ts` | The host side. One `activate(ctx)`; each section is one `ctx` member (see below). |
 | `panels/hello.html`, `panels/hello.js` | The panel page. Script must be a separate file: the plugin's CSP allows script from the plugin's own files only, no inline script, no network. |
 | `panels/pick.html`, `panels/pick.js` | A page opened as an html overlay. |
+| `settings/index.html`, `settings/index.js` | The html settings page (`contributes.settings.page`), shown under the forms in Settings. |
 | `icons/hello.svg` | The panel's icon. |
 | `themes/hello-dusk.json` | A theme (CSS variables plus xterm colours); the same format as `src/themes/*.json`. |
 
@@ -51,6 +52,10 @@ app's code ends up in the bundle.
   "Set" / "Not set" with Replace and Clear; main stores the value encrypted, and the plugin host
   (never a renderer) sees it as a string in `ctx.settings.app.apiToken`. The panel gets only
   `tokenSet`, a boolean: it never shows the value.
+- **settings page**: `contributes.settings.page` adds `settings/index.html` under the forms on
+  Settings > Plugins (app scope) and Settings > This project (project scope). It has no settings
+  API: `ctx.settingsPage.onOpen` answers its messages and keeps a note in `ctx.appStorage` or
+  `ctx.storage` by `page.scope`. Never post a secret to a page.
 - **secrets**: `ctx.secrets.get/set/delete/keys` is an app-wide, per-plugin store encrypted with the
   OS keychain, for tokens a plugin obtains itself. The "Bump" button keeps a counter there. The
   `setting:` key prefix belongs to secret settings fields: readable, but not writable, and not

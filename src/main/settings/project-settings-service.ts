@@ -193,6 +193,7 @@ export class ProjectSettingsService {
     }
     const projectSettings = this.projectSettingsView(project, p)
     if (projectSettings !== undefined) view.projectSettings = projectSettings
+    if (manifest.contributes?.settings?.page?.scopes.includes('project') === true) view.settingsPage = true
     return view
   }
 
