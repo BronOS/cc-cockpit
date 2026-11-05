@@ -1,6 +1,6 @@
 # cc-cockpit — next design (real-work round)
 
-Status: built (app 0.10, 2026-11-05); unreleased until the version bump. Deviations from the text below, all additive:
+Status: released in app 0.10.0 (2026-11-05). Deviations from the text below, all additive:
 `ctx.slots.available(type)` answers a `Promise<boolean>` (only main knows the project's pick); a provider slot needs `type`
 and `entry`, `title` is optional; the Services group (service, open-file and slot picks) moved from Plugins to This Project;
 side-panel settings sit on General; the bare-element rules of the component stylesheet are scoped to `:root:not(.cc-shell)`
