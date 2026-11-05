@@ -822,6 +822,9 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   overlay button, agenda placement per setting, badge, act failure message, missing app members → the message
 - [ ] run `npm test` — done when green
 - ➕ delete `dist/lib/v1.js` (v1 ranking and settings kept for the v1 host by task 26) and move `test/settings-view.test.js` off it
+- ➕ run every full placement (start, rules change, a source joining or leaving) inside `jev.sweep(() => …)` so queued Jev
+  requests of items gone or questions edited are dropped; re-place the refs `onAnswer` hands over (answers, the 10-minute
+  retry, a `jev` provider appearing); `jev.dispose()` in deactivate
 
 ### Task 30: Inbox panel v2 [model: opus]
 
