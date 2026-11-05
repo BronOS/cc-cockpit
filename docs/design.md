@@ -1121,7 +1121,12 @@ name, not which plugin is asking; installed plugins are trusted code.
   §3 Custom commands); keybinding list with overrides (the new-tab menu entries included, §3
   Custom commands › Keys for entries).
 
-All plugin forms are rendered from the manifest's JSON Schema; no plugin-owned settings pages.
+Plugin forms are rendered from the manifest's JSON Schema. For what a form cannot hold, a plugin may
+add an html page with `contributes.settings.page` (`{ entry, scopes }`, scopes `app` and/or `project`),
+shown under the form; its backend is `ctx.settingsPage.onOpen` in the window's host. The page has no
+settings API of its own (the plugin stores what it edits via `ctx.appStorage` / `ctx.storage`) and never
+receives a secret value. One page of a plugin is open at a time; a plugin not enabled in the project has
+no backend there, so the page shows an enable hint.
 Besides `"format": "secret"` (§6) the form knows two more formats. `"multiline"`: a string drawn as
 a growing text area, allowed anywhere in the schema. It is a hint to the form only (main's ajv does
 not validate formats), so it needs no check in main. `"sound"`: a notification sound picker, the
