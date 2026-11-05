@@ -717,11 +717,12 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 **Files (repo `~/Projects/cc-cockpit-jira`):** `dist/host.js` (the issue open path, reviewer `annotate` and the own
 `panels/issue.html` fallback), `panels/issue.js`, `test/host.test.js`, `test/fakes.js`, `README.md`
 
-- [ ] as task 20 for issues (both the reviewer path and its own page get the type, `ready: 'manual'`, buttons,
+- [x] as task 20 for issues (both the reviewer path and its own page get the type, `ready: 'manual'`, buttons,
   `onDiscuss` with key, summary, status and latest comment, capped); drop the own page's Discuss / New session buttons
   only when `ctx.overlay.buttons` exists (an older app keeps them)
-- [ ] write the same tests as task 20
-- [ ] run `npm test` — done when green
+- [x] write the same tests as task 20
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-jira`; the type also goes with `prepare`; the reader page's doc message carries `toolbar: true` (buttons and `onDiscuss` exist), which hides the page's Discuss / New session; a failed post to the page shows an error notice and closes the loader
 
 ### Task 25: Calendar: the agenda slot [model: sonnet]
 
