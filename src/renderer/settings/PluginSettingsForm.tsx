@@ -1,8 +1,9 @@
 // The deep import is deliberate: the package root also exports a test helper that imports
 // `@rjsf/validator-ajv8` (ajv), which this page must not bundle (see noRendererValidation).
 import Form from '@rjsf/core/lib/components/Form.js'
-import type { RJSFSchema, ValidatorType, WidgetProps } from '@rjsf/utils'
-import { Component, createContext, useContext, useEffect, useRef, useState } from 'react'
+import DefaultObjectFieldTemplate from '@rjsf/core/lib/components/templates/ObjectFieldTemplate.js'
+import type { ObjectFieldTemplateProps, RJSFSchema, UiSchema, ValidatorType, WidgetProps } from '@rjsf/utils'
+import { Component, createContext, useContext, useEffect, useId, useRef, useState } from 'react'
 import { errorText } from '../../shared/error-text'
 import type { PluginSettingsSaveResult, SecretEdits, SecretFieldsView } from '../../shared/ipc'
 import { ipcErrorMessage } from '../ipc-error'
@@ -141,15 +142,120 @@ function SecretWidget(props: WidgetProps): React.JSX.Element {
 
 const widgets = { ...formatWidgets, secret: SecretWidget }
 
+/**
+ * A project form's "Use global" switches (design-next §5.2): which top-level fields this project
+ * overrides now (edited, not saved yet), and the switch of one field. Absent (null) on the app-wide
+ * and global forms, which have no such choice. A context like SecretContext: rjsf builds the root's
+ * property elements before the template sees them, and the switches must follow a toggle.
+ */
+interface OverrideFormState {
+  overridden: ReadonlySet<string>
+  setOverride(name: string, override: boolean): void
+  disabled: boolean
+}
+const OverrideContext = createContext<OverrideFormState | null>(null)
+
+/** The top-level properties of a schema, by name (main checked the schema; a manifest's, so anything). */
+function propertiesOf(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = schema.properties
+  return typeof props === 'object' && props !== null && !Array.isArray(props) ? (props as Record<string, unknown>) : {}
+}
+
+/** The label of a top-level field: its schema title, else its name. */
+function fieldTitle(schema: Record<string, unknown>, name: string): string {
+  const field = propertiesOf(schema)[name]
+  const title = typeof field === 'object' && field !== null ? (field as { title?: unknown }).title : undefined
+  return typeof title === 'string' && title.trim() !== '' ? title : name
+}
+
+/** The top-level properties with `"format": "secret"` (main allows the format only there). */
+function secretFieldNames(schema: Record<string, unknown>): Set<string> {
+  return new Set(
+    Object.entries(propertiesOf(schema))
+      .filter(([, v]) => typeof v === 'object' && v !== null && (v as { format?: unknown }).format === 'secret')
+      .map(([k]) => k)
+  )
+}
+
+/**
+ * One top-level field of a project form, under its "Use global" switch. Using the global value, the
+ * field shows that value and is disabled (uiSchema `ui:disabled`, which rjsf passes down to every
+ * input of a nested object or array); switched off, the field is this project's override, edited
+ * in place.
+ */
+function OverrideField(props: { name: string; title: string; children: React.ReactNode }): React.JSX.Element {
+  const ctx = useContext(OverrideContext)
+  const id = useId()
+  const overridden = ctx?.overridden.has(props.name) === true
+  return (
+    <div className="settings-override" data-override-field={props.name} data-override={overridden ? 'on' : 'off'}>
+      <label className="settings-override-toggle" htmlFor={id}>
+        <input
+          id={id}
+          type="checkbox"
+          checked={!overridden}
+          disabled={ctx?.disabled !== false}
+          // Named "Use global" alone, the field's title left out: a name that held it would also
+          // answer a lookup of the field by its label (getByLabel matches a part of a name).
+          title={`Use the global value of ${props.title}`}
+          onChange={(e) => ctx?.setOverride(props.name, !e.target.checked)}
+        />
+        Use global
+      </label>
+      {props.children}
+    </div>
+  )
+}
+
+/** rjsf's object template, with each top-level field of a project form under its switch. */
+function ObjectFieldTemplate(props: ObjectFieldTemplateProps): React.JSX.Element | null {
+  const ctx = useContext(OverrideContext)
+  if (ctx === null || props.fieldPathId.$id !== 'root') return <DefaultObjectFieldTemplate {...props} />
+  const schema = props.schema as Record<string, unknown>
+  const properties = props.properties.map((p) =>
+    p.hidden
+      ? p
+      : {
+          ...p,
+          content: (
+            <OverrideField key={p.name} name={p.name} title={fieldTitle(schema, p.name)}>
+              {p.content}
+            </OverrideField>
+          )
+        }
+  )
+  return <DefaultObjectFieldTemplate {...props} properties={properties} />
+}
+
+const templates = { ...formTemplates, ObjectFieldTemplate }
+
+/**
+ * A project form's project mode (design-next §5.2): which fields the project overrides as stored,
+ * and the global values a field shows on "Use global".
+ */
+export interface ProjectOverrides {
+  /** The fields this project overrides as stored (PluginAppSettingsView.overrides). */
+  fields: string[]
+  /** The global values, defaults applied (PluginAppSettingsView.globalValues). */
+  globalValues: Record<string, unknown>
+  /** Whether each secret field has a global value (PluginAppSettingsView.globalSecretFields). */
+  globalSecretFields?: SecretFieldsView
+}
+
 /** The edits worth sending: a typed value that is still empty is no change. */
 function secretsToSend(edits: SecretEdits): SecretEdits {
   return Object.fromEntries(Object.entries(edits).filter(([, v]) => v === null || v !== ''))
 }
 
 /**
- * A plugin's settings form, rendered from the schema in its manifest (design §6: no plugin-owned
- * settings pages). `save` sends the values (and the secret fields' edits) to main; a rejection by
- * main's validation is listed.
+ * A plugin's settings form, rendered from the schema in its manifest (design §6; a plugin's html
+ * page, if any, is drawn under it). `save` sends the values (and the secret fields' edits) to main;
+ * a rejection by main's validation is listed.
+ *
+ * With `overrides` it is a project's form (This Project): each top-level field has "Use global"
+ * (the default) or is overridden, and a save sends only the overridden fields, so a field the user
+ * never touched keeps following the global value. "Use global" on a field that was overridden
+ * drops the override (a secret one is cleared). Without it, every field is sent, as before.
  */
 export function PluginSettingsForm(props: {
   schema: Record<string, unknown>
@@ -158,6 +264,10 @@ export function PluginSettingsForm(props: {
   problem?: string
   /** Whether each secret field is stored (absent when the schema has none). */
   secretFields?: SecretFieldsView
+  /** A project's form: what it overrides and the global values (see above). */
+  overrides?: ProjectOverrides
+  /** The Save button's text (default "Save settings"); a page with two forms names them apart. */
+  saveLabel?: string
   save: (values: Record<string, unknown>, secrets: SecretEdits) => Promise<PluginSettingsSaveResult>
   onSaved: () => void
 }): React.JSX.Element {
@@ -186,34 +296,99 @@ export function PluginSettingsForm(props: {
   const [data, setData] = useState<Record<string, unknown>>(props.values)
   const [secretFields, setSecretFields] = useState<SecretFieldsView>(props.secretFields ?? {})
   const [edits, setEdits] = useState<SecretEdits>({})
-  const incoming = JSON.stringify([props.schema, props.values, props.problem ?? null, props.secretFields ?? null])
+  const [overridden, setOverridden] = useState<ReadonlySet<string>>(() => new Set(props.overrides?.fields ?? []))
+  const incoming = JSON.stringify([props.schema, props.values, props.problem ?? null, props.secretFields ?? null, props.overrides ?? null])
   const [seen, setSeen] = useState(incoming)
   if (seen !== incoming) {
     setSeen(incoming)
     setData(props.values)
     setSecretFields(props.secretFields ?? {})
     setEdits({})
+    setOverridden(new Set(props.overrides?.fields ?? []))
     setErrors(props.problem !== undefined ? [props.problem] : [])
     setRefusals(0)
   }
+  const project = props.overrides
+  const secretNames = secretFieldNames(props.schema)
+  const setEdit = (name: string, edit: string | null | undefined): void => {
+    setSaved(false)
+    setEdits((prev) => {
+      const next = { ...prev }
+      if (edit === undefined) delete next[name]
+      else next[name] = edit
+      return next
+    })
+  }
   const secretState: SecretFormState = {
-    fields: secretFields,
+    // A project's secret field shows the global value's state while it uses global, and its own
+    // (an override stored or not) once overridden: the view's `secretFields` are the effective
+    // ones, which would call a fresh override "Set" when only the global value is.
+    fields:
+      project === undefined
+        ? secretFields
+        : Object.fromEntries(
+            [...secretNames].map((f) => [
+              f,
+              { set: overridden.has(f) ? project.fields.includes(f) : project.globalSecretFields?.[f]?.set === true }
+            ])
+          ),
     edits,
-    setEdit: (name, edit) => {
-      setSaved(false)
-      setEdits((prev) => {
-        const next = { ...prev }
-        if (edit === undefined) delete next[name]
-        else next[name] = edit
-        return next
-      })
-    }
+    setEdit
+  }
+  const overrideState: OverrideFormState | null =
+    project === undefined
+      ? null
+      : {
+          overridden,
+          disabled: saving,
+          setOverride: (name, override) => {
+            setSaved(false)
+            setOverridden((prev) => {
+              const next = new Set(prev)
+              if (override) next.add(name)
+              else next.delete(name)
+              return next
+            })
+            if (override) return
+            // Back to the global value: the field shows it again, and a typed secret is dropped.
+            if (secretNames.has(name)) {
+              setEdit(name, undefined)
+              return
+            }
+            setData((prev) => {
+              const next = { ...prev }
+              if (Object.hasOwn(project.globalValues, name)) next[name] = structuredClone(project.globalValues[name])
+              else delete next[name]
+              return next
+            })
+          }
+        }
+  // A project form's fields on "Use global" are shown disabled; rjsf passes it down to nested inputs.
+  const uiSchema: UiSchema | undefined =
+    project === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.keys(propertiesOf(props.schema))
+            .filter((f) => !overridden.has(f))
+            .map((f) => [f, { 'ui:disabled': true }])
+        )
+
+  /** What a save sends: every field, or for a project its overrides only ("Use global" clears one). */
+  const toSend = (formData: Record<string, unknown>): { values: Record<string, unknown>; secrets: SecretEdits } => {
+    if (project === undefined) return { values: formData, secrets: secretsToSend(edits) }
+    const values = Object.fromEntries(Object.entries(formData).filter(([k]) => overridden.has(k) && !secretNames.has(k)))
+    const secrets: SecretEdits = {}
+    for (const [name, edit] of Object.entries(secretsToSend(edits))) if (overridden.has(name)) secrets[name] = edit
+    // A secret override switched back to "Use global": its own value goes.
+    for (const name of project.fields) if (secretNames.has(name) && !overridden.has(name)) secrets[name] = null
+    return { values, secrets }
   }
 
   const submit = (formData: Record<string, unknown>): void => {
     setSaving(true)
     setSaved(false)
-    props.save(formData, secretsToSend(edits)).then(
+    const out = toSend(formData)
+    props.save(out.values, out.secrets).then(
       (result) => {
         setSaving(false)
         if (result.ok) {
@@ -255,38 +430,41 @@ export function PluginSettingsForm(props: {
       {refusals === 0 && errorList}
       <FormBoundary>
         <SecretContext.Provider value={secretState}>
-          <Form
-            schema={props.schema as RJSFSchema}
-            formData={data}
-            widgets={widgets}
-            templates={formTemplates}
-            validator={noRendererValidation}
-            noValidate
-            // The browser's own constraint check (min/max/required on the inputs) would block the
-            // submit with a native bubble; main's answer is the one the user should see.
-            noHtml5Validate
-            liveValidate={false}
-            disabled={saving}
-            onChange={(e) => {
-              setSaved(false)
-              setData((e.formData ?? {}) as Record<string, unknown>)
-            }}
-            onSubmit={(e) => submit((e.formData ?? {}) as Record<string, unknown>)}
-          >
-            <div ref={footerRef}>
-              {refusals > 0 && errorList}
-              <div className="settings-form-actions">
-                <button type="submit" className="primary" disabled={saving}>
-                  Save settings
-                </button>
-                {saved && (
-                  <span role="status" className="settings-saved">
-                    Saved.
-                  </span>
-                )}
+          <OverrideContext.Provider value={overrideState}>
+            <Form
+              schema={props.schema as RJSFSchema}
+              formData={data}
+              {...(uiSchema !== undefined ? { uiSchema } : {})}
+              widgets={widgets}
+              templates={templates}
+              validator={noRendererValidation}
+              noValidate
+              // The browser's own constraint check (min/max/required on the inputs) would block the
+              // submit with a native bubble; main's answer is the one the user should see.
+              noHtml5Validate
+              liveValidate={false}
+              disabled={saving}
+              onChange={(e) => {
+                setSaved(false)
+                setData((e.formData ?? {}) as Record<string, unknown>)
+              }}
+              onSubmit={(e) => submit((e.formData ?? {}) as Record<string, unknown>)}
+            >
+              <div ref={footerRef}>
+                {refusals > 0 && errorList}
+                <div className="settings-form-actions">
+                  <button type="submit" className="primary" disabled={saving}>
+                    {props.saveLabel ?? 'Save settings'}
+                  </button>
+                  {saved && (
+                    <span role="status" className="settings-saved">
+                      Saved.
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-          </Form>
+            </Form>
+          </OverrideContext.Provider>
         </SecretContext.Provider>
       </FormBoundary>
     </div>

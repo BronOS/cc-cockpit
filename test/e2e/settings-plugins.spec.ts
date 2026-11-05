@@ -121,7 +121,8 @@ test('settings: link a plugin, save its app settings, an overlay over the screen
 
   // The secret field (required, and unset: the plugin is not disabled for it). Set it: the value
   // goes to main once, which stores it encrypted in secrets.json, never in app.json or the page.
-  const secretState = plugin.locator('[data-secret-state]')
+  // The app form's: the global values of the project fields (their own secret field) are under it.
+  const secretState = plugin.getByTestId('app-settings-form').locator('[data-secret-state]')
   // The password field Add or Replace opens (labelled "API token" plus rjsf's required mark).
   const tokenInput = plugin.locator('input[type="password"]')
   const storedToken = async (): Promise<string | null> => {

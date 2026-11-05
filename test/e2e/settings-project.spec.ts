@@ -1,9 +1,11 @@
 // Task 33: the settings overlay's "This Project", "Appearance" and "Keybindings" pages. A fixture plugin
 // with a panel is enabled for the project (its icon appears, the host restarts), moved to another
 // zone and disabled again (icon gone); a project settings form is saved (main validates) and no
-// account picker is shown (accounts left core, design §6); its secret field is set, replaced and
-// cleared, keyed by this project's id and never shown; the theme is switched; a keybinding is
-// changed, a conflict is warned about, and the new chord is used.
+// account picker is shown (accounts left core, design §6); each field is "Use global" until it is
+// overridden, and a save stores the overrides only (design-next §5.2); its secret field is set,
+// replaced and cleared, keyed by this project's id and never shown; a global value set on the
+// plugin's global page (Plugins › Settings) reaches the fields that use global; the theme is
+// switched; a keybinding is changed, a conflict is warned about, and the new chord is used.
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
@@ -84,18 +86,35 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   await expect(ui.getByLabel('Enable Settings UI fixture')).toBeChecked()
   await expect(ui.getByText(/account/i)).toHaveCount(0)
 
-  // The project settings form (@rjsf): main refuses a value the schema refuses, and stores a good one.
+  // The project settings form (@rjsf): every field starts on "Use global" (shown, not editable).
   await ui.getByRole('button', { name: 'Settings' }).click()
+  const useGlobal = (field: string): ReturnType<Page['locator']> =>
+    ui.locator(`[data-override-field="${field}"]`).getByRole('checkbox', { name: 'Use global' })
   await expect(ui.getByLabel('Board')).toHaveValue('main')
+  await expect(ui.getByLabel('Board')).toBeDisabled()
+  for (const field of ['board', 'pageSize', 'key']) await expect(useGlobal(field)).toBeChecked()
+  // Overridden, a field is edited here: main refuses a value the schema refuses, and stores a good one.
+  await useGlobal('pageSize').click()
+  await expect(useGlobal('pageSize')).not.toBeChecked()
   await ui.getByLabel('Page size').fill('0')
   await ui.getByRole('button', { name: 'Save settings' }).click()
   await expect(ui.getByRole('alert')).toContainText('pageSize')
   await ui.getByLabel('Page size').fill('50')
+  await useGlobal('board').click()
   await ui.getByLabel('Board').fill('release')
   await ui.getByRole('button', { name: 'Save settings' }).click()
   await expect(ui.getByRole('status')).toHaveText('Saved.')
   await expect.poll(() => projectFiles(), { timeout: 5_000 }).toContain('release')
   expect(projectFiles()).toMatch(/"pageSize":\s*50/)
+  await expect(useGlobal('board')).not.toBeChecked()
+  // "Use global" again drops the override: the field shows the global value (the default here),
+  // and the record keeps only the field still overridden.
+  await useGlobal('board').click()
+  await expect(ui.getByLabel('Board')).toHaveValue('main')
+  await ui.getByRole('button', { name: 'Save settings' }).click()
+  await expect.poll(() => projectFiles(), { timeout: 5_000 }).not.toContain('release')
+  expect(projectFiles()).toMatch(/"test\.settingsui":\s*\{\s*"pageSize":\s*50\s*\}/)
+  await expect(useGlobal('board')).toBeChecked()
 
   // The project's secret field: stored under this project's id, never in its record or the page.
   const PROJECT_FIRST = 'e2e-project-key-first'
@@ -116,6 +135,7 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   const keyState = ui.locator('[data-secret-state]')
   const keyInput = ui.locator('input[type="password"]')
   await expect(keyState).toHaveText('Not set')
+  await useGlobal('key').click()
   await ui.getByRole('button', { name: 'Add Project key' }).click()
   await keyInput.fill(PROJECT_FIRST)
   await ui.getByRole('button', { name: 'Save settings' }).click()
@@ -135,6 +155,32 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   await ui.getByRole('button', { name: 'Save settings' }).click()
   await expect(keyState).toHaveText('Not set')
   await expect.poll(storedKeys, { timeout: 5_000 }).toEqual({})
+  // A cleared override is no override: the field is back on "Use global".
+  await expect(useGlobal('key')).toBeChecked()
+
+  // The plugin's global page (Plugins › Settings): the global values of its project fields, under
+  // the app fields. A global Board reaches this project, which uses global for it; the overridden
+  // Page size stays.
+  await settings.getByRole('button', { name: 'Plugins' }).click()
+  const pluginRow = settings.locator('[data-plugin="test.settingsui"]')
+  const globalToggle = pluginRow.getByRole('button', { name: 'Settings' })
+  if ((await globalToggle.getAttribute('aria-expanded')) !== 'true') await globalToggle.click()
+  const globals = pluginRow.getByTestId('project-defaults-form')
+  await expect(globals.getByLabel('Board')).toHaveValue('main')
+  await expect(globals.getByRole('checkbox', { name: 'Use global' })).toHaveCount(0)
+  await globals.getByLabel('Board').fill('global-board')
+  await globals.getByRole('button', { name: 'Save global values' }).click()
+  await expect(globals.getByRole('status')).toHaveText('Saved.')
+  await expect
+    .poll(() => (JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { pluginProjectDefaults?: unknown }).pluginProjectDefaults)
+    .toEqual({ 'test.settingsui': { board: 'global-board', pageSize: 20 } })
+  await settings.getByRole('button', { name: 'This Project', exact: true }).click()
+  const uiToggle = ui.getByRole('button', { name: 'Settings' })
+  if ((await uiToggle.getAttribute('aria-expanded')) !== 'true') await uiToggle.click()
+  await expect(ui.getByLabel('Board')).toHaveValue('global-board')
+  await expect(useGlobal('board')).toBeChecked()
+  await expect(ui.getByLabel('Page size')).toHaveValue('50')
+  expect(projectFiles()).not.toContain('global-board')
 
   // Appearance: the theme picker reaches the page (and so the panels and terminals that follow it).
   await settings.getByRole('button', { name: 'Appearance', exact: true }).click()

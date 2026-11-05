@@ -165,6 +165,14 @@ function ProjectPlugin(props: {
           values={plugin.projectSettings.values}
           {...(plugin.projectSettings.problem !== undefined ? { problem: plugin.projectSettings.problem } : {})}
           {...(plugin.projectSettings.secretFields !== undefined ? { secretFields: plugin.projectSettings.secretFields } : {})}
+          // Each field "Use global" or overridden here (design-next §5.2): a save sends the overrides only.
+          overrides={{
+            fields: plugin.projectSettings.overrides ?? [],
+            globalValues: plugin.projectSettings.globalValues ?? {},
+            ...(plugin.projectSettings.globalSecretFields !== undefined
+              ? { globalSecretFields: plugin.projectSettings.globalSecretFields }
+              : {})
+          }}
           save={(values, secrets) => window.cockpit.invoke('settings.projectPluginSettingsSave', { pluginId: plugin.id, values, secrets })}
           onSaved={reload}
         />

@@ -1,7 +1,7 @@
 import { useId, useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
-import { BlocksIcon } from './icons'
+import { BlocksIcon, GearIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { PluginSettingsPage } from './PluginSettingsPage'
 import { Empty, Group, PageHeader, Switch } from './ui'
@@ -264,8 +264,10 @@ function PluginItem(props: {
               <button type="button" className="quiet" onClick={props.onOpenProject}>
                 Enable in This Project
               </button>
-              {(plugin.appSettings || plugin.settingsPage) && (
+              {/* The gear: the plugin's global page (design-next §5.1): app fields, the global values of project fields, its html page. */}
+              {(plugin.appSettings || plugin.projectDefaults || plugin.settingsPage) && (
                 <button type="button" aria-expanded={showSettings} onClick={() => setShowSettings((s) => !s)}>
+                  <GearIcon size={14} />
                   Settings
                 </button>
               )}
@@ -307,17 +309,40 @@ function PluginItem(props: {
           </button>
         </form>
       )}
+      {plugin.appSettings && showSettings && plugin.projectDefaults && <h4 className="settings-form-heading">App-wide</h4>}
       {plugin.appSettings && showSettings && (
-        <PluginSettingsForm
-          schema={plugin.appSettings.schema}
-          values={plugin.appSettings.values}
-          {...(plugin.appSettings.problem !== undefined ? { problem: plugin.appSettings.problem } : {})}
-          {...(plugin.appSettings.secretFields !== undefined ? { secretFields: plugin.appSettings.secretFields } : {})}
-          save={(values, secrets) => window.cockpit.invoke('settings.pluginSettingsSave', { id: plugin.id, values, secrets })}
-          onSaved={reload}
-        />
+        <div data-testid="app-settings-form">
+          <PluginSettingsForm
+            schema={plugin.appSettings.schema}
+            values={plugin.appSettings.values}
+            {...(plugin.appSettings.problem !== undefined ? { problem: plugin.appSettings.problem } : {})}
+            {...(plugin.appSettings.secretFields !== undefined ? { secretFields: plugin.appSettings.secretFields } : {})}
+            save={(values, secrets) => window.cockpit.invoke('settings.pluginSettingsSave', { id: plugin.id, values, secrets })}
+            onSaved={reload}
+          />
+        </div>
       )}
-      {/* The plugin's html page for the app scope (design-next §5.4), under its form. */}
+      {/* The global values of the project fields (design-next §5.2): what every project that does not override a field gets. */}
+      {plugin.projectDefaults && showSettings && (
+        <>
+          <h4 className="settings-form-heading">Every project</h4>
+          <p className="settings-item-meta settings-form-heading-note">
+            The global value of each project setting. A project uses it unless it overrides the field under This Project.
+          </p>
+          <div data-testid="project-defaults-form">
+            <PluginSettingsForm
+              schema={plugin.projectDefaults.schema}
+              values={plugin.projectDefaults.values}
+              {...(plugin.projectDefaults.problem !== undefined ? { problem: plugin.projectDefaults.problem } : {})}
+              {...(plugin.projectDefaults.secretFields !== undefined ? { secretFields: plugin.projectDefaults.secretFields } : {})}
+              saveLabel="Save global values"
+              save={(values, secrets) => window.cockpit.invoke('settings.pluginProjectDefaultsSave', { id: plugin.id, values, secrets })}
+              onSaved={reload}
+            />
+          </div>
+        </>
+      )}
+      {/* The plugin's html page for the app scope (design-next §5.4), under its forms. */}
       {plugin.settingsPage && showSettings && <PluginSettingsPage pluginId={plugin.id} pluginName={plugin.name} scope="app" />}
     </li>
   )

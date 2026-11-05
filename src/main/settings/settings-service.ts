@@ -455,6 +455,9 @@ export class SettingsService {
     }
     const appSettings = this.appSettingsView(p)
     if (appSettings !== undefined) view.appSettings = appSettings
+    // The global values of the project fields, on the same global page (design-next §5.2).
+    const projectDefaults = p.manifest !== undefined ? this.pluginProjectDefaults(p.id) : undefined
+    if (projectDefaults !== undefined) view.projectDefaults = projectDefaults
     // The html page (design-next §5.4) shows under the form; whether it can talk to the plugin here is
     // asked by the page itself (`settingsPage.info`, the window's project).
     if (p.state.ok && p.manifest?.contributes?.settings?.page?.scopes.includes('app') === true) view.settingsPage = true

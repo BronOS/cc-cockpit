@@ -352,6 +352,13 @@ export interface PluginAppSettingsView {
    * the effective ones (override, else global, else default).
    */
   overrides?: string[]
+  /**
+   * A project's view only: the global values of the plugin's project fields (defaults applied), what
+   * a field shows on "Use global" before the save. Never a secret field: see `globalSecretFields`.
+   */
+  globalValues?: Record<string, unknown>
+  /** A project's view only, when the schema has secret fields: whether each has a global value. */
+  globalSecretFields?: SecretFieldsView
 }
 
 /**
@@ -368,6 +375,11 @@ export interface PluginView {
   /** `ok: false` = disabled, with the reason the manifest or settings check gave. */
   state: { ok: true } | { ok: false; reason: string; revoked?: { reason: string; source: string } }
   appSettings?: PluginAppSettingsView
+  /**
+   * The global values of the plugin's project fields (design-next §5.2), edited on its global page
+   * under the app fields: what every project that does not override a field gets.
+   */
+  projectDefaults?: PluginAppSettingsView
   /** The plugin has an html settings page for the app scope (`contributes.settings.page`, design-next §5.4). */
   settingsPage?: true
   /** Bundled plugins only: switched off in every project (`AppSettings.disabledBundled`). Absent for any other source. */
@@ -898,6 +910,14 @@ export interface IpcInvokeMap {
     req: { id: string; values: Record<string, unknown>; secrets?: SecretEdits }
     res: PluginSettingsSaveResult
   }
+  /**
+   * Save the global values of a plugin's project fields; main validates them alone and merged with
+   * every open project's overrides, and refuses naming a project they would make invalid.
+   */
+  'settings.pluginProjectDefaultsSave': {
+    req: { id: string; values: Record<string, unknown>; secrets?: SecretEdits }
+    res: PluginSettingsSaveResult
+  }
 
   // Settings overlay, "This Project", "General" and "Appearance". They act on the
   // sender's own project (ids in a payload are looked up inside it) and the app-wide theme/keys.
@@ -1254,6 +1274,7 @@ export const INVOKE_CHANNELS = [
   'settings.marketplaceRefresh',
   'settings.marketplaceSetUrls',
   'settings.pluginSettingsSave',
+  'settings.pluginProjectDefaultsSave',
   'settings.project',
   'settings.projectPluginEnable',
   'settings.projectPluginSettingsSave',

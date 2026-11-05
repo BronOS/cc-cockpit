@@ -886,6 +886,7 @@ describe('registerSettingsHandlers', () => {
       uninstallPlugin: async (...args) => rec('uninstallPlugin', undefined)(...args),
       setBundledOff: async (...args) => rec('setBundledOff', undefined)(...args),
       savePluginSettings: async (...args) => rec('savePluginSettings', { ok: true as const, values: {} })(...args),
+      saveProjectDefaults: async (...args) => rec('saveProjectDefaults', { ok: true as const, values: {} })(...args),
       marketplace: rec('marketplace', { indexes: [], entries: [], warnings: [] }),
       installMarketplace: async (...args) => rec('installMarketplace', {} as never)(...args),
       updateMarketplace: async (...args) => rec('updateMarketplace', {} as never)(...args),
@@ -899,7 +900,7 @@ describe('registerSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(16)
+    expect(channels).toHaveLength(17)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {
@@ -925,6 +926,8 @@ describe('registerSettingsHandlers', () => {
     await ipc.invoke('settings.pluginSettingsSave', 11, [{ id: 'a.b', values: { k: 1 } }])
     // A secret field's edit travels beside the values, never inside them.
     await ipc.invoke('settings.pluginSettingsSave', 11, [{ id: 'a.b', values: {}, secrets: { token: 'new', old: null } }])
+    // The global values of project fields: an id and the values, never a project (main checks them all).
+    await ipc.invoke('settings.pluginProjectDefaultsSave', 11, [{ id: 'a.b', values: { k: 2 }, secrets: { token: null }, projectId: 'other' }])
     await ipc.invoke('settings.pluginUninstall', 11, [{ id: 'a.b', extra: 1 }])
     await ipc.invoke('settings.pluginBundledOff', 11, [{ id: 'cockpit.editor', off: true, projectId: 'other' }])
     // The marketplace calls name a listing only; a repo, tag or commit in the payload is dropped.
@@ -936,6 +939,7 @@ describe('registerSettingsHandlers', () => {
       ['updatePlugin', 'a.b', 'v2'],
       ['savePluginSettings', 'a.b', { k: 1 }, undefined],
       ['savePluginSettings', 'a.b', {}, { token: 'new', old: null }],
+      ['saveProjectDefaults', 'a.b', { k: 2 }, { token: null }],
       ['uninstallPlugin', 'a.b'],
       ['setBundledOff', 'cockpit.editor', true],
       ['installMarketplace', 'https://i/x.json', 'a.b', { repo: 'r', commit: 'c' }],

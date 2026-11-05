@@ -247,6 +247,10 @@ export class ProjectSettingsService {
     const stored = this.storedOverrides(project, p.id)
     const view = settingsViewOf(schema, effectiveProjectValues(this.deps.projectDefaults(p.id), stored), (f) => this.secretSet(p.id, project.id, f))
     view.overrides = overriddenFields(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
+    // What "Use global" shows for a field before the save: the global value (defaults applied).
+    const global = settingsViewOf(schema, this.deps.projectDefaults(p.id), (f) => this.deps.secrets.hasSetting(p.id, projectDefaultSettingKey(f)))
+    view.globalValues = global.values
+    if (global.secretFields !== undefined) view.globalSecretFields = global.secretFields
     return view
   }
 }

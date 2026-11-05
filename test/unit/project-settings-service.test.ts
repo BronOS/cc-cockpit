@@ -132,7 +132,8 @@ describe('view', () => {
     expect(service.view(P).plugins[0]!.projectSettings).toEqual({
       schema: expect.objectContaining({ type: 'object' }),
       values: { board: 'main' },
-      overrides: []
+      overrides: [],
+      globalValues: { board: 'main' }
     })
     record.pluginSettings['test.jira'] = { limit: 0 }
     const view = service.view(P).plugins[0]!.projectSettings!
@@ -230,6 +231,8 @@ describe('saveSettings', () => {
     expect(result).toEqual({ ok: true, values: { board: 'team', limit: 9 } })
     expect(record.pluginSettings['test.jira']).toEqual({ limit: 9 })
     expect(service.view(P).plugins[0]!.projectSettings).toMatchObject({ values: { board: 'team', limit: 9 }, overrides: ['limit'] })
+    // What "Use global" shows for an overridden field: the global value, not the override.
+    expect(service.view(P).plugins[0]!.projectSettings?.globalValues).toEqual({ board: 'team', limit: 3 })
     // An object field is overridden whole, and a key the schema does not declare is no override.
     record.pluginSettings['test.jira'] = { extra: 1 }
     expect(service.view(P).plugins[0]!.projectSettings).toMatchObject({ values: { board: 'team', limit: 3, extra: 1 }, overrides: [] })

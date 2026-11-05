@@ -1064,11 +1064,21 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   calls for global values and overrides, `test/e2e/settings-project.spec.ts`, `test/e2e/plugin-config.spec.ts`,
   `test/e2e/settings-page.spec.ts`
 
-- [ ] Plugins › gear opens the plugin's **global** page: `app` fields plus the global values of `project` fields, then the
+- [x] Plugins › gear opens the plugin's **global** page: `app` fields plus the global values of `project` fields, then the
   html page with app scope; This Project per plugin: each project field "Use global" (default) or an override, then the
   html page with project scope
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-project.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-project.spec.ts
   test/e2e/plugin-config.spec.ts test/e2e/settings-page.spec.ts test/e2e/plugin-secrets.spec.ts` — done when green
+- ➕ The global page is the Plugins row's expanded settings (its "Settings" button now has the gear glyph): the app
+  form, then "Every project" (the global values of the project fields, own Save button "Save global values", new
+  channel `settings.pluginProjectDefaultsSave` → `SettingsService.saveProjectDefaults`; `PluginView.projectDefaults`),
+  then the html page with app scope.
+- ➕ This Project: each top-level field sits under a "Use global" switch (checked by default; the field is shown with the
+  global value and disabled through uiSchema `ui:disabled`). A save sends only the overridden fields; "Use global" on an
+  overridden field drops it (a secret one is sent as a clear). The project view gained `globalValues` /
+  `globalSecretFields` so a switched-back field shows the global value before the save. The switch is named "Use global"
+  alone (field title in its `title`): a name holding the title made `getByLabel('<title>')` match two elements.
+- ➕ `settings-plugins.spec.ts` scopes its secret-state locator to the app form (the global form has its own secret field).
 
 ### Task 40: The panel gear, guide and design.md [model: sonnet]
 

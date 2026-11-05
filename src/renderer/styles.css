@@ -2096,6 +2096,39 @@ iframe:focus-visible {
 .settings-subform .settings-row {
   padding: 6px 0;
 }
+/* A plugin's global page has two forms (app fields, the global values of project fields): each
+   under a small heading in the subpanel's indent. */
+.settings-form-heading {
+  margin: 4px 0 0 28px;
+  font-size: var(--cc-text-sm);
+  font-weight: 600;
+  color: var(--cc-fg);
+}
+.settings-form-heading-note {
+  margin: 0 0 0 28px;
+}
+/* A project form's field under its "Use global" switch (PluginSettingsForm OverrideField): the
+   switch on a line of its own at the right, over the field it governs. */
+.settings-plugin-form .settings-override {
+  padding: 4px 0;
+  border-top: 1px solid var(--cc-border);
+}
+.settings-plugin-form .settings-override:first-of-type {
+  border-top: 0;
+}
+.settings-plugin-form .settings-override-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+  cursor: pointer;
+}
+.settings-plugin-form .settings-override[data-override='on'] .settings-override-toggle {
+  color: var(--cc-accent);
+}
 /* Submit at the right, as in the cards' footers; "Saved." sits just before it. */
 .settings-form-actions {
   display: flex;

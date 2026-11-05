@@ -568,6 +568,10 @@ describe('global values of project fields (design-next §5.2)', () => {
     expect(host(P)).toMatchObject({ project: { board: 'team', key: 'own-key' } })
     expect(host(Q)).toMatchObject({ project: { key: 'global-key' } })
     expect(project.view(P).plugins[0]!.projectSettings?.overrides).toEqual(['key'])
+    // The form's "Use global" shows the global secret as set or not, never its value.
+    expect(project.view(P).plugins[0]!.projectSettings?.globalSecretFields).toEqual({ key: { set: true } })
+    expect(app.plugins()[0]!.projectDefaults?.secretFields).toEqual({ key: { set: true } })
+    expect(JSON.stringify(app.plugins())).not.toContain('global-key')
 
     // A global edit P overrides changes nothing in P: only Q hears of it.
     announced.length = 0

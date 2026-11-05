@@ -461,6 +461,8 @@ export interface SettingsHandlerDeps {
   setMarketplaceUrls(urls: unknown): Promise<MarketplaceView>
   /** `secrets`: the form's secret edits (SecretEdits), checked by the service like `values`. */
   savePluginSettings(id: unknown, values: unknown, secrets: unknown): Promise<PluginSettingsSaveResult>
+  /** The global values of a plugin's project fields (SettingsService.saveProjectDefaults), checked like the app ones. */
+  saveProjectDefaults(id: unknown, values: unknown, secrets: unknown): Promise<PluginSettingsSaveResult>
 }
 
 /**
@@ -523,6 +525,10 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
   router.handleProject('settings.pluginSettingsSave', (_ctx, payload) => {
     const p = fields('settings.pluginSettingsSave', payload)
     return deps.savePluginSettings(p.id, p.values, p.secrets)
+  })
+  router.handleProject('settings.pluginProjectDefaultsSave', (_ctx, payload) => {
+    const p = fields('settings.pluginProjectDefaultsSave', payload)
+    return deps.saveProjectDefaults(p.id, p.values, p.secrets)
   })
 }
 
