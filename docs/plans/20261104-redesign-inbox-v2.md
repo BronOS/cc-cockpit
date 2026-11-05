@@ -664,14 +664,14 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `dist/host.js` (thread open), `panels/thread.js` (`ccPanel.ready()` once drawn), `test/host.test.js`,
   `test/fakes.js`, `README.md`
 
-- [ ] thread overlays: `start({ …, type: { name: 'inbox-item', data: { source: '<own id>', id } }, ready: 'manual' })` at
+- [x] thread overlays: `start({ …, type: { name: 'inbox-item', data: { source: '<own id>', id } }, ready: 'manual' })` at
   once, then fetch and `post`; through the reviewer: `annotate({ …, type })` (an older reviewer ignores it)
-- [ ] `ctx.overlay.buttons('inbox-item', …)` when the function exists: the item's current actions except `open` when
+- [x] `ctx.overlay.buttons('inbox-item', …)` when the function exists: the item's current actions except `open` when
   `data.source` is its own id and `data.id` one of its items, else `[]`; `run` = the same code as `act`; labels follow
   state (Mark read ↔ Mark unread); `onDiscuss` supplies the thread's text (subject, from, snippet; capped)
-- [ ] write tests: buttons only for own items, run = act, `ready: 'manual'` spec sent before the fetch, no buttons
+- [x] write tests: buttons only for own items, run = act, `ready: 'manual'` spec sent before the fetch, no buttons
   registered on a fake ctx without the member
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
 
 ### Task 21: Chat: feed v2 [model: sonnet]
 
