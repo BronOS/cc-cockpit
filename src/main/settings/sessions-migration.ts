@@ -36,7 +36,7 @@ export function migrateSessionFilesShown(app: Pick<AppSettings, 'sessionFilesSho
   // A damaged top level is replaced rather than written into (as the settings form's save does).
   if (!isPlainObject(app.pluginSettings)) app.pluginSettings = {}
   const own: unknown = Object.hasOwn(app.pluginSettings, SESSIONS_PLUGIN_ID) ? app.pluginSettings[SESSIONS_PLUGIN_ID] : undefined
-  if (own !== undefined && !isPlainObject(own)) return // not ours to repair: the form shows it as a problem
+  if (own !== undefined && !isPlainObject(own)) return // not ours to repair: the old value is dropped with the old key, the form shows the damaged one as a problem
   if (own !== undefined && Object.hasOwn(own, 'filesShown')) return
   app.pluginSettings[SESSIONS_PLUGIN_ID] = { ...(own ?? {}), filesShown: value }
 }
