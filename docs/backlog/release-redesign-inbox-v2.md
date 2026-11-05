@@ -20,4 +20,6 @@ tagged or published. Releasing waits for Oleg's go; `git rm` this file in the re
   the example free of exec, sessions, overlays and secrets, as it is listed.
 - Marketplace index: new versions for the Inbox and sources, plus `preview.png` and `category` per listing
   (the index tools now check them; `requiredFrom` in the preview policy sets when they are required).
+- Inbox's `skills/inbox-source/contract.md` tells source authors "Needs cc-cockpit 0.10.0": match it to the app
+  version actually released (the app has no manifest field for a minimum version).
 - Before any push, scan each repo's new commits for a work email, employer name or real data.
