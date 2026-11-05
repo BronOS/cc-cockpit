@@ -216,6 +216,12 @@ export async function saveSettingsForm(form: SettingsFormSave): Promise<PluginSe
     // except writeSettings' own await, which this plugin's queue keeps every other save out of.
     const checked = early ?? checkSave(form, valuesAtRun !== undefined ? valuesAtRun() : form.values)
     if (!checked.ok) return { ok: false, errors: checked.errors }
+    // The early check read project records before a save queued ahead of this one ran; refuse
+    // reads them, so it is asked again here, where nothing can change them before the write.
+    if (early !== undefined && form.effective === undefined) {
+      const refused = form.refuse?.(checked.stored) ?? []
+      if (refused.length > 0) return { ok: false, errors: refused.slice(0, MAX_ERRORS) }
+    }
     form.beforeWrite?.()
     try {
       await form.store.writeSettings(form.pluginId, changes, guard)

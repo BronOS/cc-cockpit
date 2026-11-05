@@ -341,12 +341,18 @@ function start(): void {
     }
   })
   // Plugin hosts wait for this: before it, every plugin looks uninstalled.
-  const pluginsLoaded: Promise<void> = plugins.load().catch((err: unknown) => console.error('loading plugins failed', err))
+  let pluginsLoadFailed = false
+  const pluginsLoaded: Promise<void> = plugins.load().catch((err: unknown) => {
+    pluginsLoadFailed = true
+    console.error('loading plugins failed', err)
+  })
   void pluginsLoaded.then(() => claudePluginsBuilds.start())
   // Once: stored project values equal to their schema default become "use global" (design-next
   // §5.2, settings/project-defaults-migration.ts). After the load, as it needs the manifests; a host
   // started before it sees the same values (the global value starts as that default).
   void pluginsLoaded.then(() => {
+    // A failed load leaves no manifest to read a default from: not marked done, so the next start retries.
+    if (pluginsLoadFailed) return
     try {
       migrateProjectDefaults({
         app: registry.app,

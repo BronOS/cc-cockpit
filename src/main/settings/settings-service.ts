@@ -389,7 +389,11 @@ export class SettingsService {
           // A project with no overrides gets the global value alone, which was checked already.
           if (overrides === undefined) continue
           const checked = checkFormSettings(schema, effectiveProjectValues(value, overrides))
-          if (!checked.ok) return [`the project ${project.name} overrides fields this value does not fit (change it there first): ${checked.errors.join('; ')}`]
+          if (!checked.ok) {
+            // Overrides that are not a plain object are damaged (hand-edited file): no global value fixes that.
+            if (!isPlainObject(overrides)) return [`the stored settings of the project ${project.name} for this plugin are damaged (fix or clear them in the project's settings)`]
+            return [`the project ${project.name} overrides fields this value does not fit (change it there first): ${checked.errors.join('; ')}`]
+          }
         }
         return []
       },
