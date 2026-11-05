@@ -127,7 +127,7 @@ async function rig(opts: {
       update: async (id: string, tag: string, pin?: InstallPin, beforeRecord?: (entry: PluginEntry) => void) => {
         calls.push(['update', id, tag, pin])
         if (opts.failUpdate?.includes(id)) throw new Error(`the tag ${tag} is at another commit`)
-        opts.whileQueued?.(repos)
+        await opts.whileQueued?.(repos)
         beforeRecord?.(installedGit({ version: pin?.version ?? '0' }))
         order.push('hosts reload')
         return installedGit({ version: pin?.version ?? '0' })
@@ -585,6 +585,23 @@ describe('an update asked again in the installer queue', () => {
       }
     })
     await expect(r.service.updateMarketplace(A, 'bronos.jira', SHOWN)).rejects.toThrow(/is at version 2\.0\.0 now; 1\.5\.0 is not an update/)
+    expect(r.order).toEqual([])
+  })
+
+  it('update all refuses an item that was revoked while it waited in the queue', async () => {
+    const installed = [installedGit({ version: '1.0.0', commit: c('2') })]
+    const r = await rig({
+      texts: { [A]: indexOf([{ version: '1.5.0' }]) },
+      installed,
+      whileQueued: async () => {
+        r.texts[A] = indexOf([{ version: '1.5.0' }], [{ id: 'bronos.jira', commit: c('2') }])
+        await r.service.refreshMarketplace()
+        installed[0] = installedGit({ version: '1.0.0', commit: c('2'), state: { ok: false, reason: 'revoked', revoked: { reason: 'bad', source: A } } })
+      }
+    })
+    const res = await r.service.updateAllMarketplace([{ indexUrl: A, id: 'bronos.jira', expect: SHOWN }])
+    expect(res.failed).toEqual([{ id: 'bronos.jira', error: expect.stringMatching(/revoked/) }])
+    expect(res.updated).toEqual([])
     expect(r.order).toEqual([])
   })
 
