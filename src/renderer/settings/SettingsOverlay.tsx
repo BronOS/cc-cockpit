@@ -43,8 +43,14 @@ export function SettingsOverlay(props: {
   target?: SettingsTarget | null
 }): React.JSX.Element {
   const [section, setSection] = useState<SectionId>(props.target ? (props.target.scope === 'project' ? 'project' : 'plugins') : 'general')
-  // Only the section the screen was opened at: moving to another section by hand drops it.
-  const openPlugin = props.target && section === (props.target.scope === 'project' ? 'project' : 'plugins') ? props.target.pluginId : undefined
+  // Only while the screen stays at the section it was opened at: moving to another section by hand
+  // drops it for good (`moved`), so coming back does not expand and scroll the plugin again.
+  const [moved, setMoved] = useState(false)
+  const go = (id: SectionId): void => {
+    setSection(id)
+    setMoved(true)
+  }
+  const openPlugin = !moved && props.target && section === (props.target.scope === 'project' ? 'project' : 'plugins') ? props.target.pluginId : undefined
   const own = useRef<HTMLDivElement>(null)
   const root = props.rootRef ?? own
 
@@ -80,7 +86,7 @@ export function SettingsOverlay(props: {
               type="button"
               aria-current={id === section ? 'page' : undefined}
               className={id === section ? 'active' : undefined}
-              onClick={() => setSection(id)}
+              onClick={() => go(id)}
             >
               <Icon />
               {title}
@@ -99,8 +105,8 @@ export function SettingsOverlay(props: {
             {section === 'general' && <GeneralPage />}
             {section === 'appearance' && <AppearancePage />}
             {section === 'keybindings' && <KeybindingsPage />}
-            {section === 'plugins' && <PluginsPage openPlugin={openPlugin} onOpenProject={() => setSection('project')} />}
-            {section === 'marketplace' && <MarketplacePage onOpenProject={() => setSection('project')} />}
+            {section === 'plugins' && <PluginsPage openPlugin={openPlugin} onOpenProject={() => go('project')} />}
+            {section === 'marketplace' && <MarketplacePage onOpenProject={() => go('project')} />}
             {section === 'project' && <ProjectPage openPlugin={openPlugin} />}
             {section === 'projects' && <ProjectsPage />}
           </div>
