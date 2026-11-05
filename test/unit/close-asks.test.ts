@@ -1,7 +1,7 @@
 // ctx.sessions.close's wait for the window's answer (close-asks.ts): answered only by the window it
 // went to, false when the window cannot be asked, closes, or the wait runs out.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CLOSE_ASK_MS, CloseAsks } from '../../src/main/sessions/close-asks'
+import { CLOSE_ASK_MS, CloseAsks, closeWillAsk } from '../../src/main/sessions/close-asks'
 
 let sent: { windowId: number; requestId: string; tabId: string }[]
 let asks: CloseAsks
@@ -59,5 +59,14 @@ describe('CloseAsks', () => {
     vi.advanceTimersByTime(CLOSE_ASK_MS)
     await expect(b).resolves.toBe(false)
     expect(asks.size).toBe(0)
+  })
+})
+
+describe('closeWillAsk (when a plugin close raises the window)', () => {
+  it('only for a tab whose process is alive, with the setting on', () => {
+    expect(closeWillAsk({}, true)).toBe(true)
+    expect(closeWillAsk({ exit: undefined }, true)).toBe(true)
+    expect(closeWillAsk({ exit: { code: 0 } }, true)).toBe(false)
+    expect(closeWillAsk({}, false)).toBe(false)
   })
 })

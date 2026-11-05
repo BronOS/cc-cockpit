@@ -1967,6 +1967,24 @@ describe('HostManager', () => {
       expect(sink.cleared).not.toContain('p1:a.two')
     })
 
+    it('a reload carries the access declaration as it is now: dropped on removal, set on addition', async () => {
+      const calls: { method: string; params: unknown }[] = []
+      factory.handlers = reloadHandlers(calls)
+      enabled.p1 = [plugin('a.one', { access: { sessions: 'all-windows' } }), plugin('a.two')]
+      await manager.open('p1', 1)
+      enabled.p1 = [plugin('a.one'), plugin('a.two')]
+      await manager.devReload('a.one')
+      enabled.p1 = [plugin('a.one'), plugin('a.two', { access: { sessions: 'all-windows' } })]
+      await manager.devReload('a.one')
+      await manager.devReload('a.two')
+      const specs = calls.map((c) => (c.params as { plugin: { id: string; sessionsAll?: boolean } }).plugin)
+      expect(specs.map((s) => [s.id, s.sessionsAll])).toEqual([
+        ['a.one', undefined],
+        ['a.one', undefined],
+        ['a.two', true]
+      ])
+    })
+
     it('a reload that arrives while the launch is still activating ends with the plugin active, in one process', async () => {
       const calls: { method: string; params: unknown }[] = []
       let finishActivate: (() => void) | undefined

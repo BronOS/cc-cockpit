@@ -1466,6 +1466,27 @@ describe('sessions scope all, focus, close, openFile', () => {
     await expect(host('sessions.list', {})).resolves.toHaveLength(1)
   })
 
+  it('a reload that drops the declaration stops sessions.all and refuses scope all; one that adds it grants it', async () => {
+    vi.useFakeTimers()
+    deps.summaries = (projectId) => registry.summariesFor(projectId)
+    const events: { event: string; params: unknown }[] = []
+    const host = hostFor(declared(), events)
+    const mine = { id: 'a.one', dir: pluginOne, panels: ['board'] }
+    await expect(host('sessions.list', { pluginId: 'a.one', scope: 'all' })).resolves.toBeDefined()
+    // The new manifest has no `access`: main must forget the old copy's grant.
+    apis.at(-1)!.updatePlugin(mine)
+    await expect(host('sessions.list', { pluginId: 'a.one', scope: 'all' })).rejects.toThrow('needs "access"')
+    tabs.create(B, { kind: 'claude' })
+    vi.advanceTimersByTime(SESSIONS_EVENT_INTERVAL_MS)
+    expect(events.filter((e) => e.event === 'sessions.all')).toEqual([])
+    // Another plugin of the host gets it by a reload that adds the declaration.
+    apis.at(-1)!.updatePlugin({ id: 'a.two', dir: pluginTwo, panels: ['inbox'], sessionsAll: true })
+    await expect(host('sessions.list', { pluginId: 'a.two', scope: 'all' })).resolves.toBeDefined()
+    tabs.create(B, { kind: 'claude' })
+    vi.advanceTimersByTime(SESSIONS_EVENT_INTERVAL_MS)
+    expect(events.some((e) => e.event === 'sessions.all')).toBe(true)
+  })
+
   it('sends sessions.all on any window’s change only to a host running a declaring plugin', async () => {
     vi.useFakeTimers()
     deps.summaries = (projectId) => registry.summariesFor(projectId)

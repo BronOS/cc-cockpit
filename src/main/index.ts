@@ -107,7 +107,7 @@ import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
-import { CloseAsks } from './sessions/close-asks'
+import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
@@ -470,6 +470,14 @@ function start(): void {
     win.webContents.send('sessions.closeAsk', ask)
     return true
   })
+  // ctx.sessions.close's body (HostApi checked the tab is the project's); a function so the test
+  // hook `pluginCloseTab` runs the very same path.
+  const closeTabForPlugin = (windowId: number, projectId: string, tabId: string): Promise<boolean> => {
+    const tab = tabs.list(projectId).find((t) => t.id === tabId)
+    if (!tab) return Promise.resolve(false)
+    if (closeWillAsk(tab, appearance.confirmTabClose())) windows.focusProject(projectId)
+    return closeAsks.ask(windowId, tabId)
+  }
   /** The command a chord fires in a project window (main's registry, the user's overrides applied). */
   const commandForChord = (windowId: number, chord: string): string | undefined => {
     const projectId = windows.projectWindows().find((w) => w.windowId === windowId)?.projectId
@@ -829,12 +837,7 @@ function start(): void {
       // window, so that window is raised first when it will (the dialog is the person's, they must
       // see it); an idle tab closes without moving their focus. The renderer decides the rest
       // exactly as for its own × (close-confirm.ts) and answers through CloseAsks.
-      closeTab: (windowId, projectId, tabId) => {
-        const tab = tabs.list(projectId).find((t) => t.id === tabId)
-        if (!tab) return Promise.resolve(false)
-        if (tab.exit === undefined && appearance.confirmTabClose()) windows.focusProject(projectId)
-        return closeAsks.ask(windowId, tabId)
-      },
+      closeTab: (windowId, projectId, tabId) => closeTabForPlugin(windowId, projectId, tabId),
       // ctx.sessions.openFile: the Sessions panel's click (the recorded-file check is routeOpenFile's).
       openSessionFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
@@ -1869,6 +1872,14 @@ function start(): void {
           panelStatus: (path: string, panelKey: string, status: PanelStatus | null) => {
             const project = projectAt(path)
             return project ? layouts.setStatus(project.id, panelKey, status ?? undefined) : false
+          },
+          // A plugin's ctx.sessions.close of a tab (the path HostApi's closeTab runs): resolves to
+          // `closed` once the window answered. False for an unknown folder.
+          pluginCloseTab: (path: string, tabId: string) => {
+            const project = projectAt(path)
+            const windowId = project ? windows.windowIdOf(project.id) : undefined
+            if (!project || windowId === undefined) return Promise.resolve(false)
+            return closeTabForPlugin(windowId, project.id, tabId)
           },
           // The main-internal send / cancel (no IPC reaches them yet), for a tab id the test read
           // from `sessions` or `tabs`.

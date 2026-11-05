@@ -270,6 +270,17 @@ describe('plugins', () => {
   })
 })
 
+describe('seesAllSessions (the access declaration)', () => {
+  it('is on the view only for a valid plugin that declares access.sessions all-windows', () => {
+    const r = rig()
+    r.plugins.push(plugin('test.all', { access: { sessions: 'all-windows' } }))
+    r.plugins.push(plugin('test.bad', { access: { sessions: 'all-windows' } }, false))
+    expect(r.service.plugins().find((p) => p.id === 'test.all')?.seesAllSessions).toBe(true)
+    expect(r.service.plugins().find((p) => p.id === 'test.mail')).not.toHaveProperty('seesAllSessions')
+    expect(r.service.plugins().find((p) => p.id === 'test.bad')).not.toHaveProperty('seesAllSessions')
+  })
+})
+
 describe('off in all projects (bundled plugins)', () => {
   const BID = 'cockpit.editor'
   function withBundled(): Rig {

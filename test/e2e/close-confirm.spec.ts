@@ -170,3 +170,53 @@ test('with the setting off a running tab closes at once', async ({ cockpit }) =>
   await expect(cockpit.page.getByRole('tab')).toHaveCount(0)
   await expect(dialog(cockpit.page)).toHaveCount(0)
 })
+
+// A plugin's ctx.sessions.close (main's `sessions.closeAsk`, hook `pluginCloseTab`) goes through the
+// person's close path: every way the dialog is cancelled or dropped answers closed: false, and only
+// the person's Close answers true. The hook resolves when the window answered, so it is not awaited
+// before the dialog is driven.
+test('a plugin close asks like the person’s ×: Cancel and Close answer, a competing dialog or overlay drops it', async () => {
+  const { cockpit: c, close } = await launchCockpit({ confirmTabClose: true })
+  try {
+    const { page } = c
+    await c.newTab('shell')
+    await c.waitForTerminalText('FAKE-SHELL ready')
+    const tabId = (await c.hook<Array<{ id: string }>>('tabs', c.projectDir))[0]!.id
+    const pluginClose = (): Promise<boolean> => c.hook<boolean>('pluginCloseTab', c.projectDir, tabId)
+
+    // Cancel: closed false, the tab stays.
+    let answer = pluginClose()
+    await expect(dialog(page)).toBeVisible()
+    await dialog(page).getByRole('button', { name: 'Cancel' }).click()
+    expect(await answer).toBe(false)
+    await expect(page.getByRole('tab')).toHaveCount(1)
+
+    // A dialog already up (the person's own ×): the plugin's ask is dropped, theirs stays.
+    await page.getByRole('button', { name: /^Close Shell/ }).click()
+    await expect(dialog(page)).toBeVisible()
+    expect(await pluginClose()).toBe(false)
+    await expect(dialog(page)).toBeVisible()
+    await dialog(page).getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog(page)).toHaveCount(0)
+
+    // An overlay opening over the dialog dismisses it: closed false, the tab stays.
+    answer = pluginClose()
+    await expect(dialog(page)).toBeVisible()
+    await c.hook('openOverlay', c.projectDir, { kind: 'terminal', argv: ['cat'], cwd: c.projectDir })
+    expect(await answer).toBe(false)
+    await expect(dialog(page)).toHaveCount(0)
+    await expect(page.getByRole('tab')).toHaveCount(1)
+    await page.locator('.overlay').getByRole('button', { name: 'Close overlay' }).click()
+    await expect(page.locator('.overlay')).toHaveCount(0)
+
+    // Close: closed true, the tab is gone in main too.
+    answer = pluginClose()
+    await expect(dialog(page)).toBeVisible()
+    await dialog(page).getByRole('button', { name: 'Close', exact: true }).click()
+    expect(await answer).toBe(true)
+    await expect(page.getByRole('tab')).toHaveCount(0)
+    expect(await c.hook<unknown[]>('tabs', c.projectDir)).toEqual([])
+  } finally {
+    await close()
+  }
+})
