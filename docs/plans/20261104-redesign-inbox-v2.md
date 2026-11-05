@@ -642,20 +642,21 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify (rewrite): `dist/lib/feed.js`; Modify: `dist/host.js`, `plugin.json` (`provides: { "inbox-feed": 2 }`, version
   0.5.0), `test/feed.test.js`, `test/host.test.js`, `test/fakes.js`, `README.md`
 
-- [ ] stop: `level`, unread-only filter, noise rule, `limit`, `items` / `recent` / `markRead` / `markUnread` methods,
+- [x] stop: `level`, unread-only filter, noise rule, `limit`, `items` / `recent` / `markRead` / `markUnread` methods,
   `canUnread`, `jiraKey` field, `changed` event (design-v2 "Gmail")
-- [ ] scope: the threads of its Unread and Read lanes (Inbox label, `unreadDays`, the read lane's days), alert threads
+- [x] scope: the threads of its Unread and Read lanes (Inbox label, `unreadDays`, the read lane's days), alert threads
   each their own item; `describe().scope` "unread + read of the last N days" from settings; same line in its panel
   and settings description
-- [ ] fields per the table (label map names, `important`, `starred`, `category:<name>`, `alert`, `alert:<name>`,
+- [x] fields per the table (label map names, `important`, `starred`, `category:<name>`, `alert`, `alert:<name>`,
   `jira:KEY`), `to` from To/Cc/list, `rev` newest message id; `snapshot()` from the cache; `act(id, action)` checks the id
   is its own and the action is in that item's `actions` (open, markRead or markUnread), returns `{ ok, message }`
-- [ ] a pure diff emitter (`diffFeed(prev, next)` → items and gone ids): `item` on any field change, `gone` on a missing
+- [x] a pure diff emitter (`diffFeed(prev, next)` → items and gone ids): `item` on any field change, `gone` on a missing
   id; emitted after each poll and right after a mark; `sync` after activate's first cached view, a sign-in and a
   recovered error
-- [ ] write tests: mapping and caps, diff (each field change, missing id, no-op), `act` refusing a foreign id or an
+- [x] write tests: mapping and caps, diff (each field change, missing id, no-op), `act` refusing a foreign id or an
   action the item lacks, sync triggers, plugin still activates on a fake ctx without `useAll`/`slots`/`overlay.buttons`
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-gmail`; `feedItems` takes `threads` (the mark-overlaid cache) to expand alert groups; scope line also shown in the panel footer; `sync` is emitted on any Sync-state change (sign-in, error, recovery), user label names are read once a poll ends
 
 ### Task 20: Gmail: overlay type, buttons, open first [model: sonnet]
 
