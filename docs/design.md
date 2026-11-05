@@ -660,7 +660,8 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
 
 - `panels[].kind`: `"html"` (default, needs `entry`) or `"webview"` (no `entry`; see Web view below).
 - `cli[].name`: `^[a-z][a-z0-9-]{1,31}$`, not a core command (or `app`, `config`, `version`), at
-  most 10, and the manifest needs `main`. `stdin: true` lets the command receive stdin.
+  most 10, and the manifest needs `main`. `stdin: true` lets the command receive stdin. With `stdinDash: true` as well, stdin is read only when an argument is exactly `-`, so
+  subcommands that take no input never wait on a script's open, silent stdin (older apps ignore the key).
   A name already owned by another plugin refuses install, link and update, naming the owner; it
   is also re-checked at every load and dev reload (bundled plugins first, then the earlier index
   entry): the loser gets a not-ok state naming the clash and is not activated. A plugin installed
@@ -1288,7 +1289,7 @@ active by then, or the limit passes, the answer is exit 124 (`CLI_TIMEOUT_CODE`,
 already running in the old copy when the reload starts ends with exit 1. The client adds its own bounds: a reply
 timer of 35 s (`CLI_REPLY_TIMEOUT_MS`) and a hard deadline of 40 s over the whole call
 (`CLI_CLIENT_DEADLINE_MS`, a backstop for whatever the round trip fails to settle), each exit 124. Stdin is read
-only for a command declared `stdin: true` and only when it is not a terminal; if it is not closed within 40 s
+only for a command declared `stdin: true` (with `stdinDash`, only for a `-` argument) and only when it is not a terminal; if it is not closed within 40 s
 (`STDIN_READ_TIMEOUT_MS`, an open pipe a tool runner leaves attached) the command prints the reason and exits 124.
 `plugin config` with values, like `overlay` and `plugin link`, has no 10 s reply timer: it waits behind the plugin's settings-save
 queue (a form save may sit at a keychain prompt) and for a host the change restarts. Its edits are merged into
