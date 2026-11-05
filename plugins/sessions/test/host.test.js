@@ -2,26 +2,40 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-// A fake ctx with only what the host uses; every call is recorded.
-function fakeCtx({ own = [], all = [], app = {} } = {}) {
+// A fake ctx with only what the host uses; every call is recorded. Each subscription returns a
+// disposer that counts its calls in `disposed` (by kind), so deactivate can be checked.
+// `fail`: { own, all, header } makes that list call reject or the header call throw.
+function fakeCtx({ own = [], all = [], app = {}, fail = {} } = {}) {
   const calls = []
   const listeners = { window: [], all: [], panel: [], settings: [], slot: [] }
+  const disposed = { window: 0, all: 0, panel: 0, settings: 0, slot: 0 }
+  const disposer = (kind) => () => {
+    disposed[kind]++
+  }
   const ctx = {
     settings: { app },
     log: { info() {}, warn: (m) => calls.push(['warn', m]), error() {} },
     panels: {
       post: (panel, m) => calls.push(['post', panel, m]),
-      header: (panel, h) => calls.push(['header', panel, h]),
+      header: (panel, h) => {
+        if (fail.header) throw new Error('header refused')
+        calls.push(['header', panel, h])
+      },
       onMessage: (panel, fn) => {
         listeners.panel.push(fn)
-        return () => {}
+        return disposer('panel')
       },
     },
     sessions: {
-      list: async (o) => (o && o.scope === 'all' ? all : own),
+      list: async (o) => {
+        const scope = o && o.scope === 'all' ? 'all' : 'own'
+        if (fail[scope]) throw new Error(`${scope} unavailable`)
+        return scope === 'all' ? all : own
+      },
       onChange: (fn, o) => {
-        listeners[o && o.scope === 'all' ? 'all' : 'window'].push(fn)
-        return () => {}
+        const kind = o && o.scope === 'all' ? 'all' : 'window'
+        listeners[kind].push(fn)
+        return disposer(kind)
       },
       focus: async (tabId) => {
         calls.push(['focus', tabId])
@@ -36,15 +50,15 @@ function fakeCtx({ own = [], all = [], app = {} } = {}) {
       onOpen: (type, fn) => {
         assert.equal(type, 'sessions-strip')
         listeners.slot.push(fn)
-        return () => {}
+        return disposer('slot')
       },
     },
     onSettingsChange: (fn) => {
       listeners.settings.push(fn)
-      return () => {}
+      return disposer('settings')
     },
   }
-  return { ctx, calls, listeners }
+  return { ctx, calls, listeners, disposed }
 }
 
 function fakeSlot() {
@@ -155,5 +169,45 @@ test('strip: other windows ordered, refreshed on change, focus only for drawn id
   const n = f.posts.length
   listeners.all[0](all)
   assert.equal(f.posts.length, n)
+  host.deactivate()
+})
+
+test('deactivate runs every disposer once; a second deactivate runs none', async () => {
+  const host = load()
+  const { ctx, disposed } = fakeCtx()
+  host.activate(ctx)
+  await tick()
+  host.deactivate()
+  assert.deepEqual(disposed, { window: 1, all: 1, panel: 1, settings: 1, slot: 1 })
+  host.deactivate()
+  assert.deepEqual(disposed, { window: 1, all: 1, panel: 1, settings: 1, slot: 1 })
+})
+
+test('a list that rejects is logged and the lists stay empty until a change; a throwing header is logged', async () => {
+  const host = load()
+  const own = [{ tabId: 't1', status: 'idle', notes: [], files: [] }]
+  const { ctx, calls, listeners } = fakeCtx({ own, fail: { own: true, all: true, header: true } })
+  host.activate(ctx)
+  await tick()
+  const warns = calls.filter((c) => c[0] === 'warn').map((c) => c[1])
+  assert.ok(warns.includes('list: own unavailable'), warns.join('\n'))
+  assert.ok(warns.includes('list all: all unavailable'), warns.join('\n'))
+  // Nothing was posted for the window: the change event is what fills it.
+  assert.equal(calls.filter((c) => c[0] === 'post').length, 0)
+  listeners.window[0](own)
+  assert.deepEqual(calls.filter((c) => c[0] === 'post').at(-1)[2].sessions, own)
+  assert.ok(calls.some((c) => c[0] === 'warn' && c[1] === 'header: header refused'))
+  host.deactivate()
+})
+
+test('openFile for a tab id the panel never had is refused without a call', async () => {
+  const host = load()
+  const own = [{ tabId: 't1', status: 'idle', notes: [], files: ['/p/a.js'] }]
+  const { ctx, calls, listeners } = fakeCtx({ own })
+  host.activate(ctx)
+  await tick()
+  await listeners.panel[0]({ type: 'openFile', tabId: 'unknown', path: '/p/a.js' })
+  assert.deepEqual(calls.filter((c) => c[0] === 'openFile'), [])
+  assert.deepEqual(calls.filter((c) => c[0] === 'post').at(-1), ['post', 'sessions', { type: 'refused', tabId: 'unknown', path: '/p/a.js' }])
   host.deactivate()
 })

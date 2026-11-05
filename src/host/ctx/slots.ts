@@ -15,7 +15,7 @@
 import type { Disposer, JsonValue, PluginContext, SlotInstance } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { MAX_SLOT_PARAMS_BYTES, SLOT_FRAME_ID_PATTERN, SLOT_TYPE_PATTERN, type SlotHost } from '../../shared/slots'
-import { MAX_PANEL_MESSAGE_LENGTH, type PanelPort } from './ui'
+import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
 
 type MessageListener = (message: JsonValue) => void
 
@@ -174,16 +174,7 @@ export class SlotHub {
 
   private instanceOf(frame: Frame, tag: SlotOpenTag): SlotInstance {
     const post = (message: JsonValue): void => {
-      let text: string | undefined
-      try {
-        text = JSON.stringify(message)
-      } catch (err) {
-        throw new TypeError(`slot post: the message is not JSON: ${errorText(err)}`, { cause: err })
-      }
-      if (text === undefined) throw new TypeError('slot post: the message is not JSON')
-      if (text.length > MAX_PANEL_MESSAGE_LENGTH) {
-        throw new RangeError(`slot post: message of ${text.length} chars exceeds ${MAX_PANEL_MESSAGE_LENGTH}`)
-      }
+      const text = encodePortMessage(message, 'slot post')
       if (frame.ended) return
       try {
         frame.port.postMessage(text)
@@ -232,20 +223,14 @@ export class SlotHub {
 
   /** A message from the slot's page: a JSON string within the cap, else dropped (logged). */
   private receive(frame: Frame, raw: unknown): void {
-    if (typeof raw !== 'string' || raw.length > MAX_PANEL_MESSAGE_LENGTH) {
-      this.log(frame.pluginId, `dropped a message from slot ${frame.id}: not a JSON string within the size cap`)
-      return
-    }
-    let parsed: JsonValue
-    try {
-      parsed = JSON.parse(raw) as JsonValue
-    } catch {
-      this.log(frame.pluginId, `dropped a message from slot ${frame.id}: not JSON`)
+    const got = decodePortMessage(raw)
+    if (!got.ok) {
+      this.log(frame.pluginId, `dropped a message from slot ${frame.id}: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
       return
     }
     for (const listener of [...frame.messageListeners]) {
       try {
-        listener(structuredClone(parsed))
+        listener(structuredClone(got.value))
       } catch (err) {
         this.log(frame.pluginId, `a slot onMessage listener threw: ${errorText(err)}`)
       }

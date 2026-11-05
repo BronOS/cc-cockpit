@@ -184,3 +184,28 @@ test('Discuss to New session opens a Claude tab with the text as its prompt and 
   await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
   await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'false')
 })
+
+test('Discuss popover keys: Esc closes the popover only and gives focus back; Enter in the list sends', async ({ cockpit }) => {
+  const { page } = cockpit
+  await enable(cockpit, [TOOLBAR, 'overlay-toolbar'])
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+  await run(cockpit, 'thing')
+  const toggle = page.locator('.overlay .overlay-discuss').getByRole('button', { name: 'Discuss' })
+  const popover = page.getByRole('dialog', { name: 'Discuss with Claude' })
+  await toggle.click()
+  await expect(popover).toBeVisible()
+  // The preselected target has the focus (no Claude tab: New session).
+  await expect(popover.getByRole('option', { name: 'New session' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(popover).toHaveCount(0)
+  await expect(page.locator('.overlay')).toHaveCount(1)
+  await expect(toggle).toBeFocused()
+  expect(cockpit.claudeRuns()).toEqual([])
+
+  await toggle.click()
+  await expect(popover.getByRole('option', { name: 'New session' })).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.overlay')).toHaveCount(0)
+  await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(1)
+})

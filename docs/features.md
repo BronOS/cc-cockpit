@@ -318,6 +318,8 @@ ccc guide [topic]                        bundled docs for Claude and plugin auth
 ccc guide types                          the plugin SDK types
 ccc plugin new|link|unlink|list|logs     the plugin dev loop (see `ccc guide dev-loop`)
 ccc plugin config <id> [key=value...]    show or set a plugin's settings (never a secret field)
+  [--scope app|global|project]           which value a set changes (an app, global or project field)
+ccc plugin config <id> --use-global <key>...   drop this project's override: the field uses the global value
 ccc panel show <plugin>/<panel>          reveal a plugin's panel in this project's window
 ccc <plugin command> ...                 commands plugins declare (`ccc help` lists them in a tab)
 ```

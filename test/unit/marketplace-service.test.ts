@@ -668,6 +668,24 @@ describe('MarketplaceService.preview', () => {
     await s.preview(URL1, 'a.b')
     expect(readdirSync(cacheDir())).toEqual([`${sha(PNG)}.png`])
   })
+
+  it('keeps the cache while a configured index has not been read: its previews are not known yet', async () => {
+    mkdirSync(cacheDir(), { recursive: true })
+    const other = `${'e'.repeat(64)}.png`
+    writeFileSync(join(cacheDir(), other), PNG)
+    const OFFLINE = 'https://offline.example/index.json'
+    const s = new MarketplaceService({
+      dataDir: dir,
+      urls: () => [URL1, OFFLINE],
+      authorities: () => [],
+      fetcher: async (u) => (u === URL1 ? listed() : Promise.reject(new Error('offline'))),
+      previewFetcher: async () => PNG,
+      now: () => 1000
+    })
+    await s.refresh()
+    await s.preview(URL1, 'a.b')
+    expect(readdirSync(cacheDir()).sort()).toEqual([`${sha(PNG)}.png`, other].sort())
+  })
 })
 
 describe('preview fetcher', () => {

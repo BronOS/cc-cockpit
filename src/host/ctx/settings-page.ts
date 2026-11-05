@@ -17,7 +17,7 @@ import type { Disposer, JsonValue, PluginContext, SettingsPageInstance } from '.
 import { errorText } from '../../shared/error-text'
 import type { SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope, SETTINGS_PAGE_ID_PATTERN } from '../../shared/settings-page'
-import { MAX_PANEL_MESSAGE_LENGTH, type PanelPort } from './ui'
+import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
 
 type MessageListener = (message: JsonValue) => void
 
@@ -151,16 +151,7 @@ export class SettingsPageHub {
 
   private instanceOf(page: Page, scope: SettingsPageScope): SettingsPageInstance {
     const post = (message: JsonValue): void => {
-      let text: string | undefined
-      try {
-        text = JSON.stringify(message)
-      } catch (err) {
-        throw new TypeError(`settings page post: the message is not JSON: ${errorText(err)}`, { cause: err })
-      }
-      if (text === undefined) throw new TypeError('settings page post: the message is not JSON')
-      if (text.length > MAX_PANEL_MESSAGE_LENGTH) {
-        throw new RangeError(`settings page post: message of ${text.length} chars exceeds ${MAX_PANEL_MESSAGE_LENGTH}`)
-      }
+      const text = encodePortMessage(message, 'settings page post')
       if (page.ended) return
       try {
         page.port.postMessage(text)
@@ -195,19 +186,13 @@ export class SettingsPageHub {
 
   /** A message from the page: a JSON string within the cap, else dropped (logged). */
   private receive(page: Page, raw: unknown): void {
-    if (typeof raw !== 'string' || raw.length > MAX_PANEL_MESSAGE_LENGTH) {
-      this.log(page.pluginId, 'dropped a message from the settings page: not a JSON string within the size cap')
-      return
-    }
-    let parsed: JsonValue
-    try {
-      parsed = JSON.parse(raw) as JsonValue
-    } catch {
-      this.log(page.pluginId, 'dropped a message from the settings page: not JSON')
+    const got = decodePortMessage(raw)
+    if (!got.ok) {
+      this.log(page.pluginId, `dropped a message from the settings page: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
       return
     }
     for (const listener of [...page.messageListeners]) {
-      this.safely(page.pluginId, 'onMessage', () => listener(structuredClone(parsed)))
+      this.safely(page.pluginId, 'onMessage', () => listener(structuredClone(got.value)))
     }
   }
 }

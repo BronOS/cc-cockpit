@@ -46,8 +46,11 @@ interface Registration {
   readonly provider: Provider
 }
 
-
-/** The overlay as main describes it to the providers, checked. */
+/**
+ * The overlay as main describes it to the providers, checked: a fresh copy, deep-frozen, so every
+ * provider and run gets the same object and none can change what the next one sees (a write to
+ * it throws in strict mode, or is ignored).
+ */
 function infoOf(value: unknown): OverlayInfo {
   const { type, title, opener } = (value ?? {}) as Record<string, unknown>
   const { name, data } = (type ?? {}) as Record<string, unknown>
@@ -61,7 +64,7 @@ function infoOf(value: unknown): OverlayInfo {
   } catch {
     throw new Error('overlay.buttons: type data is not JSON')
   }
-  return { type: { name, data: copy }, title, opener }
+  return deepFreeze({ type: { name, data: copy }, title, opener })
 }
 
 function keyOf(value: unknown, what: string): string {
@@ -69,16 +72,12 @@ function keyOf(value: unknown, what: string): string {
   return value
 }
 
-/** A deep, frozen copy for one provider or run: one plugin cannot change what the next one sees. */
-function frozenInfo(info: OverlayInfo): OverlayInfo {
-  const deepFreeze = <T>(v: T): T => {
-    if (typeof v === 'object' && v !== null) {
-      for (const inner of Object.values(v)) deepFreeze(inner)
-      Object.freeze(v)
-    }
-    return v
+function deepFreeze<T>(v: T): T {
+  if (typeof v === 'object' && v !== null) {
+    for (const inner of Object.values(v)) deepFreeze(inner)
+    Object.freeze(v)
   }
-  return deepFreeze(structuredClone(info))
+  return v
 }
 
 /** `promise`, or the timeout's rejection after `ms`; the timer never outlives the race. */
@@ -189,7 +188,7 @@ export class OverlayButtonRegistry {
     let result: unknown
     try {
       // Through a resolved promise: a run that throws synchronously lands in the same catch.
-      result = await Promise.resolve().then(() => run(frozenInfo(info)))
+      result = await Promise.resolve().then(() => run(info))
     } catch (err) {
       this.log(pluginId, `overlay button "${buttonId}" failed: ${errorText(err)}`)
       throw err
@@ -212,7 +211,7 @@ export class OverlayButtonRegistry {
     let raw: unknown
     try {
       raw = await within(
-        Promise.resolve().then(() => reg.provider(frozenInfo(info))),
+        Promise.resolve().then(() => reg.provider(info)),
         this.timeoutMs,
         what
       )

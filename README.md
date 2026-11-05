@@ -159,6 +159,8 @@ ccc notify <text>                        show a system notification
 ccc guide [topic]                        bundled docs (works offline)
 ccc plugin new|link|unlink|list|logs     the plugin dev loop
 ccc plugin config <id> [key=value...]    show or set a plugin's settings
+  [--scope app|global|project]           which value a set changes
+ccc plugin config <id> --use-global <key>...   drop this project's override
 ccc panel show <plugin>/<panel>          reveal a plugin's panel
 ccc help                                 everything else, in a tab
 ```

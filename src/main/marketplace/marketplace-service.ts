@@ -382,7 +382,10 @@ export class MarketplaceService {
 
   /**
    * tmp + rename, then drop every cached preview no index lists any more: the folder holds at most the
-   * previews of the listings shown, and an old version's image does not stay for good.
+   * previews of the listings shown, and an old version's image does not stay for good. No pruning
+   * while a configured index has no index read yet (at start, or one whose fetch failed with no
+   * cache): it lists nothing here, so its valid previews would be deleted and fetched again later.
+   * The cache then waits for the next write after every configured index has been read.
    */
   private writePreviewCache(sha256: string, bytes: Uint8Array): void {
     const file = this.previewFile(sha256)
@@ -400,6 +403,7 @@ export class MarketplaceService {
       }
       return
     }
+    if (this.options.urls().some((u) => !this.states.get(u)?.index)) return
     const listed = new Set<string>()
     for (const s of this.states.values()) for (const e of s.index?.plugins ?? []) if (e.preview) listed.add(e.preview.sha256)
     try {

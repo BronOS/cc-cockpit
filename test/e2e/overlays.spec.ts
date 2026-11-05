@@ -218,6 +218,20 @@ test.describe('url overlay', () => {
     }
   })
 
+  test('a first load that fails (nothing listening) ends the loader and shows the view', async ({ cockpit }) => {
+    // did-fail-load on the main frame with a real error (not ERR_ABORTED): the loader must go.
+    const closed = createServer()
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve))
+    const port = (closed.address() as AddressInfo).port
+    await new Promise<void>((resolve) => closed.close(() => resolve()))
+    const handle = await open(cockpit, { kind: 'url', url: `http://127.0.0.1:${port}/` })
+    await expect(cockpit.page.locator('.overlay[data-kind="url"]')).toBeVisible()
+    await expect.poll(async () => (await stack(cockpit))[0]?.loading ?? false).toBe(false)
+    await expect(cockpit.page.locator('.overlay-loader')).toHaveCount(0)
+    await cockpit.page.keyboard.press('Escape')
+    expect(await outcome(cockpit, handle)).toEqual({ result: { kind: 'dismissed' } })
+  })
+
   // design-next §3.2 / §3.3: an opener's four buttons and another plugin's four type buttons fold
   // into "…". The url overlay's native view paints above the renderer, so it gives way (zero
   // bounds) while the menu is open and comes back when it closes; type buttons run in their

@@ -53,6 +53,39 @@ import type { OverlayButtonRegistry } from '../overlay-buttons'
 /** Longest panel message, as JSON text (the RPC cap). */
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
 
+/**
+ * A plugin's message to one of its pages (panel, slot, settings page) as the port's JSON text, or a
+ * throw: TypeError when it is not JSON, RangeError past MAX_PANEL_MESSAGE_LENGTH. `what` starts
+ * each error ("panels.post", "slot post"). One rule for every page port, so the caps cannot drift.
+ */
+export function encodePortMessage(message: unknown, what: string): string {
+  let text: string | undefined
+  try {
+    text = JSON.stringify(message)
+  } catch (err) {
+    throw new TypeError(`${what}: the message is not JSON: ${errorText(err)}`, { cause: err })
+  }
+  if (text === undefined) throw new TypeError(`${what}: the message is not JSON`)
+  if (text.length > MAX_PANEL_MESSAGE_LENGTH) {
+    throw new RangeError(`${what}: message of ${text.length} chars exceeds ${MAX_PANEL_MESSAGE_LENGTH}`)
+  }
+  return text
+}
+
+/**
+ * A page's message as it came off the port: the parsed JSON, or why it is dropped (`size`: not a
+ * string within the cap, `json`: not JSON). The page is the plugin's own code but may show
+ * third-party content, so the caller logs a drop and gives each listener its own copy.
+ */
+export function decodePortMessage(raw: unknown): { ok: true; value: JsonValue } | { ok: false; reason: 'size' | 'json' } {
+  if (typeof raw !== 'string' || raw.length > MAX_PANEL_MESSAGE_LENGTH) return { ok: false, reason: 'size' }
+  try {
+    return { ok: true, value: JSON.parse(raw) as JsonValue }
+  } catch {
+    return { ok: false, reason: 'json' }
+  }
+}
+
 /** The host's end of one panel's MessagePort (`fromMainPort` adapts Electron's MessagePortMain). */
 export interface PanelPort {
   postMessage(message: string): void
@@ -163,16 +196,7 @@ export class PanelPorts {
 
   /** Send to the panel; false when it has no port (the message is dropped). */
   post(pluginId: string, panelId: string, message: unknown): boolean {
-    let text: string | undefined
-    try {
-      text = JSON.stringify(message)
-    } catch (err) {
-      throw new TypeError(`panels.post: the message is not JSON: ${errorText(err)}`, { cause: err })
-    }
-    if (text === undefined) throw new TypeError('panels.post: the message is not JSON')
-    if (text.length > MAX_PANEL_MESSAGE_LENGTH) {
-      throw new RangeError(`panels.post: message of ${text.length} chars exceeds ${MAX_PANEL_MESSAGE_LENGTH}`)
-    }
+    const text = encodePortMessage(message, 'panels.post')
     const attached = this.ports.get(`${pluginId}/${panelId}`)
     if (!attached) return false
     try {
@@ -211,20 +235,14 @@ export class PanelPorts {
    * listener gets its own parsed copy.
    */
   private receive(pluginId: string, key: string, raw: unknown): void {
-    if (typeof raw !== 'string' || raw.length > MAX_PANEL_MESSAGE_LENGTH) {
-      this.log(pluginId, `dropped a message from panel ${key}: not a JSON string within the size cap`)
-      return
-    }
-    let parsed: JsonValue
-    try {
-      parsed = JSON.parse(raw) as JsonValue
-    } catch {
-      this.log(pluginId, `dropped a message from panel ${key}: not JSON`)
+    const got = decodePortMessage(raw)
+    if (!got.ok) {
+      this.log(pluginId, `dropped a message from panel ${key}: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
       return
     }
     for (const listener of [...(this.listeners.get(key) ?? [])]) {
       try {
-        listener(structuredClone(parsed))
+        listener(structuredClone(got.value))
       } catch (err) {
         this.log(pluginId, `a panels.onMessage listener threw: ${errorText(err)}`)
       }

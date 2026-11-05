@@ -1,12 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MarketplaceEntryView, MarketplaceIndexView, MarketplaceView, PluginView } from '../../shared/ipc'
-import { STALE_AFTER_MS, type MarketplaceCategory } from '../../shared/marketplace'
+import { MARKETPLACE_CATEGORIES, STALE_AFTER_MS, type MarketplaceCategory } from '../../shared/marketplace'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
 import { GearIcon } from './icons'
 import { IndexesSection, MarketplaceNotices } from './MarketplaceIndexes'
 import {
   buildCards,
-  CATEGORIES,
   CATEGORY_LABELS,
   clampPage,
   FILTER_LABELS,
@@ -272,7 +271,7 @@ export function PluginsPage(props: {
             }}
           >
             <option value="">All categories</option>
-            {CATEGORIES.map((c) => (
+            {MARKETPLACE_CATEGORIES.map((c) => (
               <option key={c} value={c}>
                 {CATEGORY_LABELS[c]}
               </option>

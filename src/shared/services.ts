@@ -100,8 +100,12 @@ export function serviceProblemMessage(problem: ServiceProblem, nameOf: (id: stri
       return `plugins ${joinNames(problem.candidates.map(nameOf))} both provide service "${problem.service}"; pick one in Settings > This Project`
     case 'version-mismatch':
       return `"${problem.service}": ${nameOf(problem.consumer)} uses version ${problem.usesVersion}, ${nameOf(problem.provider)} provides version ${problem.providesVersion}`
-    case 'collected-major':
-      return `${nameOf(problem.provider)} provides ${problem.service} ${problem.providesVersion}, ${nameOf(problem.consumer)} reads ${problem.usesVersion}: update ${nameOf(problem.provider)}`
+    case 'collected-major': {
+      // The older side is the one to update: a source updated before the collector (it provides 2,
+      // the collector reads 1) needs the collector updated, not the source.
+      const older = problem.providesVersion < problem.usesVersion ? problem.provider : problem.consumer
+      return `${nameOf(problem.provider)} provides ${problem.service} ${problem.providesVersion}, ${nameOf(problem.consumer)} reads ${problem.usesVersion}: update ${nameOf(older)}`
+    }
   }
 }
 

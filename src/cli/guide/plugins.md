@@ -313,4 +313,10 @@ not reviewed. Users install the pinned commit and the app refuses a tag that has
 tag: tag a new version and send a PR that changes `version`, `tag` and `commit`. A listed owner's version bump merges
 by itself when checks pass. A plugin whose id and commit are in `revoked.json` is disabled in apps where that index is the default one or the one the
 plugin was installed from; any other index only produces a warning.
-See `marketplace/README.md` in the cc-cockpit repo.
+
+Put `preview.png` at the root of the tagged commit: the card's picture on the Plugins page. A still PNG (no `acTL`),
+at most 512 KiB, from 640×400 to 1600×1000 (1280×800 recommended), a regular file, not a symlink. The index CI checks
+it: a broken one fails, a missing one is a warning until the date in the index's `preview-policy.json` (`requiredFrom`),
+after which a new or changed listing without one is refused. An entry may set `category` (`sources`, `views`, `tools`,
+`themes`, `claude` or `other`, the default); the Plugins page filters by it.
+See `marketplace/README.md` in the cc-cockpit repo ("Preview and category" for the rules above).

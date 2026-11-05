@@ -3,7 +3,7 @@
 // search rules are unit-tested without a page. Nothing here fetches: the page has the whole index
 // already (main caps it at 5 MiB and 2000 entries), so a new page or a new search is no new request.
 import type { MarketplaceEntryView, MarketplaceView, PluginView } from '../../shared/ipc'
-import { MARKETPLACE_CATEGORIES, type MarketplaceCategory } from '../../shared/marketplace'
+import type { MarketplaceCategory } from '../../shared/marketplace'
 
 export const PAGE_SIZE = 20
 
@@ -25,7 +25,6 @@ export const CATEGORY_LABELS: Record<MarketplaceCategory, string> = {
   claude: 'Claude',
   other: 'Other'
 }
-export const CATEGORIES = MARKETPLACE_CATEGORIES
 
 export interface PluginCard {
   /** Stable React key: the id for an installed plugin, `indexUrl|id` for a listing alone. */

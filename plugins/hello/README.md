@@ -78,7 +78,7 @@ app's code ends up in the bundle.
   resolves with its exit code; `{ kind: 'html', file }` shows one of the plugin's own pages, which
   answers with `ccPanel.post({ result })`. The call resolves when the overlay ends.
 - **commands**: `ctx.commands.register('say-hello', fn)`; the id must be declared in the manifest.
-  The default key can be changed by the user in Settings > Appearance and keys.
+  The default key can be changed by the user in Settings > Keybindings.
 - **panels**: `ctx.panels.post(panelId, json)` and `ctx.panels.onMessage(panelId, fn)`. A panel
   that is not shown drops messages, so the page sends `ready` when it loads and the host answers
   with its whole state. Treat every message from a panel as untrusted input.

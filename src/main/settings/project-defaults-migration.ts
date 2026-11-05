@@ -9,6 +9,13 @@
 // Runs once (`app.json` › `projectDefaultsMigrated`), after the plugins loaded (the manifests say
 // what a default is). A host that started on the old record meanwhile sees the same values: the
 // effective value of a dropped field is that same default.
+//
+// Accepted trade-off: a plugin that is not installed or not valid at that start (no schema to say
+// what a default is) is skipped, and the migration is still marked done, so its stored values stay
+// overrides for good. Re-running it later would drop values the person has since set on purpose to
+// the default (an override that happens to equal it), which is worse. Such a field is set back to
+// "uses global" by hand (Settings > This Project, or `ccc plugin config --use-global`). Only a
+// failure of the run itself is retried (index.ts).
 import { isDeepStrictEqual } from 'node:util'
 import { isPlainObject } from '../../shared/guards'
 import type { JsonSchema } from '../../shared/manifest'

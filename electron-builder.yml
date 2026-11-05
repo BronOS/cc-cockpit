@@ -8,11 +8,11 @@
 #    the CLI recomputes in src/main/paths.ts `defaultDataDir`) from the app name, and the packaged
 #    app must keep using the same `cc-cockpit` folder as dev.
 #  - The build output ships (out/: main, preload, renderer, cli, host, sdk/panel.js) plus the
-#    production node_modules electron-builder adds by itself, and the built-in browser, reviewer and editor plugins
+#    production node_modules electron-builder adds by itself, and the built-in plugins
 #    (extraResources below: plugins/browser, plugins/reviewer, plugins/editor, plugins/files, plugins/sessions). main reaches the CLI, the plugin host
 #    entry, the SDK and the preload through __dirname, i.e. inside app.asar, which Electron (and
 #    Electron run as Node, for `ccc`) reads transparently. The `hello` reference plugin is NOT
-#    bundled (only browser, reviewer, editor and files are): plugins are installed or linked from a folder (design §5), and hello is a template
+#    bundled (only browser, reviewer, editor, files and sessions are): plugins are installed or linked from a folder (design §5), and hello is a template
 #    to link in dev (plugins/hello/README.md), not a feature of the app.
 #  - node-pty is a native module with a helper executable (spawn-helper): neither can be loaded or
 #    executed from inside an archive, so the whole package is unpacked (node-pty finds it under

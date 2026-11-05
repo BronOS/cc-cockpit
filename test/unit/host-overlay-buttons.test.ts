@@ -31,7 +31,7 @@ afterEach(() => {
 })
 
 describe('OverlayButtonRegistry', () => {
-  it('asks every provider of the type with its own frozen copy; buttons carry the registering plugin', async () => {
+  it('asks every provider of the type with one deep-frozen copy; buttons carry the registering plugin', async () => {
     const { reg } = registry()
     const seen: OverlayInfo[] = []
     reg.register('p.edit', 'file', (o) => {
@@ -53,7 +53,10 @@ describe('OverlayButtonRegistry', () => {
     ])
     expect(seen).toHaveLength(2)
     expect(seen[0]).toEqual({ type: { name: 'file', data: { path: 'src/x.ts' } }, title: 'src/x.ts', opener: 'p.rev' })
-    expect(seen[0]).not.toBe(seen[1])
+    // One copy of main's message, frozen all the way down: shared, since no provider can change it.
+    expect(seen[0]).toBe(seen[1])
+    expect(Object.isFrozen(seen[1]!.type.data)).toBe(true)
+    expect((seen[1]!.type.data as { path: string }).path).toBe('src/x.ts')
   })
 
   it('skips a slow, throwing or malformed provider (logged in its plugin log); the rest shows', async () => {

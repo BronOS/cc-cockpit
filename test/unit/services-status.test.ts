@@ -76,6 +76,14 @@ describe('serviceStatus', () => {
     expect(msg).toBe('Gmail provides inbox-feed 1, Inbox reads 2: update Gmail')
   })
 
+  it('collected-major message names the collector when it is the older side', () => {
+    const msg = serviceProblemMessage(
+      { kind: 'collected-major', service: 'inbox-feed', consumer: 'inbox', usesVersion: 1, provider: 'gmail', providesVersion: 2 },
+      (id) => ({ inbox: 'Inbox', gmail: 'Gmail' })[id] ?? id
+    )
+    expect(msg).toBe('Gmail provides inbox-feed 2, Inbox reads 1: update Inbox')
+  })
+
   it('is empty for plugins without services', () => {
     expect(serviceStatus([{ id: 'a' }], {})).toEqual({ plugins: [{ id: 'a', provides: [], uses: [], problems: [] }], services: [] })
   })
