@@ -156,6 +156,11 @@ export function PluginsPage(props: {
     setPage(0)
     setConfirming(null)
   }
+  /** Paging hides cards too, so it drops an open prompt the same way. */
+  const goTo = (n: number): void => {
+    setPage(n)
+    setConfirming(null)
+  }
 
   const act = (e: MarketplaceEntryView): void => {
     const call = e.action === 'update' ? 'settings.marketplaceUpdate' : 'settings.marketplaceInstall'
@@ -281,13 +286,13 @@ export function PluginsPage(props: {
         )}
         {pages > 1 && (
           <div role="group" aria-label="Pages" className="settings-pager">
-            <button type="button" className="quiet" disabled={current === 0} onClick={() => setPage(current - 1)}>
+            <button type="button" className="quiet" disabled={current === 0} onClick={() => goTo(current - 1)}>
               Previous
             </button>
             <span className="settings-item-meta" data-testid="plugin-page">
               Page {current + 1} of {pages}
             </span>
-            <button type="button" className="quiet" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
+            <button type="button" className="quiet" disabled={current >= pages - 1} onClick={() => goTo(current + 1)}>
               Next
             </button>
           </div>
