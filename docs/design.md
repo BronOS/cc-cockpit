@@ -481,7 +481,9 @@ name, 500 ms each; main bounds the whole ask to 2 s) and again after a click set
 when a plugin that added buttons stops; a click is accepted only for a button main currently shows (not
 busy, not disabled), from that window's host, and goes main → host as a request (30 s bound, busy
 meanwhile); `{ close: true }` dismisses the overlay. A click never reaches the page. The `type` is
-untrusted data from the opener: a button provider checks it. Well-known types: `file` `{ path, mime? }`
+untrusted data from the opener: a button provider checks it. The info's `opener` is main's: the plugin id
+HostApi accepted the open for (`core`, `cli` otherwise), never a field of the spec, so a source gates its
+`inbox-item` buttons on it (itself or the reviewer it handed the item to). Well-known types: `file` `{ path, mime? }`
 and `inbox-item` `{ source, id }`.
 
 **Overlay loader.** `OverlayInfo.loading` is main's: an overlay is on the stack from the request, with a

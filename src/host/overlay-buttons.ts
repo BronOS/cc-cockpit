@@ -20,6 +20,9 @@
 // What a provider is told came from the opener (another plugin, the CLI), so it is untrusted input
 // for the provider: each gets its own frozen copy, and the guide asks a provider to check the data
 // (a source checks that the id is one of its own, the Editor resolves the path inside the project).
+// `opener` is the exception: main fills it from the plugin it accepted the open for (typeQuery in
+// overlay-manager.ts), so a source can refuse its buttons on an overlay another plugin opened for
+// one of its items.
 import type { Disposer, JsonValue, OverlayInfo, OverlayTypeButton } from '../sdk/types'
 import { errorText } from '../shared/error-text'
 import { within } from '../shared/timeout'

@@ -158,7 +158,11 @@ export interface OverlayManagerOptions {
 export interface OverlayTypeQuery {
   type: CleanOverlayType
   title: string
-  /** The opening plugin's id, `cli` or `core`. */
+  /**
+   * The opening plugin's id, `cli` or `core`: from `pluginId` of start(), the id HostApi checked
+   * the request for, never from the spec. Providers trust it (a source shows its inbox-item buttons
+   * only to itself and its reviewer), so it must stay main's record.
+   */
   opener: string
 }
 

@@ -167,7 +167,10 @@ with full Node access.
   answers up to 4 buttons, each with a `run(info)`; it is asked when such an overlay opens, after
   every click on its buttons and when the opener calls `setButtons`, and has 500 ms (a slower or
   throwing one is skipped and logged in your plugin's log). `data` came from the opener: check it
-  (an id is yours, a path resolves inside the project). A click shows the button busy until `run`
+  (an id is yours, a path resolves inside the project). `opener` is the app's own record of the
+  plugin whose request opened the overlay (never taken from the spec or `data`): a button that acts
+  on an account checks it too, as a source adds its `inbox-item` buttons only on overlays it or the
+  reviewer it handed the item to (`cockpit.reviewer`) opened. A click shows the button busy until `run`
   settles (at most 30 s); `{ close: true }` closes the overlay. A click never reaches the
   overlay's page. Returns a disposer; dropped when the plugin stops. Check
   `typeof ctx.overlay.buttons === 'function'` first: an older app has none.

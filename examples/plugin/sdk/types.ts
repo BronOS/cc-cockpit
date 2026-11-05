@@ -228,7 +228,13 @@ export interface OverlayButton {
 export interface OverlayInfo {
   readonly type: { readonly name: string; readonly data: JsonValue }
   readonly title: string
-  /** The opening plugin's id, `'core'` or `'cli'`. */
+  /**
+   * The opening plugin's id, `'core'` or `'cli'`. Set by the app from the plugin whose request it
+   * accepted (never from the spec or its `type.data`), so a provider can trust it where it cannot
+   * trust `data`: a source adds its `inbox-item` buttons only on overlays it or the reviewer it handed
+   * the item to opened, so another plugin naming a thread of yours gets none. Plugins of one project
+   * share a JS realm, so this keeps out mistakes and opportunists, not deliberate impersonation.
+   */
   readonly opener: string
 }
 
@@ -658,7 +664,7 @@ export interface PluginContext {
      * asked with the overlay's info and answers the buttons to show now (at most 4; `[]` for none).
      * It has 500 ms: a slower or throwing provider is skipped (logged in your plugin's log). The
      * info's data came from the opener, so check it (that an id is yours, that a path is inside the
-     * project). A click calls that button's `run` (it shows busy until it settles, at most 30 s);
+     * project), and before a button that acts on an account, check `opener` too (OverlayInfo). A click calls that button's `run` (it shows busy until it settles, at most 30 s);
      * `{ close: true }` closes the overlay. Never reaches the overlay's page. Dropped when the plugin
      * stops. Check `typeof ctx.overlay.buttons === 'function'` first: an older app has none.
      */

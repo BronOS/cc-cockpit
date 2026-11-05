@@ -1347,6 +1347,36 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     ])
   })
 
+  it("the providers' opener is the plugin main checked the open for, never a name in the opener's payload", async () => {
+    // A source gates its inbox-item buttons on `opener` (a plugin opening an overlay that names a
+    // Gmail thread must not get Gmail's Mark read): main fills it from the plugin it accepted the
+    // request for, so a spec, its type data or the request naming another plugin changes nothing.
+    const { api, call, hostCalls } = toolbarHost((c) => (c.method === 'overlay.buttons' ? [] : null))
+    const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
+    const typed = new OverlayManager({
+      backend: overlayBackend,
+      views: { create: () => view, focusWindow: () => {} },
+      isWindowOpen: (id) => id === WIN_A,
+      env: () => ({ PATH: '/usr/bin' }),
+      emit: () => {},
+      commandForChord: () => undefined,
+      typeButtons: (windowId) => (windowId === WIN_A ? api.overlayButtons : undefined),
+      log: () => {}
+    })
+    deps.openOverlay = async (windowId, spec, opener, peerGone, channel, pluginId) =>
+      typed.open(windowId, spec, opener, peerGone, channel, pluginId)
+    const forged = { opener: 'a.one', openedBy: 'a.one', pluginId: 'a.one' }
+    const type = { name: 'inbox-item', data: { source: 'a.one', id: 't1', ...forged } }
+    void call('overlay.open', {
+      pluginId: 'a.two',
+      ...{ opener: 'a.one', openedBy: 'a.one' },
+      spec: { kind: 'url', url: 'https://example.com/', title: 'Thread', type, ...forged }
+    })
+    await vi.waitFor(() => expect(hostCalls.filter((c) => c.method === 'overlay.buttons')).toHaveLength(1))
+    expect(hostCalls[0]!.params.info).toEqual({ type, title: 'Thread', opener: 'a.two' })
+    typed.disposeAll()
+  })
+
   it('type buttons: only plugins of this host, each plugin checked with the opener rule; a click names it', async () => {
     const { api, hostCalls, events } = toolbarHost((c) => {
       if (c.method === 'overlay.buttons') {
