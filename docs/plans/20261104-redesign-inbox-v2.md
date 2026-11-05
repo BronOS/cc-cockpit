@@ -603,10 +603,10 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   `src/renderer/settings/PluginsPage.tsx` (shows it), `test/unit/services-status.test.ts`,
   `test/e2e/services-collect.spec.ts` (+ fixtures: an `item` / `gone` / `sync` event case), `docs/design.md` (§5 services)
 
-- [ ] the warning rule in `services.ts` only (host and Plugins page share it); no change to `useAll` (it still lists only
+- [x] the warning rule in `services.ts` only (host and Plugins page share it); no change to `useAll` (it still lists only
   providers at the collector's major)
-- [ ] if `services.ts` feeds `marketplace/tools`, `npm run build:marketplace-tools` and commit the dist
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/services-collect.spec.ts`
+- [x] if `services.ts` feeds `marketplace/tools`, `npm run build:marketplace-tools` and commit the dist (not needed: services.ts does not feed marketplace/tools)
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/services-collect.spec.ts`
   — done when green
 
 ### Task 17: Inbox: feed v2 validation [model: sonnet]

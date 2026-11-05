@@ -7,13 +7,20 @@ const path = require('node:path')
 
 exports.activate = (ctx) => {
   const file = path.join(process.env.HOME, 'svc-collector.json')
-  const seen = { rounds: [], events: [] }
+  const seen = { rounds: [], events: [], feed: [] }
   const save = () => fs.writeFileSync(file, JSON.stringify(seen))
   const set = ctx.services.useAll('greet')
   set.on('greeted', (data, from) => {
     seen.events.push({ by: data.by, from })
     save()
   })
+  // item / gone / sync (the inbox-feed v2 event kinds): recorded as kind:by:from.
+  for (const kind of ['item', 'gone', 'sync']) {
+    set.on(kind, (data, from) => {
+      seen.feed.push(`${kind}:${data.by}:${from}`)
+      save()
+    })
+  }
   ctx.commands.register('collect', async () => {
     const round = []
     for (const p of set.providers()) round.push({ from: p.pluginId, value: await p.handle.greet('all') })

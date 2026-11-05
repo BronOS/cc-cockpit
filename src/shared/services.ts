@@ -24,6 +24,9 @@ export type ServiceProblem =
   | { kind: 'missing'; service: string }
   | { kind: 'ambiguous'; service: string; candidates: string[] }
   | { kind: 'version-mismatch'; service: string; consumer: string; usesVersion: number; provider: string; providesVersion: number }
+  // A collector reads every provider at its own major (useAll); this one provides the name at another
+  // major, so useAll skips it and its items would be silently absent.
+  | { kind: 'collected-major'; service: string; consumer: string; usesVersion: number; provider: string; providesVersion: number }
 
 export type ProviderSelection =
   | { ok: true; provider: string; version: number }
@@ -97,6 +100,8 @@ export function serviceProblemMessage(problem: ServiceProblem, nameOf: (id: stri
       return `plugins ${joinNames(problem.candidates.map(nameOf))} both provide service "${problem.service}"; pick one in Settings > Plugins`
     case 'version-mismatch':
       return `"${problem.service}": ${nameOf(problem.consumer)} uses version ${problem.usesVersion}, ${nameOf(problem.provider)} provides version ${problem.providesVersion}`
+    case 'collected-major':
+      return `${nameOf(problem.provider)} provides ${problem.service} ${problem.providesVersion}, ${nameOf(problem.consumer)} reads ${problem.usesVersion}: update ${nameOf(problem.provider)}`
   }
 }
 
@@ -142,9 +147,19 @@ export function serviceStatus(plugins: readonly ServicePlugin[], choices: Servic
     for (const e of [...provides, ...uses]) names.add(e.service)
     const problems: ServiceProblem[] = []
     for (const u of uses) {
-      // A collected name reads every provider: none, several or another major on one of them is
-      // not this plugin's problem (useAll lists the providers of its major).
-      if (collectsName(p, u.service)) continue
+      // A collected name reads every provider: none or several is not a problem (useAll lists the
+      // providers of its major). A provider at another major is: useAll skips it, so its items
+      // would be silently absent; the collector gets one warning per such provider (the host and the
+      // Plugins page share this rule). The plugin itself is skipped: it may provide and collect a name.
+      if (collectsName(p, u.service)) {
+        for (const other of plugins) {
+          const v = other.id === p.id ? undefined : declared(other.services?.provides, u.service)
+          if (v !== undefined && v !== u.version) {
+            problems.push({ kind: 'collected-major', service: u.service, consumer: p.id, usesVersion: u.version, provider: other.id, providesVersion: v })
+          }
+        }
+        continue
+      }
       const sel = selectProvider(u.service, plugins, choices, { id: p.id, version: u.version })
       if (!sel.ok) problems.push(sel.problem)
     }

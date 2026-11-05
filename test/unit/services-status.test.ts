@@ -56,6 +56,26 @@ describe('selectProvider', () => {
 })
 
 describe('serviceStatus', () => {
+  it('collected name: a provider at another major is a problem on the collector, a same-major one is not', () => {
+    const collector: ServicePlugin = { id: 'inbox', services: { uses: { feed: 2 }, collects: ['feed'] } }
+    const s = serviceStatus([collector, prov('old', { feed: 1 }), prov('new', { feed: 2 })], {})
+    expect(s.plugins.find((p) => p.id === 'inbox')!.problems).toEqual([
+      { kind: 'collected-major', service: 'feed', consumer: 'inbox', usesVersion: 2, provider: 'old', providesVersion: 1 }
+    ])
+    expect(s.plugins.find((p) => p.id === 'old')!.problems).toEqual([])
+    expect(s.services[0]).toMatchObject({ collectedOnly: true })
+    const none = serviceStatus([collector, prov('new', { feed: 2 })], {})
+    expect(none.plugins.find((p) => p.id === 'inbox')!.problems).toEqual([])
+  })
+
+  it('collected-major message names the provider and the collector', () => {
+    const msg = serviceProblemMessage(
+      { kind: 'collected-major', service: 'inbox-feed', consumer: 'inbox', usesVersion: 2, provider: 'gmail', providesVersion: 1 },
+      (id) => ({ inbox: 'Inbox', gmail: 'Gmail' })[id] ?? id
+    )
+    expect(msg).toBe('Gmail provides inbox-feed 1, Inbox reads 2: update Gmail')
+  })
+
   it('is empty for plugins without services', () => {
     expect(serviceStatus([{ id: 'a' }], {})).toEqual({ plugins: [{ id: 'a', provides: [], uses: [], problems: [] }], services: [] })
   })

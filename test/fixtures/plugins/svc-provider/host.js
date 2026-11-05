@@ -4,6 +4,10 @@ exports.activate = (ctx) => {
   ctx.services.provide('greet', {
     greet: (name) => {
       ctx.services.emit('greet', 'greeted', { name, by: 'one' })
+      // Feed-shaped events (inbox-feed v2): item, gone and sync, each carrying the sender's marker.
+      ctx.services.emit('greet', 'item', { id: 'x-one', by: 'one' })
+      ctx.services.emit('greet', 'gone', { id: 'x-one', by: 'one' })
+      ctx.services.emit('greet', 'sync', { by: 'one' })
       return 'hello ' + name + ' from one'
     }
   })

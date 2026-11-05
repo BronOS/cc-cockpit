@@ -11,7 +11,7 @@ const COLLECTOR = 'test.svccollector'
 const ONE = 'test.svcprovider'
 const TWO = 'test.svcprovider2'
 
-type Seen = { rounds: Array<Array<{ from: string; value: string }>>; events: Array<{ by: string; from: string }> }
+type Seen = { rounds: Array<Array<{ from: string; value: string }>>; events: Array<{ by: string; from: string }>; feed: string[] }
 
 test('a collector reads every provider of a service through ctx.services.useAll', async ({ cockpit }) => {
   const { page } = cockpit
@@ -58,6 +58,12 @@ test('a collector reads every provider of a service through ctx.services.useAll'
   await expect
     .poll(() => seen().events.map((e) => `${e.from}:${e.by}`).sort(), { timeout: 10_000 })
     .toEqual([`${ONE}:one`, `${TWO}:two`].sort())
+
+  // item / gone / sync events arrive from each provider with its id, in the order emitted.
+  await expect
+    .poll(() => seen().feed.filter((f) => f.endsWith(`:${ONE}`)), { timeout: 10_000 })
+    .toEqual([`item:one:${ONE}`, `gone:one:${ONE}`, `sync:one:${ONE}`])
+  expect(seen().feed.filter((f) => f.endsWith(`:${TWO}`))).toEqual([`item:two:${TWO}`, `gone:two:${TWO}`, `sync:two:${TWO}`])
 
   // Only a collector uses "greet": no pick to make, no problem reported.
   const status = (await invoke('settings.pluginServices', {})) as {
