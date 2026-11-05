@@ -236,6 +236,12 @@ var MAX_DESCRIPTION_LENGTH = 1e3;
 var MAX_REASON_LENGTH = 1e3;
 var MAX_VERSION_LENGTH = 64;
 var COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+var SHA256_PATTERN = /^[0-9a-f]{64}$/;
+var MARKETPLACE_CATEGORIES = ["sources", "views", "tools", "themes", "claude", "other"];
+function isMarketplaceCategory(v) {
+  return typeof v === "string" && MARKETPLACE_CATEGORIES.includes(v);
+}
+var MAX_PREVIEW_BYTES = 512 * 1024;
 var UNSAFE_TEXT = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 var UNSAFE_TEXT_ALL = new RegExp(UNSAFE_TEXT.source, "g");
 function label(v, max) {
@@ -259,7 +265,7 @@ function marketplaceRepoProblem(repo, indexUrl) {
 function parseEntry(raw, indexUrl) {
   const bad = (problem) => ({ ok: false, problem });
   if (!isPlainObject(raw)) return bad("the entry is not a JSON object");
-  const { id, name, description, author, repo, version, tag, commit, api } = raw;
+  const { id, name, description, author, repo, version, tag, commit, api, category, preview } = raw;
   if (typeof id !== "string" || id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id))
     return bad('"id" is not a valid plugin id');
   if (isReservedPluginId(id)) return bad(`"id": ${RESERVED_PLUGIN_ID_MESSAGE}`);
@@ -285,6 +291,7 @@ function parseEntry(raw, indexUrl) {
     return bad('"commit" must be the full 40-character lower-case hash');
   if (typeof api !== "number" || !Number.isInteger(api) || api < 1)
     return bad('"api" must be a positive integer');
+  const sha256 = isPlainObject(preview) && typeof preview.sha256 === "string" && SHA256_PATTERN.test(preview.sha256) ? preview.sha256 : null;
   return {
     ok: true,
     entry: {
@@ -296,7 +303,9 @@ function parseEntry(raw, indexUrl) {
       version,
       tag,
       commit,
-      api
+      api,
+      category: isMarketplaceCategory(category) ? category : "other",
+      ...sha256 !== null ? { preview: { sha256 } } : {}
     }
   };
 }
@@ -360,7 +369,7 @@ function compareVersions(a, b) {
 // src/common.ts
 var MAX_ENTRY_BYTES = 64 * 1024;
 var MAX_OWNERS = 50;
-var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "owners"]);
+var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "category", "owners"]);
 var ToolError = class extends Error {
 };
 var MAX_QUOTED = 200;
@@ -382,6 +391,9 @@ function parseSourceEntry(text, indexUrl) {
   const { owners, ...fields } = raw;
   if (!Array.isArray(owners) || owners.length === 0 || owners.length > MAX_OWNERS || !owners.every((o) => Number.isSafeInteger(o) && o > 0)) {
     return { ok: false, problem: `"owners" must list 1 to ${MAX_OWNERS} numeric GitHub user ids` };
+  }
+  if (fields.category !== void 0 && !isMarketplaceCategory(fields.category)) {
+    return { ok: false, problem: `"category" must be one of ${MARKETPLACE_CATEGORIES.join(", ")}` };
   }
   const parsed = parseEntry(fields, indexUrl);
   if (!parsed.ok) return parsed;

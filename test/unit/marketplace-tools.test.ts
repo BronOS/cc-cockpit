@@ -9,9 +9,19 @@ import { pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { bumpedId, decideAutoMerge, listAll, main as autoMergeMain, resolvePullRequest, type DecisionInput, type FetchLike, type PullFile, type PullSummary } from '../../marketplace/tools/src/auto-merge'
 import { PARTIAL_EXIT, buildIndex } from '../../marketplace/tools/src/build-index'
-import { changedEntryFiles, checkEntry, main as checkMain, manifestProblems } from '../../marketplace/tools/src/check-entry'
+import {
+  changedEntryFiles,
+  checkEntry,
+  fetchPreviews,
+  inspectEntry,
+  main as checkMain,
+  manifestProblems,
+  parseRequiredFrom
+} from '../../marketplace/tools/src/check-entry'
 import { MAX_ENTRY_BYTES, listEntryFiles, parseSourceEntry, quoted } from '../../marketplace/tools/src/common'
-import { DEFAULT_MARKETPLACE_URL as SERVICE_URL, parseMarketplaceIndex, type MarketplaceEntry } from '../../src/shared/marketplace'
+import { createHash } from 'node:crypto'
+import { DEFAULT_MARKETPLACE_URL as SERVICE_URL, parseMarketplaceIndex, previewPath, type MarketplaceEntry } from '../../src/shared/marketplace'
+import { fakePng } from '../fakes/png'
 
 // js-yaml ships no types and this one call needs none.
 const { load: parseYaml } = createRequire(__filename)('js-yaml') as { load(text: string): unknown }
@@ -85,9 +95,22 @@ describe('parseSourceEntry', () => {
     ['an unknown field', { homepage: 'https://x' }],
     ['a short commit', { commit: 'abc' }],
     ['an ssh repo', { repo: 'git@github.com:a/b.git' }],
-    ['a file: repo from an https index', { repo: 'file:///tmp/r.git' }]
+    ['a file: repo from an https index', { repo: 'file:///tmp/r.git' }],
+    // The app reads an unknown category as `other`; CI catches the typo.
+    ['an unknown category', { category: 'game' }],
+    // build-index writes it from the image it checked; an author cannot claim one.
+    ['a preview claimed by the author', { preview: { sha256: 'f'.repeat(64) } }]
   ])('refuses %s', (_name, patch) => {
     expect(parseSourceEntry(JSON.stringify(sourceEntry(patch)), SERVICE_URL).ok).toBe(false)
+  })
+
+  it('takes a known category, and none as other', () => {
+    const parsed = parseSourceEntry(JSON.stringify(sourceEntry({ category: 'sources' })), SERVICE_URL)
+    expect(parsed.ok && parsed.entry.category).toBe('sources')
+    const none = parseSourceEntry(JSON.stringify(sourceEntry()), SERVICE_URL)
+    expect(none.ok && none.entry.category).toBe('other')
+    const bad = parseSourceEntry(JSON.stringify(sourceEntry({ category: 'game' })), SERVICE_URL)
+    expect(bad.ok ? null : bad.problem).toMatch(/"category" must be one of sources, views, tools, themes, claude, other/)
   })
 
   it('says what is wrong, for the author reading the CI log', () => {
@@ -242,6 +265,47 @@ describe('buildIndex', () => {
     })
   })
 
+  describe('previews', () => {
+    const plant = (root: string, bytes: Buffer | string, id = 'acme.tool', commit = COMMIT_A): string => {
+      const path = join(root, previewPath(id, commit))
+      mkdirSync(join(path, '..'), { recursive: true })
+      writeFileSync(path, bytes)
+      return path
+    }
+
+    it('lists the hash of a published preview of the entry\'s own commit', () => {
+      const root = indexRepo(tmp, [sourceEntry(), sourceEntry({ id: 'zed.tool' })])
+      const png = fakePng()
+      plant(root, png)
+      // Another commit's image is not this listing's.
+      plant(root, png, 'zed.tool', COMMIT_B)
+      const { text, problems, warnings } = buildIndex(root)
+      expect(problems).toEqual([])
+      const plugins = JSON.parse(text).plugins as Record<string, unknown>[]
+      expect(plugins[0]).toMatchObject({ id: 'acme.tool', category: 'other', preview: { sha256: createHash('sha256').update(png).digest('hex') } })
+      expect(plugins[1]).not.toHaveProperty('preview')
+      expect(warnings).toEqual(['build-index: "zed.tool": no preview published for this commit'])
+    })
+
+    it.each<[string, (root: string) => void, RegExp]>([
+      ['a wrong-size image', (root) => plant(root, fakePng({ width: 100, height: 100 })), /100x100/],
+      ['an animated image', (root) => plant(root, fakePng({ animated: true })), /animated/],
+      ['an oversized file', (root) => plant(root, fakePng({ dataBytes: 600 * 1024 })), /too large/],
+      ['a symlink', (root) => {
+        mkdirSync(join(root, 'previews/acme.tool'), { recursive: true })
+        symlinkSync('/etc/passwd', join(root, previewPath('acme.tool', COMMIT_A)))
+      }, /not a regular file/]
+    ])('lists the entry without a preview for %s, as a warning that fails nothing', (_name, setup, pattern) => {
+      const root = indexRepo(tmp, [sourceEntry()], [{ id: 'x.y', commit: COMMIT_B, reason: 'bad' }])
+      setup(root)
+      const { text, problems, warnings } = buildIndex(root)
+      expect(problems).toEqual([])
+      expect(warnings.join('\n')).toMatch(pattern)
+      expect(JSON.parse(text).plugins[0]).not.toHaveProperty('preview')
+      expect(JSON.parse(text).revoked).toHaveLength(1)
+    })
+  })
+
   it('refuses a file: repo unless told the index is file:', () => {
     const root = indexRepo(tmp, [sourceEntry({ repo: 'file:///tmp/r.git' })])
     expect(buildIndex(root).problems[0]).toMatch(/a file: repo needs a file: index/)
@@ -258,6 +322,7 @@ describe('check-entry', () => {
   function tagged(work: string, tag: string, manifest: Record<string, unknown> | null, setup?: () => void): void {
     rmSync(join(work, 'plugin.json'), { force: true })
     rmSync(join(work, 'dist'), { recursive: true, force: true })
+    rmSync(join(work, 'preview.png'), { force: true })
     if (manifest !== null) writeFileSync(join(work, 'plugin.json'), JSON.stringify(manifest))
     setup?.()
     git(work, 'add', '-A')
@@ -288,6 +353,18 @@ describe('check-entry', () => {
       symlinkSync('/etc/passwd', join(work, 'dist/host.js'))
     })
     tagged(work, 'git-main', { ...manifest, main: '.git/HEAD' })
+    const withPreview = (bytes: Buffer): (() => void) => () => {
+      built()
+      writeFileSync(join(work, 'preview.png'), bytes)
+    }
+    tagged(work, 'preview-good', manifest, withPreview(fakePng()))
+    tagged(work, 'preview-oversized', manifest, withPreview(fakePng({ dataBytes: 600 * 1024 })))
+    tagged(work, 'preview-wrong-size', manifest, withPreview(fakePng({ width: 800, height: 300 })))
+    tagged(work, 'preview-animated', manifest, withPreview(fakePng({ animated: true })))
+    tagged(work, 'preview-symlink', manifest, () => {
+      built()
+      symlinkSync('/etc/passwd', join(work, 'preview.png'))
+    })
     tagged(work, 'no-manifest', null)
     tagged(work, 'bad-manifest', null, () => writeFileSync(join(work, 'plugin.json'), '{'))
     // Annotated: the tag ref names a tag object, whose hash is not the commit's.
@@ -311,6 +388,7 @@ describe('check-entry', () => {
       tag,
       commit: commits[tag] ?? commits.good!,
       api: 1,
+      category: 'tools',
       ...patch
     }
   }
@@ -334,6 +412,110 @@ describe('check-entry', () => {
     ['a broken plugin.json', 'bad-manifest', /plugin\.json is missing/]
   ])('reports %s', async (_name, tag, pattern) => {
     expect((await check(entryAt(tag))).join('\n')).toMatch(pattern)
+  })
+
+  describe('preview.png', () => {
+    const DAY = '2027-01-10'
+    const before = (): Date => new Date('2027-01-09T23:59:59Z')
+    const on = (): Date => new Date('2027-01-10T00:00:00Z')
+
+    it('passes a good preview and hands over its bytes', async () => {
+      const seen = await inspectEntry(entryAt('preview-good'), { env: GIT_ENV, previewRequiredFrom: DAY, now: on })
+      expect(seen).toMatchObject({ problems: [], warnings: [], atCommit: true })
+      expect(seen.preview?.equals(fakePng())).toBe(true)
+    })
+
+    it.each<[string, RegExp]>([
+      ['preview-oversized', /preview\.png: the preview is over 512 KiB/],
+      ['preview-wrong-size', /preview\.png: the preview is 800x300/],
+      ['preview-animated', /preview\.png: the preview is animated/],
+      ['preview-symlink', /preview\.png is not a regular file/]
+    ])('refuses %s, with or without the date', async (tag, pattern) => {
+      expect((await check(entryAt(tag))).join('\n')).toMatch(pattern)
+      const seen = await inspectEntry(entryAt(tag), { env: GIT_ENV, previewRequiredFrom: null })
+      expect(seen.preview).toBeNull()
+    })
+
+    it('a missing one is a warning before the date or with none, and refused from the day', async () => {
+      const none = await inspectEntry(entryAt('good'), { env: GIT_ENV, previewRequiredFrom: null })
+      expect(none.problems).toEqual([])
+      expect(none.warnings).toEqual(['there is no preview.png at the tag: the listing shows a placeholder, and one will be required soon'])
+      const early = await inspectEntry(entryAt('good'), { env: GIT_ENV, previewRequiredFrom: DAY, now: before })
+      expect(early.problems).toEqual([])
+      expect(early.warnings[0]).toMatch(/will be required from 2027-01-10/)
+      const due = await inspectEntry(entryAt('good'), { env: GIT_ENV, previewRequiredFrom: DAY, now: on })
+      expect(due.problems).toEqual(['there is no preview.png at the tag: one is required since 2027-01-10'])
+      expect(due.warnings).toEqual([])
+    })
+
+    it('--preview-required-from takes a calendar day or none, nothing else', () => {
+      expect(parseRequiredFrom(undefined)).toBeNull()
+      expect(parseRequiredFrom('none')).toBeNull()
+      expect(parseRequiredFrom('2027-01-10')).toBe('2027-01-10')
+      // '' is what the workflow passes when preview-policy.json is missing: fail closed.
+      for (const bad of ['', 'null', '2027-02-30', '2027-1-10', 'tomorrow']) expect(() => parseRequiredFrom(bad)).toThrow(/YYYY-MM-DD or none/)
+    })
+
+    it('--base/--head warns on the PR for a missing preview, and refuses it past the date', async () => {
+      const base = indexRepo(join(tmp, 'base'), [])
+      const head = indexRepo(join(tmp, 'head'), [{ ...entryAt('good'), owners: [OWNER] }])
+      const args = ['--base', base, '--head', head, '--index-url', FILE_INDEX]
+      const logged: string[] = []
+      const log = console.log
+      console.log = (line: string) => logged.push(line)
+      try {
+        await expect(checkMain([...args, '--preview-required-from', 'none'], { env: GIT_ENV })).resolves.toBeUndefined()
+      } finally {
+        console.log = log
+      }
+      expect(logged[0]).toMatch(/^::warning::check-entry: "acme\.tool\.json": there is no preview\.png/)
+      await expect(checkMain([...args, '--preview-required-from', '2000-01-01'], { env: GIT_ENV })).rejects.toThrow(/one is required since 2000-01-01/)
+    })
+  })
+
+  describe('--fetch-previews', () => {
+    const quiet = { env: GIT_ENV }
+
+    it('writes the image of a listing that has none, a marker when the repo has none, and skips what is done', async () => {
+      const root = indexRepo(join(tmp, 'index'), [
+        { ...entryAt('preview-good'), owners: [OWNER] },
+        { ...entryAt('good', { id: 'bare.tool' }), owners: [OWNER] },
+        { ...entryAt('preview-animated', { id: 'anim.tool' }), owners: [OWNER] },
+        // A moved tag: whatever is at the tag is not the pinned commit's, so nothing is written.
+        { ...entryAt('preview-good', { id: 'moved.tool', commit: COMMIT_A }), owners: [OWNER] }
+      ])
+      const out = join(tmp, 'out')
+      const log = await fetchPreviews(root, out, FILE_INDEX, quiet)
+      expect(readFileSync(join(out, previewPath('acme.tool', commits['preview-good']!))).equals(fakePng())).toBe(true)
+      expect(existsSync(join(out, `previews/bare.tool/${commits.good!}.none`))).toBe(true)
+      expect(existsSync(join(out, `previews/anim.tool/${commits['preview-animated']!}.none`))).toBe(true)
+      expect(existsSync(join(out, 'previews/moved.tool'))).toBe(false)
+      expect(log.join('\n')).toMatch(/"moved\.tool\.json": not fetched/)
+
+      // Once published (copied into the index checkout), neither is cloned again.
+      execFileSync('cp', ['-R', join(out, 'previews'), root])
+      const again = join(tmp, 'again')
+      const second = await fetchPreviews(root, again, FILE_INDEX, quiet)
+      expect(second).toEqual(['"moved.tool.json": not fetched, the tag is not at the pinned commit or could not be cloned'])
+      expect(existsSync(join(again, 'previews'))).toBe(false)
+      // And build-index lists the hash of the image it finds there.
+      const built = JSON.parse(buildIndex(root, FILE_INDEX).text) as { plugins: Record<string, unknown>[] }
+      expect(built.plugins.find((p) => p.id === 'acme.tool')).toHaveProperty('preview.sha256', createHash('sha256').update(fakePng()).digest('hex'))
+      expect(built.plugins.find((p) => p.id === 'bare.tool')).not.toHaveProperty('preview')
+    })
+
+    it('runs as a command from the committed bundle', () => {
+      const root = indexRepo(join(tmp, 'index'), [{ ...entryAt('preview-good'), owners: [OWNER] }])
+      const out = join(tmp, 'out')
+      const run = spawnSync(process.execPath, [join(DIST, 'check-entry.js'), '--fetch-previews', root, '--out', out, '--index-url', FILE_INDEX], {
+        env: GIT_ENV,
+        encoding: 'utf8',
+        timeout: 25_000
+      })
+      expect(run.status).toBe(0)
+      expect(run.stdout).toContain('"acme.tool.json": preview fetched')
+      expect(existsSync(join(out, previewPath('acme.tool', commits['preview-good']!)))).toBe(true)
+    }, 30_000)
   })
 
   it('reports a commit that is not where the tag is (a moved tag)', async () => {
@@ -814,7 +996,8 @@ describe('the workflows', () => {
     expect(text).not.toContain('github.token')
     const runs = job.steps!.flatMap((s) => (s.run !== undefined ? [s.run] : []))
     expect(runs).toEqual([
-      'node base/tools/dist/check-entry.js --base base --head pr',
+      // The grace date is read from the base: a PR cannot move it.
+      `node base/tools/dist/check-entry.js --base base --head pr --preview-required-from "$(jq -r '.requiredFrom // "none"' base/preview-policy.json)"`,
       'node base/tools/dist/build-index.js --root pr --out "$RUNNER_TEMP/index.json" --base base'
     ])
     // The tools' checkout is pinned to the base commit and neither one keeps a credential.
@@ -932,6 +1115,30 @@ describe('the workflows', () => {
     expect(w.permissions).toEqual({ contents: 'read' })
     const steps = w.jobs.publish!.steps!
     expect(steps.find((s) => s.uses?.startsWith('actions/checkout'))?.with).toMatchObject({ ref: 'main', token: '${{ secrets.PUBLISH_TOKEN }}' })
+  })
+
+  it('publish fetches previews in a job with no token, and publishes even when that job fails', () => {
+    const w = parsed('publish-index.yml')
+    const previews = w.jobs.previews!
+    // It clones repos somebody else controls: no secret and no credential anywhere in the job.
+    expect(JSON.stringify(previews)).not.toMatch(/secrets\.|github\.token/)
+    expect(previews.permissions).toBeUndefined()
+    expect(previews.steps!.find((s) => s.uses?.startsWith('actions/checkout'))?.with).toMatchObject({ 'persist-credentials': false })
+    const fetch = previews.steps![stepIndex(previews.steps!, 'Fetch missing previews')]!
+    expect(fetch.run).toContain('node tools/dist/check-entry.js --fetch-previews . --out "$RUNNER_TEMP/fetched"')
+    expect((fetch as { 'continue-on-error'?: boolean })['continue-on-error']).toBe(true)
+    const publish = w.jobs.publish!
+    expect(publish.needs).toBe('previews')
+    // A preview must never hold a revocation back.
+    expect(publish.if).toBe('${{ !cancelled() }}')
+    const build = publish.steps![stepIndex(publish.steps!, 'Build and push index.json')]!
+    expect(build.run).toContain('git add previews')
+    // The publish job, which holds the token, never clones a listed repo.
+    expect(publish.steps!.map((s) => s.run ?? '').join('\n')).not.toContain('check-entry')
+    // The auto-merge re-check reads the same policy file, from main.
+    const recheck = parsed('auto-merge.yml').jobs.merge!.steps!.find((s) => s.name === 'Re-check the entry')!
+    expect(recheck.run).toContain(`--preview-required-from "$(jq -r '.requiredFrom // "none"' preview-policy.json)"`)
+    expect(JSON.parse(readFileSync(join(TEMPLATE, 'preview-policy.json'), 'utf8'))).toEqual({ requiredFrom: null })
   })
 
   it('every action is first-party', () => {

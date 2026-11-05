@@ -11,13 +11,22 @@
 // The same holds for a PR's check: a bad entry on main must not hold up a PR that only revokes something.
 // `--base` (check.yml) names the PR's base checkout: a bad entry identical there is reported and does
 // not fail the run, a new or changed one does.
+//
+// Previews: an entry is listed with `preview: { sha256 }` when `previews/<id>/<commit>.png` is in the
+// repo (check-entry --fetch-previews put it there) and passes the same checks again here. A missing or
+// bad one is a warning and the entry is listed without it: the image is cosmetic and must never hold
+// a listing or a revocation back.
+import { createHash } from 'node:crypto'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   DEFAULT_MARKETPLACE_URL,
   MARKETPLACE_SCHEMA,
   MAX_INDEX_BYTES,
+  MAX_PREVIEW_BYTES,
   parseMarketplaceIndex,
+  previewPath,
+  previewPngProblem,
   type MarketplaceEntry
 } from '../../../src/shared/marketplace'
 import {
@@ -29,6 +38,7 @@ import {
   parseRevoked,
   parseSourceEntry,
   quoted,
+  readRegularBytes,
   readRegularFile,
   sameEntryFile
 } from './common'
@@ -46,6 +56,25 @@ export interface BuiltIndex {
   problems: string[]
   /** The same, for entries identical in the base checkout: not this change's doing. Empty with no base. */
   inherited: string[]
+  /** Entries listed without a preview: none published yet, or a file that failed the checks. Never fails the run. */
+  warnings: string[]
+}
+
+/** The entry with its preview's hash, when `previews/<id>/<commit>.png` is there and valid; otherwise why not. */
+// `entry` comes from a source file, which cannot hold `preview` (common.ts), so it is the bare listing.
+function withPreview(root: string, bare: MarketplaceEntry): { entry: MarketplaceEntry; warning: string | null } {
+  const entry = bare
+  const path = join(root, previewPath(entry.id, entry.commit))
+  if (!existsSync(path)) return { entry: bare, warning: `${quoted(entry.id)}: no preview published for this commit` }
+  let bytes: Buffer
+  try {
+    bytes = readRegularBytes(path, MAX_PREVIEW_BYTES)
+  } catch (err) {
+    return { entry: bare, warning: `${quoted(entry.id)}: the preview is not usable: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  const problem = previewPngProblem(bytes)
+  if (problem !== null) return { entry: bare, warning: `${quoted(entry.id)}: the preview is not usable: ${problem}` }
+  return { entry: { ...bare, preview: { sha256: createHash('sha256').update(bytes).digest('hex') } }, warning: null }
 }
 
 /** The listings of the `index.json` already at `root`; none when it is absent or not usable. */
@@ -72,6 +101,7 @@ export function buildIndex(root: string, indexUrl: string = DEFAULT_MARKETPLACE_
 
   const problems: string[] = []
   const inherited: string[] = []
+  const warnings: string[] = []
   const plugins: MarketplaceEntry[] = []
   const published = publishedEntries(root, indexUrl)
   for (const name of listEntryFiles(join(root, 'plugins'))) {
@@ -95,7 +125,11 @@ export function buildIndex(root: string, indexUrl: string = DEFAULT_MARKETPLACE_
     // The auto-merge rule "filename equals the id" and the one-listing-per-id rule both rest on this.
     else if (name !== `${parsed.entry.id}.json`) refuse('the file name must be the id plus .json')
     // Only the validated fields go on, so `owners` never reaches the published file.
-    else plugins.push(parsed.entry)
+    else {
+      const listed = withPreview(root, parsed.entry)
+      if (listed.warning !== null) warnings.push(`build-index: ${listed.warning}`)
+      plugins.push(listed.entry)
+    }
   }
 
   const text = `${JSON.stringify({ schema: MARKETPLACE_SCHEMA, plugins, revoked: revoked.revoked }, null, 2)}\n`
@@ -104,7 +138,7 @@ export function buildIndex(root: string, indexUrl: string = DEFAULT_MARKETPLACE_
   if (Buffer.byteLength(text) > MAX_INDEX_BYTES) throw new ToolError('build-index: the index is over the size cap')
   const check = parseMarketplaceIndex(text, { indexUrl })
   if (!check.ok) throw new ToolError(`build-index: ${check.error}`)
-  return { text, problems, inherited }
+  return { text, problems, inherited, warnings }
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -114,6 +148,7 @@ export async function main(argv: string[]): Promise<void> {
   if (root === undefined || out === undefined) throw new ToolError('usage: build-index --root <repo> --out <file> [--index-url <url>] [--base <checkout>]')
   const built = buildIndex(root, flags.get('--index-url'), flags.get('--base'))
   writeFileSync(out, built.text)
+  if (built.warnings.length > 0) console.error(built.warnings.join('\n'))
   // In the log for whoever looks, and still red on main's own publish run, which passes no base.
   if (built.inherited.length > 0) console.error(built.inherited.map((line) => `already on the base, not failing: ${line}`).join('\n'))
   if (built.problems.length > 0) {

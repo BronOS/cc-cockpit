@@ -1,4 +1,5 @@
 // src/build-index.ts
+var import_node_crypto = require("node:crypto");
 var import_node_fs2 = require("node:fs");
 var import_node_path2 = require("node:path");
 
@@ -239,6 +240,50 @@ var MAX_DESCRIPTION_LENGTH = 1e3;
 var MAX_REASON_LENGTH = 1e3;
 var MAX_VERSION_LENGTH = 64;
 var COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+var SHA256_PATTERN = /^[0-9a-f]{64}$/;
+var MARKETPLACE_CATEGORIES = ["sources", "views", "tools", "themes", "claude", "other"];
+function isMarketplaceCategory(v) {
+  return typeof v === "string" && MARKETPLACE_CATEGORIES.includes(v);
+}
+var MAX_PREVIEW_BYTES = 512 * 1024;
+var PREVIEW_MIN_WIDTH = 640;
+var PREVIEW_MIN_HEIGHT = 400;
+var PREVIEW_MAX_WIDTH = 1600;
+var PREVIEW_MAX_HEIGHT = 1e3;
+var PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+function previewPath(id, commit) {
+  return `previews/${id}/${commit}.png`;
+}
+function hasPngSignature(bytes) {
+  return bytes.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, i) => bytes[i] === b);
+}
+function chunkType(bytes, at) {
+  return String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
+}
+function uint32(bytes, at) {
+  return (bytes[at] << 24 >>> 0) + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3];
+}
+function previewPngProblem(bytes) {
+  if (bytes.length > MAX_PREVIEW_BYTES) return `the preview is over ${MAX_PREVIEW_BYTES / 1024} KiB`;
+  if (!hasPngSignature(bytes)) return "the preview is not a PNG";
+  if (bytes.length < 33 || uint32(bytes, 8) !== 13 || chunkType(bytes, 12) !== "IHDR") return "the preview has no IHDR chunk first";
+  const width = uint32(bytes, 16);
+  const height = uint32(bytes, 20);
+  if (width < PREVIEW_MIN_WIDTH || width > PREVIEW_MAX_WIDTH || height < PREVIEW_MIN_HEIGHT || height > PREVIEW_MAX_HEIGHT) {
+    return `the preview is ${width}x${height}; it must be ${PREVIEW_MIN_WIDTH}x${PREVIEW_MIN_HEIGHT} to ${PREVIEW_MAX_WIDTH}x${PREVIEW_MAX_HEIGHT} (1280x800 recommended)`;
+  }
+  let at = 8;
+  for (; ; ) {
+    if (at + 12 > bytes.length) return "the preview is truncated";
+    const length = uint32(bytes, at);
+    const type = chunkType(bytes, at + 4);
+    const next = at + 12 + length;
+    if (next > bytes.length) return "the preview is truncated";
+    if (type === "acTL") return "the preview is animated (APNG); a still image is required";
+    if (type === "IEND") return null;
+    at = next;
+  }
+}
 var UNSAFE_TEXT = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 var UNSAFE_TEXT_ALL = new RegExp(UNSAFE_TEXT.source, "g");
 function label(v, max) {
@@ -262,7 +307,7 @@ function marketplaceRepoProblem(repo, indexUrl) {
 function parseEntry(raw, indexUrl) {
   const bad = (problem) => ({ ok: false, problem });
   if (!isPlainObject(raw)) return bad("the entry is not a JSON object");
-  const { id, name, description, author, repo, version, tag, commit, api } = raw;
+  const { id, name, description, author, repo, version, tag, commit, api, category, preview } = raw;
   if (typeof id !== "string" || id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id))
     return bad('"id" is not a valid plugin id');
   if (isReservedPluginId(id)) return bad(`"id": ${RESERVED_PLUGIN_ID_MESSAGE}`);
@@ -288,6 +333,7 @@ function parseEntry(raw, indexUrl) {
     return bad('"commit" must be the full 40-character lower-case hash');
   if (typeof api !== "number" || !Number.isInteger(api) || api < 1)
     return bad('"api" must be a positive integer');
+  const sha256 = isPlainObject(preview) && typeof preview.sha256 === "string" && SHA256_PATTERN.test(preview.sha256) ? preview.sha256 : null;
   return {
     ok: true,
     entry: {
@@ -299,7 +345,9 @@ function parseEntry(raw, indexUrl) {
       version,
       tag,
       commit,
-      api
+      api,
+      category: isMarketplaceCategory(category) ? category : "other",
+      ...sha256 !== null ? { preview: { sha256 } } : {}
     }
   };
 }
@@ -386,7 +434,7 @@ var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
 var MAX_ENTRY_BYTES = 64 * 1024;
 var MAX_OWNERS = 50;
-var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "owners"]);
+var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "category", "owners"]);
 var ToolError = class extends Error {
 };
 var MAX_QUOTED = 200;
@@ -408,6 +456,9 @@ function parseSourceEntry(text, indexUrl) {
   const { owners, ...fields } = raw;
   if (!Array.isArray(owners) || owners.length === 0 || owners.length > MAX_OWNERS || !owners.every((o) => Number.isSafeInteger(o) && o > 0)) {
     return { ok: false, problem: `"owners" must list 1 to ${MAX_OWNERS} numeric GitHub user ids` };
+  }
+  if (fields.category !== void 0 && !isMarketplaceCategory(fields.category)) {
+    return { ok: false, problem: `"category" must be one of ${MARKETPLACE_CATEGORIES.join(", ")}` };
   }
   const parsed = parseEntry(fields, indexUrl);
   if (!parsed.ok) return parsed;
@@ -435,6 +486,12 @@ function readRegularFile(path, maxBytes) {
   if (!stats.isFile()) throw new ToolError(`${quoted(path)} is not a regular file`);
   if (stats.size > maxBytes) throw new ToolError(`${quoted(path)} is too large`);
   return (0, import_node_fs.readFileSync)(path, "utf8");
+}
+function readRegularBytes(path, maxBytes) {
+  const stats = (0, import_node_fs.lstatSync)(path);
+  if (!stats.isFile()) throw new ToolError(`${quoted(path)} is not a regular file`);
+  if (stats.size > maxBytes) throw new ToolError(`${quoted(path)} is too large`);
+  return (0, import_node_fs.readFileSync)(path);
 }
 function listEntryFiles(pluginsDir) {
   if (!(0, import_node_fs.existsSync)(pluginsDir)) return [];
@@ -473,6 +530,20 @@ function runCli(main2) {
 // src/build-index.ts
 var MAX_REVOKED_BYTES = MAX_INDEX_BYTES;
 var PARTIAL_EXIT = 2;
+function withPreview(root, bare) {
+  const entry = bare;
+  const path = (0, import_node_path2.join)(root, previewPath(entry.id, entry.commit));
+  if (!(0, import_node_fs2.existsSync)(path)) return { entry: bare, warning: `${quoted(entry.id)}: no preview published for this commit` };
+  let bytes;
+  try {
+    bytes = readRegularBytes(path, MAX_PREVIEW_BYTES);
+  } catch (err) {
+    return { entry: bare, warning: `${quoted(entry.id)}: the preview is not usable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const problem = previewPngProblem(bytes);
+  if (problem !== null) return { entry: bare, warning: `${quoted(entry.id)}: the preview is not usable: ${problem}` };
+  return { entry: { ...bare, preview: { sha256: (0, import_node_crypto.createHash)("sha256").update(bytes).digest("hex") } }, warning: null };
+}
 function publishedEntries(root, indexUrl) {
   const file = (0, import_node_path2.join)(root, "index.json");
   if (!(0, import_node_fs2.existsSync)(file)) return [];
@@ -488,6 +559,7 @@ function buildIndex(root, indexUrl = DEFAULT_MARKETPLACE_URL, base) {
   if (!revoked.ok) throw new ToolError(`build-index: ${revoked.problem}`);
   const problems = [];
   const inherited = [];
+  const warnings = [];
   const plugins = [];
   const published = publishedEntries(root, indexUrl);
   for (const name of listEntryFiles((0, import_node_path2.join)(root, "plugins"))) {
@@ -509,14 +581,18 @@ function buildIndex(root, indexUrl = DEFAULT_MARKETPLACE_URL, base) {
     const parsed = parseSourceEntry(text2, indexUrl);
     if (!parsed.ok) refuse(parsed.problem);
     else if (name !== `${parsed.entry.id}.json`) refuse("the file name must be the id plus .json");
-    else plugins.push(parsed.entry);
+    else {
+      const listed = withPreview(root, parsed.entry);
+      if (listed.warning !== null) warnings.push(`build-index: ${listed.warning}`);
+      plugins.push(listed.entry);
+    }
   }
   const text = `${JSON.stringify({ schema: MARKETPLACE_SCHEMA, plugins, revoked: revoked.revoked }, null, 2)}
 `;
   if (Buffer.byteLength(text) > MAX_INDEX_BYTES) throw new ToolError("build-index: the index is over the size cap");
   const check = parseMarketplaceIndex(text, { indexUrl });
   if (!check.ok) throw new ToolError(`build-index: ${check.error}`);
-  return { text, problems, inherited };
+  return { text, problems, inherited, warnings };
 }
 async function main(argv) {
   const flags = parseFlags(argv, ["--root", "--out", "--index-url", "--base"]);
@@ -525,6 +601,7 @@ async function main(argv) {
   if (root === void 0 || out === void 0) throw new ToolError("usage: build-index --root <repo> --out <file> [--index-url <url>] [--base <checkout>]");
   const built = buildIndex(root, flags.get("--index-url"), flags.get("--base"));
   (0, import_node_fs2.writeFileSync)(out, built.text);
+  if (built.warnings.length > 0) console.error(built.warnings.join("\n"));
   if (built.inherited.length > 0) console.error(built.inherited.map((line) => `already on the base, not failing: ${line}`).join("\n"));
   if (built.problems.length > 0) {
     console.error(built.problems.join("\n"));

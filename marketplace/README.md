@@ -30,6 +30,7 @@ What the index does give you:
      "tag": "v1.0.0",
      "commit": "<the full 40-character commit the tag points at>",
      "api": 1,
+     "category": "tools",
      "owners": [12345678]
    }
    ```
@@ -39,13 +40,35 @@ What the index does give you:
    out of the published `index.json`.
 
 The rules: `repo` is `https://` with no credentials; `commit` is the 40-character lower-case hash; `id` and `version`
-are as in `plugin.json`, and an `id` starting with `cockpit.` is refused (reserved for plugins the app ships); `name` and `author` are at most 100 characters, `description` at most 1000; no unknown fields.
+are as in `plugin.json`, and an `id` starting with `cockpit.` is refused (reserved for plugins the app ships); `name` and `author` are at most 100 characters, `description` at most 1000; `category` is optional (see below); no unknown fields.
 
 The `check` workflow clones your repo at the tag, runs nothing from it, and compares `commit` and the `id`, `version`
-and `api` of `plugin.json`, and checks that the `main` file exists. A person then reviews and merges a new listing.
+and `api` of `plugin.json`, checks that the `main` file exists, and checks `preview.png` (below). A person then reviews and merges a new listing.
 That is not the app's full manifest validation, so an entry can pass here and still be refused at install: try it first
 with Settings > Plugins > Install from git URL. A clone failure is reported without git's own text, because this log
 is public and a PR picks the host; run `git clone --branch <tag> <repo>` yourself to see why.
+
+## Preview and category
+
+**Preview.** Put `preview.png` at the root of your repo, in the tagged commit: the app shows it on the plugin's card.
+
+- PNG, at most 512 KiB, 1280×800 recommended (16:10); anything from 640×400 to 1600×1000 is accepted;
+- a still image: an animated PNG (an `acTL` chunk) is refused;
+- a regular file, not a symlink.
+
+The `check` workflow reads only the PNG's framing (signature, size, chunk headers) and decodes nothing. A preview that
+breaks a rule fails the check. A missing one passes with a warning on the PR until the date in `preview-policy.json`
+(`requiredFrom`, `YYYY-MM-DD`, UTC; `null` means warnings only); from that day a new listing or a new version without
+one is refused. Listings already on `main` without a preview stay listed, with a warning in every publish run.
+
+After a merge, `publish-index.yml` clones each listing whose commit has no preview yet (in a job with no token), copies
+the image to `previews/<id>/<commit>.png` next to `index.json`, and the entry in `index.json` gets
+`"preview": { "sha256": "…" }`. A commit whose repo had no usable preview gets the marker `previews/<id>/<commit>.none`
+instead, so it is not cloned again every hour; delete the marker to make the next run look again. The app fetches the
+image from this repo, never from yours, and checks it against that hash.
+
+**Category.** `category` is one of `sources`, `views`, `tools`, `themes`, `claude`, `other`; leaving it out means
+`other`. Any other value fails the check. The Plugins page filters by it.
 
 ## Publish a new version
 

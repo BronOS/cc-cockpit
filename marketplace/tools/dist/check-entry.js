@@ -286,6 +286,51 @@ var MAX_AUTHOR_LENGTH = 100;
 var MAX_DESCRIPTION_LENGTH = 1e3;
 var MAX_VERSION_LENGTH = 64;
 var COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+var SHA256_PATTERN = /^[0-9a-f]{64}$/;
+var MARKETPLACE_CATEGORIES = ["sources", "views", "tools", "themes", "claude", "other"];
+function isMarketplaceCategory(v) {
+  return typeof v === "string" && MARKETPLACE_CATEGORIES.includes(v);
+}
+var MAX_PREVIEW_BYTES = 512 * 1024;
+var PREVIEW_MIN_WIDTH = 640;
+var PREVIEW_MIN_HEIGHT = 400;
+var PREVIEW_MAX_WIDTH = 1600;
+var PREVIEW_MAX_HEIGHT = 1e3;
+var PREVIEW_FILE = "preview.png";
+var PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+function previewPath(id, commit) {
+  return `previews/${id}/${commit}.png`;
+}
+function hasPngSignature(bytes) {
+  return bytes.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, i) => bytes[i] === b);
+}
+function chunkType(bytes, at) {
+  return String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
+}
+function uint32(bytes, at) {
+  return (bytes[at] << 24 >>> 0) + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3];
+}
+function previewPngProblem(bytes) {
+  if (bytes.length > MAX_PREVIEW_BYTES) return `the preview is over ${MAX_PREVIEW_BYTES / 1024} KiB`;
+  if (!hasPngSignature(bytes)) return "the preview is not a PNG";
+  if (bytes.length < 33 || uint32(bytes, 8) !== 13 || chunkType(bytes, 12) !== "IHDR") return "the preview has no IHDR chunk first";
+  const width = uint32(bytes, 16);
+  const height = uint32(bytes, 20);
+  if (width < PREVIEW_MIN_WIDTH || width > PREVIEW_MAX_WIDTH || height < PREVIEW_MIN_HEIGHT || height > PREVIEW_MAX_HEIGHT) {
+    return `the preview is ${width}x${height}; it must be ${PREVIEW_MIN_WIDTH}x${PREVIEW_MIN_HEIGHT} to ${PREVIEW_MAX_WIDTH}x${PREVIEW_MAX_HEIGHT} (1280x800 recommended)`;
+  }
+  let at = 8;
+  for (; ; ) {
+    if (at + 12 > bytes.length) return "the preview is truncated";
+    const length = uint32(bytes, at);
+    const type = chunkType(bytes, at + 4);
+    const next = at + 12 + length;
+    if (next > bytes.length) return "the preview is truncated";
+    if (type === "acTL") return "the preview is animated (APNG); a still image is required";
+    if (type === "IEND") return null;
+    at = next;
+  }
+}
 var UNSAFE_TEXT = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 var UNSAFE_TEXT_ALL = new RegExp(UNSAFE_TEXT.source, "g");
 function label(v, max) {
@@ -309,7 +354,7 @@ function marketplaceRepoProblem(repo, indexUrl) {
 function parseEntry(raw, indexUrl) {
   const bad = (problem) => ({ ok: false, problem });
   if (!isPlainObject(raw)) return bad("the entry is not a JSON object");
-  const { id, name, description, author, repo, version, tag, commit, api } = raw;
+  const { id, name, description, author, repo, version, tag, commit, api, category, preview } = raw;
   if (typeof id !== "string" || id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id))
     return bad('"id" is not a valid plugin id');
   if (isReservedPluginId(id)) return bad(`"id": ${RESERVED_PLUGIN_ID_MESSAGE}`);
@@ -335,6 +380,7 @@ function parseEntry(raw, indexUrl) {
     return bad('"commit" must be the full 40-character lower-case hash');
   if (typeof api !== "number" || !Number.isInteger(api) || api < 1)
     return bad('"api" must be a positive integer');
+  const sha256 = isPlainObject(preview) && typeof preview.sha256 === "string" && SHA256_PATTERN.test(preview.sha256) ? preview.sha256 : null;
   return {
     ok: true,
     entry: {
@@ -346,7 +392,9 @@ function parseEntry(raw, indexUrl) {
       version,
       tag,
       commit,
-      api
+      api,
+      category: isMarketplaceCategory(category) ? category : "other",
+      ...sha256 !== null ? { preview: { sha256 } } : {}
     }
   };
 }
@@ -363,7 +411,7 @@ var import_node_fs = require("node:fs");
 var import_node_path2 = require("node:path");
 var MAX_ENTRY_BYTES = 64 * 1024;
 var MAX_OWNERS = 50;
-var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "owners"]);
+var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "category", "owners"]);
 var ToolError = class extends Error {
 };
 var MAX_QUOTED = 200;
@@ -386,6 +434,9 @@ function parseSourceEntry(text, indexUrl) {
   if (!Array.isArray(owners) || owners.length === 0 || owners.length > MAX_OWNERS || !owners.every((o) => Number.isSafeInteger(o) && o > 0)) {
     return { ok: false, problem: `"owners" must list 1 to ${MAX_OWNERS} numeric GitHub user ids` };
   }
+  if (fields.category !== void 0 && !isMarketplaceCategory(fields.category)) {
+    return { ok: false, problem: `"category" must be one of ${MARKETPLACE_CATEGORIES.join(", ")}` };
+  }
   const parsed = parseEntry(fields, indexUrl);
   if (!parsed.ok) return parsed;
   return { ok: true, entry: parsed.entry, owners, raw };
@@ -402,6 +453,9 @@ function listEntryFiles(pluginsDir) {
 }
 function entryPath(root, name) {
   return (0, import_node_path2.join)(root, "plugins", name);
+}
+function noPreviewMarker(id, commit) {
+  return `previews/${id}/${commit}.none`;
 }
 function sameEntryFile(base, head, name) {
   const basePath = entryPath(base, name);
@@ -434,6 +488,30 @@ function runCli(main2) {
 var GIT_TIMEOUT_MS = 12e4;
 var MAX_MANIFEST_BYTES = 256 * 1024;
 var MAX_CHANGED_ENTRIES = 20;
+var MAX_PREVIEW_FETCHES = 20;
+function readPreview(dir) {
+  const path = (0, import_node_path3.join)(dir, PREVIEW_FILE);
+  const stats = (0, import_node_fs2.lstatSync)(path, { throwIfNoEntry: false });
+  if (stats === void 0) return { missing: true };
+  if (!stats.isFile()) return { problem: `${PREVIEW_FILE} is not a regular file` };
+  if (stats.size > MAX_PREVIEW_BYTES) return { problem: `${PREVIEW_FILE}: the preview is over ${MAX_PREVIEW_BYTES / 1024} KiB` };
+  const bytes = (0, import_node_fs2.readFileSync)(path);
+  const problem = previewPngProblem(bytes);
+  return problem === null ? { bytes } : { problem: `${PREVIEW_FILE}: ${problem}` };
+}
+function previewRequired(opts) {
+  const from = opts.previewRequiredFrom;
+  if (from === void 0 || from === null) return false;
+  return (opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString().slice(0, 10) >= from;
+}
+function parseRequiredFrom(value) {
+  if (value === void 0 || value === "none") return null;
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(value) ? /* @__PURE__ */ new Date(`${value}T00:00:00Z`) : null;
+  if (day === null || Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== value) {
+    throw new ToolError("check-entry: --preview-required-from must be YYYY-MM-DD or none");
+  }
+  return value;
+}
 function runGit(args, cwd, opts) {
   return new Promise((done) => {
     (0, import_node_child_process.execFile)(
@@ -480,18 +558,36 @@ async function isFileInside(dir, rel) {
     return false;
   }
 }
-async function checkEntry(entry, opts = {}) {
+async function inspectEntry(entry, opts = {}) {
   const parent = (0, import_node_fs2.mkdtempSync)((0, import_node_path3.join)((0, import_node_os.tmpdir)(), "check-entry-"));
   try {
     const dest = (0, import_node_path3.join)(parent, "repo");
     const clone = await runGit(cloneArgs(entry.repo, entry.tag, dest), parent, opts);
-    if (clone.code !== 0) return [`could not clone tag ${quoted(entry.tag)} of ${quoted(entry.repo)}: the repo is not public, or the tag does not exist`];
+    if (clone.code !== 0) {
+      return {
+        problems: [`could not clone tag ${quoted(entry.tag)} of ${quoted(entry.repo)}: the repo is not public, or the tag does not exist`],
+        warnings: [],
+        preview: null,
+        atCommit: false
+      };
+    }
     const head = await runGit(["rev-parse", "--verify", "HEAD"], dest, opts);
     const commit = head.stdout.trim();
     const problems = [];
-    if (head.code !== 0 || commit !== entry.commit) problems.push(`the tag is at commit ${quoted(commit)}, the entry says ${quoted(entry.commit)}`);
+    const warnings = [];
+    const atCommit = head.code === 0 && commit === entry.commit;
+    if (!atCommit) problems.push(`the tag is at commit ${quoted(commit)}, the entry says ${quoted(entry.commit)}`);
     problems.push(...await manifestProblems(dest, entry));
-    return problems;
+    const preview = readPreview(dest);
+    if ("problem" in preview) problems.push(preview.problem);
+    else if ("missing" in preview) {
+      if (previewRequired(opts)) problems.push(`there is no ${PREVIEW_FILE} at the tag: one is required since ${String(opts.previewRequiredFrom)}`);
+      else {
+        const when = opts.previewRequiredFrom ? `from ${opts.previewRequiredFrom}` : "soon";
+        warnings.push(`there is no ${PREVIEW_FILE} at the tag: the listing shows a placeholder, and one will be required ${when}`);
+      }
+    }
+    return { problems, warnings, preview: "bytes" in preview ? preview.bytes : null, atCommit };
   } finally {
     (0, import_node_fs2.rmSync)(parent, { recursive: true, force: true });
   }
@@ -512,32 +608,77 @@ function retagProblem(basePath, entry, indexUrl) {
   return "a new commit needs a new version: installed copies cannot update to the version they already have";
 }
 async function checkFile(path, indexUrl, opts, expectedName, basePath) {
+  const refused = (problem) => ({ problems: [problem], warnings: [] });
   const parsed = parseSourceEntry(readRegularFile(path, MAX_ENTRY_BYTES), indexUrl);
-  if (!parsed.ok) return [parsed.problem];
-  if (expectedName !== void 0 && expectedName !== `${parsed.entry.id}.json`) return ["the file name must be the id plus .json"];
+  if (!parsed.ok) return refused(parsed.problem);
+  if (expectedName !== void 0 && expectedName !== `${parsed.entry.id}.json`) return refused("the file name must be the id plus .json");
   const retag = basePath === void 0 ? null : retagProblem(basePath, parsed.entry, indexUrl);
-  if (retag !== null) return [retag];
-  return checkEntry(parsed.entry, opts);
+  if (retag !== null) return refused(retag);
+  const { problems, warnings } = await inspectEntry(parsed.entry, opts);
+  return { problems, warnings };
+}
+async function fetchPreviews(root, out, indexUrl, opts = {}) {
+  const log = [];
+  let fetched = 0;
+  for (const name of listEntryFiles((0, import_node_path3.join)(root, "plugins"))) {
+    let parsed;
+    try {
+      parsed = parseSourceEntry(readRegularFile(entryPath(root, name), MAX_ENTRY_BYTES), indexUrl);
+    } catch {
+      continue;
+    }
+    if (!parsed.ok || name !== `${parsed.entry.id}.json`) continue;
+    const { id, commit } = parsed.entry;
+    if ((0, import_node_fs2.existsSync)((0, import_node_path3.join)(root, previewPath(id, commit))) || (0, import_node_fs2.existsSync)((0, import_node_path3.join)(root, noPreviewMarker(id, commit)))) continue;
+    if (fetched >= MAX_PREVIEW_FETCHES) {
+      log.push(`more than ${MAX_PREVIEW_FETCHES} previews to fetch: the rest wait for the next run`);
+      break;
+    }
+    fetched++;
+    const seen = await inspectEntry(parsed.entry, opts);
+    if (!seen.atCommit) {
+      log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned`);
+      continue;
+    }
+    const target = (0, import_node_path3.join)(out, seen.preview !== null ? previewPath(id, commit) : noPreviewMarker(id, commit));
+    (0, import_node_fs2.mkdirSync)((0, import_node_path3.join)(target, ".."), { recursive: true });
+    (0, import_node_fs2.writeFileSync)(target, seen.preview ?? "");
+    log.push(`${quoted(name)}: ${seen.preview !== null ? "preview fetched" : "no usable preview at this commit"}`);
+  }
+  return log;
 }
 async function main(argv, opts = {}) {
-  const flags = parseFlags(argv, ["--entry", "--base", "--head", "--index-url"]);
+  const flags = parseFlags(argv, ["--entry", "--base", "--head", "--index-url", "--preview-required-from", "--fetch-previews", "--out"]);
   const indexUrl = flags.get("--index-url") ?? DEFAULT_MARKETPLACE_URL;
   const file = flags.get("--entry");
   const base = flags.get("--base");
   const head = flags.get("--head");
+  const fetchRoot = flags.get("--fetch-previews");
+  const out = flags.get("--out");
+  const checkOpts = { ...opts, previewRequiredFrom: parseRequiredFrom(flags.get("--preview-required-from")) };
   const problems = [];
-  if (file !== void 0) {
-    problems.push(...(await checkFile(file, indexUrl, opts)).map((p) => `check-entry: ${p}`));
+  const warnings = [];
+  if (fetchRoot !== void 0 && out !== void 0) {
+    for (const line of await fetchPreviews(fetchRoot, out, indexUrl, opts)) console.log(`check-entry: ${line}`);
+    return;
+  } else if (file !== void 0) {
+    const found = await checkFile(file, indexUrl, checkOpts);
+    problems.push(...found.problems.map((p) => `check-entry: ${p}`));
+    warnings.push(...found.warnings);
   } else if (base !== void 0 && head !== void 0) {
     const names = changedEntryFiles(base, head);
     if (names.length > MAX_CHANGED_ENTRIES) throw new ToolError(`check-entry: a PR may change at most ${MAX_CHANGED_ENTRIES} entries`);
     for (const name of names) {
-      const found = await checkFile(entryPath(head, name), indexUrl, opts, name, entryPath(base, name));
-      problems.push(...found.map((p) => `check-entry: ${quoted(name)}: ${p}`));
+      const found = await checkFile(entryPath(head, name), indexUrl, checkOpts, name, entryPath(base, name));
+      problems.push(...found.problems.map((p) => `check-entry: ${quoted(name)}: ${p}`));
+      warnings.push(...found.warnings.map((w) => `${quoted(name)}: ${w}`));
     }
   } else {
-    throw new ToolError("usage: check-entry --entry <file> | --base <dir> --head <dir> [--index-url <url>]");
+    throw new ToolError(
+      "usage: check-entry --entry <file> | --base <dir> --head <dir> [--preview-required-from <YYYY-MM-DD|none>] | --fetch-previews <dir> --out <dir> [--index-url <url>]"
+    );
   }
+  for (const warning of warnings) console.log(`::warning::check-entry: ${warning}`);
   if (problems.length > 0) throw new ToolError(problems.join("\n"));
   console.log("check-entry: ok");
 }

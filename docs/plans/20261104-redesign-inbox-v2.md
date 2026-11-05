@@ -1108,7 +1108,20 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `test/unit/marketplace.test.ts`, `marketplace-tools.test.ts` (fixture repo with good, oversized, wrong-size,
   animated and symlinked previews; with and without the date); run `npm run build:marketplace-tools` and commit the dist
 
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green (the dist byte test included)
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green (the dist byte test included)
+- ➕ Previews reach `previews/` through a new `check-entry --fetch-previews <root> --out <dir>` mode, run by a token-less
+  `previews` job in `publish-index.yml` (artifact handed to the `publish` job, which never clones); a commit whose repo
+  had no usable preview gets a `previews/<id>/<commit>.none` marker so it is not re-cloned hourly; ≤ 20 fetches a run.
+  Both the fetch step and the artifact download are `continue-on-error` and `publish` runs `if: !cancelled()`, so a
+  preview never holds a revocation back.
+- ➕ `build-index` reads `previews/<id>/<commit>.png` from the index repo, re-checks it and writes `preview: { sha256 }`;
+  a missing or bad image is a warning (listed without a preview), never a problem. `preview` is not a source-file field.
+- ➕ App side: `category` is always set on a parsed entry (unknown/absent → `other`); a malformed `preview` is dropped,
+  not the entry. PNG framing checks are shared in `src/shared/marketplace.ts` (`previewPngProblem`, `hasPngSignature`,
+  `previewPath`) for task 42; test PNGs from `test/fakes/png.ts`.
+- ➕ The grace date reaches the tools as `--preview-required-from "$(jq -r '.requiredFrom // "none"' preview-policy.json)"`
+  (check.yml from the base checkout, the auto-merge re-check from main); an empty or invalid value is refused (fails
+  closed). A missing preview prints a `::warning::` annotation; a present but invalid one is always refused.
 
 ### Task 42: Preview fetch, cache and display [model: opus]
 

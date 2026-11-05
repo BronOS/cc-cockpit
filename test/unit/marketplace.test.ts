@@ -4,13 +4,18 @@ import {
   MAX_INDEX_PLUGINS,
   MAX_INDEX_REVOCATIONS,
   MAX_NAME_LENGTH,
+  MAX_PREVIEW_BYTES,
   compareVersions,
+  hasPngSignature,
   parseEntry,
   parseMarketplaceIndex,
   parseRevocation,
   plainDisplayText,
+  previewPath,
+  previewPngProblem,
 } from '../../src/shared/marketplace'
 import { gitUrlProblem } from '../../src/shared/git-source'
+import { fakePng } from '../fakes/png'
 
 const HTTPS = 'https://example.com/index.json'
 const FILE = 'file:///tmp/index.json'
@@ -57,7 +62,7 @@ describe('parseMarketplaceIndex', () => {
       skippedRevocations: 0,
     })
     if (!r.ok) return
-    expect(r.index.plugins).toEqual([entry()])
+    expect(r.index.plugins).toEqual([{ ...entry(), category: 'other' }])
     expect(r.index.revoked).toEqual([
       { id: 'acme.jira', commit: C2, reason: 'leaks tokens' },
     ])
@@ -329,6 +334,69 @@ describe('parseMarketplaceIndex', () => {
     }
     expect(ok({ repo: repo(2000) })).toBe(true)
     expect(ok({ repo: repo(2001) })).toBe(false)
+  })
+})
+
+describe('parseEntry: category and preview', () => {
+  const SHA = 'f'.repeat(64)
+  const parsed = (over: Record<string, unknown>) => {
+    const r = parseEntry(entry(over), HTTPS)
+    if (!r.ok) throw new Error(r.problem)
+    return r.entry
+  }
+
+  it('keeps a known category; absent or unknown reads as other, never dropping the entry', () => {
+    expect(parsed({ category: 'sources' }).category).toBe('sources')
+    expect(parsed({}).category).toBe('other')
+    // A newer index may add a category this app does not know.
+    expect(parsed({ category: 'games' }).category).toBe('other')
+    expect(parsed({ category: 7 }).category).toBe('other')
+  })
+
+  it('keeps a well-formed preview hash; a malformed one is no preview, not a dropped entry', () => {
+    expect(parsed({ preview: { sha256: SHA } }).preview).toEqual({ sha256: SHA })
+    expect(parsed({}).preview).toBeUndefined()
+    for (const preview of [{ sha256: SHA.toUpperCase() }, { sha256: 'abc' }, 'x', null, { sha256: SHA, url: 'https://x' }]) {
+      const e = parsed({ preview })
+      // Extra keys are dropped: only the hash goes on.
+      if (e.preview !== undefined) expect(e.preview).toEqual({ sha256: SHA })
+    }
+    expect(parsed({ preview: { sha256: 'abc' } })).not.toHaveProperty('preview')
+  })
+
+  it('names the published path after the id and the commit', () => {
+    expect(previewPath('acme.jira', C1)).toBe(`previews/acme.jira/${C1}.png`)
+  })
+})
+
+describe('previewPngProblem', () => {
+  it('accepts a still PNG in the size range', () => {
+    expect(previewPngProblem(fakePng())).toBeNull()
+    expect(previewPngProblem(fakePng({ width: 640, height: 400 }))).toBeNull()
+    expect(previewPngProblem(fakePng({ width: 1600, height: 1000 }))).toBeNull()
+    expect(hasPngSignature(fakePng())).toBe(true)
+  })
+
+  it.each<[string, Buffer, RegExp]>([
+    ['too small', fakePng({ width: 639, height: 400 }), /639x400/],
+    ['too tall', fakePng({ width: 1280, height: 1001 }), /1280x1001/],
+    ['animated', fakePng({ animated: true }), /animated/],
+    ['over the cap', fakePng({ dataBytes: MAX_PREVIEW_BYTES }), /512 KiB/],
+    ['not a PNG', Buffer.from('GIF89a and then some more bytes to be long enough'), /not a PNG/],
+    ['truncated', fakePng().subarray(0, 40), /truncated/],
+  ])('refuses one %s', (_name, bytes, pattern) => {
+    expect(previewPngProblem(bytes)).toMatch(pattern)
+  })
+
+  it('refuses a chunk whose length runs past the end, and IHDR not first', () => {
+    const forged = Buffer.from(fakePng())
+    // The IDAT length (right after IHDR's 25 bytes) set past the file.
+    forged.writeUInt32BE(0x7fffffff, 33)
+    expect(previewPngProblem(forged)).toMatch(/truncated/)
+    const swapped = Buffer.from(fakePng())
+    swapped.write('IHDX', 12, 'latin1')
+    expect(previewPngProblem(swapped)).toMatch(/IHDR/)
+    expect(hasPngSignature(new Uint8Array([0x89, 0x50]))).toBe(false)
   })
 })
 

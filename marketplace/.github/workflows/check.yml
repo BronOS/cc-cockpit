@@ -30,8 +30,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The preview grace date comes from the base too, so a PR cannot move it. A missing or broken
+      # preview-policy.json gives an empty date, which the tool refuses: the check fails closed.
       - name: Every changed entry matches its repo
-        run: node base/tools/dist/check-entry.js --base base --head pr
+        run: node base/tools/dist/check-entry.js --base base --head pr --preview-required-from "$(jq -r '.requiredFrom // "none"' base/preview-policy.json)"
       # --base: a bad entry already on main is not this PR's doing, and must not block a revocation.
       - name: The index still builds
         run: node base/tools/dist/build-index.js --root pr --out "$RUNNER_TEMP/index.json" --base base

@@ -35,6 +35,80 @@ export const MAX_VERSION_LENGTH = 64
 // A full sha-1 object name. A short or uppercase form could match several objects or compare
 // unequal to what `git rev-parse` prints, so only the one canonical spelling is accepted.
 export const COMMIT_PATTERN = /^[0-9a-f]{40}$/
+/** A sha-256 in lower-case hex: the one spelling `build-index` writes and the app compares. */
+export const SHA256_PATTERN = /^[0-9a-f]{64}$/
+
+/**
+ * What a listing is about, for the Plugins page's filter (design-next §6.2). One per entry; absent is
+ * `other`. The app reads an unknown value as `other` (a newer index may add one), the index CI
+ * refuses it (a typo must not read as "not set").
+ */
+export const MARKETPLACE_CATEGORIES = ['sources', 'views', 'tools', 'themes', 'claude', 'other'] as const
+export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number]
+
+export function isMarketplaceCategory(v: unknown): v is MarketplaceCategory {
+  return typeof v === 'string' && (MARKETPLACE_CATEGORIES as readonly string[]).includes(v)
+}
+
+// The preview image (design-next §6.1): `preview.png` at the root of the plugin's repo at the pinned
+// tag, published by the index's CI as `previews/<id>/<commit>.png` next to index.json, with its
+// sha-256 in the entry. The checks below read the PNG's framing only and decode nothing: the bytes
+// come from somebody else's repo and are shown to every user of the index.
+export const MAX_PREVIEW_BYTES = 512 * 1024
+export const PREVIEW_MIN_WIDTH = 640
+export const PREVIEW_MIN_HEIGHT = 400
+export const PREVIEW_MAX_WIDTH = 1600
+export const PREVIEW_MAX_HEIGHT = 1000
+/** The file name in the plugin's repo, and the extension of the published copy. */
+export const PREVIEW_FILE = 'preview.png'
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+/** The published path of a preview, relative to the folder index.json is in. */
+export function previewPath(id: string, commit: string): string {
+  return `previews/${id}/${commit}.png`
+}
+
+/** True when `bytes` start with the PNG signature: the app's check on a fetched preview. */
+export function hasPngSignature(bytes: Uint8Array): boolean {
+  return bytes.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, i) => bytes[i] === b)
+}
+
+function chunkType(bytes: Uint8Array, at: number): string {
+  return String.fromCharCode(bytes[at]!, bytes[at + 1]!, bytes[at + 2]!, bytes[at + 3]!)
+}
+
+function uint32(bytes: Uint8Array, at: number): number {
+  return ((bytes[at]! << 24) >>> 0) + (bytes[at + 1]! << 16) + (bytes[at + 2]! << 8) + bytes[at + 3]!
+}
+
+/**
+ * What is wrong with a preview, or null. Checks the byte cap, the signature, that IHDR comes first
+ * with a size in range, and walks the chunk headers to IEND: an `acTL` chunk makes an animated PNG
+ * (APNG), which is refused, and a chunk running past the end is a truncated file. Never echoes bytes.
+ */
+export function previewPngProblem(bytes: Uint8Array): string | null {
+  if (bytes.length > MAX_PREVIEW_BYTES) return `the preview is over ${MAX_PREVIEW_BYTES / 1024} KiB`
+  if (!hasPngSignature(bytes)) return 'the preview is not a PNG'
+  // Signature (8), then IHDR: length (4) = 13, type (4), width (4), height (4), the rest (5), CRC (4).
+  if (bytes.length < 33 || uint32(bytes, 8) !== 13 || chunkType(bytes, 12) !== 'IHDR') return 'the preview has no IHDR chunk first'
+  const width = uint32(bytes, 16)
+  const height = uint32(bytes, 20)
+  if (width < PREVIEW_MIN_WIDTH || width > PREVIEW_MAX_WIDTH || height < PREVIEW_MIN_HEIGHT || height > PREVIEW_MAX_HEIGHT) {
+    return `the preview is ${width}x${height}; it must be ${PREVIEW_MIN_WIDTH}x${PREVIEW_MIN_HEIGHT} to ${PREVIEW_MAX_WIDTH}x${PREVIEW_MAX_HEIGHT} (1280x800 recommended)`
+  }
+  let at = 8
+  for (;;) {
+    if (at + 12 > bytes.length) return 'the preview is truncated'
+    const length = uint32(bytes, at)
+    const type = chunkType(bytes, at + 4)
+    // length + type + data + CRC; a length past the file is a truncated or forged chunk.
+    const next = at + 12 + length
+    if (next > bytes.length) return 'the preview is truncated'
+    if (type === 'acTL') return 'the preview is animated (APNG); a still image is required'
+    if (type === 'IEND') return null
+    at = next
+  }
+}
 
 export interface MarketplaceEntry {
   id: string
@@ -46,6 +120,10 @@ export interface MarketplaceEntry {
   tag: string
   commit: string
   api: number
+  /** `other` when the index gives none or one this app does not know. */
+  category: MarketplaceCategory
+  /** Set by `build-index` when the repo had a valid `preview.png` at the commit. */
+  preview?: { sha256: string }
 }
 
 export interface MarketplaceRevocation {
@@ -134,7 +212,7 @@ export function parseEntry(
 ): { ok: true; entry: MarketplaceEntry } | { ok: false; problem: string } {
   const bad = (problem: string) => ({ ok: false as const, problem })
   if (!isPlainObject(raw)) return bad('the entry is not a JSON object')
-  const { id, name, description, author, repo, version, tag, commit, api } =
+  const { id, name, description, author, repo, version, tag, commit, api, category, preview } =
     raw
   if (
     typeof id !== 'string' ||
@@ -175,6 +253,13 @@ export function parseEntry(
     return bad('"commit" must be the full 40-character lower-case hash')
   if (typeof api !== 'number' || !Number.isInteger(api) || api < 1)
     return bad('"api" must be a positive integer')
+  // Both cosmetic, so neither drops the entry: an unknown category reads as `other` (a newer index may
+  // add one), and a malformed preview as none (the card shows its placeholder). The index CI is the
+  // strict side: it refuses an unknown category and writes `preview` itself.
+  const sha256 =
+    isPlainObject(preview) && typeof preview.sha256 === 'string' && SHA256_PATTERN.test(preview.sha256)
+      ? preview.sha256
+      : null
   return {
     ok: true,
     entry: {
@@ -187,6 +272,8 @@ export function parseEntry(
       tag: tag as string,
       commit,
       api,
+      category: isMarketplaceCategory(category) ? category : 'other',
+      ...(sha256 !== null ? { preview: { sha256 } } : {}),
     },
   }
 }

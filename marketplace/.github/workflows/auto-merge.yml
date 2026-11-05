@@ -49,7 +49,7 @@ jobs:
         if: steps.decide.outputs.merge == 'true'
         env:
           ENTRY_FILE: ${{ runner.temp }}/entry.json
-        run: node tools/dist/check-entry.js --entry "$ENTRY_FILE"
+        run: node tools/dist/check-entry.js --entry "$ENTRY_FILE" --preview-required-from "$(jq -r '.requiredFrom // "none"' preview-policy.json)"
       # `sha`: GitHub refuses the merge if the PR's head has moved since the decision, so a push made
       # after the check cannot slip in. Branch protection still applies to this call.
       #

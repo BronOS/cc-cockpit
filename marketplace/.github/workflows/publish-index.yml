@@ -5,7 +5,12 @@
 #
 # main is protected, so GITHUB_TOKEN cannot push here. PUBLISH_TOKEN is a fine-grained token for this
 # repo alone with `contents: write`, whose owner is on the branch protection's bypass list (README.md).
-# Its push changes only index.json, which is not in the path filter below, so this cannot loop.
+# Its push changes only index.json and previews/, neither in the path filter below, so this cannot loop.
+#
+# Previews (README.md "Preview and category"): the `previews` job clones each listing that has no
+# `previews/<id>/<commit>.png` (or `.none` marker) yet and hands the checked images over as an
+# artifact. It runs with no token at all, since it clones repos somebody else controls; the `publish`
+# job, which holds PUBLISH_TOKEN, never clones anything, and build-index checks every image again.
 name: publish-index
 on:
   push:
@@ -24,7 +29,35 @@ on:
 permissions:
   contents: read
 jobs:
+  previews:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The marker file keeps the artifact from being empty, which download-artifact would fail on.
+      # continue-on-error, here and on the publish side: a preview must never hold a revocation back.
+      - name: Fetch missing previews
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/fetched"
+          touch "$RUNNER_TEMP/fetched/.fetched"
+          node tools/dist/check-entry.js --fetch-previews . --out "$RUNNER_TEMP/fetched"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previews
+          path: ${{ runner.temp }}/fetched
+          include-hidden-files: true
+          retention-days: 1
   publish:
+    needs: previews
+    # Also when the previews job failed: index.json and its revocations publish without new previews.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # One at a time. A waiting run replaced by a newer one loses nothing: each builds from the latest main.
@@ -39,6 +72,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: previews
+          path: ${{ runner.temp }}/fetched
       # A retry rather than a failure: another merge can land between the build and the push.
       # Exit 2 from the tool: index.json was written but an entry is bad (the log names it). It is still
       # pushed, since a revocation must not wait for somebody's entry, and the job then fails to say so.
@@ -46,13 +84,21 @@ jobs:
         run: |
           git config user.name "cc-cockpit-marketplace"
           git config user.email "cc-cockpit-marketplace@users.noreply.github.com"
+          # The fetched previews are copied in on every attempt: the reset after a lost push race drops them.
           for attempt in 1 2 3; do
+            if [ -d "$RUNNER_TEMP/fetched/previews" ]; then
+              mkdir -p previews
+              cp -R "$RUNNER_TEMP/fetched/previews/." previews/
+            fi
             status=0
             node tools/dist/build-index.js --root . --out index.json || status=$?
             if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
               exit "$status"
             fi
             git add index.json
+            if [ -d previews ]; then
+              git add previews
+            fi
             if git diff --cached --quiet; then
               echo "index.json is up to date"
               exit "$status"

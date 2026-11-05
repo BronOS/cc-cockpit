@@ -2,24 +2,40 @@
 //   check-entry --entry <file> [--index-url <url>]            one source file
 //   check-entry --base <dir> --head <dir> [--index-url <url>] every entry that differs between two
 //                                                             checkouts of the index repo
+//   check-entry --fetch-previews <dir> --out <dir> [--index-url <url>]
+//                                                             the preview of every listing in the
+//                                                             index checkout <dir> that has none
+//                                                             yet, written under <out>/previews/
+// The first two also take --preview-required-from <YYYY-MM-DD|none> (preview-policy.json): from that
+// day (UTC) a checked entry without `preview.png` is refused; before it, or with `none`, it passes
+// with a warning annotation on the PR.
 //
 // The entry's repo is untrusted code and this runs in CI, so nothing from it is run: the clone is the
 // app's own locked-down one (no hooks, no submodules, no lfs, one transport), there is no install or
-// build step, and the checkout is only read: `plugin.json`, and a stat of the file it names as `main`.
+// build step, and the checkout is only read: `plugin.json`, a stat of the file it names as `main`, and
+// the framing of `preview.png` (nothing in it is decoded).
 import { execFile } from 'node:child_process'
-import { existsSync, mkdtempSync, promises as fs, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { cloneArgs, gitEnv } from '../../../src/shared/git-source'
 import { isPlainObject } from '../../../src/shared/guards'
 import { relativePathProblem } from '../../../src/shared/manifest'
-import { DEFAULT_MARKETPLACE_URL, type MarketplaceEntry } from '../../../src/shared/marketplace'
+import {
+  DEFAULT_MARKETPLACE_URL,
+  MAX_PREVIEW_BYTES,
+  PREVIEW_FILE,
+  previewPath,
+  previewPngProblem,
+  type MarketplaceEntry
+} from '../../../src/shared/marketplace'
 import { within } from '../../../src/main/path-within'
 import {
   MAX_ENTRY_BYTES,
   ToolError,
   entryPath,
   listEntryFiles,
+  noPreviewMarker,
   parseFlags,
   parseSourceEntry,
   quoted,
@@ -32,11 +48,60 @@ const MAX_MANIFEST_BYTES = 256 * 1024
 // Each changed entry is a clone. A human bulk edit can be split; a runner should not clone hundreds
 // of repos because one PR said so.
 const MAX_CHANGED_ENTRIES = 20
+// The same bound for one publish run's preview fetches; the hourly run picks up the rest.
+const MAX_PREVIEW_FETCHES = 20
 
 export interface CheckOptions {
   /** The env git runs with; the process env when absent. */
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
+  /** From this day (YYYY-MM-DD, UTC) a missing `preview.png` is refused; null or absent: a warning. */
+  previewRequiredFrom?: string | null
+  /** The clock that date is compared with; tests pass a fixed one. */
+  now?: () => Date
+}
+
+/** What one clone of the entry's repo showed. */
+export interface Inspection {
+  problems: string[]
+  warnings: string[]
+  /** The checked bytes of `preview.png`, when it is there and valid. */
+  preview: Buffer | null
+  /** True only when the clone worked and its HEAD is the pinned commit: what the repo says is about that commit. */
+  atCommit: boolean
+}
+
+type PreviewRead = { bytes: Buffer } | { missing: true } | { problem: string }
+
+/** `preview.png` at the root of the checkout: a regular file (a symlink could feed in some file of the runner), checked, never decoded. */
+export function readPreview(dir: string): PreviewRead {
+  const path = join(dir, PREVIEW_FILE)
+  const stats = lstatSync(path, { throwIfNoEntry: false })
+  if (stats === undefined) return { missing: true }
+  if (!stats.isFile()) return { problem: `${PREVIEW_FILE} is not a regular file` }
+  // Before reading: a 2 GB file must not be loaded to be told it is too large.
+  if (stats.size > MAX_PREVIEW_BYTES) return { problem: `${PREVIEW_FILE}: the preview is over ${MAX_PREVIEW_BYTES / 1024} KiB` }
+  const bytes = readFileSync(path)
+  const problem = previewPngProblem(bytes)
+  return problem === null ? { bytes } : { problem: `${PREVIEW_FILE}: ${problem}` }
+}
+
+/** True when the date has come. The date is from preview-policy.json, checked by `parseRequiredFrom`. */
+function previewRequired(opts: CheckOptions): boolean {
+  const from = opts.previewRequiredFrom
+  if (from === undefined || from === null) return false
+  return (opts.now ?? (() => new Date()))().toISOString().slice(0, 10) >= from
+}
+
+/** The value of --preview-required-from: `none` is null, otherwise a real calendar day. */
+export function parseRequiredFrom(value: string | undefined): string | null {
+  if (value === undefined || value === 'none') return null
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : null
+  // Round-tripped, so 2026-02-30 (which Date rolls over to March) is refused.
+  if (day === null || Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== value) {
+    throw new ToolError('check-entry: --preview-required-from must be YYYY-MM-DD or none')
+  }
+  return value
 }
 
 function runGit(args: string[], cwd: string, opts: CheckOptions): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -93,25 +158,49 @@ async function isFileInside(dir: string, rel: string): Promise<boolean> {
   }
 }
 
-/** Clone the entry's repo at its tag and compare. Problems, empty when the listing is true. */
-export async function checkEntry(entry: MarketplaceEntry, opts: CheckOptions = {}): Promise<string[]> {
+/** Clone the entry's repo at its tag and compare, the preview included. */
+export async function inspectEntry(entry: MarketplaceEntry, opts: CheckOptions = {}): Promise<Inspection> {
   const parent = mkdtempSync(join(tmpdir(), 'check-entry-'))
   try {
     const dest = join(parent, 'repo')
     const clone = await runGit(cloneArgs(entry.repo, entry.tag, dest), parent, opts)
     // Generic on purpose: a PR picks the host, this runs on GitHub's network and the log is public, so
     // git's text would be a free probe of what answers there, and how.
-    if (clone.code !== 0) return [`could not clone tag ${quoted(entry.tag)} of ${quoted(entry.repo)}: the repo is not public, or the tag does not exist`]
+    if (clone.code !== 0) {
+      return {
+        problems: [`could not clone tag ${quoted(entry.tag)} of ${quoted(entry.repo)}: the repo is not public, or the tag does not exist`],
+        warnings: [],
+        preview: null,
+        atCommit: false
+      }
+    }
     const head = await runGit(['rev-parse', '--verify', 'HEAD'], dest, opts)
     const commit = head.stdout.trim()
     const problems: string[] = []
+    const warnings: string[] = []
     // The same comparison the installer makes: a tag can move, the pinned commit cannot.
-    if (head.code !== 0 || commit !== entry.commit) problems.push(`the tag is at commit ${quoted(commit)}, the entry says ${quoted(entry.commit)}`)
+    const atCommit = head.code === 0 && commit === entry.commit
+    if (!atCommit) problems.push(`the tag is at commit ${quoted(commit)}, the entry says ${quoted(entry.commit)}`)
     problems.push(...(await manifestProblems(dest, entry)))
-    return problems
+    const preview = readPreview(dest)
+    // A bad image is refused at once, grace or not: only a missing one has the grace period.
+    if ('problem' in preview) problems.push(preview.problem)
+    else if ('missing' in preview) {
+      if (previewRequired(opts)) problems.push(`there is no ${PREVIEW_FILE} at the tag: one is required since ${String(opts.previewRequiredFrom)}`)
+      else {
+        const when = opts.previewRequiredFrom ? `from ${opts.previewRequiredFrom}` : 'soon'
+        warnings.push(`there is no ${PREVIEW_FILE} at the tag: the listing shows a placeholder, and one will be required ${when}`)
+      }
+    }
+    return { problems, warnings, preview: 'bytes' in preview ? preview.bytes : null, atCommit }
   } finally {
     rmSync(parent, { recursive: true, force: true })
   }
+}
+
+/** Clone the entry's repo at its tag and compare. Problems, empty when the listing is true. */
+export async function checkEntry(entry: MarketplaceEntry, opts: CheckOptions = {}): Promise<string[]> {
+  return (await inspectEntry(entry, opts)).problems
 }
 
 /** The entry file names in `head` that are new or differ from `base`. A deletion needs no check. */
@@ -140,34 +229,96 @@ function retagProblem(basePath: string, entry: MarketplaceEntry, indexUrl: strin
   return 'a new commit needs a new version: installed copies cannot update to the version they already have'
 }
 
-async function checkFile(path: string, indexUrl: string, opts: CheckOptions, expectedName?: string, basePath?: string): Promise<string[]> {
+async function checkFile(
+  path: string,
+  indexUrl: string,
+  opts: CheckOptions,
+  expectedName?: string,
+  basePath?: string
+): Promise<{ problems: string[]; warnings: string[] }> {
+  const refused = (problem: string): { problems: string[]; warnings: string[] } => ({ problems: [problem], warnings: [] })
   const parsed = parseSourceEntry(readRegularFile(path, MAX_ENTRY_BYTES), indexUrl)
-  if (!parsed.ok) return [parsed.problem]
-  if (expectedName !== undefined && expectedName !== `${parsed.entry.id}.json`) return ['the file name must be the id plus .json']
+  if (!parsed.ok) return refused(parsed.problem)
+  if (expectedName !== undefined && expectedName !== `${parsed.entry.id}.json`) return refused('the file name must be the id plus .json')
   const retag = basePath === undefined ? null : retagProblem(basePath, parsed.entry, indexUrl)
-  if (retag !== null) return [retag]
-  return checkEntry(parsed.entry, opts)
+  if (retag !== null) return refused(retag)
+  const { problems, warnings } = await inspectEntry(parsed.entry, opts)
+  return { problems, warnings }
+}
+
+/**
+ * The previews the index checkout at `root` lacks, fetched into `out`/previews/. Run by publish-index.yml
+ * in a job with no token (it clones repos somebody else controls); the publish job copies the result in
+ * and build-index checks every image again before listing its hash. An entry already holding a
+ * `<commit>.png` or the `<commit>.none` marker is skipped: a commit never changes, so one clone per
+ * commit is enough. A clone that fails or lands on another commit writes nothing and is retried next run.
+ */
+export async function fetchPreviews(root: string, out: string, indexUrl: string, opts: CheckOptions = {}): Promise<string[]> {
+  const log: string[] = []
+  let fetched = 0
+  for (const name of listEntryFiles(join(root, 'plugins'))) {
+    let parsed: ReturnType<typeof parseSourceEntry>
+    try {
+      parsed = parseSourceEntry(readRegularFile(entryPath(root, name), MAX_ENTRY_BYTES), indexUrl)
+    } catch {
+      continue
+    }
+    // A bad entry is build-index's to report; the file-name rule keeps one listing per id.
+    if (!parsed.ok || name !== `${parsed.entry.id}.json`) continue
+    const { id, commit } = parsed.entry
+    if (existsSync(join(root, previewPath(id, commit))) || existsSync(join(root, noPreviewMarker(id, commit)))) continue
+    if (fetched >= MAX_PREVIEW_FETCHES) {
+      log.push(`more than ${MAX_PREVIEW_FETCHES} previews to fetch: the rest wait for the next run`)
+      break
+    }
+    fetched++
+    const seen = await inspectEntry(parsed.entry, opts)
+    if (!seen.atCommit) {
+      log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned`)
+      continue
+    }
+    const target = join(out, seen.preview !== null ? previewPath(id, commit) : noPreviewMarker(id, commit))
+    mkdirSync(join(target, '..'), { recursive: true })
+    writeFileSync(target, seen.preview ?? '')
+    log.push(`${quoted(name)}: ${seen.preview !== null ? 'preview fetched' : 'no usable preview at this commit'}`)
+  }
+  return log
 }
 
 export async function main(argv: string[], opts: CheckOptions = {}): Promise<void> {
-  const flags = parseFlags(argv, ['--entry', '--base', '--head', '--index-url'])
+  const flags = parseFlags(argv, ['--entry', '--base', '--head', '--index-url', '--preview-required-from', '--fetch-previews', '--out'])
   const indexUrl = flags.get('--index-url') ?? DEFAULT_MARKETPLACE_URL
   const file = flags.get('--entry')
   const base = flags.get('--base')
   const head = flags.get('--head')
+  const fetchRoot = flags.get('--fetch-previews')
+  const out = flags.get('--out')
+  const checkOpts: CheckOptions = { ...opts, previewRequiredFrom: parseRequiredFrom(flags.get('--preview-required-from')) }
   const problems: string[] = []
-  if (file !== undefined) {
-    problems.push(...(await checkFile(file, indexUrl, opts)).map((p) => `check-entry: ${p}`))
+  const warnings: string[] = []
+  if (fetchRoot !== undefined && out !== undefined) {
+    for (const line of await fetchPreviews(fetchRoot, out, indexUrl, opts)) console.log(`check-entry: ${line}`)
+    return
+  } else if (file !== undefined) {
+    const found = await checkFile(file, indexUrl, checkOpts)
+    problems.push(...found.problems.map((p) => `check-entry: ${p}`))
+    warnings.push(...found.warnings)
   } else if (base !== undefined && head !== undefined) {
     const names = changedEntryFiles(base, head)
     if (names.length > MAX_CHANGED_ENTRIES) throw new ToolError(`check-entry: a PR may change at most ${MAX_CHANGED_ENTRIES} entries`)
     for (const name of names) {
-      const found = await checkFile(entryPath(head, name), indexUrl, opts, name, entryPath(base, name))
-      problems.push(...found.map((p) => `check-entry: ${quoted(name)}: ${p}`))
+      const found = await checkFile(entryPath(head, name), indexUrl, checkOpts, name, entryPath(base, name))
+      problems.push(...found.problems.map((p) => `check-entry: ${quoted(name)}: ${p}`))
+      warnings.push(...found.warnings.map((w) => `${quoted(name)}: ${w}`))
     }
   } else {
-    throw new ToolError('usage: check-entry --entry <file> | --base <dir> --head <dir> [--index-url <url>]')
+    throw new ToolError(
+      'usage: check-entry --entry <file> | --base <dir> --head <dir> [--preview-required-from <YYYY-MM-DD|none>] | --fetch-previews <dir> --out <dir> [--index-url <url>]'
+    )
   }
+  // A workflow command on purpose, so the warning shows on the PR; the text after it is ours, with
+  // the file name quoted.
+  for (const warning of warnings) console.log(`::warning::check-entry: ${warning}`)
   if (problems.length > 0) throw new ToolError(problems.join('\n'))
   console.log('check-entry: ok')
 }

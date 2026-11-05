@@ -6,7 +6,9 @@ import { constants as fsConstants, existsSync, lstatSync, readFileSync, readdirS
 import { join } from 'node:path'
 import { isPlainObject } from '../../../src/shared/guards'
 import {
+  MARKETPLACE_CATEGORIES,
   MAX_INDEX_REVOCATIONS,
+  isMarketplaceCategory,
   parseEntry,
   parseRevocation,
   type MarketplaceEntry,
@@ -18,8 +20,11 @@ export const MAX_ENTRY_BYTES = 64 * 1024
 /** Who may auto-merge a plugin's updates: a handful in practice; the cap bounds what one file makes CI compare. */
 export const MAX_OWNERS = 50
 
-/** The fields of `plugins/<id>.json`. Unknown ones are refused: a typo must not read as "not set". */
-const ENTRY_FIELDS = new Set(['id', 'name', 'description', 'author', 'repo', 'version', 'tag', 'commit', 'api', 'owners'])
+/**
+ * The fields of `plugins/<id>.json`. Unknown ones are refused: a typo must not read as "not set".
+ * `preview` is not one: build-index writes it from the image it checked, an author cannot claim it.
+ */
+const ENTRY_FIELDS = new Set(['id', 'name', 'description', 'author', 'repo', 'version', 'tag', 'commit', 'api', 'category', 'owners'])
 
 /** A refusal meant for the log, printed without a stack. */
 export class ToolError extends Error {}
@@ -64,6 +69,10 @@ export function parseSourceEntry(text: string, indexUrl: string): ParsedSource {
   ) {
     return { ok: false, problem: `"owners" must list 1 to ${MAX_OWNERS} numeric GitHub user ids` }
   }
+  // The app reads an unknown category as `other`; here it is refused, so a typo is caught in the PR.
+  if (fields.category !== undefined && !isMarketplaceCategory(fields.category)) {
+    return { ok: false, problem: `"category" must be one of ${MARKETPLACE_CATEGORIES.join(', ')}` }
+  }
   const parsed = parseEntry(fields, indexUrl)
   if (!parsed.ok) return parsed
   return { ok: true, entry: parsed.entry, owners: owners as number[], raw }
@@ -99,6 +108,14 @@ export function readRegularFile(path: string, maxBytes: number): string {
   return readFileSync(path, 'utf8')
 }
 
+/** The bytes of a regular file, at most `maxBytes`, with the same refusals as `readRegularFile`. */
+export function readRegularBytes(path: string, maxBytes: number): Buffer {
+  const stats = lstatSync(path)
+  if (!stats.isFile()) throw new ToolError(`${quoted(path)} is not a regular file`)
+  if (stats.size > maxBytes) throw new ToolError(`${quoted(path)} is too large`)
+  return readFileSync(path)
+}
+
 /**
  * The `*.json` names in `plugins/`, in code-unit order so a build is the same on every machine. No
  * folder means no entries: git keeps no empty one, so a PR removing the last entry and its `.gitkeep`
@@ -113,6 +130,15 @@ export function listEntryFiles(pluginsDir: string): string[] {
 
 export function entryPath(root: string, name: string): string {
   return join(root, 'plugins', name)
+}
+
+/**
+ * Next to `previews/<id>/<commit>.png`: the marker that the repo had no usable preview at that commit,
+ * so the publish run does not clone it again every hour. A commit never changes; deleting the marker
+ * by hand makes the next run look again.
+ */
+export function noPreviewMarker(id: string, commit: string): string {
+  return `previews/${id}/${commit}.none`
 }
 
 /**
