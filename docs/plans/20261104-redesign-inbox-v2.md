@@ -749,18 +749,21 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Create: `dist/lib/rules.js`, `test/rules.test.js`
 - Modify (rewrite): `dist/lib/settings.js`, `test/settings.test.js`; Delete: `dist/lib/rank.js`, `test/rank.test.js`
 
-- [ ] `InboxSettings` v2 (design-v2 "Format", with decided Q4: `when` and/or `jev`), validated on every read; caps
+- [x] `InboxSettings` v2 (design-v2 "Format", with decided Q4: `when` and/or `jev`), validated on every read; caps
   (groups ≤ 20, rules ≤ 200, conditions ≤ 20, `in` ≤ 50, names, question ≤ 300, `min` 0..1); defaults table (groups Chat,
   Mail, Jira, Rest collapsed; rules 1-4); `rest` always last; reset
-- [ ] migration from 0.1.0 settings: weights, levels, boosts, counts dropped; the calendar position carried to `agenda`
+- [x] migration from 0.1.0 settings: weights, levels, boosts, counts dropped; the calendar position carried to `agenda`
   (`in the list` and `beside` → `top`)
-- [ ] evaluation: every field/op of the table, case-insensitive NFKC lower-case, no regex, `to: none`, `time` minutes;
+- [x] evaluation: every field/op of the table, case-insensitive NFKC lower-case, no regex, `to: none`, `time` minutes;
   first enabled rule that holds wins; none → Rest "no rule"; within a group newest `time`, then source, then id;
   reasons (`rule 3: Jev 0.86`, `rule 1: from.address is lead@example.com`, the rule's name when set); a full trace for
   `why`; a Jev rule calls an injected `jevAnswer(rule, item)` returning `{ score } | 'pending' | 'unavailable'`
-- [ ] write tests: each op, first match, disabled rules, Rest, the stable order (same input → same list), pre-filter
+- [x] write tests: each op, first match, disabled rules, Rest, the stable order (same input → same list), pre-filter
   then Jev, pending/unavailable passing through, migration, bad settings replaced by defaults
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ defaults follow Oleg's workflow with the sources' real fields: groups Now, Chat, Mail, Jira (badge), Rest (collapsed); rules `read is true` → Rest, Chat `mentionsMe` → Now, Chat `to is direct` → Now, then `sourceKind` chat / mail / issues; Jira mentions and Gmail `to: direct` stay in their groups (every assigned issue and most mail are `direct`)
+- ➕ the v1 host still runs on v1 ranking and settings: `rank.js` and the old `settings.js` live on as `dist/lib/v1.js` until task 29; `keyOf` moved to `rules.js` (state.js reads it there); a rule with any bad condition is dropped whole (dropping the condition would widen it), an unknown group → Rest, empty `when` with no `jev` dropped
+- ➕ `rules.js`: `conditionOf`, `holds`, `placeItem(settings, item, { now, kindOf, jevAnswer })` → `{ group, rule, ruleId, reason, jev, score? }`, `traceItem` (steps + text), `placeAll` → `{ groups[].rows, byKey }`
 
 ### Task 27: Jev conditions [model: opus]
 
@@ -817,6 +820,7 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - [ ] write tests with the fake ctx: two sources then a third, a source leaving, rules applied, Jev move, Done via the
   overlay button, agenda placement per setting, badge, act failure message, missing app members → the message
 - [ ] run `npm test` — done when green
+- ➕ delete `dist/lib/v1.js` (v1 ranking and settings kept for the v1 host by task 26) and move `test/settings-view.test.js` off it
 
 ### Task 30: Inbox panel v2 [model: opus]
 
