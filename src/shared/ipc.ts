@@ -686,6 +686,12 @@ export interface CccCommandView {
   onPath: boolean
   /** AppSettings.cccOffer with the default applied: whether start-up offers the install. */
   offerAtStart: boolean
+  /**
+   * With state 'foreign': what sits at `linkPath`, so the page can say what it is and what to do.
+   * `target` is a symlink's own target (as written, unresolved); `cockpitDataDir` is set when that
+   * target is another cc-cockpit's generated wrapper (another install, or the dev app's data dir).
+   */
+  existing?: { kind: 'file' | 'directory' | 'link'; target?: string; cockpitDataDir?: string }
 }
 
 /** The zone layout of the sender's project together with the panels it may place. */

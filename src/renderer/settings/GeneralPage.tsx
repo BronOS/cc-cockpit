@@ -228,13 +228,12 @@ export function GeneralPage(): React.JSX.Element {
                   }
                   help={
                     <>
-                      Links {ccc.data.linkPath} to the app&apos;s launcher.
+                      Lets you run <code>ccc</code> from any terminal, not only from this app&apos;s tabs (which always
+                      have it), by linking {ccc.data.linkPath} to this app&apos;s launcher.
                       {ccc.data.state === 'installed' && !ccc.data.onPath && (
                         <span className="warn"> {ccc.data.binDir} is not on your shell&apos;s PATH; add it to use <code>ccc</code> there.</span>
                       )}
-                      {ccc.data.state === 'foreign' && (
-                        <span className="settings-error"> {ccc.data.linkPath} is already something else; it is left alone.</span>
-                      )}
+                      {ccc.data.state === 'foreign' && <ForeignCcc view={ccc.data} />}
                     </>
                   }
                 >
@@ -300,6 +299,37 @@ export function GeneralPage(): React.JSX.Element {
  * field). A picked system sound that is gone keeps its own option, marked missing; it rings the
  * Chime meanwhile.
  */
+/**
+ * Why the Install button is off when `~/.local/bin/ccc` is taken, and what to do. The common case is
+ * a link to another cc-cockpit's launcher (a second install, or the dev app beside the installed
+ * one): that `ccc` works and reaches the app it belongs to, so it is not an error, only a note.
+ */
+function ForeignCcc(props: { view: CccCommandView }): React.JSX.Element {
+  const { linkPath, existing } = props.view
+  if (existing?.cockpitDataDir !== undefined) {
+    return (
+      <span className="warn">
+        {' '}
+        {linkPath} already belongs to another cc-cockpit (data folder {existing.cockpitDataDir}), so a terminal&apos;s{' '}
+        <code>ccc</code> talks to that one. This app leaves it as is; remove the link to install this app&apos;s instead.
+      </span>
+    )
+  }
+  const what =
+    existing?.kind === 'link' && existing.target !== undefined
+      ? `a link to ${existing.target}`
+      : existing?.kind === 'directory'
+        ? 'a folder'
+        : 'a file'
+  return (
+    <span className="settings-error">
+      {' '}
+      {linkPath} is already {what}, not this app&apos;s <code>ccc</code>, so it is left as is. Remove or rename it to install
+      this app&apos;s.
+    </span>
+  )
+}
+
 function NotificationSoundRow(props: {
   id: string
   value: string

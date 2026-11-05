@@ -39,7 +39,7 @@ test('install the ccc command: a foreign file at ~/.local/bin/ccc is left alone'
   await settings.getByRole('button', { name: 'General', exact: true }).click()
 
   const row = settings.getByTestId('ccc-command')
-  await expect(row).toContainText('is already something else')
+  await expect(row).toContainText('is already a file, not this app')
   await expect(row.getByRole('button', { name: 'Install ccc command' })).toBeDisabled()
   expect(readFileSync(join(bin, 'ccc'), 'utf8')).toBe('my own script\n')
 })
