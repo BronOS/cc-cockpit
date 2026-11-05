@@ -1157,10 +1157,20 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `test/e2e/settings-marketplace.spec.ts`, `settings-plugins.spec.ts`, `settings-plugin-install.spec.ts`,
   `marketplace-revoked.spec.ts`, `test/unit/settings-marketplace.test.ts`
 
-- [ ] 20 per page; case-insensitive substring search over name, id, author, description (no regex); filters Installed /
+- [x] 20 per page; case-insensitive substring search over name, id, author, description (no regex); filters Installed /
   Available / Updates and category; the page touches the network only through the existing marketplace fetch
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-marketplace.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-marketplace.spec.ts
   test/e2e/settings-plugins.spec.ts test/e2e/settings-plugin-install.spec.ts test/e2e/marketplace-revoked.spec.ts` — done when green
+- ➕ Cards: installed plugins first (main's order), then one card per index and id not installed. An installed card merges
+  the listing of its recorded index (new `PluginView.marketplace`, git installs only), else the first listing of its id
+  (text and category only); other indexes' listings of an installed id add no card. `MarketplaceEntryView.category` added.
+  Category of an installed plugin with no listing: `other`. Updates = installed with a listing action `update` (a revoked
+  plugin's safe version included).
+- ➕ "Add plugin…" is a toggle (folded on every visit) over the git URL form and Link folder; index management is
+  `MarketplaceIndexes.tsx` (folded, "Manage"), with Refresh and a failing-index count kept in its heading so both stay
+  visible. Refresh, adding an index and the on-open refresh also reload the installed list (a fetch can revoke a plugin).
+  The panel gear opens the page that holds the plugin (`pageOf`). Revoked-move button reads "Move to safe version".
+  `settings-form.spec.ts` also needed the "Add plugin…" click; README and features.md now say Settings > Plugins.
 
 ### Task 44: Update all [model: opus]
 

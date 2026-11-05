@@ -118,7 +118,7 @@ build. To run the app straight from the source tree, see Development below.
 
 ## Plugins
 
-Open **Settings > Marketplace** to browse and install.
+Open **Settings > Plugins** to browse, search and install: installed plugins and the marketplace's listings are one list.
 
 **A plugin runs with full access to your computer: your files, your accounts and the network.** "Listed" means the index
 names that exact version and checks that it matches its repo. It does not mean anyone reviewed the code, so install only

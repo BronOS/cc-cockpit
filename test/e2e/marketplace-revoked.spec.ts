@@ -53,6 +53,7 @@ test('a revocation in the cache keeps a plugin from activating at startup, with 
       const settings = first.cockpit.page.getByRole('dialog', { name: 'Settings' })
       await first.cockpit.page.keyboard.press('ControlOrMeta+,')
       await settings.getByRole('button', { name: 'Plugins' }).click()
+      await settings.getByRole('button', { name: 'Add plugin…' }).click()
       const form = settings.getByRole('form', { name: 'Install a plugin' })
       await form.getByLabel('Git URL').fill(repoUrl)
       await form.getByLabel('Tag').fill('v1.0.0')

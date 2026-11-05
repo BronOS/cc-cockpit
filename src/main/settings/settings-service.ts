@@ -246,7 +246,7 @@ export class SettingsService {
     }
   }
 
-  /** A snapshot of the saved lists. It starts no fetch (the Plugins tab reads it too); the Marketplace page refreshes a stale index itself. */
+  /** A snapshot of the saved lists. It starts no fetch; the Plugins page refreshes a stale index itself. */
   marketplace(): MarketplaceView {
     return buildMarketplaceView(this.marketplaceInput())
   }
@@ -472,6 +472,7 @@ export class SettingsService {
     if (p.source.kind === 'bundled') view.offInAllProjects = offAppWide(p, this.deps.bundledOff.get())
     if (seesAllSessions(p.manifest)) view.seesAllSessions = true
     if (p.source.kind !== 'bundled' && hasOwnPreview(p.dir)) view.preview = true
+    if (p.source.kind === 'git' && p.marketplace !== undefined) view.marketplace = p.marketplace
     return view
   }
 }

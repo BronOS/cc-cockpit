@@ -2066,6 +2066,31 @@ iframe:focus-visible {
   line-height: 1.5;
 }
 /* Under a row's text, lined up with it past the glyph (16px + the 12px gap). */
+/* The one Plugins page (design-next §6.3): search, the filter chips (.cc-chip) and the category over
+   the list of cards, "Add plugin…" above them, and the pager under them when there is more than a page. */
+.settings-plugin-add {
+  display: flex;
+  justify-content: flex-end;
+}
+.settings-plugin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-plugin-filters input[type='search'] {
+  min-width: 180px;
+}
+.settings-plugin-chips {
+  display: flex;
+  gap: 4px;
+}
+.settings-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
 .settings-item-foot {
   margin-left: 28px;
   display: flex;

@@ -18,6 +18,7 @@ import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
+import type { MarketplaceCategory } from './marketplace'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -399,6 +400,11 @@ export interface PluginView {
   seesAllSessions?: true
   /** A folder or git plugin has its own `preview.png` at its root, shown through `cc-plugin://<id>/preview.png`. */
   preview?: true
+  /**
+   * Git installs from a marketplace: the index recorded on the plugin, the only one whose listing may
+   * update it. The Plugins page merges that listing into the plugin's card.
+   */
+  marketplace?: string
 }
 
 /** The repository and commit a confirmation displayed; main compares them with its own pin before it installs. */
@@ -431,6 +437,8 @@ export interface MarketplaceEntryView {
    * bytes. False shows the placeholder with the name's initial without asking.
    */
   preview: boolean
+  /** The listing's category (design-next §6.2); an unknown or absent one reads as `other`. */
+  category: MarketplaceCategory
   status: MarketplaceStatus
   /** The version installed now, when the id is installed. */
   installedVersion?: string

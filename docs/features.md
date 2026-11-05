@@ -239,15 +239,16 @@ behind it are in [design.md](design.md).
 
 ## Marketplace
 
-Settings > Marketplace lists plugins from one or more static `index.json` files and installs one after a
+Settings > Plugins lists the installed plugins together with the plugins of one or more static `index.json` files
+(20 per page, with a search and the Installed / Available / Updates and category filters) and installs one after a
 confirmation that shows the repo and the commit. Things to know:
 
 - **Network.** At every launch the app fetches the default index from `raw.githubusercontent.com`, plus every index
   you added and every index an installed plugin was installed from, so those hosts see the request too. While the app
-  is open it fetches again any index over an hour old or whose last fetch failed (checked every 15 minutes). The Marketplace
+  is open it fetches again any index over an hour old or whose last fetch failed (checked every 15 minutes). The Plugins
   page refetches when an index is stale or failed, and adding or removing an index fetches. The default index is always
   fetched (removing it only hides its plugins) and there is no setting to turn the fetching off. It sends no account
-  data, but the hosts see the request. The Plugins tab does no fetching. Offline, the last cached index is used.
+  data, but the hosts see the request. Paging and search fetch nothing. Offline, the last cached index is used.
 - **"Listed" does not mean reviewed.** The app checks the shape of an index and refuses a tag that has moved.
   The official index's CI also checks that an entry matches its repo (tag, commit, id, version) and a person reviews and
   merges a new listing, but nobody audits the plugin code; an index you add may have no checks at all, so there "listed"
@@ -259,7 +260,7 @@ confirmation that shows the repo and the commit. Things to know:
   enforce revocations.
 - **The official index** is the repo [BronOS/cc-cockpit-marketplace](https://github.com/BronOS/cc-cockpit-marketplace), made from
   the `marketplace/` template. Its setup steps (`PUBLISH_TOKEN`, branch protection with no required approvals) are in
-  [marketplace/README.md](../marketplace/README.md). Add your own index under Settings > Marketplace.
+  [marketplace/README.md](../marketplace/README.md). Add your own index under Settings > Plugins › Marketplace indexes.
 - **Index URLs** are https (or `file:` for a local index). `marketplaces` in app settings holds the list; it replaces
   the default list, while the default index is still fetched and still enforces revocations.
 - Repos are shown as plain text, and from an index only as ASCII. Installing a plugin id through the Marketplace from a

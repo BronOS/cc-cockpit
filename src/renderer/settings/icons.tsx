@@ -47,16 +47,6 @@ export function BlocksIcon(props: GlyphProps): React.JSX.Element {
   )
 }
 
-/** Marketplace: a shop awning over a counter. */
-export function StoreIcon(props: GlyphProps): React.JSX.Element {
-  return (
-    <Glyph {...props}>
-      <path d="M2.5 6.5V13h11V6.5" />
-      <path d="M2 3h12l1 3.2a1.8 1.8 0 0 1-3.3.9 1.8 1.8 0 0 1-3.4 0 1.8 1.8 0 0 1-3.4 0A1.8 1.8 0 0 1 1 6.2z" />
-    </Glyph>
-  )
-}
-
 /** This Project: three sliders. */
 export function SlidersIcon(props: GlyphProps): React.JSX.Element {
   return (

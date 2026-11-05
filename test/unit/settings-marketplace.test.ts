@@ -204,6 +204,24 @@ describe('marketplace view statuses', () => {
     expect(views.find((p) => p.id === 'bronos.chat')).not.toHaveProperty('preview')
   })
 
+  it('carries the category (unknown or absent reads as other) and the index recorded on a git install', async () => {
+    const text = JSON.stringify({
+      schema: 1,
+      plugins: [{ ...entry(), category: 'sources' }, { ...entry({ id: 'bronos.chat' }), category: 'gadgets' }, entry({ id: 'bronos.mail' })],
+      revoked: []
+    })
+    const { service } = await rig({
+      texts: { [A]: text },
+      installed: [installedGit(), installedGit({ id: 'bronos.chat', marketplace: undefined })]
+    })
+    expect(statusOf(service.marketplace())).toMatchObject({ category: 'sources' })
+    expect(statusOf(service.marketplace(), A, 'bronos.chat')).toMatchObject({ category: 'other' })
+    expect(statusOf(service.marketplace(), A, 'bronos.mail')).toMatchObject({ category: 'other' })
+    const views = service.plugins()
+    expect(views.find((p) => p.id === 'bronos.jira')?.marketplace).toBe(A)
+    expect(views.find((p) => p.id === 'bronos.chat')).not.toHaveProperty('marketplace')
+  })
+
   it('shows the tag and commit an install would use', async () => {
     const { service } = await rig({ texts: { [A]: indexOf([{}]) } })
     expect(statusOf(service.marketplace())).toMatchObject({ tag: 'v1.1.0', commit: c('a') })

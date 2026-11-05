@@ -73,7 +73,6 @@ test('settings: link a plugin, save its app settings, an overlay over the screen
     'Appearance',
     'Keybindings',
     'Plugins',
-    'Marketplace',
     'This Project',
     'Projects'
   ])
@@ -92,6 +91,7 @@ test('settings: link a plugin, save its app settings, an overlay over the screen
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [folder] })) as typeof dialog.showOpenDialog
   }, FIXTURE)
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
   await settings.getByRole('button', { name: 'Link folder…' }).click()
   const plugin = settings.locator('[data-plugin="test.settingsui"]')
   await expect(plugin).toContainText('Settings UI fixture')
@@ -238,6 +238,9 @@ test('settings: services warn about a missing provider and offer the pick betwee
     await app.evaluate(({ dialog }, folder) => {
       dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [folder] })) as typeof dialog.showOpenDialog
     }, fixture(name))
+    // "Add plugin…" is folded on every visit to the page and stays open after a link.
+    const add = settings.getByRole('button', { name: 'Add plugin…' })
+    if ((await add.getAttribute('aria-expanded')) !== 'true') await add.click()
     await settings.getByRole('button', { name: 'Link folder…' }).click()
   }
   const consumer = settings.locator('[data-plugin="test.svcconsumer"]')

@@ -164,6 +164,7 @@ function resolveEntry(url: string, entry: MarketplaceEntry, input: MarketplaceVi
       commit: entry.commit,
       version: entry.version,
       preview: entry.preview !== undefined,
+      category: entry.category,
       action: null,
       ...status
     }

@@ -20,6 +20,7 @@ test('settings: a plugin form with arrays, groups and multi-line fields', async 
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [folder] })) as typeof dialog.showOpenDialog
   }, FIXTURE)
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
   await settings.getByRole('button', { name: 'Link folder…' }).click()
   const plugin = settings.locator('[data-plugin="test.settingsform"]')
   await expect(plugin).toContainText('Settings form fixture')

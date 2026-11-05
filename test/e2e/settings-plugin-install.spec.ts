@@ -116,7 +116,8 @@ test('settings: install a plugin from a git URL, update it to a new tag, uninsta
   await settings.getByRole('button', { name: 'Plugins' }).click()
   await expect(settings.getByText('No plugins installed.')).toBeVisible()
 
-  // --- Install at v1.0.0. ---
+  // --- Install at v1.0.0, from "Add plugin…". ---
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
   const form = settings.getByRole('form', { name: 'Install a plugin' })
   const install = form.getByRole('button', { name: 'Install' })
   await form.getByLabel('Git URL').fill(repo.url)
@@ -145,6 +146,8 @@ test('settings: install a plugin from a git URL, update it to a new tag, uninsta
   await expect(projectPage).toBeVisible()
   await expect(projectPage.getByRole('checkbox', { name: /^Enable / })).toBeChecked()
   await settings.getByRole('button', { name: 'Plugins' }).click()
+  // A new visit starts with "Add plugin…" folded.
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
 
   // Installing the same id again is refused with the reason (and the form keeps what was typed).
   await form.getByLabel('Git URL').fill(repo.url)

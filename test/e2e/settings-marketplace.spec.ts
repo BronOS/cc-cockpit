@@ -1,4 +1,4 @@
-// Settings › Marketplace, end to end against a local index: a file:/// index.json and a bare repo, so
+// Settings › Plugins with the marketplace merged in (design-next §6.3), end to end against a local index: a file:/// index.json and a bare repo, so
 // nothing leaves the machine (the official default index is an authority, but main never fetches it
 // in a test run: testFetcher in main/index.ts). The unit tests
 // (marketplace-*.test.ts, settings-marketplace.test.ts)
@@ -156,7 +156,7 @@ test('marketplace: a pin mismatch is refused, Cancel installs nothing, then inst
 
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
+  await settings.getByRole('button', { name: 'Plugins' }).click()
   // The index was written after the app's startup fetch: fetch it again.
   await settings.getByRole('button', { name: 'Refresh' }).click()
   const entry = settings.locator(`[data-plugin="${PLUGIN_ID}"]`)
@@ -168,10 +168,10 @@ test('marketplace: a pin mismatch is refused, Cancel installs nothing, then inst
   await expect(entry).toContainText(market.indexUrl)
 
   // The filter narrows the list.
-  await settings.getByLabel('Filter plugins').fill('no such plugin')
+  await settings.getByLabel('Search plugins').fill('no such plugin')
   await expect(entry).toHaveCount(0)
   await expect(settings.getByText('No plugin matches the filter.')).toBeVisible()
-  await settings.getByLabel('Filter plugins').fill('good')
+  await settings.getByLabel('Search plugins').fill('good')
   await expect(entry).toHaveCount(1)
 
   // --- The confirmation says what the plugin is and what listed means; Cancel is focused. ---
@@ -217,7 +217,9 @@ test('marketplace: a pin mismatch is refused, Cancel installs nothing, then inst
   await settings.getByRole('button', { name: 'Refresh' }).click()
   await entry.getByRole('button', { name: 'Install' }).click()
   await confirm.getByRole('button', { name: 'Yes, install' }).click()
-  await expect(entry.getByRole('button', { name: 'Installed' })).toBeDisabled()
+  // The listing became the installed plugin's card: its own buttons now, and no install prompt.
+  await expect(entry.getByRole('button', { name: 'Uninstall' })).toBeVisible()
+  await expect(entry.getByTestId('marketplace-done')).toBeVisible()
   await expect(settings.getByRole('alert')).toHaveCount(0)
   expect(existsSync(join(cockpit.dataDir, 'plugins', `${PLUGIN_ID}@1.0.0`, 'plugin.json'))).toBe(true)
   const stored = JSON.parse(readFileSync(join(cockpit.dataDir, 'plugins.json'), 'utf8')) as {
@@ -245,12 +247,12 @@ test('marketplace: an update is offered and applied, a revoked plugin stops and 
 
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
+  await settings.getByRole('button', { name: 'Plugins' }).click()
   await settings.getByRole('button', { name: 'Refresh' }).click()
   const entry = settings.locator(`[data-plugin="${PLUGIN_ID}"]`)
   await entry.getByRole('button', { name: 'Install' }).click()
   await entry.getByRole('button', { name: 'Yes, install' }).click()
-  await expect(entry.getByRole('button', { name: 'Installed' })).toBeVisible()
+  await expect(entry.getByRole('button', { name: 'Uninstall' })).toBeVisible()
   await cockpit.hook('enablePlugin', cockpit.projectDir, PLUGIN_ID)
   const plugins = async (): Promise<unknown> => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir))?.plugins
   await expect.poll(plugins, { timeout: 15_000 }).toEqual([{ id: PLUGIN_ID, state: 'active' }])
@@ -260,13 +262,14 @@ test('marketplace: an update is offered and applied, a revoked plugin stops and 
   market.list(v2)
   await settings.getByRole('button', { name: 'Refresh' }).click()
   await expect(entry).toContainText('update available')
-  await settings.getByRole('button', { name: 'Plugins' }).click()
-  const row = settings.locator(`[data-plugin="${PLUGIN_ID}"]`)
-  await expect(row.getByTestId('marketplace-note')).toContainText('Version 1.1.0 is available in the Marketplace.')
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
-  await entry.getByRole('button', { name: 'Update', exact: true }).click()
+  await expect(entry).toContainText(`${PLUGIN_ID} · 1.0.0 · by Test Author · listed 1.1.0`)
+  // The Updates filter shows it; the card is the installed plugin and its listing in one.
+  await settings.getByRole('button', { name: 'Updates' }).click()
+  await expect(entry).toHaveCount(1)
+  await settings.getByRole('button', { name: 'All', exact: true }).click()
+  await entry.locator('.settings-item-actions').getByRole('button', { name: 'Update', exact: true }).click()
   await entry.getByRole('button', { name: 'Yes, update' }).click()
-  await expect(entry.getByRole('button', { name: 'Installed' })).toBeVisible()
+  await expect(entry.getByRole('button', { name: 'Uninstall' })).toBeVisible()
   await expect(entry).toContainText('by Test Author')
   await expect.poll(() => existsSync(join(cockpit.dataDir, 'plugins', `${PLUGIN_ID}@1.1.0`, 'plugin.json')), { timeout: 10_000 }).toBe(true)
   await expect.poll(() => existsSync(join(cockpit.dataDir, 'plugins', `${PLUGIN_ID}@1.0.0`)), { timeout: 10_000 }).toBe(false)
@@ -275,22 +278,18 @@ test('marketplace: an update is offered and applied, a revoked plugin stops and 
   // --- The index revokes 1.1.0: the plugin stops, and the Plugins page says why. ---
   market.list(v2, [{ release: v2, reason: 'steals tokens' }])
   await settings.getByRole('button', { name: 'Refresh' }).click()
-  await expect(entry).toContainText('revoked')
-  await expect(entry).toContainText('Revoked: steals tokens')
   await expect.poll(plugins, { timeout: 15_000 }).toEqual([])
-  await settings.getByRole('button', { name: 'Plugins' }).click()
-  await expect(row.locator('.settings-badge')).toContainText('revoked')
-  await expect(row.getByRole('alert')).toContainText('steals tokens')
-  await expect(row.getByRole('button', { name: 'Uninstall' })).toBeEnabled()
+  await expect(entry.locator('.settings-badge')).toHaveText('revoked')
+  await expect(entry.getByRole('alert')).toContainText('steals tokens')
+  await expect(entry.getByRole('button', { name: 'Uninstall' })).toBeEnabled()
 
   // --- A safe version is listed: the revoked plugin moves to it from the Marketplace. ---
   const v3 = market.publish('1.2.0')
   market.list(v3, [{ release: v2, reason: 'steals tokens' }])
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
   await settings.getByRole('button', { name: 'Refresh' }).click()
-  await entry.getByRole('button', { name: 'Move to this version' }).click()
-  await entry.getByRole('button', { name: 'Yes, move to this version' }).click()
-  await expect(entry.getByRole('button', { name: 'Installed' })).toBeVisible()
+  await entry.getByRole('button', { name: 'Move to safe version' }).click()
+  await entry.getByRole('button', { name: 'Yes, move to safe version' }).click()
+  await expect(entry.getByRole('button', { name: 'Uninstall' })).toBeVisible()
   await expect.poll(plugins, { timeout: 15_000 }).toEqual([{ id: PLUGIN_ID, state: 'active' }])
 })
 
@@ -302,6 +301,7 @@ test('marketplace: a revocation from an index with no authority over a plugin is
   await page.keyboard.press('ControlOrMeta+,')
   // Installed from a git URL: no index is recorded on it, and this one is not the default index.
   await settings.getByRole('button', { name: 'Plugins' }).click()
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
   const form = settings.getByRole('form', { name: 'Install a plugin' })
   await form.getByLabel('Git URL').fill(market.repoUrl)
   await form.getByLabel('Tag').fill(v1.tag)
@@ -312,7 +312,6 @@ test('marketplace: a revocation from an index with no authority over a plugin is
   await expect.poll(plugins, { timeout: 15_000 }).toEqual([{ id: PLUGIN_ID, state: 'active' }])
 
   market.list(null, [{ release: v1, reason: 'a griefer says so' }])
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
   await settings.getByRole('button', { name: 'Refresh' }).click()
   const warning = settings.getByTestId('marketplace-warning')
   await expect(warning).toContainText(market.indexUrl)
@@ -338,8 +337,11 @@ test.describe('with an unreachable index', () => {
     market.list(market.publish('1.0.0'))
     const settings = page.getByRole('dialog', { name: 'Settings' })
     await page.keyboard.press('ControlOrMeta+,')
-    await settings.getByRole('button', { name: 'Marketplace' }).click()
+    await settings.getByRole('button', { name: 'Plugins' }).click()
     await settings.getByRole('button', { name: 'Refresh' }).click()
+    // Index management is folded at the bottom; its heading counts the failing index.
+    await expect(settings.getByText('2 configured, 1 could not be fetched')).toBeVisible()
+    await settings.getByRole('button', { name: 'Manage' }).click()
     const good = settings.getByRole('list', { name: 'Marketplace indexes' }).locator(`[data-index="${market.indexUrl}"]`)
     const broken = settings.getByRole('list', { name: 'Marketplace indexes' }).locator(`[data-index="${brokenUrl(market)}"]`)
     await expect(good).toContainText('last fetched')
@@ -368,6 +370,7 @@ test('marketplace: installing an id from another repo warns, and it stays off in
   await page.keyboard.press('ControlOrMeta+,')
   // Installed by git URL (which records the repo), on in this project, then uninstalled: the switch stays on.
   await settings.getByRole('button', { name: 'Plugins' }).click()
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
   const form = settings.getByRole('form', { name: 'Install a plugin' })
   await form.getByLabel('Git URL').fill(market.repoUrl)
   await form.getByLabel('Tag').fill(v1.tag)
@@ -384,7 +387,6 @@ test('marketplace: installing an id from another repo warns, and it stays off in
   // The index lists that id from a different repository.
   const other = market.mirror()
   market.list(v1, [], { repo: other })
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
   await settings.getByRole('button', { name: 'Refresh' }).click()
   const entry = settings.locator(`li[data-plugin="${PLUGIN_ID}"]`)
   await expect(entry).toContainText('last installed from')
@@ -395,7 +397,7 @@ test('marketplace: installing an id from another repo warns, and it stays off in
   await expect(entry.getByRole('group', { name: `Confirm install of ${PLUGIN_ID}` })).toContainText(other)
 
   await entry.getByRole('button', { name: 'Yes, install' }).click()
-  await expect(entry.getByRole('button', { name: 'Installed' })).toBeVisible()
+  await expect(entry.getByRole('button', { name: 'Uninstall' })).toBeVisible()
   // Installed, recorded from the new repo, and not started in the project that had it on.
   const stored = JSON.parse(readFileSync(join(cockpit.dataDir, 'plugins.json'), 'utf8')) as { plugins: { id: string; source: { url?: string } }[] }
   expect(stored.plugins.find((p) => p.id === PLUGIN_ID)?.source.url).toBe(other)
@@ -410,6 +412,7 @@ test('marketplace: a folder linked under an id ends its repository history', asy
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
   await settings.getByRole('button', { name: 'Plugins' }).click()
+  await settings.getByRole('button', { name: 'Add plugin…' }).click()
   const form = settings.getByRole('form', { name: 'Install a plugin' })
   await form.getByLabel('Git URL').fill(market.repoUrl)
   await form.getByLabel('Tag').fill(v1.tag)
@@ -442,7 +445,7 @@ test('marketplace: a project record this app cannot read refuses an install that
 
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
+  await settings.getByRole('button', { name: 'Plugins' }).click()
   await settings.getByRole('button', { name: 'Refresh' }).click()
   const entry = settings.locator(`li[data-plugin="${PLUGIN_ID}"]`)
   await expect(entry).toContainText('last installed from')
@@ -469,14 +472,15 @@ test('marketplace: an index row counts what it skipped and what this app cannot 
   })
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Marketplace' }).click()
+  await settings.getByRole('button', { name: 'Plugins' }).click()
   await settings.getByRole('button', { name: 'Refresh' }).click()
+  await settings.getByRole('button', { name: 'Manage' }).click()
   const row = settings.getByRole('list', { name: 'Marketplace indexes' }).locator(`[data-index="${market.indexUrl}"]`)
   await expect(row).toContainText('2 entries skipped')
   await expect(row).toContainText('1 revocation skipped')
   await expect(row).toContainText('1 incompatible with this app')
   // Only the usable one is listed.
-  await expect(settings.getByRole('list', { name: 'Listed plugins' }).locator('li')).toHaveCount(1)
+  await expect(settings.getByRole('list', { name: 'Plugin list' }).locator('li')).toHaveCount(1)
   await expect(settings.locator(`li[data-plugin="${PLUGIN_ID}"]`)).toBeVisible()
 })
 
@@ -489,7 +493,8 @@ test.describe('with the real index list', () => {
     const stored = (): unknown => (JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { marketplaces?: unknown }).marketplaces
     const settings = page.getByRole('dialog', { name: 'Settings' })
     await page.keyboard.press('ControlOrMeta+,')
-    await settings.getByRole('button', { name: 'Marketplace' }).click()
+    await settings.getByRole('button', { name: 'Plugins' }).click()
+    await settings.getByRole('button', { name: 'Manage' }).click()
     const indexes = settings.getByRole('list', { name: 'Marketplace indexes' })
     const entry = settings.locator(`li[data-plugin="${PLUGIN_ID}"]`)
     // Out of the box: the official index, not fetched in a test run, so it shows an error.

@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { AppearancePage } from './AppearancePage'
 import { GeneralPage } from './GeneralPage'
-import { BlocksIcon, CloseIcon, ContrastIcon, FolderIcon, GearIcon, KeyboardIcon, SlidersIcon, StoreIcon } from './icons'
+import { BlocksIcon, CloseIcon, ContrastIcon, FolderIcon, GearIcon, KeyboardIcon, SlidersIcon } from './icons'
 import { KeybindingsPage } from './KeybindingsPage'
-import { MarketplacePage } from './MarketplacePage'
 import { PluginsPage } from './PluginsPage'
 import { ProjectPage } from './ProjectPage'
 import { ProjectsPage } from './ProjectsPage'
@@ -11,7 +10,7 @@ import type { SettingsTarget } from './settings-target'
 
 /**
  * The pages of design-next §5.1, in its order; every setting lives on exactly one of them. The
- * Marketplace keeps its own section after Plugins until the two merge into one Plugins page.
+ * Marketplace is part of Plugins (design-next §6.3): one list of installed and listed plugins.
  * General comes first and is where the screen opens: it holds what a person changes most.
  */
 const SECTIONS = [
@@ -19,7 +18,6 @@ const SECTIONS = [
   { id: 'appearance', title: 'Appearance', Icon: ContrastIcon },
   { id: 'keybindings', title: 'Keybindings', Icon: KeyboardIcon },
   { id: 'plugins', title: 'Plugins', Icon: BlocksIcon },
-  { id: 'marketplace', title: 'Marketplace', Icon: StoreIcon },
   { id: 'project', title: 'This Project', Icon: SlidersIcon },
   { id: 'projects', title: 'Projects', Icon: FolderIcon }
 ] as const
@@ -106,7 +104,6 @@ export function SettingsOverlay(props: {
             {section === 'appearance' && <AppearancePage />}
             {section === 'keybindings' && <KeybindingsPage />}
             {section === 'plugins' && <PluginsPage openPlugin={openPlugin} onOpenProject={() => go('project')} />}
-            {section === 'marketplace' && <MarketplacePage onOpenProject={() => go('project')} />}
             {section === 'project' && <ProjectPage openPlugin={openPlugin} />}
             {section === 'projects' && <ProjectsPage />}
           </div>
