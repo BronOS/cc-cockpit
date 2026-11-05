@@ -732,13 +732,14 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   "minHeight": 48, "maxHeight": 320 }]`, version 0.3.0), `dist/host.js` (`ctx.slots.onOpen('agenda', …)` when
   `ctx.slots` exists), `test/fakes.js`, `README.md`
 
-- [ ] page from the event cache: today's timeline with the now line (reuse `panels/timeline.js` logic), the next event with
+- [x] page from the event cache: today's timeline with the now line (reuse `panels/timeline.js` logic), the next event with
   a countdown and Join (backend opens the meeting URL with `ctx.openExternal`, https only), invitations with Accept /
   Decline (its RSVP); components stylesheet; `ccPanel.slot.setHeight` to fit; all provider text as text
-- [ ] keep the `calendar` v1 service; no `inbox-feed`
-- [ ] write tests: the pure render functions (timeline, next event, invitations, empty state), Join refusing non-https,
+- [x] keep the `calendar` v1 service; no `inbox-feed`
+- [x] write tests: the pure render functions (timeline, next event, invitations, empty state), Join refusing non-https,
   RSVP answer checked, activation without `ctx.slots` (older app)
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-calendar`; the slot page draws a compact horizontal timeline (a full hour timeline does not fit 48-320 px) with the now line, reusing `panels/timeline.js` logic; the host sends the slot its own `agenda` message (timed rows, now, next, 5 invitations) and handles `join` (https only), `open`, `rsvp`; the frame gets Accept / Decline only
 
 ### Phase F — Inbox v2 (repo `~/Projects/cc-cockpit-inbox`)
 
