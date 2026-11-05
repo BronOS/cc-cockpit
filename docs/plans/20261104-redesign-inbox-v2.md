@@ -679,13 +679,14 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify (rewrite): `dist/lib/feed.js`; Modify: `dist/host.js`, `plugin.json` (`inbox-feed` 2, version 0.3.0),
   `test/feed.test.js`, `test/host.test.js`, `test/fakes.js`, `README.md`
 
-- [ ] as task 19 with design-v2 "Chat": stop `level`, the Mentions-and-DMs filter, noise, `limit`, `recent`,
+- [x] as task 19 with design-v2 "Chat": stop `level`, the Mentions-and-DMs filter, noise, `limit`, `recent`,
   `canUnread` (no `markUnread` action where it cannot), `jiraKey`, `changed`; scope = unread conversations of every lane
   plus read ones of the last `recentDays`; `to` from the conversation kind, `mentionsMe` from `@you`, labels
   `mention:all`, `alert`, `alert:<name>`, `jira:KEY`; `place` = channel with the space's display name; `rev` latest
   message name; the same diff emitter, `snapshot`, `act`, `sync` triggers
-- [ ] write the same tests as task 19
-- [ ] run `npm test` — done when green
+- [x] write the same tests as task 19
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-chat`; an alert group's conversations are items of their own (`convRows` on the alert rows of `buildView`, found by `rowOf`); `markRead` / `markUnread` are listed only on a row with a mark target
 
 ### Task 22: Chat: overlay type, buttons, open first [model: sonnet]
 
