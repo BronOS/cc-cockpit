@@ -787,16 +787,18 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 **Files:**
 - Modify: `dist/lib/state.js`, `test/state.test.js`; Create: `dist/lib/search.js`, `test/search.test.js`
 
-- [ ] Done (design-v2 "Inbox's own memory"): `st:<pluginId>:<id>` (hashed when too long, v1 key form) → `{ kind: 'done',
+- [x] Done (design-v2 "Inbox's own memory"): `st:<pluginId>:<id>` (hashed when too long, v1 key form) → `{ kind: 'done',
   rev, at, title, pluginId, id }`; hidden until an `item` with a different `rev` (then "back: new activity"); read or
   label change alone does not bring it back; never calls the source; 14-day prune after last seen; `gone` keeps the entry
-- [ ] undo of the last Done; Done view list (newest first, live title else stored) with "Back to Inbox"
-- [ ] snooze kept from v1, a woken item returned to rule placement and marked "back"; drop v1's "done also marks read"
-- [ ] search: case-insensitive substring over title, preview, from, place and labels of every item, Rest and Done
+- [x] undo of the last Done; Done view list (newest first, live title else stored) with "Back to Inbox"
+- [x] snooze kept from v1, a woken item returned to rule placement and marked "back"; drop v1's "done also marks read"
+- [x] search: case-insensitive substring over title, preview, from, place and labels of every item, Rest and Done
   included, Done ones marked
-- [ ] write tests: rev change returns, read change does not, prune, undo, Done view order, v1 entries carried over,
+- [x] write tests: rev change returns, read change does not, prune, undo, Done view order, v1 entries carried over,
   search over each field and over Done items
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-inbox`; `state.js` gained `status(item, now, opts)` (v2: `{ hidden, back }`, no bonus), `doneList(liveByKey)`, `undoLastDone()`; `search.js` `search(query, items, doneEntries)`. v1 `view`/`done`-marks-read stay in the v1 host until task 29 (which drops `doneMarksRead`)
+
 
 ### Task 29: Inbox host v2 [model: opus]
 
