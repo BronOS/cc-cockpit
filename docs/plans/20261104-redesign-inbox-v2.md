@@ -627,13 +627,14 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Create: `dist/lib/sources.js`, `test/sources.test.js`; Modify: `test/fakes.js` (fake `useAll` with `on(event, (data,
   pluginId))`, providers joining/leaving, `snapshot` that resolves late)
 
-- [ ] per source (keyed by the registry's `pluginId`, never a data field): `describe` once per provider instance,
+- [x] per source (keyed by the registry's `pluginId`, never a data field): `describe` once per provider instance,
   `snapshot()` on activate and on every `onChange` join; buffer that source's events while its `snapshot()` is pending,
   apply after; `item` replaces whole, `gone` removes, `sync` replaces the set; non-ok state keeps the last list marked
   stale with its message; a leaving provider removes its items; a change callback for the host
-- [ ] write tests: item/gone/sync, buffering (an older snapshot never overwrites a newer item), a provider leaving and
+- [x] write tests: item/gone/sync, buffering (an older snapshot never overwrites a newer item), a provider leaving and
   rejoining, a throwing snapshot (source error line, others unaffected), signedOut/error states, refused counts carried
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ `createSources(set, { log, onChange, callMs })` → `start / sync / snapshot / handle / get / list / dispose`; a pending snapshot's buffer is capped at 2000 events (past that: dropped and a second snapshot); `gone` ids past 500 count as refused; an event from a listed provider before its `onChange` joins it behind a snapshot
 
 ### Task 19: Gmail: feed v2 [model: sonnet]
 
