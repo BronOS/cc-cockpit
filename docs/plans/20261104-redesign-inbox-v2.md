@@ -770,16 +770,17 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 **Files:**
 - Create: `dist/lib/jev.js`, `test/jev.test.js`
 
-- [ ] answers through `ctx.services.use('jev').grid(items, { q: { type: 'noul', instructions } })`, text `title + "\n" +
+- [x] answers through `ctx.services.use('jev').grid(items, { q: { type: 'noul', instructions } })`, text `title + "\n" +
   preview` cut to 1500; cache `jv:<hash(question)>:<hash(pluginId, id)>` in `ctx.appStorage` → `{ rev, score, at }`;
   a new `rev` asks again, read/label changes do not; threshold change needs no new answer
-- [ ] batching: one `grid` per question every 2 s at most, 100 items a call; only items that reach the rule are asked
-- [ ] pending → rule not holding and row "Jev…"; on answer the item moves once; unavailable (no provider, cap, error) →
+- [x] batching: one `grid` per question every 2 s at most, 100 items a call; only items that reach the rule are asked
+- [x] pending → rule not holding and row "Jev…"; on answer the item moves once; unavailable (no provider, cap, error) →
   not holding, nothing cached, reason "rule N skipped: Jev unavailable", retry after 10 minutes; pruned with Done entries
-- [ ] a "test" mode that reads cached answers only (never a request), for the settings page
-- [ ] write tests (fake clock, fake jev): cache key with `rev`, batching sizes and pacing, pending then one move,
+- [x] a "test" mode that reads cached answers only (never a request), for the settings page
+- [x] write tests (fake clock, fake jev): cache key with `rev`, batching sizes and pacing, pending then one move,
   unavailable then retry, no request in test mode, a hostile answer (missing or non-number score) treated as unavailable
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-inbox`; `jev.js`: `createJev({ store, services, onAnswer, now, timers, log })` → `{ load, answer, cachedAnswer, prune, dispose, pending }`; `answer` is the sync `jevAnswer` of rules.js; `onAnswer(refs)` also fires on unavailability (the reason changes); the cache value carries `seen` (bumped at most daily) so the hashed keys can be pruned 14 days after last use; one `grid` in flight per question; the 10-minute retry block is per question+item and a new rev waits it out too; `cachedAnswer` ("Test") gives `pending` for an uncached item, `unavailable` with no provider
 
 ### Task 28: Done, snooze, undo and search [model: sonnet]
 
