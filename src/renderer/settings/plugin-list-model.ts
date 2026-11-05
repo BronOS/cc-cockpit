@@ -18,11 +18,13 @@ export const FILTER_LABELS: Record<PluginFilter, string> = {
 }
 
 export const CATEGORY_LABELS: Record<MarketplaceCategory, string> = {
-  sources: 'Sources',
-  views: 'Views',
-  tools: 'Tools',
-  themes: 'Themes',
-  claude: 'Claude',
+  // Named for what someone browsing looks for, not how a plugin works inside the app (the first
+  // set, sources/views/tools/themes/claude, read as internals; renamed before any listing used it).
+  integrations: 'Integrations',
+  productivity: 'Productivity',
+  ai: 'AI & Claude',
+  developer: 'Developer tools',
+  appearance: 'Themes & appearance',
   other: 'Other'
 }
 

@@ -241,7 +241,7 @@ var MAX_REASON_LENGTH = 1e3;
 var MAX_VERSION_LENGTH = 64;
 var COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 var SHA256_PATTERN = /^[0-9a-f]{64}$/;
-var MARKETPLACE_CATEGORIES = ["sources", "views", "tools", "themes", "claude", "other"];
+var MARKETPLACE_CATEGORIES = ["integrations", "productivity", "ai", "developer", "appearance", "other"];
 function isMarketplaceCategory(v) {
   return typeof v === "string" && MARKETPLACE_CATEGORIES.includes(v);
 }

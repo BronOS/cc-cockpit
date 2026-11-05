@@ -210,14 +210,14 @@ describe('marketplace view statuses', () => {
   it('carries the category (unknown or absent reads as other) and the index recorded on a git install', async () => {
     const text = JSON.stringify({
       schema: 1,
-      plugins: [{ ...entry(), category: 'sources' }, { ...entry({ id: 'bronos.chat' }), category: 'gadgets' }, entry({ id: 'bronos.mail' })],
+      plugins: [{ ...entry(), category: 'integrations' }, { ...entry({ id: 'bronos.chat' }), category: 'gadgets' }, entry({ id: 'bronos.mail' })],
       revoked: []
     })
     const { service } = await rig({
       texts: { [A]: text },
       installed: [installedGit(), installedGit({ id: 'bronos.chat', marketplace: undefined })]
     })
-    expect(statusOf(service.marketplace())).toMatchObject({ category: 'sources' })
+    expect(statusOf(service.marketplace())).toMatchObject({ category: 'integrations' })
     expect(statusOf(service.marketplace(), A, 'bronos.chat')).toMatchObject({ category: 'other' })
     expect(statusOf(service.marketplace(), A, 'bronos.mail')).toMatchObject({ category: 'other' })
     const views = service.plugins()

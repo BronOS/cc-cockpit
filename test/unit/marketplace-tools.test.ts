@@ -109,12 +109,12 @@ describe('parseSourceEntry', () => {
   })
 
   it('takes a known category, and none as other', () => {
-    const parsed = parseSourceEntry(JSON.stringify(sourceEntry({ category: 'sources' })), SERVICE_URL)
-    expect(parsed.ok && parsed.entry.category).toBe('sources')
+    const parsed = parseSourceEntry(JSON.stringify(sourceEntry({ category: 'integrations' })), SERVICE_URL)
+    expect(parsed.ok && parsed.entry.category).toBe('integrations')
     const none = parseSourceEntry(JSON.stringify(sourceEntry()), SERVICE_URL)
     expect(none.ok && none.entry.category).toBe('other')
     const bad = parseSourceEntry(JSON.stringify(sourceEntry({ category: 'game' })), SERVICE_URL)
-    expect(bad.ok ? null : bad.problem).toMatch(/"category" must be one of sources, views, tools, themes, claude, other/)
+    expect(bad.ok ? null : bad.problem).toMatch(/"category" must be one of integrations, productivity, ai, developer, appearance, other/)
   })
 
   it('says what is wrong, for the author reading the CI log', () => {
@@ -392,7 +392,7 @@ describe('check-entry', () => {
       tag,
       commit: commits[tag] ?? commits.good!,
       api: 1,
-      category: 'tools',
+      category: 'developer',
       ...patch
     }
   }

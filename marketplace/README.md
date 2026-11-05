@@ -70,7 +70,7 @@ or a tag that no longer points at `commit`, gets `previews/<id>/<commit>.failed`
 listing is tried again a day later. One run fetches at most 20 previews and starts no clone after 10 minutes; the rest
 wait for the next run. The app fetches the image from this repo, never from yours, and checks it against that hash.
 
-**Category.** `category` is one of `sources`, `views`, `tools`, `themes`, `claude`, `other`; leaving it out means
+**Category.** `category` is one of `integrations`, `productivity`, `ai`, `developer`, `appearance`, `other`; leaving it out means
 `other`. Any other value fails the check. The Plugins page filters by it.
 
 ## Publish a new version

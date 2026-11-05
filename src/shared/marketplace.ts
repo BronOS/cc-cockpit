@@ -43,7 +43,7 @@ export const SHA256_PATTERN = /^[0-9a-f]{64}$/
  * `other`. The app reads an unknown value as `other` (a newer index may add one), the index CI
  * refuses it (a typo must not read as "not set").
  */
-export const MARKETPLACE_CATEGORIES = ['sources', 'views', 'tools', 'themes', 'claude', 'other'] as const
+export const MARKETPLACE_CATEGORIES = ['integrations', 'productivity', 'ai', 'developer', 'appearance', 'other'] as const
 export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number]
 
 export function isMarketplaceCategory(v: unknown): v is MarketplaceCategory {

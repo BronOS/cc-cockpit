@@ -346,7 +346,7 @@ describe('parseEntry: category and preview', () => {
   }
 
   it('keeps a known category; absent or unknown reads as other, never dropping the entry', () => {
-    expect(parsed({ category: 'sources' }).category).toBe('sources')
+    expect(parsed({ category: 'integrations' }).category).toBe('integrations')
     expect(parsed({}).category).toBe('other')
     // A newer index may add a category this app does not know.
     expect(parsed({ category: 'games' }).category).toBe('other')

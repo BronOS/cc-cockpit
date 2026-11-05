@@ -58,12 +58,12 @@ describe('buildCards', () => {
   })
 
   it('merges the listing from the recorded index into an installed card, the first listing otherwise', () => {
-    const fromA = listing('x.one', { status: 'installed', action: null, note: 'installed from another marketplace index', category: 'tools' })
-    const fromB = listing('x.one', { indexUrl: B, status: 'update', action: 'update', version: '2.0.0', category: 'sources' })
+    const fromA = listing('x.one', { status: 'installed', action: null, note: 'installed from another marketplace index', category: 'developer' })
+    const fromB = listing('x.one', { indexUrl: B, status: 'update', action: 'update', version: '2.0.0', category: 'integrations' })
     const recorded = buildCards([plugin('x.one', { marketplace: B })], viewOf([fromA, fromB]))
     expect(recorded).toHaveLength(1)
     expect(recorded[0]?.listing).toBe(fromB)
-    expect(recorded[0]?.category).toBe('sources')
+    expect(recorded[0]?.category).toBe('integrations')
     const gitUrl = buildCards([plugin('x.one')], viewOf([fromA, fromB]))
     expect(gitUrl[0]?.listing).toBe(fromA)
   })
@@ -104,11 +104,11 @@ describe('filters', () => {
   const cards = buildCards(
     [plugin('x.current', { marketplace: A }), plugin('x.old', { marketplace: A }), plugin('x.revoked', { marketplace: A, state: { ok: false, reason: 'revoked' } })],
     viewOf([
-      listing('x.current', { status: 'installed', action: null, category: 'tools' }),
-      listing('x.old', { status: 'update', action: 'update', version: '1.1.0', category: 'sources' }),
-      listing('x.revoked', { status: 'revoked', action: 'update', category: 'sources' }),
-      listing('x.new', { category: 'sources' }),
-      listing('x.gone', { status: 'revoked', action: null, category: 'themes' })
+      listing('x.current', { status: 'installed', action: null, category: 'developer' }),
+      listing('x.old', { status: 'update', action: 'update', version: '1.1.0', category: 'integrations' }),
+      listing('x.revoked', { status: 'revoked', action: 'update', category: 'integrations' }),
+      listing('x.new', { category: 'integrations' }),
+      listing('x.gone', { status: 'revoked', action: null, category: 'appearance' })
     ])
   )
   const ids = (q: Partial<ListQuery>): string[] => filterCards(cards, { ...all, ...q }).map((c) => c.id)
@@ -122,10 +122,10 @@ describe('filters', () => {
   })
 
   it('category, combined with a filter and a search', () => {
-    expect(ids({ category: 'sources' })).toEqual(['x.old', 'x.revoked', 'x.new'])
-    expect(ids({ category: 'sources', filter: 'available' })).toEqual(['x.new'])
-    expect(ids({ category: 'sources', search: 'old' })).toEqual(['x.old'])
-    expect(ids({ category: 'claude' })).toEqual([])
+    expect(ids({ category: 'integrations' })).toEqual(['x.old', 'x.revoked', 'x.new'])
+    expect(ids({ category: 'integrations', filter: 'available' })).toEqual(['x.new'])
+    expect(ids({ category: 'integrations', search: 'old' })).toEqual(['x.old'])
+    expect(ids({ category: 'ai' })).toEqual([])
   })
 })
 

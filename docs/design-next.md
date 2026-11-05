@@ -445,7 +445,7 @@ plus an optional page), §6 CLI table (`plugin config`), secrets reserved keys.
 
 ### 6.2 Categories, pagination, search
 
-- Entry field `category`: one of `sources`, `views`, `tools`, `themes`, `claude`, `other` (absent = `other`), checked by
+- Entry field `category`: one of `integrations`, `productivity`, `ai`, `developer`, `appearance`, `other` (absent = `other`), checked by
   `parseEntry` and CI (unknown values drop to `other` in the app, refused in CI).
 - The page fetches the whole index (it does today; at most 5 MiB and 2000 entries) and pages it in the renderer: 20 per
   page, search over name, id, author and description (case-insensitive substring, no regex), filters Installed /
@@ -500,5 +500,5 @@ All accepted as recommended (Oleg, 2026-11-04).
 11. Allow per-project overrides of `app` fields? Recommended: no; `app` means app-wide.
 12. An opt-out of the component stylesheet for a page? Recommended: none; the layer makes plugin CSS win.
 13. Preview size and cap (1280×800, 512 KiB)? Recommended: as written.
-14. Category list (`sources, views, tools, themes, claude, other`)? Recommended: as written, one per entry.
+14. Category list (`integrations, productivity, ai, developer, appearance, other`)? Recommended: as written, one per entry.
 15. Preview grace period length? Recommended: 60 days from the release that adds the rule.
