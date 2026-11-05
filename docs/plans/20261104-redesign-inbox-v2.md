@@ -703,13 +703,14 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify (rewrite): `dist/lib/feed.js`; Modify: `dist/host.js`, `plugin.json` (`inbox-feed` 2 beside `jira`, version
   0.7.0), `test/feed.test.js`, `test/host.test.js`, `test/fakes.js`, `README.md`
 
-- [ ] design-v2 "Jira": stop `level` and status hints in the feed, noise, `limit`, `dueAt`, `changed`; scope = issues of
+- [x] design-v2 "Jira": stop `level` and status hints in the feed, noise, `limit`, `dueAt`, `changed`; scope = issues of
   its Backlog, In progress, On hold and Mentioned lanes (Done lane → `gone`); `place` = project key + status name; labels
   `assigned`, `mentioned`, `priority:<name>`, `type:<name>`, `due:YYYY-MM-DD`, `label:<name>`; `preview` latest comment
   else description start from the cache; `rev` = `updated`; actions open, markRead / markUnread on its seen marks;
   same diff emitter, `snapshot`, `act`, `sync` triggers
-- [ ] write the same tests as task 19, plus Done-lane issues emitted as `gone`
-- [ ] run `npm test` — done when green
+- [x] write the same tests as task 19, plus Done-lane issues emitted as `gone`
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-jira`; Jira labels are asked for in the searches (`labels` in `SEARCH_FIELDS` / `HEADER_FIELDS`) and kept on the header (`poll.current` drops a stale `labels` / `dueAt`); an assigned issue mentioned within `mentionDays` also gets `mentioned`; a Mentioned-lane issue gets `assignee:<name>` or `unassigned`; the state is a `sync` when kind or message changes; settings changes emit too; `scope` follows the lanes
 
 ### Task 24: Jira: overlay type, buttons, open first [model: sonnet]
 
