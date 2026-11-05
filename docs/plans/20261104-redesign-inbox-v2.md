@@ -808,21 +808,21 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   "settings/index.html", "scopes": ["app"] }`; no `calendar`), `test/host.test.js`, `test/manifest.test.js`, `test/fakes.js`
   (`panels.slots`, `slots.available`, `overlay.buttons`, `settingsPage`, `panels.header`, `badge`)
 
-- [ ] wire tasks 18, 26, 27, 28: sources → rules (re-run one item on its `item` and Jev answer, all on a rules change) →
+- [x] wire tasks 18, 26, 27, 28: sources → rules (re-run one item on its `item` and Jev answer, all on a rules change) →
   groups → panel state; the app-version check (`typeof ctx.slots === 'object'` and `ctx.overlay.buttons`), with a clear
   message naming cc-cockpit 0.10.0 when missing
-- [ ] header via `ctx.panels.header`: meta "updated HH:MM", a refresh action calling `snapshot()` on every source; no
+- [x] header via `ctx.panels.header`: meta "updated HH:MM", a refresh action calling `snapshot()` on every source; no
   settings action (the app's gear)
-- [ ] agenda: `ctx.panels.slots('main', [{ type: 'agenda', position, height: 140 }])` from the setting, `null` when off;
+- [x] agenda: `ctx.panels.slots('main', [{ type: 'agenda', position, height: 140 }])` from the setting, `null` when off;
   re-placed when the setting changes; Inbox does not read the calendar
-- [ ] `ctx.overlay.buttons('inbox-item', …)`: "Done (Inbox)" for items it holds, `run` marks Done and returns `{ close: true }`
-- [ ] row actions route to `act(id, action)` on the item's provider handle (the `useAll` handle of that `pluginId`),
+- [x] `ctx.overlay.buttons('inbox-item', …)`: "Done (Inbox)" for items it holds, `run` marks Done and returns `{ close: true }`
+- [x] row actions route to `act(id, action)` on the item's provider handle (the `useAll` handle of that `pluginId`),
   `open` included; the result's `message` shown on failure
-- [ ] badge: unread items in `badge: true` groups; settings read from `ctx.appStorage` `settings`, changes from the
+- [x] badge: unread items in `badge: true` groups; settings read from `ctx.appStorage` `settings`, changes from the
   settings page applied at once in this window and on the next read in others
-- [ ] write tests with the fake ctx: two sources then a third, a source leaving, rules applied, Jev move, Done via the
+- [x] write tests with the fake ctx: two sources then a third, a source leaving, rules applied, Jev move, Done via the
   overlay button, agenda placement per setting, badge, act failure message, missing app members → the message
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
 - ➕ drop `doneMarksRead` and its `markRead` call from `dist/host.js` (task 28 left it live in the v1 host; design-v2: Done
   never calls the source); add a test that Done (row, `e`, overlay button) makes no source call. Task 30 rewrites the
   panel side (`panels/main.js`) and must not carry it over
@@ -830,6 +830,7 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - ➕ run every full placement (start, rules change, a source joining or leaving) inside `jev.sweep(() => …)` so queued Jev
   requests of items gone or questions edited are dropped; re-place the refs `onAnswer` hands over (answers, the 10-minute
   retry, a `jev` provider appearing); `jev.dispose()` in deactivate
+- ➕ commit in `cc-cockpit-inbox`; panel state v2 (`type: 'state', version: 2`): `groups[]` (rows ≤ 200 each with `count`, `unread`; a row has key, source, id, title, preview cut to 200, time, from, to, place, labels, read, actions without `open`, `canOpen`, reason, `jev`, `back`, badge/color/label), `sources[]` (state, message, error, stale, refused, overCap, count, scope), `done { count, rows }`, `search` (`{ query, count, groups, done }` or null), `undo`, `agenda`; panel messages `hello`/`visible`, `refresh`, `open {key}`, `act {key, action}`, `done {key}`, `snooze {key, choice}`, `undo`, `restore {key}`, `search {query}`; `createInbox(...).saveSettings(raw)` for the settings page (task 31); `settings/index.html` is a placeholder page so the manifest's entry exists; the v1 feed/calendar parsers left `lib/feed.js`; snooze times fixed at v1's defaults (14:00 / 09:00) and woken snoozes still notify (v2 settings have neither); the badge counts `read === false` only; Jev answers of other windows are re-read every 10 minutes; `ccc inbox` lists the groups' rows in order with the group name where v1 printed the level until task 32
 
 ### Task 30: Inbox panel v2 [model: opus]
 
