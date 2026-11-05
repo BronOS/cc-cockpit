@@ -1388,12 +1388,13 @@ function start(): void {
     // A project's colour shows in core in two places, each reached its own way: its own window's
     // title bar and top line (`project.updated`, the summary window.info would now give), and an
     // open picker's rows (it reads the list again). Other windows' strip dots are a plugin's
-    // (ctx.sessions scope all), which reads the colour again with the next session change.
+    // (ctx.sessions scope all): the registry re-announces the project's tabs so it reads the colour again.
     colorChanged: (projectId) => {
       const project = registry.get(projectId)
       if (project) sendToProject(projectId, 'project.updated', summary(project))
       const picker = windows.pickerWindowId
       if (picker !== undefined) sendToWindow(picker, 'projects.changed', undefined)
+      sessions.projectChanged(projectId)
     }
   })
   const appearance = new AppearanceService({

@@ -315,6 +315,17 @@ export class SessionRegistry {
   }
 
   /**
+   * Tell subscribers that something shown about a project's tabs changed outside the registry (its
+   * colour, which summaries carry): one unchanged-entry change per tab, so a plugin that lists the
+   * tabs of all windows reads them again. Gist and the other subscribers act only on a status move.
+   */
+  projectChanged(projectId: string): void {
+    for (const entry of [...this.entries.values()]) {
+      if (entry.projectId === projectId) this.changed({ tabId: entry.tabId, entry, prev: entry })
+    }
+  }
+
+  /**
    * The view of a window that shows `projectId`: the full detail of that project's tabs only
    * (plan: "a window gets full entries only for its own project's tabs"). Other windows' tabs are
    * not in it: their strip is a plugin's now (summariesFor, design-next §4). Built from explicit

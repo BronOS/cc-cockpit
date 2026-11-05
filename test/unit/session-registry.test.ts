@@ -144,6 +144,15 @@ describe('onChange', () => {
     ])
   })
 
+  it('projectChanged re-announces only that project\'s tabs, entry unchanged', () => {
+    start('a', P1)
+    start('b', P2)
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    reg.projectChanged(P1)
+    expect(changes.map((c) => [c.tabId, c.entry === c.prev])).toEqual([['a', true]])
+  })
+
   it('does not fire for an event the reducer ignored', () => {
     start('c1')
     reg.tabExited('c1', 0)
