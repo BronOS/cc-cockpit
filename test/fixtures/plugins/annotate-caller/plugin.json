@@ -7,7 +7,8 @@
   "contributes": {
     "commands": [
       { "id": "html", "title": "Annotate: HTML" },
-      { "id": "companion", "title": "Annotate: with a companion" }
+      { "id": "companion", "title": "Annotate: with a companion" },
+      { "id": "filetype", "title": "Annotate: a file review" }
     ]
   },
   "services": { "uses": { "reviewer": 1 } }

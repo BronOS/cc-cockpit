@@ -109,5 +109,21 @@ exports.activate = (ctx) => {
     }
     save()
   })
+  // The well-known `file` type (design-next §3.3): the bundled editor adds "Edit" to the toolbar for
+  // a text file of the project. `notes.txt` is made by the test.
+  ctx.commands.register('filetype', async () => {
+    try {
+      const r = await reviewer.annotate({
+        title: 'A file review',
+        text: 'Some words to review.',
+        key: 'file:notes',
+        type: { name: 'file', data: { path: 'notes.txt' } },
+      })
+      seen.calls.push({ ok: true, value: r })
+    } catch (err) {
+      seen.calls.push({ ok: false, error: String(err && err.message ? err.message : err) })
+    }
+    save()
+  })
   save()
 }

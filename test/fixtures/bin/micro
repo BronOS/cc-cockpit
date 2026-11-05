@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stand-in for the micro editor in the e2e suite (the bundled editor plugin runs `micro -version`
+# once, then opens `micro -autosave N [-colorscheme X] <file> [+line]` in a terminal overlay).
+if [ "$1" = "-version" ]; then
+  echo "Version: 0.0.0-fake"
+  exit 0
+fi
+echo "FAKE-MICRO $*"
+exec cat

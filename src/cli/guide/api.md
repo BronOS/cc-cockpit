@@ -165,6 +165,25 @@ with full Node access.
   settles (at most 30 s); `{ close: true }` closes the overlay. A click never reaches the
   overlay's page. Returns a disposer; dropped when the plugin stops. Check
   `typeof ctx.overlay.buttons === 'function'` first: an older app has none.
+- Overlay extras, in the spec of any kind: `type: { name, data }` (what the overlay shows: `name` a
+  plain noun `^[a-z][a-z0-9-]{0,63}$`, `data` plain JSON of at most 4,096 characters), `buttons` (the
+  opener's own, at most 4), `discuss` (`false` or `{ tabId }`, above) and, for `html` only,
+  `ready: 'load' | 'manual'`. Well-known types, so plugins agree on them: `file` `{ path, mime? }`
+  (`path` relative to the project folder; the editor adds Edit, the reviewer's file reviews have it) and
+  `inbox-item` `{ source, id }` (`source` is the providing plugin's id; Discuss names it
+  `Item: <source> <id>`). The toolbar reads, left to right: the title, the opener's buttons, a divider,
+  the type buttons of other plugins (in plugin-title order), Discuss, and the close button where the tab
+  close side setting puts it; more than 6 buttons fold the rest into "...". Plain text, no chords, no
+  icons beyond the core names and plugin `.svg` files.
+- Loader: an overlay is on screen as soon as it is requested, with a spinner (and "Still loading..."
+  after 10 s) until its content is up: an `html` page when it has loaded (`ready: 'load'`, the default),
+  or when it calls `ccPanel.ready()` (`ready: 'manual'`); a `url` view at its first load or failed load;
+  a terminal at the first output. The close button works throughout.
+- Open first, fetch after: for a page that needs data before it can show, open the overlay at once with
+  `ready: 'manual'` and the `type`, fetch, `post` the content, and have the page call `ccPanel.ready()`
+  when it has drawn it. The person sees the toolbar and the loader instead of nothing, and Discuss and
+  the type buttons are there from the start. Close the overlay (`close()`) when the fetch fails and
+  tell the person with `ctx.notify`.
 
 ## Sessions
 

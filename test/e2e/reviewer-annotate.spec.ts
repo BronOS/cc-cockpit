@@ -15,7 +15,7 @@
 // divider that is remembered, the companion's links, a note made in the companion and found again on
 // reopen, stacked when narrow.
 // Bundled plugins are on for this spec.
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { OverlayInfo } from '../../src/shared/ipc'
@@ -397,4 +397,30 @@ test('annotate companion: two columns with their own facts, a remembered divider
   await expect.poll(() => below(mainHead, left)).toBe(true)
   await expect.poll(() => below(left, issueHead)).toBe(true)
   await expect.poll(() => below(issueHead, right)).toBe(true)
+})
+
+// design-next §3.3: a review of the well-known `file` type shows the bundled editor's "Edit" in the
+// toolbar (the page has no Edit of its own any more); a click opens micro on top and the review
+// stays under it. `micro` is the stand-in of test/fixtures/bin. Discuss is there too (a typed overlay).
+test('a file review gets the editor\'s Edit button; a click opens micro over it and the review stays', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\n')
+  const { run } = await linkCaller(cockpit)
+  expect(await run('filetype')).toEqual({ ok: true, value: { opened: true } })
+  const TITLE3 = 'Notes: A file review'
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE3])
+
+  const toolbar = page.locator('.overlay-header').first()
+  await expect(toolbar.locator('[data-source="type"]')).toHaveText(['Edit'], { timeout: 15_000 })
+  await expect(toolbar.locator('.overlay-discuss')).toHaveCount(1)
+  await toolbar.getByRole('button', { name: 'Edit' }).click()
+
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE3, 'Edit: notes.txt'])
+  const terminal = page.locator('.overlay[data-kind="terminal"]')
+  await expect(terminal.locator('.xterm-rows')).toContainText('FAKE-MICRO', { timeout: 15_000 })
+  await expect(terminal.locator('.xterm-rows')).toContainText('notes.txt')
+
+  // Closing micro leaves the review.
+  await terminal.getByRole('button', { name: 'Close overlay' }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title)).toEqual([TITLE3])
 })

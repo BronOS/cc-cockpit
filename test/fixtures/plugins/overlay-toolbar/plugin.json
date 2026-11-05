@@ -1,0 +1,15 @@
+{
+  "id": "test.overlaytoolbar",
+  "name": "Overlay toolbar",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "manual", "title": "Overlay toolbar: manual page" },
+      { "id": "release", "title": "Overlay toolbar: release the manual page" },
+      { "id": "opener", "title": "Overlay toolbar: opener buttons" },
+      { "id": "thing", "title": "Overlay toolbar: typed thing" }
+    ]
+  }
+}

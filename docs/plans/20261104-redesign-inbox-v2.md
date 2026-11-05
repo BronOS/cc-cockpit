@@ -551,10 +551,10 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   `ctx.overlay.buttons`, well-known types `file` and `inbox-item`, the open-first pattern), `docs/design.md` (§4 Overlay
   stack, Two-way html overlays, §5 Host API overlay row, reviewer paragraph)
 
-- [ ] e2e: loader shown before `pageReady` and cleared by `ready()`; opener button click and `setButtons`; a type button
+- [x] e2e: loader shown before `pageReady` and cleared by `ready()`; opener button click and `setButtons`; a type button
   from another plugin, busy then refreshed, `close: true`; Discuss to an existing tab (fake `claude`, delivered or
   queued) and to New session (tab selected); Discuss hidden on a bare overlay; reviewer Edit via the editor's button
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/overlay-toolbar.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/overlay-toolbar.spec.ts
   test/e2e/overlays.spec.ts test/e2e/reviewer-annotate.spec.ts test/e2e/send.spec.ts` — done when green
 
 ### Phase D — Plugin html settings page (repo `~/Projects/cc-cockpit`)

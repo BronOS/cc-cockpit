@@ -451,6 +451,41 @@ loads with `require`, which throws in a page. `post`/`onMessage` throw for a ter
 Ownership: only the plugin whose host opened the overlay can post to it or hear it (HostApi looks the
 overlay up by its own plugin and handle).
 
+**Overlay toolbar** (`OverlayToolbar.tsx`, design-next §3). One header row on every overlay kind: the
+title (ellipsis, full text in the tooltip), the opener's buttons (`buttons` in the spec, at most 4, clicks
+reach `handle.onButton`, `setButtons` replaces them), a divider, the type buttons other plugins add for
+the overlay's `type` (`ctx.overlay.buttons`), Discuss with Claude, and ✕ on the side the tab close side
+setting names. More than 6 buttons: the first 5 show and "…" takes the 6th place; Esc with the menu open
+closes the menu only, and a url overlay's native view gets zero bounds meanwhile (it would paint over
+the menu). Button rules (ids, labels, icons) are one module for host and main, `src/shared/overlay-buttons.ts`.
+Type buttons: main asks the window's host once per typed overlay (the host calls every provider of the
+name, 500 ms each; main bounds the whole ask to 2 s) and again after a click settles, on `setButtons` and
+when a plugin that added buttons stops; a click is accepted only for a button main currently shows (not
+busy, not disabled), from that window's host, and goes main → host as a request (30 s bound, busy
+meanwhile); `{ close: true }` dismisses the overlay. A click never reaches the page. The `type` is
+untrusted data from the opener: a button provider checks it. Well-known types: `file` `{ path, mime? }`
+and `inbox-item` `{ source, id }`.
+
+**Overlay loader.** `OverlayInfo.loading` is main's: an overlay is on the stack from the request, with a
+`.cc-spinner` until its content is up (an html page's `pageReady`, or `ccPanel.ready()` for
+`ready: 'manual'`, relayed to the parent window as `{ type: 'cc-plugin.ready' }`; a url view's first
+`did-finish-load` / `did-fail-load` / `did-stop-loading`; a terminal's first PTY output). "Still
+loading…" after 10 s; ✕ and Esc work throughout. A renderer reload brings an html overlay's loader back.
+
+**Discuss with Claude** (`DiscussPopover.tsx`, `main/overlays/discuss.ts`). Shown for an overlay with a
+`type` or an `onDiscuss` handler unless the spec says `discuss: false`. The popover lists this window's
+Claude tabs (status) and New session; the preselection is the opener's `discuss.tabId`, else the active
+Claude tab, else New session (`src/shared/discuss.ts`, used by renderer and main). Send is the renderer
+call `overlays.discuss`; main asks the opener's host for context (`onDiscuss`, 5 s), builds `About:
+<title>`, the type line, the context and the note (at most 20,000 characters, the context cut first, the
+note never), re-checks that the target is a Claude tab of this window, then sends through the send gate
+(queued when the tab is busy) or opens a Claude tab in the project folder with the text as its first
+prompt (5 a minute per window), closes the overlay with `{ kind: 'discussed', tabId, queued }` and selects
+the tab. The text always starts with `About:`, so the gate's refusal of a leading `/`, `!`, `#` or `&`
+never fires; an `onDiscuss` that throws or times out shows its error in the popover and sends nothing.
+The reviewer's own Discuss and New session buttons are gone: its file reviews are `type: file` overlays
+and answer `onDiscuss` with the review text.
+
 **Themes**: a set of CSS variables plus an xterm palette. Light and dark are built in; theme
 plugins add more. The active theme is app-wide. A plugin theme inherits every variable it does
 not set from the built-in of its kind (accent, surfaces and focus tokens came later than some
@@ -637,7 +672,7 @@ that project.
 | data | `ctx.storage` (KV, per plugin per project), `ctx.dataDir`; `ctx.appStorage` (the same KV, app-wide, with an atomic `increment`), `ctx.appDataDir` |
 | work | `ctx.schedule(seconds, fn)` (no overlap, timeout), `ctx.exec(argv, {stdin, cwd})` (argv only, never a shell) |
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
-| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.panels.slots(id, placements \| null)` (Slots, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus}` (`focus` brings it to the front, no-op after close; two-way html overlay, §4) |
+| UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.panels.slots(id, placements \| null)` (Slots, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus, onButton, setButtons, onDiscuss}` (`focus` brings it to the front, no-op after close; two-way html overlay, toolbar buttons and Discuss, §4), `ctx.overlay.buttons(type, provider)` (buttons on every overlay of a type, §4 Overlay toolbar) |
 | slots | `ctx.slots.onOpen(type, fn)` → disposer (provider side; the type must be in `contributes.slots`), a `SlotInstance` `{id, type, host, params, post, onMessage, onClose}`, `ctx.slots.available(type)` → `Promise<boolean>` (Slots, below) |
 | files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
@@ -922,8 +957,9 @@ The index entry (not the manifest) may set `enabledByDefault`; the project recor
 `disabledPlugins` so a default-on plugin can be switched off. The built-in browser
 (`cockpit.browser`) has a webview panel, an app setting `home`, `ccc browser open|url|reload`
 and a skill. The reviewer (`cockpit.reviewer`) opens a changed file as a diff in a two-way html overlay (CodeMirror 6 with
-`@codemirror/merge`), takes notes on selections and one comment per file, and hands the review to Claude (Discuss, New
-session; a note or comment is optional, and New session selects its tab) or to the `editor` service (Edit); its
+`@codemirror/merge`), takes notes on selections and one comment per file. A file review is an overlay of the type `file`: the app's toolbar gives it
+Discuss with Claude (the reviewer answers `onDiscuss` with the review text; a note is optional, New session selects
+its tab) and the editor's Edit button (micro on top, the review stays under it); its
 `reviewer` service also takes a plain text from another plugin
 (`annotate`: a ticket, a mail), as text or as allow-list-sanitized HTML with image assets, for notes in the same overlay (`prepare` shows that
 overlay at once with a loader while the caller still fetches, and the annotate of the same key fills it); its design is in `plugins/reviewer/docs/design.md`. The editor
