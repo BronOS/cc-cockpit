@@ -438,6 +438,16 @@ exports.activate = (ctx) => {
     let pending = null
     let saveTimer = null
     let saving = Promise.resolve()
+    // Discuss is the toolbar's primary button once there is a note to send, plain while there is
+    // none (an older app has no setDiscussPrimary: the button just stays plain).
+    let primary = null
+    const markDiscuss = (d) => {
+      const on = !!(d && Array.isArray(d.notes) && d.notes.length > 0)
+      if (on === primary || typeof handle.setDiscussPrimary !== 'function') return
+      primary = on
+      handle.setDiscussPrimary(on)
+    }
+    markDiscuss(draft)
     let saveError = null // why the newest text is not stored; null while it is
     let failed = null // the draft whose write failed (retried once at close); null for a draftProblem
     // Discuss's asks for the page's newest draft, answered by its next `draft` (or `draft-unsaved`).
@@ -512,6 +522,7 @@ exports.activate = (ctx) => {
           return
         }
         draft = review.cleanDraft(m.draft)
+        markDiscuss(draft)
         pending = draft
         clearTimeout(saveTimer)
         saveTimer = setTimeout(flush, DRAFT_SAVE_MS)

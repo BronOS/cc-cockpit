@@ -1560,6 +1560,24 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(m.setDiscussHandler(W2, bare!.id, true)).toBe(false)
   })
 
+  it('setDiscussPrimary marks Discuss primary or plain, kept while Discuss is hidden', () => {
+    const m = withDiscuss(fakeSessions())
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    void m.open(W1, html(), 'cli')
+    const [typed, bare] = m.infos(W1)
+    expect(m.setDiscussPrimary(W1, typed!.id, true)).toBe(true)
+    expect(m.infos(W1)[0]!.discuss).toEqual({ primary: true })
+    expect(lastStack(W1)[0]!.discuss).toEqual({ primary: true })
+    m.setDiscussPrimary(W1, typed!.id, false)
+    expect(m.infos(W1)[0]!.discuss).toEqual({})
+    // No Discuss yet: nothing to draw, but the flag shows once a handler brings it.
+    m.setDiscussPrimary(W1, bare!.id, true)
+    expect(m.infos(W1)[1]).not.toHaveProperty('discuss')
+    m.setDiscussHandler(W1, bare!.id, true)
+    expect(m.infos(W1)[1]!.discuss).toEqual({ primary: true })
+    expect(m.setDiscussPrimary(W2, bare!.id, true)).toBe(false)
+  })
+
   it('sends to an existing tab through the gate, closes as discussed and selects the tab', async () => {
     const sessions = fakeSessions()
     const m = withDiscuss(sessions)

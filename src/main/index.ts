@@ -901,6 +901,7 @@ function start(): void {
       focusOverlay: (windowId, overlayId) => overlays.focus(windowId, overlayId),
       setOverlayButtons: (windowId, overlayId, buttons) => overlays.setButtons(windowId, overlayId, buttons),
       setOverlayDiscuss: (windowId, overlayId, on) => overlays.setDiscussHandler(windowId, overlayId, on),
+      setOverlayDiscussPrimary: (windowId, overlayId, on) => overlays.setDiscussPrimary(windowId, overlayId, on),
       refreshOverlayButtons: (windowId) => overlays.refreshTypeButtons(windowId),
       secrets: pluginSecrets,
       oauth: pluginOAuth,

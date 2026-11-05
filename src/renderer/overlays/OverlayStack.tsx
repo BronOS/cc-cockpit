@@ -188,6 +188,7 @@ export function OverlayStack(props: {
                   <DiscussButton
                     overlayId={overlay.id}
                     preferredTabId={overlay.discuss.tabId}
+                    primary={overlay.discuss.primary === true}
                     tabs={props.discussTabs}
                     activeTabId={props.activeTabId}
                     onOpenChange={(open) =>

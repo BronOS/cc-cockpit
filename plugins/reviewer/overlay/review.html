@@ -18,6 +18,8 @@
         <span id="base" class="muted"></span>
       </div>
       <div class="tools">
+        <!-- The status line (an error, a link that cannot be opened from here): muted, at the right. -->
+        <span id="status" class="muted" role="status"></span>
         <button id="layout" type="button" title="Switch between side by side and unified">Unified</button>
       </div>
     </header>
@@ -33,12 +35,6 @@
       <!-- annotate's `aside`: the caller's details column, sanitized like the document. -->
       <aside id="details" aria-label="Details" hidden><article id="details-body" class="doc-body details-body"></article></aside>
     </main>
-    <footer>
-      <span id="status" class="muted"></span>
-      <span class="spacer"></span>
-      <!-- Discuss with Claude (and New session) and Edit are on the overlay's toolbar, drawn by the app. -->
-      <button id="close" type="button" title="Close without sending; the draft is kept (Esc too)">Close</button>
-    </footer>
     <!-- "Add note", floating just under the end of the selection (the page positions it; hidden while
          there is none). -->
     <button id="add-note" type="button" title="Attach a note to the selected text (a)" hidden>Add note</button>

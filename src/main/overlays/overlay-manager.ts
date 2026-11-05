@@ -354,6 +354,8 @@ interface Overlay {
   discussSpec?: false | { tabId?: string }
   /** The opener has an `onDiscuss` handler now (setDiscussHandler). */
   discussHandler: boolean
+  /** Discuss is drawn as the primary button (setDiscussPrimary). */
+  discussPrimary?: boolean
   /** A Send is under way: a second one is refused until it ends. */
   discussing: boolean
 }
@@ -848,6 +850,20 @@ export class OverlayManager {
   }
 
   /**
+   * The opener draws Discuss as the primary button or plain (handle.setDiscussPrimary). Kept while
+   * Discuss is hidden, so it applies when it shows. False for an overlay that is gone.
+   */
+  setDiscussPrimary(windowId: number, overlayId: string, on: boolean): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return false
+    if ((overlay.discussPrimary === true) === (on === true)) return true
+    overlay.discussPrimary = on === true
+    overlay.info = withDiscuss(overlay.info, overlay)
+    this.changed(windowId)
+    return true
+  }
+
+  /**
    * Discuss with Claude's Send, from the window's renderer (design-next §3.5, §3.6). The renderer
    * is not trusted: the overlay must show Discuss, the note is at most MAX_DISCUSS_NOTE, and a tab
    * target must be a Claude tab of this window, checked when the request arrives and again just
@@ -1097,12 +1113,16 @@ export class OverlayManager {
  * `info` with `discuss` as the overlay's state says (design-next §3.5): shown for an overlay with a
  * type or an onDiscuss handler, unless its spec said `discuss: false`; a bare overlay has none.
  */
-function withDiscuss(info: OverlayInfo, overlay: Pick<Overlay, 'type' | 'discussHandler' | 'discussSpec'>): OverlayInfo {
+function withDiscuss(
+  info: OverlayInfo,
+  overlay: Pick<Overlay, 'type' | 'discussHandler' | 'discussSpec' | 'discussPrimary'>
+): OverlayInfo {
   const next = { ...info }
   delete next.discuss
   if (overlay.discussSpec === false || (!overlay.type && !overlay.discussHandler)) return next
   const tabId = overlay.discussSpec?.tabId
   next.discuss = tabId === undefined ? {} : { tabId }
+  if (overlay.discussPrimary) next.discuss.primary = true
   return next
 }
 

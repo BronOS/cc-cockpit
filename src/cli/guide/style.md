@@ -117,6 +117,8 @@ violet grey`.
 
 - Rows for items, cards for a block that is not an item.
 - One primary button per view.
+- An overlay has one action bar, the app's toolbar: a page draws no close button and no footer of
+  actions. Its actions are overlay `buttons` (`primary: true` for the main one), and ✕ / Esc close.
 - A destructive action asks first or offers undo.
 - Empty, loading and error states are always drawn: `.cc-empty` says why it is empty and what to do.
 - Sentence case labels ("Mark as read", not "Mark As Read").

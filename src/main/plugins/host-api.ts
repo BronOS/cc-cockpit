@@ -39,6 +39,7 @@
 //   overlay.focus   { pluginId, handle }       -> boolean        bring it to the top of the window's stack
 //   overlay.setButtons { pluginId, handle, buttons } -> boolean  replace that overlay's opener buttons
 //                                                                (checked again, shared/overlay-buttons.ts)
+//   overlay.discussPrimary { pluginId, handle, on } -> boolean   Discuss drawn as the primary button or not
 //   overlay.discussable { pluginId, handle, on } -> boolean      that overlay's opener has an onDiscuss
 //                                                                handler now (on) or no more: Discuss shows
 //   secrets.get     { pluginId, key }          -> string | null  the plugin's app-wide secret store
@@ -344,6 +345,8 @@ export interface HostApiDeps {
   setOverlayButtons?(windowId: number, overlayId: string, buttons: CleanOverlayButton[]): boolean
   /** OverlayManager.setDiscussHandler (handle.onDiscuss). Without it the request is refused. */
   setOverlayDiscuss?(windowId: number, overlayId: string, on: boolean): boolean
+  /** OverlayManager.setDiscussPrimary (handle.setDiscussPrimary). Without it the request is refused. */
+  setOverlayDiscussPrimary?(windowId: number, overlayId: string, on: boolean): boolean
   /** OverlayManager.refreshTypeButtons: a plugin's ctx ended, its type buttons leave the window's toolbars. */
   refreshOverlayButtons?(windowId: number): void
   /** ctx.secrets (PluginSecrets). */
@@ -414,6 +417,8 @@ interface OverlayLink {
   buttons?: CleanOverlayButton[]
   /** onDiscuss() came before the overlay existed: applied as soon as it does (the last state). */
   discuss?: boolean
+  /** setDiscussPrimary() came before the overlay existed: applied as soon as it does (the last one). */
+  discussPrimary?: boolean
 }
 
 /** A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. */
@@ -629,6 +634,7 @@ export class HostApi {
       'overlay.focus': (params) => this.overlayFocus(params),
       'overlay.setButtons': (params) => this.overlaySetButtons(params),
       'overlay.discussable': (params) => this.overlayDiscussable(params),
+      'overlay.discussPrimary': (params) => this.overlayDiscussPrimary(params),
       'secrets.get': (params) => this.secretsGet(params),
       'secrets.set': (params) => this.secretsSet(params),
       'secrets.delete': (params) => this.secretsDelete(params),
@@ -1263,6 +1269,10 @@ export class HostApi {
             this.deps.setOverlayDiscuss?.(this.scope.windowId, overlayId, link.discuss)
             link.discuss = undefined
           }
+          if (link.discussPrimary !== undefined) {
+            this.deps.setOverlayDiscussPrimary?.(this.scope.windowId, overlayId, link.discussPrimary)
+            link.discussPrimary = undefined
+          }
           if (link.closing) this.deps.closeOverlay?.(this.scope.windowId, overlayId)
         },
         // A click on one of its own buttons: to this host, this plugin and this handle only.
@@ -1407,6 +1417,23 @@ export class HostApi {
       return true
     }
     return this.deps.setOverlayDiscuss(this.scope.windowId, link.overlayId, rest.on)
+  }
+
+  /**
+   * handle.setDiscussPrimary: draw that overlay's Discuss as the primary button (`on`) or plain.
+   * Held until the overlay exists, like setButtons. False for an overlay that ended or that this
+   * plugin did not open.
+   */
+  private overlayDiscussPrimary(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.discussPrimary')
+    if (typeof rest.on !== 'boolean') throw new Error('overlay.discussPrimary: on must be a boolean')
+    if (!link) return false
+    if (!this.deps.setOverlayDiscussPrimary) throw new Error('overlay.discussPrimary: not available')
+    if (link.overlayId === undefined) {
+      link.discussPrimary = rest.on
+      return true
+    }
+    return this.deps.setOverlayDiscussPrimary(this.scope.windowId, link.overlayId, rest.on)
   }
 
   /** A request to the host; refused once it is stopping, or when main wired no `call`. */

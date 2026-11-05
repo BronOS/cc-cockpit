@@ -1426,6 +1426,19 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     await expect(api.overlayButtons.list('k', query)).rejects.toThrow(/not available/)
   })
 
+  it("setDiscussPrimary reaches only the opener's overlay, held until it exists; on must be a boolean", async () => {
+    deps.setOverlayDiscussPrimary = (windowId, overlayId, on) => overlays.setDiscussPrimary(windowId, overlayId, on)
+    const { call } = toolbarHost(() => null)
+    void call('overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com/', type: { name: 'file', data: {} } }, handle: H }).catch(() => {})
+    await expect(call('overlay.discussPrimary', { pluginId: 'a.one', handle: H, on: true })).resolves.toBe(true)
+    await vi.waitFor(() => expect(overlays.infos(WIN_A)).toHaveLength(1))
+    expect(overlays.infos(WIN_A)[0]!.discuss).toEqual({ primary: true })
+    await expect(call('overlay.discussPrimary', { pluginId: 'a.two', handle: H, on: false })).resolves.toBe(false)
+    await expect(call('overlay.discussPrimary', { pluginId: 'a.one', handle: H, on: 1 })).rejects.toThrow(/boolean/)
+    await expect(call('overlay.discussPrimary', { pluginId: 'a.one', handle: H, on: false })).resolves.toBe(true)
+    expect(overlays.infos(WIN_A)[0]!.discuss).toEqual({})
+  })
+
   it("onDiscuss: discussable reaches only the opener's overlay (held until it exists); the ask goes to that handle, 5 s", async () => {
     deps.setOverlayDiscuss = (windowId, overlayId, on) => overlays.setDiscussHandler(windowId, overlayId, on)
     const { call, hostCalls } = toolbarHost((c) => (c.method === 'overlay.discuss' ? { text: 'ctx' } : null))

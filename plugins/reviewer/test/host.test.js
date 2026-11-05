@@ -300,6 +300,29 @@ test('a failed draft write is shown in the page, cleared by a later write, and r
   host.deactivate()
 })
 
+test('Discuss is the primary button once there is a note, plain again when the last goes', async () => {
+  const f = setup({ editorAvailable: true })
+  storeFake(f)
+  f.ctx.overlay.start = () => {
+    const h = pageHandle(f)
+    h.primary = []
+    h.setDiscussPrimary = (on) => h.primary.push(on)
+    return h
+  }
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  assert.deepEqual(h.primary, [false]) // no draft: plain from the start
+  h.say({ type: 'draft', draft: { global: 'just a comment', notes: [] } })
+  h.say({ type: 'draft', draft: { global: '', notes: [note('one')] } })
+  h.say({ type: 'draft', draft: { global: '', notes: [note('one'), note('two', 1)] } })
+  h.say({ type: 'draft', draft: { global: '', notes: [] } })
+  assert.deepEqual(h.primary, [false, true, false]) // told on a change only
+  h.end({ kind: 'dismissed' })
+  await wait(50)
+  host.deactivate()
+})
+
 test('Esc right after a change still stores it: the coalesced write is flushed at close', async () => {
   const f = setup({ editorAvailable: false })
   const { store, notices } = storeFake(f)

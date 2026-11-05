@@ -450,6 +450,19 @@ describe('ctx.overlay.start', () => {
     await expect(term.result).resolves.toEqual({ kind: 'dismissed' })
   })
 
+  it('setDiscussPrimary sends the flag, refuses a non-boolean, and sends nothing once ended', async () => {
+    const { ctx, calls, end } = pending()
+    const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })
+    const handle = handleOf(calls)
+    overlay.setDiscussPrimary(true)
+    expect(() => overlay.setDiscussPrimary('yes' as unknown as boolean)).toThrow(TypeError)
+    expect(calls.slice(1)).toEqual([{ method: 'overlay.discussPrimary', params: { pluginId: 'a.one', handle, on: true } }])
+    end({ kind: 'dismissed' })
+    await overlay.result
+    overlay.setDiscussPrimary(false)
+    expect(calls).toHaveLength(2)
+  })
+
   it('onDiscuss tells main on the first handler and when the last goes; ended, it sends nothing', async () => {
     const { ctx, calls, end } = pending()
     const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })

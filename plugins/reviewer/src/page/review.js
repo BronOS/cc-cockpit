@@ -30,10 +30,10 @@
 //   { type: 'draft', draft }                          on every change, and when the host asks
 //                                                     ({ type: 'draft-request' }: Discuss with Claude);
 //   { type: 'draft-unsaved' }                         for a request while the draft is too large;
-//   { result: { action: 'close' } }                   from Close.
 // Discuss with Claude, New session and Edit are the app's overlay toolbar now (the host answers
 // Discuss with the review text; the editor adds "Edit" for the overlay's `file` type), so the page
-// has no tab picker and no send buttons.
+// has no tab picker, no send buttons and no Close: the toolbar's ✕ and Esc close it (one action
+// bar per overlay, guide style.md). The status line sits at the right end of the header row.
 // Esc closes the overlay without asking the page, so drafts are posted as they change, at once (a
 // debounce here lost the last keystrokes to an Esc pressed within it; the host coalesces writes).
 // The host answers { type: 'draft-error', message } when a draft could not be stored and
@@ -883,7 +883,7 @@ function columnHead(view, { label, url, urlLabel, canOpen, doc }) {
     b.type = 'button'
     b.title = `${openLabel(urlLabel, false)}: ${url}`
     b.addEventListener('click', () => {
-      $('status').textContent = ''
+      setStatus('')
       ccPanel.post(doc ? { type: 'open-url', doc } : { type: 'open-url' })
     })
     bar.append(b)
@@ -968,10 +968,10 @@ function prepareLinks(root) {
 function openLink(a) {
   const href = a.getAttribute('href')
   if (!state.canOpenLinks) {
-    $('status').textContent = `Link (not opened from here): ${href}`
+    setStatus(`Link (not opened from here): ${href}`)
     return
   }
-  $('status').textContent = ''
+  setStatus('')
   ccPanel.post({ type: 'open-link', href })
 }
 
@@ -1074,12 +1074,14 @@ document.addEventListener('keydown', (e) => {
 
 // ---- buttons ----
 
-function finish(action) {
-  // Close: the draft goes first, so a page message lost with the result loses nothing. No draft in
-  // the result: the host has the last one that fit, and a draft too large for a message would be
-  // dropped with the result, leaving Close doing nothing.
-  postDraft()
-  ccPanel.post({ result: { action } })
+/**
+ * The status line, at the right of the header row. An annotate review has no header row of its own
+ * (`data-bare`: title and layout toggle hidden), so there the row shows only while it has a status.
+ */
+function setStatus(text) {
+  $('status').textContent = text
+  const header = document.querySelector('header')
+  if (header.dataset.bare === 'true') header.hidden = !text
 }
 
 /** Discuss with Claude asks for the newest draft: posted, or `draft-unsaved` when it is too large to store. */
@@ -1104,7 +1106,9 @@ function init(m) {
   $('base').textContent = s.mode === 'diff' ? `vs last commit ${s.head ? s.head.slice(0, 8) : ''}` : ''
   // annotate: the overlay's title bar already names the text, and the document usually does too, so
   // no header row (a third copy of the title). The file review keeps it: path, base, layout toggle.
-  document.querySelector('header').hidden = isText() || isHtml()
+  const header = document.querySelector('header')
+  header.dataset.bare = String(isText() || isHtml())
+  header.hidden = header.dataset.bare === 'true' && !$('status').textContent
   // annotate's url as an icon button, not the long URL as text: the page cannot navigate (a sandboxed
   // frame), so the click asks the host, which opens the URL it was given. The URL is only shown in
   // the tooltip. Off when the host cannot open links (no ctx.openExternal); placeOpenUrl puts it in
@@ -1144,11 +1148,10 @@ $('layout').addEventListener('click', () => {
   ccPanel.post({ type: 'layout', layout: state.layout }) // remembered for the next review
   buildEditors()
 })
-$('close').addEventListener('click', () => finish('close'))
 $('open-url').addEventListener('click', (e) => {
   // Inside the document: not a link click of the document's (an h1 inside an <a>) as well.
   e.stopPropagation()
-  $('status').textContent = ''
+  setStatus('')
   ccPanel.post({ type: 'open-url' })
 })
 
@@ -1156,7 +1159,7 @@ $('open-url').addEventListener('click', (e) => {
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return
   if (m.type === 'init') init(m)
-  else if (m.type === 'error') $('status').textContent = m.message
+  else if (m.type === 'error') setStatus(m.message)
   else if (m.type === 'draft-error') {
     saveState.hostError = typeof m.message === 'string' ? m.message : 'Draft not saved.'
     showSaveState()

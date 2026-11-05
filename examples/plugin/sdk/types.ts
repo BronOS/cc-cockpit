@@ -324,6 +324,12 @@ export interface OverlayHandle {
    * throw or a timeout shows its error to the person and sends nothing.
    */
   onDiscuss(handler: () => Promise<{ text: string } | null> | { text: string } | null): Disposer
+  /**
+   * Draw Discuss with Claude as the toolbar's primary (accent) button, or plain again with `false`
+   * (the default): e.g. once the page holds something worth sending. Held until the overlay exists;
+   * a no-op once it ended or while Discuss is not shown. An older app has no such method.
+   */
+  setDiscussPrimary(on: boolean): void
 }
 
 export type SessionStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'

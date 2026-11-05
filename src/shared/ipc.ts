@@ -762,7 +762,7 @@ export type OverlayInfo = OverlayInfoBody & {
    * opener's preselected Claude tab (`discuss.tabId`), which the popover uses only when it is one of
    * this window's Claude tabs.
    */
-  discuss?: { tabId?: string }
+  discuss?: { tabId?: string; primary?: true }
   /**
    * Present while the body is not ready yet (design-next §3.4), so the renderer draws a loader over
    * it: html until the page's port is up (`ready: 'load'`, the default) or until it calls

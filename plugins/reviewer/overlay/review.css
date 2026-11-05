@@ -10,10 +10,9 @@ body {
 body.loading > :not(#loading) { display: none !important; }
 #loading { display: none; }
 body.loading > #loading { display: flex; flex: 1; align-items: center; justify-content: center; gap: 10px; color: var(--cc-fg-muted); }
-header, footer { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--cc-bg-bar); }
+header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--cc-bg-bar); }
 header { border-bottom: 1px solid var(--cc-border); justify-content: space-between; }
 header[hidden] { display: none; } /* annotate: the overlay's title bar names the text */
-footer { border-top: 1px solid var(--cc-border); }
 .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* annotate's "Open in browser" (its url): an icon, not the URL's text. The page puts it at the end of
    the document's first h1 (.in-title), else at the top right of the HTML document (.float) or of the
@@ -33,7 +32,11 @@ button.icon[hidden] { display: none; }
 }
 #add-note:hover:not(:disabled) { background: var(--cc-accent-hover); }
 #add-note[hidden] { display: none; }
-.tools { display: flex; gap: 6px; }
+.tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* annotate: no title or layout toggle of its own; the row is there only for a status. */
+header[data-bare='true'] { justify-content: flex-end; }
+header[data-bare='true'] .title, header[data-bare='true'] #layout { display: none; }
 .spacer { flex: 1; }
 .banner { padding: 6px 12px; background: var(--cc-bg-banner); color: var(--cc-fg-muted); border-bottom: 1px solid var(--cc-border); }
 .banner.error { background: var(--cc-bg-error); color: var(--cc-fg); }

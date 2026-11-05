@@ -159,7 +159,8 @@ with full Node access.
   (`discuss: false` in the spec hides it; `discuss: { tabId }` preselects that Claude tab). The
   person picks a Claude tab of the window or New session and may add a note; `onDiscuss(fn)` answers
   `{ text }` (the context, within 5 s) or `null` for none, and a throw shows its error and sends
-  nothing. The app sends `About: <title>`, the type, your text and the note (20,000 characters at
+  nothing. `setDiscussPrimary(on)` draws Discuss as the accent (primary) button, or plain again
+  (e.g. primary once there is something to send). The app sends `About: <title>`, the type, your text and the note (20,000 characters at
   most, your text cut first), closes the overlay with `{ kind: 'discussed', tabId, queued }` and
   shows the tab.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the

@@ -33,6 +33,8 @@ export function DiscussButton(props: {
   tabs: readonly DiscussTab[]
   /** The window's selected tab, if any. */
   activeTabId: string | null
+  /** The opener asked for the accent style (handle.setDiscussPrimary). */
+  primary?: boolean
   onOpenChange?: (open: boolean) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -78,7 +80,7 @@ export function DiscussButton(props: {
     <div className="overlay-discuss" ref={root}>
       <button
         type="button"
-        className="cc-btn overlay-button overlay-discuss-button"
+        className={`cc-btn overlay-button overlay-discuss-button${props.primary ? ' cc-primary' : ''}`}
         title="Discuss with Claude"
         aria-haspopup="dialog"
         aria-expanded={open}

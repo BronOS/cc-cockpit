@@ -5,7 +5,8 @@
 //   overlay.open(spec)                 terminal (argv only), url (http/https), html (a file of the
 //                                      plugin's own folder, read by main); resolves when it closes
 //   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
-//                                      focus, onButton, setButtons, onDiscuss }; open(spec) is
+//                                      focus, onButton, setButtons, onDiscuss,
+//                                      setDiscussPrimary }; open(spec) is
 //                                      start(spec).result
 //   overlay.buttons(type, provider)    buttons on every overlay of that type (host/overlay-buttons.ts)
 //   panels.post / panels.onMessage     over the panel's MessagePort
@@ -575,6 +576,13 @@ export function createUiApi(
         // Fire and forget like post; main checks the list again and applies it to this plugin's
         // overlay of this handle only (held until the overlay exists). The port keeps order.
         send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean })
+      },
+      setDiscussPrimary: (on: boolean): void => {
+        if (typeof on !== 'boolean') throw new TypeError('setDiscussPrimary needs a boolean')
+        if (!link || link.ended) return
+        deps.alive()
+        // Fire and forget like setButtons; held in main until the overlay exists.
+        send('overlay.discussPrimary', { pluginId, handle: link.handle, on })
       },
       onDiscuss: (handler: () => unknown): Disposer => {
         if (typeof handler !== 'function') throw new TypeError('overlay onDiscuss needs a function')

@@ -1,6 +1,6 @@
 // The overlay's toolbar (design-next §3.2): one row of title · the opener's buttons · a divider ·
 // the buttons other plugins registered for the overlay's type (plugin-title order) · Discuss with
-// Claude · ✕, the ✕ before or after the title by the tabs' close-side setting. More than six
+// Claude · a divider · ✕ (that divider only when the ✕ is on the right), the ✕ before or after the title by the tabs' close-side setting. More than six
 // buttons fold into a "…" menu (overlay-toolbar.ts decides which). Everything is React text from
 // main's clean copy (overlay-manager.ts), every control a real button, so Tab reaches each one;
 // there are no chords for them, and Esc keeps its meaning (it pops the overlay; with the "…" menu
@@ -207,6 +207,10 @@ export function OverlayToolbar(props: {
         <MoreMenu entries={layout.menu} onClick={props.onButton} onOpenChange={props.onMenuOpenChange} />
       )}
       {props.discuss}
+      {/* The actions are one group, the ✕ apart from them: a divider between, when there are any. */}
+      {closeSide === 'right' && (layout.row.length > 0 || layout.menu.length > 0 || props.discuss) && (
+        <span className="overlay-divider" data-before="close" role="separator" aria-orientation="vertical" />
+      )}
       {closeSide === 'right' && <OverlayClose onClose={props.onClose} />}
     </header>
   )
