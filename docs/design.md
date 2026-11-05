@@ -882,7 +882,7 @@ dispatched inside the host with no round trip to main.
   A name only collectors use has no pick and no pick problem on the Plugins page (`collectedOnly` in
   `serviceStatus`); a provider of the name at another major than the collector's is a `collected-major`
   problem on the collector ("Gmail provides inbox-feed 1, Inbox reads 2: update Gmail"), since `useAll`
-  skips it and its items would be silently absent. An emit no `use` consumer misses is not logged as dropped, and an emit no `use` consumer misses is not logged as dropped. `services` is
+  skips it and its items would be silently absent. An emit no `use` consumer misses is not logged as dropped. `services` is
   strict in the manifest schema, so an app before 0.9.7 refuses a manifest with `collects`.
 - `ctx.services.caller()`, inside a provider's method, is the id of the plugin whose call it serves, for per-caller
   counts or caps. The registry takes it from the calling plugin's own `ctx` (the AsyncLocalStorage frame it
