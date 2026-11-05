@@ -891,6 +891,7 @@ describe('registerSettingsHandlers', () => {
       installMarketplace: async (...args) => rec('installMarketplace', {} as never)(...args),
       updateMarketplace: async (...args) => rec('updateMarketplace', {} as never)(...args),
       refreshMarketplace: async (...args) => rec('refreshMarketplace', { indexes: [], entries: [], warnings: [] })(...args),
+      marketplacePreview: async (...args) => rec('marketplacePreview', null)(...args),
       setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args)
     }
     registerSettingsHandlers(router, deps)
@@ -900,7 +901,7 @@ describe('registerSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(17)
+    expect(channels).toHaveLength(18)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {
@@ -963,6 +964,13 @@ describe('registerSettingsHandlers', () => {
     await ipc.invoke('settings.marketplace', 11)
     await ipc.invoke('settings.marketplaceRefresh', 11)
     expect(calls).toEqual([['marketplace'], ['refreshMarketplace']])
+  })
+
+  it('passes a preview request on as given: the service finds the entry and checks the fields', async () => {
+    const { ipc, calls } = settingsSetup()
+    expect(await ipc.invoke('settings.marketplacePreview', 11, [{ indexUrl: 'https://a.example/index.json', id: 'a.b' }])).toBeNull()
+    await expect(ipc.invoke('settings.marketplacePreview', 11, [])).rejects.toThrow(/bad payload/)
+    expect(calls).toEqual([['marketplacePreview', 'https://a.example/index.json', 'a.b']])
   })
 })
 

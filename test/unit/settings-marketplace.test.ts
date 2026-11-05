@@ -184,6 +184,26 @@ describe('marketplace view statuses', () => {
     expect(statusOf(service.marketplace())).toMatchObject({ status: 'installed', action: null })
   })
 
+  it('says whether a listing has a preview, and an installed git or folder plugin its own preview.png', async () => {
+    const withPreview = JSON.stringify({
+      schema: 1,
+      plugins: [{ ...entry(), preview: { sha256: 'e'.repeat(64) } }, entry({ id: 'bronos.chat' })],
+      revoked: []
+    })
+    const own = mkdtempSync(join(tmpdir(), 'cc-mkt-own-'))
+    dirs.push(own)
+    writeFileSync(join(own, 'preview.png'), 'x')
+    const { service } = await rig({
+      texts: { [A]: withPreview },
+      installed: [installedGit({ dir: own }), installedGit({ id: 'bronos.chat', dir: join(own, 'missing') })]
+    })
+    expect(statusOf(service.marketplace())).toMatchObject({ preview: true })
+    expect(statusOf(service.marketplace(), A, 'bronos.chat')).toMatchObject({ preview: false })
+    const views = service.plugins()
+    expect(views.find((p) => p.id === 'bronos.jira')?.preview).toBe(true)
+    expect(views.find((p) => p.id === 'bronos.chat')).not.toHaveProperty('preview')
+  })
+
   it('shows the tag and commit an install would use', async () => {
     const { service } = await rig({ texts: { [A]: indexOf([{}]) } })
     expect(statusOf(service.marketplace())).toMatchObject({ tag: 'v1.1.0', commit: c('a') })

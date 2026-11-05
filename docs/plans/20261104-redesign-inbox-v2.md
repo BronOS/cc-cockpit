@@ -1132,8 +1132,19 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   installed folder/git plugins' own `preview.png` through `cc-plugin://` when present
 - Modify: `test/unit/marketplace-service.test.ts` (fake fetch: good, wrong hash, redirect, oversized, cache hit)
 
-- [ ] placeholder with the name's initial when no preview; never the real network in tests
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] placeholder with the name's initial when no preview; never the real network in tests
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ IPC `settings.marketplacePreview { indexUrl, id }` → `Uint8Array | null`: main finds the entry in its own state
+  (configured indexes only), builds `previews/<id>/<commit>.png` against the index's folder, fetches it with
+  `createPreviewFetcher` (fetch-index.ts: https/file only, `redirect: 'error'`, 512 KiB cap while reading, timeout),
+  checks sha256 + PNG signature, caches as `<data>/marketplace/previews/<sha256>.png` (re-hashed on every read; files
+  no index lists are dropped on each write); one fetch per hash in flight, a failure retried after 10 min. In a test run
+  nothing under the default index's folder is fetched (`testPreviewFetcher`, index.ts).
+- ➕ `MarketplaceEntryView.preview: boolean`; `PluginView.preview?: true` when a git/folder plugin has a regular
+  `preview.png` at its root (shown via `cc-plugin://<id>/preview.png`, which serves only plugins on in an open window;
+  otherwise the image fails and the placeholder stays). Card component: `src/renderer/settings/PluginPreview.tsx`
+  (IntersectionObserver lazy load, `blob:` URL revoked on unmount), pure helpers `plugin-preview.ts`; used in today's
+  Marketplace and Plugins rows in place of the blocks glyph (task 43 merges the pages).
 
 ### Task 43: One Plugins page with paging, search and filters [model: opus]
 

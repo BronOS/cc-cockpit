@@ -397,6 +397,8 @@ export interface PluginView {
    * project of every window's Claude tabs (design-next §4.1). Shown on the plugin's row. Absent: no.
    */
   seesAllSessions?: true
+  /** A folder or git plugin has its own `preview.png` at its root, shown through `cc-plugin://<id>/preview.png`. */
+  preview?: true
 }
 
 /** The repository and commit a confirmation displayed; main compares them with its own pin before it installs. */
@@ -424,6 +426,11 @@ export interface MarketplaceEntryView {
   tag: string
   commit: string
   version: string
+  /**
+   * The index lists a preview image for this commit: `settings.marketplacePreview` may give its
+   * bytes. False shows the placeholder with the name's initial without asking.
+   */
+  preview: boolean
   status: MarketplaceStatus
   /** The version installed now, when the id is installed. */
   installedVersion?: string
@@ -911,6 +918,12 @@ export interface IpcInvokeMap {
   'settings.marketplaceUpdate': { req: { indexUrl: string; id: string; expect: MarketplaceExpectation }; res: PluginView }
   /** Fetch every configured index now, then answer with the new view. */
   'settings.marketplaceRefresh': { req: void; res: MarketplaceView }
+  /**
+   * A listing's preview PNG (design-next §6.1), fetched lazily from the index's own folder, checked
+   * against the entry's sha256 and cached by main; null when it has none or it cannot be had. The page
+   * shows the bytes from a `blob:` URL.
+   */
+  'settings.marketplacePreview': { req: { indexUrl: string; id: string }; res: Uint8Array | null }
   /** Replace the configured index URLs (https: or file: only, checked in main), fetch, answer with the view. */
   'settings.marketplaceSetUrls': { req: { urls: string[] }; res: MarketplaceView }
   /** Save a plugin's app-wide settings; main validates against the manifest's schema. */
@@ -1280,6 +1293,7 @@ export const INVOKE_CHANNELS = [
   'settings.marketplaceInstall',
   'settings.marketplaceUpdate',
   'settings.marketplaceRefresh',
+  'settings.marketplacePreview',
   'settings.marketplaceSetUrls',
   'settings.pluginSettingsSave',
   'settings.pluginProjectDefaultsSave',

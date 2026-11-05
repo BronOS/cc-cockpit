@@ -331,7 +331,7 @@ function services(secrets: PluginSecrets) {
       update: async () => installed,
       uninstall: async () => {}
     },
-    marketplace: { list: () => [], refresh: async () => {}, revocationFor: () => null, revocationWarnings: () => [], prune: () => {} },
+    marketplace: { list: () => [], refresh: async () => {}, revocationFor: () => null, revocationWarnings: () => [], prune: () => {}, preview: async () => null },
     setMarketplaceUrls: () => {},
     pluginRepos: { get: () => undefined, set: () => {} },
     disableEverywhere: () => {},

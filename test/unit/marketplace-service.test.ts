@@ -5,9 +5,10 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_MARKETPLACE_URL, STALE_AFTER_MS } from '../../src/shared/marketplace'
-import { checkMarketplaceUrl, createIndexFetcher } from '../../src/main/marketplace/fetch-index'
-import { MarketplaceService, type MarketplaceState, marketplaceUrls } from '../../src/main/marketplace/marketplace-service'
+import { DEFAULT_MARKETPLACE_URL, MAX_PREVIEW_BYTES, STALE_AFTER_MS } from '../../src/shared/marketplace'
+import { checkMarketplaceUrl, createIndexFetcher, createPreviewFetcher } from '../../src/main/marketplace/fetch-index'
+import { MarketplaceService, PREVIEW_RETRY_MS, type MarketplaceState, marketplaceUrls } from '../../src/main/marketplace/marketplace-service'
+import { fakePng } from '../fakes/png'
 
 const COMMIT = 'a'.repeat(40)
 const URL1 = 'https://example.com/index.json'
@@ -551,5 +552,142 @@ describe('MarketplaceService revocations', () => {
     const unrecorded = service(byUrl({}), () => 1000, [])
     unrecorded.loadCache()
     expect(unrecorded.revocationFor(plugin)).toBeUndefined()
+  })
+})
+
+// Design-next §6.1: a listing's preview, fetched lazily from the index's own folder, checked against
+// the entry's sha256 and the PNG signature, and cached under <data>/marketplace/previews/.
+describe('MarketplaceService.preview', () => {
+  const PNG = fakePng()
+  const sha = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex')
+  const PREVIEW_URL = `https://example.com/previews/a.b/${COMMIT}.png`
+  const listed = (sha256: string | null = sha(PNG)) =>
+    JSON.stringify({
+      schema: 1,
+      plugins: [{ ...entry('a.b'), ...(sha256 !== null ? { preview: { sha256 } } : {}) }, entry('c.d')],
+      revoked: []
+    })
+
+  /** A service over one listed index whose previews come from `previews` (by URL); `asked` records each fetch. */
+  async function setup(previews: (url: string) => Promise<Uint8Array>, opts: { text?: string; now?: () => number } = {}) {
+    const asked: string[] = []
+    const logs: string[] = []
+    const s = new MarketplaceService({
+      dataDir: dir,
+      urls: () => [URL1],
+      authorities: () => [],
+      fetcher: async (u) => (u === URL1 ? (opts.text ?? listed()) : Promise.reject(new Error('offline'))),
+      previewFetcher: (u) => (asked.push(u), previews(u)),
+      now: opts.now ?? (() => 1000),
+      log: (m) => logs.push(m)
+    })
+    await s.refresh()
+    return { s, asked, logs }
+  }
+  const cacheDir = (): string => join(dir, 'marketplace', 'previews')
+
+  it('fetches from the index folder, checks the hash, caches, and serves the cache after', async () => {
+    const { s, asked } = await setup(async () => PNG)
+    expect(Buffer.from((await s.preview(URL1, 'a.b'))!)).toEqual(PNG)
+    expect(asked).toEqual([PREVIEW_URL])
+    expect(readdirSync(cacheDir())).toEqual([`${sha(PNG)}.png`])
+    // A cache hit: no second fetch, the same bytes.
+    expect(Buffer.from((await s.preview(URL1, 'a.b'))!)).toEqual(PNG)
+    expect(asked).toHaveLength(1)
+  })
+
+  it('shares one fetch between concurrent asks', async () => {
+    let release: (b: Uint8Array) => void = () => {}
+    const { s, asked } = await setup(() => new Promise((r) => (release = r)))
+    const both = Promise.all([s.preview(URL1, 'a.b'), s.preview(URL1, 'a.b')])
+    await Promise.resolve()
+    release(PNG)
+    const [x, y] = await both
+    expect(x).not.toBeNull()
+    expect(y).not.toBeNull()
+    expect(asked).toHaveLength(1)
+  })
+
+  it('refuses a wrong hash and a body that is not a PNG, and caches neither', async () => {
+    const other = fakePng({ width: 1600 })
+    const { s, logs } = await setup(async () => other)
+    expect(await s.preview(URL1, 'a.b')).toBeNull()
+    expect(logs.join('\n')).toMatch(/does not match the hash/)
+    expect(() => readdirSync(cacheDir())).toThrow()
+
+    rmSync(join(dir, 'marketplaces'), { recursive: true, force: true })
+    const notPng = Buffer.from('GIF89a not a png at all')
+    const { s: s2 } = await setup(async () => notPng, { text: listed(sha(notPng)) })
+    expect(await s2.preview(URL1, 'a.b')).toBeNull()
+  })
+
+  it('a fetch failure (redirect, oversized, HTTP error) is null and retried only after PREVIEW_RETRY_MS', async () => {
+    let t = 1000
+    let fail = true
+    const { s, asked } = await setup(async () => (fail ? Promise.reject(new Error('the server answered HTTP 302')) : PNG), { now: () => t })
+    expect(await s.preview(URL1, 'a.b')).toBeNull()
+    fail = false
+    expect(await s.preview(URL1, 'a.b')).toBeNull()
+    expect(asked).toHaveLength(1)
+    t += PREVIEW_RETRY_MS
+    expect(await s.preview(URL1, 'a.b')).not.toBeNull()
+    expect(asked).toHaveLength(2)
+  })
+
+  it('asks nothing for a listing without a preview, an unknown id, an unconfigured index or bad input', async () => {
+    const { s, asked } = await setup(async () => PNG)
+    expect(await s.preview(URL1, 'c.d')).toBeNull()
+    expect(await s.preview(URL1, 'no.such')).toBeNull()
+    expect(await s.preview('https://other.example/index.json', 'a.b')).toBeNull()
+    expect(await s.preview(5, 'a.b')).toBeNull()
+    expect(await s.preview(URL1, { id: 'a.b' })).toBeNull()
+    expect(asked).toEqual([])
+  })
+
+  it('a changed cache file is fetched again, not shown', async () => {
+    const { s, asked } = await setup(async () => PNG)
+    await s.preview(URL1, 'a.b')
+    writeFileSync(join(cacheDir(), `${sha(PNG)}.png`), Buffer.concat([PNG, Buffer.from('x')]))
+    expect(Buffer.from((await s.preview(URL1, 'a.b'))!)).toEqual(PNG)
+    expect(asked).toHaveLength(2)
+  })
+
+  it('drops cached previews no index lists any more when it writes one', async () => {
+    mkdirSync(cacheDir(), { recursive: true })
+    writeFileSync(join(cacheDir(), `${'f'.repeat(64)}.png`), PNG)
+    writeFileSync(join(cacheDir(), 'stray.png.tmp'), 'x')
+    const { s } = await setup(async () => PNG)
+    await s.preview(URL1, 'a.b')
+    expect(readdirSync(cacheDir())).toEqual([`${sha(PNG)}.png`])
+  })
+})
+
+describe('preview fetcher', () => {
+  const PNG = fakePng()
+  it('reads a file: preview, capped, regular files only', async () => {
+    const f = join(dir, 'p.png')
+    writeFileSync(f, PNG)
+    expect(Buffer.from(await createPreviewFetcher()(`file://${f}`))).toEqual(PNG)
+    await expect(createPreviewFetcher({ maxBytes: 10 })(`file://${f}`)).rejects.toThrow(`over ${MAX_PREVIEW_BYTES / 1024} KiB`)
+    await expect(createPreviewFetcher()(`file://${dir}`)).rejects.toThrow('could not be read')
+    const link = join(dir, 'l.png')
+    symlinkSync('/dev/zero', link)
+    await expect(createPreviewFetcher()(`file://${link}`)).rejects.toThrow('could not be read')
+  })
+
+  it('https: refuses a redirect, an HTTP error and an oversized body; returns the bytes', async () => {
+    let seen: RequestInit | undefined
+    const ok = await createPreviewFetcher({ fetch: async (_u, i) => ((seen = i), new Response(new Uint8Array(PNG))) })(URL1)
+    expect(Buffer.from(ok)).toEqual(PNG)
+    expect(seen?.redirect).toBe('error')
+    await expect(createPreviewFetcher({ fetch: async () => new Response('', { status: 404 }) })(URL1)).rejects.toThrow('HTTP 404')
+    await expect(
+      createPreviewFetcher({ fetch: async () => Promise.reject(new TypeError('redirect mode is set to error')) })(URL1)
+    ).rejects.toThrow(/^the preview could not be fetched$/)
+    await expect(createPreviewFetcher({ maxBytes: 10, fetch: async () => new Response(new Uint8Array(PNG)) })(URL1)).rejects.toThrow('KiB')
+    await expect(
+      createPreviewFetcher({ fetch: async () => new Response('', { headers: { 'content-length': String(MAX_PREVIEW_BYTES + 1) } }) })(URL1)
+    ).rejects.toThrow('KiB')
+    await expect(createPreviewFetcher()('ftp://a/p.png')).rejects.toThrow('only https')
   })
 })

@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
-import { BlocksIcon, GearIcon } from './icons'
+import { GearIcon } from './icons'
+import { PluginPreview } from './PluginPreview'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { PluginSettingsPage } from './PluginSettingsPage'
 import { Empty, Group, PageHeader, Switch } from './ui'
@@ -183,7 +184,7 @@ function PluginItem(props: {
   return (
     <li ref={row} className="settings-item column" data-plugin={plugin.id}>
       <div className="settings-item-head">
-        <BlocksIcon className="settings-item-glyph" />
+        <PluginPreview name={plugin.name} source={plugin.preview === true ? { kind: 'own', id: plugin.id } : null} />
         <div className="settings-item-main">
           <div className="settings-item-title">
             {plugin.name}

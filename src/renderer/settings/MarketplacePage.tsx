@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MarketplaceEntryView, MarketplaceIndexView, MarketplaceView } from '../../shared/ipc'
 import { STALE_AFTER_MS } from '../../shared/marketplace'
 import { ipcErrorMessage } from '../ipc-error'
-import { BlocksIcon } from './icons'
+import { PluginPreview } from './PluginPreview'
 import { Empty, Group, PageHeader } from './ui'
 import { useAction } from './use-action'
 
@@ -300,7 +300,7 @@ function EntryItem(props: {
   return (
     <li className="settings-item column" data-plugin={e.id} data-index={e.indexUrl}>
       <div className="settings-item-head">
-        <BlocksIcon className="settings-item-glyph" />
+        <PluginPreview name={e.name} source={e.preview ? { kind: 'listing', indexUrl: e.indexUrl, id: e.id } : null} />
         <div className="settings-item-main">
           <div className="settings-item-title">
             {e.name}

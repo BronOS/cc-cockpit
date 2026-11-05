@@ -458,6 +458,8 @@ export interface SettingsHandlerDeps {
   installMarketplace(indexUrl: unknown, id: unknown, expect: unknown): Promise<PluginView>
   updateMarketplace(indexUrl: unknown, id: unknown, expect: unknown): Promise<PluginView>
   refreshMarketplace(): Promise<MarketplaceView>
+  /** A listing's preview bytes, or null; the service finds the entry in main's own index state. */
+  marketplacePreview(indexUrl: unknown, id: unknown): Promise<Uint8Array | null>
   setMarketplaceUrls(urls: unknown): Promise<MarketplaceView>
   /** `secrets`: the form's secret edits (SecretEdits), checked by the service like `values`. */
   savePluginSettings(id: unknown, values: unknown, secrets: unknown): Promise<PluginSettingsSaveResult>
@@ -519,6 +521,10 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
     return deps.updateMarketplace(p.indexUrl, p.id, expectOf(p.expect))
   })
   router.handleProject('settings.marketplaceRefresh', () => deps.refreshMarketplace())
+  router.handleProject('settings.marketplacePreview', (_ctx, payload) => {
+    const p = fields('settings.marketplacePreview', payload)
+    return deps.marketplacePreview(p.indexUrl, p.id)
+  })
   router.handleProject('settings.marketplaceSetUrls', (_ctx, payload) =>
     deps.setMarketplaceUrls(fields('settings.marketplaceSetUrls', payload).urls)
   )

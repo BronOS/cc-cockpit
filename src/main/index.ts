@@ -128,7 +128,7 @@ import { isTestRun } from './test-run'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
 import { settingsGearOf } from '../shared/settings-gear'
-import { createIndexFetcher, type IndexFetcher } from './marketplace/fetch-index'
+import { createIndexFetcher, createPreviewFetcher, type IndexFetcher, type PreviewFetcher } from './marketplace/fetch-index'
 import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-service'
 import { revocationNotice } from './marketplace/marketplace-view'
 import { rendererLocation } from './windows/create-window'
@@ -173,6 +173,13 @@ if (!app.requestSingleInstanceLock(launch)) {
 function testFetcher(inner: IndexFetcher, testRun: boolean): IndexFetcher {
   if (!testRun) return inner
   return (url) => (url === DEFAULT_MARKETPLACE_URL ? Promise.reject(new Error('not fetched in a test run')) : inner(url))
+}
+
+/** The same rule for previews: nothing from the default index's folder (the real network) in a test run. */
+function testPreviewFetcher(inner: PreviewFetcher, testRun: boolean): PreviewFetcher {
+  if (!testRun) return inner
+  const folder = new URL('./', DEFAULT_MARKETPLACE_URL).href
+  return (url) => (url.startsWith(folder) ? Promise.reject(new Error('not fetched in a test run')) : inner(url))
 }
 
 function start(): void {
@@ -310,6 +317,7 @@ function start(): void {
     dataDir,
     urls: () => marketplaceUrls(registry.app.data.marketplaces, process.env, app.isPackaged),
     fetcher: testFetcher(createIndexFetcher(), testRun),
+    previewFetcher: testPreviewFetcher(createPreviewFetcher(), testRun),
     // From the index, not the installer: loadCache below asks before the installer exists.
     authorities: () => pluginIndex.list().flatMap((p) => (p.marketplace !== undefined ? [p.marketplace] : [])),
     log: (m) => console.warn(m),

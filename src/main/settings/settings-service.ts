@@ -22,9 +22,12 @@
 //    `setting:projectDefault:<field>`. A save is checked alone (what a project with no overrides
 //    gets) and merged with every open project's overrides, and refused naming the first project it
 //    would make invalid. Only the projects whose effective values changed hear of it.
+import { lstatSync } from 'node:fs'
+import { join } from 'node:path'
 import type { MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
 import { seesAllSessions } from '../../shared/manifest'
+import { PREVIEW_FILE } from '../../shared/marketplace'
 import { checkMarketplaceUrl } from '../marketplace/fetch-index'
 import type { MarketplaceService } from '../marketplace/marketplace-service'
 import { buildMarketplaceView, repoChangeFrom, resolveMarketplace, type MarketplaceViewInput } from '../marketplace/marketplace-view'
@@ -54,7 +57,7 @@ export interface SettingsDeps {
   pickFolder(windowId: number, title: string): Promise<string | undefined>
   plugins: Pick<PluginInstaller, 'list' | 'get' | 'install' | 'link' | 'update' | 'uninstall' | 'applyRevocations'>
   /** The marketplace indexes (fetch, cache, revocation lookups). */
-  marketplace: Pick<MarketplaceService, 'list' | 'refresh' | 'revocationFor' | 'revocationWarnings' | 'prune'>
+  marketplace: Pick<MarketplaceService, 'list' | 'refresh' | 'revocationFor' | 'revocationWarnings' | 'prune' | 'preview'>
   /** Store the configured index URLs (`app.json` › `marketplaces`); already checked here. */
   setMarketplaceUrls(urls: string[]): void
   /** `app.json` › `pluginRepos`: the git URL each id was last installed from, kept past an uninstall. `set` is on disk when it returns, or throws. */
@@ -254,6 +257,11 @@ export class SettingsService {
     // plugin this very refresh revoked.
     await this.deps.plugins.applyRevocations().catch(() => {})
     return buildMarketplaceView(this.marketplaceInput())
+  }
+
+  /** A listing's preview bytes (design-next §6.1); the service checks both fields and finds the entry itself. */
+  marketplacePreview(indexUrl: unknown, id: unknown): Promise<Uint8Array | null> {
+    return this.deps.marketplace.preview(indexUrl, id)
   }
 
   /** Replace the index list. A refused URL refuses the whole call and stores nothing. */
@@ -463,6 +471,21 @@ export class SettingsService {
     if (p.state.ok && p.manifest?.contributes?.settings?.page?.scopes.includes('app') === true) view.settingsPage = true
     if (p.source.kind === 'bundled') view.offInAllProjects = offAppWide(p, this.deps.bundledOff.get())
     if (seesAllSessions(p.manifest)) view.seesAllSessions = true
+    if (p.source.kind !== 'bundled' && hasOwnPreview(p.dir)) view.preview = true
     return view
+  }
+}
+
+/**
+ * A folder or git plugin's own `preview.png` (design-next §6.1) is a regular file at its root: the page
+ * then shows it through `cc-plugin://<id>/preview.png`, which serves a plugin's files with its own
+ * containment checks (and only while the plugin is on in an open window; otherwise the image fails and
+ * the card keeps its placeholder). A symlink is not followed here: the protocol decides what it serves.
+ */
+function hasOwnPreview(dir: string): boolean {
+  try {
+    return lstatSync(join(dir, PREVIEW_FILE)).isFile()
+  } catch {
+    return false
   }
 }

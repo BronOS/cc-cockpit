@@ -296,7 +296,7 @@ function rig() {
       uninstall: async () => {},
       applyRevocations: async () => {}
     },
-    marketplace: { list: () => [], refresh: async () => {}, revocationFor: () => null, revocationWarnings: () => [], prune: () => {} },
+    marketplace: { list: () => [], refresh: async () => {}, revocationFor: () => null, revocationWarnings: () => [], prune: () => {}, preview: async () => null },
     setMarketplaceUrls: () => {},
     pluginRepos: { get: () => undefined, set: () => {} },
     disableEverywhere: () => {},

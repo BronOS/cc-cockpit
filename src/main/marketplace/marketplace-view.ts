@@ -163,6 +163,7 @@ function resolveEntry(url: string, entry: MarketplaceEntry, input: MarketplaceVi
       tag: entry.tag,
       commit: entry.commit,
       version: entry.version,
+      preview: entry.preview !== undefined,
       action: null,
       ...status
     }
