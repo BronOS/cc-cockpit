@@ -692,10 +692,10 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 
 **Files (repo `~/Projects/cc-cockpit-chat`):** `dist/host.js`, `panels/thread.js`, `test/host.test.js`, `test/fakes.js`, `README.md`
 
-- [ ] as task 20 for Chat threads (`inbox-item { source, id }`, `ready: 'manual'`, buttons from the item's actions,
+- [x] as task 20 for Chat threads (`inbox-item { source, id }`, `ready: 'manual'`, buttons from the item's actions,
   `onDiscuss` with the conversation's latest messages, capped)
-- [ ] write the same tests as task 20
-- [ ] run `npm test` — done when green
+- [x] write the same tests as task 20
+- [x] run `npm test` — done when green
 
 ### Task 23: Jira: feed v2 [model: sonnet]
 
