@@ -215,11 +215,11 @@ describe('sessions.list', () => {
     registry.applyHook(mine.id, 'UserPromptSubmit', { prompt: 'fix it' })
     registry.send(mine.id, 'queued text')
     registry.tabOutput(mine.id, '\x1b]0;✳ Fixing it\x07')
-    // The gist is main's (the Sessions panel's), not part of the plugin API; nor are the recent prompts.
+    // The gist reaches plugins (design-next §4.1: the cockpit.sessions cards show it); the recent prompts do not.
     registry.setGist(mine.id, 'a gist')
     const list = (await hostA()('sessions.list', {})) as Record<string, unknown>[]
     expect(list).toEqual([
-      { tabId: mine.id, status: 'working', cwd: join(projA, 'sub'), lastPrompt: 'fix it', title: 'Fixing it', notes: [], files: [] }
+      { tabId: mine.id, status: 'working', cwd: join(projA, 'sub'), lastPrompt: 'fix it', title: 'Fixing it', gist: 'a gist', notes: [], files: [] }
     ])
     // Nothing of main's bookkeeping: the queue, the project id, the delivering flag.
     expect(Object.keys(list[0]!)).not.toContain('queue')
@@ -1450,6 +1450,7 @@ describe('sessions scope all, focus, close, openFile', () => {
     const mine = tabs.create(A, { kind: 'claude' })
     const theirs = tabs.create(B, { kind: 'claude' })
     registry.applyHook(theirs.id, 'UserPromptSubmit', { prompt: 'their private prompt' })
+    registry.setGist(theirs.id, 'their gist')
     const plain = hostA()
     await expect(plain('sessions.list', { pluginId: 'a.one', scope: 'all' })).rejects.toThrow(
       `needs "access": { "sessions": "all-windows" } in a.one's plugin.json`
@@ -1463,7 +1464,7 @@ describe('sessions scope all, focus, close, openFile', () => {
       { tabId: mine.id, own: true, project: { name: 'p' }, status: 'starting' },
       { tabId: theirs.id, own: false, project: { name: 'p' }, status: 'working' }
     ])
-    expect(JSON.stringify(all)).not.toMatch(/private|cwd|files|notes/)
+    expect(JSON.stringify(all)).not.toMatch(/private|gist|cwd|files|notes/)
     // Scope window (or none) is the call as it always was, for any plugin.
     await expect(host('sessions.list', { pluginId: 'a.two', scope: 'window' })).resolves.toHaveLength(1)
     await expect(host('sessions.list', {})).resolves.toHaveLength(1)

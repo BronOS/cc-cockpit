@@ -466,6 +466,7 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   if (e.lastPrompt !== undefined) out.lastPrompt = e.lastPrompt
   if (e.title !== undefined) out.title = e.title
   if (e.name !== undefined) out.name = e.name
+  if (e.gist !== undefined) out.gist = e.gist
   if (e.steps !== undefined) out.steps = { ...e.steps }
   if (active) out.active = true
   return out

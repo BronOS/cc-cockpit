@@ -1,0 +1,117 @@
+'use strict'
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const view = require('../dist/lib/view')
+
+const session = (over = {}) => ({ tabId: 't1', status: 'idle', cwd: '/p', notes: [], files: [], ...over })
+const files = (n) => Array.from({ length: n }, (_, i) => `/p/src/f${i}.js`)
+
+test('card: name over title over "Claude N"', () => {
+  assert.equal(view.cardView(session({ name: 'Mine', title: 'Topic' })).label, 'Mine')
+  assert.equal(view.cardView(session({ title: 'Topic' })).label, 'Topic')
+  const bare = view.cardView(session(), { index: 3 })
+  assert.equal(bare.label, 'Claude 3')
+  assert.equal(bare.tooltip, 'Go to this tab')
+  assert.equal(view.cardView(session({ title: 'Topic' })).tooltip, 'Topic\nGo to this tab')
+})
+
+test('card: the gist stands in for the last prompt, which stays the tooltip', () => {
+  const g = view.cardView(session({ gist: 'Fixing the parser', lastPrompt: 'please fix the parser' }))
+  assert.deepEqual(g.summary, { text: 'Fixing the parser', title: 'please fix the parser', gist: true })
+  const p = view.cardView(session({ lastPrompt: 'hello' }))
+  assert.deepEqual(p.summary, { text: 'hello', title: 'hello', gist: false })
+  assert.equal(view.cardView(session()).summary, undefined)
+})
+
+test('card: status text, dialog tools and steps', () => {
+  assert.equal(view.cardView(session({ status: 'working', tool: 'Bash' })).statusText, 'working · Bash')
+  assert.equal(view.cardView(session({ status: 'needs-permission', tool: 'AskUserQuestion' })).statusText, 'needs you · question')
+  assert.equal(view.cardView(session({ status: 'needs-permission', tool: 'ExitPlanMode' })).statusText, 'needs you · plan approval')
+  assert.equal(view.cardView(session({ status: 'needs-permission', tool: 'Edit' })).statusText, 'needs permission · Edit')
+  assert.equal(view.cardView(session({ status: 'waiting' })).statusText, 'waiting for input')
+  assert.deepEqual(view.cardView(session({ steps: { done: 1, total: 4 } })).steps, { text: '1/4', percent: 25 })
+  assert.equal(view.cardView(session({ steps: { done: 3, total: 0 } })).steps.percent, 0)
+  assert.equal(view.cardView(session({ steps: { done: 9, total: 4 } })).steps.percent, 100)
+  assert.equal(view.cardView(session()).steps, undefined)
+})
+
+test('card: notes and the active tab', () => {
+  const c = view.cardView(session({ notes: ['one', 'two'], active: true }))
+  assert.deepEqual(c.notes, ['one', 'two'])
+  assert.equal(c.active, true)
+  assert.equal(view.cardView(session()).active, false)
+})
+
+test('card: the file list is capped at filesShown until Show all', () => {
+  const s = session({ files: files(14) })
+  const capped = view.cardView(s, { filesShown: 10 })
+  assert.equal(capped.files.length, 10)
+  assert.deepEqual(capped.files, files(10))
+  assert.equal(capped.fileCount, 14)
+  assert.equal(capped.hiddenFiles, 4)
+  const open = view.cardView(s, { filesShown: 10, showAll: true })
+  assert.equal(open.files.length, 14)
+  assert.equal(open.hiddenFiles, 4)
+  // Under the cap: nothing hidden.
+  assert.equal(view.cardView(session({ files: files(3) }), { filesShown: 10 }).hiddenFiles, 0)
+  assert.equal(view.cardView(s, { filesShown: 2 }).files.length, 2)
+})
+
+test('filesShown: integers 1-500, else the default 10', () => {
+  assert.equal(view.filesShownOf(1), 1)
+  assert.equal(view.filesShownOf(500), 500)
+  for (const bad of [0, 501, 2.5, '10', null, undefined, -1]) assert.equal(view.filesShownOf(bad), 10)
+  assert.equal(view.cardView(session({ files: files(14) }), { filesShown: 0 }).files.length, 10)
+})
+
+test('splitPath and the header meta', () => {
+  assert.deepEqual(view.splitPath('/a/b/c.js'), { dir: '/a/b/', name: 'c.js' })
+  assert.deepEqual(view.splitPath('c.js'), { dir: '', name: 'c.js' })
+  assert.equal(view.metaText(0), undefined)
+  assert.equal(view.metaText(2), '2 in this window')
+})
+
+const summary = (tabId, status, over = {}) => ({ tabId, own: false, project: { name: 'app' }, status, ...over })
+
+test('strip: other windows only, needs-you first, stable within a status', () => {
+  const entries = view.stripView([
+    summary('a', 'idle'),
+    summary('mine', 'needs-permission', { own: true }),
+    summary('b', 'working'),
+    summary('c', 'needs-permission'),
+    summary('d', 'ended'),
+    summary('e', 'waiting'),
+    summary('f', 'starting'),
+    summary('g', 'working'),
+  ])
+  assert.deepEqual(
+    entries.map((e) => e.tabId),
+    ['c', 'e', 'b', 'g', 'a', 'f', 'd'],
+  )
+})
+
+test('strip: needs-you is tinted, text and tooltip', () => {
+  const [c, b] = view.stripView([summary('b', 'working', { tool: 'Bash', title: 'Topic' }), summary('c', 'needs-permission', { name: 'Named' })])
+  assert.equal(c.needsYou, true)
+  assert.equal(b.needsYou, false)
+  assert.equal(b.text, 'app · working · Bash')
+  assert.equal(b.tooltip, 'app · Topic\nworking · Bash')
+  assert.equal(c.tooltip, 'app · Named\nneeds permission')
+})
+
+test('strip: the project colour, only as a token or #rrggbb', () => {
+  const [a, b, c] = view.stripView([
+    summary('a', 'idle', { project: { name: 'x', color: 'var(--cc-project-blue)' } }),
+    summary('b', 'idle', { project: { name: 'y', color: '#12abef' } }),
+    summary('c', 'idle', { project: { name: 'z', color: 'red; background: url(x)' } }),
+  ])
+  assert.equal(a.color, 'var(--cc-project-blue)')
+  assert.equal(b.color, '#12abef')
+  assert.equal(c.color, undefined)
+})
+
+test('strip: empty when no other window has a session', () => {
+  assert.deepEqual(view.stripView([]), [])
+  assert.deepEqual(view.stripView([summary('mine', 'idle', { own: true })]), [])
+  assert.deepEqual(view.stripView(undefined), [])
+})

@@ -334,6 +334,11 @@ export interface SessionInfo {
   readonly title?: string
   /** The name the person (or a plugin, `ctx.sessions.rename`) gave the tab; shown instead of `title`. */
   readonly name?: string
+  /**
+   * A one-line summary of the session (the app's "Session gist" setting, a short model run after each
+   * turn); absent while the setting is off or before the first one. An older app never sends it.
+   */
+  readonly gist?: string
   readonly notes: readonly string[]
   readonly steps?: { readonly done: number; readonly total: number }
   /**

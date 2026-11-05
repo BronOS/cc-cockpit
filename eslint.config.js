@@ -56,5 +56,11 @@ module.exports = tseslint.config(
     // The files plugin's panel page: a classic script in a sandboxed frame, with the panel SDK's global.
     files: ['plugins/files/panels/**/*.js'],
     languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly' }, sourceType: 'script' }
+  },
+  {
+    // The sessions plugin's panel and slot pages: classic scripts with the panel SDK's global and the
+    // plugin's own view helpers (dist/lib/view.js, loaded first by each page).
+    files: ['plugins/sessions/panels/**/*.js', 'plugins/sessions/slots/**/*.js'],
+    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly', ccSessionsView: 'readonly' }, sourceType: 'script' }
   }
 )

@@ -22,7 +22,10 @@ export const BUNDLED_PLUGINS: readonly BundledPluginSpec[] = [
   // On by default: without micro, Edit shows how to install it instead of failing silently.
   { id: 'cockpit.editor', dir: 'editor', enabledByDefault: true },
   // The project tree (plugins/files/docs/design.md): opens any file through the open-file pick.
-  { id: 'cockpit.files', dir: 'files', enabledByDefault: true }
+  { id: 'cockpit.files', dir: 'files', enabledByDefault: true },
+  // The Claude status view (design-next §4.2): this window's sessions panel and the top bar's
+  // sessions-strip slot, on the public API like the others.
+  { id: 'cockpit.sessions', dir: 'sessions', enabledByDefault: true }
 ]
 
 /**

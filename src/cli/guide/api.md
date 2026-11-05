@@ -203,7 +203,8 @@ with full Node access.
   put in its terminal title (spinner glyph removed), what the Sessions panel and the tab strip
   name the tab; absent until Claude has one. `lastPrompt` is the person's last prompt with Claude
   Code's own markup taken out (a turn of system reminders or task notifications only keeps the
-  one before). `active: true` marks the tab the window shows (selected in its tab pane), the one
+  one before). `gist` is a one-line summary of the session, present only while the app's Session gist
+  setting is on and after its first run. `active: true` marks the tab the window shows (selected in its tab pane), the one
   the person is looking at; absent on the others, and on all of them while a shell tab is
   selected. Selection only: the window may be in the background.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change

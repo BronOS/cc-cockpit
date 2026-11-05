@@ -1,0 +1,41 @@
+{
+  "id": "cockpit.sessions",
+  "name": "Sessions",
+  "version": "0.1.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "access": { "sessions": "all-windows" },
+  "contributes": {
+    "panels": [
+      {
+        "id": "sessions",
+        "title": "Sessions",
+        "entry": "panels/sessions.html",
+        "icon": "icons/sessions.svg",
+        "defaultZone": "left"
+      }
+    ],
+    "slots": [
+      {
+        "type": "sessions-strip",
+        "entry": "slots/strip.html",
+        "title": "Other windows' sessions"
+      }
+    ],
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "filesShown": {
+            "type": "integer",
+            "title": "Changed files shown per session",
+            "description": "How many changed files each session card lists before the rest go behind Show all.",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 10
+          }
+        }
+      }
+    }
+  }
+}

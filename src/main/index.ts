@@ -103,6 +103,7 @@ import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings
 import { ProjectSettingsService } from './settings/project-settings-service'
 import { ServiceChoices } from './plugins/service-choices'
 import { SettingsService } from './settings/settings-service'
+import { migrateSessionFilesShown, needsSessionFilesMigration } from './settings/sessions-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
@@ -201,6 +202,9 @@ function start(): void {
   // sign-in, so the e2e's recorder that replaces it after launch is what runs (no real browser).
   const pluginOAuth = new PluginOAuth({ openExternal: (url) => shell.openExternal(url), log: (m) => console.warn(m) })
   const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
+  // One-time data migration, before any plugin host reads its settings: the core "changed files
+  // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).
+  if (needsSessionFilesMigration(registry.app.data)) registry.app.update(migrateSessionFilesShown)
   const paths = dataPaths(dataDir)
   // Test hooks and recorded notifications exist only in an unpackaged test run, like the fake
   // secret store (secrets/secret-store.ts): a shipped app never takes a test-only path, whatever its

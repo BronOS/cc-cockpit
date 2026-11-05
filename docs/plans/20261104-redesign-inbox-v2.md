@@ -945,17 +945,27 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   `eslint.config.js` (ignores like the other plain-JS plugins), `test/unit/bundled-plugins.test.ts`,
   `test/unit/packaging-config.test.ts`
 
-- [ ] design-next §4.2: panel `sessions` (zone left) with today's cards (name or title, gist or last prompt, status, notes,
+- [x] design-next §4.2: panel `sessions` (zone left) with today's cards (name or title, gist or last prompt, status, notes,
   steps, changed files first N with Show all, file click → `openFile`, card click → `focus`), header meta "N in this
   window"; slot `sessions-strip` (other windows' tabs, needs-you first and tinted, project colour dot, click → `focus`,
   nothing drawn without one); app setting `filesShown` 1-500 default 10; `"access": { "sessions": "all-windows" }`;
   plain DOM with the components, no React, public API only
-- [ ] migration (no runtime privilege for `cockpit.*`): main seeds the plugin's app setting once at start, as a data
+- [x] migration (no runtime privilege for `cockpit.*`): main seeds the plugin's app setting once at start, as a data
   migration like the layout key one: when `app.json` has `sessionFilesShown` and `cockpit.sessions` has no stored
   `filesShown`, store it as the plugin's app setting, then drop `sessionFilesShown` (a unit test in
   `test/unit/settings-service.test.ts` or next to the migration)
-- [ ] write `node:test` tests: card rendering, strip ordering and tint, file list cap, the empty strip
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins` — done when green
+- [x] write `node:test` tests: card rendering, strip ordering and tint, file list cap, the empty strip
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins` — done when green
+- ➕ `SessionInfo.gist` added to the plugin API (design-next §4.1; `sessionInfoOf`, `src/sdk/types.ts`, guide `api.md`, example
+  types copied); the scope `all` summaries still carry no gist. The pure card / strip rules are one UMD file,
+  `plugins/sessions/dist/lib/view.js`, required by the host and loaded by both pages (`/dist/lib/view.js`, global
+  `ccSessionsView`), so the node:test "card rendering" tests run on the card model, not a DOM. The host checks every id a
+  page sends (focus: drawn ids only; openFile: a file of that tab's list) before calling ctx.
+- ➕ migration in `src/main/settings/sessions-migration.ts`, run at start in `index.ts`: copies a valid `sessionFilesShown`
+  (integer 1-500) into `pluginSettings['cockpit.sessions'].filesShown` unless the plugin has its own, and drops the old key
+  in every case. Until task 36 the core Sessions panel then reads the default 10. `eslint.config.js` lints the plugin like
+  `plugins/files` (dist as CommonJS, pages as browser scripts) instead of ignoring it. `test/e2e/bundled-plugins.spec.ts`
+  lists `cockpit.sessions` among the running bundled plugins (passes).
 
 ### Task 36: Remove the renderer's Sessions panel and strip [model: opus]
 

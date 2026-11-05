@@ -9,7 +9,7 @@
 #    app must keep using the same `cc-cockpit` folder as dev.
 #  - The build output ships (out/: main, preload, renderer, cli, host, sdk/panel.js) plus the
 #    production node_modules electron-builder adds by itself, and the built-in browser, reviewer and editor plugins
-#    (extraResources below: plugins/browser, plugins/reviewer, plugins/editor). main reaches the CLI, the plugin host
+#    (extraResources below: plugins/browser, plugins/reviewer, plugins/editor, plugins/files, plugins/sessions). main reaches the CLI, the plugin host
 #    entry, the SDK and the preload through __dirname, i.e. inside app.asar, which Electron (and
 #    Electron run as Node, for `ccc`) reads transparently. The `hello` reference plugin is NOT
 #    bundled (only browser, reviewer, editor and files are): plugins are installed or linked from a folder (design §5), and hello is a template
@@ -83,6 +83,16 @@ extraResources:
       - README.md
       - dist/**
       - panels/**
+      - icons/**
+      - '!**/*.map'
+  - from: plugins/sessions
+    to: plugins/sessions
+    filter:
+      - plugin.json
+      - README.md
+      - dist/**
+      - panels/**
+      - slots/**
       - icons/**
       - '!**/*.map'
   # The bundled terminal fonts ship inside app.asar (Vite emits them with the renderer); their

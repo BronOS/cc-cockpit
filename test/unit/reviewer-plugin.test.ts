@@ -13,6 +13,7 @@ const REPO = resolve(__dirname, '../..')
 const REVIEWER = join(REPO, 'plugins/reviewer')
 const EDITOR = join(REPO, 'plugins/editor')
 const FILES = join(REPO, 'plugins/files')
+const SESSIONS = join(REPO, 'plugins/sessions')
 
 let tmp: string
 beforeEach(() => {
@@ -36,7 +37,8 @@ describe('moved plugin manifests', () => {
   it.each([
     ['reviewer', REVIEWER, 'cockpit.reviewer'],
     ['editor', EDITOR, 'cockpit.editor'],
-    ['files', FILES, 'cockpit.files']
+    ['files', FILES, 'cockpit.files'],
+    ['sessions', SESSIONS, 'cockpit.sessions']
   ])('the %s manifest passes the app validation', async (_name, dir, id) => {
     const result = await loadManifest(dir)
     if (!result.ok) throw new Error(result.errors.join('; '))
@@ -44,7 +46,7 @@ describe('moved plugin manifests', () => {
   })
 
   it('the built hosts the manifests point at exist', async () => {
-    for (const dir of [REVIEWER, EDITOR, FILES]) {
+    for (const dir of [REVIEWER, EDITOR, FILES, SESSIONS]) {
       const result = await loadManifest(dir)
       if (!result.ok) throw new Error(result.errors.join('; '))
       expect(() => readFileSync(join(dir, result.manifest.main!))).not.toThrow()

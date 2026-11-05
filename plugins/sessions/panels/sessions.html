@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sessions</title>
+    <!-- CSP: scripts only from this plugin's own files. view.js is the shared pure part (labels,
+         file cap), sessions.js draws. -->
+    <script src="/__sdk/panel.js"></script>
+    <script src="/dist/lib/view.js"></script>
+    <script src="sessions.js" defer></script>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; overflow: auto; background: var(--cc-bg); color: var(--cc-fg); }
+      main { padding: var(--cc-space-3); }
+      ul { margin: 0; padding: 0; list-style: none; }
+      /* A card per Claude tab: cc-card's frame, the page's own inner layout (no component has a
+         head row with a status dot and a steps bar). */
+      #list { display: flex; flex-direction: column; gap: 10px; }
+      .card { cursor: pointer; overflow: hidden; }
+      .card[data-active] { border-color: var(--cc-border-strong); }
+      .head { display: flex; align-items: center; gap: var(--cc-space-2); }
+      .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--cc-status-idle, var(--cc-fg-subtle)); }
+      .dot[data-status='starting'] { background: var(--cc-status-starting, var(--cc-fg-subtle)); }
+      .dot[data-status='working'] { background: var(--cc-status-working); }
+      .dot[data-status='needs-permission'] { background: var(--cc-status-needs-permission); }
+      .dot[data-status='waiting'] { background: var(--cc-status-waiting); }
+      .dot[data-status='ended'] { background: var(--cc-status-ended); }
+      /* The topic can be long: it shrinks with an ellipsis, the full text is the tooltip. */
+      .title { min-width: 0; flex: 0 1 auto; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; height: auto; }
+      .title:hover { text-decoration: underline; text-underline-offset: 2px; }
+      .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--cc-text-s); color: var(--cc-fg-muted); }
+      .steps { flex: none; margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; font-size: var(--cc-text-s); color: var(--cc-fg-subtle); font-variant-numeric: tabular-nums; }
+      .bar { display: block; width: 34px; height: 3px; border-radius: 2px; background: var(--cc-surface-3); overflow: hidden; }
+      .bar > span { display: block; height: 100%; background: var(--cc-fg-subtle); }
+      .card[data-status='working'] .bar > span { background: var(--cc-status-working); }
+      .summary { margin: var(--cc-space-2) 0 0; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+      .summary.gist { -webkit-line-clamp: 2; color: var(--cc-fg-muted); }
+      .notes { margin-top: var(--cc-space-2); color: var(--cc-fg-muted); }
+      .notes li { position: relative; padding-left: 12px; overflow-wrap: anywhere; }
+      .notes li::before { content: ''; position: absolute; left: 2px; top: 0.6em; width: 4px; height: 4px; border-radius: 50%; background: var(--cc-fg-subtle); }
+      .files { margin-top: 10px; padding-top: var(--cc-space-2); border-top: 1px solid var(--cc-border); }
+      .caption { padding: 0 6px 4px; font-size: var(--cc-text-s); color: var(--cc-fg-subtle); }
+      .file { display: flex; width: 100%; min-height: 24px; height: auto; padding: 0 6px; border: 0; justify-content: flex-start; background: none; color: var(--cc-fg-muted); font-family: var(--cc-font-mono); font-size: var(--cc-text-s); text-align: left; cursor: pointer; white-space: nowrap; }
+      .file:hover { background: var(--cc-surface-2); }
+      /* The folder gives way (ellipsis) before the name does: Claude reports absolute paths. */
+      .file .dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .file .name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--cc-fg); }
+      .more { margin-top: 2px; height: auto; padding: 2px 6px; font-size: var(--cc-text-s); color: var(--cc-fg-muted); }
+      .refused { margin-top: var(--cc-space-2); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="empty" class="cc-empty" hidden><p>No Claude sessions in this window.</p></div>
+      <ul id="list" aria-label="Claude sessions"></ul>
+    </main>
+  </body>
+</html>
