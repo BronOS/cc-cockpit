@@ -318,12 +318,23 @@ describe('panel SDK: the component stylesheet', () => {
     )
     expect(rules.length).toBeGreaterThan(40)
     for (const prelude of rules) {
-      if (prelude === ':root') continue
+      // :root holds tokens; [hidden] must outrank the components on purpose (next test).
+      if (prelude === ':root' || prelude === '[hidden]') continue
       for (const selector of splitSelectors(prelude)) {
         // `:where(...)` alone, optionally followed by a pseudo-element.
         expect(selector, prelude).toMatch(/^:where\([\s\S]*\)(::?[a-z-]+)?$/)
       }
     }
+  })
+
+  it('makes `hidden` hide a component that sets display (the Sessions panel showed its empty text beside a card)', () => {
+    const body = topLevel(COMPONENTS_CSS)[0]!.body
+    const rules = topLevel(body)
+    const hidden = rules.find((r) => r.prelude === '[hidden]')
+    expect(hidden?.body).toMatch(/display:\s*none/)
+    // Plain specificity (0,1,0), not !important (the layer test above): it beats every zero-specificity
+    // component rule wherever it sits, and a page's own unlayered CSS still beats it.
+    expect(hidden?.body).not.toMatch(/!important/)
   })
 
   it('keeps the bare-element defaults out of the shell, which marks its root cc-shell', () => {

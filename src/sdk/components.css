@@ -505,4 +505,13 @@
     line-height: 1.5;
     text-align: center;
   }
+
+  /* `hidden` must hide. The browser's own [hidden] { display: none } is a user-agent rule, and any
+     page rule beats it, layered or not: every component above that sets `display` (`.cc-empty` is
+     flex) kept a hidden element on screen (the Sessions panel showed "No Claude sessions" beside a
+     session card). Specificity (0,1,0) against the components' zero-specificity :where() rules, so
+     this wins inside the layer without !important, and a plugin's own unlayered CSS still wins. */
+  [hidden] {
+    display: none;
+  }
 }
