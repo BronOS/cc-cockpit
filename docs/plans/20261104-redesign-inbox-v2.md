@@ -614,12 +614,12 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 **Files (repo `~/Projects/cc-cockpit-inbox`):**
 - Modify (rewrite): `dist/lib/feed.js`; Modify: `test/feed.test.js`
 
-- [ ] `describeOf`, `featuresOf`, `itemOf`, `syncOf`, `goneOf` per design-v2 "The item" caps table: cut titles/previews,
+- [x] `describeOf`, `featuresOf`, `itemOf`, `syncOf`, `goneOf` per design-v2 "The item" caps table: cut titles/previews,
   refuse bad ids/action ids, drop unknown fields, one-line titles, labels ≤ 20 lowercase-compared, actions ≤ 8 with the id
   pattern, `read` boolean or null, palette names only, `message` ≤ 300; duplicate ids in one `sync` refused; ≤ 1000 per
   source keeping the newest by `time`; every function returns refused and over-cap counts, never throws on hostile input
-- [ ] write tests: each cap, unknown fields, wrong types, duplicates, prototype keys (`__proto__`, `constructor`), counts
-- [ ] run `npm test` — done when green
+- [x] write tests: each cap, unknown fields, wrong types, duplicates, prototype keys (`__proto__`, `constructor`), counts
+- [x] run `npm test` — done when green
 
 ### Task 18: Inbox: the source store and event application [model: opus]
 
