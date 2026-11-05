@@ -856,14 +856,15 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `dist/host.js` (`ctx.settingsPage.onOpen`: send settings, sources, the test results; validate and store what the
   page sends)
 
-- [ ] design-v2 "Settings page": Groups (add, rename, reorder, delete → its rules move to Rest, collapsed, badge), Rules
+- [x] design-v2 "Settings page": Groups (add, rename, reorder, delete → its rules move to Rest, collapsed, badge), Rules
   (ordered list, move up/down, enable, duplicate, delete, inline edit of group + conditions and/or a Jev question with
   threshold), "Test" (count and five examples, Jev from cache only), Sources (read-only: label, scope, state, count, the
   note on keeping a source out), Agenda (top / bottom / off); a Jev rule shown inactive with no `jev` provider
-- [ ] the host validates every save with `lib/settings.js`; a refused save shows the reason; no secrets posted
-- [ ] components stylesheet; keyboard reachable
-- [ ] write tests: pure logic (edits, reorder, delete group moving rules, Test results), host save round trip and refusal
-- [ ] run `npm test` — done when green
+- [x] the host validates every save with `lib/settings.js`; a refused save shows the reason; no secrets posted
+- [x] components stylesheet; keyboard reachable
+- [x] write tests: pure logic (edits, reorder, delete group moving rules, Test results), host save round trip and refusal
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-inbox`; the page edits a draft and saves it whole (Save / Discard changes / Reset to defaults, which only fills the draft), so a half-typed rule is never applied; `lib/settings.js` gained `checkSettings` (strict: refuses with the reason, by position, what `readSettings` would silently drop) next to the lenient read; the host sends the field table (`FIELDS`, kinds, to, caps) with the settings so the page holds no copy of it; Test counts the items the rule would place where it stands, how many it holds for alone, and the ones without a cached Jev answer, over the visible items (Done and snoozed left out), a disabled rule tried as enabled; `in` text lists are one value per line (names may hold commas); new rules go to the top; a page opened for a scope other than `app` gets a fatal line
 
 ### Task 32: `ccc inbox` v2 and the Inbox docs [model: sonnet]
 
