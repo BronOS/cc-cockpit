@@ -3,9 +3,7 @@
 // The renderer applies them for a fast answer; main checks everything again, since the renderer is
 // not trusted. Kept free of Node and DOM imports.
 
-/** The person's optional note, in characters. A longer one is refused, never cut. */
-export const MAX_DISCUSS_NOTE = 4_000
-/** The whole message sent to Claude; the opener's context is cut to fit, the note never. */
+/** The whole message sent to Claude; the opener's context is cut to fit. */
 export const MAX_DISCUSS_TEXT = 20_000
 /** The overlay's type as one line (`File: …`, `Item: …`, `name: k=v …`), cut to this. */
 export const MAX_DISCUSS_TYPE_LINE = 500

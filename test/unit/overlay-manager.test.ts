@@ -1587,11 +1587,11 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     const r = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev'))
     const id = m.infos(W1)[0]!.id
     m.setDiscussHandler(W1, id, true)
-    const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't2' }, 'Is this right?')
+    const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't2' })
     expect(answer).toEqual({ ok: true, tabId: 't2', queued: false })
     expect(ch.asks).toBe(1)
     expect(sessions.sent).toEqual([
-      { tabId: 't2', text: 'About: Review src/x.ts\nFile: src/x.ts\n\nThe review so far\n\nIs this right?' }
+      { tabId: 't2', text: 'About: Review src/x.ts\nFile: src/x.ts\n\nThe review so far' }
     ])
     await flush()
     expect(r.results).toEqual([{ kind: 'discussed', tabId: 't2', queued: false }])
@@ -1604,9 +1604,9 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     sessions.delivered = false
     const m = withDiscuss(sessions)
     const r = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev'))
-    const answer = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'tab', tabId: 't1' }, '')
+    const answer = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'tab', tabId: 't1' })
     expect(answer).toEqual({ ok: true, tabId: 't1', queued: true })
-    // No handler: no ask, no context; the empty note adds nothing.
+    // No handler: no ask, no context; .
     expect(sessions.sent[0]!.text).toBe('About: Review src/x.ts\nFile: src/x.ts')
     await flush()
     expect(r.results).toEqual([{ kind: 'discussed', tabId: 't1', queued: true }])
@@ -1617,21 +1617,21 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     const m = withDiscuss(sessions)
     for (let i = 0; i < 5; i++) {
       void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
-      const answer = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' }, `note ${i}`)
+      const answer = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' })
       expect(answer).toEqual({ ok: true, tabId: `new${i + 1}`, queued: false })
     }
     expect(sessions.opened).toHaveLength(5)
-    expect(sessions.opened[0]).toEqual({ windowId: W1, prompt: 'About: Review src/x.ts\nFile: src/x.ts\n\nnote 0' })
+    expect(sessions.opened[0]).toEqual({ windowId: W1, prompt: 'About: Review src/x.ts\nFile: src/x.ts' })
     expect(sessions.selected.map((s) => s.tabId)).toEqual(['new1', 'new2', 'new3', 'new4', 'new5'])
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
-    const sixth = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' }, '')
+    const sixth = await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' })
     expect(sixth.ok).toBe(false)
     expect(m.infos(W1)).toHaveLength(1)
     // Another window has its own budget; the minute passing gives this one its budget back.
     void m.open(W2, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
-    expect((await m.discuss(W2, m.infos(W2)[0]!.id, { kind: 'new' }, '')).ok).toBe(true)
+    expect((await m.discuss(W2, m.infos(W2)[0]!.id, { kind: 'new' })).ok).toBe(true)
     vi.advanceTimersByTime(60_000)
-    expect((await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' }, '')).ok).toBe(true)
+    expect((await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' })).ok).toBe(true)
   })
 
   it('a refused new tab gives its budget back and leaves the overlay open', async () => {
@@ -1641,10 +1641,10 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
     const id = m.infos(W1)[0]!.id
     for (let i = 0; i < 6; i++) {
-      expect(await m.discuss(W1, id, { kind: 'new' }, '')).toEqual({ ok: false, error: 'No new session: the project window was closed' })
+      expect(await m.discuss(W1, id, { kind: 'new' })).toEqual({ ok: false, error: 'No new session: the project window was closed' })
     }
     sessions.openError = undefined
-    expect((await m.discuss(W1, id, { kind: 'new' }, '')).ok).toBe(true)
+    expect((await m.discuss(W1, id, { kind: 'new' })).ok).toBe(true)
   })
 
   it('an overlay dismissed while its new session opens: the session stays and is selected, the opener heard dismissed', async () => {
@@ -1654,7 +1654,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     const m = withDiscuss(sessions)
     const r = track(m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev'))
     const id = m.infos(W1)[0]!.id
-    const pending = m.discuss(W1, id, { kind: 'new' }, 'note')
+    const pending = m.discuss(W1, id, { kind: 'new' })
     await flush()
     m.close(W1, id)
     release({ tabId: 'new1' })
@@ -1671,7 +1671,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, thrower, 'p.rev')
     const id = m.infos(W1)[0]!.id
     m.setDiscussHandler(W1, id, true)
-    expect(await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, '')).toEqual({
+    expect(await m.discuss(W1, id, { kind: 'tab', tabId: 't1' })).toEqual({
       ok: false,
       error: 'Reviewer could not give its context: no draft'
     })
@@ -1679,16 +1679,16 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, slow, 'p.rev')
     const slowId = m.infos(W1)[1]!.id
     m.setDiscussHandler(W1, slowId, true)
-    const pending = m.discuss(W1, slowId, { kind: 'tab', tabId: 't1' }, '')
+    const pending = m.discuss(W1, slowId, { kind: 'tab', tabId: 't1' })
     // A second Send while the first waits is refused.
-    expect(await m.discuss(W1, slowId, { kind: 'tab', tabId: 't1' }, '')).toEqual({ ok: false, error: 'Already sending' })
+    expect(await m.discuss(W1, slowId, { kind: 'tab', tabId: 't1' })).toEqual({ ok: false, error: 'Already sending' })
     await vi.advanceTimersByTimeAsync(5_000)
     expect(await pending).toEqual({ ok: false, error: 'Reviewer could not give its context: onDiscuss took longer than 5 s' })
     const odd = opener(() => Promise.resolve({ txt: 'x' }))
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, odd, 'p.rev')
     const oddId = m.infos(W1)[2]!.id
     m.setDiscussHandler(W1, oddId, true)
-    expect((await m.discuss(W1, oddId, { kind: 'tab', tabId: 't1' }, '')).ok).toBe(false)
+    expect((await m.discuss(W1, oddId, { kind: 'tab', tabId: 't1' })).ok).toBe(false)
     expect(sessions.sent).toEqual([])
     expect(m.infos(W1)).toHaveLength(3)
   })
@@ -1700,8 +1700,8 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     void m.open(W1, { ...html(), title: 'Notes' }, 'plugin p.rev', undefined, ch, 'p.rev')
     const id = m.infos(W1)[0]!.id
     m.setDiscussHandler(W1, id, true)
-    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, 'look')).ok).toBe(true)
-    expect(sessions.sent[0]!.text).toBe('About: Notes\n\nlook')
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't1' })).ok).toBe(true)
+    expect(sessions.sent[0]!.text).toBe('About: Notes')
   })
 
   it("refuses a tab that is not this window's Claude tab, now and again just before the send", async () => {
@@ -1712,12 +1712,12 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev')
     const id = m.infos(W1)[0]!.id
     // Another window's tab, or a shell tab id, is refused before the opener is asked.
-    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't9' }, '')).ok).toBe(false)
-    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 'shell1' }, '')).ok).toBe(false)
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't9' })).ok).toBe(false)
+    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 'shell1' })).ok).toBe(false)
     m.setDiscussHandler(W1, id, true)
     expect(ch.asks).toBe(0)
     // The tab closes while the opener is asked: checked again, nothing sent.
-    const pending = m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, '')
+    const pending = m.discuss(W1, id, { kind: 'tab', tabId: 't1' })
     await flush()
     sessions.claude.get(W1)!.delete('t1')
     release({ text: 'ctx' })
@@ -1734,30 +1734,29 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     const m = withDiscuss(sessions)
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, opener(() => Promise.resolve(null)), 'p.rev')
     const id = m.infos(W1)[0]!.id
-    const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, 'look')
+    const answer = await m.discuss(W1, id, { kind: 'tab', tabId: 't1' })
     expect(answer).toEqual({ ok: false, error: expect.stringMatching(/not answered since it started/) })
     expect(sessions.sent).toEqual([])
     expect(m.infos(W1)).toHaveLength(1)
     // A new session is not a tab target: unaffected.
-    expect((await m.discuss(W1, id, { kind: 'new' }, '')).ok).toBe(true)
+    expect((await m.discuss(W1, id, { kind: 'new' })).ok).toBe(true)
   })
 
-  it('refuses a bare overlay, a too long note, another window and an overlay that closed meanwhile', async () => {
+  it('refuses a bare overlay, another window and an overlay that closed meanwhile', async () => {
     const sessions = fakeSessions()
     const m = withDiscuss(sessions)
     void m.open(W1, html(), 'cli')
     const bare = m.infos(W1)[0]!.id
-    expect((await m.discuss(W1, bare, { kind: 'tab', tabId: 't1' }, '')).ok).toBe(false)
+    expect((await m.discuss(W1, bare, { kind: 'tab', tabId: 't1' })).ok).toBe(false)
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
     const id = m.infos(W1)[1]!.id
-    expect((await m.discuss(W1, id, { kind: 'tab', tabId: 't1' }, 'x'.repeat(4_001))).ok).toBe(false)
-    expect((await m.discuss(W2, id, { kind: 'tab', tabId: 't9' }, '')).ok).toBe(false)
+    expect((await m.discuss(W2, id, { kind: 'tab', tabId: 't9' })).ok).toBe(false)
     let release!: (v: unknown) => void
     const ch = opener(() => new Promise((resolve) => (release = resolve)))
     void m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev')
     const third = m.infos(W1)[2]!.id
     m.setDiscussHandler(W1, third, true)
-    const pending = m.discuss(W1, third, { kind: 'tab', tabId: 't1' }, '')
+    const pending = m.discuss(W1, third, { kind: 'tab', tabId: 't1' })
     await flush()
     m.close(W1, third)
     release(null)
@@ -1766,6 +1765,6 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     // Without main's sessions wired, Send is an error too.
     const plain = manager()
     void plain.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
-    expect((await plain.discuss(W1, plain.infos(W1)[0]!.id, { kind: 'new' }, '')).ok).toBe(false)
+    expect((await plain.discuss(W1, plain.infos(W1)[0]!.id, { kind: 'new' })).ok).toBe(false)
   })
 })

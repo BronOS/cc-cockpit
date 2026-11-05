@@ -119,6 +119,8 @@ violet grey`.
 - One primary button per view.
 - An overlay has one action bar, the app's toolbar: a page draws no close button and no footer of
   actions. Its actions are overlay `buttons` (`primary: true` for the main one), and ✕ / Esc close.
+- A page that wants the person's words before Discuss keeps its own field and returns them from
+  `onDiscuss` (the reviewer's comment is the example); Discuss itself has no note field.
 - A destructive action asks first or offers undo.
 - Empty, loading and error states are always drawn: `.cc-empty` says why it is empty and what to do.
 - Sentence case labels ("Mark as read", not "Mark As Read").

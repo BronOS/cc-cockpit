@@ -106,13 +106,13 @@ const mainPart = (c: Cockpit) => c.page.locator('.overlay .overlay-discuss').get
 const menuPart = (c: Cockpit) => c.page.locator('.overlay .overlay-discuss').getByRole('button', { name: 'Discuss in an existing session' })
 const menu = (c: Cockpit) => c.page.getByRole('dialog', { name: 'Discuss in an existing session' })
 
-/** Opens the ▾ menu of the top overlay, picks nothing (the preselection stays) and sends `note`. */
-async function discuss(c: Cockpit, note: string): Promise<void> {
+/** Opens the ▾ menu of the top overlay, picks nothing (the preselection stays) and sends. */
+async function discuss(c: Cockpit): Promise<void> {
   await menuPart(c).click()
   const popover = menu(c)
   await expect(popover).toBeVisible()
   await expect(popover.getByRole('option', { name: 'New session' })).toHaveCount(0)
-  await popover.getByLabel('Note (optional)').fill(note)
+  await expect(popover.getByLabel('Note (optional)')).toHaveCount(0)
   await popover.getByRole('button', { name: 'Send' }).click()
 }
 
@@ -136,9 +136,9 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
     .toBe('waiting')
   const tabId = await claudeTab(cockpit)
 
-  // Waiting: the text goes straight in as one paste, with the About: head, the opener's context and the note.
+  // Waiting: the text goes straight in as one paste, with the About: head, the opener's context.
   await run(cockpit, 'thing')
-  await discuss(cockpit, 'please look at this')
+  await discuss(cockpit)
   await expect(page.locator('.overlay')).toHaveCount(0)
   await expect.poll(() => notes(cockpit)).toContain(`thing ${JSON.stringify({ kind: 'discussed', tabId, queued: false })}`)
   await expect.poll(() => cockpit.pastes().length).toBe(1)
@@ -146,7 +146,6 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
   expect(pasted).toContain('About: Thing')
   expect(pasted).toContain('e2e-thing: id=t1')
   expect(pasted).toContain('context from the opener')
-  expect(pasted).toContain('please look at this')
 
   // The fake submitted it, so the tab is working: the next one is queued and goes in on Stop.
   await expect
@@ -157,13 +156,13 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
   await expect(menu(cockpit).getByRole('option').first()).toContainText('queued — sent when it is free')
   await menuPart(cockpit).click()
   await expect(menu(cockpit)).toHaveCount(0)
-  await discuss(cockpit, 'and this later')
+  await discuss(cockpit)
   await expect(page.locator('.overlay')).toHaveCount(0)
   await expect.poll(() => notes(cockpit)).toContain(`thing ${JSON.stringify({ kind: 'discussed', tabId, queued: true })}`)
   expect(cockpit.pastes()).toHaveLength(1)
   await cockpit.typeLine('/stop')
   await expect.poll(() => cockpit.pastes().length).toBe(2)
-  expect(cockpit.pastes()[1]).toContain('and this later')
+  expect(cockpit.pastes()[1]).toContain('About: Thing')
 })
 
 test('Discuss main part opens a new Claude tab with the text as its prompt and selects it, no popover', async ({ cockpit }) => {

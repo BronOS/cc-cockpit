@@ -1453,7 +1453,7 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     await expect(call('overlay.discussable', { pluginId: 'a.one', handle: H, on: 'yes' })).rejects.toThrow(/boolean/)
     expect(overlays.infos(WIN_A)[0]!.discuss).toEqual({})
     // This manager has no sessions wired: Send is refused before the opener is asked.
-    const answer = await overlays.discuss(WIN_A, overlays.infos(WIN_A)[0]!.id, { kind: 'new' }, '')
+    const answer = await overlays.discuss(WIN_A, overlays.infos(WIN_A)[0]!.id, { kind: 'new' })
     expect(answer.ok).toBe(false)
     await expect(call('overlay.discussable', { pluginId: 'a.one', handle: H, on: false })).resolves.toBe(true)
     expect(overlays.infos(WIN_A)[0]).not.toHaveProperty('discuss')

@@ -1,18 +1,18 @@
 // Discuss with Claude (design-next §3.5): the toolbar's split button and its menu. The main part
-// discusses in a new Claude session straight away (no picker, no note); the ▾ part opens a popover
+// discusses in a new Claude session straight away (no picker); the ▾ part opens a popover
 // listing only this window's existing Claude tabs (name, status), the preselected one first (the
 // opener's `discuss.tabId`, else the active Claude tab: shared/discuss.ts), then waiting, then busy
-// ones marked queued, then not-ready ones (no turn since start: Send is off for them), and takes an optional note. Send asks main (`overlays.discuss`), which builds
+// ones marked queued, then not-ready ones (no turn since start: Send is off for them). Send asks main (`overlays.discuss`), which builds
 // the text, checks the target again, sends it through the send gate or opens the new session,
 // closes the overlay as `discussed` and selects the tab; an error comes back as text and is shown
 // here, nothing sent. No "remember last choice": the main part always means a new session.
 //
 // Keys: Alt+ArrowDown on the main part opens the menu; Up/Down move the target, Enter in the list
-// sends, Cmd/Ctrl+Enter in the note sends, Esc closes the popover only and gives the ▾ the focus
+// sends, Esc closes the popover only and gives the ▾ the focus
 // (the latest `overlay.pop` handler wins, as for the "…" menu). A url overlay hides its native view
 // while the popover is open (`onOpenChange`): it would cover it.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { MAX_DISCUSS_NOTE, preselectDiscussTarget, type DiscussTarget } from '../../shared/discuss'
+import { preselectDiscussTarget, type DiscussTarget } from '../../shared/discuss'
 import { registerHandlers } from '../commands/keybindings'
 import { StatusDot } from '../status/StatusDot'
 import { statusText } from '../status/strip-order'
@@ -20,8 +20,8 @@ import { discussReadiness, discussRowMeta, existingMenuTitle, orderDiscussTabs, 
 
 type Answer = { ok: true } | { ok: false; error: string }
 
-function askDiscuss(overlayId: string, target: DiscussTarget, note: string): Promise<string | null> {
-  return window.cockpit.invoke('overlays.discuss', { overlayId, target, note }).then(
+function askDiscuss(overlayId: string, target: DiscussTarget): Promise<string | null> {
+  return window.cockpit.invoke('overlays.discuss', { overlayId, target }).then(
     // On success main closed the overlay, which takes this button with it.
     (answer: Answer) => (answer.ok ? null : answer.error),
     (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -90,7 +90,7 @@ export function DiscussButton(props: {
     setStarting(true)
     setOpen(false)
     setError(null)
-    void askDiscuss(props.overlayId, { kind: 'new' }, '').then((err) => {
+    void askDiscuss(props.overlayId, { kind: 'new' }).then((err) => {
       setError(err)
       setStarting(false)
     })
@@ -164,7 +164,6 @@ function DiscussPopover(props: {
 }): React.JSX.Element {
   const { tabs } = props
   const [selected, setSelected] = useState(tabs[0]!.tabId)
-  const [note, setNote] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const list = useRef<HTMLDivElement>(null)
@@ -182,7 +181,7 @@ function DiscussPopover(props: {
     if (sending || notReady) return
     setSending(true)
     setError(null)
-    void askDiscuss(props.overlayId, { kind: 'tab', tabId: current }, note).then((err) => {
+    void askDiscuss(props.overlayId, { kind: 'tab', tabId: current }).then((err) => {
       setError(err)
       setSending(false)
     })
@@ -225,22 +224,6 @@ function DiscussPopover(props: {
           </div>
         ))}
       </div>
-      <label className="discuss-note">
-        <span className="discuss-caption">Note (optional)</span>
-        <textarea
-          value={note}
-          maxLength={MAX_DISCUSS_NOTE}
-          rows={3}
-          placeholder="What should Claude look at?"
-          onChange={(e) => setNote(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault()
-              send()
-            }
-          }}
-        />
-      </label>
       {error !== null && (
         <div className="cc-error-line discuss-error" role="alert">
           {error}

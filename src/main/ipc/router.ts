@@ -928,8 +928,8 @@ export interface OverlayHandlerDeps {
   loaded(windowId: number, overlayId: string): void
   /** A toolbar button click (OverlayManager.buttonClick checks it is a button it shows now). */
   button(windowId: number, overlayId: string, click: OverlayButtonClick): boolean
-  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay, note and target again). */
-  discuss(windowId: number, overlayId: string, target: DiscussTarget, note: string): Promise<DiscussAnswer>
+  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again). */
+  discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer>
 }
 
 /**
@@ -1014,12 +1014,11 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
   // Discuss on an overlay of the SENDER's window; a tab target is checked there to be a Claude tab
   // of that window (twice: now and just before the send).
   router.handleProject('overlays.discuss', (ctx, payload) => {
-    const { target, note } = fields('overlays.discuss', payload)
-    if (typeof note !== 'string') throw new Error('overlays.discuss: note must be a string')
+    const { target } = fields('overlays.discuss', payload)
     const overlayId = overlayIdOf('overlays.discuss', payload)
     const t = (target ?? {}) as Record<string, unknown>
-    if (t.kind === 'new') return deps.discuss(ctx.windowId, overlayId, { kind: 'new' }, note)
-    if (t.kind === 'tab' && typeof t.tabId === 'string') return deps.discuss(ctx.windowId, overlayId, { kind: 'tab', tabId: t.tabId }, note)
+    if (t.kind === 'new') return deps.discuss(ctx.windowId, overlayId, { kind: 'new' })
+    if (t.kind === 'tab' && typeof t.tabId === 'string') return deps.discuss(ctx.windowId, overlayId, { kind: 'tab', tabId: t.tabId })
     throw new Error('overlays.discuss: target must be { kind: "tab", tabId } or { kind: "new" }')
   })
 }

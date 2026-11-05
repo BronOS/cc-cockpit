@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { composeDiscuss, CUT_MARK, discussTypeLine, DiscussSessionBudget } from '../../src/main/overlays/discuss'
 import { prepareText } from '../../src/main/sessions/send-gate'
 import {
-  MAX_DISCUSS_NOTE,
   MAX_DISCUSS_TEXT,
   MAX_DISCUSS_TYPE_LINE,
   preselectDiscussTarget
@@ -11,28 +10,25 @@ import { discussReadiness, discussRowMeta, discussTabsOf, existingMenuTitle, ord
 import type { SessionDetail, TabInfo } from '../../src/shared/ipc'
 
 describe('composeDiscuss', () => {
-  it('orders the About line, the type line, the context and the note', () => {
+  it('orders the About line, the type line, the context', () => {
     const text = composeDiscuss({
       title: 'Review src/x.ts',
       type: { name: 'file', data: { path: 'src/x.ts', mime: 'text/plain' } },
-      context: 'Notes:\n- line 3 is odd',
-      note: 'What do you think?'
+      context: 'Notes:\n- line 3 is odd'
     })
-    expect(text).toBe('About: Review src/x.ts\nFile: src/x.ts\n\nNotes:\n- line 3 is odd\n\nWhat do you think?')
+    expect(text).toBe('About: Review src/x.ts\nFile: src/x.ts\n\nNotes:\n- line 3 is odd')
   })
 
   it('leaves out what is missing or blank, and keeps the title on one line', () => {
     expect(composeDiscuss({ title: 'a\n\tb  c' })).toBe('About: a b c')
-    expect(composeDiscuss({ title: '', context: '  ', note: '\n' })).toBe('About: Overlay')
-    expect(composeDiscuss({ title: 'T', note: 'n' })).toBe('About: T\n\nn')
+    expect(composeDiscuss({ title: '', context: '  ' })).toBe('About: Overlay')
     expect(composeDiscuss({ title: 'T', context: 'c' })).toBe('About: T\n\nc')
   })
 
-  it('caps the whole at 20,000, cutting the context and never the note', () => {
-    const note = 'n'.repeat(MAX_DISCUSS_NOTE)
-    const text = composeDiscuss({ title: 'T'.repeat(200), type: { name: 'x', data: 'y'.repeat(4000) }, context: 'c'.repeat(50_000), note })
+  it('caps the whole at 20,000, cutting the context', () => {
+    const text = composeDiscuss({ title: 'T'.repeat(200), type: { name: 'x', data: 'y'.repeat(4000) }, context: 'c'.repeat(50_000) })
     expect(text.length).toBe(MAX_DISCUSS_TEXT)
-    expect(text.endsWith(`${CUT_MARK}\n\n${note}`)).toBe(true)
+    expect(text.endsWith(CUT_MARK)).toBe(true)
     // Exactly at the cap nothing is cut.
     const head = 'About: T'
     const fits = 'c'.repeat(MAX_DISCUSS_TEXT - head.length - 2)
@@ -42,7 +38,7 @@ describe('composeDiscuss', () => {
 
   it('always starts with "About:", so the send gate never refuses it as a command', () => {
     for (const title of ['/clear', '!rm -rf', '# memory', '& bg']) {
-      const text = composeDiscuss({ title, context: '/compact', note: '!ls' })
+      const text = composeDiscuss({ title, context: '/compact' })
       expect(text.startsWith('About: ')).toBe(true)
       expect(() => prepareText(text)).not.toThrow()
     }

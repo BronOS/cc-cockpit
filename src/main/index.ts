@@ -1816,7 +1816,7 @@ function start(): void {
     ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId),
     loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId),
     button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click),
-    discuss: (windowId, overlayId, target, note) => overlays.discuss(windowId, overlayId, target, note)
+    discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.

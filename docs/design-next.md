@@ -226,7 +226,7 @@ drawn. Combined with a source answering `act(id, 'open')` by opening first, a cl
 
 Shown on every overlay that has a `type` or an `onDiscuss` handler, unless `discuss: false`; a bare overlay (a user's
 lazygit entry, `ccc overlay --html`) has none. It is a split button `[ Discuss | ▾ ]`: the main
-part (click or Enter) discusses in a **new session** at once, with no picker and no note; the ▾ part (Alt+ArrowDown on
+part (click or Enter) discusses in a **new session** at once, with no picker; the ▾ part (Alt+ArrowDown on
 the main part also opens it; disabled when the window has no Claude tab) opens a small popover under the button:
 
 - **Target**: a list of this window's existing Claude tabs (name, status): the preselected one first (`discuss.tabId`
@@ -235,13 +235,13 @@ the main part also opens it; disabled when the window has no Claude tab) opens a
   it first" with Send off (main refuses them too): no turn has run since SessionStart (a fresh, resumed or `/clear`-ed
   session), idle is not sendable and no Stop comes until the person runs a prompt, so a queued text would wait there
   indefinitely. A not-ready preselected tab is not put first. No "remember last choice".
-- **Note**: an optional text area (4,000 characters). Empty is fine: the old "needs a note or a comment" rule is gone.
-- **Send** (Enter in the target list, Cmd+Enter in the note) / Cancel (Esc closes the popover only).
+- **No note field**: it duplicated the reviewer's own comment and the person can type follow-ups in the session. A page that wants the person's words first keeps its own field and returns them from `onDiscuss`.
+- **Send** (Enter in the target list) / Cancel (Esc closes the popover only).
 
 Main asks the opener's `onDiscuss` (host RPC, 5 s bound) for the context text, then builds the message: `About: <title>`
 line, the type as a short line (`File: src/x.ts`, `Item: bronos.gmail thread`; unknown types as `name: key=value`
-pairs, at most 500 characters), the opener's text, then the note; the whole capped at 20,000 characters (the context is
-cut first, the note never). It always starts with `About:`, so the send gate's `/ ! # &` refusal never fires. An
+pairs, at most 500 characters), the opener's text; the whole capped at 20,000 characters (the context is
+cut to fit). It always starts with `About:`, so the send gate's `/ ! # &` refusal never fires. An
 `onDiscuss` that throws or times out shows its error in the popover and sends nothing; one that returns `null` means
 "no extra context". An existing tab gets the text through the send gate (queued while busy, the queued chip as today);
 New session opens a Claude tab in the project folder with the text as its first prompt (main's own open path, the

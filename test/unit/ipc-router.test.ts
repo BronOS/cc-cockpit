@@ -1403,8 +1403,8 @@ describe('registerOverlayHandlers', () => {
         calls.push(['button', windowId, overlayId, click])
         return true
       },
-      discuss: (windowId, overlayId, target, note) => {
-        calls.push(['discuss', windowId, overlayId, target, note])
+      discuss: (windowId, overlayId, target) => {
+        calls.push(['discuss', windowId, overlayId, target])
         return Promise.resolve({ ok: true, tabId: 't1', queued: false })
       }
     })
@@ -1425,8 +1425,8 @@ describe('registerOverlayHandlers', () => {
     await ipc.invoke('overlays.loaded', 12, [{ overlayId: 'o2', windowId: 1 }])
     await ipc.invoke('overlays.button', 11, [{ overlayId: 'o1', source: 'opener', buttonId: 'b', pluginId: 'x', windowId: 2 }])
     await ipc.invoke('overlays.button', 12, [{ overlayId: 'o2', source: 'type', pluginId: 'p.one', buttonId: 'edit' }])
-    await ipc.invoke('overlays.discuss', 11, [{ overlayId: 'o1', target: { kind: 'tab', tabId: 't1', windowId: 2 }, note: 'hi' }])
-    await ipc.invoke('overlays.discuss', 12, [{ overlayId: 'o2', target: { kind: 'new', tabId: 'x' }, note: '' }])
+    await ipc.invoke('overlays.discuss', 11, [{ overlayId: 'o1', target: { kind: 'tab', tabId: 't1', windowId: 2 } }])
+    await ipc.invoke('overlays.discuss', 12, [{ overlayId: 'o2', target: { kind: 'new', tabId: 'x' } }])
     expect(calls).toEqual([
       ['list', 1],
       ['close', 2, 'o1'],
@@ -1442,8 +1442,8 @@ describe('registerOverlayHandlers', () => {
       ['button', 1, 'o1', { source: 'opener', buttonId: 'b' }],
       ['button', 2, 'o2', { source: 'type', pluginId: 'p.one', buttonId: 'edit' }],
       // A clean target: only the fields of its kind.
-      ['discuss', 1, 'o1', { kind: 'tab', tabId: 't1' }, 'hi'],
-      ['discuss', 2, 'o2', { kind: 'new' }, '']
+      ['discuss', 1, 'o1', { kind: 'tab', tabId: 't1' }],
+      ['discuss', 2, 'o2', { kind: 'new' }]
     ])
   })
 
@@ -1470,10 +1470,9 @@ describe('registerOverlayHandlers', () => {
       ['overlays.button', [{ overlayId: 'o', source: 'type', buttonId: 'b' }]],
       ['overlays.button', [{ overlayId: 'o', source: 'page', buttonId: 'b' }]],
       ['overlays.button', [{ source: 'opener', buttonId: 'b' }]],
-      ['overlays.discuss', [{ overlayId: 'o', target: { kind: 'new' } }]],
-      ['overlays.discuss', [{ overlayId: 'o', target: { kind: 'tab' }, note: '' }]],
-      ['overlays.discuss', [{ overlayId: 'o', target: 'new', note: '' }]],
-      ['overlays.discuss', [{ target: { kind: 'new' }, note: '' }]]
+      ['overlays.discuss', [{ overlayId: 'o', target: { kind: 'tab' } }]],
+      ['overlays.discuss', [{ overlayId: 'o', target: 'new' }]],
+      ['overlays.discuss', [{ target: { kind: 'new' } }]]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()

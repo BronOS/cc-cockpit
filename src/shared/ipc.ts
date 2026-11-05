@@ -1120,7 +1120,7 @@ export interface IpcInvokeMap {
    * `discussed` and selects the tab. `{ error }` when nothing was sent (shown in the popover).
    */
   'overlays.discuss': {
-    req: { overlayId: string; target: DiscussTarget; note: string }
+    req: { overlayId: string; target: DiscussTarget }
     res: DiscussAnswer
   }
 

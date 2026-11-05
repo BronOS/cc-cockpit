@@ -26,7 +26,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import { DISCUSS_ASK_MS, MAX_DISCUSS_NOTE, type DiscussTarget } from '../../shared/discuss'
+import { DISCUSS_ASK_MS, type DiscussTarget } from '../../shared/discuss'
 import { toError } from '../../shared/error-text'
 import {
   OVERLAY_SIZES,
@@ -870,7 +870,7 @@ export class OverlayManager {
 
   /**
    * Discuss with Claude's Send, from the window's renderer (design-next §3.5, §3.6). The renderer
-   * is not trusted: the overlay must show Discuss, the note is at most MAX_DISCUSS_NOTE, and a tab
+   * is not trusted: the overlay must show Discuss, and a tab
    * target must be a Claude tab of this window, checked when the request arrives and again just
    * before the send (the context ask may take seconds, the tab may close meanwhile). The opener's
    * `onDiscuss` answers within DISCUSS_ASK_MS; a throw or a timeout is the answer's error and nothing
@@ -879,13 +879,11 @@ export class OverlayManager {
    * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window (an overlay
    * dismissed while the new session opens has already answered `dismissed`). Never rejects.
    */
-  async discuss(windowId: number, overlayId: string, target: DiscussTarget, note: unknown): Promise<DiscussAnswer> {
+  async discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer> {
     const overlay = this.find(windowId, overlayId)
     if (!overlay?.info.discuss) return { ok: false, error: 'Discuss is not available on this overlay' }
     const sessions = this.options.discuss
     if (!sessions) return { ok: false, error: 'Discuss is not available' }
-    if (typeof note !== 'string') return { ok: false, error: 'The note must be text' }
-    if (note.length > MAX_DISCUSS_NOTE) return { ok: false, error: `The note is longer than ${MAX_DISCUSS_NOTE} characters` }
     // Checked again after the opener answered: the tab may have closed (or restarted) meanwhile.
     const targetProblem = (): string | undefined => {
       if (target.kind !== 'tab') return undefined
@@ -917,7 +915,7 @@ export class OverlayManager {
       }
       // The overlay may have closed while the opener was asked: nothing to discuss any more.
       if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
-      const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, note })
+      const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context })
       const late = targetProblem()
       if (late) return { ok: false, error: late }
       let tabId: string

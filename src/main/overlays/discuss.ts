@@ -6,10 +6,7 @@
 //
 //   <the opener's context text>
 //
-//   <the person's note>
-//
-// at most MAX_DISCUSS_TEXT characters, the context cut first and the note never (the note is
-// capped at MAX_DISCUSS_NOTE before it gets here, so head and note always fit). It always starts
+// at most MAX_DISCUSS_TEXT characters, the context cut to fit (the head is short and capped). It always starts
 // with `About:`, so the send gate's refusal of a leading `/`, `!`, `#` or `&` (a slash command or a
 // bash line typed into Claude) can never fire on it, whatever the title or context say.
 import {
@@ -27,8 +24,6 @@ export interface DiscussParts {
   type?: CleanOverlayType
   /** What the opener's onDiscuss answered (absent or empty: no extra context). */
   context?: string
-  /** The person's note, already within MAX_DISCUSS_NOTE (absent or blank: none). */
-  note?: string
 }
 
 /** Shown where the context was cut to fit, so Claude knows it did not get all of it. */
@@ -81,18 +76,17 @@ export function composeDiscuss(parts: DiscussParts): string {
   const head = [`About: ${oneLine(parts.title) || 'Overlay'}`]
   if (parts.type) head.push(discussTypeLine(parts.type))
   const headText = head.join('\n')
-  const note = parts.note?.trim() ? parts.note.trim() : undefined
   let context = parts.context?.trim() ? parts.context.trim() : undefined
   if (context !== undefined) {
-    // What the head, the note and the blank lines between them leave for the context.
-    const fixed = headText.length + 2 + (note === undefined ? 0 : note.length + 2)
+    // What the head and the blank line after it leave for the context.
+    const fixed = headText.length + 2
     const room = MAX_DISCUSS_TEXT - fixed
     if (context.length > room) {
       const keep = room - CUT_MARK.length
       context = keep > 0 ? `${context.slice(0, keep).trimEnd()}${CUT_MARK}` : undefined
     }
   }
-  return [headText, context, note].filter((p): p is string => p !== undefined).join('\n\n')
+  return [headText, context].filter((p): p is string => p !== undefined).join('\n\n')
 }
 
 /**

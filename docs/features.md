@@ -115,8 +115,7 @@ behind it are in [design.md](design.md).
   the Inbox's Done on a Gmail message, the reviewer's Edit on a file), Discuss with Claude and the close button (✕ on the
   side Settings > Appearance names). More than 6 buttons fold the rest into "…". An overlay opens at once with a spinner
   and "Still loading…" after 10 s; ✕ and Esc work throughout. Discuss with Claude is core's: it shows for a typed overlay
-  (or one whose opener answers `onDiscuss`), lists this window's Claude tabs and New session, takes an optional note,
-  sends `About: <title>`, the context and the note through the send gate (queued while the tab is busy) and selects the
+  (or one whose opener answers `onDiscuss`), lists this window's Claude tabs and New session, sends `About: <title>` and the context through the send gate (queued while the tab is busy) and selects the
   tab. A plugin whose overlay has no type and no `onDiscuss` shows only ✕ (an older plugin looks as before).
 - Component stylesheet: the panel SDK adopts `components.css` (buttons, inputs, rows, chips, a spinner and the like, all
   in a low-priority `@layer cc`) before the plugin's own CSS, so plugin pages look like the app's and any rule of the

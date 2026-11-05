@@ -282,11 +282,10 @@ editor's Edit (and any plugin's `file` buttons) show on it.
 
 Claude gets `About <title> (<url>)`, then the comment and the numbered notes: `Lines 2-4:` with the quote for a text,
 `On «quote»: note` for HTML. With a companion the head adds `, with <title> (<url>) beside it` and a note on it reads
-`In <title>, on «quote»: note`. With no comment and no note Discuss still sends: the head, a request to discuss it,
+`In <title>, on «quote»: note`. With no comment and no notes Discuss still sends: the head, a request to discuss it,
 then the text itself (your `aside` and `html` as plain text, the companion after; cut to 15,000 characters, the
 reviewer's share of Discuss's 20,000), since Claude cannot read your mail or ticket otherwise; a file review asks
-Claude to read the file and its diff. Discuss puts its `About: <title>` and type lines before that and the person's
-note after it, and selects the tab it went to. The reviewer README has the details and a Jira example.
+Claude to read the file and its diff. Discuss puts its `About: <title>` and type lines before that, and selects the tab it went to. The reviewer README has the details and a Jira example.
 
 ## Build and ship
 

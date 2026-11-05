@@ -1687,26 +1687,6 @@ iframe:focus-visible {
   gap: 8px;
   cursor: pointer;
 }
-.discuss-note {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.discuss-note textarea {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  padding: 6px 8px;
-  font: inherit;
-  color: var(--cc-fg);
-  background: var(--cc-bg);
-  border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-md);
-}
-.discuss-note textarea:focus {
-  outline: none;
-  border-color: var(--cc-accent);
-}
 .discuss-actions {
   display: flex;
   justify-content: flex-end;
