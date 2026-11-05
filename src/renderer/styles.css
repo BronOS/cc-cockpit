@@ -2079,9 +2079,14 @@ iframe:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  /* The list card follows directly: the same gap a group heading keeps above its card. */
+  margin: 0 2px 10px;
 }
 .settings-plugin-filters input[type='search'] {
   min-width: 180px;
+  /* Chromium draws a search field its own way (lighter fill, square corners); drop that so the
+     field takes the settings field style above, the same as the category select beside it. */
+  appearance: none;
 }
 .settings-plugin-chips {
   display: flex;
@@ -2403,6 +2408,7 @@ ul.settings-alert {
 .settings-page input[type='text'],
 .settings-page input[type='password'],
 .settings-page input[type='number'],
+.settings-page input[type='search'],
 .settings-page select,
 .settings-page textarea,
 .settings-plugin-form .form-control {
