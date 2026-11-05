@@ -346,6 +346,12 @@ export interface PluginAppSettingsView {
   problem?: string
   /** Present when the schema has secret fields. */
   secretFields?: SecretFieldsView
+  /**
+   * A project's view only (design-next §5.2): the top-level fields this project overrides, in
+   * declaration order; every other field uses the global value. `values` and `secretFields` are then
+   * the effective ones (override, else global, else default).
+   */
+  overrides?: string[]
 }
 
 /**

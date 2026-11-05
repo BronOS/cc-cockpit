@@ -59,6 +59,8 @@ function rig() {
     panels: [{ panelKey: 'core/sessions', title: 'Sessions', icon: 'S' }]
   }
   const settingsCheck: { value: { ok: true } | { ok: false; reason: string } } = { value: { ok: true } }
+  // `app.json` › `pluginProjectDefaults`: the global values of project fields.
+  const globals = new Map<string, unknown>()
   const deps: ProjectSettingsDeps = {
     projects: {
       get: (id) => (id === P ? record : undefined),
@@ -88,12 +90,14 @@ function rig() {
       }
     },
     // Secret fields have their own tests (secret-settings.test.ts); none of these schemas has one.
-    secrets: { hasSetting: () => false, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} }
+    secrets: { hasSetting: () => false, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} },
+    projectDefaults: (id) => globals.get(id)
   }
   return {
     service: new ProjectSettingsService(deps),
     calls,
     record,
+    globals,
     settingsCheck,
     setLayout: (layout: LayoutState, panels: LayoutView['panels']) => {
       layoutView = { layout, panels }
@@ -127,7 +131,8 @@ describe('view', () => {
     const { service, record } = rig()
     expect(service.view(P).plugins[0]!.projectSettings).toEqual({
       schema: expect.objectContaining({ type: 'object' }),
-      values: { board: 'main' }
+      values: { board: 'main' },
+      overrides: []
     })
     record.pluginSettings['test.jira'] = { limit: 0 }
     const view = service.view(P).plugins[0]!.projectSettings!
@@ -209,12 +214,37 @@ describe('setEnabled', () => {
 })
 
 describe('saveSettings', () => {
-  it('validates against the manifest, applies defaults, stores and tells the host', async () => {
+  it('validates against the manifest, stores only the overrides (no defaults filled in) and tells the host', async () => {
     const { service, record, calls } = rig()
     const result = await service.saveSettings(P, 'test.jira', { limit: 5 })
     expect(result).toEqual({ ok: true, values: { board: 'main', limit: 5 } })
-    expect(record.pluginSettings['test.jira']).toEqual({ board: 'main', limit: 5 })
+    expect(record.pluginSettings['test.jira']).toEqual({ limit: 5 })
     expect(calls).toEqual(['update', `settingsChanged ${P} test.jira`])
+  })
+
+  it('merges the overrides over the global values: effective = override, else global, else default', async () => {
+    const { service, record, globals } = rig()
+    globals.set('test.jira', { board: 'team', limit: 3 })
+    expect(service.view(P).plugins[0]!.projectSettings).toMatchObject({ values: { board: 'team', limit: 3 }, overrides: [] })
+    const result = await service.saveSettings(P, 'test.jira', { limit: 9 })
+    expect(result).toEqual({ ok: true, values: { board: 'team', limit: 9 } })
+    expect(record.pluginSettings['test.jira']).toEqual({ limit: 9 })
+    expect(service.view(P).plugins[0]!.projectSettings).toMatchObject({ values: { board: 'team', limit: 9 }, overrides: ['limit'] })
+    // An object field is overridden whole, and a key the schema does not declare is no override.
+    record.pluginSettings['test.jira'] = { extra: 1 }
+    expect(service.view(P).plugins[0]!.projectSettings).toMatchObject({ values: { board: 'team', limit: 3, extra: 1 }, overrides: [] })
+    expect(service.pluginProjectOverrides(P, 'test.jira')).toEqual({ extra: 1 })
+  })
+
+  it('checks the overrides merged with the global value, so a bad global value is refused through them too', async () => {
+    const { service, record, globals } = rig()
+    // Damaged global value: an override that does not replace it still fails the merged check.
+    globals.set('test.jira', { limit: 0 })
+    const result = await service.saveSettings(P, 'test.jira', { board: 'x' })
+    expect(result.ok).toBe(false)
+    expect(record.pluginSettings).toEqual({})
+    // Overriding the bad field makes the effective values valid.
+    await expect(service.saveSettings(P, 'test.jira', { limit: 2 })).resolves.toMatchObject({ ok: true, values: { board: 'main', limit: 2 } })
   })
 
   it('stores nothing and lists the reasons for values the schema refuses', async () => {
@@ -229,8 +259,8 @@ describe('saveSettings', () => {
   it('replaces a damaged settings object in the record instead of writing into it', async () => {
     const { service, record } = rig()
     ;(record as { pluginSettings: unknown }).pluginSettings = ['x']
-    await service.saveSettings(P, 'test.jira', {})
-    expect(record.pluginSettings).toEqual({ 'test.jira': { board: 'main' } })
+    await service.saveSettings(P, 'test.jira', { board: 'b' })
+    expect(record.pluginSettings).toEqual({ 'test.jira': { board: 'b' } })
   })
 
   it('refuses a plugin without project settings, an unknown one, and values that are not an object', async () => {

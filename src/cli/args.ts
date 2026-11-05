@@ -60,9 +60,10 @@ export type Command =
   /**
    * `ccc plugin config <id>` (friction round 1, Task 6): no `set` prints the plugin's settings;
    * `set` holds the `key=value` arguments, each value parsed as JSON or kept as text
-   * (parseConfigValue). `scope` is `--scope app|project`, only with `set`.
+   * (parseConfigValue). `scope` is `--scope app|global|project`, only with `set`. `useGlobal` holds
+   * the `--use-global <key>` keys (repeatable; alone, no `set`): drop this project's overrides.
    */
-  | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; project?: string }
+  | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; useGlobal?: string[]; project?: string }
   /** `ccc panel show <plugin>/<panel>` (friction round 1, Task 7). */
   | { kind: 'panel-show'; plugin: string; panel: string; project?: string }
   | { kind: 'usage'; message: string }
@@ -188,10 +189,16 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       { synopsis: ['plugin unlink [--project <path>] <id>'], text: ['unlink a linked plugin'] },
       { synopsis: ['plugin list [--project <path>] [--json]'], text: ['the installed plugins and whether they are enabled here'] },
       {
-        synopsis: ['plugin config [--project <path>] <id> [--json]', 'plugin config [--project <path>] <id> [--scope app|project] <key>=<value>...'],
+        synopsis: [
+          'plugin config [--project <path>] <id> [--json]',
+          'plugin config [--project <path>] <id> [--scope app|global|project] <key>=<value>...',
+          'plugin config [--project <path>] <id> --use-global <key>...'
+        ],
         text: [
-          "print a plugin's app and project settings, or set top-level",
-          'fields (value: JSON, else text); secret fields only in Settings'
+          "print a plugin's app, global and project settings, or set top-level",
+          'fields (value: JSON, else text; global: the value every project',
+          'without an override gets); --use-global drops an override;',
+          'secret fields only in Settings'
         ]
       },
       { synopsis: ['plugin logs <id> [--follow]'], text: ["print a plugin's log (the last lines; --follow keeps going)"] }
@@ -295,7 +302,12 @@ const PLUGIN_OPTIONS: Record<PluginSub, Readonly<Record<string, { value: string 
   link: { '--project': { value: 'needs a value' } },
   unlink: { '--project': { value: 'needs a value' } },
   list: { '--project': { value: 'needs a value' }, '--json': 'flag' },
-  config: { '--project': { value: 'needs a value' }, '--json': 'flag', '--scope': { value: 'needs app or project' } },
+  config: {
+    '--project': { value: 'needs a value' },
+    '--json': 'flag',
+    '--scope': { value: 'needs app, global or project' },
+    '--use-global': { value: 'needs a key' }
+  },
   logs: { '--follow': 'flag' }
 }
 
@@ -313,6 +325,8 @@ function parsePluginDev(rest: readonly string[]): Command {
   const positional: string[] = []
   const values = new Map<string, string>()
   const flags = new Set<string>()
+  // `--use-global` is the one option given more than once (each names a key).
+  const useGlobal: string[] = []
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] as string
     const option = Object.hasOwn(options, arg) ? options[arg] : undefined
@@ -320,7 +334,8 @@ function parsePluginDev(rest: readonly string[]): Command {
     else if (option !== undefined) {
       const value = args[++i]
       if (!value) return usage(`plugin ${sub}: ${arg} ${option.value}`)
-      values.set(arg, value)
+      if (arg === '--use-global') useGlobal.push(value)
+      else values.set(arg, value)
     } else if (arg.startsWith('--')) return usage(`plugin ${sub}: unknown option ${arg}`)
     else positional.push(arg)
   }
@@ -353,7 +368,7 @@ function parsePluginDev(rest: readonly string[]): Command {
     case 'list':
       return positional.length > 0 ? usage('plugin list takes only --json') : withProject({ kind: 'plugin-list', json: flags.has('--json') })
     case 'config': {
-      const config = parsePluginConfig(positional, values.get('--scope'), flags.has('--json'))
+      const config = parsePluginConfig(positional, values.get('--scope'), flags.has('--json'), useGlobal)
       return config.kind === 'plugin-config' ? withProject(config) : config
     }
     case 'unlink':
@@ -373,13 +388,19 @@ function parsePluginDev(rest: readonly string[]): Command {
  * may hold more). The scope flag is not `--app`/`--project`: `--project <path>` already names the
  * project folder for every `ccc plugin` subcommand, so `--project` alone would be ambiguous.
  */
-function parsePluginConfig(positional: readonly string[], scope: string | undefined, json: boolean): Command {
+function parsePluginConfig(positional: readonly string[], scope: string | undefined, json: boolean, useGlobal: readonly string[]): Command {
   const [id, ...pairs] = positional
   if (id === undefined || id === '') return usage('plugin config takes a plugin id, then key=value to set')
   const problem = pluginIdProblem(id)
   if (problem !== undefined) return usage(`plugin config: ${problem}`)
   if (scope !== undefined && !PLUGIN_CONFIG_SCOPES.includes(scope as PluginConfigScope)) {
-    return usage(`plugin config: --scope is app or project, not ${scope}`)
+    return usage(`plugin config: --scope is app, global or project, not ${scope}`)
+  }
+  if (useGlobal.length > 0) {
+    // One save of the overrides, nothing else: a set in the same call would need its own scope rules.
+    if (pairs.length > 0 || scope !== undefined) return usage('plugin config: --use-global goes alone, without key=value or --scope')
+    if (useGlobal.length > MAX_PLUGIN_CONFIG_EDITS) return usage(`plugin config: at most ${MAX_PLUGIN_CONFIG_EDITS} --use-global at once`)
+    return { kind: 'plugin-config', id, json, set: [], useGlobal: [...useGlobal] }
   }
   if (pairs.length > MAX_PLUGIN_CONFIG_EDITS) return usage(`plugin config: at most ${MAX_PLUGIN_CONFIG_EDITS} key=value at once`)
   const set: Array<[string, unknown]> = []

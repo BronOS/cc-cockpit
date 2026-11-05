@@ -2,14 +2,19 @@
 // CLI and main (main/settings/plugin-config.ts), and the CLI's plain-text form of them. Pure: the
 // CLI bundles it, so no Node or Electron import.
 //
-// Request args: `{ id, scope?, set? }`. No `set` prints; `set` is a list of `[key, value]` pairs (a
-// list, not an object: a key is the caller's text and must never become a property of a live
-// object before main checked it against the schema). The project is never in the args: main takes
+// Request args: `{ id, scope?, set?, useGlobal? }`. No `set` and no `useGlobal` prints; `set` is a
+// list of `[key, value]` pairs (a list, not an object: a key is the caller's text and must never
+// become a property of a live object before main checked it against the schema); `useGlobal` lists
+// project fields whose override this project drops. The project is never in the args: main takes
 // it from the socket caller (a tab's token or `--project`).
+//
+// Scopes (design-next §5.2): `app` (app-wide fields), `global` (the global value of a project
+// field, what every project without an override gets) and `project` (this project's override).
 
-export type PluginConfigScope = 'app' | 'project'
+export type PluginConfigScope = 'app' | 'global' | 'project'
 
-export const PLUGIN_CONFIG_SCOPES: readonly PluginConfigScope[] = ['app', 'project']
+/** In print order. */
+export const PLUGIN_CONFIG_SCOPES: readonly PluginConfigScope[] = ['app', 'global', 'project']
 
 /** Most `key=value` edits one call takes; a settings form has a handful of top-level fields. */
 export const MAX_PLUGIN_CONFIG_EDITS = 64
@@ -24,12 +29,21 @@ export interface PluginConfigScopeView {
   secrets: Record<string, boolean>
   /** Why the stored values fail the schema; the plugin is disabled until they pass. */
   problem?: string
+  /**
+   * `project` only: the fields this project overrides (declaration order). `values` and `secrets`
+   * are then the effective ones; every other field uses the global value.
+   */
+  overrides?: string[]
 }
 
-/** `plugin.config` without `set`: the scopes the plugin declares, the project one for the caller's project. */
+/**
+ * `plugin.config` without `set`: the scopes the plugin declares, `global` and `project` (for the
+ * caller's project) when it declares project settings.
+ */
 export interface PluginConfigView {
   id: string
   app?: PluginConfigScopeView
+  global?: PluginConfigScopeView
   project?: PluginConfigScopeView
 }
 
@@ -58,7 +72,9 @@ function line(scope: string, key: string, value: string, plain: (text: string) =
 }
 
 /**
- * The text of `ccc plugin config <id>`: one `scope key = JSON` line per field, app first. A secret
+ * The text of `ccc plugin config <id>`: one `scope key = JSON` line per field, app first, then the
+ * global values of the project fields, then this project's effective values with a `# project:`
+ * line naming its overrides. A secret
  * field reads `set` or `not set`, and so does a plain field with no value and no default; neither is
  * JSON (a string value prints quoted), so a script can tell them apart. A field stored but not
  * declared (a schema that allows more) follows the declared ones. Stored values that fail the
@@ -77,6 +93,9 @@ export function formatPluginConfig(view: PluginConfigView, plain: (text: string)
     }
     for (const [key, value] of Object.entries(s.values)) {
       if (!declared.has(key)) out += line(scope, key, JSON.stringify(value), plain)
+    }
+    if (s.overrides !== undefined) {
+      out += `${plain(s.overrides.length === 0 ? `# ${scope}: no overrides, every field uses the global value` : `# ${scope}: overrides ${s.overrides.join(', ')}; the rest use the global value`)}\n`
     }
     if (s.problem !== undefined) out += `${plain(`# ${scope}: the stored settings fail the schema, the plugin stays off: ${s.problem}`)}\n`
   }

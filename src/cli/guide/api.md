@@ -31,11 +31,11 @@ with full Node access.
 - `ctx.projectDir`: the project folder, absolute and its real path (symlinks resolved, read when
   the host started your plugin), the default cwd of `ctx.exec`. No need for `pwd -P`.
 - `ctx.settings`: a frozen snapshot `{ project, app }` of the validated values with schema
-  defaults applied. A save replaces the whole snapshot: read `ctx.settings` again instead of
+  defaults applied (`project`: this project's override of each field, else its global value). A save replaces the whole snapshot: read `ctx.settings` again instead of
   keeping `ctx.settings.app` in a variable. A secret field is in it as plaintext when set and
   absent when not (`settings-secrets` topic).
 - `ctx.onSettingsChange(listener)`: after a save of this plugin's app or project settings
-  (Settings > Plugins or `ccc plugin config`) `listener(settings)` is called with the new whole
+  (Settings or `ccc plugin config`) that changed this project's values `listener(settings)` is called with the new whole
   `{ project, app }`, both scopes whichever one changed; `ctx.settings` already holds it. It is
   not called at start (read `ctx.settings` in `activate`). Returns a disposer; a listener that
   throws is logged and the others still run.

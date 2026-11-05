@@ -21,7 +21,11 @@ export type Disposer = () => void
 
 /** The plugin's settings, validated against the manifest's JSON Schemas with defaults applied. */
 export interface PluginSettings {
-  /** This project's values (`contributes.settings.project`). */
+  /**
+   * This project's values (`contributes.settings.project`): per top-level field, the project's
+   * override, else the global value (set on the plugin's global settings page), else the schema
+   * default. An object field is overridden whole.
+   */
   readonly project: Readonly<Record<string, JsonValue>>
   /** App-wide values (`contributes.settings.app`). */
   readonly app: Readonly<Record<string, JsonValue>>

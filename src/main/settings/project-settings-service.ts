@@ -18,6 +18,10 @@
 //    lenient (the registry repairs a damaged stored value to none).
 //  - Secret fields are stored encrypted under `setting:project:<projectId>:<field>` (keyed by the
 //    project main resolved, never one from the payload); the renderer only learns whether each is set.
+//  - What this page stores are the project's OVERRIDES of the plugin's global values (design-next
+//    §5.2, plugin-settings.ts effectiveProjectValues): a save names only the fields it overrides, the
+//    schema checks them merged with the global values, and a field left out (or a secret cleared)
+//    uses the global value again. The view shows the effective values and which fields are overrides.
 import type {
   LayoutView,
   PluginAppSettingsView,
@@ -31,10 +35,10 @@ import { checkProjectColor, projectColorOf, type ProjectColor } from '../../shar
 import { zoneOf } from '../../shared/layout'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
 import type { InstalledPlugin, PluginInstaller } from '../plugins/installer'
-import { projectSettingKey } from '../secrets/plugin-secrets'
 import { offAppWide, pluginEnabledIn } from '../plugins/enablement'
 import { tabCommandsOf } from '../tabs/tab-commands'
-import { saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
+import { projectDefaultSettingKey, projectSettingKey } from '../secrets/plugin-secrets'
+import { effectiveProjectValues, overriddenFields, saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
 
 export interface ProjectSettingsDeps {
   projects: {
@@ -59,6 +63,11 @@ export interface ProjectSettingsDeps {
   }
   /** Where secret fields are stored (PluginSecrets; it also updates the hosts' decrypted cache). */
   secrets: SecretSettingsStore
+  /**
+   * `app.json` › `pluginProjectDefaults[pluginId]` as stored (user-writable, so anything): the global
+   * values of the plugin's project fields, which every field this project does not override uses.
+   */
+  projectDefaults(pluginId: string): unknown
   /**
    * The project's colour was stored (changed or not): tell the windows (its own window's title
    * bar, every other window's strip, an open picker). Not awaited; a failed push stores nothing less.
@@ -132,10 +141,11 @@ export class ProjectSettingsService {
   }
 
   /**
-   * Store the plugin's project-level settings. A failure stores nothing and lists the reasons;
-   * `secrets` sets or clears secret fields (encrypted first: a keychain that refuses also stores
-   * nothing). On success the running plugin hears of it (or a plugin disabled for invalid
-   * settings starts).
+   * Store the plugin's project-level overrides: `values` holds only the fields this project
+   * overrides (the rest use the global value), checked merged with the global values. A failure
+   * stores nothing and lists the reasons; `secrets` sets or clears secret overrides (encrypted
+   * first: a keychain that refuses also stores nothing; a cleared one uses the global value). On
+   * success the running plugin hears of it (or a plugin disabled for invalid settings starts).
    */
   async saveSettings(projectId: string, pluginId: unknown, values: unknown, secrets?: unknown): Promise<PluginSettingsSaveResult> {
     this.project(projectId)
@@ -153,6 +163,9 @@ export class ProjectSettingsService {
       // Keyed by the project main resolved for the sender, never one from the payload.
       keyOf: (field) => projectSettingKey(projectId, field),
       store: this.deps.secrets,
+      // Read in the plugin's queue: a global save queued ahead of this one has stored by then.
+      effective: (overrides) => effectiveProjectValues(this.deps.projectDefaults(plugin.id), overrides),
+      secretSet: (field) => this.secretSet(plugin.id, projectId, field),
       save: (value) =>
         this.deps.projects.update(projectId, (r) => {
           // The record file is user-writable: a damaged top level is replaced rather than written into.
@@ -198,8 +211,9 @@ export class ProjectSettingsService {
   }
 
   /**
-   * The plugin's settings for this project as the This project page shows them (stored values with
-   * defaults, secret fields as set or not); undefined when it declares none. `ccc plugin config`
+   * The plugin's settings for this project as the This Project page shows them (the effective
+   * values with defaults, secret fields as set or not, the overridden fields); undefined when it
+   * declares none. `ccc plugin config`
    * reads this (main/settings/plugin-config.ts), so both show the same thing.
    */
   pluginProjectSettings(projectId: string, pluginId: unknown): PluginAppSettingsView | undefined {
@@ -209,12 +223,30 @@ export class ProjectSettingsService {
     return this.projectSettingsView(project, plugin)
   }
 
+  /**
+   * The project's stored overrides of the plugin's project fields, as stored (user-writable, so
+   * anything; undefined when none). `ccc plugin config` merges its edits into these, never into the
+   * effective values (which would turn every field into an override).
+   */
+  pluginProjectOverrides(projectId: string, pluginId: string): unknown {
+    return this.storedOverrides(this.project(projectId), pluginId)
+  }
+
+  private storedOverrides(project: ProjectView, pluginId: string): unknown {
+    return isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, pluginId) ? project.pluginSettings[pluginId] : undefined
+  }
+
+  /** A secret project field is set for the project: its own value, else the global one. */
+  private secretSet(pluginId: string, projectId: string, field: string): boolean {
+    return this.deps.secrets.hasSetting(pluginId, projectSettingKey(projectId, field)) || this.deps.secrets.hasSetting(pluginId, projectDefaultSettingKey(field))
+  }
+
   private projectSettingsView(project: ProjectView, p: InstalledPlugin): PluginAppSettingsView | undefined {
     const schema = p.manifest?.contributes?.settings?.project
     if (schema === undefined) return undefined
-    const stored: unknown = isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, p.id)
-      ? project.pluginSettings[p.id]
-      : undefined
-    return settingsViewOf(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
+    const stored = this.storedOverrides(project, p.id)
+    const view = settingsViewOf(schema, effectiveProjectValues(this.deps.projectDefaults(p.id), stored), (f) => this.secretSet(p.id, project.id, f))
+    view.overrides = overriddenFields(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
+    return view
   }
 }

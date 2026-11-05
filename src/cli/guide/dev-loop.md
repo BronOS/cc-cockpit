@@ -52,12 +52,14 @@ folder's own files, including a `test/` folder without a `plugin.json`, still re
 
 A plugin with `contributes.settings` can be configured from the tab, no Settings screen needed:
 
-- `ccc plugin config <id>` prints its app and project settings (`app greeting = "hello"`); a
+- `ccc plugin config <id>` prints its app, global and project settings (`app greeting = "hello"`); a
   secret field shows only `set` or `not set`.
 - `ccc plugin config <id> limit=5 endpoint=https://example.com` sets top-level fields (a value
   is JSON if it parses, else text) through the same save and validation as the Settings form, so
   the running plugin gets `ctx.onSettingsChange`, and a plugin that was off because its settings
-  were invalid starts. A key declared in both scopes needs `--scope app` or `--scope project`.
+  were invalid starts. A project field is set as this project's override; `--scope global` sets
+  the global value every project without an override gets, and `--use-global <key>` drops the
+  override. A key declared in both scopes needs `--scope app` or `--scope project`.
 - **Secret fields cannot be set this way**: ask the person to enter them in Settings > Plugins
   (app scope) or Settings > This Project. Write the plugin so it starts without them and says
   what is missing.

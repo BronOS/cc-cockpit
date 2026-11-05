@@ -1037,14 +1037,25 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `test/unit/{project-settings-service,settings-service,plugin-settings,plugin-config,secret-settings,
   ctx-settings,plugin-cli}.test.ts`
 
-- [ ] design-next §5.2: effective = override → global → default, top-level fields only; validation over the effective
+- [x] design-next §5.2: effective = override → global → default, top-level fields only; validation over the effective
   object; a save that makes any open project's values invalid is refused naming the project; `onSettingsChange` in every
   project whose effective values changed; secret global values in the plugin's secret store, never in JSON
-- [ ] migration at first start: a stored project value equal to the schema default is dropped; others stay overrides;
+- [x] migration at first start: a stored project value equal to the schema default is dropped; others stay overrides;
   secrets stay overrides
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] write tests: merge (plain and secret), validation refusal naming the project, fan-out, migration, CLI flags
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] write tests: merge (plain and secret), validation refusal naming the project, fan-out, migration, CLI flags
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ The project form's save now stores the project's **overrides** only (no defaults filled in) and checks them
+  merged with the global values; today's This Project form still sends every field, so until task 39 a form save
+  makes each field an override. `PluginAppSettingsView.overrides` (project views) and
+  `SettingsService.pluginProjectDefaults` / `saveProjectDefaults` are ready for task 39's pages and router calls.
+- ➕ A global save is checked alone (what a project with no overrides gets) and merged with each open project's
+  overrides; `onSettingsChange` goes only to open projects whose host values changed (fingerprint before/after).
+- ➕ CLI: a project key without `--scope` still sets this project's override; `--use-global <key>` is repeatable
+  and goes alone (no `key=value`, no `--scope`), and refuses secret fields like a set. `ccc plugin config <id>`
+  prints `global` lines and a `# project: overrides …` line. Migration runs once after the plugins load
+  (`app.json` › `projectDefaultsMigrated`); `pluginProjectDefaults` is read and written in `index.ts`
+  (registry.ts needed no change).
 
 ### Task 39: "Use global" in This Project, the global page, the html page placement [model: opus]
 

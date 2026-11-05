@@ -236,6 +236,17 @@ export interface AppSettings {
   disabledBundled?: string[]
   /** pluginId -> app-wide plugin settings (validated against the manifest schema, Task 26). */
   pluginSettings: Record<string, unknown>
+  /**
+   * pluginId -> the global values of its project fields (design-next §5.2): every project that does
+   * not override a field gets this value, else the schema default. Secret ones live in secrets.json
+   * (`setting:projectDefault:<field>`). Absent = defaults only.
+   */
+  pluginProjectDefaults?: Record<string, unknown>
+  /**
+   * The one-time migration to global values ran (main/settings/project-defaults-migration.ts): stored
+   * project values equal to their schema default were dropped, so they use the global value.
+   */
+  projectDefaultsMigrated?: true
 }
 
 /**

@@ -1,5 +1,5 @@
 // Friction round 1, Task 6: `ccc plugin config` from a terminal outside the app (`--project`). It
-// prints a plugin's app and project settings (a secret field only as set / not set), and sets
+// prints a plugin's app, global and project settings (a secret field only as set / not set), and sets
 // top-level fields through the Settings form's save: the running plugin hears of it by
 // `ctx.onSettingsChange`, a value the schema refuses stores nothing, a secret field is refused.
 import { spawn } from 'node:child_process'
@@ -60,13 +60,19 @@ test('ccc plugin config prints and sets a plugin\'s settings; the plugin hears o
   const config = (...args: string[]): Promise<Ran> => ccc(cockpit, ['plugin', 'config', '--project', cockpit.projectDir, ID, ...args])
 
   // Print: defaults, the secret only as "not set".
-  expect(await config()).toEqual({ status: 0, out: 'app limit = 10\napp token = not set\nproject board = "main"\n', err: '' })
+  const noOverrides = '# project: no overrides, every field uses the global value\n'
+  expect(await config()).toEqual({
+    status: 0,
+    out: `app limit = 10\napp token = not set\nglobal board = "main"\nproject board = "main"\n${noOverrides}`,
+    err: ''
+  })
   const json = await config('--json')
   expect(json.status).toBe(0)
   expect(JSON.parse(json.out)).toEqual({
     id: ID,
     app: { fields: ['limit', 'token'], values: { limit: 10 }, secrets: { token: false } },
-    project: { fields: ['board'], values: { board: 'main' }, secrets: {} }
+    global: { fields: ['board'], values: { board: 'main' }, secrets: {} },
+    project: { fields: ['board'], values: { board: 'main' }, secrets: {}, overrides: [] }
   })
 
   // Set an app field: stored in app.json, and the running plugin is told.
@@ -80,7 +86,18 @@ test('ccc plugin config prints and sets a plugin\'s settings; the plugin hears o
   // A project field goes to this project (the scope that declares it), text kept as a string.
   expect(await config('board=dev')).toEqual({ status: 0, out: 'project board = "dev"\n', err: '' })
   await expect.poll(() => seen().changes.at(-1)?.project, { timeout: 10_000 }).toEqual({ board: 'dev' })
-  expect((await config()).out).toBe('app limit = 5\napp token = not set\nproject board = "dev"\n')
+  expect((await config()).out).toBe(
+    'app limit = 5\napp token = not set\nglobal board = "main"\nproject board = "dev"\n# project: overrides board; the rest use the global value\n'
+  )
+
+  // Back to the global value, then a new global value reaches this project (design-next §5.2).
+  expect(await config('--use-global', 'board')).toEqual({ status: 0, out: 'project board = "main"\n', err: '' })
+  await expect.poll(() => seen().changes.at(-1)?.project, { timeout: 10_000 }).toEqual({ board: 'main' })
+  expect(await config('--scope', 'global', 'board=team')).toEqual({ status: 0, out: 'global board = "team"\n', err: '' })
+  await expect.poll(() => seen().changes.at(-1)?.project, { timeout: 10_000 }).toEqual({ board: 'team' })
+  const globals = (): unknown =>
+    (JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { pluginProjectDefaults?: Record<string, unknown> }).pluginProjectDefaults?.[ID]
+  await expect.poll(globals, { timeout: 5_000 }).toEqual({ board: 'team' })
 
   // Refusals: exit 1 with the reason, nothing stored.
   const bad = await config('limit=0')
@@ -96,5 +113,5 @@ test('ccc plugin config prints and sets a plugin\'s settings; the plugin hears o
   expect(appJson().pluginSettings?.[ID]).toEqual({ limit: 5 })
 
   // A usage error is exit 2, before anything reaches the app.
-  expect((await config('--scope', 'global', 'limit=2')).status).toBe(2)
+  expect((await config('--scope', 'everywhere', 'limit=2')).status).toBe(2)
 })

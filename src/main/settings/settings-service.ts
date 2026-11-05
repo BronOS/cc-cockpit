@@ -17,6 +17,11 @@
 //  - Secret fields (plugin-settings.ts) are stored encrypted under `setting:app:<field>` in the
 //    plugin's secret store, by main itself (no ctx.secrets rate limit or key cap); the renderer only
 //    ever learns whether each one is set.
+//  - The global values of a plugin's project fields (design-next §5.2) are edited here too, on the
+//    plugin's global page: `app.json` › `pluginProjectDefaults[pluginId]`, secret ones under
+//    `setting:projectDefault:<field>`. A save is checked alone (what a project with no overrides
+//    gets) and merged with every open project's overrides, and refused naming the first project it
+//    would make invalid. Only the projects whose effective values changed hear of it.
 import type { MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
 import { seesAllSessions } from '../../shared/manifest'
@@ -26,8 +31,9 @@ import { buildMarketplaceView, repoChangeFrom, resolveMarketplace, type Marketpl
 import { offAppWide } from '../plugins/enablement'
 import type { InstalledPlugin, PluginInstaller } from '../plugins/installer'
 import type { PluginEntry } from '../plugins/plugin-index'
-import { appSettingKey } from '../secrets/plugin-secrets'
-import { saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
+import { isPlainObject } from '../../shared/guards'
+import { appSettingKey, projectDefaultSettingKey } from '../secrets/plugin-secrets'
+import { checkFormSettings, effectiveProjectValues, saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
 
 /** The slice of ProjectRegistry the settings use. */
 export interface SettingsProjects {
@@ -73,6 +79,17 @@ export interface SettingsDeps {
   pluginSettingsChanged(): Promise<void>
   /** Where secret fields are stored (PluginSecrets; it also updates the hosts' decrypted cache). */
   secrets: SecretSettingsStore
+  /** `app.json` › `pluginProjectDefaults[pluginId]`: the global values of the plugin's project fields, `get` as stored. */
+  projectDefaults: { get(pluginId: string): unknown; set(pluginId: string, value: Record<string, unknown>): void }
+  /** The projects with a window now (their hosts run): a global save is checked against, and told to, these. */
+  openProjectIds(): string[]
+  /**
+   * What the plugin's host in the project gets now (index.ts hostSettingsOf, as text, secrets
+   * included: it never leaves main), so a global save tells only the projects it changed.
+   */
+  settingsFingerprint(projectId: string, pluginId: string): string
+  /** One plugin's settings changed in one project: push them to it (HostManager.settingsChanged). */
+  projectSettingsChanged(projectId: string, pluginId: string): Promise<void>
 }
 
 const MAX_MARKETPLACE_URLS = 20
@@ -342,6 +359,64 @@ export class SettingsService {
       save: (value) => this.deps.appPluginSettings.set(plugin.id, value),
       announce: () => this.deps.pluginSettingsChanged()
     })
+  }
+
+  /**
+   * Store the global values of a plugin's project fields (design-next §5.2), what every project
+   * that does not override a field gets. Checked alone (defaults applied, as stored) and merged
+   * with each open project's overrides; a failure stores nothing, and one that an open project's
+   * overrides cause names the project. `secrets` sets or clears the global value of secret project
+   * fields. On success every open project whose effective values changed hears of it.
+   */
+  async saveProjectDefaults(id: unknown, values: unknown, secrets?: unknown): Promise<PluginSettingsSaveResult> {
+    const plugin = typeof id === 'string' ? this.deps.plugins.get(id) : undefined
+    if (!plugin?.manifest) throw new Error('unknown plugin')
+    const schema = plugin.manifest.contributes?.settings?.project
+    if (schema === undefined) throw new Error(`${plugin.id} declares no project settings`)
+    const before = new Map<string, string>()
+    return saveSettingsForm({
+      pluginId: plugin.id,
+      schema,
+      values,
+      secrets,
+      keyOf: projectDefaultSettingKey,
+      store: this.deps.secrets,
+      refuse: (value) => {
+        for (const projectId of this.deps.openProjectIds()) {
+          const project = this.deps.projects.get(projectId)
+          if (!project) continue
+          const overrides = isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, plugin.id) ? project.pluginSettings[plugin.id] : undefined
+          // A project with no overrides gets the global value alone, which was checked already.
+          if (overrides === undefined) continue
+          const checked = checkFormSettings(schema, effectiveProjectValues(value, overrides))
+          if (!checked.ok) return [`the project ${project.name} overrides fields this value does not fit (change it there first): ${checked.errors.join('; ')}`]
+        }
+        return []
+      },
+      beforeWrite: () => {
+        for (const projectId of this.deps.openProjectIds()) before.set(projectId, this.deps.settingsFingerprint(projectId, plugin.id))
+      },
+      save: (value) => this.deps.projectDefaults.set(plugin.id, value),
+      announce: async () => {
+        for (const projectId of this.deps.openProjectIds()) {
+          // A project opened during the save has no before-state: it may have started on the old values.
+          if (before.get(projectId) === this.deps.settingsFingerprint(projectId, plugin.id)) continue
+          await this.deps.projectSettingsChanged(projectId, plugin.id)
+        }
+      }
+    })
+  }
+
+  /**
+   * The global values of the plugin's project fields as its global page shows them (stored values
+   * with defaults, secret fields as set or not); undefined when it declares no project settings.
+   */
+  pluginProjectDefaults(id: unknown): PluginAppSettingsView | undefined {
+    const plugin = typeof id === 'string' ? this.deps.plugins.get(id) : undefined
+    if (!plugin?.manifest) throw new Error(`unknown plugin: ${String(id)}`)
+    const schema = plugin.manifest.contributes?.settings?.project
+    if (schema === undefined) return undefined
+    return settingsViewOf(schema, this.deps.projectDefaults.get(plugin.id), (f) => this.deps.secrets.hasSetting(plugin.id, projectDefaultSettingKey(f)))
   }
 
   /**

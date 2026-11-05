@@ -99,8 +99,9 @@
 // of reach. Accepted because installed plugins are trusted code that can already `ctx.exec`
 // anything as the user (reading the keychain-backed file's plaintext is no harder than that).
 // One cut main does make: `secrets.get` of a `setting:project:<id>:*` key (a project's secret
-// settings field) is refused unless <id> is this host's project; app-wide `setting:app:*` and
-// this project's keys stay readable, as ctx.settings hands this host their plaintext anyway.
+// settings field) is refused unless <id> is this host's project; app-wide `setting:app:*`, the global
+// values of project fields (`setting:projectDefault:*`) and this project's keys stay readable, as
+// ctx.settings hands this host their plaintext anyway.
 //
 // Overlay handles: the host picks a random `handle` per ctx.overlay.start and main keys it by
 // `<pluginId>/<handle>` in THIS HostApi, so a post or close only finds an overlay this host process

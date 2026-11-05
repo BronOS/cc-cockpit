@@ -50,7 +50,12 @@ export const SECRET_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 export const MAX_SECRET_VALUE_BYTES = 64 * 1024
 /** Plugin-set keys per plugin; `setting:` keys (main's) do not count. */
 export const MAX_SECRET_KEYS = 100
-/** Reserved for secret settings fields: `setting:app:<field>`, `setting:project:<projectId>:<field>`. */
+/**
+ * Reserved for secret settings fields: `setting:app:<field>`, `setting:project:<projectId>:<field>`
+ * (a project's override) and `setting:projectDefault:<field>` (the global value of a project field,
+ * design-next §5.2). `projectDefault:` never matches the `project:` prefix (no `:` after `project`),
+ * so no walk over a project's keys takes a global value for one.
+ */
 export const SETTING_KEY_PREFIX = 'setting:'
 
 /** The secrets.json key of an app-wide secret settings field. */
@@ -58,7 +63,12 @@ export function appSettingKey(field: string): string {
   return `${SETTING_KEY_PREFIX}app:${field}`
 }
 
-/** The secrets.json key of a project's secret settings field. */
+/** The secrets.json key of the global value of a secret project field (design-next §5.2). */
+export function projectDefaultSettingKey(field: string): string {
+  return `${SETTING_KEY_PREFIX}projectDefault:${field}`
+}
+
+/** The secrets.json key of a project's secret settings field (its override of the global value). */
 export function projectSettingKey(projectId: string, field: string): string {
   return `${SETTING_KEY_PREFIX}project:${projectId}:${field}`
 }
@@ -200,7 +210,7 @@ export class PluginSecrets implements PluginSecretsApi {
   }
 
   /**
-   * Decrypt the plugin's app-wide and `projectId`'s `setting:` values into the cache. Values
+   * Decrypt the plugin's app-wide (`app:` and `projectDefault:`) and `projectId`'s `setting:` values into the cache. Values
    * already there are kept (every change since went through writeSettings). Never rejects: a value
    * that will not decrypt (a reset keychain) is logged and left out, so the plugin runs without
    * that field while the form still shows it as set (the user can replace it there).
@@ -213,11 +223,13 @@ export class PluginSecrets implements PluginSecretsApi {
     const entry = this.entry(pluginId)
     if (!entry) return
     const app = `${SETTING_KEY_PREFIX}app:`
+    // Global values of project fields are app-wide too: every project that uses global reads them.
+    const projectDefault = `${SETTING_KEY_PREFIX}projectDefault:`
     const project = `${SETTING_KEY_PREFIX}project:${projectId}:`
     // Closed already: only the app-wide values are worth a decrypt (and a keychain prompt).
     const closed = this.evictionMark(projectId) !== since
     const keys = Object.keys(entry).filter(
-      (k) => (k.startsWith(app) || (!closed && k.startsWith(project))) && this.cachedSetting(pluginId, k) === undefined
+      (k) => (k.startsWith(app) || k.startsWith(projectDefault) || (!closed && k.startsWith(project))) && this.cachedSetting(pluginId, k) === undefined
     )
     await Promise.all(
       keys.map(async (key) => {

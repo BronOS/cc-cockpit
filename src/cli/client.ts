@@ -377,7 +377,8 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       // No project in args: main takes the project from the routing (token or --project).
       cmd = 'plugin.config'
       args = { id: command.id }
-      if (command.set.length > 0) {
+      if (command.useGlobal !== undefined && command.useGlobal.length > 0) args.useGlobal = command.useGlobal
+      else if (command.set.length > 0) {
         args.set = command.set
         if (command.scope !== undefined) args.scope = command.scope
       }
@@ -448,13 +449,14 @@ export async function runCommand(
     // waits its turn in the installer's serial queue (behind a clone of up to two minutes) and for
     // the hosts to reload: cut off at 10 s it printed "did not answer" and exit 1 while the unlink
     // still went through, and the retry then failed with "is not installed" (review finding).
-    // `plugin config` with values to set likewise: it waits in the plugin's settings save queue
-    // (behind a form save that may be at a keychain prompt) and for a host restarted by the change.
+    // `plugin config` with values to set (or overrides to drop) likewise: it waits in the plugin's
+    // settings save queue (behind a form save that may be at a keychain prompt) and for a host
+    // restarted by the change.
     const waits =
       command.kind === 'overlay' ||
       command.kind === 'plugin-link' ||
       command.kind === 'plugin-unlink' ||
-      (command.kind === 'plugin-config' && command.set.length > 0)
+      (command.kind === 'plugin-config' && (command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0))
         ? undefined
         : REPLY_TIMEOUT_MS
     const trip = await roundTrip(socket, encodeRequest(request), waits)
@@ -710,7 +712,7 @@ function formatResult(command: UserCommand, result: unknown): string {
   if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`
   if (command.kind === 'plugin-config') {
     if (command.json) return `${JSON.stringify(result)}\n`
-    return command.set.length > 0
+    return command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0
       ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
       : formatPluginConfig(result as PluginConfigView, plainLine)
   }

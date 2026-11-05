@@ -11,7 +11,7 @@ import { parseArgs } from '../../src/cli/args'
 import { buildRequest, run, type Output } from '../../src/cli/client'
 import type { InstalledPlugin } from '../../src/main/plugins/installer'
 import { appSettingKey, projectSettingKey } from '../../src/main/secrets/plugin-secrets'
-import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from '../../src/main/settings/plugin-config'
+import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from '../../src/main/settings/plugin-config'
 import { ProjectSettingsService } from '../../src/main/settings/project-settings-service'
 import { SettingsService, type SettingsDeps } from '../../src/main/settings/settings-service'
 import { pluginConfigHandler, registerPluginConfigHandler, type PluginConfigOptions } from '../../src/main/socket/handlers'
@@ -56,6 +56,17 @@ describe('parseArgs: plugin config', () => {
       ]
     })
     expect(parseArgs(['plugin', 'config', 'acme.x', '--scope', 'project', 'board=dev'])).toMatchObject({ scope: 'project', set: [['board', 'dev']] })
+    expect(parseArgs(['plugin', 'config', 'acme.x', '--scope', 'global', 'board=dev'])).toMatchObject({ scope: 'global', set: [['board', 'dev']] })
+  })
+
+  it('takes --use-global keys, repeatable, alone', () => {
+    expect(parseArgs(['plugin', 'config', 'acme.x', '--use-global', 'board', '--use-global', 'limit'])).toEqual({
+      kind: 'plugin-config',
+      id: 'acme.x',
+      json: false,
+      set: [],
+      useGlobal: ['board', 'limit']
+    })
     expect(parseConfigValue('null')).toBeNull()
     expect(parseConfigValue('{"a":1}')).toEqual({ a: 1 })
   })
@@ -65,7 +76,10 @@ describe('parseArgs: plugin config', () => {
     [['plugin', 'config', 'Not An Id']],
     [['plugin', 'config', 'acme.x', 'novalue']],
     [['plugin', 'config', 'acme.x', '=5']],
-    [['plugin', 'config', 'acme.x', '--scope', 'global', 'a=1']],
+    [['plugin', 'config', 'acme.x', '--scope', 'everywhere', 'a=1']],
+    [['plugin', 'config', 'acme.x', '--use-global']],
+    [['plugin', 'config', 'acme.x', '--use-global', 'a', 'b=1']], // --use-global goes alone
+    [['plugin', 'config', 'acme.x', '--scope', 'project', '--use-global', 'a']],
     [['plugin', 'config', 'acme.x', '--scope', 'app']], // --scope goes with values
     [['plugin', 'config', 'acme.x', '--scope']],
     [['plugin', 'config', 'acme.x', '--app', 'a=1']], // --project is the folder; the scope is --scope
@@ -95,6 +109,8 @@ describe('buildRequest: plugin config', () => {
     ) as Request
     expect(outside).toMatchObject({ cmd: 'plugin.config', project: '/work/dir/rel' })
     expect(outside.args).toEqual({ id: 'acme.x', set: [['limit', 5]], scope: 'app' })
+    const useGlobal = buildRequest({ kind: 'plugin-config', id: 'acme.x', json: false, set: [], useGlobal: ['board'] }, { APP_TAB_TOKEN: TOKEN }, CWD) as Request
+    expect(useGlobal.args).toEqual({ id: 'acme.x', useGlobal: ['board'] })
     expect(buildRequest({ kind: 'plugin-config', id: 'acme.x', json: false, set: [] }, {}, CWD)).toEqual({
       error: expect.stringMatching(/--project/)
     })
@@ -241,9 +257,21 @@ function rig() {
       }
     }),
     plugin('test.plain', {}),
+    // Two related fields (`if`/`then`: max >= 6 once min >= 6), so values valid alone can fail merged.
+    plugin('test.rule', {
+      settings: {
+        project: {
+          type: 'object',
+          properties: { min: { type: 'integer', default: 1 }, max: { type: 'integer', default: 10 } },
+          if: { properties: { min: { minimum: 6 } } },
+          then: { properties: { max: { minimum: 6 } } }
+        }
+      }
+    }),
     plugin('test.apponly', { settings: { app: { type: 'object', properties: { site: { type: 'string' } } } } })
   ]
   const appSettings = new Map<string, unknown>()
+  const projectDefaults = new Map<string, unknown>()
   const storedSecrets = new Set<string>([appSettingKey('token')])
   const secretWrites: Array<Map<string, string | null>> = []
   const secrets = {
@@ -277,7 +305,12 @@ function rig() {
     bundledOff: { get: () => undefined, set: () => {} },
     bundledOffChanged: async () => {},
     pluginSettingsChanged: async () => void calls.push('app settings announced'),
-    secrets
+    secrets,
+    projectDefaults: { get: (id) => projectDefaults.get(id), set: (id, value) => void projectDefaults.set(id, value) },
+    openProjectIds: () => [P, OTHER],
+    // What a host would get: the effective project values (secrets are not in this rig's fingerprint).
+    settingsFingerprint: (projectId, id) => JSON.stringify(projectSettings.pluginProjectSettings(projectId, id)?.values),
+    projectSettingsChanged: async (projectId, id) => void calls.push(`project settings announced ${projectId} ${id}`)
   } as SettingsDeps)
   const projectSettings = new ProjectSettingsService({
     projects: {
@@ -293,28 +326,49 @@ function rig() {
     enabledChanged: async () => {},
     settingsChanged: async (projectId, pluginId) => void calls.push(`project settings announced ${projectId} ${pluginId}`),
     layouts: { view: () => undefined, move: () => undefined },
-    secrets
+    secrets,
+    projectDefaults: (id) => projectDefaults.get(id)
   })
   const deps: PluginConfigDeps = {
     appSettings: (id) => settings.pluginAppSettings(id),
     projectSettings: (projectId, id) => projectSettings.pluginProjectSettings(projectId, id),
     saveApp: (id, values) => settings.savePluginSettings(id, values),
-    saveProject: (projectId, id, values) => projectSettings.saveSettings(projectId, id, values)
+    saveProject: (projectId, id, values) => projectSettings.saveSettings(projectId, id, values),
+    globalSettings: (id) => settings.pluginProjectDefaults(id),
+    projectOverrides: (projectId, id) => projectSettings.pluginProjectOverrides(projectId, id),
+    saveGlobal: (id, values) => settings.saveProjectDefaults(id, values)
   }
-  return { deps, calls, projects, appSettings, storedSecrets, secretWrites }
+  return { deps, calls, projects, appSettings, projectDefaults, storedSecrets, secretWrites }
 }
 
 describe('pluginConfigView', () => {
-  it('shows both scopes with defaults, and secret fields only as set or not', () => {
+  it('shows every scope with defaults, and secret fields only as set or not', () => {
     const { deps } = rig()
     const view = pluginConfigView(deps, P, 'test.settingsui')
     expect(view).toEqual({
       id: 'test.settingsui',
       app: { fields: ['greeting', 'limit', 'token', 'shared'], values: { greeting: 'hello', limit: 10 }, secrets: { token: true } },
-      project: { fields: ['board', 'pageSize', 'key', 'shared'], values: { board: 'main', pageSize: 20 }, secrets: { key: false } }
+      global: { fields: ['board', 'pageSize', 'key', 'shared'], values: { board: 'main', pageSize: 20 }, secrets: { key: false } },
+      project: { fields: ['board', 'pageSize', 'key', 'shared'], values: { board: 'main', pageSize: 20 }, secrets: { key: false }, overrides: [] }
     })
     expect(formatPluginConfig(view, (t) => t)).toContain('app token = set\n')
     expect(formatPluginConfig(view, (t) => t)).toContain('project key = not set\n')
+    expect(formatPluginConfig(view, (t) => t)).toContain('# project: no overrides, every field uses the global value\n')
+  })
+
+  it('shows the effective project values: the override, else the global value, else the default', () => {
+    const { deps, projectDefaults, projects } = rig()
+    projectDefaults.set('test.settingsui', { board: 'team', pageSize: 30 })
+    projects.get(P)!.pluginSettings['test.settingsui'] = { pageSize: 5 }
+    const view = pluginConfigView(deps, P, 'test.settingsui')
+    expect(view.global?.values).toEqual({ board: 'team', pageSize: 30 })
+    expect(view.project).toMatchObject({ values: { board: 'team', pageSize: 5 }, overrides: ['pageSize'] })
+    const text = formatPluginConfig(view, (t) => t)
+    expect(text).toContain('global board = "team"\nglobal pageSize = 30\n')
+    expect(text).toContain('project board = "team"\nproject pageSize = 5\n')
+    expect(text).toContain('# project: overrides pageSize; the rest use the global value\n')
+    // Another project overrides nothing: all global.
+    expect(pluginConfigView(deps, OTHER, 'test.settingsui').project).toMatchObject({ values: { board: 'team', pageSize: 30 }, overrides: [] })
   })
 
   it('never shows a secret value, even one a hand-edited file put among the plain values', () => {
@@ -444,6 +498,65 @@ describe('setPluginConfig', () => {
   })
 })
 
+describe('global values and overrides (design-next §5.2)', () => {
+  it('--scope global sets the global value: every project without an override gets it, and hears of it', async () => {
+    const { deps, calls, projectDefaults, projects } = rig()
+    projects.get(OTHER)!.pluginSettings['test.settingsui'] = { board: 'own' }
+    await expect(setPluginConfig(deps, P, 'test.settingsui', [['board', 'team']], 'global')).resolves.toEqual({
+      id: 'test.settingsui',
+      scope: 'global',
+      values: { board: 'team' }
+    })
+    expect(projectDefaults.get('test.settingsui')).toEqual({ board: 'team', pageSize: 20 })
+    expect(projects.get(P)?.pluginSettings['test.settingsui']).toBeUndefined()
+    expect(pluginConfigView(deps, P, 'test.settingsui').project?.values).toMatchObject({ board: 'team' })
+    expect(pluginConfigView(deps, OTHER, 'test.settingsui').project?.values).toMatchObject({ board: 'own' })
+    // OTHER overrides board, so its effective values did not change and it is not told.
+    expect(calls).toEqual([`project settings announced ${P} test.settingsui`])
+  })
+
+  it('--scope project stores only the overrides, never the effective values', async () => {
+    const { deps, projectDefaults, projects } = rig()
+    projectDefaults.set('test.settingsui', { board: 'team', pageSize: 30 })
+    await expect(setPluginConfig(deps, P, 'test.settingsui', [['pageSize', 5]])).resolves.toMatchObject({ scope: 'project', values: { pageSize: 5 } })
+    expect(projects.get(P)?.pluginSettings['test.settingsui']).toEqual({ pageSize: 5 })
+    // A later global change still reaches the field P does not override.
+    await setPluginConfig(deps, P, 'test.settingsui', [['board', 'later']], 'global')
+    expect(pluginConfigView(deps, P, 'test.settingsui').project?.values).toEqual({ board: 'later', pageSize: 5 })
+  })
+
+  it('--use-global drops an override; the effective value is the global one again', async () => {
+    const { deps, calls, projectDefaults, projects } = rig()
+    projectDefaults.set('test.settingsui', { board: 'team' })
+    projects.get(P)!.pluginSettings['test.settingsui'] = { board: 'own', pageSize: 5 }
+    await expect(useGlobalConfig(deps, P, 'test.settingsui', ['board'])).resolves.toEqual({
+      id: 'test.settingsui',
+      scope: 'project',
+      values: { board: 'team' }
+    })
+    expect(projects.get(P)?.pluginSettings['test.settingsui']).toEqual({ pageSize: 5 })
+    expect(calls).toEqual([`project settings announced ${P} test.settingsui`])
+    await expect(useGlobalConfig(deps, P, 'test.settingsui', ['key'])).rejects.toThrow(/secret field/)
+    await expect(useGlobalConfig(deps, P, 'test.settingsui', ['greeting'])).rejects.toThrow(/not a project setting/)
+    await expect(useGlobalConfig(deps, P, 'test.apponly', ['site'])).rejects.toThrow(/declares no project settings/)
+  })
+
+  it('refuses a global value that does not fit an open project with overrides, naming the project', async () => {
+    const { deps, calls, projectDefaults, projects } = rig()
+    projects.get(OTHER)!.pluginSettings['test.rule'] = { min: 8 }
+    // max must be >= min: 5 fits P (min default 1) but not OTHER's override.
+    await expect(setPluginConfig(deps, P, 'test.rule', [['max', 5]], 'global')).rejects.toThrow(
+      new RegExp(`the project ${OTHER} overrides fields this value does not fit`)
+    )
+    expect(projectDefaults.has('test.rule')).toBe(false)
+    expect(calls).toEqual([])
+    // A project override is checked merged with the global value.
+    projectDefaults.set('test.rule', { max: 5 })
+    await expect(setPluginConfig(deps, P, 'test.rule', [['min', 6]])).rejects.toThrow(/nothing was stored/)
+    expect(projects.get(P)?.pluginSettings['test.rule']).toBeUndefined()
+  })
+})
+
 describe('the plugin.config socket handler', () => {
   const seen: Array<{ op: string; projectId: string; pluginId: string; edits?: unknown; scope?: unknown }> = []
   const options: PluginConfigOptions = {
@@ -454,6 +567,10 @@ describe('the plugin.config socket handler', () => {
     set: async (projectId, pluginId, edits, scope) => {
       seen.push({ op: 'set', projectId, pluginId, edits, scope })
       return { id: pluginId, scope: scope ?? 'app', values: {} }
+    },
+    useGlobal: async (projectId, pluginId, keys) => {
+      seen.push({ op: 'useGlobal', projectId, pluginId, edits: keys })
+      return { id: pluginId, scope: 'project', values: {} }
     }
   }
   const handler = pluginConfigHandler(options)
@@ -472,10 +589,12 @@ describe('the plugin.config socket handler', () => {
     await handler({ id: 'acme.x', project: OTHER, projectId: OTHER }, tab)
     await handler({ id: 'acme.x', set: [['limit', 5]], scope: 'app', project: OTHER }, { kind: 'window', projectId: P })
     await handler({ id: 'acme.x' }, { kind: 'project', path: '/work/p', projectId: P })
+    await handler({ id: 'acme.x', useGlobal: ['board'], project: OTHER }, tab)
     expect(seen).toEqual([
       { op: 'view', projectId: P, pluginId: 'acme.x' },
       { op: 'set', projectId: P, pluginId: 'acme.x', edits: [['limit', 5]], scope: 'app' },
-      { op: 'view', projectId: P, pluginId: 'acme.x' }
+      { op: 'view', projectId: P, pluginId: 'acme.x' },
+      { op: 'useGlobal', projectId: P, pluginId: 'acme.x', edits: ['board'] }
     ])
   })
 
@@ -490,7 +609,12 @@ describe('the plugin.config socket handler', () => {
   it.each<[Record<string, unknown>, RegExp]>([
     [{}, /needs a plugin id/],
     [{ id: '../x' }, /needs a plugin id/],
-    [{ id: 'acme.x', scope: 'global', set: [['a', 1]] }, /scope is app or project/],
+    [{ id: 'acme.x', scope: 'everywhere', set: [['a', 1]] }, /scope is app, global or project/],
+    [{ id: 'acme.x', useGlobal: ['a'], set: [['a', 1]] }, /use-global goes alone/],
+    [{ id: 'acme.x', useGlobal: ['a'], scope: 'project' }, /use-global goes alone/],
+    [{ id: 'acme.x', useGlobal: [] }, /use-global takes 1 to 64/],
+    [{ id: 'acme.x', useGlobal: 'a' }, /use-global takes 1 to 64/],
+    [{ id: 'acme.x', useGlobal: [''] }, /non-empty string/],
     [{ id: 'acme.x', scope: 'app' }, /scope goes with values/],
     [{ id: 'acme.x', set: [] }, /1 to 64/],
     [{ id: 'acme.x', set: { a: 1 } }, /1 to 64/],

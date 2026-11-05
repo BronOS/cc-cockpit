@@ -457,11 +457,14 @@ export function registerPluginDevHandlers(
 export interface PluginConfigOptions {
   view(projectId: string, pluginId: string): PluginConfigView
   set(projectId: string, pluginId: string, edits: Array<[string, unknown]>, scope?: PluginConfigScope): Promise<PluginConfigSetResult>
+  /** Drop the project's overrides of these project fields (`--use-global`). */
+  useGlobal(projectId: string, pluginId: string, keys: string[]): Promise<PluginConfigSetResult>
 }
 
 /**
- * `plugin.config { id, scope?, set? }` (friction round 1, Task 6): print a plugin's app and project
- * settings, or set top-level fields through the Settings form's save. The project is the caller's
+ * `plugin.config { id, scope?, set?, useGlobal? }` (friction round 1, Task 6; design-next §5.2): print
+ * a plugin's app, global and project settings, set top-level fields through the Settings form's
+ * save, or drop project overrides (`useGlobal`, alone: no `set`, no `scope`). The project is the caller's
  * (a token's, or the one `--project` named), never a field of `args`; it needs a record, like
  * `plugin list`, but no open window (the record is saved, a host that is not running has nothing
  * to tell). Every field is checked here; values are any JSON, the schema decides in main.
@@ -469,12 +472,24 @@ export interface PluginConfigOptions {
 export function pluginConfigHandler(options: PluginConfigOptions): Handler {
   return async (args, caller) => {
     const projectId = projectOf(caller, 'plugin config')
-    const { id, scope, set } = args
+    const { id, scope, set, useGlobal } = args
     if (typeof id !== 'string' || id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id)) {
       throw new Error('plugin config needs a plugin id')
     }
     if (scope !== undefined && !PLUGIN_CONFIG_SCOPES.includes(scope as PluginConfigScope)) {
-      throw new Error('plugin config: scope is app or project')
+      throw new Error('plugin config: scope is app, global or project')
+    }
+    if (useGlobal !== undefined) {
+      if (set !== undefined || scope !== undefined) throw new Error('plugin config: use-global goes alone, without values to set or a scope')
+      if (!Array.isArray(useGlobal) || useGlobal.length === 0 || useGlobal.length > MAX_PLUGIN_CONFIG_EDITS) {
+        throw new Error(`plugin config: use-global takes 1 to ${MAX_PLUGIN_CONFIG_EDITS} keys`)
+      }
+      const keys: string[] = []
+      for (const key of useGlobal as unknown[]) {
+        if (typeof key !== 'string' || key === '') throw new Error('plugin config: each use-global key is a non-empty string')
+        keys.push(key)
+      }
+      return options.useGlobal(projectId, id, keys)
     }
     if (set === undefined) {
       if (scope !== undefined) throw new Error('plugin config: scope goes with values to set')

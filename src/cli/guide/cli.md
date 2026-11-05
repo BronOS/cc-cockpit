@@ -43,19 +43,27 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   [--json]` shows the installed plugins and whether each is enabled here. `ccc plugin logs <id>
   [--follow]` prints a plugin's log. See `ccc guide dev-loop`.
 - `ccc plugin config [--project <path>] <id> [--json]` prints a plugin's settings, one
-  `scope key = JSON` line per top-level field (`app` lines first, then `project` ones for this
-  project). A secret field reads `set` or `not set`, never its value; so does a plain field with
-  no value and no default. `--json` prints `{ id, app?, project? }`, each scope
-  `{ fields, values, secrets, problem? }` (`secrets` maps each secret field to whether it is set).
-- `ccc plugin config [--project <path>] <id> [--scope app|project] <key>=<value>...` sets
+  `scope key = JSON` line per top-level field: `app` lines first, then `global` (the global value
+  of each project field, what every project without an override gets), then `project` (this
+  project's effective value: its override, else the global value, else the default) and a
+  `# project:` line naming the fields this project overrides. A secret field reads `set` or
+  `not set`, never its value; so does a plain field with no value and no default. `--json` prints
+  `{ id, app?, global?, project? }`, each scope `{ fields, values, secrets, problem? }` (`secrets`
+  maps each secret field to whether it is set; `project` adds `overrides`, the overridden fields).
+- `ccc plugin config [--project <path>] <id> [--scope app|global|project] <key>=<value>...` sets
   top-level fields and prints the stored `scope key = JSON` lines. A value is parsed as JSON, else
   taken as text: `limit=5` is a number, `name=hi` the string `hi`, `name='"5"'` the string `5`. The
-  scope is the one whose schema declares the key; a key both scopes declare needs `--scope`, and one
-  call sets one scope. The save is the Settings form's: the same schema check (a refused value
-  exits 1 with the schema's reasons and stores nothing), then the plugin gets
-  `ctx.onSettingsChange`, or starts if it was off for invalid settings. Exit 1 also for an unknown
-  plugin or key, and for a secret field: those are set by a person in Settings > Plugins (app) or
-  Settings > This Project, never through `ccc`.
+  scope is the one whose schema declares the key, and a project field defaults to `project` (this
+  project's override); `--scope global` sets its global value instead (refused, naming the project,
+  when an open project's overrides would no longer validate with it). A key both the app and the
+  project schema declare needs `--scope`, and one call sets one scope. `ccc plugin config <id>
+  --use-global <key>` (repeatable, alone) drops this project's override so the field uses the
+  global value again. The save is the Settings form's: the same schema check over the effective
+  values (a refused value exits 1 with the schema's reasons and stores nothing), then the plugin
+  gets `ctx.onSettingsChange` in every project whose values changed, or starts if it was off for
+  invalid settings. Exit 1 also for an unknown plugin or key, and for a secret field: those are
+  set by a person in Settings > Plugins (app and global values) or Settings > This Project, never
+  through `ccc`.
 - `ccc panel show [--project <path>] <plugin>/<panel>` reveals one of a plugin's panels in this
   project's window: unhidden, opened, its zone expanded, and shown again if the window auto-hid
   it for a narrow terminal (what `ctx.panels.show` does for the

@@ -17,6 +17,11 @@
 //    the schema does not name is refused, even where the schema would allow it.
 //  - Scope: the one that declares the key. A key both scopes declare needs `--scope`; all keys of
 //    one call must land in one scope (one save, so one validation decides for all of them).
+//  - Project fields (design-next §5.2): `--scope global` sets their global value (merged into the
+//    stored global values, as the app scope), `--scope project`, the default for a project key,
+//    sets this project's override (merged into the stored OVERRIDES, never the effective values,
+//    which would make every field an override), and `--use-global key` drops overrides. The schema
+//    checks the merged effective values either way (the services' saves).
 //  - Secret fields are refused, never passed on: their values stay between the Settings form and
 //    the keychain, and `secrets` is never sent, so a set leaves every stored secret as it is.
 //  - This grants nothing new: the socket is the user's own, and any local process can already write
@@ -38,8 +43,14 @@ export interface PluginConfigDeps {
    * then, not before an earlier save in the queue has written.
    */
   saveApp(pluginId: string, values: () => Record<string, unknown>): Promise<PluginSettingsSaveResult>
-  /** ProjectSettingsService.saveSettings, likewise. */
+  /** ProjectSettingsService.saveSettings, likewise: `values` are the project's overrides. */
   saveProject(projectId: string, pluginId: string, values: () => Record<string, unknown>): Promise<PluginSettingsSaveResult>
+  /** SettingsService.pluginProjectDefaults: the global values of the project fields; undefined when it declares none. */
+  globalSettings(pluginId: string): PluginAppSettingsView | undefined
+  /** ProjectSettingsService.pluginProjectOverrides: the project's stored overrides, as stored. */
+  projectOverrides(projectId: string, pluginId: string): unknown
+  /** SettingsService.saveProjectDefaults, likewise. */
+  saveGlobal(pluginId: string, values: () => Record<string, unknown>): Promise<PluginSettingsSaveResult>
 }
 
 /** Keys that would reach an object's prototype when assigned; never a settings field here. */
@@ -48,18 +59,25 @@ const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 /** Where a scope's secret fields are set by hand. */
 const SECRET_HOME: Record<PluginConfigScope, string> = {
   app: 'Settings > Plugins',
+  global: 'Settings > Plugins',
   project: 'Settings > This Project'
 }
 
-/** "an app setting", "a project setting". */
+/** "an app setting", "a project setting" (a global value is one of a project setting). */
 function aScope(scope: PluginConfigScope): string {
-  return scope === 'app' ? 'an app setting' : 'a project setting'
+  return scope === 'app' ? 'an app setting' : scope === 'global' ? 'a global value' : 'a project setting'
 }
 
 function views(deps: PluginConfigDeps, projectId: string, pluginId: string): Record<PluginConfigScope, PluginAppSettingsView | undefined> {
   // App first: it throws 'unknown plugin' before the project view is asked.
   const app = deps.appSettings(pluginId)
-  return { app, project: deps.projectSettings(projectId, pluginId) }
+  return { app, global: deps.globalSettings(pluginId), project: deps.projectSettings(projectId, pluginId) }
+}
+
+/** The project's stored overrides as a plain object to merge into (a damaged value is replaced). */
+function overridesOf(deps: PluginConfigDeps, projectId: string, pluginId: string): Record<string, unknown> {
+  const stored = deps.projectOverrides(projectId, pluginId)
+  return isPlainObject(stored) ? { ...stored } : {}
 }
 
 /** The schema's top-level fields, in declaration order. */
@@ -73,7 +91,8 @@ function scopeView(view: PluginAppSettingsView): PluginConfigScopeView {
     fields: fieldsOf(view.schema),
     values: view.values,
     secrets,
-    ...(view.problem !== undefined ? { problem: view.problem } : {})
+    ...(view.problem !== undefined ? { problem: view.problem } : {}),
+    ...(view.overrides !== undefined ? { overrides: view.overrides } : {})
   }
 }
 
@@ -83,6 +102,7 @@ export function pluginConfigView(deps: PluginConfigDeps, projectId: string, plug
   if (v.app === undefined && v.project === undefined) throw new Error(`${pluginId} declares no settings`)
   const out: PluginConfigView = { id: pluginId }
   if (v.app !== undefined) out.app = scopeView(v.app)
+  if (v.global !== undefined) out.global = scopeView(v.global)
   if (v.project !== undefined) out.project = scopeView(v.project)
   return out
 }
@@ -100,14 +120,16 @@ function scopeFor(
   }
   const known = (scope: PluginConfigScope): string => {
     const fields = v[scope] === undefined ? [] : fieldsOf(v[scope].schema)
-    return fields.length === 0 ? `${pluginId} declares no ${scope} settings` : `its ${scope} settings are ${fields.join(', ')}`
+    // A global value is one of a project field: the same schema.
+    const named = scope === 'global' ? 'project' : scope
+    return fields.length === 0 ? `${pluginId} declares no ${named} settings` : `its ${named} settings are ${fields.join(', ')}`
   }
   let scope: PluginConfigScope
   if (requested !== undefined) {
     if (!declares(requested)) throw new Error(`${key} is not ${aScope(requested)} of ${pluginId} (${known(requested)})`)
     scope = requested
   } else if (declares('app') && declares('project')) {
-    throw new Error(`${key} is both an app and a project setting of ${pluginId}: add --scope app or --scope project`)
+    throw new Error(`${key} is both an app and a project setting of ${pluginId}: add --scope app, --scope global or --scope project`)
   } else if (declares('app')) scope = 'app'
   else if (declares('project')) scope = 'project'
   else {
@@ -121,7 +143,7 @@ function scopeFor(
 }
 
 /**
- * `ccc plugin config <id> [--scope app|project] key=value ...`: store the edits through the
+ * `ccc plugin config <id> [--scope app|global|project] key=value ...`: store the edits through the
  * Settings form's save. A value the schema refuses throws with the schema's reasons, and nothing
  * is stored. Returns the stored value of each key set (defaults never change a value given).
  */
@@ -151,15 +173,55 @@ export async function setPluginConfig(
   // Read when the save runs in the plugin's queue, not now: a save queued ahead may still change what
   // is stored, and merging into this read would write its old values back (lost update).
   const values = (): Record<string, unknown> => {
-    const current = target === 'app' ? deps.appSettings(pluginId) : deps.projectSettings(projectId, pluginId)
-    if (current === undefined) throw new Error(`${pluginId} no longer declares ${target} settings`)
-    // A spread copy, then plain assignment of keys the schema declares (reserved ones refused above).
-    const merged: Record<string, unknown> = { ...current.values }
+    let merged: Record<string, unknown>
+    if (target === 'project') {
+      if (deps.projectSettings(projectId, pluginId) === undefined) throw new Error(`${pluginId} no longer declares project settings`)
+      merged = overridesOf(deps, projectId, pluginId)
+    } else {
+      const current = target === 'app' ? deps.appSettings(pluginId) : deps.globalSettings(pluginId)
+      if (current === undefined) throw new Error(`${pluginId} no longer declares ${target === 'app' ? 'app' : 'project'} settings`)
+      // A spread copy, then plain assignment of keys the schema declares (reserved ones refused above).
+      merged = { ...current.values }
+    }
     for (const [key, value] of edits) merged[key] = value
     return merged
   }
-  const saved = scope === 'app' ? await deps.saveApp(pluginId, values) : await deps.saveProject(projectId, pluginId, values)
+  const saved =
+    scope === 'app'
+      ? await deps.saveApp(pluginId, values)
+      : scope === 'global'
+        ? await deps.saveGlobal(pluginId, values)
+        : await deps.saveProject(projectId, pluginId, values)
   if (!saved.ok) throw new Error(`${pluginId}: nothing was stored, the ${scope} settings fail the schema: ${saved.errors.join('; ')}`)
   const keys = new Set(edits.map(([key]) => key))
   return { id: pluginId, scope, values: Object.fromEntries([...keys].map((key) => [key, saved.values[key]])) }
+}
+
+/**
+ * `ccc plugin config <id> --use-global key ...`: drop this project's overrides of these project
+ * fields, so they use the global value again, through the This Project form's save (the schema
+ * checks the new effective values; a refusal stores nothing). Secret fields are refused like a set.
+ * Returns the effective value of each key now.
+ */
+export async function useGlobalConfig(
+  deps: PluginConfigDeps,
+  projectId: string,
+  pluginId: string,
+  keys: readonly string[]
+): Promise<PluginConfigSetResult> {
+  if (keys.length === 0) throw new Error('plugin config --use-global needs a key')
+  const v = views(deps, projectId, pluginId)
+  if (v.project === undefined) throw new Error(`${pluginId} declares no project settings`)
+  for (const key of keys) {
+    if (RESERVED_KEYS.has(key)) throw new Error(`${key} is not allowed as a key`)
+    scopeFor(pluginId, key, v, 'project')
+  }
+  const values = (): Record<string, unknown> => {
+    const merged = overridesOf(deps, projectId, pluginId)
+    for (const key of keys) delete merged[key]
+    return merged
+  }
+  const saved = await deps.saveProject(projectId, pluginId, values)
+  if (!saved.ok) throw new Error(`${pluginId}: nothing was stored, the project settings fail the schema: ${saved.errors.join('; ')}`)
+  return { id: pluginId, scope: 'project', values: Object.fromEntries([...new Set(keys)].map((key) => [key, saved.values[key]])) }
 }

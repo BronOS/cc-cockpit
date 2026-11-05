@@ -4,8 +4,14 @@
 
 `contributes.settings.project` and `.app` are JSON Schemas (objects with `properties`). The app
 renders the forms from them; for what a form cannot hold, add an html page under them (see
-"Settings page" below). Project settings are per project, app settings are shared. The host reads them as `ctx.settings.project` / `.app`, with
-defaults applied, and hears changes through `ctx.onSettingsChange`.
+"Settings page" below). App settings are shared by every project and edited on the plugin's
+global page (Settings > Plugins, its gear). Project fields have a global value, set on that same
+page, and each project either uses it (the default) or overrides it in Settings > This Project.
+The host reads them as `ctx.settings.project` / `.app`, with defaults applied:
+`ctx.settings.project[field]` is this project's override, else the global value, else the
+schema default. Only top-level fields are overridden (an object field is replaced whole), and the
+schema checks that merged object. `ctx.onSettingsChange` fires in every project whose values
+changed, so a global edit reaches each project that uses the global value.
 
 What the form renders (the app's form is rjsf with main as the only validator; it renders one
 field per property of the root object):
@@ -87,7 +93,9 @@ A top-level string property with `"format": "secret"` is a password field:
   snapshot) its key is simply absent, so `ctx.settings.app.apiToken === undefined` and
   `'apiToken' in ctx.settings.app` is false. It is never `''` or `null`: an empty value typed in
   the form is no change, and Clear removes the key. After the person sets it, `ctx.onSettingsChange`
-  fires with the key present. `ccc plugin config` cannot set it.
+  fires with the key present. `ccc plugin config` cannot set it. A secret project field has a
+  global value too; a project that sets its own uses that one, and clearing it there goes back to
+  the global value.
 
 ## `ctx.secrets`
 

@@ -426,7 +426,8 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
         settingsGuard: () => ({ removals: undefined, forgets: new Map() }),
         checkSettingsGuard: () => {},
         writeSettings: async () => {}
-      }
+      },
+      projectDefaults: () => undefined
     }
     return { service: new ProjectSettingsService(deps), restarts, json: () => json }
   }

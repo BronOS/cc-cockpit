@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { checkPluginSettings, compileSettingsSchema, MAX_SCHEMA_EXPANSION, validateSettings } from '../../src/main/plugins/validate'
+import { effectiveProjectValues, hostSettingsOf, overriddenFields } from '../../src/main/settings/plugin-settings'
 import type { PluginManifest } from '../../src/shared/manifest'
 
 const schema = {
@@ -426,5 +427,38 @@ describe('checkPluginSettings', () => {
     const r = checkPluginSettings(bad, {})
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toContain('"$id" is not allowed')
+  })
+})
+
+describe('effective project values (design-next §5.2)', () => {
+  it('takes each top-level field from the override, else the global value; an object field is overridden whole', () => {
+    expect(effectiveProjectValues(undefined, undefined)).toBeUndefined()
+    expect(effectiveProjectValues(null, { limit: 5 })).toEqual({ limit: 5 })
+    expect(effectiveProjectValues({ limit: 5, nested: { flag: false, x: 1 } }, { nested: { flag: true } })).toEqual({ limit: 5, nested: { flag: true } })
+    // A damaged side is handed on as is, so the schema check fails on it.
+    expect(effectiveProjectValues({ limit: 5 }, 'bad')).toBe('bad')
+    expect(effectiveProjectValues([1], { limit: 5 })).toEqual([1])
+  })
+
+  it('the host gets override, else global, else default, checked together', () => {
+    const manifest = manifestWith({ project: schema })
+    const none = { cachedSetting: () => undefined }
+    expect(hostSettingsOf(manifest, { projectDefaults: { limit: 50 }, project: { baseUrl: 'https://x.example.com' } }, none, 'p')).toEqual({
+      ok: true,
+      app: {},
+      project: { baseUrl: 'https://x.example.com', limit: 50, nested: { flag: true } }
+    })
+    // A global value that is fine alone but out of range is refused with the project's reason.
+    const bad = hostSettingsOf(manifest, { projectDefaults: { limit: 500 }, project: {} }, none, 'p')
+    expect(bad.ok).toBe(false)
+    // The override replaces the bad global value.
+    expect(hostSettingsOf(manifest, { projectDefaults: { limit: 500 }, project: { limit: 2 } }, none, 'p')).toMatchObject({ ok: true, project: { limit: 2 } })
+  })
+
+  it('lists the declared fields a project overrides, secret ones by their stored project value', () => {
+    const withSecret = { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' }, k: { type: 'string', format: 'secret' } } }
+    expect(overriddenFields(withSecret, { b: 'x', undeclared: 1 }, () => false)).toEqual(['b'])
+    expect(overriddenFields(withSecret, undefined, (f) => f === 'k')).toEqual(['k'])
+    expect(overriddenFields(withSecret, 'damaged', () => false)).toEqual([])
   })
 })

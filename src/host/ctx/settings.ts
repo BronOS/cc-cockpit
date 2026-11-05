@@ -1,5 +1,7 @@
 // `ctx.settings` and `ctx.onSettingsChange` (design §5). Main validates the values against the
-// plugin's manifest schemas (defaults applied) and sends them at activation and on every change;
+// plugin's manifest schemas (defaults applied; the project values are the effective ones, the
+// project's overrides over the global values, design-next §5.2) and sends them at activation and
+// on every change;
 // the host only holds the latest snapshot and tells listeners. Nothing is validated again here:
 // the host is not the authority, and a snapshot that fails main's check is never sent (main
 // restarts the host without that plugin instead, see HostManager.settingsChanged).

@@ -104,6 +104,7 @@ import { ProjectSettingsService } from './settings/project-settings-service'
 import { ServiceChoices } from './plugins/service-choices'
 import { SettingsService } from './settings/settings-service'
 import { migrateSessionFilesShown, needsSessionFilesMigration } from './settings/sessions-migration'
+import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
@@ -115,7 +116,7 @@ import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
-import { pluginConfigView, setPluginConfig, type PluginConfigDeps } from './settings/plugin-config'
+import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
 import { ThemeService } from './themes/theme-service'
@@ -342,6 +343,23 @@ function start(): void {
   // Plugin hosts wait for this: before it, every plugin looks uninstalled.
   const pluginsLoaded: Promise<void> = plugins.load().catch((err: unknown) => console.error('loading plugins failed', err))
   void pluginsLoaded.then(() => claudePluginsBuilds.start())
+  // Once: stored project values equal to their schema default become "use global" (design-next
+  // §5.2, settings/project-defaults-migration.ts). After the load, as it needs the manifests; a host
+  // started before it sees the same values (the global value starts as that default).
+  void pluginsLoaded.then(() => {
+    try {
+      migrateProjectDefaults({
+        app: registry.app,
+        projects: registry,
+        projectSchemaOf: (pluginId) => {
+          const p = plugins.get(pluginId)
+          return p?.state.ok === true ? p.manifest?.contributes?.settings?.project : undefined
+        }
+      })
+    } catch (err) {
+      console.error('migrating project settings to global values failed', err)
+    }
+  })
   void marketplace.refresh()
   marketplace.startPeriodicRefresh()
   const commands = new CommandRegistry(
@@ -722,6 +740,11 @@ function start(): void {
     await Promise.all(out.map((p) => pluginSecrets.loadSettings(p.id, projectId, evictionMark)))
     return out
   }
+  /** `app.json` › `pluginProjectDefaults[pluginId]` as stored (user-writable: own property only, anything). */
+  const projectDefaultsOf = (pluginId: string): unknown => {
+    const all: unknown = registry.app.data.pluginProjectDefaults
+    return isPlainObject(all) && Object.hasOwn(all, pluginId) ? all[pluginId] : undefined
+  }
   /**
    * A plugin's stored app and project settings against its manifest (also shown in Settings), with
    * its secret fields merged in from the decrypted cache (plugin-settings.ts hostSettingsOf).
@@ -731,7 +754,7 @@ function start(): void {
     if (!manifest) return { ok: false, reason: 'the plugin is not installed' }
     const check = pluginHostSettings(
       manifest,
-      { app: registry.app.data.pluginSettings[pluginId], project: registry.get(projectId)?.pluginSettings[pluginId] },
+      { app: registry.app.data.pluginSettings[pluginId], project: registry.get(projectId)?.pluginSettings[pluginId], projectDefaults: projectDefaultsOf(pluginId) },
       pluginSecrets,
       projectId
     )
@@ -1179,11 +1202,15 @@ function start(): void {
     appSettings: (pluginId) => settings.pluginAppSettings(pluginId),
     projectSettings: (projectId, pluginId) => projectSettings.pluginProjectSettings(projectId, pluginId),
     saveApp: (pluginId, values) => settings.savePluginSettings(pluginId, values),
-    saveProject: (projectId, pluginId, values) => projectSettings.saveSettings(projectId, pluginId, values)
+    saveProject: (projectId, pluginId, values) => projectSettings.saveSettings(projectId, pluginId, values),
+    globalSettings: (pluginId) => settings.pluginProjectDefaults(pluginId),
+    projectOverrides: (projectId, pluginId) => projectSettings.pluginProjectOverrides(projectId, pluginId),
+    saveGlobal: (pluginId, values) => settings.saveProjectDefaults(pluginId, values)
   }
   registerPluginConfigHandler(socket, {
     view: (projectId, pluginId) => pluginConfigView(pluginConfigDeps, projectId, pluginId),
-    set: (projectId, pluginId, edits, scope) => setPluginConfig(pluginConfigDeps, projectId, pluginId, edits, scope)
+    set: (projectId, pluginId, edits, scope) => setPluginConfig(pluginConfigDeps, projectId, pluginId, edits, scope),
+    useGlobal: (projectId, pluginId, keys) => useGlobalConfig(pluginConfigDeps, projectId, pluginId, keys)
   })
 
   /** Open a folder named on a command line; false when the argv names none (or it failed). */
@@ -1356,7 +1383,22 @@ function start(): void {
         await hosts.settingsChanged(projectId).catch((err: unknown) => console.error('plugin settings push failed', err))
       }
     },
-    secrets: pluginSecrets
+    secrets: pluginSecrets,
+    projectDefaults: {
+      get: projectDefaultsOf,
+      set: (pluginId, value) => {
+        registry.app.update((a) => {
+          // app.json is user-writable: a damaged top level is replaced rather than written into.
+          if (!isPlainObject(a.pluginProjectDefaults)) a.pluginProjectDefaults = {}
+          a.pluginProjectDefaults[pluginId] = value
+        })
+      }
+    },
+    openProjectIds: () => windows.projectWindows().map((w) => w.projectId),
+    // Text of what the host gets: compared before and after a global save, never shown or logged.
+    settingsFingerprint: (projectId, pluginId) => JSON.stringify(hostSettingsOf(projectId, pluginId)),
+    projectSettingsChanged: (projectId, pluginId) =>
+      hosts.settingsChanged(projectId, pluginId).catch((err: unknown) => console.error('plugin settings push failed', err))
   })
   // Plugin services on the Plugins page: status over the set the project's host runs, and the pick.
   const serviceChoices = new ServiceChoices({
@@ -1385,6 +1427,7 @@ function start(): void {
     settingsChanged: (projectId, pluginId) => hosts.settingsChanged(projectId, pluginId),
     layouts,
     secrets: pluginSecrets,
+    projectDefaults: projectDefaultsOf,
     // A project's colour shows in core in two places, each reached its own way: its own window's
     // title bar and top line (`project.updated`, the summary window.info would now give), and an
     // open picker's rows (it reads the list again). Other windows' strip dots are a plugin's

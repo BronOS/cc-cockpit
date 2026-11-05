@@ -308,8 +308,15 @@ function services(secrets: PluginSecrets) {
     ])
   )
   const announced: string[] = []
+  // `app.json` › `pluginProjectDefaults`: the global values of the project fields.
+  const globals = new Map<string, unknown>()
   const host = (projectId: string) =>
-    hostSettingsOf(manifest, { app: appSettings.get(ID), project: records.get(projectId)?.pluginSettings[ID] }, secrets, projectId)
+    hostSettingsOf(
+      manifest,
+      { app: appSettings.get(ID), project: records.get(projectId)?.pluginSettings[ID], projectDefaults: globals.get(ID) },
+      secrets,
+      projectId
+    )
   const app = new SettingsService({
     projects: { list: () => [], get: () => undefined, relink: () => { throw new Error('unused') }, forget: () => {}, update: () => {} },
     hasWindow: () => false,
@@ -334,7 +341,11 @@ function services(secrets: PluginSecrets) {
     bundledOffChanged: async () => {},
     // What the hosts would read right now (the cache must be current when this runs).
     pluginSettingsChanged: async () => void announced.push(`app ${JSON.stringify(host(P))}`),
-    secrets
+    secrets,
+    projectDefaults: { get: (id) => globals.get(id), set: (id, v) => void globals.set(id, v) },
+    openProjectIds: () => [...records.keys()],
+    settingsFingerprint: (projectId) => JSON.stringify(host(projectId)),
+    projectSettingsChanged: async (projectId) => void announced.push(`project ${projectId} ${JSON.stringify(host(projectId))}`)
   })
   const project = new ProjectSettingsService({
     projects: {
@@ -353,9 +364,10 @@ function services(secrets: PluginSecrets) {
     enabledChanged: async () => {},
     settingsChanged: async (projectId) => void announced.push(`project ${projectId} ${JSON.stringify(host(projectId))}`),
     layouts: { view: () => undefined, move: () => undefined },
-    secrets
+    secrets,
+    projectDefaults: (id) => globals.get(id)
   })
-  return { app, project, appSettings, records, announced, host }
+  return { app, project, appSettings, records, announced, host, globals }
 }
 
 describe('settings services', () => {
@@ -530,6 +542,62 @@ describe('settings services', () => {
     await project.saveSettings(P, ID, { board: 'b' }, { key: null })
     expect(secrets.hasSetting(ID, `setting:project:${P}:key`)).toBe(false)
     expect(host(P)).toEqual({ ok: true, app: { site: 'example' }, project: { board: 'b' } })
+  })
+})
+
+describe('global values of project fields (design-next §5.2)', () => {
+  it('a global secret reaches every project without an override; an override wins; clearing it uses global again', async () => {
+    const secrets = openSecrets()
+    const { app, project, records, announced, host, globals } = services(secrets)
+    const result = await app.saveProjectDefaults(ID, { board: 'team' }, { key: 'global-key' })
+    expect(result).toEqual({ ok: true, values: { board: 'team' }, secretFields: { key: { set: true } } })
+    expect(globals.get(ID)).toEqual({ board: 'team' })
+    expect(secrets.hasSetting(ID, 'setting:projectDefault:key')).toBe(true)
+    expect(secretsFile()).not.toContain('global-key')
+    expect(JSON.stringify(app.pluginProjectDefaults(ID))).not.toContain('global-key')
+    expect(app.pluginProjectDefaults(ID)?.secretFields).toEqual({ key: { set: true } })
+    // Both projects use global: both effective values changed, both are told.
+    const both = { ok: true, app: { site: 'example' }, project: { board: 'team', key: 'global-key' } }
+    expect(announced).toEqual([`project ${P} ${JSON.stringify(both)}`, `project ${Q} ${JSON.stringify(both)}`])
+    expect(project.view(P).plugins[0]!.projectSettings).toMatchObject({ values: { board: 'team' }, secretFields: { key: { set: true } }, overrides: [] })
+
+    // P overrides the secret: only P is told, and Q keeps the global value.
+    announced.length = 0
+    await project.saveSettings(P, ID, {}, { key: 'own-key' })
+    expect(records.get(P)!.pluginSettings[ID]).toEqual({})
+    expect(host(P)).toMatchObject({ project: { board: 'team', key: 'own-key' } })
+    expect(host(Q)).toMatchObject({ project: { key: 'global-key' } })
+    expect(project.view(P).plugins[0]!.projectSettings?.overrides).toEqual(['key'])
+
+    // A global edit P overrides changes nothing in P: only Q hears of it.
+    announced.length = 0
+    await app.saveProjectDefaults(ID, { board: 'team' }, { key: 'global-2' })
+    expect(announced).toEqual([`project ${Q} ${JSON.stringify({ ok: true, app: { site: 'example' }, project: { board: 'team', key: 'global-2' } })}`])
+
+    // Clearing P's override: P uses the global value again.
+    await project.saveSettings(P, ID, {}, { key: null })
+    expect(host(P)).toMatchObject({ project: { key: 'global-2' } })
+    expect(project.view(P).plugins[0]!.projectSettings?.overrides).toEqual([])
+  })
+
+  it('decrypts the global secret values with the app-wide ones, for every project', async () => {
+    const first = openSecrets()
+    await first.writeSettings(ID, new Map([['setting:projectDefault:key', 'g'], [`setting:project:${P}:key`, 'p']]))
+    first.flush()
+    const s = openSecrets()
+    await s.loadSettings(ID, Q)
+    expect(s.cachedSetting(ID, 'setting:projectDefault:key')).toBe('g')
+    expect(s.cachedSetting(ID, `setting:project:${P}:key`)).toBeUndefined()
+    // A project closing or forgotten keeps the global value (not one of its `setting:project:` keys).
+    s.evictProject(Q)
+    s.forgetProject(P)
+    expect(s.cachedSetting(ID, 'setting:projectDefault:key')).toBe('g')
+    expect(s.hasSetting(ID, 'setting:projectDefault:key')).toBe(true)
+    expect(hostSettingsOf(manifest, { projectDefaults: { board: 'b' } }, s, Q)).toEqual({
+      ok: true,
+      app: { site: 'example' },
+      project: { board: 'b', key: 'g' }
+    })
   })
 })
 
