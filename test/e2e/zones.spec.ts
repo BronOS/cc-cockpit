@@ -1,7 +1,9 @@
 // Task 18: zones. Panels in the left / right / bottom zones, their icon strips and menus, the
 // collapse keys, draggable splitters, badges, and a layout that survives closing the window.
-// Only the core Sessions panel `core/sessions` (default zone right) exists by default; a second panel is declared
-// through the `pluginPanels` test hook, the way Task 25 will declare a plugin's.
+// Core has no panels of its own (the Sessions panel is the bundled cockpit.sessions plugin's, off in
+// this harness), so each test declares a stand-in "Sessions" panel `stand/sessions` (default zone
+// right) through the `pluginPanels` test hook, the way a plugin's host declares its panels; a second
+// panel is declared the same way.
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +21,16 @@ const sessionsPanel = (page: Page, zone: string) =>
   page.locator(`.zone-${zone} section.panel[aria-label="Sessions"]`)
 
 const layout = (c: Cockpit): Promise<LayoutView> => c.hook<LayoutView>('layout', c.projectDir)
+
+/** Declare the stand-in Sessions panel (again after a window reopened: its declaration is per open project). */
+async function declareSessions(c: Cockpit, page: Page = c.page): Promise<void> {
+  await c.hook('pluginPanels', c.projectDir, 'stand', [{ id: 'sessions', title: 'Sessions', defaultZone: 'right' }])
+  await expect(page.getByRole('button', { name: /^Sessions/ })).toHaveCount(1)
+}
+
+test.beforeEach(async ({ cockpit }) => {
+  await declareSessions(cockpit)
+})
 
 /**
  * Move every window off the real OS cursor before a mouse drag. A cursor resting over the window
@@ -81,7 +93,7 @@ test('move a panel to the bottom zone, hide and unhide it, collapse a zone, reop
     await expect(sessionsIcon(page, 'left')).toHaveCount(0)
     await expect(sessionsIcon(page, 'bottom')).toHaveAttribute('aria-pressed', 'true')
     expect((await layout(cockpit)).layout.zones.bottom.panels.map((p) => p.panelKey)).toEqual([
-      'core/sessions'
+      'stand/sessions'
     ])
 
     // Hide: gone from the strip and the area, listed under "..." of a strip.
@@ -89,7 +101,7 @@ test('move a panel to the bottom zone, hide and unhide it, collapse a zone, reop
     await page.getByRole('menuitem', { name: 'Hide' }).click()
     await expect(page.locator('section.panel')).toHaveCount(0)
     await expect(page.getByRole('button', { name: /^Sessions/ })).toHaveCount(0)
-    expect((await layout(cockpit)).layout.hidden).toEqual(['core/sessions'])
+    expect((await layout(cockpit)).layout.hidden).toEqual(['stand/sessions'])
 
     // Unhide from the "..." of the LEFT strip: it returns where it was (bottom), still open.
     await page.locator('.zone-left').getByRole('button', { name: 'Hidden panels' }).click()
@@ -126,6 +138,7 @@ test('move a panel to the bottom zone, hide and unhide it, collapse a zone, reop
     await expect.poll(() => cockpit.app.windows().length).toBe(2)
     const reopened = cockpit.app.windows().find((p) => p !== pageB)!
     await reopened.locator('.tabs-pane').waitFor()
+    await declareSessions(cockpit, reopened)
 
     // The same layout: the bottom zone is collapsed, its strip shows the panel, and the key
     // expands it again with the panel still open.
@@ -208,7 +221,7 @@ test('panels stack with a draggable splitter, and zone and panel sizes are saved
   await page.mouse.up()
   await expect.poll(async () => (await sessions.boundingBox())!.height).toBeGreaterThan(a.height + 50)
   const stored = (await layout(cockpit)).layout.zones.left
-  expect(stored.panels.find((p) => p.panelKey === 'core/sessions')!.size).toBeGreaterThan(280)
+  expect(stored.panels.find((p) => p.panelKey === 'stand/sessions')!.size).toBeGreaterThan(280)
 
   // Drag the zone edge 50px to the right: the left zone gets wider and the size is saved.
   const widthBefore = (await page.locator('.zone-left .panel-area').boundingBox())!.width
@@ -245,24 +258,24 @@ test('badges (count, dot) and a plugin error warning show on the icon', async ({
   await moveTo(page, 'right', 'left')
   const icon = sessionsIcon(page, 'left')
 
-  await cockpit.hook('panelStatus', cockpit.projectDir, 'core/sessions', {
+  await cockpit.hook('panelStatus', cockpit.projectDir, 'stand/sessions', {
     badge: { kind: 'count', count: 3 }
   })
   await expect(icon.locator('.panel-badge')).toHaveText('3')
   await expect(icon).toHaveAccessibleName('Sessions, 3 new')
 
-  await cockpit.hook('panelStatus', cockpit.projectDir, 'core/sessions', { badge: { kind: 'dot' } })
+  await cockpit.hook('panelStatus', cockpit.projectDir, 'stand/sessions', { badge: { kind: 'dot' } })
   await expect(icon.locator('.panel-badge-dot')).toBeVisible()
   await expect(icon).toHaveAccessibleName('Sessions, needs you')
 
-  await cockpit.hook('panelStatus', cockpit.projectDir, 'core/sessions', {
+  await cockpit.hook('panelStatus', cockpit.projectDir, 'stand/sessions', {
     error: 'jira: 401 unauthorized'
   })
   await expect(icon.locator('.panel-badge')).toHaveCount(0)
   await expect(icon.locator('.panel-error')).toHaveAttribute('title', 'jira: 401 unauthorized')
   await expect(icon).toHaveAccessibleName('Sessions, has an error')
 
-  await cockpit.hook('panelStatus', cockpit.projectDir, 'core/sessions', null)
+  await cockpit.hook('panelStatus', cockpit.projectDir, 'stand/sessions', null)
   await expect(icon.locator('.panel-error')).toHaveCount(0)
   await expect(icon).toHaveAccessibleName('Sessions')
 })

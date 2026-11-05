@@ -1,7 +1,6 @@
 import { Fragment, useRef } from 'react'
 import type { PanelInfo } from '../../shared/ipc'
 import { MIN_SIZE, type PanelPlacement, type ZoneId, type ZoneState } from '../../shared/layout'
-import { SessionsMeta, SessionsPanel } from '../sessions/SessionsPanel'
 import { MoreGlyph } from '../window-icons'
 import { MENU_WIDTH, ZONE_MENU_TRIGGER } from './IconStrip'
 import { PanelHeaderActions, PanelHeaderMeta } from './PanelHeaderBar'
@@ -18,18 +17,6 @@ function lengthOf(el: Element | null | undefined, horizontal: boolean): number {
   if (!el) return 0
   const r = el.getBoundingClientRect()
   return horizontal ? r.width : r.height
-}
-
-/** What a panel shows: the built-in Sessions panel, or a plugin's page (PluginPanel). */
-function PanelBody(props: { info: PanelInfo }): React.JSX.Element {
-  if (props.info.panelKey === 'core/sessions') {
-    return (
-      <div className="panel-body" data-panel-body={props.info.panelKey}>
-        <SessionsPanel />
-      </div>
-    )
-  }
-  return <PluginPanel info={props.info} />
 }
 
 /**
@@ -117,9 +104,7 @@ export function PanelArea(props: {
               >
                 <header className="panel-header">
                   <span className="panel-title">{info.title}</span>
-                  {/* Core's own count for Sessions; a plugin panel's meta and actions are what
-                      its plugin set with ctx.panels.header (main only ever has them for those). */}
-                  {placement.panelKey === 'core/sessions' && <SessionsMeta />}
+                  {/* The meta and actions are what the panel's plugin set with ctx.panels.header. */}
                   <PanelHeaderMeta header={info.header} />
                   <span className="panel-header-spacer" />
                   <PanelHeaderActions panelKey={placement.panelKey} header={info.header} />
@@ -144,7 +129,7 @@ export function PanelArea(props: {
                     <MoreGlyph />
                   </button>
                 </header>
-                <PanelBody info={info} />
+                <PluginPanel info={info} />
               </section>
               {!last && (
                 <Splitter

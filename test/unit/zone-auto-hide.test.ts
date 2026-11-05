@@ -24,7 +24,7 @@ function input(room: number, over: Partial<AutoHideInput> = {}): AutoHideInput {
     room,
     sizes: { left: LEFT, right: RIGHT },
     open: { left: true, right: true },
-    panels: ['core/sessions', 'test/notes'],
+    panels: ['test/sessions', 'test/notes'],
     ...over
   }
 }
@@ -95,7 +95,7 @@ describe('decideAutoHide: thresholds and order', () => {
   it('returns the same state when nothing changed', () => {
     const state = decideAutoHide(INITIAL_AUTO_HIDE, input(1000))
     expect(decideAutoHide(state, input(1000))).toBe(state)
-    expect(decideAutoHide(state, { ...input(1000), panels: ['core/sessions', 'test/notes'] })).toBe(state)
+    expect(decideAutoHide(state, { ...input(1000), panels: ['test/sessions', 'test/notes'] })).toBe(state)
   })
 })
 
@@ -216,21 +216,21 @@ describe('decideAutoHide: the setting and other re-checks', () => {
     expect(state.hidden).toEqual(['right'])
     // A panel that only goes away re-checks nothing.
     state = revealZone(state, 'right')
-    state = decideAutoHide(state, input(1000, { panels: ['core/sessions'] }))
+    state = decideAutoHide(state, input(1000, { panels: ['test/sessions'] }))
     expect(state.hidden).toEqual([])
   })
 })
 
 describe('newlyShown', () => {
   const available = [
-    { panelKey: 'core/sessions', defaultZone: 'right' as const },
+    { panelKey: 'test/sessions', defaultZone: 'right' as const },
     { panelKey: 'test/notes', defaultZone: 'left' as const },
     { panelKey: 'test/other', defaultZone: 'left' as const }
   ]
   const base = reconcile(defaultLayout(), available)
 
   it('names a zone that got a panel opened in it, expanded or moved in', () => {
-    const opened = togglePanel(base, 'core/sessions')
+    const opened = togglePanel(base, 'test/sessions')
     expect(newlyShown(base, opened)).toEqual(['right'])
     // A second panel in an open zone is new too.
     const both = togglePanel(togglePanel(base, 'test/notes'), 'test/other')
@@ -239,13 +239,13 @@ describe('newlyShown', () => {
     const collapsed = setZoneCollapsed(opened, 'right', true)
     expect(newlyShown(collapsed, opened)).toEqual(['right'])
     // An open panel moved into the other zone.
-    expect(newlyShown(opened, movePanel(opened, 'core/sessions', 'left'))).toEqual(['left'])
+    expect(newlyShown(opened, movePanel(opened, 'test/sessions', 'left'))).toEqual(['left'])
   })
 
   it('names nothing for a close, a collapse or an unchanged layout', () => {
-    const opened = togglePanel(base, 'core/sessions')
+    const opened = togglePanel(base, 'test/sessions')
     expect(newlyShown(opened, opened)).toEqual([])
-    expect(newlyShown(opened, togglePanel(opened, 'core/sessions'))).toEqual([])
+    expect(newlyShown(opened, togglePanel(opened, 'test/sessions'))).toEqual([])
     expect(newlyShown(opened, setZoneCollapsed(opened, 'right', true))).toEqual([])
     // The bottom zone is not a side zone.
     expect(newlyShown(opened, togglePanel(movePanel(base, 'test/notes', 'bottom'), 'test/notes'))).toEqual([])

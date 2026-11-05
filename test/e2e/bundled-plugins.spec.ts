@@ -63,12 +63,15 @@ test('the reviewer and editor load by default, show as built in, and a modified-
   git(projectDir, 'commit', '-q', '-m', 'first')
   writeFileSync(file, 'one\ntwo\nthree\n')
 
-  await page.locator('.zone-right').getByRole('button', { name: /^Sessions/ }).click()
+  // The Sessions panel is the bundled cockpit.sessions plugin's (default zone left); its file click
+  // goes through ctx.sessions.openFile to the project's open-file pick, the reviewer here.
+  await page.locator('.zone-left').getByRole('button', { name: /^Sessions/ }).click()
+  const sessionsPanel = page.frameLocator('section.panel[aria-label="Sessions"] iframe')
   await cockpit.newTab('claude')
   await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
   await cockpit.typeLine(`/edit ${file}`)
-  await expect(page.locator('.session-file')).toHaveCount(1)
-  await page.getByRole('button', { name: file }).click()
+  await expect(sessionsPanel.locator('.file')).toHaveCount(1)
+  await sessionsPanel.getByRole('button', { name: file }).click()
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Review: src/a.txt'])
 
   // Esc right after typing keeps the text: the page posts every change at once (a 300 ms page
@@ -85,7 +88,7 @@ test('the reviewer and editor load by default, show as built in, and a modified-
     wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
   })
   await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
-  await page.getByRole('button', { name: file }).click()
+  await sessionsPanel.getByRole('button', { name: file }).click()
   await expect(page.frameLocator('iframe[title="Review: src/a.txt"]').getByPlaceholder('Comment on the whole file (optional)')).toHaveValue(
     'kept through Esc'
   )
@@ -190,12 +193,15 @@ test('a third-party open-file plugin replaces the reviewer through the pick, and
 
   const file = join(projectDir, 'notes.txt')
   writeFileSync(file, 'one\n')
-  await page.locator('.zone-right').getByRole('button', { name: /^Sessions/ }).click()
+  // The Sessions panel is the bundled cockpit.sessions plugin's (default zone left); its file click
+  // goes through ctx.sessions.openFile to the project's open-file pick, the reviewer here.
+  await page.locator('.zone-left').getByRole('button', { name: /^Sessions/ }).click()
+  const sessionsPanel = page.frameLocator('section.panel[aria-label="Sessions"] iframe')
   await cockpit.newTab('claude')
   await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
   await cockpit.typeLine(`/edit ${file}`)
-  await expect(page.locator('.session-file')).toHaveCount(1)
-  await page.getByRole('button', { name: file }).click()
+  await expect(sessionsPanel.locator('.file')).toHaveCount(1)
+  await sessionsPanel.getByRole('button', { name: file }).click()
   await expect.poll(() => seen().map((r) => r.path), { timeout: 10_000 }).toEqual(['notes.txt'])
   expect(await stack(cockpit)).toEqual([])
 })

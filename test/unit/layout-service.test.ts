@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { CORE_PANELS, LayoutService } from '../../src/main/layout/layout-service'
+import { LayoutService } from '../../src/main/layout/layout-service'
 import type { LayoutView } from '../../src/shared/ipc'
 import { defaultLayout, hidePanel, movePanel, zoneOf, type LayoutState } from '../../src/shared/layout'
 
 const P = 'aaaaaaaaaaaaaaaa'
+
+/** A plugin panel that is there from the start in setup(), default zone right. */
+const sessionsDef = { id: 'sessions', title: 'Sessions', defaultZone: 'right' as const }
 
 function setup(): {
   service: LayoutService
@@ -22,18 +25,28 @@ function setup(): {
     },
     publish: (_id, view) => published.push(view)
   })
+  // Core has no panels of its own: a plugin's panel stands in as the one every test can move.
+  service.setPluginPanels(P, 'base', [sessionsDef])
+  published.length = 0
   return { service, stored, writes, published }
 }
 
 const notes = { id: 'notes', title: 'Notes', defaultZone: 'right' as const }
 
 describe('LayoutService.view', () => {
-  it('places the core panel in its default zone, closed, without storing anything', () => {
+  it('has no core panels: a project whose plugins declare none has none', () => {
+    const stored = new Map<string, LayoutState>([[P, defaultLayout()]])
+    const bare = new LayoutService({ getLayout: (id) => stored.get(id), setLayout: () => {}, publish: () => {} })
+    expect(bare.view(P)!.panels).toEqual([])
+    expect(bare.view(P)!.layout).toEqual(defaultLayout())
+  })
+
+  it('places a declared panel in its default zone, closed, without storing anything', () => {
     const { service, writes } = setup()
     const view = service.view(P)!
-    expect(zoneOf(view.layout, 'core/sessions')).toBe('right')
-    expect(view.layout.zones.right.panels[0]).toMatchObject({ panelKey: 'core/sessions', open: false })
-    expect(view.panels.map((p) => p.panelKey)).toEqual(CORE_PANELS.map((p) => p.panelKey))
+    expect(zoneOf(view.layout, 'base/sessions')).toBe('right')
+    expect(view.layout.zones.right.panels[0]).toMatchObject({ panelKey: 'base/sessions', open: false })
+    expect(view.panels.map((p) => p.panelKey)).toEqual(['base/sessions'])
     expect(service.view(P)!.layout).toEqual(view.layout)
     expect(writes).toHaveLength(0)
   })
@@ -43,18 +56,19 @@ describe('LayoutService.view', () => {
     service.setPluginPanels(P, 'jira', [{ ...notes, defaultZone: 'left' }])
     // The user puts Notes above Sessions.
     const base = published.at(-1)!.layout
-    service.set(P, movePanel(base, 'core/sessions', 'left'))
+    service.set(P, movePanel(base, 'base/sessions', 'left'))
     expect(stored.get(P)!.zones.left.panels.map((p) => p.panelKey)).toEqual([
       'jira/notes',
-      'core/sessions'
+      'base/sessions'
     ])
     // Window reopened: `layout.get` runs before the plugin declares its panels again.
     service.closeProject(P)
     expect(zoneOf(service.view(P)!.layout, 'jira/notes')).toBeUndefined()
+    service.setPluginPanels(P, 'base', [sessionsDef])
     service.setPluginPanels(P, 'jira', [{ ...notes, defaultZone: 'left' }])
     expect(published.at(-1)!.layout.zones.left.panels.map((p) => p.panelKey)).toEqual([
       'jira/notes',
-      'core/sessions'
+      'base/sessions'
     ])
   })
 
@@ -68,9 +82,9 @@ describe('LayoutService.set', () => {
   it('stores a valid layout as sent', () => {
     const { service, stored } = setup()
     const base = service.view(P)!.layout
-    const moved = movePanel(base, 'core/sessions', 'bottom')
+    const moved = movePanel(base, 'base/sessions', 'bottom')
     const view = service.set(P, moved)!
-    expect(zoneOf(view.layout, 'core/sessions')).toBe('bottom')
+    expect(zoneOf(view.layout, 'base/sessions')).toBe('bottom')
     expect(stored.get(P)).toEqual(view.layout)
   })
 
@@ -83,15 +97,15 @@ describe('LayoutService.set', () => {
     }
     const view = service.set(P, forged)!
     expect(zoneOf(view.layout, 'evil/panel')).toBeUndefined()
-    expect(zoneOf(view.layout, 'core/sessions')).toBe('right')
+    expect(zoneOf(view.layout, 'base/sessions')).toBe('right')
     expect(service.set(P, 'nonsense')!.layout.zones.right.panels).toHaveLength(1)
   })
 
   it('keeps a hidden panel hidden', () => {
     const { service } = setup()
     const base = service.view(P)!.layout
-    const view = service.set(P, hidePanel(base, 'core/sessions'))!
-    expect(view.layout.hidden).toEqual(['core/sessions'])
+    const view = service.set(P, hidePanel(base, 'base/sessions'))!
+    expect(view.layout.hidden).toEqual(['base/sessions'])
   })
 })
 
@@ -119,6 +133,8 @@ describe('LayoutService.set before the plugins declared their panels', () => {
       publish: () => {},
       enabledPlugins: () => enabled
     })
+    // The stand-in panel (setup()) is declared at once in the new window, x.p's are not yet.
+    fresh.setPluginPanels(P, 'base', [sessionsDef])
     return { stored, service: fresh }
   }
 
@@ -126,12 +142,12 @@ describe('LayoutService.set before the plugins declared their panels', () => {
     const { stored, service } = withStoredPlugin(['x.p'])
     const before = stored.get(P)!.zones.left.panels.map((p) => p.panelKey)
     expect(before).toEqual(['x.p/a', 'x.p/b'])
-    // The page only knows core panels; it moves Sessions to the left zone (appended).
-    const view = service.set(P, movePanel(service.view(P)!.layout, 'core/sessions', 'left'))!
+    // The page only knows the declared panels; it moves Sessions to the left zone (appended).
+    const view = service.set(P, movePanel(service.view(P)!.layout, 'base/sessions', 'left'))!
     // The reply holds only panels the page can show.
-    expect(view.layout.zones.left.panels.map((p) => p.panelKey)).toEqual(['core/sessions'])
+    expect(view.layout.zones.left.panels.map((p) => p.panelKey)).toEqual(['base/sessions'])
     // What is stored keeps the plugin's panels where they were, and the hidden one hidden.
-    expect(stored.get(P)!.zones.left.panels.map((p) => p.panelKey)).toEqual(['x.p/a', 'x.p/b', 'core/sessions'])
+    expect(stored.get(P)!.zones.left.panels.map((p) => p.panelKey)).toEqual(['x.p/a', 'x.p/b', 'base/sessions'])
     expect(stored.get(P)!.hidden).toEqual(['x.p/c'])
     expect(stored.get(P)!.remembered['x.p/c']).toMatchObject({ hidden: true, zone: 'left' })
     // Once the host declares, the view shows them in that order.
@@ -139,7 +155,7 @@ describe('LayoutService.set before the plugins declared their panels', () => {
     expect(service.view(P)!.layout.zones.left.panels.map((p) => p.panelKey)).toEqual([
       'x.p/a',
       'x.p/b',
-      'core/sessions'
+      'base/sessions'
     ])
   })
 
@@ -155,8 +171,8 @@ describe('LayoutService.move', () => {
   it('moves a panel to the end of another zone, stores it and publishes', () => {
     const { service, stored, published } = setup()
     service.setPluginPanels(P, 'jira', [notes])
-    const view = service.move(P, 'core/sessions', 'bottom')!
-    expect(zoneOf(view.layout, 'core/sessions')).toBe('bottom')
+    const view = service.move(P, 'base/sessions', 'bottom')!
+    expect(zoneOf(view.layout, 'base/sessions')).toBe('bottom')
     expect(zoneOf(view.layout, 'jira/notes')).toBe('right')
     expect(stored.get(P)).toEqual(view.layout)
     expect(published.at(-1)).toEqual(view)
@@ -165,29 +181,29 @@ describe('LayoutService.move', () => {
   it('does not store or publish when the panel is already in that zone', () => {
     const { service, writes, published } = setup()
     const before = published.length
-    service.move(P, 'core/sessions', 'right')
+    service.move(P, 'base/sessions', 'right')
     expect(writes).toHaveLength(0)
     expect(published).toHaveLength(before)
   })
 
   it('brings a hidden panel back into the chosen zone', () => {
     const { service } = setup()
-    service.set(P, hidePanel(service.view(P)!.layout, 'core/sessions'))
-    const view = service.move(P, 'core/sessions', 'left')!
+    service.set(P, hidePanel(service.view(P)!.layout, 'base/sessions'))
+    const view = service.move(P, 'base/sessions', 'left')!
     expect(view.layout.hidden).toEqual([])
-    expect(zoneOf(view.layout, 'core/sessions')).toBe('left')
+    expect(zoneOf(view.layout, 'base/sessions')).toBe('left')
   })
 
   it('refuses a zone or a panel that does not exist, and stores nothing', () => {
     const { service, writes } = setup()
-    expect(() => service.move(P, 'core/sessions', 'sideways')).toThrow('unknown zone')
+    expect(() => service.move(P, 'base/sessions', 'sideways')).toThrow('unknown zone')
     expect(() => service.move(P, 'jira/notes', 'left')).toThrow('unknown panel')
     expect(() => service.move(P, 'evil/panel', 'left')).toThrow('unknown panel')
     expect(writes).toHaveLength(0)
   })
 
   it('answers undefined for an unknown project', () => {
-    expect(setup().service.move('ffffffffffffffff', 'core/sessions', 'left')).toBeUndefined()
+    expect(setup().service.move('ffffffffffffffff', 'base/sessions', 'left')).toBeUndefined()
   })
 })
 
@@ -197,7 +213,7 @@ describe('plugin panels', () => {
     service.view(P)
     service.setPluginPanels(P, 'jira', [notes])
     const view = published.at(-1)!
-    expect(view.panels.map((p) => p.panelKey)).toEqual(['core/sessions', 'jira/notes'])
+    expect(view.panels.map((p) => p.panelKey)).toEqual(['base/sessions', 'jira/notes'])
     expect(zoneOf(view.layout, 'jira/notes')).toBe('right')
   })
 
@@ -207,7 +223,7 @@ describe('plugin panels', () => {
     const placed = movePanel(published.at(-1)!.layout, 'jira/notes', 'bottom')
     service.set(P, placed)
     service.setPluginPanels(P, 'jira', [])
-    expect(published.at(-1)!.panels.map((p) => p.panelKey)).toEqual(['core/sessions'])
+    expect(published.at(-1)!.panels.map((p) => p.panelKey)).toEqual(['base/sessions'])
     expect(zoneOf(published.at(-1)!.layout, 'jira/notes')).toBeUndefined()
     service.setPluginPanels(P, 'jira', [notes])
     expect(zoneOf(published.at(-1)!.layout, 'jira/notes')).toBe('bottom')
@@ -222,7 +238,7 @@ describe('plugin panels', () => {
     const panels = published.at(-1)!.panels
     expect(panels.find((p) => p.panelKey === 'acme.jira/board')?.src).toBe('cc-plugin://acme.jira/panels/my%20board.html')
     expect(panels.find((p) => p.panelKey === 'acme.jira/bare')).not.toHaveProperty('src')
-    expect(panels.find((p) => p.panelKey === 'core/sessions')).not.toHaveProperty('src')
+    expect(panels.find((p) => p.panelKey === 'base/sessions')).not.toHaveProperty('src')
   })
 
   it("gives a plugin panel with an icon file its cc-plugin:// image URL instead of a glyph", () => {
@@ -249,14 +265,14 @@ describe('panel status', () => {
   it('shows a badge and an error on the panel info and publishes', () => {
     const { service, published } = setup()
     expect(
-      service.setStatus(P, 'core/sessions', { badge: { kind: 'count', count: 3 }, error: 'boom' })
+      service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 3 }, error: 'boom' })
     ).toBe(true)
     expect(published.at(-1)!.panels[0]).toMatchObject({
-      panelKey: 'core/sessions',
+      panelKey: 'base/sessions',
       badge: { kind: 'count', count: 3 },
       error: 'boom'
     })
-    service.setStatus(P, 'core/sessions', undefined)
+    service.setStatus(P, 'base/sessions', undefined)
     expect(published.at(-1)!.panels[0]!.badge).toBeUndefined()
     expect(published.at(-1)!.panels[0]!.error).toBeUndefined()
   })
@@ -269,15 +285,15 @@ describe('panel status', () => {
 
   it('cleans a count (floor, clamp; zero or NaN shows nothing) and a dot', () => {
     const { service, published } = setup()
-    service.setStatus(P, 'core/sessions', { badge: { kind: 'count', count: 2.9 } })
+    service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 2.9 } })
     expect(published.at(-1)!.panels[0]!.badge).toEqual({ kind: 'count', count: 2 })
-    service.setStatus(P, 'core/sessions', { badge: { kind: 'count', count: 1e9 } })
+    service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 1e9 } })
     expect(published.at(-1)!.panels[0]!.badge).toEqual({ kind: 'count', count: 99_999 })
-    service.setStatus(P, 'core/sessions', { badge: { kind: 'count', count: 0 } })
+    service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: 0 } })
     expect(published.at(-1)!.panels[0]!.badge).toBeUndefined()
-    service.setStatus(P, 'core/sessions', { badge: { kind: 'count', count: NaN } })
+    service.setStatus(P, 'base/sessions', { badge: { kind: 'count', count: NaN } })
     expect(published.at(-1)!.panels[0]!.badge).toBeUndefined()
-    service.setStatus(P, 'core/sessions', { badge: { kind: 'dot' } })
+    service.setStatus(P, 'base/sessions', { badge: { kind: 'dot' } })
     expect(published.at(-1)!.panels[0]!.badge).toEqual({ kind: 'dot' })
   })
 
@@ -342,7 +358,7 @@ describe('panel status', () => {
     const { service } = setup()
     service.setPluginPanels(P, 'jira', [notes])
     service.closeProject(P)
-    expect(service.view(P)!.panels.map((p) => p.panelKey)).toEqual(['core/sessions'])
+    expect(service.view(P)!.panels).toEqual([])
   })
 })
 
@@ -450,7 +466,7 @@ describe('LayoutService slots (design-next §2)', () => {
     const { service, providers } = slotSetup()
     providers.set('agenda', cal)
     const one = [{ type: 'agenda', position: 'top' as const, height: 60 }]
-    expect(service.setSlots(P, 'core/sessions', one)).toBe(false)
+    expect(service.setSlots(P, 'base/sessions', one)).toBe(false)
     expect(service.setSlots(P, 'a.inbox/nope', one)).toBe(false)
     service.setSlots(P, 'a.inbox/main', one)
     service.setPluginPanels(P, 'a.inbox', [])

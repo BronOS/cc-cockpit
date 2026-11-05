@@ -173,7 +173,7 @@ export const SERVICE_VERSION_MAX = 9999
 export const MAX_SERVICES = 32
 
 /**
- * The plugin can take over a click on a changed file in core's Sessions panel (friction round 1,
+ * The plugin can take over a click on a changed file in the Sessions panel (cockpit.sessions' ctx.sessions.openFile; friction round 1,
  * Task 12): main sends it `{ path, tabId }` through `ctx.files.onOpen`. `title` labels the plugin in
  * Settings > Plugins when the project has to pick between several (and the built-in viewer).
  */

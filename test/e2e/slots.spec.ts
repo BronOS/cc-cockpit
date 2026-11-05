@@ -150,40 +150,47 @@ test('an agenda slot: no provider picked, one picked, hidden panel, none, a prov
   await expect(page.locator('section.panel[aria-label="Board"]')).toBeVisible()
 })
 
-test('the top bar slot sessions-strip replaces the built-in entries while a provider draws it', async ({ cockpit }) => {
+test('the top bar slot sessions-strip: a provider\'s frame between the name and the "+", only the "+" without one', async ({ cockpit }) => {
   const { page } = cockpit
   const dirB = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-e2e-slots-b-')))
   try {
-    // Window B has a Claude tab: it is an entry in window A's strip.
+    // Window B has a Claude tab. Core draws no entry for it (the strip is a plugin's): with no
+    // provider the bar is the project's name, the "+" and the gear.
     await cockpit.hook('openProject', dirB)
     await expect.poll(() => cockpit.app.windows().length).toBe(2)
     const pageB = cockpit.app.windows().find((p) => p !== page)!
     await pageB.locator('.tabs-pane').waitFor()
     await pageB.getByRole('button', { name: 'New tab' }).click()
     await pageB.getByRole('menuitem', { name: 'Claude' }).click()
-    const entries = page.locator('.top-strip .strip-entry')
-    await expect(entries).toHaveCount(1, { timeout: 15_000 })
+    await expect.poll(async () => (await cockpit.hook<unknown[]>('sessions', dirB)).length, { timeout: 15_000 }).toBe(1)
+    const plus = page.locator('.top-strip .strip-open-project')
     await expect(page.locator('.top-strip .strip-nav.has-slot')).toHaveCount(0)
+    await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(0)
+    await expect(plus).toHaveCount(1)
+    await expect(page.locator('.top-strip .strip-nav button')).toHaveCount(1)
 
-    // The provider is the only candidate: its frame takes the entries' place, between the project
-    // name and the "+", and its page talks to the provider with the app host.
+    // The provider is the only candidate: its frame sits between the project name and the "+",
+    // takes its room once its page has a port, and its page talks to the provider with the app host.
     await cockpit.hook('linkPlugin', fixture('slot-provider'))
     await cockpit.hook('enablePlugin', cockpit.projectDir, ONE)
     const frame = page.locator('.top-strip [data-slot-frame][data-slot-type="sessions-strip"]')
     await expect(frame).toHaveCount(1, { timeout: 15_000 })
     await expect(frame).toHaveAttribute('data-slot-plugin', ONE)
     await expect(page.locator('.top-strip .strip-nav.has-slot')).toHaveCount(1)
-    await expect(entries).toHaveCount(0)
-    await expect(page.locator('.top-strip .strip-open-project')).toHaveCount(1)
+    await expect(plus).toHaveCount(1)
     await expect.poll(() => text(pageFrame(page, ONE, 'strip.html'), 'who'), { timeout: 15_000 }).toBe('one')
+    await expect(frame).toHaveAttribute('data-connected', '')
+    expect((await frame.boundingBox())!.width).toBeGreaterThan(100)
+    // The "+" sits after the frame, before the gear.
+    expect((await plus.boundingBox())!.x).toBeGreaterThan((await frame.boundingBox())!.x)
     expect(await text(pageFrame(page, ONE, 'strip.html'), 'slot')).toBe('sessions-strip')
     expect(logOf(cockpit, 'one').opens).toContainEqual({ type: 'sessions-strip', host: { kind: 'app', place: 'top-bar' }, params: null })
 
-    // None: the built-in entries are back and the frame is gone.
+    // None: the frame is gone and the bar is the "+" again.
     await invoke(page, 'settings.pluginServiceProvider', { service: '@slot:sessions-strip', pluginId: '@none' })
     await expect(frame).toHaveCount(0)
     await expect(page.locator('.top-strip .strip-nav.has-slot')).toHaveCount(0)
-    await expect(entries).toHaveCount(1)
+    await expect(plus).toHaveCount(1)
   } finally {
     rmSync(dirB, { recursive: true, force: true })
   }

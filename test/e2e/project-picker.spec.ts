@@ -28,8 +28,7 @@ test('the strip’s + shows the picker, once; picking a recent project opens it 
     }, nameB)
     await expect.poll(() => titles(app)).toEqual([nameA])
 
-    // No Claude tab anywhere: the strip is there all the same, with its "+".
-    await expect(page.locator('.top-strip .strip-entry')).toHaveCount(0)
+    // No Claude tab anywhere: the bar is there all the same, with its "+".
     const plus = page.locator('.top-strip').getByRole('button', { name: 'Open project…' })
     await expect(plus).toHaveAttribute('title', 'Open project…')
     await plus.click()

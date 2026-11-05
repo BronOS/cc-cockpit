@@ -276,8 +276,8 @@ iframe:focus-visible {
   display: flex;
   align-items: center;
 }
-/* The entries scroll here, not in the bar: the gear after it stays at the right end. Only as
-   wide as its entries, so the rest of the bar stays a drag region. */
+/* The "+" after the sessions-strip slot (TopStrip). Only as wide as what it holds, so the rest of
+   the bar stays a drag region. */
 .strip-list {
   flex: 0 1 auto;
   display: flex;
@@ -286,44 +286,6 @@ iframe:focus-visible {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
-}
-.strip-entry {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 26px;
-  padding: 0 10px 0 9px;
-  font: inherit;
-  font-size: var(--cc-text-sm);
-  color: var(--cc-fg-muted);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: var(--cc-radius-md);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.strip-entry:hover {
-  border-color: var(--cc-border-strong);
-  color: var(--cc-fg);
-}
-.strip-project {
-  color: var(--cc-fg);
-  font-weight: 500;
-}
-/* The entry that waits on the user stands out by a tint of its status colour, not only by
-   weight. */
-.strip-entry[data-status='needs-permission'] {
-  color: var(--cc-fg);
-  font-weight: 600;
-  background: color-mix(in srgb, var(--cc-status-needs-permission) 13%, transparent);
-  border-color: color-mix(in srgb, var(--cc-status-needs-permission) 40%, transparent);
-}
-.strip-entry[data-status='needs-permission'] .strip-project {
-  font-weight: 600;
-}
-.strip-entry[data-status='ended'] {
-  opacity: 0.6;
 }
 .titlebar-end {
   flex: none;
@@ -361,7 +323,7 @@ iframe:focus-visible {
 .see-through .top-strip[data-project-color] {
   background: color-mix(in srgb, var(--cc-bar-tinted) calc(var(--cc-window-alpha) * 100%), transparent);
 }
-/* The dot by a project's name: the title-bar chip, other windows' strip entries, the picker rows.
+/* The dot by a project's name: the title-bar chip, the picker rows.
    A hairline ring in the text colour keeps a light colour visible on a light bar. */
 .project-dot {
   flex: none;
@@ -370,10 +332,6 @@ iframe:focus-visible {
   height: 8px;
   border-radius: 50%;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent);
-}
-.strip-text .project-dot {
-  margin-right: 6px;
-  vertical-align: 0;
 }
 
 /* ── Tab bar (TabBar.tsx): a segmented control at the top of the centre column ── */
@@ -1404,6 +1362,19 @@ iframe:focus-visible {
   flex: 1 1 auto;
   align-self: stretch;
 }
+/* Until main handed the page its port (SlotFrame `collapseUntilConnected`) the frame takes no room:
+   a frame main refuses a port (its provider stopped meanwhile) leaves no blank, no-drag gap in the
+   bar, only the "+" and the gear. The iframe still loads, 0 px wide. */
+.slot-frame-wrap[data-collapsible]:not([data-connected]) {
+  flex: 0 0 0;
+  width: 0;
+  overflow: hidden;
+}
+/* With a slot the "+" sits at the bar's end, before the gear, whether the frame has its room yet or
+   not: it does not jump when the port arrives. */
+.strip-nav.has-slot .strip-list {
+  margin-left: auto;
+}
 .top-strip.title-bar .slot-frame-top-bar {
   -webkit-app-region: no-drag;
 }
@@ -1465,224 +1436,6 @@ iframe:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-/* Sessions panel (renderer/sessions/SessionsPanel.tsx): a card per Claude tab. */
-.sessions-empty {
-  margin: 0;
-  color: var(--cc-fg-muted);
-}
-
-.sessions-list,
-.session-notes,
-.session-files {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.sessions-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.session-item {
-  padding: 11px 12px 12px;
-  border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-lg);
-  background: var(--cc-surface-1);
-  overflow: hidden;
-}
-
-.session-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.session-title {
-  /* A topic from the terminal title can be long: it shrinks with an ellipsis like the status
-     beside it, and the full text is the tooltip. */
-  min-width: 0;
-  flex: 0 1 auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-weight: 600;
-  text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.session-title:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.session-status {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: var(--cc-text-sm);
-  color: var(--cc-fg-muted);
-  white-space: nowrap;
-}
-
-/* Steps done: the count over a small bar of the same fraction. */
-.session-steps {
-  flex: none;
-  margin-left: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-  font-size: var(--cc-text-xs);
-  color: var(--cc-fg-subtle);
-  font-variant-numeric: tabular-nums;
-}
-.session-steps-bar {
-  display: block;
-  width: 34px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--cc-surface-3);
-  overflow: hidden;
-}
-.session-steps-bar > span {
-  display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: var(--cc-fg-subtle);
-}
-.session-item[data-status='working'] .session-steps-bar > span {
-  background: var(--cc-status-working);
-}
-
-.session-prompt {
-  margin: 8px 0 0;
-  font-size: var(--cc-text-sm);
-  line-height: 1.5;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow-wrap: anywhere;
-}
-
-/* Haiku's gist in place of the last prompt: one line, read as a summary rather than a quote. */
-.session-gist {
-  -webkit-line-clamp: 2;
-  color: var(--cc-fg-muted);
-}
-
-.session-notes {
-  margin-top: 8px;
-  font-size: var(--cc-text-sm);
-  line-height: 1.45;
-  color: var(--cc-fg-muted);
-}
-
-.session-notes li {
-  position: relative;
-  padding-left: 12px;
-  overflow-wrap: anywhere;
-}
-.session-notes li::before {
-  content: '';
-  position: absolute;
-  left: 2px;
-  top: 7px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--cc-fg-subtle);
-}
-
-/* The changed files: a tray across the bottom of the card (out to its edges). */
-.session-files-box {
-  margin: 10px -12px 0;
-  padding: 8px 6px 7px;
-  border-top: 1px solid var(--cc-border);
-  background: color-mix(in srgb, var(--cc-fg) 2.5%, transparent);
-}
-.session-files-box:last-child {
-  margin-bottom: -12px;
-}
-.session-files-caption {
-  padding: 0 6px 4px;
-  font-size: var(--cc-text-xs);
-  color: var(--cc-fg-subtle);
-}
-/* "Show all (N more)" / "Hide (N)" under a list longer than the sessionFilesShown setting: a quiet
-   text button, so it reads as part of the list rather than another file. */
-.session-files-more {
-  margin: 2px 0 0;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: var(--cc-radius-sm);
-  background: none;
-  font-size: var(--cc-text-xs);
-  color: var(--cc-fg-muted);
-  cursor: pointer;
-}
-.session-files-more:hover {
-  color: var(--cc-fg);
-  text-decoration: underline;
-}
-
-.session-file {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 24px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--cc-radius-sm);
-  background: none;
-  color: var(--cc-fg-muted);
-  font-family: var(--cc-font-mono);
-  font-size: 11.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.session-file .glyph {
-  color: var(--cc-fg-subtle);
-}
-.session-file-path {
-  display: flex;
-  min-width: 0;
-  white-space: nowrap;
-}
-.session-file-dir {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.session-file-name {
-  flex: none;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--cc-fg);
-}
-
-.session-file:hover {
-  background: color-mix(in srgb, var(--cc-fg) 6%, transparent);
-}
-
-.session-error {
-  margin: 8px 0 0;
-  padding: 4px 8px;
-  border-radius: var(--cc-radius-sm);
-  font-size: var(--cc-text-sm);
-  background: var(--cc-bg-error);
-  overflow-wrap: anywhere;
 }
 
 /* Splitters: a hairline with a grip mark in the middle. The element is the 1px line; its ::before

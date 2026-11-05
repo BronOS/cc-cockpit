@@ -1,11 +1,11 @@
 // A colour per project (Settings › This project › Colour; design §6 Project colour): a palette
 // colour or a custom one marks the project's window with a 3px line along its top edge, a tint of
-// its top bar and a dot by its name; every other window's strip shows the dot on that project's
-// entries, live, and so does the picker's row. None takes it all away. In a transparent window the
+// its top bar and a dot by its name, and the picker's row shows the dot live. (Other windows' strip
+// entries are the cockpit.sessions plugin's.) None takes it all away. In a transparent window the
 // tinted bar stays one translucent layer.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test, type Cockpit } from './fixtures'
 
@@ -60,26 +60,22 @@ function storedColor(c: Cockpit): unknown {
   return 'no record'
 }
 
-test('a project colour marks its window and reaches the other window’s strip and the picker live; None removes it', async ({
+test('a project colour marks its window and reaches the picker live; None removes it', async ({
   cockpit
 }) => {
   const { page, app } = cockpit
   const dirB = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-e2e-color-b-')))
   try {
-    const nameA = basename(cockpit.projectDir)
     const plainBar = await barBackground(page)
     expect(await topLine(page)).toMatchObject({ content: 'none' })
     expect(await dots(page, '.titlebar-project')).toEqual([])
 
-    // A Claude tab in A, so B's strip has an entry of project A to put the dot on.
-    await cockpit.newTab('claude')
+    // A second window, whose bar must stay untouched and whose "+" opens the picker. (Its strip of
+    // the other windows' tabs is the cockpit.sessions plugin's, with its own dots: not core's.)
     await cockpit.hook('openProject', dirB)
     await expect.poll(() => app.windows().length).toBe(2)
     const pageB = app.windows().find((p) => p !== page)!
     await pageB.locator('.tabs-pane').waitFor()
-    const entryA = pageB.getByRole('navigation', { name: 'Claude sessions' }).locator('.strip-entry', { hasText: nameA })
-    await expect(entryA).toHaveCount(1, { timeout: 15_000 })
-    expect(await dots(pageB, '.strip-nav')).toEqual([])
 
     // Settings › This project › Colour: Blue.
     await page.keyboard.press('ControlOrMeta+,')
@@ -101,8 +97,7 @@ test('a project colour marks its window and reaches the other window’s strip a
     // The line takes no room: the bar is as tall as ever.
     expect((await page.locator('.top-strip').boundingBox())?.height).toBe(40)
 
-    // Window B: the dot on A's entry arrived without B doing anything; B's own bar is untouched.
-    await expect.poll(() => dots(pageB, '.strip-nav')).toEqual([rgb(await rootVar(pageB, '--cc-project-blue'))])
+    // Window B's own bar is untouched.
     expect(await topLine(pageB)).toMatchObject({ content: 'none' })
 
     // The picker (from B's "+") lists A with its dot, and follows a change made in A meanwhile.
@@ -122,7 +117,6 @@ test('a project colour marks its window and reaches the other window’s strip a
     expect((await topLine(page)).color).toBe(custom)
     await expect(group.getByRole('radio', { checked: true })).toHaveCount(0)
     await expect(settings.getByLabel('Colour: Custom #12abef')).toHaveCount(1)
-    await expect.poll(() => dots(pageB, '.strip-nav')).toEqual([custom])
     await expect.poll(() => dots(picker, '.picker-list')).toContain(custom)
 
     // None: line, tint and dots gone everywhere.
@@ -134,7 +128,6 @@ test('a project colour marks its window and reaches the other window’s strip a
     expect(await topLine(page)).toMatchObject({ content: 'none' })
     expect(await barBackground(page)).toBe(plainBar)
     expect(await dots(page, '.titlebar-project')).toEqual([])
-    await expect.poll(() => dots(pageB, '.strip-nav')).toEqual([])
   } finally {
     rmSync(dirB, { recursive: true, force: true })
   }

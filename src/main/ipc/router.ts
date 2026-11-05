@@ -573,7 +573,6 @@ export interface ProjectSettingsHandlerDeps {
   setNotificationSound(value: unknown): Promise<void>
   /** A system sound's bytes for an id main finds in a fresh listing (SystemSounds.read); null otherwise. */
   notificationSoundData(id: unknown): Promise<NotificationSoundData | null>
-  setSessionFilesShown(value: unknown): void
   setZoneAutoHide(value: unknown): void
   setMinTerminalWidth(value: unknown): void
   /** AppSettings.confirmTabClose with the default applied. */
@@ -632,9 +631,6 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   // The page plays a picked system sound (a chime, the Play button) with these bytes. The id is
   // only a claim: main finds it in a fresh listing of its own folders or answers null.
   router.handleProject('notify.soundData', (_ctx, payload) => deps.notificationSoundData(fields('notify.soundData', payload).id))
-  router.handleProject('settings.sessionFilesShownSet', (_ctx, payload) => {
-    deps.setSessionFilesShown(fields('settings.sessionFilesShownSet', payload).value)
-  })
   router.handleProject('settings.zoneAutoHideSet', (_ctx, payload) => {
     deps.setZoneAutoHide(fields('settings.zoneAutoHideSet', payload).value)
   })
@@ -832,19 +828,14 @@ export interface SessionHandlerDeps {
   snapshotFor(projectId: string): SessionsSnapshot
   /** Scoped to `projectId`: false for a tab of another project, an unknown tab or a gone item. */
   cancelQueued(projectId: string, tabId: string, itemId: string): boolean
-  /** Focus the window of that tab (any project) and have it select the tab; false when gone. */
-  focusTab(tabId: string): boolean
-  /** The file-click diff (open-diff.ts); resolves once the overlay is up. */
-  openFile(caller: ProjectContext, tabId: string, file: string): Promise<boolean>
   /** A window's answer to a plugin's close ask (CloseAsks.answer); false for an ask it was not sent. */
   closeAnswer(windowId: number, requestId: string, closed: boolean): boolean
 }
 
 /**
- * Claude status handlers. `sessions.list` and `sessions.cancelQueued` act on the sender's own
- * project. `sessions.focus` deliberately reaches other projects' tabs (it is the top strip's
- * click), but it only moves focus: it reveals nothing and types nothing, and main resolves the
- * tab's window itself instead of trusting anything in the payload.
+ * Claude status handlers, each on the sender's own project. Focusing another window's tab and a
+ * session's file click went with the core Sessions panel and strip (design-next §4): the plugin that
+ * draws them now asks through ctx.sessions.focus / openFile (host-api.ts), with its limits.
  */
 export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerDeps): void {
   router.handleProject('sessions.list', (ctx) => deps.snapshotFor(ctx.projectId))
@@ -853,17 +844,6 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     const itemId = fields('sessions.cancelQueued', payload).itemId
     if (typeof itemId !== 'string') throw new Error('sessions.cancelQueued: itemId must be a string')
     return deps.cancelQueued(ctx.projectId, tabIdOf('sessions.cancelQueued', payload), itemId)
-  })
-
-  router.handleProject('sessions.focus', (_ctx, payload) =>
-    deps.focusTab(tabIdOf('sessions.focus', payload))
-  )
-
-  // Only a tab id and a file string travel; main decides cwd and argv (open-diff.ts).
-  router.handleProject('sessions.openFile', (ctx, payload) => {
-    const file = fields('sessions.openFile', payload).file
-    if (typeof file !== 'string') throw new Error('sessions.openFile: file must be a string')
-    return deps.openFile(ctx, tabIdOf('sessions.openFile', payload), file)
   })
 
   // The window is the sender's (ctx), never a value in the payload: only the window an ask went to

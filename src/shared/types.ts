@@ -178,9 +178,9 @@ export interface AppSettings {
    */
   tabCloseSide?: TabCloseSide
   /**
-   * How many changed files each session lists in the Sessions panel; the rest sit behind a
-   * "Show all" button under the list. Absent or damaged (the file is user-writable) reads as 10
-   * (src/shared/session-files.ts). Pushed to every window (`prefs.changed`).
+   * Legacy (before 0.10): how many changed files the core Sessions panel listed. Only read once at
+   * start, to move it to the cockpit.sessions plugin's `filesShown` app setting, then dropped
+   * (main/settings/sessions-migration.ts); nothing writes it any more.
    */
   sessionFilesShown?: number
   /**

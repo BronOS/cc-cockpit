@@ -17,7 +17,7 @@
   /**
    * What needs the person first: a permission prompt or a question / plan dialog (both
    * `needs-permission`), then waiting for input, then busy, then quiet; `starting` is as quiet as
-   * idle, `ended` last. The core strip's order (renderer strip-order.ts), kept so the move is invisible.
+   * idle, `ended` last. The old core strip's order (it lived in the renderer until 0.10), kept so the move is invisible.
    */
   const RANK = { 'needs-permission': 0, waiting: 1, working: 2, idle: 3, starting: 3, ended: 4 }
 

@@ -981,9 +981,25 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `docs/design.md` (§1 core, §3 Claude status UI, §5 Host API sessions row, Bundled plugins), `CLAUDE.md`
   (bundled list in "Implementation patterns"), `src/cli/guide/*.md` mentions of the core Sessions panel, `docs/features.md`
 
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`, `npm run build`,
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`, `npm run build`,
   `npx playwright test test/e2e/sessions-panel.spec.ts test/e2e/top-strip.spec.ts test/e2e/status.spec.ts
   test/e2e/bundled-plugins.spec.ts test/e2e/zones.spec.ts` — done when green
+- ➕ removed with the panel and strip: `SessionsPanel.tsx`, `shared/session-files.ts`, the strip entries and their CSS,
+  `orderStrip` / `stripText` / `otherWindowsEntries`, `SessionStripEntry` and `SessionsSnapshot.strip` (a window's snapshot is
+  its own tabs only), the renderer IPCs `sessions.focus`, `sessions.openFile` and `settings.sessionFilesShownSet`, the
+  Appearance field and ShellPrefs/AppearanceView `sessionFilesShown`, `SessionRegistry.refresh()` (it only resent strip
+  colours), `CORE_PANELS` (core has no panels). `useSessions` keeps the `own` list (tab dots, close dialog, Discuss).
+- ➕ layout migration: `RENAMED_PANEL_KEYS` in `src/shared/layout.ts`, applied by `normalizeLayout` on every read (placed,
+  hidden and remembered keys); when the stored layout already has `cockpit.sessions/sessions` the old entry is dropped.
+- ➕ top bar fallback (task 7 review): the bar is always the name, the "+" and the gear; the slot frame takes room only
+  once main handed its page a port (`SlotFrame collapseUntilConnected`, `data-connected`), and with a slot the "+" sits at
+  the bar's end so it does not jump when the frame expands.
+- ➕ e2e: the harness runs without bundled plugins, so `zones.spec.ts`, `zone-auto-hide.spec.ts` and
+  `window-background.spec.ts` declare stand-in panels with the `pluginPanels` hook; `sessions-panel.spec.ts`,
+  `top-strip.spec.ts` (with the new "plugin off" case) and `bundled-plugins.spec.ts` launch with the bundled plugins and
+  read the plugin's pages through their iframes; `cli.spec.ts:97` reads notes/steps from the registry (it passes now).
+- ⚠️ `project-color.spec.ts:63` fails before and after this task here (the top line measures 2.99805px, not 3px); its
+  assertions on other windows' strip dots were removed (the dot is the plugin's and follows the next session change, task 33).
 
 ### Phase H — Settings (repo `~/Projects/cc-cockpit`)
 

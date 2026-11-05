@@ -5,6 +5,7 @@ import {
   MAX_REMEMBERED,
   MAX_SIZE,
   MIN_SIZE,
+  RENAMED_PANEL_KEYS,
   defaultLayout,
   hidePanel,
   movePanel,
@@ -21,7 +22,7 @@ import {
   type ZoneId
 } from '../../src/shared/layout'
 
-const SESSIONS: AvailablePanel = { panelKey: 'core/sessions', defaultZone: 'left', defaultOpen: true }
+const SESSIONS: AvailablePanel = { panelKey: 'test/sessions', defaultZone: 'left', defaultOpen: true }
 const BOARD: AvailablePanel = { panelKey: 'jira/board', defaultZone: 'left' }
 const LOG: AvailablePanel = { panelKey: 'jira/log', defaultZone: 'bottom' }
 
@@ -32,10 +33,10 @@ const panel = (l: LayoutState, key: string) =>
 describe('reconcile', () => {
   it('puts new panels in their default zone, in available order, with default open and size', () => {
     const l = reconcile(defaultLayout(), [SESSIONS, BOARD, LOG])
-    expect(keys(l, 'left')).toEqual(['core/sessions', 'jira/board'])
+    expect(keys(l, 'left')).toEqual(['test/sessions', 'jira/board'])
     expect(keys(l, 'bottom')).toEqual(['jira/log'])
-    expect(panel(l, 'core/sessions')).toEqual({
-      panelKey: 'core/sessions',
+    expect(panel(l, 'test/sessions')).toEqual({
+      panelKey: 'test/sessions',
       open: true,
       size: DEFAULT_PANEL_SIZE
     })
@@ -49,9 +50,9 @@ describe('reconcile', () => {
 
   it('keeps existing placement and order, appending a newly available panel', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
-    l = movePanel(l, 'core/sessions', 'right')
+    l = movePanel(l, 'test/sessions', 'right')
     l = reconcile(l, [SESSIONS, BOARD, LOG])
-    expect(keys(l, 'right')).toEqual(['core/sessions'])
+    expect(keys(l, 'right')).toEqual(['test/sessions'])
     expect(keys(l, 'left')).toEqual(['jira/board'])
     expect(keys(l, 'bottom')).toEqual(['jira/log'])
   })
@@ -74,7 +75,7 @@ describe('reconcile', () => {
       size: 333,
       hidden: false
     })
-    expect(keys(dropped, 'left')).toEqual(['core/sessions'])
+    expect(keys(dropped, 'left')).toEqual(['test/sessions'])
   })
 
   it('restores the remembered zone, open state and size when the plugin is enabled again', () => {
@@ -165,17 +166,17 @@ describe('togglePanel', () => {
   it('expands a collapsed zone when opening, leaves it collapsed when closing', () => {
     let l = reconcile(defaultLayout(), [SESSIONS])
     l = setZoneCollapsed(l, 'left', true)
-    l = togglePanel(l, 'core/sessions') // open -> closed
+    l = togglePanel(l, 'test/sessions') // open -> closed
     expect(l.zones.left.collapsed).toBe(true)
-    l = togglePanel(l, 'core/sessions') // closed -> open
+    l = togglePanel(l, 'test/sessions') // closed -> open
     expect(l.zones.left.collapsed).toBe(false)
-    expect(panel(l, 'core/sessions').open).toBe(true)
+    expect(panel(l, 'test/sessions').open).toBe(true)
   })
 
   it('only touches the named panel', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
     l = togglePanel(l, 'jira/board')
-    expect(panel(l, 'core/sessions').open).toBe(true)
+    expect(panel(l, 'test/sessions').open).toBe(true)
   })
 
   it('ignores unknown and hidden panels', () => {
@@ -188,39 +189,39 @@ describe('togglePanel', () => {
 describe('movePanel', () => {
   it('moves to the end of the target zone and keeps open state and size', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD, LOG])
-    l = resizePanel(l, 'core/sessions', 400)
-    l = movePanel(l, 'core/sessions', 'bottom')
+    l = resizePanel(l, 'test/sessions', 400)
+    l = movePanel(l, 'test/sessions', 'bottom')
     expect(keys(l, 'left')).toEqual(['jira/board'])
-    expect(keys(l, 'bottom')).toEqual(['jira/log', 'core/sessions'])
-    expect(panel(l, 'core/sessions')).toEqual({ panelKey: 'core/sessions', open: true, size: 400 })
+    expect(keys(l, 'bottom')).toEqual(['jira/log', 'test/sessions'])
+    expect(panel(l, 'test/sessions')).toEqual({ panelKey: 'test/sessions', open: true, size: 400 })
   })
 
   it('moving within the same zone sends the panel to the end', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
-    l = movePanel(l, 'core/sessions', 'left')
-    expect(keys(l, 'left')).toEqual(['jira/board', 'core/sessions'])
+    l = movePanel(l, 'test/sessions', 'left')
+    expect(keys(l, 'left')).toEqual(['jira/board', 'test/sessions'])
   })
 
   it('unhides a hidden panel, using its remembered open state and size', () => {
     let l = reconcile(defaultLayout(), [SESSIONS])
-    l = hidePanel(resizePanel(l, 'core/sessions', 500), 'core/sessions')
-    l = movePanel(l, 'core/sessions', 'right')
+    l = hidePanel(resizePanel(l, 'test/sessions', 500), 'test/sessions')
+    l = movePanel(l, 'test/sessions', 'right')
     expect(l.hidden).toEqual([])
     expect(l.remembered).toEqual({})
-    expect(panel(l, 'core/sessions')).toEqual({ panelKey: 'core/sessions', open: true, size: 500 })
-    expect(zoneOf(l, 'core/sessions')).toBe('right')
+    expect(panel(l, 'test/sessions')).toEqual({ panelKey: 'test/sessions', open: true, size: 500 })
+    expect(zoneOf(l, 'test/sessions')).toBe('right')
   })
 
   it('ignores an unknown panel or zone', () => {
     const l = reconcile(defaultLayout(), [SESSIONS])
     expect(movePanel(l, 'nope/x', 'right')).toBe(l)
-    expect(movePanel(l, 'core/sessions', 'top' as ZoneId)).toBe(l)
+    expect(movePanel(l, 'test/sessions', 'top' as ZoneId)).toBe(l)
   })
 
   it('does not mutate its input', () => {
     const l = reconcile(defaultLayout(), [SESSIONS])
     const before = JSON.stringify(l)
-    movePanel(l, 'core/sessions', 'right')
+    movePanel(l, 'test/sessions', 'right')
     expect(JSON.stringify(l)).toBe(before)
   })
 })
@@ -229,7 +230,7 @@ describe('hidePanel / unhidePanel', () => {
   it('hides a panel out of its zone and remembers where it was', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
     l = hidePanel(l, 'jira/board')
-    expect(keys(l, 'left')).toEqual(['core/sessions'])
+    expect(keys(l, 'left')).toEqual(['test/sessions'])
     expect(l.hidden).toEqual(['jira/board'])
     expect(l.remembered['jira/board']).toMatchObject({ zone: 'left', hidden: true })
   })
@@ -247,8 +248,8 @@ describe('hidePanel / unhidePanel', () => {
 
   it('unhide expands a collapsed zone for an open panel but not for a closed one', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
-    l = setZoneCollapsed(hidePanel(hidePanel(l, 'core/sessions'), 'jira/board'), 'left', true)
-    expect(unhidePanel(l, 'core/sessions').zones.left.collapsed).toBe(false) // was open
+    l = setZoneCollapsed(hidePanel(hidePanel(l, 'test/sessions'), 'jira/board'), 'left', true)
+    expect(unhidePanel(l, 'test/sessions').zones.left.collapsed).toBe(false) // was open
     expect(unhidePanel(l, 'jira/board').zones.left.collapsed).toBe(true) // was closed
   })
 
@@ -265,7 +266,7 @@ describe('hidePanel / unhidePanel', () => {
   it('ignores hiding an unknown or already hidden panel and unhiding a visible one', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
     expect(hidePanel(l, 'nope/x')).toBe(l)
-    expect(unhidePanel(l, 'core/sessions')).toBe(l)
+    expect(unhidePanel(l, 'test/sessions')).toBe(l)
     l = hidePanel(l, 'jira/board')
     expect(hidePanel(l, 'jira/board')).toBe(l)
   })
@@ -274,10 +275,10 @@ describe('hidePanel / unhidePanel', () => {
 describe('resize', () => {
   it('sets a panel size and clamps it', () => {
     let l = reconcile(defaultLayout(), [SESSIONS])
-    l = resizePanel(l, 'core/sessions', 123.6)
-    expect(panel(l, 'core/sessions').size).toBe(124)
-    expect(panel(resizePanel(l, 'core/sessions', 1), 'core/sessions').size).toBe(MIN_SIZE)
-    expect(panel(resizePanel(l, 'core/sessions', 1e9), 'core/sessions').size).toBe(MAX_SIZE)
+    l = resizePanel(l, 'test/sessions', 123.6)
+    expect(panel(l, 'test/sessions').size).toBe(124)
+    expect(panel(resizePanel(l, 'test/sessions', 1), 'test/sessions').size).toBe(MIN_SIZE)
+    expect(panel(resizePanel(l, 'test/sessions', 1e9), 'test/sessions').size).toBe(MAX_SIZE)
   })
 
   it('sets a zone size and clamps it', () => {
@@ -290,8 +291,8 @@ describe('resize', () => {
 
   it('ignores NaN, Infinity, unknown panels and zones', () => {
     const l = reconcile(defaultLayout(), [SESSIONS])
-    expect(resizePanel(l, 'core/sessions', NaN)).toBe(l)
-    expect(resizePanel(l, 'core/sessions', Infinity)).toBe(l)
+    expect(resizePanel(l, 'test/sessions', NaN)).toBe(l)
+    expect(resizePanel(l, 'test/sessions', Infinity)).toBe(l)
     expect(resizePanel(l, 'nope/x', 100)).toBe(l)
     expect(resizeZone(l, 'left', NaN)).toBe(l)
     expect(resizeZone(l, 'top' as ZoneId, 100)).toBe(l)
@@ -300,7 +301,7 @@ describe('resize', () => {
   it('does not change other panels', () => {
     let l = reconcile(defaultLayout(), [SESSIONS, BOARD])
     l = resizePanel(l, 'jira/board', 300)
-    expect(panel(l, 'core/sessions').size).toBe(DEFAULT_PANEL_SIZE)
+    expect(panel(l, 'test/sessions').size).toBe(DEFAULT_PANEL_SIZE)
   })
 })
 
@@ -318,7 +319,7 @@ describe('setZoneCollapsed', () => {
   it('keeps the open state of the panels inside', () => {
     let l = reconcile(defaultLayout(), [SESSIONS])
     l = setZoneCollapsed(l, 'left', true)
-    expect(panel(l, 'core/sessions').open).toBe(true)
+    expect(panel(l, 'test/sessions').open).toBe(true)
   })
 
   it('leaves the other zones alone and ignores an unknown zone', () => {
@@ -396,5 +397,80 @@ describe('normalizeLayout', () => {
     })
     expect(Object.keys(l.remembered)).toEqual(['e/f'])
     expect(l.remembered['e/f']).toEqual({ zone: 'bottom', open: true, size: 100, hidden: true })
+  })
+})
+
+describe('renamed panel keys (the core Sessions panel became cockpit.sessions/sessions)', () => {
+  const OLD = 'core/sessions'
+  const NEW = 'cockpit.sessions/sessions'
+
+  it('maps the old core key to the bundled plugin\'s panel', () => {
+    expect(RENAMED_PANEL_KEYS[OLD]).toBe(NEW)
+  })
+
+  it('keeps the zone, the order, the open state and the size', () => {
+    const l = normalizeLayout({
+      zones: {
+        right: {
+          collapsed: false,
+          size: 330,
+          panels: [
+            { panelKey: 'jira/board', open: false, size: 200 },
+            { panelKey: OLD, open: true, size: 310 },
+            { panelKey: 'jira/log', open: false, size: 100 }
+          ]
+        }
+      }
+    })
+    expect(keys(l, 'right')).toEqual(['jira/board', NEW, 'jira/log'])
+    expect(panel(l, NEW)).toEqual({ panelKey: NEW, open: true, size: 310 })
+    expect(JSON.stringify(l)).not.toContain(OLD)
+    // Idempotent: the next read of what was stored is the same.
+    expect(normalizeLayout(JSON.parse(JSON.stringify(l)))).toEqual(l)
+  })
+
+  it('renames a hidden one (still hidden) and a remembered one (its placement kept)', () => {
+    const hidden = normalizeLayout({
+      hidden: [OLD],
+      remembered: { [OLD]: { zone: 'bottom', open: true, size: 150, hidden: true } }
+    })
+    expect(hidden.hidden).toEqual([NEW])
+    expect(hidden.remembered).toEqual({ [NEW]: { zone: 'bottom', open: true, size: 150, hidden: true } })
+    const remembered = normalizeLayout({ remembered: { [OLD]: { zone: 'left', open: false, size: 90 } } })
+    expect(remembered.remembered).toEqual({ [NEW]: { zone: 'left', open: false, size: 90, hidden: false } })
+  })
+
+  it('drops the old entry when the layout already has the plugin\'s panel anywhere', () => {
+    const placed = normalizeLayout({
+      zones: {
+        left: { collapsed: false, size: 280, panels: [{ panelKey: NEW, open: false, size: 240 }] },
+        right: { collapsed: false, size: 320, panels: [{ panelKey: OLD, open: true, size: 300 }] }
+      }
+    })
+    expect(keys(placed, 'left')).toEqual([NEW])
+    expect(keys(placed, 'right')).toEqual([])
+    expect(panel(placed, NEW).open).toBe(false)
+    const hidden = normalizeLayout({
+      zones: { right: { collapsed: false, size: 320, panels: [{ panelKey: OLD, open: true, size: 300 }] } },
+      hidden: [NEW]
+    })
+    expect(keys(hidden, 'right')).toEqual([])
+    expect(hidden.hidden).toEqual([NEW])
+    const remembered = normalizeLayout({
+      hidden: [OLD],
+      remembered: { [NEW]: { zone: 'left', open: false, size: 90 } }
+    })
+    expect(remembered.hidden).toEqual([])
+    expect(remembered.remembered).toEqual({ [NEW]: { zone: 'left', open: false, size: 90, hidden: false } })
+  })
+
+  it('reconciles the renamed panel into its stored place once the plugin declares it', () => {
+    const stored = normalizeLayout({
+      zones: { right: { collapsed: false, size: 320, panels: [{ panelKey: OLD, open: true, size: 260 }] } }
+    })
+    // The plugin's manifest says left; the person's place (right) wins.
+    const l = reconcile(stored, [{ panelKey: NEW, defaultZone: 'left' }])
+    expect(keys(l, 'right')).toEqual([NEW])
+    expect(panel(l, NEW)).toEqual({ panelKey: NEW, open: true, size: 260 })
   })
 })

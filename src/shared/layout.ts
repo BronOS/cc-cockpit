@@ -4,10 +4,11 @@
 // a store write with `next === prev`). No DOM, Electron or Node imports: main persists it in the
 // project record and the renderer (Task 18) renders it, both through this one module.
 //
-// A panel is identified by its `panelKey`: `core/sessions` for the built-in Sessions panel or
-// `<pluginId>/<panelId>` for a plugin's. Whether a panel EXISTS is not this module's call: the
-// caller passes the available panels to `reconcile` (core panels plus panels of the plugins
-// enabled for the project), and everything else here only moves what is already placed.
+// A panel is identified by its `panelKey`, `<pluginId>/<panelId>` (core has no panels of its own
+// since the Sessions panel became the bundled cockpit.sessions plugin's; RENAMED_PANEL_KEYS). Whether
+// a panel EXISTS is not this module's call: the caller passes the available panels to `reconcile`
+// (the panels of the plugins enabled for the project), and everything else here only moves what is
+// already placed.
 
 import { isPlainObject } from './guards'
 
@@ -25,6 +26,19 @@ export const MAX_SIZE = 4000
 export const MAX_REMEMBERED = 100
 /** A panel key is a short string (it is also an object key in the persisted file). */
 const MAX_KEY_LENGTH = 200
+
+/**
+ * Panel keys a stored layout may still hold under an old name, and their new one. `core/sessions`
+ * was the renderer's own Sessions panel until it moved into the bundled `cockpit.sessions` plugin
+ * (design-next §4): the person's zone, order, open state and size carry over to the plugin's panel.
+ * normalizeLayout applies it on every read of a stored layout, so the first load after the update
+ * migrates it (and the next write stores it). When the layout already places, hides or remembers
+ * the new key (the plugin's panel was already there), the old entry is dropped instead: the place
+ * the person gave the plugin's own panel wins over a stale one.
+ */
+export const RENAMED_PANEL_KEYS: Readonly<Record<string, string>> = Object.freeze({
+  'core/sessions': 'cockpit.sessions/sessions'
+})
 
 export interface PanelPlacement {
   panelKey: string
@@ -286,6 +300,7 @@ export function reconcile(layout: LayoutState, available: readonly AvailablePane
 export function normalizeLayout(raw: unknown): LayoutState {
   const out = defaultLayout()
   if (!isPlainObject(raw)) return out
+  const rename = renamerOf(raw)
   const seen = new Set<string>()
   const zonesRaw = isPlainObject(raw.zones) ? raw.zones : {}
   for (const z of ZONE_IDS) {
@@ -295,10 +310,12 @@ export function normalizeLayout(raw: unknown): LayoutState {
     if (isSize(zr.size)) out.zones[z].size = clampSize(zr.size)
     if (!Array.isArray(zr.panels)) continue
     for (const p of zr.panels) {
-      if (!isPlainObject(p) || !isPanelKey(p.panelKey) || seen.has(p.panelKey)) continue
-      seen.add(p.panelKey)
+      if (!isPlainObject(p) || !isPanelKey(p.panelKey)) continue
+      const key = rename(p.panelKey)
+      if (key === undefined || seen.has(key)) continue
+      seen.add(key)
       out.zones[z].panels.push({
-        panelKey: p.panelKey,
+        panelKey: key,
         open: p.open === true,
         size: isSize(p.size) ? clampSize(p.size) : DEFAULT_PANEL_SIZE
       })
@@ -307,15 +324,19 @@ export function normalizeLayout(raw: unknown): LayoutState {
   const placed = new Set(seen)
   if (Array.isArray(raw.hidden)) {
     for (const k of raw.hidden) {
-      if (!isPanelKey(k) || seen.has(k)) continue
-      seen.add(k)
-      out.hidden.push(k)
+      if (!isPanelKey(k)) continue
+      const key = rename(k)
+      if (key === undefined || seen.has(key)) continue
+      seen.add(key)
+      out.hidden.push(key)
     }
   }
   if (isPlainObject(raw.remembered)) {
-    for (const [key, m] of Object.entries(raw.remembered)) {
+    for (const [stored, m] of Object.entries(raw.remembered)) {
+      if (!isPanelKey(stored)) continue
+      const key = rename(stored)
       // An entry for a panel that is placed now is stale.
-      if (!isPanelKey(key) || placed.has(key) || !isPlainObject(m) || !isZoneId(m.zone)) continue
+      if (key === undefined || placed.has(key) || !isPlainObject(m) || !isZoneId(m.zone)) continue
       out.remembered[key] = {
         zone: m.zone,
         open: m.open === true,
@@ -328,6 +349,27 @@ export function normalizeLayout(raw: unknown): LayoutState {
   }
   out.remembered = capRemembered(out.remembered, out.hidden)
   return out
+}
+
+/**
+ * The key a stored key is read as (RENAMED_PANEL_KEYS), or undefined to drop it: an old key whose
+ * new one the stored layout already has anywhere (placed, hidden or remembered).
+ */
+function renamerOf(raw: Record<string, unknown>): (key: string) => string | undefined {
+  const present = new Set<string>()
+  const zones = isPlainObject(raw.zones) ? raw.zones : {}
+  for (const z of ZONE_IDS) {
+    const zr = zones[z]
+    if (!isPlainObject(zr) || !Array.isArray(zr.panels)) continue
+    for (const p of zr.panels) if (isPlainObject(p) && typeof p.panelKey === 'string') present.add(p.panelKey)
+  }
+  if (Array.isArray(raw.hidden)) for (const k of raw.hidden) if (typeof k === 'string') present.add(k)
+  if (isPlainObject(raw.remembered)) for (const k of Object.keys(raw.remembered)) present.add(k)
+  return (key) => {
+    const to = Object.hasOwn(RENAMED_PANEL_KEYS, key) ? RENAMED_PANEL_KEYS[key] : undefined
+    if (to === undefined) return key
+    return present.has(to) ? undefined : to
+  }
 }
 
 function panelIn(layout: LayoutState, zone: ZoneId, panelKey: string): PanelPlacement {

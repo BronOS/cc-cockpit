@@ -862,7 +862,7 @@ export class HostApi {
   }
 
   /**
-   * ctx.sessions.focus: any window's Claude tab, by design (the top strip's click does the same):
+   * ctx.sessions.focus: any window's Claude tab, by design (the top bar strip's click, cockpit.sessions):
    * it only moves the person's focus, reveals nothing and types nothing. main resolves the tab's
    * window from its own registry (focusTab), never from anything in the request.
    */

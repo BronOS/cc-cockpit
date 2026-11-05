@@ -224,16 +224,13 @@ describe('snapshotFor (the per-window split)', () => {
     reg.send('b', 'beta queued text')
   }
 
-  it('lists every tab with the strip fields for every window, in creation order', () => {
+  it('lists no other project\'s tab at all: the other windows\' strip is a plugin\'s (scope all)', () => {
     seed()
-    const strip = [
-      { tabId: 'a', projectName: 'alpha', status: 'working', tool: 'Bash' },
-      { tabId: 'b', projectName: 'beta', status: 'working' }
-    ]
-    expect(reg.snapshotFor(P1).strip).toEqual(strip)
-    expect(reg.snapshotFor(P2).strip).toEqual(strip)
-    // A project with no window tab at all still sees the whole strip, and owns nothing.
-    expect(reg.snapshotFor('nobody')).toEqual({ strip, own: [] })
+    expect(reg.snapshotFor(P1).own.map((d) => d.tabId)).toEqual(['a'])
+    expect(reg.snapshotFor(P2).own.map((d) => d.tabId)).toEqual(['b'])
+    expect(Object.keys(reg.snapshotFor(P1))).toEqual(['own'])
+    // A project with no window tab at all gets nothing.
+    expect(reg.snapshotFor('nobody')).toEqual({ own: [] })
   })
 
   it('gives the full entries of the window’s own project only', () => {
@@ -266,11 +263,6 @@ describe('snapshotFor (the per-window split)', () => {
     for (const secret of ['beta secret prompt', '/beta/', 'beta queued text']) {
       expect(text).not.toContain(secret)
     }
-    // The strip part of any window carries the strip fields and nothing else.
-    for (const e of reg.snapshotFor(P2).strip) {
-      expect(Object.keys(e).every((k) => ['tabId', 'projectName', 'projectColor', 'status', 'tool'].includes(k))).toBe(true)
-    }
-    expect(JSON.stringify(reg.snapshotFor(P2).strip)).not.toMatch(/secret|projectId|\/proj|cwd/)
   })
 
   it('exposes no field of the entry that detail does not name (cwd, project id, delivering, session id)', () => {
@@ -287,40 +279,6 @@ describe('snapshotFor (the per-window split)', () => {
     expect(sentTo().own[0]?.queue).toEqual([{ id, text: 'later' }])
     expect(reg.cancelQueued('b', id)).toBe(true)
     expect(sentTo().own[0]?.queue).toEqual([])
-  })
-})
-
-describe('project colour', () => {
-  it('each strip entry carries its project’s colour, read at each snapshot; none is no field', () => {
-    const colors: Record<string, string | undefined> = { [P1]: 'blue' }
-    const colored = new SessionRegistry({
-      projectName: (id) => names[id],
-      projectColor: (id) => colors[id] as never,
-      broadcast: (snapshotFor) => sent.push(snapshotFor(P2)),
-      write: () => {}
-    })
-    colored.tabStarted({ tabId: 'a', projectId: P1, kind: 'claude', cwd: '/proj' })
-    colored.tabStarted({ tabId: 'b', projectId: P2, kind: 'claude', cwd: '/proj' })
-    expect(colored.snapshotFor(P2).strip).toEqual([
-      { tabId: 'a', projectName: 'alpha', projectColor: 'blue', status: 'starting' },
-      { tabId: 'b', projectName: 'beta', status: 'starting' }
-    ])
-    colors[P2] = '#12abef'
-    expect(colored.snapshotFor(P1).strip[1]).toMatchObject({ tabId: 'b', projectColor: '#12abef' })
-    colored.dispose()
-  })
-
-  it('refresh sends the snapshot again with no entry changed, through the throttle', () => {
-    start('c1')
-    expect(sent).toHaveLength(1)
-    vi.advanceTimersByTime(500)
-    reg.refresh() // a quiet spell: at once
-    expect(sent).toHaveLength(2)
-    reg.refresh()
-    reg.refresh()
-    expect(sent).toHaveLength(2) // folded into one trailing send
-    vi.advanceTimersByTime(100)
-    expect(sent).toHaveLength(3)
   })
 })
 
@@ -401,7 +359,6 @@ describe('broadcast throttle', () => {
     expect(sent).toHaveLength(1)
     vi.advanceTimersByTime(1)
     expect(sent).toHaveLength(2)
-    expect(sent[1]?.strip).toEqual([{ tabId: 'c1', projectName: 'alpha', status: 'working', tool: 'Bash' }])
     expect(sent[1]?.own).toMatchObject([{ tabId: 'c1', status: 'working', tool: 'Bash' }])
     // Nothing pending: no further send.
     vi.advanceTimersByTime(1000)
@@ -557,8 +514,6 @@ describe('terminal title (tabOutput)', () => {
     expect(reg.get('c1')?.title).toBe('Greeting in two words')
     vi.runAllTimers()
     expect(sent.at(-1)?.own[0]).toMatchObject({ tabId: 'c1', title: 'Greeting in two words' })
-    // The strip (every window) gets no title: it is made from the prompts.
-    expect(sent.at(-1)?.strip[0]).not.toHaveProperty('title')
   })
 
   it('reports no change while only the spinner glyph animates, nor for the reset at exit', () => {

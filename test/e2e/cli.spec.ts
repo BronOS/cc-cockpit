@@ -94,12 +94,13 @@ test('main writes hooks.json and a working bin/ccc before any Claude tab, and th
   }
 })
 
-test('inside a Claude tab, session note and steps reach the Sessions panel; sessions --json lists the tab', async ({
+test('inside a Claude tab, session note and steps reach the session; sessions --json lists the tab', async ({
   cockpit
 }) => {
-  const { page } = cockpit
-  await page.locator('.zone-right').getByRole('button', { name: /^Sessions/ }).click()
-  await expect(page.locator('.zone-right section.panel[aria-label="Sessions"]')).toBeVisible()
+  // What the session registry holds for the tab (what ctx.sessions, and so the Sessions panel of
+  // the bundled cockpit.sessions plugin, show: sessions-panel.spec.ts).
+  const session = async (): Promise<{ notes?: string[]; steps?: { done: number; total: number } } | undefined> =>
+    (await cockpit.hook<Array<{ notes?: string[]; steps?: { done: number; total: number } }>>('sessions', cockpit.projectDir))[0]
 
   await cockpit.newTab('claude')
   await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
@@ -107,13 +108,13 @@ test('inside a Claude tab, session note and steps reach the Sessions panel; sess
   await cockpit.typeLine('/ccc session note hi there')
   await cockpit.waitForTerminalText('FAKE-CLAUDE ccc exit=0')
   await cockpit.typeLine('/ccc session steps 3/5')
-  await expect(page.locator('.session-notes')).toContainText('hi there')
-  await expect(page.locator('.session-steps')).toHaveText('3/5')
+  await expect.poll(async () => (await session())?.notes).toEqual(['hi there'])
+  await expect.poll(async () => (await session())?.steps).toEqual({ done: 3, total: 5 })
 
   // done > total fails in the CLI itself (usage, exit 2) before the app is asked.
   await cockpit.typeLine('/ccc session steps 9/5')
   await cockpit.waitForTerminalText('FAKE-CLAUDE ccc exit=2')
-  await expect(page.locator('.session-steps')).toHaveText('3/5')
+  expect((await session())?.steps).toEqual({ done: 3, total: 5 })
 
   // From outside any tab: the Claude tabs of every window.
   const listed = await ccc(cockpit, ['sessions', '--json'])

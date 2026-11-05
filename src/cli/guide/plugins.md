@@ -31,7 +31,7 @@ so a person chooses to install or link it.
 - `id`: lower case, reverse-DNS-like, at least two dot-separated labels, the last one starting
   with a letter (`acme.hello`). It becomes a folder name and a URL host. Ids starting with
   `cockpit.` (any letter case) are reserved for the plugins that ship with the app (`cockpit.browser`,
-  `cockpit.reviewer`, `cockpit.editor`, `cockpit.files`): `ccc plugin new`, link, install, the Marketplace and its index
+  `cockpit.reviewer`, `cockpit.editor`, `cockpit.files`, `cockpit.sessions`): `ccc plugin new`, link, install, the Marketplace and its index
   refuse one, and the app loads one only from its own bundled folder. A plugin becomes built in only
   through an app release, never by asking; under your own id a plugin can do everything a built-in
   one does (they use the same public API).
@@ -192,7 +192,8 @@ picker, `ctx.secrets` for stored credentials and
 
 ## Built-in plugins
 
-The app ships `cockpit.browser`, `cockpit.reviewer`, `cockpit.editor` and `cockpit.files`. They are on in every project
+The app ships `cockpit.browser`, `cockpit.reviewer`, `cockpit.editor`, `cockpit.files` and `cockpit.sessions` (the
+Sessions panel and the top bar's `sessions-strip` slot; core draws neither). They are on in every project
 until switched off: per project under This project, or for the whole app with "Off in all projects" on
 their row in Settings > Plugins. Off in all projects wins over every project's switch (which cannot turn
 it on meanwhile) and gives each project its own choice back when undone; only built-in plugins have it.
@@ -200,7 +201,9 @@ A built-in plugin has no priority over yours. To replace one, provide the same t
 another `editor` or `reviewer` provider appears in "Plugin used for <service>", another `openFile`
 plugin in "Plugin used to open files"; with both on, the project picks (until then a service call
 fails as ambiguous and a file click opens the built-in viewer). Turn the built-in one off (in the
-project or everywhere) and yours is the only provider, used without a pick.
+project or everywhere) and yours is the only provider, used without a pick. For the Sessions view: a
+`sessions-strip` provider appears in that slot's pick, and your own Sessions panel replaces the built-in
+one once `cockpit.sessions` is off.
 
 ### The reviewer service
 

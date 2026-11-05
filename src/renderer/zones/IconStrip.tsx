@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { chordKeys, chordOf } from '../commands/keybindings'
-import { SessionsGlyph } from '../window-icons'
 import type { PanelInfo } from '../../shared/ipc'
 import { ZONE_IDS, type PanelPlacement, type ZoneId } from '../../shared/layout'
 import { useShellLayer } from './use-shell-layer'
@@ -57,12 +56,6 @@ export function MaskIcon({
  */
 function PanelGlyph({ info }: { info: PanelInfo }): React.JSX.Element {
   const [failed, setFailed] = useState<string | undefined>(undefined)
-  // The core Sessions panel is the app's own: a stroke glyph in the window's vocabulary rather
-  // than its letter "S" (layout-service.ts keeps `icon: 'S'` for the PanelInfo contract; plugins
-  // keep the icon they ship).
-  if (info.panelKey === 'core/sessions') {
-    return <SessionsGlyph size={17} />
-  }
   if (info.iconSrc && failed !== info.iconSrc) {
     return <MaskIcon src={info.iconSrc} onFail={setFailed} />
   }

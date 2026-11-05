@@ -1,11 +1,10 @@
-// The app settings the shell page applies itself (ShellPrefs: where a tab's close button sits, how
-// many changed files a session lists, when the side zones give way to a narrow terminal, the
+// The app settings the shell page applies itself (ShellPrefs: where a tab's close button sits,
+// when the side zones give way to a narrow terminal, the
 // terminals' font, a transparent window's background opacity), kept like the theme: read from main once per page load and replaced whenever
 // main pushes a change, so a pick in one window's settings shows in every window without a reload.
 // Components read it through `usePrefs`; plain code through `currentPrefs` / `onPrefs`.
 import { useSyncExternalStore } from 'react'
 import type { ShellPrefs } from '../../shared/ipc'
-import { SESSION_FILES_SHOWN_DEFAULT } from '../../shared/session-files'
 import { DEFAULT_TERMINAL_FONT } from '../../shared/terminal-font'
 import { DEFAULT_WINDOW_BACKGROUND } from '../../shared/window-background'
 import { MIN_TERMINAL_WIDTH_DEFAULT, ZONE_AUTO_HIDE_DEFAULT } from '../../shared/zone-auto-hide'
@@ -14,7 +13,6 @@ import { loadTerminalFont } from '../tabs/terminal-font'
 /** What a page shows before main has answered (and if it never does): the app's defaults. */
 export const DEFAULT_PREFS: ShellPrefs = {
   tabCloseSide: 'right',
-  sessionFilesShown: SESSION_FILES_SHOWN_DEFAULT,
   zoneAutoHide: ZONE_AUTO_HIDE_DEFAULT,
   minTerminalWidth: MIN_TERMINAL_WIDTH_DEFAULT,
   terminalFont: { ...DEFAULT_TERMINAL_FONT },

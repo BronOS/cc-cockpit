@@ -7,9 +7,9 @@ behind it are in [design.md](design.md).
 
 - One window per project (a folder), a project picker, restore of the last open projects; each
   window reopens at its last size, place and maximised / full-screen state. One bar across the
-  top holds the project's name and path, the Claude strip and the gear (on macOS it is the title
-  bar, traffic lights included). The "+" at the end of the strip (or File > Open Project…) brings
-  the picker back to open another project.
+  top holds the project's name and path, the other windows' Claude strip (the bundled Sessions plugin's), a "+" and
+  the gear (on macOS it is the title bar, traffic lights included). The "+" (or File > Open Project…) brings the
+  picker back to open another project.
 - A colour per project, to tell windows apart: Settings > This project > Colour picks None, one of
   eight palette colours (red, orange, yellow, green, teal, blue, purple, grey; each tuned per
   theme) or Custom… (the system colour panel). The project's window gets a 3px line along its top
@@ -75,17 +75,21 @@ behind it are in [design.md](design.md).
   closes when the program exits, or with Cmd+Shift+W. Overlays are not restored. Overlays are centered dialogs, 75 % of
   the window by default; a plugin's spec can ask for `size: 'large'` (about 90 %) or `'full'` (the whole window below
   the top bar).
-- Claude status from hooks: tab dots, a top strip across windows, a Sessions panel with notes,
-  steps and changed files (click a file for `git diff` in a terminal overlay). A permission prompt,
-  a question from Claude and a plan approval all show as needing you and sort first.
+- Claude status from hooks: tab dots (core), and through the bundled Sessions plugin (`cockpit.sessions`, on by default,
+  ships with the app) a top-bar strip of the other windows' sessions and a Sessions panel (left zone) with notes,
+  steps and changed files (a click opens the file through "Plugin used to open files", the built-in `git diff` overlay
+  without one). A permission prompt, a question from Claude and a plan approval all show as needing you and sort first.
+  With the plugin off there is no strip and no panel; tabs, dots, `ccc sessions` and notifications work as before.
+  A Sessions panel placed before 0.10 keeps its zone, order and size.
 - Session names: a Claude tab is named after the topic Claude Code puts in its terminal title (`File tree plugin`),
   in the tab strip and the Sessions panel, its spinner glyph left out; "Claude N" until Claude has one. Plugins see it
   as `title` in `ctx.sessions`.
 - The last prompt under each session is what the person typed: Claude Code's own markup in a user turn is taken out
   (a `<system-reminder>`, a `<task-notification>`, an agent message, a `!` command's output). A turn made only of that
   markup keeps the prompt before it; a slash command reads `/name args`, a shell command `! command`.
-- Changed files per session (Settings > Appearance and keys > Claude sessions, 10 by default): the Sessions panel lists
-  that many of a session's changed files; the rest are behind Show all (N more) / Hide (N) under the list.
+- Changed files per session (the Sessions plugin's setting, Settings > Plugins > Sessions, 10 by default; a value set
+  before 0.10 in Appearance and keys is moved there once): the Sessions panel lists that many of a session's changed
+  files; the rest are behind Show all (N more) / Hide (N) under the list.
 - Session gist (off by default; Settings > Appearance and keys > Claude sessions): after a turn ends, Claude Haiku
   writes a one-line summary of the session from its last five prompts, shown in the Sessions panel in place of the last
   prompt (which stays as the tooltip). It uses your Claude Code login (`claude -p --model haiku --safe-mode`, so none of
@@ -193,7 +197,7 @@ behind it are in [design.md](design.md).
   Folders load when expanded and are watched (`fs.watch`) while open; git marks (M, A, ?, R, U, D) follow the work
   tree and the index. The filter box searches git's tracked and untracked files (not ignored ones), or a bounded walk
   outside git. No create, rename or delete, and no copy path (a panel cannot write the clipboard).
-- Bundled plugins (browser, reviewer, editor, files) can be switched off for the whole app (Settings > Plugins, "Off in all
+- Bundled plugins (browser, reviewer, editor, files, sessions) can be switched off for the whole app (Settings > Plugins, "Off in all
   projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
   the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for
   plugins that ship with the app; the template plugins are `example.hello` and `example.plugin` (renamed from

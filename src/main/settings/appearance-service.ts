@@ -32,7 +32,6 @@ import { own } from '../../shared/guards'
 import type { AppearanceView, KeyBindingRow, ShellPrefs } from '../../shared/ipc'
 import { normalizeChord, type KeyPlatform } from '../../shared/keys'
 import { notificationSoundOf, parseSoundId } from '../../shared/notify-sound'
-import { SESSION_FILES_SHOWN_RANGE, sessionFilesShownOf } from '../../shared/session-files'
 import type { Theme } from '../../shared/theme'
 import type { TerminalFont } from '../../shared/terminal-font'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
@@ -87,11 +86,6 @@ export interface AppearanceDeps {
    * fresh listing of the OS sound folders now (SystemSounds.has). Read at each chime: no event.
    */
   notificationSound: { get(): unknown; set(next: string): void; systemHas(id: string): Promise<boolean> }
-  /**
-   * `app.json` › `sessionFilesShown`, as stored (unvalidated). The Sessions panel draws from it, so
-   * a change is pushed to every window (`prefsChanged`), like `tabCloseSide`.
-   */
-  sessionFilesShown: { get(): unknown; set(next: number): void }
   /**
    * `app.json` › `zoneAutoHide` and `minTerminalWidth`, as stored (unvalidated). Each window decides
    * from them as it lays out its zones, so a change is pushed to every window (`prefsChanged`).
@@ -190,7 +184,6 @@ export class AppearanceService {
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
       notificationSounds: notificationSoundsOf(this.deps.notificationSounds.get()),
       notificationSound: notificationSoundOf(this.deps.notificationSound.get()),
-      sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
       zoneAutoHide: zoneAutoHideOf(this.deps.zoneAutoHide.get()),
       minTerminalWidth: minTerminalWidthOf(this.deps.minTerminalWidth.get()),
       confirmTabClose: this.confirmTabClose(),
@@ -262,16 +255,6 @@ export class AppearanceService {
     this.deps.notificationSound.set(value as string)
   }
 
-  /** How many changed files each session lists in the Sessions panel; every window follows. */
-  setSessionFilesShown(value: unknown): void {
-    const { min, max } = SESSION_FILES_SHOWN_RANGE
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-      throw new Error(`give a whole number from ${min} to ${max}`)
-    }
-    this.deps.sessionFilesShown.set(value)
-    this.deps.prefsChanged()
-  }
-
   /** Hide the side zones when the terminal gets narrow (true), or never; every window follows. */
   setZoneAutoHide(value: unknown): void {
     if (typeof value !== 'boolean') throw new Error('give true or false')
@@ -304,7 +287,6 @@ export class AppearanceService {
   prefs(): ShellPrefs {
     return {
       tabCloseSide: tabCloseSideOf(this.deps.tabCloseSide.get()),
-      sessionFilesShown: sessionFilesShownOf(this.deps.sessionFilesShown.get()),
       zoneAutoHide: zoneAutoHideOf(this.deps.zoneAutoHide.get()),
       minTerminalWidth: minTerminalWidthOf(this.deps.minTerminalWidth.get()),
       terminalFont: terminalFontOf(this.deps.terminalFont.get()),

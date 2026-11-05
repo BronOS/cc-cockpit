@@ -167,8 +167,9 @@ test('a transparent background reaches project windows opened after the switch; 
     // the glass; "Whole window" brings the panels' glass back.
     const area = settings.getByRole('combobox', { name: 'See-through' })
     await expect(area).toHaveValue('window')
-    // A zone with a panel open (Sessions starts in the right zone, collapsed).
-    await second.locator('.zone-right').getByRole('button', { name: /^Sessions/ }).click()
+    // A zone with a panel open: a test panel declared in the right zone (core has none of its own).
+    await c.hook('pluginPanels', other, 'test', [{ id: 'notes', title: 'Notes', defaultZone: 'right' }])
+    await second.locator('.zone-right').getByRole('button', { name: /^Notes/ }).click()
     await second.locator('.zone-right .panel-area').waitFor()
     expect(alphaOf(await background(second, '.panel-area'))).toBeCloseTo(0.4, 2)
     expect(alphaOf(await background(second, '.icon-strip'))).toBeCloseTo(0.4, 2)

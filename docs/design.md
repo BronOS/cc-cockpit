@@ -8,8 +8,9 @@ A desktop app (Electron) that wraps Claude Code terminal sessions and adds a coc
 
 1. **Terminal**: tabs running `claude` (or a shell) in the central zone, with the ability to send
    text into a running Claude session safely.
-2. **Claude status**: a core view of every in-app Claude session (working, waiting, needs
-   permission, changed files), across all windows.
+2. **Claude status**: core tracks every in-app Claude session (working, waiting, needs
+   permission, changed files) across all windows, with a status dot on each tab; the views of
+   them (the Sessions panel, the other windows' strip) are the bundled `cockpit.sessions` plugin's.
 3. **Plugins**: everything source-specific (Jira, Gmail, calendar, Forgejo, file tree, editor…)
    is an externally installed plugin that brings its own data, panels, settings and triage.
 
@@ -31,12 +32,15 @@ plugin.** A feature is core only if at least one holds:
 
 Everything else is a plugin, even if every user installs it. Named accounts fail all three, so
 they left core (removed in 2026-10); what stays is what only main can do: `ctx.secrets`, the
-secret settings field and the optional `ctx.oauth` helper (§6).
+secret settings field and the optional `ctx.oauth` helper (§6). The Claude status *view* (the
+Sessions panel, the other windows' strip in the top bar) fails them too and left the renderer in
+0.10 for the bundled `cockpit.sessions` plugin; the session registry, hooks, status, the send gate,
+the title reader, gist, restore and the tab strip's dots stay (§3).
 
 ### Phase 1 scope
 
 In: projects and windows, zones and panel moving, terminal tabs, Claude status (tab dots, top
-strip, Sessions panel, notes/steps), overlay stack, plugin host and API, plugin secrets and
+strip and Sessions panel, since 0.10 the bundled `cockpit.sessions` plugin's; notes/steps), overlay stack, plugin host and API, plugin secrets and
 sign-in helpers (`ctx.secrets`, secret settings field, `ctx.oauth`), settings, themes, commands
 and keybindings, CLI, the `hello` reference plugin.
 Clicking a changed file opens the bundled reviewer (`cockpit.reviewer`, §5 "Bundled plugins"); with it off, `git diff` in a
@@ -275,26 +279,39 @@ on screen, still not sendable.
 - Never sent while *needs permission*: a keystroke must never answer a permission prompt, a
   question or a plan approval.
 
-**Claude status UI** (core, not plugins):
+**Claude status UI.** Core keeps what only main can do or every tab needs: the session registry,
+hooks, status, the send gate and queue, the title reader, gist, restore, and the tab strip with its
+status dots. The views of the sessions are the bundled **`cockpit.sessions`** plugin's (§5 "Bundled
+plugins", design-next §4), built on the public API only:
 
 - each Claude tab shows a status dot where shell and command tabs show a glyph of their kind;
-  a *working* dot pulses (a slow ring), off under `prefers-reduced-motion`;
-- the **top strip** in every window lists the Claude tabs of the *other* windows
-  (project · status · tool), the ones needing you first (a *needs permission* entry is tinted);
-  a click focuses that window and tab. This window's own tabs are left out (they are in its tab
-  bar and Sessions panel): the renderer drops the snapshot's strip entries whose tab id is in the
-  snapshot's `own` list, so nothing new crosses IPC. With no other window's session the strip is
-  just the "+". It is one bar with the window title (§4 Window chrome):
-  the project's name and folder lead it. The entries end with a "+" ("Open project…") that shows
-  the project picker, so the strip is shown even with no Claude tab anywhere. A gear at the right
-  end opens settings (the `app.openSettings` toggle). A strip entry carries its project's colour
-  (`projectColor`, §6 Project colour) for a dot by the project's name;
-- a built-in **Sessions panel** (placeable in zones like plugin panels): a card per Claude tab
-  with last prompt (main takes Claude's paste wrappers, `<pasted_content id="…">` and its closer,
-  out of the hook's prompt before storing it, keeping the pasted text, so every consumer gets the
-  text the user saw: `main/sessions/paste-wrappers.ts`), status, notes, steps done (a count over a small bar) and changed files under
-  an "N changed files" caption; a file click opens it in an overlay. Its header counts the
-  window's sessions ("2 in this window").
+  a *working* dot pulses (a slow ring), off under `prefers-reduced-motion` (core);
+- the **top bar** (§4 Window chrome) is the project's name and folder, the app slot
+  `sessions-strip`, a "+" ("Open project…", the project picker, so the bar is shown even with no
+  Claude tab anywhere) and a gear (the `app.openSettings` toggle). `cockpit.sessions` draws the
+  slot: the Claude tabs of the *other* windows (project · status · tool), the ones needing you
+  first and tinted, a dot in each project's colour, a click through `ctx.sessions.focus` (that
+  window raised at the tab). It reads them with `ctx.sessions.list({ scope: 'all' })`, which needs
+  its `"access": { "sessions": "all-windows" }` declaration and carries status, tool, title, name
+  and the project only. A window's own session snapshot (`sessions.snapshot`) holds its own tabs
+  and nothing else. With no other window's session the page draws nothing; with no provider (the
+  plugin off, or the pick "None") the bar is the name, the "+" and the gear. The frame takes room
+  only once main handed its page a port, so a provider that stopped in between leaves no gap;
+- the **Sessions panel** (`cockpit.sessions/sessions`, default zone left): a card per Claude tab of
+  the window with name or title, gist or last prompt (main takes Claude's paste wrappers,
+  `<pasted_content id="…">` and its closer, out of the hook's prompt before storing it, keeping the
+  pasted text, so every consumer gets the text the user saw: `main/sessions/paste-wrappers.ts`),
+  status, notes, steps done (a count over a small bar) and changed files under an "N changed files"
+  caption; a card click selects the tab (`ctx.sessions.focus`), a file click goes through
+  `ctx.sessions.openFile` (main checks the file is one it recorded for the tab and routes it: the
+  `@open-file` pick, else the built-in viewer). Its header meta counts the window's sessions ("2 in
+  this window"). A layout stored before 0.10 holds the old core key `core/sessions`: it is read as
+  `cockpit.sessions/sessions` in the same zone, order, open state and size
+  (`RENAMED_PANEL_KEYS`, `shared/layout.ts`).
+- **Replacing it**: another plugin provides `sessions-strip` and appears in its pick; the panel is
+  replaced by turning `cockpit.sessions` off (project or app-wide) and enabling one's own. With
+  neither there is no strip and no Sessions panel; the tab dots, `ccc sessions` and notifications
+  work as ever.
 - **Prompt cleaning.** Claude Code delivers its own input as user turns (`<system-reminder>`,
   `<task-notification>`, `<agent-message>`, `<bash-input>`/`<bash-stdout>`, `<command-name>`/
   `<command-args>`, `<local-command-stdout>`, …), and UserPromptSubmit reports them as the prompt.
@@ -307,19 +324,20 @@ on screen, still not sendable.
   plain `Claude Code` before a topic exists; main strips the glyph and control characters, ignores
   the generic and the empty title (the reset at exit), and stores `title` on the entry only when it
   changes, so the spinner never causes a broadcast. The tab strip and the Sessions panel show it in
-  place of "Claude · folder" / "Claude N"; plugins get it in `SessionInfo.title`. It is not in the
-  top strip's cross-window fields: it is made from the prompts.
+  place of "Claude · folder" / "Claude N"; plugins get it in `SessionInfo.title`, and a plugin with
+  the `access` declaration in `SessionSummary.title` for other windows' tabs.
 - **Active tab.** The renderer reports its tab pane's selection (`tabs.selected`, on every change of
   `activeId`); main keeps it per project only when the id is one of the sender's project's tabs
   (`SessionRegistry.setActive`, cleared when the window closes) and plugins get `SessionInfo.active:
   true` on that tab, absent elsewhere and on every tab while a shell tab is selected. A change is
   reported for the tabs that gained and lost it, so it reaches `ctx.sessions.onChange` through the
   usual throttle. It is the selection only, not window focus.
-- **Changed files per session** (Settings › Appearance and keys › Claude sessions; `app.json` ›
-  `sessionFilesShown`, a whole number 1–500, default 10, anything damaged reads as 10;
-  `src/shared/session-files.ts`): the Sessions panel lists that many of a card's changed files and
-  puts the rest behind Show all (N more) / Hide (N). A ShellPrefs field (`prefs.changed`), so every
-  window redraws at once; the open/closed choice is the card's own state, not stored.
+- **Changed files per session** (`cockpit.sessions`' app setting `filesShown`, Settings › Plugins ›
+  Sessions, a whole number 1–500, default 10): the Sessions panel lists that many of a card's
+  changed files and puts the rest behind Show all (N more) / Hide (N); the open/closed choice is the
+  card's own state, not stored. It was the core `app.json` › `sessionFilesShown` until 0.10: main
+  copies a valid value into the plugin's setting once at start and drops the old key
+  (`main/settings/sessions-migration.ts`).
 - **Session gist** (Settings › Appearance and keys › Claude sessions; `app.json` › `sessionGist`, off
   unless exactly `true`): after a turn ends (entry
   moves into *waiting*) and the tab's last five cleaned prompts changed since its last run, main
@@ -345,7 +363,7 @@ queued from the live ones as the window closes (`TabRestorer.requeue`), overlays
 ## 4. Window layout, zones, overlay
 
 ```
-┌─● ● ●─ project ~/path │ strip: Claude sessions (all windows)  [+] ───────────────── ⚙ ─┐
+┌─● ● ●─ project ~/path │ slot sessions-strip (other windows)   [+] ───────────────── ⚙ ─┐
 ├──┬────────────┬─────────────────────────────────────────────┬────────────┬──┤
 │ic│ panel A  … │ tabs: ( claude ● | claude ○ | >_ zsh ) [+]  │ panel X  … │ic│
 │on│────────────│                                             │            │on│
@@ -364,7 +382,7 @@ left / right / bottom, or hide) opens from the "…" button in a panel's header 
 its icon. Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
 keeps its strip, captioned "Bottom zone collapsed" with its key.
 
-**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and the width left: while a plugin draws it the built-in entries of the other windows' tabs are not shown (both list the same tabs), and with no provider, or "None", they stay.
+**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and the width left once its page has a port (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3).
 
 **Auto-hide.** The terminal is the priority. When the window narrows so the centre would be under
 the minimum terminal width (Settings › Appearance and keys › Side panels; `app.json` › `zoneAutoHide`,
@@ -385,7 +403,7 @@ main publishes the view with `reveal` even when the layout did not change). It t
 window next shrinks.
 
 **Window chrome.** One bar across the top (variant A of the window redesign): the project's
-folder glyph, name and path, then the strip (above), then the gear. On macOS the bar is the
+folder glyph, name and path, then the `sessions-strip` slot (above), the "+", then the gear. On macOS the bar is the
 window's title bar: project windows use `titleBarStyle: 'hiddenInset'` with the traffic lights
 centred on the 40px bar (`main/windows/window-chrome.ts`), the bar reserves their room (collapsed
 in full screen, where macOS hides the lights: main sends `window.state` on `enter-full-screen` /
@@ -678,7 +696,7 @@ that project.
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | services | `ctx.services.available(name)` (host-local, same `serviceStatus` rule as a call, never cached, false for an unknown name) |
-| sessions | `ctx.sessions.list()`, `onChange`, `send(tabId, text)` (waiting-only, else queued), `open({cwd, prompt, focus})` |
+| sessions | `ctx.sessions.list({scope?})`, `onChange(fn, {scope?})` (`scope: 'all'`: every window's tabs as `SessionSummary`, status/tool/title/name/project only, needs `"access": { "sessions": "all-windows" }`), `send(tabId, text)` (this window, waiting-only, else queued), `open({cwd, prompt, focus})`, `focus(tabId)` (any window's tab), `close`, `rename`, `openFile` (this window's tabs; limits per plugin and window) |
 | commands | `ctx.commands.register(id, fn)` |
 | services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)`, `caller()` → the calling plugin's id or `undefined` |
 | misc | `ctx.log`, `ctx.notify(text, {title?, sound?, action?})` → `{clicked}` (below), `ctx.openExternal(url)` (system browser; below) |
@@ -749,7 +767,7 @@ candidate draws; several with no valid pick (a stale pick counts as none) draw n
 "pick a provider" row; no candidate, no slot. A pick change needs no host restart: main re-sends the layout. Code that
 walks `serviceProviders` as services skips every `@` key.
 
-**Open file**: core's Sessions panel offers a click on a changed file to a plugin before its own viewer
+**Open file**: a Sessions panel file click (`ctx.sessions.openFile`, the `cockpit.sessions` panel's) goes to a plugin before core's own viewer
 (`src/main/sessions/open-file.ts`). Which plugin: the plugins of the project's host that declare
 `contributes.openFile`, run through `selectProvider` as providers of one reserved name (`selectOpenFile`,
 `openFileStatus` in `src/shared/services.ts`, the rule the Plugins page shares). The pick is stored in
@@ -935,7 +953,7 @@ other views' tokens. Chords with
 Cmd/Ctrl/Alt typed into a view are forwarded to the app.
 
 **Bundled plugins**: `PluginSource` has a third kind, `bundled`, for plugins shipped in the app
-resources (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `extraResources`). They are indexed from an allowlist
+resources (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`, `plugins/sessions`, `extraResources`). They are indexed from an allowlist
 (`BUNDLED_PLUGINS`) at every start, never copied, cannot be uninstalled (only disabled) and update with the app.
 They use only the public plugin API, with no privilege beyond being shipped; a third party can build the same under its own id.
 `build:browser` and `build:reviewer` (deterministic, a unit test rebuilds and compares bytes) produce the committed
@@ -967,7 +985,10 @@ its tab) and the editor's Edit button (micro on top, the review stays under it);
 overlay at once with a loader while the caller still fetches, and the annotate of the same key fills it); its design is in `plugins/reviewer/docs/design.md`. The editor
 (`cockpit.editor`) provides `editor` v1: micro in a terminal overlay, with app settings `autosaveSeconds`, `colorscheme`
 and `microPath` and `ccc edit`; it needs micro installed and says how to install it when it is missing. Files a session
-edits outside its project stay in the built-in viewer: plugins only receive project-relative paths.
+edits outside its project stay in the built-in viewer: plugins only receive project-relative paths. The sessions plugin
+(`cockpit.sessions`, §3 "Claude status UI") is the Claude status view that left the renderer in 0.10: the Sessions panel and the
+top bar's `sessions-strip` slot, with the `access` declaration for the other windows' tabs and the app setting `filesShown`;
+turned off, the window keeps its tab dots, `ccc sessions` and notifications and draws neither.
 
 *Overlays and reloads*: when a plugin reloads, is disabled, updated, uninstalled or its host stops, main closes that
 plugin's open overlays and `result` resolves as dismissed in the old copy; the new copy starts clean.
@@ -1176,10 +1197,10 @@ is drawn as-is in every theme. It shows as a 3px line along the window's top edg
 placed over the top bar: no layout shift, the traffic lights and the full-screen collapse
 untouched), a 10 % tint of the top bar (in a see-through window the tint goes into the bar
 colour before the glass alpha, so the bar stays one translucent layer), and a dot by the
-project's name: its own title-bar chip, its entries in other windows' strips, the picker's rows.
-A change is live everywhere: main sends the project's window `project.updated` (its summary, as
-`window.info` gives it), sends every window's session snapshot again (strip entries carry
-`projectColor`), and tells an open picker `projects.changed` (it reads the list again). Settings
+project's name: its own title-bar chip and the picker's rows (other windows' strips are the
+`cockpit.sessions` plugin's: `SessionSummary.project.color`, read again with the next session change).
+A change is live in core: main sends the project's window `project.updated` (its summary, as
+`window.info` gives it) and tells an open picker `projects.changed` (it reads the list again). Settings
 › Projects does not show the colour.
 
 **Window bounds**: each project window reopens at its last size and place. The record's `bounds`
@@ -1256,7 +1277,7 @@ settings page. Hook delivery failures are dropped silently.
 **Testing**: vitest for logic without a window (hook → status reducer, send-text gate and
 queue, manifest/settings validation, layout state, restore). Playwright on Electron with a fake
 `claude` script that emits hook events and reads stdin: open a project, open a tab, status
-reaches the strip, the hello plugin's panel sends text, text is queued while busy, an overlay
+reaches the tab dot and the cockpit.sessions strip, the hello plugin's panel sends text, text is queued while busy, an overlay
 returns a result.
 
 ### Distribution
@@ -1317,7 +1338,8 @@ All decided in phase 1:
 - The settings screen is a renderer-drawn overlay below the overlay stack, not part of it.
 - The hello plugin (`example.hello`) is not bundled in the packaged app: plugins are linked or installed from a
   folder, and hello is a template to link in dev (`electron-builder.yml`). Only the built-in
-  browser, reviewer, editor and files (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`) ship, as bundled plugins.
+  browser, reviewer, editor, files and sessions (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`,
+  `plugins/sessions`) ship, as bundled plugins.
 - `ctx.cli.register` is host-local (no call to main); main routes by manifest. Plugin commands are
   listed by `ccc help` only inside a tab.
 - The web view is also reachable at `cc-preview://<token>/…` only on its own partition session; a

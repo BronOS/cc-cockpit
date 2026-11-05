@@ -1,10 +1,13 @@
-// Task 16: Claude status in the UI. Tab dots, the top strip across windows (fed by the per-window
-// snapshot) and the queued chip, all driven by the fake `claude`'s scripted hook lines.
+// Task 16: Claude status in the UI. Tab dots, the top strip across windows and the queued chip, all
+// driven by the fake `claude`'s scripted hook lines. The strip of the other windows' tabs is the
+// bundled cockpit.sessions plugin's (design-next §4): its `sessions-strip` slot page in the top bar,
+// fed by ctx.sessions scope 'all', so that test runs with the bundled plugins on.
+import { spawn } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Cockpit } from './fixtures'
+import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 
 interface Entry {
   tabId: string
@@ -33,7 +36,23 @@ async function typeIn(page: Page, line: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
-test('a tab needing permission in window B leads window A’s strip, and a click focuses B on that tab', async ({
+/** The harness with the bundled plugins on (it turns them off by default): cockpit.sessions draws the strip. */
+const withSessions = test.extend<{ cockpit: Cockpit }>({
+  // eslint-disable-next-line no-empty-pattern
+  cockpit: async ({}, use) => {
+    const { cockpit, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+    try {
+      await use(cockpit)
+    } finally {
+      await close()
+    }
+  }
+})
+
+/** A window's `sessions-strip` slot page (the cockpit.sessions strip in its top bar). */
+const stripOf = (page: Page) => page.frameLocator('.top-strip iframe[title="sessions-strip slot"]').locator('.entry')
+
+withSessions('a tab needing permission in window B leads window A’s strip, and a click focuses B on that tab', async ({
   cockpit
 }) => {
   const dirB = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-e2e-strip-b-')))
@@ -80,8 +99,9 @@ test('a tab needing permission in window B leads window A’s strip, and a click
 
     // Window A's strip lists only the OTHER window's tabs (its own working tab is in its tab bar
     // and Sessions panel): B's permission tab first, then B's idle tab.
-    const strip = pageA.locator('.top-strip .strip-entry')
-    await expect(strip).toHaveCount(2)
+    await expect(pageA.locator('.top-strip [data-slot-frame][data-slot-plugin="cockpit.sessions"]')).toHaveCount(1, { timeout: 15_000 })
+    const strip = stripOf(pageA)
+    await expect(strip).toHaveCount(2, { timeout: 15_000 })
     await expect(strip.nth(0)).toHaveAttribute('data-status', 'needs-permission')
     await expect(strip.nth(0)).toContainText(`${nameB} · needs permission`)
     await expect(strip.nth(1)).toHaveAttribute('data-status', 'idle')
@@ -89,11 +109,13 @@ test('a tab needing permission in window B leads window A’s strip, and a click
     // The status dot of A's own tab.
     await expect(pageA.locator('.tab .status-dot')).toHaveAttribute('data-status', 'working')
 
-    // B's prompt was never sent to window A.
+    // B's prompt was never sent to window A, nor drawn in its strip.
     const snaps = await pageA.evaluate(() => (globalThis as unknown as { __snaps: unknown[] }).__snaps)
     expect(snaps.length).toBeGreaterThan(0)
     expect(JSON.stringify(snaps)).not.toContain('secret-b-prompt')
     expect(JSON.stringify(snaps)).toContain('work in a') // its own prompt does arrive
+    expect(JSON.stringify(snaps)).not.toContain(tabB1!.tabId) // other windows' tabs are not in the window's snapshot
+    await expect(pageA.frameLocator('.top-strip iframe[title="sessions-strip slot"]').locator('body')).not.toContainText('secret-b-prompt')
 
     // Click: window B comes to the front with the permission tab selected.
     await strip.nth(0).click()
@@ -114,7 +136,7 @@ test('a tab needing permission in window B leads window A’s strip, and a click
     expect(tabB1?.tabId).toBeTruthy()
 
     // The other direction: B's own strip lists A's tab only, and its click selects it in A.
-    const stripB = pageB.locator('.top-strip .strip-entry')
+    const stripB = stripOf(pageB)
     await expect(stripB).toHaveCount(1)
     await stripB.filter({ hasText: 'working' }).click()
     await expect
@@ -129,6 +151,63 @@ test('a tab needing permission in window B leads window A’s strip, and a click
   } finally {
     rmSync(dirB, { recursive: true, force: true })
   }
+})
+
+/** `<data>/bin/ccc` as a user's terminal runs it (no tab token), the same way cli.spec.ts does. */
+function ccc(c: Cockpit, args: string[]): Promise<{ status: number | null; out: string; err: string }> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined || k.startsWith('CC_COCKPIT_') || k.startsWith('APP_TAB_') || k.startsWith('ELECTRON_')) continue
+    env[k] = v
+  }
+  env.HOME = c.dataDir
+  return new Promise((resolve, reject) => {
+    const child = spawn(join(c.dataDir, 'bin', 'ccc'), args, { env })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.stderr.on('data', (d: Buffer) => (err += d.toString()))
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`ccc ${args.join(' ')} did not finish; out=${out} err=${err}`))
+    }, 20_000)
+    child.on('close', (status) => {
+      clearTimeout(timer)
+      resolve({ status, out, err })
+    })
+  })
+}
+
+withSessions('with cockpit.sessions off there is no strip and no Sessions panel; tabs, dots, ccc sessions and notify still work', async ({
+  cockpit
+}) => {
+  const { page, projectDir } = cockpit
+  // On by default: its panel icon and its strip frame are there.
+  const icon = page.getByRole('button', { name: /^Sessions/ })
+  await expect(icon).toHaveCount(1, { timeout: 15_000 })
+  await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(1)
+
+  // Off app-wide (Settings › Plugins, a bundled plugin's switch): the host restarts without it.
+  await page.evaluate<void>("window.cockpit.invoke('settings.pluginBundledOff', { id: 'cockpit.sessions', off: true })")
+  await expect(icon).toHaveCount(0, { timeout: 15_000 })
+  await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(0)
+  await expect(page.locator('section.panel[aria-label="Sessions"]')).toHaveCount(0)
+  // The bar is the project, the "+" and the gear.
+  await expect(page.locator('.top-strip .strip-open-project')).toBeVisible()
+  await expect(page.locator('.top-strip').getByRole('button', { name: 'Settings' })).toBeVisible()
+
+  // A Claude tab works as before: its dot follows the hooks, the registry and the CLI list it.
+  await cockpit.newTab('claude')
+  await expectStatus(cockpit, projectDir, 0, 'idle')
+  await cockpit.typeLine('/prompt work without the plugin')
+  await expectStatus(cockpit, projectDir, 0, 'working')
+  await expect(page.locator('.tab .status-dot')).toHaveAttribute('data-status', 'working')
+  const listed = await ccc(cockpit, ['sessions', '--json'])
+  expect(listed).toMatchObject({ status: 0, err: '' })
+  expect(JSON.parse(listed.out)).toMatchObject([{ projectPath: projectDir, status: 'working' }])
+  // Notifications go out as ever.
+  expect(await ccc(cockpit, ['notify', 'still', 'here'])).toEqual({ status: 0, out: '', err: '' })
+  await expect.poll(() => cockpit.hook<string[]>('notifications')).toContain('still here')
 })
 
 test('a queued text shows as a chip on its tab and can be cancelled', async ({ cockpit }) => {

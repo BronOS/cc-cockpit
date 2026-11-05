@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { AppearanceView, CccCommandView, KeyBindingRow, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
 import { chordFromEvent } from '../../shared/keys'
-import { SESSION_FILES_SHOWN_RANGE } from '../../shared/session-files'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
 import { captureKeys, displayChord, fuzzyFilter } from '../commands/keybindings'
 import { SearchIcon } from './icons'
@@ -226,7 +225,7 @@ export function AppearancePage(): React.JSX.Element {
               <Row
                 label="Session gist (Haiku)"
                 htmlFor={`${id}-session-gist`}
-                help="A one-line summary of what each Claude session is about, written by Claude Haiku after a turn ends and shown in the Sessions panel in place of the last prompt. Uses your Claude Code login; each gist is one small Haiku request, at most one a minute per tab."
+                help="A one-line summary of what each Claude session is about, written by Claude Haiku after a turn ends and shown in place of the last prompt (the Sessions panel of the bundled Sessions plugin, and any plugin that reads it). Uses your Claude Code login; each gist is one small Haiku request, at most one a minute per tab."
               >
                 <Switch
                   id={`${id}-session-gist`}
@@ -238,18 +237,6 @@ export function AppearancePage(): React.JSX.Element {
                   }}
                 />
               </Row>
-              <NumberField
-                label="Changed files per session"
-                help="How many changed files each session lists in the Sessions panel; the rest are behind Show all under the list."
-                ariaLabel="Changed files per session"
-                range={SESSION_FILES_SHOWN_RANGE}
-                step={1}
-                value={data.sessionFilesShown}
-                disabled={busy !== null}
-                onCommit={(value) => {
-                  void run('sessionFilesShown', () => window.cockpit.invoke('settings.sessionFilesShownSet', { value })).then(reload)
-                }}
-              />
             </div>
           </Group>
 

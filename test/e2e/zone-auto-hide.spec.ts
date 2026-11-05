@@ -1,7 +1,7 @@
 // Side zone auto-hide (design §4 "Auto-hide"): as the window narrows the right zone gives way
 // first, then the left one, and they come back left first as it widens, with a margin; the stored
 // layout never changes; a zone the person shows by hand stays until the window shrinks again.
-// Sessions (right) and a test panel declared through the `pluginPanels` hook (left) are opened.
+// Two test panels declared through the `pluginPanels` hook, Notes (left) and Sessions (right), are opened.
 import type { Page } from '@playwright/test'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
@@ -41,7 +41,10 @@ async function openBoth(c: Cockpit): Promise<void> {
   // right at 1128.
   await page.evaluate<void>("window.cockpit.invoke('settings.minTerminalWidthSet', { value: 400 })")
   await resize(c, 1300)
-  await c.hook('pluginPanels', c.projectDir, 'test', [{ id: 'notes', title: 'Notes', defaultZone: 'left' }])
+  await c.hook('pluginPanels', c.projectDir, 'test', [
+    { id: 'notes', title: 'Notes', defaultZone: 'left' },
+    { id: 'sessions', title: 'Sessions', defaultZone: 'right' }
+  ])
   await page.locator('.zone-left').getByRole('button', { name: /^Notes/ }).click()
   await page.locator('.zone-right').getByRole('button', { name: /^Sessions/ }).click()
   await expect(area(page, 'left')).toBeVisible()
@@ -60,7 +63,7 @@ it('the right zone hides first, then the left; they come back left first, past a
   await expect(page.locator('.zone-right').getByRole('button', { name: /^Sessions/ })).toHaveAttribute('aria-pressed', 'true')
   const stored = (await c.hook<LayoutView>('layout', c.projectDir)).layout.zones.right
   expect(stored.collapsed).toBe(false)
-  expect(stored.panels.find((p) => p.panelKey === 'core/sessions')?.open).toBe(true)
+  expect(stored.panels.find((p) => p.panelKey === 'test/sessions')?.open).toBe(true)
 
   await resize(c, 700)
   await expect(area(page, 'left')).toHaveCount(0)

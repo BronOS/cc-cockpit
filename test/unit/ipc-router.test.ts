@@ -255,7 +255,7 @@ describe('core handlers', () => {
         external.push(url)
       },
       currentTheme: () => BUILTIN_THEMES[0]!,
-      shellPrefs: () => ({ tabCloseSide: 'left', sessionFilesShown: 10, zoneAutoHide: true, minTerminalWidth: 720, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }),
+      shellPrefs: () => ({ tabCloseSide: 'left', zoneAutoHide: true, minTerminalWidth: 720, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }),
       commands: (projectId) => ({
         commands: [{ id: projectId, title: 't', source: 'core' }],
         conflicts: []
@@ -419,7 +419,7 @@ describe('core handlers', () => {
 
   it('prefs.get answers every window kind with the shell prefs', async () => {
     const { ipc } = core()
-    const prefs = { tabCloseSide: 'left', sessionFilesShown: 10, zoneAutoHide: true, minTerminalWidth: 720, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }
+    const prefs = { tabCloseSide: 'left', zoneAutoHide: true, minTerminalWidth: 720, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }
     await expect(ipc.invoke('prefs.get', 11)).resolves.toEqual(prefs)
     await expect(ipc.invoke('prefs.get', 13)).resolves.toEqual(prefs)
   })
@@ -594,24 +594,16 @@ describe('registerTabHandlers', () => {
 })
 
 describe('registerSessionHandlers', () => {
-  function sessionsSetup(focus = true): { ipc: FakeIpcMain; calls: unknown[][] } {
+  function sessionsSetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerSessionHandlers(router, {
       snapshotFor: (projectId) => {
         calls.push(['snapshotFor', projectId])
-        return { strip: [], own: [] }
+        return { own: [] }
       },
       cancelQueued: (projectId, tabId, itemId) => {
         calls.push(['cancelQueued', projectId, tabId, itemId])
-        return true
-      },
-      focusTab: (tabId) => {
-        calls.push(['focusTab', tabId])
-        return focus
-      },
-      openFile: async (caller, tabId, file) => {
-        calls.push(['openFile', caller, tabId, file])
         return true
       },
       closeAnswer: (windowId, requestId, closed) => {
@@ -634,10 +626,7 @@ describe('registerSessionHandlers', () => {
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {
     const { ipc, calls } = sessionsSetup()
-    await expect(ipc.invoke('sessions.list', 12, [{ projectId: PROJECT_A }])).resolves.toEqual({
-      strip: [],
-      own: []
-    })
+    await expect(ipc.invoke('sessions.list', 12, [{ projectId: PROJECT_A }])).resolves.toEqual({ own: [] })
     await expect(
       ipc.invoke('sessions.cancelQueued', 11, [{ tabId: 't1', itemId: 'i1', projectId: PROJECT_B }])
     ).resolves.toBe(true)
@@ -647,28 +636,17 @@ describe('registerSessionHandlers', () => {
     ])
   })
 
-  it('sessions.focus passes the tab id on from any project window and relays the answer', async () => {
-    const { ipc, calls } = sessionsSetup(false)
-    await expect(ipc.invoke('sessions.focus', 11, [{ tabId: 'other-projects-tab' }])).resolves.toBe(false)
-    expect(calls).toEqual([['focusTab', 'other-projects-tab']])
-  })
-
-  it('sessions.openFile passes the sender’s window and project, never ones from the payload', async () => {
+  it('no longer answers the core strip\'s and Sessions panel\'s channels (a plugin asks through ctx.sessions)', async () => {
     const { ipc, calls } = sessionsSetup()
-    await expect(
-      ipc.invoke('sessions.openFile', 12, [
-        { tabId: 't1', file: '-rf', projectId: PROJECT_A, windowId: 1, argv: ['rm'], cwd: '/' }
-      ])
-    ).resolves.toBe(true)
-    expect(calls).toEqual([['openFile', { windowId: 2, projectId: PROJECT_B }, 't1', '-rf']])
+    await expect(ipc.invoke('sessions.focus', 11, [{ tabId: 't1' }])).rejects.toThrow()
+    await expect(ipc.invoke('sessions.openFile', 11, [{ tabId: 't1', file: 'a' }])).rejects.toThrow()
+    expect(calls).toEqual([])
   })
 
   it('refuses the picker and unknown senders, and malformed payloads', async () => {
     const { ipc, calls } = sessionsSetup()
     for (const sender of [13, 99]) {
-      await expect(ipc.invoke('sessions.openFile', sender, [{ tabId: 't1', file: 'a' }])).rejects.toThrow()
       await expect(ipc.invoke('sessions.list', sender)).rejects.toThrow()
-      await expect(ipc.invoke('sessions.focus', sender, [{ tabId: 't1' }])).rejects.toThrow()
       await expect(
         ipc.invoke('sessions.cancelQueued', sender, [{ tabId: 't1', itemId: 'i' }])
       ).rejects.toThrow()
@@ -677,12 +655,7 @@ describe('registerSessionHandlers', () => {
       ['sessions.cancelQueued', [{ tabId: 't1' }]],
       ['sessions.cancelQueued', [{ tabId: 5, itemId: 'i' }]],
       ['sessions.cancelQueued', [{ tabId: 't1', itemId: {} }]],
-      ['sessions.cancelQueued', []],
-      ['sessions.openFile', [{ tabId: 't1' }]],
-      ['sessions.openFile', [{ tabId: 't1', file: 5 }]],
-      ['sessions.openFile', [{ file: 'a' }]],
-      ['sessions.focus', [{ tabId: 5 }]],
-      ['sessions.focus', [null]]
+      ['sessions.cancelQueued', []]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()
@@ -1106,7 +1079,7 @@ describe('registerProjectSettingsHandlers', () => {
         rec('saveProjectPluginSettings', { ok: true as const, values: {} })(...args),
       movePanel: rec('movePanel', undefined),
       setProjectColor: rec('setProjectColor', 'blue'),
-      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, notificationSounds: true, notificationSound: 'builtin:chime', sessionFilesShown: 10, zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
+      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, notificationSounds: true, notificationSound: 'builtin:chime', zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
       setTheme: rec('setTheme', undefined),
       setKey: rec('setKey', undefined),
       setTabExit: rec('setTabExit', undefined),
@@ -1121,7 +1094,6 @@ describe('registerProjectSettingsHandlers', () => {
       confirmTabClose: rec('confirmTabClose', false),
       setConfirmTabClose: rec('setConfirmTabClose', undefined),
       setTabCloseSide: rec('setTabCloseSide', undefined),
-      setSessionFilesShown: rec('setSessionFilesShown', undefined),
       setZoneAutoHide: rec('setZoneAutoHide', undefined),
       setMinTerminalWidth: rec('setMinTerminalWidth', undefined),
       setTerminalFont: rec('setTerminalFont', undefined),
@@ -1135,7 +1107,7 @@ describe('registerProjectSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = projectSettingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(24)
+    expect(channels).toHaveLength(23)
     for (const channel of channels) {
       await expect(ipc.invoke(channel, 13, [{}])).rejects.toThrow(/not a project window/)
     }
@@ -1190,16 +1162,6 @@ describe('registerProjectSettingsHandlers', () => {
     expect(calls).toEqual([
       ['setSessionGist', true],
       ['setSessionGist', 'yes']
-    ])
-  })
-
-  it('passes the changed-files count on as unknown for the service to check', async () => {
-    const { ipc, calls } = projectSettingsSetup()
-    await ipc.invoke('settings.sessionFilesShownSet', 11, [{ value: 20 }])
-    await ipc.invoke('settings.sessionFilesShownSet', 12, [{ value: 'many' }])
-    expect(calls).toEqual([
-      ['setSessionFilesShown', 20],
-      ['setSessionFilesShown', 'many']
     ])
   })
 

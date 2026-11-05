@@ -55,7 +55,7 @@ function fakeBridge(): {
 
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-const sessions: PanelInfo = { panelKey: 'core/sessions', title: 'Sessions', icon: 'S' }
+const sessions: PanelInfo = { panelKey: 'test/sessions', title: 'Sessions', icon: 'S' }
 
 /** A stored layout that differs from the default: the Sessions panel placed, open, left zone 400. */
 function storedView(panels: PanelInfo[] = [sessions]): LayoutView {
@@ -64,7 +64,7 @@ function storedView(panels: PanelInfo[] = [sessions]): LayoutView {
     ...base,
     zones: {
       ...base.zones,
-      left: { collapsed: false, size: 400, panels: [{ panelKey: 'core/sessions', open: true, size: 240 }] }
+      left: { collapsed: false, size: 400, panels: [{ panelKey: 'test/sessions', open: true, size: 240 }] }
     }
   }
   return { layout, panels }
@@ -121,7 +121,7 @@ describe('LayoutSync', () => {
     // main published before it handled the set: its view still has the zone expanded.
     fake.emit(storedView())
     expect(sync.get().layout.zones.left.collapsed).toBe(true)
-    sync.commit((l) => togglePanel(l, 'core/sessions'))
+    sync.commit((l) => togglePanel(l, 'test/sessions'))
     expect(fake.sets[1]!.layout.zones.left).toMatchObject({ collapsed: true })
     expect(fake.sets[1]!.layout.zones.left.panels[0]!.open).toBe(false)
   })

@@ -22,22 +22,6 @@ import type { SettingsPageScope } from './manifest'
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
 
-/**
- * One Claude tab as the top strip shows it: the only fields every window may see of a tab, own
- * project or not. Deliberately no prompt, notes, files, cwd or project id.
- */
-export interface SessionStripEntry {
-  tabId: string
-  projectName: string
-  /**
-   * The tab's project's colour (shared/project-color.ts), for the dot by its name; absent = none.
-   * Like the name, something every window may see: it is what tells the projects apart.
-   */
-  projectColor?: ProjectColor
-  status: TabStatus
-  tool?: string
-}
-
 /** A text waiting for the send gate (main/sessions/send-gate.ts). */
 export interface QueuedItem {
   id: string
@@ -45,7 +29,7 @@ export interface QueuedItem {
 }
 
 /**
- * What a window may see of a tab of ITS OWN project, on top of the strip fields. main builds it
+ * What a window may see of a tab of ITS OWN project. main builds it
  * (session-registry.ts `snapshotFor`); a window never receives this for another project's tab.
  */
 export interface SessionDetail {
@@ -69,12 +53,12 @@ export interface SessionDetail {
 }
 
 /**
- * The per-window snapshot (plan: Technical Details > Tab status and session registry).
- * `strip` lists every Claude tab of every window, in creation order, with the strip fields only;
- * `own` has the full entries of the receiving window's own project's tabs and nothing else.
+ * The per-window snapshot (plan: Technical Details > Tab status and session registry): `own` has
+ * the full entries of the receiving window's own project's tabs and nothing else. Other windows'
+ * tabs reach no window: the top bar's strip of them is a plugin's (`sessions-strip` slot, through
+ * ctx.sessions.list({ scope: 'all' }), design-next §4).
  */
 export interface SessionsSnapshot {
-  strip: SessionStripEntry[]
   own: SessionDetail[]
 }
 
@@ -237,7 +221,7 @@ export interface PanelHeaderInfo {
  * sits (zone, open, size) is in the LayoutState, not here.
  */
 export interface PanelInfo {
-  /** `core/sessions` or `<pluginId>/<panelId>`. */
+  /** `<pluginId>/<panelId>` (core has no panels of its own since the Sessions panel became a plugin's). */
   panelKey: string
   title: string
   /** A short glyph for the strip; the first letter of the title when absent. */
@@ -254,7 +238,7 @@ export interface PanelInfo {
   header?: PanelHeaderInfo
   /**
    * A plugin panel's page: `cc-plugin://<pluginId>/<entry>` (main builds it from the manifest).
-   * Absent for core panels; PluginPanel loads it in a sandboxed iframe.
+   * Absent for a panel declared without a page (a webview panel); PluginPanel loads it in a sandboxed iframe.
    */
   src?: string
   /**
@@ -535,8 +519,6 @@ export interface KeyBindingRow {
  */
 export interface ShellPrefs {
   tabCloseSide: TabCloseSide
-  /** Changed files each session lists in the Sessions panel before "Show all" (AppSettings.sessionFilesShown). */
-  sessionFilesShown: number
   /** Hide the side zones while the terminal would be narrower than `minTerminalWidth` (AppSettings.zoneAutoHide). */
   zoneAutoHide: boolean
   /** The terminal's minimum width in px for the zone auto-hide (AppSettings.minTerminalWidth). */
@@ -607,8 +589,6 @@ export interface AppearanceView {
    * `settings.notificationSoundOptions`).
    */
   notificationSound: string
-  /** Changed files each session lists before "Show all" (AppSettings.sessionFilesShown, default applied). */
-  sessionFilesShown: number
   /** Auto-hide the side zones when the terminal gets narrow (AppSettings.zoneAutoHide, default on). */
   zoneAutoHide: boolean
   /** The terminal's minimum width for it (AppSettings.minTerminalWidth, default applied). */
@@ -788,18 +768,6 @@ export interface IpcInvokeMap {
    */
   'sessions.cancelQueued': { req: { tabId: string; itemId: string }; res: boolean }
   /**
-   * The top strip's click: focus the window of that Claude tab (any project) and select the tab
-   * there. main looks the tab up itself; false when it is gone.
-   */
-  'sessions.focus': { req: { tabId: string }; res: boolean }
-  /**
-   * The Sessions panel's file click: open the diff of `file` (a string from the tab's `files`) in
-   * a terminal overlay. main checks the tab is one of the sender's own project's and that it
-   * recorded that file as changed, takes the cwd from its own tab record and builds the argv
-   * itself (main/sessions/open-diff.ts). False when any of that does not hold.
-   */
-  'sessions.openFile': { req: { tabId: string; file: string }; res: boolean }
-  /**
    * The answer to a `sessions.closeAsk` (a plugin's ctx.sessions.close): whether the tab closed.
    * Settles only an ask main sent to the sender's own window; false for any other id.
    */
@@ -974,8 +942,6 @@ export interface IpcInvokeMap {
    * a file that is gone, or one that changed since it was listed. The page then plays the Chime.
    */
   'notify.soundData': { req: { id: string }; res: NotificationSoundData | null }
-  /** How many changed files each session lists in the Sessions panel (AppSettings.sessionFilesShown). Every window follows. */
-  'settings.sessionFilesShownSet': { req: { value: number }; res: void }
   /** Hide the side zones when the terminal gets narrow, or never (AppSettings.zoneAutoHide). Every window follows. */
   'settings.zoneAutoHideSet': { req: { value: boolean }; res: void }
   /** The terminal's minimum width for the zone auto-hide (AppSettings.minTerminalWidth). Every window follows. */
@@ -1250,8 +1216,6 @@ export const INVOKE_CHANNELS = [
   'prefs.get',
   'sessions.list',
   'sessions.cancelQueued',
-  'sessions.focus',
-  'sessions.openFile',
   'sessions.closeAnswer',
   'layout.get',
   'layout.set',
@@ -1299,7 +1263,6 @@ export const INVOKE_CHANNELS = [
   'settings.notificationSoundOptions',
   'settings.notificationSoundSet',
   'notify.soundData',
-  'settings.sessionFilesShownSet',
   'settings.zoneAutoHideSet',
   'settings.minTerminalWidthSet',
   'settings.confirmTabClose',

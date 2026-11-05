@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SlotFrameInfo } from '../../shared/ipc'
 import { requestSlotPort } from '../plugins/panel-port-bus'
 import { PluginFrame } from '../plugins/PluginFrame'
@@ -15,11 +15,18 @@ import { SlotHeightRelay, slotFrameHeight, slotHeightRequest, slotIntro } from '
  *   column's share); the page's `ccPanel.slot.setHeight` goes to main
  *   (`slots.height`, SlotHeightRelay), which publishes the clamped `pageHeight` back.
  * - The top bar's frame has the bar's height (CSS) and no height requests: main refuses them.
+ *   It passes `collapseUntilConnected`: the frame takes no room until main handed its page a port
+ *   (`data-connected`, styles.css), so a frame whose connect main refuses (its provider not running,
+ *   or the frame no longer drawn) leaves the bar as it is with no provider (the "+" and the gear),
+ *   not a blank gap that would not even drag the window on macOS.
+ *   The page still loads while collapsed (the iframe is only 0 px wide), so it can connect.
  * - Unmounting (the host panel hidden, its zone collapsed, the placement gone) tells main, and the
  *   provider hears `onClose`. A new frame id from main is a new frame: the caller keys by `id`.
  */
-export function SlotFrame(props: { frame: SlotFrameInfo }): React.JSX.Element {
+export function SlotFrame(props: { frame: SlotFrameInfo; collapseUntilConnected?: boolean }): React.JSX.Element {
   const { frame } = props
+  // Set once a port reached this frame; a new frame id is a new component (the caller keys by id).
+  const [connected, setConnected] = useState(false)
   const topBar = frame.position === 'top-bar'
   const latest = useRef(frame)
   useEffect(() => {
@@ -52,6 +59,8 @@ export function SlotFrame(props: { frame: SlotFrameInfo }): React.JSX.Element {
       data-slot-frame={frame.id}
       data-slot-type={frame.type}
       data-slot-plugin={frame.pluginId}
+      data-connected={connected ? '' : undefined}
+      data-collapsible={props.collapseUntilConnected === true ? '' : undefined}
       style={topBar ? undefined : { height: slotFrameHeight(frame) }}
     >
       <PluginFrame
@@ -60,7 +69,12 @@ export function SlotFrame(props: { frame: SlotFrameInfo }): React.JSX.Element {
         className="slot-frame"
         intro={slotIntro(frame.type)}
         onPageMessage={onPageMessage}
-        connect={(deliver) => requestSlotPort(frame.id, deliver)}
+        connect={(deliver) =>
+          requestSlotPort(frame.id, (port) => {
+            setConnected(true)
+            deliver(port)
+          })
+        }
       />
     </div>
   )

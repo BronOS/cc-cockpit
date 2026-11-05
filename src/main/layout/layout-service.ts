@@ -2,9 +2,11 @@
 // main owns this: the renderer asks for the view and sends layouts back, and main re-validates
 // every one against the panels that exist, so a page cannot place a panel that is not there.
 //
-// Panels come from two places: the core ones below and, per project, those of its enabled plugins
-// (Task 25 and later call `setPluginPanels`). A panel's badge, error and header (ctx.panels.header)
-// are plugin-reported state kept here, not in the persisted layout.
+// Panels are those of the project's enabled plugins (`setPluginPanels`). Core has none of its own:
+// the Sessions panel it once had is the bundled cockpit.sessions plugin's now (design-next §4), and
+// a stored layout's old key for it is renamed on read (RENAMED_PANEL_KEYS, shared/layout.ts). A
+// panel's badge, error and header (ctx.panels.header) are plugin-reported state kept here, not in
+// the persisted layout.
 //
 // Slots (design-next §2) follow the header's path: a panel's placements (ctx.panels.slots, checked
 // by HostApi) are kept here per project and panel, and every view resolves them into the frames the
@@ -40,18 +42,6 @@ import {
   type ZoneId
 } from '../../shared/layout'
 import { pluginFileUrl } from '../plugins/plugin-protocol'
-
-interface CorePanel {
-  panelKey: string
-  title: string
-  icon: string
-  defaultZone: ZoneId
-}
-
-/** Core panels. `core/sessions` is the built-in Sessions panel (renderer/sessions/SessionsPanel.tsx). */
-export const CORE_PANELS: readonly CorePanel[] = [
-  { panelKey: 'core/sessions', title: 'Sessions', icon: 'S', defaultZone: 'right' }
-]
 
 /** A panel a plugin's manifest declares (design §5: id, title, entry, defaultZone). */
 export interface PluginPanelDef {
@@ -292,11 +282,11 @@ export class LayoutService {
   /**
    * Set (null clears) the slot placements of a plugin panel (ctx.panels.slots). HostApi checked
    * them (the panel is the caller's, the types are in its manifest `slots` and none is an app
-   * type, the caps); stored as given. False for a panel the project does not have, or a core one.
+   * type, the caps); stored as given. False for a panel the project does not have.
    * The same placements again publish nothing.
    */
   setSlots(projectId: string, panelKey: string, placements: readonly SlotPlacement[] | null): boolean {
-    if (!this.hasKey(projectId, panelKey) || CORE_PANELS.some((p) => p.panelKey === panelKey)) return false
+    if (!this.hasKey(projectId, panelKey)) return false
     const map = this.placements.get(projectId) ?? new Map<string, SlotPlacement[]>()
     const before = JSON.stringify(map.get(panelKey) ?? null)
     if (placements === null || placements.length === 0) map.delete(panelKey)
@@ -406,10 +396,7 @@ export class LayoutService {
   }
 
   private available(projectId: string): AvailablePanel[] {
-    const out: AvailablePanel[] = CORE_PANELS.map((p) => ({
-      panelKey: p.panelKey,
-      defaultZone: p.defaultZone
-    }))
+    const out: AvailablePanel[] = []
     for (const [pluginId, panels] of this.plugin.get(projectId) ?? []) {
       for (const p of panels) {
         out.push({
@@ -438,9 +425,7 @@ export class LayoutService {
       const out = s ? { ...info, ...s } : info
       return frames ? { ...out, slots: frames } : out
     }
-    const out: PanelInfo[] = CORE_PANELS.map((p) =>
-      withStatus({ panelKey: p.panelKey, title: p.title, icon: p.icon })
-    )
+    const out: PanelInfo[] = []
     for (const [pluginId, panels] of this.plugin.get(projectId) ?? []) {
       for (const p of panels) {
         out.push(

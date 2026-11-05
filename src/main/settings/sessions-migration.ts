@@ -6,10 +6,12 @@
 // Pure over the app.json object so it is unit-tested without a store; index.ts runs it inside
 // `registry.app.update` only when the old key is there.
 import { isPlainObject } from '../../shared/guards'
-import { SESSION_FILES_SHOWN_RANGE } from '../../shared/session-files'
 import type { AppSettings } from '../../shared/types'
 
 export const SESSIONS_PLUGIN_ID = 'cockpit.sessions'
+
+/** The old core setting's range, which is also the plugin's schema (`filesShown`, plugins/sessions/plugin.json). */
+const FILES_SHOWN_RANGE = { min: 1, max: 500 } as const
 
 /** True when `app` has the old key, i.e. the migration has something to do. */
 export function needsSessionFilesMigration(app: Pick<AppSettings, 'sessionFilesShown'>): boolean {
@@ -30,8 +32,8 @@ export function migrateSessionFilesShown(app: Pick<AppSettings, 'sessionFilesSho
   const valid =
     typeof value === 'number' &&
     Number.isInteger(value) &&
-    value >= SESSION_FILES_SHOWN_RANGE.min &&
-    value <= SESSION_FILES_SHOWN_RANGE.max
+    value >= FILES_SHOWN_RANGE.min &&
+    value <= FILES_SHOWN_RANGE.max
   if (!valid) return
   // A damaged top level is replaced rather than written into (as the settings form's save does).
   if (!isPlainObject(app.pluginSettings)) app.pluginSettings = {}

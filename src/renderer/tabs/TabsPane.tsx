@@ -19,7 +19,6 @@ import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
-import { otherWindowsEntries } from '../status/strip-order'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
@@ -90,7 +89,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [error, setError] = useState<string | null>(null)
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
-  const { snapshot, own } = useSessions()
+  const { own } = useSessions()
   // Discuss with Claude's targets on an overlay's toolbar (OverlayStack).
   const discussTabs = useMemo(() => discussTabsOf(state.tabs, own), [state.tabs, own])
   const [paletteCommands, setPaletteCommands] = useState<CommandInfo[] | null>(null)
@@ -182,8 +181,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       sessions.dispose(tabId)
       dispatch({ type: 'removed', tabId, gen })
     })
-    // The user clicked this window's tab in a strip (here or in another window): main already
-    // focused the window; only the selection is ours.
+    // A plugin focused this window's tab (ctx.sessions.focus, e.g. the cockpit.sessions strip of
+    // any window): main already focused the window; only the selection is ours.
     const offSelect = window.cockpit.on('tabs.select', ({ tabId }) => {
       dispatch({ type: 'selected', tabId })
     })
@@ -275,9 +274,6 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   const cancelQueued = (tabId: string, itemId: string): void =>
     run(window.cockpit.invoke('sessions.cancelQueued', { tabId, itemId }))
-
-  const focusTab = (tabId: string): void =>
-    run(window.cockpit.invoke('sessions.focus', { tabId }))
 
   // The strip's "+": main shows the project picker, or focuses the one already open.
   const openProject = (): void => run(window.cockpit.invoke('projects.showPicker'))
@@ -709,9 +705,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         {...(props.project ? { project: props.project } : {})}
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
-        entries={otherWindowsEntries(snapshot.strip, [...own.values()])}
         slots={layout.appSlots}
-        onFocus={focusTab} onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
       <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
       <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
         <TabBar

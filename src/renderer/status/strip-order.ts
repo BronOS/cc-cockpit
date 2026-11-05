@@ -1,33 +1,8 @@
-// Pure helpers for the top strip, so the order and the labels are unit-testable without a DOM.
+// Pure helpers for the status words (the tab strip, the close dialog, Discuss) and the top bar's
+// class, unit-testable without a DOM. The other windows' strip and its order left core with
+// design-next §4: the bundled cockpit.sessions plugin draws them (plugins/sessions/dist/lib/view.js).
 import { isDialogTool, type DialogTool } from '../../shared/hooks'
-import type { SessionStripEntry, TabStatus } from '../../shared/ipc'
-
-/**
- * The strip shows what needs the user first: a permission prompt or a question / plan dialog
- * (both `needs-permission`), then a session waiting for
- * input, then the busy ones, then the quiet ones. `starting` shares the idle rank (a process
- * that has not reported yet is as quiet as an idle one), `ended` is last.
- */
-const RANK: Record<TabStatus, number> = {
-  'needs-permission': 0,
-  waiting: 1,
-  working: 2,
-  idle: 3,
-  starting: 3,
-  ended: 4
-}
-
-/**
- * Sorted by the ranks above, STABLE by the input order: the registry lists tabs in creation
- * order, so two tabs in the same state keep their tab order and the strip does not shuffle when
- * one of them changes between two other states. Returns a new array.
- */
-export function orderStrip(entries: readonly SessionStripEntry[]): SessionStripEntry[] {
-  return entries
-    .map((entry, index) => ({ entry, index }))
-    .sort((a, b) => RANK[a.entry.status] - RANK[b.entry.status] || a.index - b.index)
-    .map(({ entry }) => entry)
-}
+import type { TabStatus } from '../../shared/ipc'
 
 const LABEL: Record<TabStatus, string> = {
   starting: 'starting',
@@ -57,25 +32,6 @@ const DIALOG_WORD: Record<DialogTool, string> = {
 export function statusText(status: TabStatus, tool?: string): string {
   if (status === 'needs-permission' && isDialogTool(tool)) return `needs you · ${DIALOG_WORD[tool]}`
   return tool ? `${statusLabel(status)} · ${tool}` : statusLabel(status)
-}
-
-/** `project · status · tool` (the tool only while there is one; statusText). */
-export function stripText(entry: SessionStripEntry): string {
-  return `${entry.projectName} · ${statusText(entry.status, entry.tool)}`
-}
-
-/**
- * The strip entries of OTHER windows. The snapshot's `strip` lists every Claude tab, this window's
- * own included, but those are already in its tab bar and its Sessions panel, so the top bar would
- * show them twice. An entry carries no project id (by design), so own entries are recognised by
- * `own` (the snapshot's full detail of this window's project's tabs): same snapshot, same tab ids.
- */
-export function otherWindowsEntries(
-  strip: readonly SessionStripEntry[],
-  own: readonly { tabId: string }[]
-): SessionStripEntry[] {
-  const mine = new Set(own.map((d) => d.tabId))
-  return strip.filter((e) => !mine.has(e.tabId))
 }
 
 /**

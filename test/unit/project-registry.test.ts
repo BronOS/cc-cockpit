@@ -406,7 +406,7 @@ describe('bad files', () => {
 })
 
 describe('layout', () => {
-  const available = [{ panelKey: 'core/sessions', defaultZone: 'left' as const }]
+  const available = [{ panelKey: 'test/sessions', defaultZone: 'left' as const }]
 
   it('gives a new record the default layout', () => {
     const view = registry().openPath(folder('a'))
@@ -416,13 +416,13 @@ describe('layout', () => {
   it('persists a changed layout through the debounced writer and reloads it', () => {
     const reg = registry()
     const id = reg.openPath(folder('a')).id
-    const layout = movePanel(reconcile(defaultLayout(), available), 'core/sessions', 'bottom')
+    const layout = movePanel(reconcile(defaultLayout(), available), 'test/sessions', 'bottom')
     reg.setLayout(id, layout)
     reg.flushAll()
 
     const again = registry().get(id)!
     expect(again.layout).toEqual(layout)
-    expect(again.layout.zones.bottom.panels.map((p) => p.panelKey)).toEqual(['core/sessions'])
+    expect(again.layout.zones.bottom.panels.map((p) => p.panelKey)).toEqual(['test/sessions'])
   })
 
   it('re-validates a layout passed to setLayout', () => {
@@ -443,13 +443,25 @@ describe('layout', () => {
     expect(registry().get(id)!.layout).toEqual(defaultLayout())
   })
 
+  it('loads the core Sessions panel of a record written before 0.10 as cockpit.sessions/sessions, in its place', () => {
+    const reg = registry()
+    const id = reg.openPath(folder('a')).id
+    const old = { ...defaultLayout(), zones: { ...defaultLayout().zones, right: { collapsed: false, size: 320, panels: [{ panelKey: 'core/sessions', open: true, size: 260 }] } } }
+    reg.update(id, (r) => {
+      r.layout = old
+    })
+    reg.flushAll()
+
+    expect(registry().get(id)!.layout.zones.right.panels).toEqual([{ panelKey: 'cockpit.sessions/sessions', open: true, size: 260 }])
+  })
+
   it('keeps hidden panels hidden across a reload', () => {
     const reg = registry()
     const id = reg.openPath(folder('a')).id
-    reg.setLayout(id, hidePanel(reconcile(defaultLayout(), available), 'core/sessions'))
+    reg.setLayout(id, hidePanel(reconcile(defaultLayout(), available), 'test/sessions'))
     reg.flushAll()
 
-    expect(registry().get(id)!.layout.hidden).toEqual(['core/sessions'])
+    expect(registry().get(id)!.layout.hidden).toEqual(['test/sessions'])
   })
 })
 

@@ -159,7 +159,6 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
       notificationSound: { get: () => undefined, set: () => {}, systemHas: async () => false },
       confirmTabClose: { get: () => undefined, set: () => {} },
       tabCloseSide: { get: () => undefined, set: () => {} },
-      sessionFilesShown: { get: () => undefined, set: () => {} },
       zoneAutoHide: { get: () => undefined, set: () => {} },
       minTerminalWidth: { get: () => undefined, set: () => {} },
       terminalFont: { get: () => undefined, set: () => {} },

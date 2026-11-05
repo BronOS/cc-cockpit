@@ -12,7 +12,6 @@ import {
   tabCloseSideOf
 } from '../../src/main/settings/appearance-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
-import { sessionFilesShownOf } from '../../src/shared/session-files'
 import { minTerminalWidthOf, zoneAutoHideOf } from '../../src/shared/zone-auto-hide'
 import { DEFAULT_TERMINAL_FONT, LEGACY_DEFAULT_FAMILY } from '../../src/shared/terminal-font'
 
@@ -35,7 +34,6 @@ function rig(initialOverrides: unknown = {}) {
     systemSounds: new Set<string>(),
     confirmTabClose: undefined as unknown,
     tabCloseSide: undefined as unknown,
-    sessionFilesShown: undefined as unknown,
     zoneAutoHide: undefined as unknown,
     minTerminalWidth: undefined as unknown,
     terminalFont: undefined as unknown,
@@ -102,12 +100,6 @@ function rig(initialOverrides: unknown = {}) {
       get: () => state.confirmTabClose,
       set: (next) => {
         state.confirmTabClose = next
-      }
-    },
-    sessionFilesShown: {
-      get: () => state.sessionFilesShown,
-      set: (next) => {
-        state.sessionFilesShown = next
       }
     },
     zoneAutoHide: {
@@ -533,35 +525,6 @@ describe('tab close button side', () => {
     }
     expect(r.state.tabCloseSide).toBe('right')
     expect(r.state.prefsChanged).toBe(2)
-  })
-})
-
-describe('changed files per session', () => {
-  it('is 10 by default, and a damaged value reads as 10', () => {
-    const r = rig()
-    expect(r.service.view(P).sessionFilesShown).toBe(10)
-    expect(r.service.prefs().sessionFilesShown).toBe(10)
-    // app.json is user-writable: nothing damaged may hide every file (0) or read as a string.
-    for (const damaged of ['20', 0, -3, 2.5, 501, null, true, NaN]) {
-      r.state.sessionFilesShown = damaged
-      expect(r.service.prefs().sessionFilesShown).toBe(10)
-    }
-    r.state.sessionFilesShown = 3
-    expect(r.service.view(P).sessionFilesShown).toBe(3)
-    expect(r.service.prefs().sessionFilesShown).toBe(3)
-    expect(sessionFilesShownOf(500)).toBe(500)
-  })
-
-  it('stores a whole number in range and tells every window; refuses the rest without telling anyone', () => {
-    const r = rig()
-    r.service.setSessionFilesShown(25)
-    expect(r.state.sessionFilesShown).toBe(25)
-    expect(r.state.prefsChanged).toBe(1)
-    for (const bad of [0, 501, 2.5, '5', undefined, null, NaN]) {
-      expect(() => r.service.setSessionFilesShown(bad)).toThrow('give a whole number from 1 to 500')
-    }
-    expect(r.state.sessionFilesShown).toBe(25)
-    expect(r.state.prefsChanged).toBe(1)
   })
 })
 

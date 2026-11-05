@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SessionDetail, SessionsSnapshot } from '../../shared/ipc'
 
-const EMPTY: SessionsSnapshot = { strip: [], own: [] }
+const EMPTY: SessionsSnapshot = { own: [] }
 
 /**
- * This window's view of the Claude tabs. Events carry the whole snapshot, so the latest one wins
- * and nothing is merged. The initial `sessions.list` answers a page that loaded between two
- * events (a second window opened while nothing changed); it is dropped if an event arrived
- * first, because the event is newer.
+ * This window's own Claude tabs as main reports them (statuses for the tab strip's dots, the
+ * close dialog, Discuss). Other windows' tabs are not here: the top bar's strip of them is a
+ * plugin's (`sessions-strip` slot, ctx.sessions.list({ scope: 'all' })). Events carry the whole
+ * snapshot, so the latest one wins and nothing is merged. The initial `sessions.list` answers a
+ * page that loaded between two events; it is dropped if an event arrived first, because the event
+ * is newer.
  */
-export function useSessions(): { snapshot: SessionsSnapshot; own: ReadonlyMap<string, SessionDetail> } {
+export function useSessions(): { own: ReadonlyMap<string, SessionDetail> } {
   const [snapshot, setSnapshot] = useState<SessionsSnapshot>(EMPTY)
 
   useEffect(() => {
@@ -24,11 +26,11 @@ export function useSessions(): { snapshot: SessionsSnapshot; own: ReadonlyMap<st
         if (!sawEvent) setSnapshot(initial)
       })
       .catch(() => {
-        // The strip stays empty until the first event; nothing else depends on it.
+        // The dots stay at the tabs' own state until the first event; nothing else depends on it.
       })
     return off
   }, [])
 
   const own = useMemo(() => new Map(snapshot.own.map((d) => [d.tabId, d])), [snapshot])
-  return { snapshot, own }
+  return { own }
 }

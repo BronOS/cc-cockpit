@@ -835,7 +835,7 @@ function start(): void {
       onSessionsChange: (listener) => sessions.onChange(listener),
       // ctx.sessions scope 'all' (HostApi checks the manifest's `access` declaration first).
       summaries: (projectId) => sessions.summariesFor(projectId),
-      // ctx.sessions.focus: the strip's click, from a plugin (any window's Claude tab).
+      // ctx.sessions.focus: any window's Claude tab (the cockpit.sessions strip's click).
       focusTab: (tabId) => focusClaudeTab(tabId),
       // ctx.sessions.close: HostApi checked the tab is this project's. A running tab asks in its
       // window, so that window is raised first when it will (the dialog is the person's, they must
@@ -844,7 +844,7 @@ function start(): void {
       closeTab: (windowId, projectId, tabId) => closeTabForPlugin(windowId, projectId, tabId),
       // ctx.sessions.rename: HostApi checked the tab is this project's and the name.
       renameTab: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
-      // ctx.sessions.openFile: the Sessions panel's click (the recorded-file check is routeOpenFile's).
+      // ctx.sessions.openFile: a session card's file click (the recorded-file check is routeOpenFile's).
       openSessionFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
@@ -1385,14 +1385,13 @@ function start(): void {
     settingsChanged: (projectId, pluginId) => hosts.settingsChanged(projectId, pluginId),
     layouts,
     secrets: pluginSecrets,
-    // A project's colour shows in three places, each reached its own way: its own window's title
-    // bar and top line (`project.updated`, the summary window.info would now give), the dots in
-    // every other window's strip (the session snapshot carries each tab's project colour; sent
-    // again although no session changed), and an open picker's rows (it reads the list again).
+    // A project's colour shows in core in two places, each reached its own way: its own window's
+    // title bar and top line (`project.updated`, the summary window.info would now give), and an
+    // open picker's rows (it reads the list again). Other windows' strip dots are a plugin's
+    // (ctx.sessions scope all), which reads the colour again with the next session change.
     colorChanged: (projectId) => {
       const project = registry.get(projectId)
       if (project) sendToProject(projectId, 'project.updated', summary(project))
-      sessions.refresh()
       const picker = windows.pickerWindowId
       if (picker !== undefined) sendToWindow(picker, 'projects.changed', undefined)
     }
@@ -1456,14 +1455,6 @@ function start(): void {
       set: (next) => {
         registry.app.update((a) => {
           a.confirmTabClose = next
-        })
-      }
-    },
-    sessionFilesShown: {
-      get: () => registry.app.data.sessionFilesShown,
-      set: (next) => {
-        registry.app.update((a) => {
-          a.sessionFilesShown = next
         })
       }
     },
@@ -1621,7 +1612,6 @@ function start(): void {
     notificationSoundOptions: () => systemSounds.groups(),
     setNotificationSound: (value) => appearance.setNotificationSound(value),
     notificationSoundData: (id) => systemSounds.read(id),
-    setSessionFilesShown: (value) => appearance.setSessionFilesShown(value),
     setZoneAutoHide: (value) => appearance.setZoneAutoHide(value),
     setMinTerminalWidth: (value) => appearance.setMinTerminalWidth(value),
     confirmTabClose: () => appearance.confirmTabClose(),
@@ -1788,7 +1778,7 @@ function start(): void {
     builtinFile: (caller, projectDir, path) => openProjectFileDiff(diffOptions, caller, projectDir, path),
     delivering: new Set()
   }
-  // The strip's click and ctx.sessions.focus may name a tab of any project; main finds its window
+  // ctx.sessions.focus may name a tab of any project; main finds its window
   // from its own registry entry and only moves focus there, then tells that window's renderer to
   // select it. False for an id that is no Claude tab (any more).
   const focusClaudeTab = (tabId: string): boolean => {
@@ -1801,8 +1791,6 @@ function start(): void {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
-    focusTab: (tabId) => focusClaudeTab(tabId),
-    openFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
     closeAnswer: (windowId, requestId, closed) => closeAsks.answer(windowId, requestId, closed)
   })
 

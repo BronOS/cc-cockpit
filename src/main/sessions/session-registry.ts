@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
 import type { HookEvent } from '../../shared/hooks'
-import type { SessionDetail, SessionsSnapshot, SessionStripEntry } from '../../shared/ipc'
+import type { SessionDetail, SessionsSnapshot } from '../../shared/ipc'
 import { projectColorCss, type ProjectColor } from '../../shared/project-color'
 import type { SessionSummary } from '../../sdk/types'
 import type { TabKind } from '../../shared/types'
@@ -49,12 +49,9 @@ export interface SendResult {
 }
 
 export interface SessionRegistryOptions {
-  /** The display name of a project, for the strip; read at each snapshot so a rename shows. */
+  /** The display name of a project, for summariesFor (scope all); read at each call so a rename shows. */
   projectName(projectId: string): string | undefined
-  /**
-   * The project's colour, for the strip's dot; read at each snapshot like the name. A change does
-   * not touch any entry, so whoever stores one calls `refresh()` to send the snapshot again.
-   */
+  /** The project's colour, for summariesFor's dot; read at each call like the name. */
   projectColor?(projectId: string): ProjectColor | undefined
   /**
    * Send each window its snapshot. Called at most once per `intervalMs`, with the function that
@@ -318,27 +315,14 @@ export class SessionRegistry {
   }
 
   /**
-   * The view of a window that shows `projectId`: the strip fields of every Claude tab, and the
-   * full detail of that project's tabs only (plan: "a window gets full entries only for its own
-   * project's tabs"). Built from explicit fields, never by spreading an entry, so a field added
-   * to SessionEntry later (cwd, projectId, a token) is not exposed by accident.
+   * The view of a window that shows `projectId`: the full detail of that project's tabs only
+   * (plan: "a window gets full entries only for its own project's tabs"). Other windows' tabs are
+   * not in it: their strip is a plugin's now (summariesFor, design-next §4). Built from explicit
+   * fields, never by spreading an entry, so a field added to SessionEntry later (cwd, projectId,
+   * a token) is not exposed by accident.
    */
   snapshotFor(projectId: string): SessionsSnapshot {
-    const entries = this.list()
-    return {
-      strip: entries.map((e) => {
-        const out: SessionStripEntry = {
-          tabId: e.tabId,
-          projectName: this.options.projectName(e.projectId) ?? '',
-          status: e.status
-        }
-        const color = this.options.projectColor?.(e.projectId)
-        if (color !== undefined) out.projectColor = color
-        if (e.tool !== undefined) out.tool = e.tool
-        return out
-      }),
-      own: entries.filter((e) => e.projectId === projectId).map(detailOf)
-    }
+    return { own: this.listByProject(projectId).map(detailOf) }
   }
 
   /**
@@ -361,15 +345,6 @@ export class SessionRegistry {
       if (e.name !== undefined) out.name = e.name
       return out
     })
-  }
-
-  /**
-   * Send the snapshot again although no entry changed: something it reads from outside (a
-   * project's colour) did. Through the same throttle as every change, so it is one more send at
-   * most, and a window with no Claude tab of its own still hears about other projects' colours.
-   */
-  refresh(): void {
-    this.markDirty()
   }
 
   /** Cancel a pending trailing broadcast and every delivery timer (app quit). */
