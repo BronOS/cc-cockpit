@@ -12,6 +12,8 @@ import {
   pageCount,
   pageOf,
   pageSlice,
+  updateAllEntries,
+  updateAllStillShown,
   type ListQuery
 } from '../../src/renderer/settings/plugin-list-model'
 
@@ -153,5 +155,25 @@ describe('paging', () => {
     expect(pageOf(many, 'x.p20')).toBe(1)
     expect(pageOf(many, 'x.p44')).toBe(2)
     expect(pageOf(many, 'x.none')).toBe(0)
+  })
+})
+
+describe('update all (design-next §6.4)', () => {
+  const up = listing('a.up', { status: 'update', action: 'update', installedVersion: '0.9.0' })
+  const revokedMove = listing('a.rev', { status: 'revoked', action: 'update', installedVersion: '2.0.0' })
+  const linked = listing('a.lnk', { status: 'linked', action: null })
+  const fromGitUrl = listing('a.git', { status: 'installed', action: null, note: 'installed from a git URL; it updates from there' })
+
+  it('offers plain newer versions only, never a revoked plugin\'s move, a linked or a git-URL plugin', () => {
+    expect(updateAllEntries(viewOf([up, revokedMove, linked, fromGitUrl, listing('a.new')])).map((e) => e.id)).toEqual(['a.up'])
+    expect(updateAllEntries(null)).toEqual([])
+  })
+
+  it('keeps the prompt open only while every listed plugin is offered at the same repo and commit', () => {
+    const other = listing('a.two', { status: 'update', action: 'update' })
+    expect(updateAllStillShown([up], viewOf([up, other]))).toBe(true)
+    expect(updateAllStillShown([up, other], viewOf([up, { ...other, commit: 'b'.repeat(40) }]))).toBe(false)
+    expect(updateAllStillShown([up], viewOf([{ ...up, status: 'installed', action: null }]))).toBe(false)
+    expect(updateAllStillShown([up], viewOf([]))).toBe(false)
   })
 })

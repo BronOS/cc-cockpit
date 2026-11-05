@@ -14,6 +14,7 @@ import type {
   InvokeChannel,
   IpcInvokeMap,
   LayoutView,
+  MarketplaceUpdateAllResult,
   MarketplaceView,
   NotificationSoundData,
   NotificationSoundGroup,
@@ -457,6 +458,8 @@ export interface SettingsHandlerDeps {
   marketplace(): MarketplaceView
   installMarketplace(indexUrl: unknown, id: unknown, expect: unknown): Promise<PluginView>
   updateMarketplace(indexUrl: unknown, id: unknown, expect: unknown): Promise<PluginView>
+  /** "Update all": the service checks the list (shape, cap, duplicates) and every item as a single update. */
+  updateAllMarketplace(items: unknown): Promise<MarketplaceUpdateAllResult>
   refreshMarketplace(): Promise<MarketplaceView>
   /** A listing's preview bytes, or null; the service finds the entry in main's own index state. */
   marketplacePreview(indexUrl: unknown, id: unknown): Promise<Uint8Array | null>
@@ -520,6 +523,9 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
     const p = fields('settings.marketplaceUpdate', payload)
     return deps.updateMarketplace(p.indexUrl, p.id, expectOf(p.expect))
   })
+  router.handleProject('settings.marketplaceUpdateAll', (_ctx, payload) =>
+    deps.updateAllMarketplace(fields('settings.marketplaceUpdateAll', payload).items)
+  )
   router.handleProject('settings.marketplaceRefresh', () => deps.refreshMarketplace())
   router.handleProject('settings.marketplacePreview', (_ctx, payload) => {
     const p = fields('settings.marketplacePreview', payload)

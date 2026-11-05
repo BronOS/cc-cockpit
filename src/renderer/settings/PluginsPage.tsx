@@ -15,6 +15,8 @@ import {
   pageOf,
   pageSlice,
   PLUGIN_FILTERS,
+  updateAllEntries,
+  updateAllStillShown,
   type PluginCard,
   type PluginFilter
 } from './plugin-list-model'
@@ -22,6 +24,7 @@ import { PluginPreview } from './PluginPreview'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { PluginSettingsPage } from './PluginSettingsPage'
 import { Empty, PageHeader, Select, Switch } from './ui'
+import { UpdateAll, type UpdateAllOutcome } from './UpdateAll'
 import { useAction, type Action } from './use-action'
 import { useLoaded } from './use-loaded'
 
@@ -87,6 +90,8 @@ export function PluginsPage(props: {
   const [filter, setFilter] = useState<PluginFilter>('all')
   const [category, setCategory] = useState<MarketplaceCategory | null>(null)
   const [page, setPage] = useState(0)
+  const [updateAllShown, setUpdateAllShown] = useState<MarketplaceEntryView[] | null>(null)
+  const [updateAllOutcome, setUpdateAllOutcome] = useState<UpdateAllOutcome | null>(null)
 
   /** Show a fresh view; it closes a prompt whose entry lost its button or moved to another repo or commit. */
   const applyView = (v: MarketplaceView): void => {
@@ -97,6 +102,7 @@ export function PluginsPage(props: {
       const e = v.entries.find((x) => x.indexUrl === c.indexUrl && x.id === c.id)
       return e !== undefined && e.action !== null && e.repo === c.repo && e.commit === c.commit ? c : null
     })
+    setUpdateAllShown((shown) => (shown !== null && updateAllStillShown(shown, v) ? shown : null))
     setInstalled(null)
   }
   const reloadMarket = (): void => {
@@ -181,8 +187,24 @@ export function PluginsPage(props: {
       services.reload()
     })
   }
+  /** Send exactly what the open prompt lists; main checks each one as a single update and reports each failure. */
+  const updateAll = (): void => {
+    const shown = updateAllShown
+    if (shown === null) return
+    const items = shown.map((e) => ({ indexUrl: e.indexUrl, id: e.id, expect: { repo: e.repo, commit: e.commit } }))
+    void run('update-all', () => window.cockpit.invoke('settings.marketplaceUpdateAll', { items })).then((r) => {
+      setUpdateAllShown(null)
+      if (r) {
+        const nameOfListed = (id: string): string => shown.find((e) => e.id === id)?.name ?? id
+        setUpdateAllOutcome({ updated: r.updated.length, failed: r.failed.map((f) => ({ ...f, name: nameOfListed(f.id) })) })
+      }
+      // Successes changed the installed list even when others failed; a refused call may mean main moved on.
+      reload()
+    })
+  }
   const refresh = (): void => {
     setConfirming(null)
+    setUpdateAllShown(null)
     void run('refresh', () => window.cockpit.invoke('settings.marketplaceRefresh')).then((v) => {
       if (v) applyView(v)
       // A fetch can revoke an installed plugin (main stops it): its card's own state must follow.
@@ -208,6 +230,20 @@ export function PluginsPage(props: {
       />
       {(error ?? plugins.error) && <p role="alert" className="settings-alert">{error ?? plugins.error}</p>}
       {view !== null && <MarketplaceNotices view={view} />}
+      <UpdateAll
+        offered={updateAllEntries(view)}
+        shown={updateAllShown}
+        outcome={updateAllOutcome}
+        busy={busy}
+        onAsk={() => {
+          setConfirming(null)
+          setUpdateAllOutcome(null)
+          setUpdateAllShown(updateAllEntries(view))
+        }}
+        onCancel={() => setUpdateAllShown(null)}
+        onConfirm={updateAll}
+        onDismiss={() => setUpdateAllOutcome(null)}
+      />
       <AddPlugin busy={busy} run={run} reload={reload} />
       <div className="settings-group">
         <div className="settings-plugin-filters">
@@ -275,6 +311,7 @@ export function PluginsPage(props: {
                   }
                   onAsk={(entry) => {
                     setInstalled(null)
+                    setUpdateAllShown(null)
                     setConfirming({ indexUrl: entry.indexUrl, id: entry.id, repo: entry.repo, commit: entry.commit })
                   }}
                   onCancel={() => setConfirming(null)}

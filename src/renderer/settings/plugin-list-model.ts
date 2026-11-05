@@ -133,3 +133,24 @@ export function pageOf(cards: PluginCard[], id: string): number {
   const i = cards.findIndex((c) => c.id === id)
   return i < 0 ? 0 : Math.floor(i / PAGE_SIZE)
 }
+
+/**
+ * What "Update all" offers (design-next §6.4): each listing that is a plain newer version from the
+ * installed plugin's recorded index. marketplace-view.ts gives `status: 'update'` only there, so linked,
+ * git-URL and bundled plugins never appear, and a revoked plugin's move to a safe version (status
+ * `revoked`, maybe a downgrade) stays a decision on its own card. Main applies the same rule again.
+ */
+export function updateAllEntries(view: MarketplaceView | null): MarketplaceEntryView[] {
+  return (view?.entries ?? []).filter((e) => e.status === 'update' && e.action === 'update')
+}
+
+/**
+ * The open "Update all" prompt still shows what main would update: every listed plugin is still offered
+ * at the same repo and commit. A refresh that moved one closes the prompt rather than send a pin the
+ * person did not see (main would refuse it anyway). New updates that appeared meanwhile are not in the
+ * prompt, and so not sent: it updates only what it lists.
+ */
+export function updateAllStillShown(shown: MarketplaceEntryView[], view: MarketplaceView): boolean {
+  const now = updateAllEntries(view)
+  return shown.every((s) => now.some((e) => e.indexUrl === s.indexUrl && e.id === s.id && e.repo === s.repo && e.commit === s.commit))
+}

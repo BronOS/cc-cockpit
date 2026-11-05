@@ -78,6 +78,8 @@ async function rig(opts: {
   failRepoWrite?: boolean
   /** The clone is refused: the fake throws where the real installer does, before `beforeRecord`. */
   refuseInstall?: boolean
+  /** Ids whose update the fake installer refuses, as the real one does for a tag at another commit. */
+  failUpdate?: string[]
   /** Runs where the real installer waits its turn and clones: operations queued ahead of the install finish here. */
   whileQueued?: (repos: Record<string, string>) => void | Promise<void>
 }) {
@@ -124,6 +126,7 @@ async function rig(opts: {
       },
       update: async (id: string, tag: string, pin?: InstallPin, beforeRecord?: (entry: PluginEntry) => void) => {
         calls.push(['update', id, tag, pin])
+        if (opts.failUpdate?.includes(id)) throw new Error(`the tag ${tag} is at another commit`)
         opts.whileQueued?.(repos)
         beforeRecord?.(installedGit({ version: pin?.version ?? '0' }))
         order.push('hosts reload')
@@ -373,6 +376,73 @@ describe('marketplace install and update', () => {
   it('refuses an update through a changed repo', async () => {
     const { service, calls } = await rig({ texts: { [A]: indexOf([{ repo: 'https://github.com/evil/jira.git' }]) }, installed: [installedGit()] })
     await expect(service.updateMarketplace(A, 'bronos.jira', SHOWN)).rejects.toThrow(/different repository/)
+    expect(calls).toEqual([])
+  })
+})
+
+describe('update all (design-next §6.4)', () => {
+  const CHAT = 'https://github.com/x/chat.git'
+  const two = (): Listing[] => [{}, { id: 'bronos.chat', repo: CHAT, version: '0.3.0', commit: c('b') }]
+  const chatInstalled = (over: Partial<InstalledPlugin> = {}): InstalledPlugin =>
+    installedGit({ id: 'bronos.chat', version: '0.2.0', source: { kind: 'git', url: CHAT, tag: 'v0.2.0' }, commit: c('2'), ...over })
+  const items = [
+    { indexUrl: A, id: 'bronos.jira', expect: SHOWN },
+    { indexUrl: A, id: 'bronos.chat', expect: { repo: CHAT, commit: c('b') } }
+  ]
+
+  it('updates each listed plugin in order through the checked update', async () => {
+    const { service, calls } = await rig({ texts: { [A]: indexOf(two()) }, installed: [installedGit(), chatInstalled()] })
+    const r = await service.updateAllMarketplace(items)
+    expect(r.failed).toEqual([])
+    expect(r.updated.map((p) => p.id)).toEqual(['bronos.jira', 'bronos.jira'])
+    expect(calls).toEqual([
+      ['update', 'bronos.jira', 'v1.1.0', { commit: c('a'), id: 'bronos.jira', version: '1.1.0', marketplace: A }],
+      ['update', 'bronos.chat', 'v0.3.0', { commit: c('b'), id: 'bronos.chat', version: '0.3.0', marketplace: A }]
+    ])
+  })
+
+  it('collects a failure with its reason and goes on; the earlier success stays', async () => {
+    const { service, calls } = await rig({ texts: { [A]: indexOf(two()) }, installed: [installedGit(), chatInstalled()], failUpdate: ['bronos.jira'] })
+    const r = await service.updateAllMarketplace(items)
+    expect(r.failed).toEqual([{ id: 'bronos.jira', error: 'the tag v1.1.0 is at another commit' }])
+    expect(r.updated).toHaveLength(1)
+    expect(calls.map((x) => x[1])).toEqual(['bronos.jira', 'bronos.chat'])
+  })
+
+  it('refuses an item whose shown pin differs, without touching the others', async () => {
+    const { service, calls } = await rig({ texts: { [A]: indexOf(two()) }, installed: [installedGit(), chatInstalled()] })
+    const r = await service.updateAllMarketplace([{ ...items[0], expect: { repo: REPO, commit: c('f') } }, items[1]])
+    expect(r.failed).toEqual([{ id: 'bronos.jira', error: expect.stringMatching(/changed in the marketplace/) }])
+    expect(calls.map((x) => x[1])).toEqual(['bronos.chat'])
+  })
+
+  it('never includes a revoked plugin, even with a safe version listed', async () => {
+    const revoked = installedGit({ version: '2.0.0', commit: c('2'), state: { ok: false, reason: 'revoked', revoked: { reason: 'bad', source: A } } })
+    const { service, calls } = await rig({
+      texts: { [A]: indexOf([{ version: '1.5.0', commit: c('5') }], [{ id: 'bronos.jira', commit: c('2') }]) },
+      installed: [revoked]
+    })
+    expect(statusOf(service.marketplace())).toMatchObject({ status: 'revoked', action: 'update' })
+    const r = await service.updateAllMarketplace([{ indexUrl: A, id: 'bronos.jira', expect: { repo: REPO, commit: c('5') } }])
+    expect(r.failed).toEqual([{ id: 'bronos.jira', error: expect.stringMatching(/revoked/) }])
+    expect(calls).toEqual([])
+  })
+
+  it('never includes a linked, git-URL or other-index plugin', async () => {
+    const linked: InstalledPlugin = { ...installedGit(), source: { kind: 'linked', path: '/l' }, marketplace: undefined }
+    const gitUrl = chatInstalled({ marketplace: undefined })
+    const { service, calls } = await rig({ texts: { [A]: indexOf(two()), [B]: indexOf([{ id: 'bronos.other', version: '9.0.0' }]) }, installed: [linked, gitUrl] })
+    const r = await service.updateAllMarketplace(items)
+    expect(r.updated).toEqual([])
+    expect(r.failed.map((f) => f.id)).toEqual(['bronos.jira', 'bronos.chat'])
+    expect(calls).toEqual([])
+  })
+
+  it('refuses a malformed, empty, oversized or duplicated list before any update', async () => {
+    const { service, calls } = await rig({ texts: { [A]: indexOf(two()) }, installed: [installedGit(), chatInstalled()] })
+    for (const bad of [undefined, 'x', [], [{ id: 'bronos.jira' }], [items[0], items[0]], Array.from({ length: 101 }, (_, i) => ({ indexUrl: A, id: `p.${i}` }))]) {
+      await expect(service.updateAllMarketplace(bad)).rejects.toThrow()
+    }
     expect(calls).toEqual([])
   })
 })

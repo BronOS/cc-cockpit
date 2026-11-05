@@ -2145,6 +2145,21 @@ iframe:focus-visible {
   border-radius: var(--cc-radius-md);
   background: var(--cc-bg);
 }
+/* "Update all" (design-next §6.4): its prompt and outcome sit above the list, not under a row. */
+.settings-update-all {
+  margin-left: 0;
+}
+.settings-update-list {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settings-update-list .settings-facts {
+  margin: 4px 0 0;
+}
 .settings-subform .settings-row {
   padding: 6px 0;
 }

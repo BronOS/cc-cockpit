@@ -413,6 +413,22 @@ export interface MarketplaceExpectation {
   commit: string
 }
 
+/** One plugin of an "Update all" confirmation (design-next §6.4): the listing and what the prompt showed of it. */
+export interface MarketplaceUpdateItem {
+  indexUrl: string
+  id: string
+  expect: MarketplaceExpectation
+}
+
+/**
+ * What "Update all" did: the plugins updated, in order, and each refused or failed update with its
+ * reason. A later failure rolls nothing back.
+ */
+export interface MarketplaceUpdateAllResult {
+  updated: PluginView[]
+  failed: { id: string; error: string }[]
+}
+
 /** What the Marketplace page shows for one listing (plan: plugin marketplace, Task 5). */
 export type MarketplaceStatus = 'available' | 'installed' | 'built-in' | 'linked' | 'update' | 'revoked' | 'repo-changed'
 
@@ -924,6 +940,12 @@ export interface IpcInvokeMap {
   'settings.marketplaceInstall': { req: { indexUrl: string; id: string; expect: MarketplaceExpectation }; res: PluginView }
   /** Update the installed plugin to a listing (a downgrade only off a revoked commit). Same lookup. */
   'settings.marketplaceUpdate': { req: { indexUrl: string; id: string; expect: MarketplaceExpectation }; res: PluginView }
+  /**
+   * "Update all" (design-next §6.4): the same checked update per item, one at a time, each only while its
+   * listing is a plain newer version from the plugin's recorded index (never a revoked plugin's move).
+   * Failures are collected, not thrown; a malformed list refuses the whole call before any update.
+   */
+  'settings.marketplaceUpdateAll': { req: { items: MarketplaceUpdateItem[] }; res: MarketplaceUpdateAllResult }
   /** Fetch every configured index now, then answer with the new view. */
   'settings.marketplaceRefresh': { req: void; res: MarketplaceView }
   /**
@@ -1300,6 +1322,7 @@ export const INVOKE_CHANNELS = [
   'settings.marketplace',
   'settings.marketplaceInstall',
   'settings.marketplaceUpdate',
+  'settings.marketplaceUpdateAll',
   'settings.marketplaceRefresh',
   'settings.marketplacePreview',
   'settings.marketplaceSetUrls',

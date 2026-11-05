@@ -1006,7 +1006,11 @@ parent around a nested one) and refuses only when a file it would write already 
 
 ### Marketplace
 
-A browsable list of plugins in Settings > Marketplace. There is no server: the index is one static
+A browsable list of plugins in Settings > Plugins, one page for the installed plugins and the listings (design-next
+§6.3): cards with a preview, name, author, version, repo as plain text, description and state, 20 per page, a
+case-insensitive substring search over name, id, author and description (no regex), and filters Installed / Available /
+Updates and category (`plugin-list-model.ts`); "Add plugin…" holds the git URL install and Link folder, and index
+management is the folded section at the bottom. There is no server: the index is one static
 `index.json` that anyone can host, and the default one lives in the repo `BronOS/cc-cockpit-marketplace`
 (fetched from `raw.githubusercontent.com`). That repo does not exist until it is created; until then the
 default fetch fails and the page shows the error. The template for it is `marketplace/` in this repo.
@@ -1018,8 +1022,25 @@ default fetch fails and the page shows the error. The template for it is `market
   on an installed plugin, and always the default index (removing it only hides its plugins; it cannot be turned off).
   While it runs, a 15-minute timer refetches any of those over an hour old or whose last fetch failed. Redirects are
   refused, so the default index's repo must never be renamed or transferred: installed copies would keep their cache and a fetch error.
-  The Marketplace page refetches when an index is stale or failed (Refresh forces it), and adding or removing an index fetches. The cache is read first, so an offline start still lists plugins and still enforces
-  revocations. The Plugins tab never touches the network. The repo of an entry is shown as plain text, not a link.
+  The Plugins page refetches when an index is stale or failed (Refresh forces it), and adding or removing an index fetches. The cache is read first, so an offline start still lists plugins and still enforces
+  revocations. The page touches the network only through that fetch and the lazy preview fetch below. The repo of an entry is shown as plain text, not a link.
+- **Category.** An entry may name one of `sources views tools themes claude other`; the app reads an unknown or absent
+  one as `other`, the index CI refuses an unknown one. The page's category filter uses it.
+- **Preview.** A plugin repo may hold a `preview.png` at its root (PNG, ≤ 512 KiB, 640×400 to 1600×1000, 1280×800
+  recommended, not animated, a regular file). The index CI checks it and publishes it as `previews/<id>/<commit>.png`
+  beside `index.json`, writing `preview: { sha256 }` on the entry; a missing preview is a warning until the date in
+  `marketplace/preview-policy.json` (`requiredFrom`, `null` = warning only), then a refusal. The app fetches the image
+  lazily (`settings.marketplacePreview`) from the index's own folder only, no redirect, ≤ 512 KiB, checks the sha256 and
+  the PNG signature and caches it under `<data>/marketplace/previews/`; the page shows the bytes from a `blob:` URL
+  (`img-src blob:`). A malformed `preview` drops the field, not the entry. With none, the card shows the name's initial.
+  An installed git or folder plugin's own `preview.png` is shown through `cc-plugin://`.
+- **Update all.** A button on the Plugins page while at least one marketplace-installed plugin has a newer listed version
+  from its recorded index. One confirmation lists each plugin's current and new version, repo and commit; on Confirm main
+  (`settings.marketplaceUpdateAll`, `SettingsService.updateAllMarketplace`) runs the same checked update per plugin, one at
+  a time (pin from main's state, `expect` from the prompt, revocation and repo-change rules, asked again in the installer's
+  queue), and answers with the failures and their reasons; a later failure rolls nothing back. Linked, git-URL and revoked
+  plugins are never in it (a revoked plugin's move to a safe version stays on its own card); main refuses such an item
+  even when asked, and a malformed or duplicated list (or more than 100 items) updates nothing.
 - **Pinning.** An entry pins a tag and the full commit. Install and update clone the tag, read `rev-parse HEAD` in
   staging and refuse when it differs from the commit (a moved tag), or when id or version differ from the entry.
   The UI sends the repo and commit it showed (`expect`); main refuses when the entry changed meanwhile.
@@ -1127,11 +1148,11 @@ name, not which plugin is asking; installed plugins are trusted code.
 **Settings** open as an overlay:
 
 - Projects: list, open, relink a moved folder, remove.
-- Plugins: install from git URL, link a local folder, update to a newer tag, uninstall,
-  app-wide settings form; the Services group holds this project's picks (a service with several providers, the
-  open-file plugin, and one row per slot type with a candidate: "Plugin drawing the agenda slot", with "None").
-- Marketplace: browse and install from the configured indexes, add or remove an index, refresh;
-  see §5 Marketplace.
+- Plugins: one page of cards for the installed plugins and the configured indexes' listings (paging, search,
+  filters, categories, previews), install or update from a listing, Update all, "Add plugin…" (git URL install, link
+  a local folder), update to a newer tag, uninstall, app-wide settings form, and the folded index management (add or
+  remove an index, refresh); see §5 Marketplace. The Services group holds this project's picks (a service with several
+  providers, the open-file plugin, and one row per slot type with a candidate: "Plugin drawing the agenda slot", with "None").
 - This project: the project's colour (below, Project colour), enable plugins, project settings
   form, panel zones, the project's commands in the new-tab menu (§3 Custom commands).
 - General: what a tab does when its process exits (close when it ends normally, or keep; §3 Exit);

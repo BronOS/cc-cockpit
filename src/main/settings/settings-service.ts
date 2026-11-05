@@ -24,7 +24,7 @@
 //    would make invalid. Only the projects whose effective values changed hear of it.
 import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
-import type { MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
+import type { MarketplaceUpdateAllResult, MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
 import { seesAllSessions } from '../../shared/manifest'
 import { PREVIEW_FILE } from '../../shared/marketplace'
@@ -96,6 +96,8 @@ export interface SettingsDeps {
 }
 
 const MAX_MARKETPLACE_URLS = 20
+/** "Update all" items per call: far above any real plugin count, small enough that one call cannot queue clones for hours. */
+const MAX_UPDATE_ALL = 100
 
 export class SettingsService {
   constructor(private readonly deps: SettingsDeps) {}
@@ -283,7 +285,7 @@ export class SettingsService {
    * The listing `indexUrl` + `id` as main's own validated state has it, and only if its button would
    * be `action`. Repo, tag and commit come from here, never from the renderer.
    */
-  private marketplaceEntry(indexUrl: unknown, id: unknown, action: 'install' | 'update', expected: unknown) {
+  private marketplaceEntry(indexUrl: unknown, id: unknown, action: 'install' | 'update', expected: unknown, newerOnly = false) {
     if (typeof indexUrl !== 'string' || typeof id !== 'string') throw new Error('give the index and the plugin')
     const found = resolveMarketplace(this.marketplaceInput()).entries.find((e) => e.view.indexUrl === indexUrl && e.view.id === id)
     if (!found) throw new Error('unknown marketplace entry')
@@ -294,6 +296,9 @@ export class SettingsService {
       }
       throw new Error(found.view.note ?? `${id} cannot be ${action === 'install' ? 'installed' : 'updated'} from this index`)
     }
+    // "Update all" takes plain newer versions only: a revoked plugin's move (maybe a downgrade) is its
+    // own decision, made on its card (design-next §6.4).
+    if (newerOnly && found.view.status !== 'update') throw new Error(`${id} is revoked; move it to a safe version on its own card`)
     // The confirmation showed one repo and commit; the index may have changed in main since (a refresh
     // in another window). Never install what the user was not shown: refuse, the page re-renders.
     const x = expected as { repo?: unknown; commit?: unknown } | null | undefined
@@ -330,8 +335,8 @@ export class SettingsService {
     )
   }
 
-  async updateMarketplace(indexUrl: unknown, id: unknown, expected: unknown): Promise<PluginView> {
-    const { entry: e } = this.marketplaceEntry(indexUrl, id, 'update', expected)
+  async updateMarketplace(indexUrl: unknown, id: unknown, expected: unknown, newerOnly = false): Promise<PluginView> {
+    const { entry: e } = this.marketplaceEntry(indexUrl, id, 'update', expected, newerOnly)
     return this.pluginView(
       await this.deps.plugins.update(
         e.id,
@@ -340,9 +345,36 @@ export class SettingsService {
         // The check above ran before this waited its turn: an update queued ahead may have installed
         // something newer, and the installer would then silently downgrade to this one (review finding).
         // Asked again in the queue, with the same rules as the button; a changed answer refuses.
-        () => void this.marketplaceEntry(indexUrl, id, 'update', expected)
+        () => void this.marketplaceEntry(indexUrl, id, 'update', expected, newerOnly)
       )
     )
+  }
+
+  /**
+   * "Update all" (design-next §6.4): each plugin the confirmation listed, one at a time, through the same
+   * checked update as its own button (pin from main's state, `expect`, revocation and repo rules, asked
+   * again in the installer's queue), limited to plain newer versions from the recorded index. A failure is
+   * collected with its reason and the rest go on; nothing already updated is rolled back. Only the list
+   * itself is checked up front: a malformed or duplicated one updates nothing.
+   */
+  async updateAllMarketplace(items: unknown): Promise<MarketplaceUpdateAllResult> {
+    if (!Array.isArray(items) || items.length === 0 || items.length > MAX_UPDATE_ALL) throw new Error('give the updates the confirmation listed')
+    const seen = new Set<string>()
+    for (const item of items) {
+      if (!isPlainObject(item) || typeof item.indexUrl !== 'string' || typeof item.id !== 'string') throw new Error('give the index and the plugin of each update')
+      // Two items for one id would update it twice, the second against a state the prompt never showed.
+      if (seen.has(item.id)) throw new Error(`${item.id} is listed twice`)
+      seen.add(item.id)
+    }
+    const result: MarketplaceUpdateAllResult = { updated: [], failed: [] }
+    for (const item of items as { indexUrl: string; id: string; expect?: unknown }[]) {
+      try {
+        result.updated.push(await this.updateMarketplace(item.indexUrl, item.id, item.expect, true))
+      } catch (err) {
+        result.failed.push({ id: item.id, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    return result
   }
 
   /**

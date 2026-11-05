@@ -1183,9 +1183,16 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   updates, one failing)
 - Modify: `docs/design.md` (§5 Marketplace: preview, category, Update all; §6 Settings list)
 
-- [ ] linked, git-URL and revoked plugins never included; only plugins with a newer listed version from their recorded index
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/marketplace-update-all.spec.ts`
+- [x] linked, git-URL and revoked plugins never included; only plugins with a newer listed version from their recorded index
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/marketplace-update-all.spec.ts`
   — done when green
+- ➕ The loop lives in `SettingsService.updateAllMarketplace` (`src/main/settings/settings-service.ts`), beside the single
+  `updateMarketplace` it reuses, not in `marketplace-service.ts` (which only fetches and caches indexes). IPC
+  `settings.marketplaceUpdateAll { items: [{ indexUrl, id, expect }] }` → `{ updated, failed: [{ id, error }] }`; each item is
+  checked as `status: 'update'` both up front and again in the installer's queue, so a revoked plugin's safe-version move
+  is refused there; a malformed, empty, duplicated or > 100 item list refuses the whole call. The page sends exactly what
+  its prompt lists (`UpdateAll.tsx`, `updateAllEntries` / `updateAllStillShown` in `plugin-list-model.ts`); a refresh that
+  moves a listed pin closes the prompt. Unit tests are in `settings-marketplace.test.ts` (where the update tests live).
 
 ### Phase J — Verification and docs
 

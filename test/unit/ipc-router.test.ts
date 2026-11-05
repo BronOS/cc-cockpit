@@ -890,6 +890,7 @@ describe('registerSettingsHandlers', () => {
       marketplace: rec('marketplace', { indexes: [], entries: [], warnings: [] }),
       installMarketplace: async (...args) => rec('installMarketplace', {} as never)(...args),
       updateMarketplace: async (...args) => rec('updateMarketplace', {} as never)(...args),
+      updateAllMarketplace: async (...args) => rec('updateAllMarketplace', { updated: [], failed: [] })(...args),
       refreshMarketplace: async (...args) => rec('refreshMarketplace', { indexes: [], entries: [], warnings: [] })(...args),
       marketplacePreview: async (...args) => rec('marketplacePreview', null)(...args),
       setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args)
@@ -901,7 +902,7 @@ describe('registerSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(18)
+    expect(channels).toHaveLength(19)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {
@@ -934,6 +935,8 @@ describe('registerSettingsHandlers', () => {
     // The marketplace calls name a listing only; a repo, tag or commit in the payload is dropped.
     await ipc.invoke('settings.marketplaceInstall', 11, [{ indexUrl: 'https://i/x.json', id: 'a.b', expect: { repo: 'r', commit: 'c' }, tag: 'v9' }])
     await ipc.invoke('settings.marketplaceUpdate', 11, [{ indexUrl: 'https://i/x.json', id: 'a.b', expect: { repo: 'r', commit: 'c' }, tag: 'v9' }])
+    // "Update all" hands its list on whole: the service checks each item's shape itself.
+    await ipc.invoke('settings.marketplaceUpdateAll', 11, [{ items: [{ indexUrl: 'https://i/x.json', id: 'a.b', expect: { repo: 'r', commit: 'c' } }], tag: 'v9' }])
     await ipc.invoke('settings.marketplaceSetUrls', 11, [{ urls: ['https://i/x.json'], extra: 1 }])
     expect(calls).toEqual([
       ['installPlugin', 'https://x', 'v1'],
@@ -945,6 +948,7 @@ describe('registerSettingsHandlers', () => {
       ['setBundledOff', 'cockpit.editor', true],
       ['installMarketplace', 'https://i/x.json', 'a.b', { repo: 'r', commit: 'c' }],
       ['updateMarketplace', 'https://i/x.json', 'a.b', { repo: 'r', commit: 'c' }],
+      ['updateAllMarketplace', [{ indexUrl: 'https://i/x.json', id: 'a.b', expect: { repo: 'r', commit: 'c' } }]],
       ['setMarketplaceUrls', ['https://i/x.json']]
     ])
   })
