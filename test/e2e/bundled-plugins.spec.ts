@@ -85,7 +85,7 @@ test('the reviewer and editor load by default, show as built in, and a modified-
   await expect(review.locator('footer, #close')).toHaveCount(0)
   const toolbar = page.locator('.overlay-header').first()
   await expect(toolbar.locator('.overlay-divider[data-before="close"] + .overlay-close')).toHaveCount(1)
-  const discuss = toolbar.locator('.overlay-discuss-button')
+  const discuss = toolbar.locator('.overlay-discuss-main')
   await expect(discuss).not.toHaveClass(/cc-primary/) // no note yet
   // A native key press, as a person types it: main sees it before the page (overlays.spec.ts).
   await cockpit.app.evaluate(({ BrowserWindow }) => {
@@ -106,7 +106,7 @@ test('the reviewer and editor load by default, show as built in, and a modified-
   await expect(addNote).toBeVisible()
   await addNote.click()
   await expect(review.locator('.note .link').first()).toHaveText('Line 3 · new')
-  await expect(page.locator('.overlay-header .overlay-discuss-button').first()).toHaveClass(/cc-primary/) // a note: Discuss is primary
+  await expect(page.locator('.overlay-header .overlay-discuss-main').first()).toHaveClass(/cc-primary/) // a note: Discuss is primary
   await expect(review.locator('main > aside:visible')).toHaveCount(0) // no notes sidebar, no details column
   await expect(addNote).toBeHidden()
 })

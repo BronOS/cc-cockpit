@@ -25,3 +25,24 @@ export function discussTabsOf(tabs: readonly TabInfo[], own: ReadonlyMap<string,
   }
   return out
 }
+
+/**
+ * The ▾ menu's order: the preselected tab (shared/discuss.ts: the opener's `discuss.tabId`, else
+ * the window's selected Claude tab) first, then the tabs waiting for input (a send goes in now),
+ * then the busy ones (queued by the send gate until they are free), each group in tab order.
+ */
+export function orderDiscussTabs(tabs: readonly DiscussTab[], preselectedId: string | undefined): DiscussTab[] {
+  const first = tabs.filter((t) => t.tabId === preselectedId)
+  const rest = tabs.filter((t) => t.tabId !== preselectedId)
+  return [...first, ...rest.filter((t) => t.status === 'waiting'), ...rest.filter((t) => t.status !== 'waiting')]
+}
+
+/** Only `waiting` takes a send now; any other status queues it (send gate: idle is not sendable). */
+export function discussQueues(tab: DiscussTab): boolean {
+  return tab.status !== 'waiting'
+}
+
+/** The ▾ part is disabled with no existing session to pick; its tooltip says why. */
+export function existingMenuTitle(tabs: readonly DiscussTab[]): string {
+  return tabs.length === 0 ? 'No Claude session in this window to discuss in' : 'Discuss in an existing session'
+}

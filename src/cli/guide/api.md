@@ -156,8 +156,10 @@ with full Node access.
   overlay; the button shows busy until `fn` settles, at most 30 s), and `setButtons(list)` replaces
   them (same rules: at most 4, ids 1-40 of `A-Z a-z 0-9 . _ -`, labels 1-40 characters).
   The toolbar's Discuss with Claude shows on an overlay with a `type` or an `onDiscuss` handler
-  (`discuss: false` in the spec hides it; `discuss: { tabId }` preselects that Claude tab). The
-  person picks a Claude tab of the window or New session and may add a note; `onDiscuss(fn)` answers
+  (`discuss: false` in the spec hides it; `discuss: { tabId }` preselects that Claude tab). It is a
+  split button: the main part discusses in a new Claude session at once (no note), the ▾ part lists
+  the window's existing Claude tabs (the preselected one first, then waiting, then busy ones, queued
+  until free; disabled with none) and takes a note; `onDiscuss(fn)` answers
   `{ text }` (the context, within 5 s) or `null` for none, and a throw shows its error and sends
   nothing. `setDiscussPrimary(on)` draws Discuss as the accent (primary) button, or plain again
   (e.g. primary once there is something to send). The app sends `About: <title>`, the type, your text and the note (20,000 characters at

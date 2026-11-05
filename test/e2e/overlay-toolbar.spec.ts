@@ -102,13 +102,16 @@ test('type buttons from another plugin: busy, then refreshed; close: true dismis
   await expect.poll(() => notes(cockpit)).toContain(`thing ${JSON.stringify({ kind: 'dismissed' })}`)
 })
 
-/** Opens the Discuss popover of the top overlay, picks nothing (the preselection stays) and sends `note`. */
-async function discuss(c: Cockpit, note: string, pick?: 'New session'): Promise<void> {
-  const { page } = c
-  await page.locator('.overlay .overlay-discuss').getByRole('button', { name: 'Discuss' }).click()
-  const popover = page.getByRole('dialog', { name: 'Discuss with Claude' })
+const mainPart = (c: Cockpit) => c.page.locator('.overlay .overlay-discuss').getByRole('button', { name: 'Discuss in a new Claude session' })
+const menuPart = (c: Cockpit) => c.page.locator('.overlay .overlay-discuss').getByRole('button', { name: 'Discuss in an existing session' })
+const menu = (c: Cockpit) => c.page.getByRole('dialog', { name: 'Discuss in an existing session' })
+
+/** Opens the ▾ menu of the top overlay, picks nothing (the preselection stays) and sends `note`. */
+async function discuss(c: Cockpit, note: string): Promise<void> {
+  await menuPart(c).click()
+  const popover = menu(c)
   await expect(popover).toBeVisible()
-  if (pick) await popover.getByRole('option', { name: pick }).click()
+  await expect(popover.getByRole('option', { name: 'New session' })).toHaveCount(0)
   await popover.getByLabel('Note (optional)').fill(note)
   await popover.getByRole('button', { name: 'Send' }).click()
 }
@@ -150,6 +153,10 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
     .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
     .toBe('working')
   await run(cockpit, 'thing')
+  await menuPart(cockpit).click()
+  await expect(menu(cockpit).getByRole('option').first()).toContainText('queued — sent when it is free')
+  await menuPart(cockpit).click()
+  await expect(menu(cockpit)).toHaveCount(0)
   await discuss(cockpit, 'and this later')
   await expect(page.locator('.overlay')).toHaveCount(0)
   await expect.poll(() => notes(cockpit)).toContain(`thing ${JSON.stringify({ kind: 'discussed', tabId, queued: true })}`)
@@ -159,7 +166,7 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
   expect(cockpit.pastes()[1]).toContain('and this later')
 })
 
-test('Discuss to New session opens a Claude tab with the text as its prompt and selects it', async ({ cockpit }) => {
+test('Discuss main part opens a new Claude tab with the text as its prompt and selects it, no popover', async ({ cockpit }) => {
   const { page } = cockpit
   await enable(cockpit, [TOOLBAR, 'overlay-toolbar'])
   // A shell tab is selected, so the new Claude tab being selected afterwards is a change.
@@ -168,15 +175,17 @@ test('Discuss to New session opens a Claude tab with the text as its prompt and 
   expect(cockpit.claudeRuns()).toEqual([])
 
   await run(cockpit, 'thing')
-  // No Claude tab: New session is the preselection; picking it explicitly is the same.
-  await discuss(cockpit, 'start from here', 'New session')
+  // No Claude tab: the ▾ part is disabled and says why.
+  await expect(menuPart(cockpit)).toBeDisabled()
+  await expect(menuPart(cockpit)).toHaveAttribute('title', /No Claude session/)
+  await mainPart(cockpit).click()
   await expect(page.locator('.overlay')).toHaveCount(0)
+  await expect(menu(cockpit)).toHaveCount(0)
   await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(1)
   const argv = cockpit.claudeRuns()[0]!
   const prompt = argv[argv.indexOf('--') + 1]
   expect(prompt).toContain('About: Thing')
   expect(prompt).toContain('context from the opener')
-  expect(prompt).toContain('start from here')
 
   await expect.poll(() => notes(cockpit)).toContainEqual(expect.stringMatching(/^thing \{"kind":"discussed","tabId":"[^"]+","queued":false\}$/))
   const tabs = page.getByRole('tab')
@@ -185,27 +194,38 @@ test('Discuss to New session opens a Claude tab with the text as its prompt and 
   await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'false')
 })
 
-test('Discuss popover keys: Esc closes the popover only and gives focus back; Enter in the list sends', async ({ cockpit }) => {
+test('Discuss menu keys: Alt+ArrowDown opens it, Esc closes it and gives focus back; Enter in the list sends', async ({ cockpit }) => {
   const { page } = cockpit
   await enable(cockpit, [TOOLBAR, 'overlay-toolbar'])
-  await cockpit.newTab('shell')
-  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+  await cockpit.newTab('claude')
+  await expect
+    .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status, { timeout: 15_000 })
+    .toBe('idle')
+  await cockpit.typeLine('/prompt first')
+  await cockpit.typeLine('/stop')
+  await expect
+    .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
+    .toBe('waiting')
+  const tabId = await claudeTab(cockpit)
   await run(cockpit, 'thing')
-  const toggle = page.locator('.overlay .overlay-discuss').getByRole('button', { name: 'Discuss' })
-  const popover = page.getByRole('dialog', { name: 'Discuss with Claude' })
-  await toggle.click()
+  const popover = menu(cockpit)
+  await mainPart(cockpit).focus()
+  await page.keyboard.press('Alt+ArrowDown')
   await expect(popover).toBeVisible()
-  // The preselected target has the focus (no Claude tab: New session).
-  await expect(popover.getByRole('option', { name: 'New session' })).toBeFocused()
+  // The window's selected Claude tab is preselected and has the focus.
+  await expect(popover.getByRole('option')).toHaveCount(1)
+  await expect(popover.getByRole('option').first()).toBeFocused()
   await page.keyboard.press('Escape')
   await expect(popover).toHaveCount(0)
   await expect(page.locator('.overlay')).toHaveCount(1)
-  await expect(toggle).toBeFocused()
-  expect(cockpit.claudeRuns()).toEqual([])
+  await expect(menuPart(cockpit)).toBeFocused()
+  expect(cockpit.pastes()).toHaveLength(0)
 
-  await toggle.click()
-  await expect(popover.getByRole('option', { name: 'New session' })).toBeFocused()
+  await menuPart(cockpit).click()
+  await expect(popover.getByRole('option').first()).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(page.locator('.overlay')).toHaveCount(0)
-  await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(1)
+  await expect.poll(() => notes(cockpit)).toContain(`thing ${JSON.stringify({ kind: 'discussed', tabId, queued: false })}`)
+  await expect.poll(() => cockpit.pastes().length).toBe(1)
+  expect(cockpit.claudeRuns()).toHaveLength(1)
 })

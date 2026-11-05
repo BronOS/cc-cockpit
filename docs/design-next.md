@@ -225,10 +225,13 @@ drawn. Combined with a source answering `act(id, 'open')` by opening first, a cl
 ### 3.5 Discuss with Claude (core)
 
 Shown on every overlay that has a `type` or an `onDiscuss` handler, unless `discuss: false`; a bare overlay (a user's
-lazygit entry, `ccc overlay --html`) has none. A click opens a small popover under the button:
+lazygit entry, `ccc overlay --html`) has none. It is a split button `[ Discuss | ▾ ]`: the main
+part (click or Enter) discusses in a **new session** at once, with no picker and no note; the ▾ part (Alt+ArrowDown on
+the main part also opens it; disabled when the window has no Claude tab) opens a small popover under the button:
 
-- **Target**: a list of this window's Claude tabs (name, status) and **New session**. Preselected: `discuss.tabId`
-  when it is a Claude tab of this window, else the active tab when it is Claude, else New session.
+- **Target**: a list of this window's existing Claude tabs (name, status): the preselected one first (`discuss.tabId`
+  when it is a Claude tab of this window, else the active tab when it is Claude), then the waiting ones, then the busy
+  ones, marked "queued — sent when it is free". No "remember last choice".
 - **Note**: an optional text area (4,000 characters). Empty is fine: the old "needs a note or a comment" rule is gone.
 - **Send** (Enter in the target list, Cmd+Enter in the note) / Cancel (Esc closes the popover only).
 

@@ -209,7 +209,7 @@ one once `cockpit.sessions` is off.
 
 The built-in `reviewer` service (v1): `"uses": { "reviewer": 1 }`, then `ctx.services.use('reviewer')`. Both methods
 resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise. Sending to Claude is the
-overlay toolbar's Discuss with Claude (a Claude tab of the window, or New session): `tabId` is its preselected tab
+overlay toolbar's Discuss with Claude (main part: a new session; ▾: a Claude tab of the window): `tabId` is the ▾ menu's preselected tab
 when it is a Claude tab of the window, else the active one. A file review has the type `file { path }`, so the
 editor's Edit (and any plugin's `file` buttons) show on it.
 

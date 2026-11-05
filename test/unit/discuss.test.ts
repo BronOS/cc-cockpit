@@ -7,7 +7,7 @@ import {
   MAX_DISCUSS_TYPE_LINE,
   preselectDiscussTarget
 } from '../../src/shared/discuss'
-import { discussTabsOf } from '../../src/renderer/overlays/discuss-tabs'
+import { discussQueues, discussTabsOf, existingMenuTitle, orderDiscussTabs, type DiscussTab } from '../../src/renderer/overlays/discuss-tabs'
 import type { SessionDetail, TabInfo } from '../../src/shared/ipc'
 
 describe('composeDiscuss', () => {
@@ -125,5 +125,23 @@ describe('discussTabsOf', () => {
       { tabId: 'c2', label: 'Claude · app', status: 'working', tool: 'Bash' },
       { tabId: 'c1', label: 'Fix the parser', status: 'waiting' }
     ])
+  })
+})
+
+describe('orderDiscussTabs', () => {
+  const t = (tabId: string, status: DiscussTab['status']): DiscussTab => ({ tabId, label: tabId, status })
+  const tabs = [t('a', 'working'), t('b', 'waiting'), t('c', 'idle'), t('d', 'waiting')]
+  it('puts the preselected tab first, then waiting, then busy, in tab order', () => {
+    expect(orderDiscussTabs(tabs, 'c').map((x) => x.tabId)).toEqual(['c', 'b', 'd', 'a'])
+    expect(orderDiscussTabs(tabs, undefined).map((x) => x.tabId)).toEqual(['b', 'd', 'a', 'c'])
+    expect(orderDiscussTabs(tabs, 'gone').map((x) => x.tabId)).toEqual(['b', 'd', 'a', 'c'])
+    expect(orderDiscussTabs([], 'a')).toEqual([])
+  })
+  it('marks every status but waiting as queued', () => {
+    expect(tabs.map(discussQueues)).toEqual([true, false, true, false])
+  })
+  it('says why the menu is disabled with no session', () => {
+    expect(existingMenuTitle([])).toMatch(/No Claude session/)
+    expect(existingMenuTitle(tabs)).toBe('Discuss in an existing session')
   })
 })

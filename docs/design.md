@@ -493,9 +493,11 @@ and `inbox-item` `{ source, id }`.
 loading…" after 10 s; ✕ and Esc work throughout. A renderer reload brings an html overlay's loader back.
 
 **Discuss with Claude** (`DiscussPopover.tsx`, `main/overlays/discuss.ts`). Shown for an overlay with a
-`type` or an `onDiscuss` handler unless the spec says `discuss: false`. The popover lists this window's
-Claude tabs (status) and New session; the preselection is the opener's `discuss.tabId`, else the active
-Claude tab, else New session (`src/shared/discuss.ts`, used by renderer and main). Send is the renderer
+`type` or an `onDiscuss` handler unless the spec says `discuss: false`. It is a split button: the main part
+sends to a new session at once (no note); the ▾ part (disabled with no Claude tab) lists this window's
+Claude tabs (status; preselected first, then waiting, then busy as queued, `discuss-tabs.ts`) with a note;
+the preselection is the opener's `discuss.tabId`, else the active Claude tab (`src/shared/discuss.ts`,
+used by renderer and main). Send is the renderer
 call `overlays.discuss`; main asks the opener's host for context (`onDiscuss`, 5 s), builds `About:
 <title>`, the type line, the context and the note (at most 20,000 characters, the context cut first, the
 note never), re-checks that the target is a Claude tab of this window, then sends through the send gate

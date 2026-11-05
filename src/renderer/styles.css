@@ -1634,6 +1634,27 @@ iframe:focus-visible {
   position: relative;
   flex: none;
 }
+/* The split button: two halves drawn as one control (shared border radius outside, a 1px divider
+   inside), same height as the other toolbar buttons; primary colours both halves. */
+.overlay-discuss-split {
+  display: flex;
+  align-items: stretch;
+}
+.overlay-discuss-split .overlay-discuss-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.overlay-discuss-split .overlay-discuss-more {
+  margin-left: -1px;
+  padding-left: 6px;
+  padding-right: 6px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid var(--cc-border-strong);
+}
+.overlay-discuss-split .overlay-discuss-more.cc-primary {
+  border-left-color: color-mix(in srgb, var(--cc-bg) 45%, transparent);
+}
 .discuss-popover {
   position: absolute;
   top: calc(100% + 6px);
