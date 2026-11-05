@@ -1327,6 +1327,78 @@ describe('ServiceRegistry available()', () => {
   })
 })
 
+// `ctx.services.provider(name)`: the sources (Gmail, Chat, Jira) trusted an inbox-item overlay only
+// when the hardcoded cockpit.reviewer opened it; this names the reviewer the project picked.
+describe('ServiceRegistry provider()', () => {
+  it('names the only provider, needing no activation or implementation', () => {
+    const { reg, acts } = setup()
+    reg.setSpec(consumer('c', { reviewer: 1 }))
+    reg.setSpec(provider('cockpit.reviewer', { reviewer: 1 }))
+    acts.start('cockpit.reviewer')
+    expect(reg.provider('c', 'reviewer')).toBe('cockpit.reviewer')
+  })
+
+  it('with several providers, names the pick; none or a stale pick is null', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { reviewer: 1 }))
+    reg.setSpec(provider('cockpit.reviewer', { reviewer: 1 }))
+    reg.setSpec(provider('other.reviewer', { reviewer: 1 }))
+    expect(reg.provider('c', 'reviewer')).toBeNull()
+    reg.setChoices({ reviewer: 'gone' })
+    expect(reg.provider('c', 'reviewer')).toBeNull()
+    reg.setChoices({ reviewer: 'other.reviewer' })
+    expect(reg.provider('c', 'reviewer')).toBe('other.reviewer')
+  })
+
+  it('falls back to the only provider when the pick names a plugin no longer providing it', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { reviewer: 1 }))
+    reg.setSpec(provider('cockpit.reviewer', { reviewer: 1 }))
+    reg.setChoices({ reviewer: 'other.reviewer' })
+    expect(reg.provider('c', 'reviewer')).toBe('cockpit.reviewer')
+  })
+
+  it('is null with no provider, or a selected provider of another major', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { reviewer: 1 }))
+    expect(reg.provider('c', 'reviewer')).toBeNull()
+    reg.setSpec(provider('p', { reviewer: 2 }))
+    expect(reg.provider('c', 'reviewer')).toBeNull()
+  })
+
+  it('reflects a pick change, a disable and an enable on the next call (nothing cached)', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { reviewer: 1 }))
+    reg.setSpec(provider('a', { reviewer: 1 }))
+    reg.setSpec(provider('b', { reviewer: 1 }))
+    reg.setChoices({ reviewer: 'a' })
+    expect(reg.provider('c', 'reviewer')).toBe('a')
+    reg.setChoices({ reviewer: 'b' })
+    expect(reg.provider('c', 'reviewer')).toBe('b')
+    reg.removeSpec('b')
+    expect(reg.provider('c', 'reviewer')).toBe('a')
+    reg.removeSpec('a')
+    expect(reg.provider('c', 'reviewer')).toBeNull()
+  })
+
+  it('refuses a name not in uses, like use(), and a non-string name', () => {
+    const { reg } = setup()
+    reg.setSpec(consumer('c', { reviewer: 1 }))
+    reg.setSpec(provider('p', { reviewer: 1, other: 1 }))
+    expect(() => reg.provider('c', 'other')).toThrow('plugin c does not declare service "other" in services.uses')
+    expect(() => reg.provider('c', 'constructor')).toThrow('does not declare service "constructor"')
+    expect(() => reg.provider('unknown-plugin', 'reviewer')).toThrow('does not declare service "reviewer"')
+    expect(() => reg.provider('c', 42)).toThrow(TypeError)
+  })
+
+  it('refuses a name the plugin collects: the pick does not apply to a collector', () => {
+    const { reg } = setup()
+    reg.setSpec({ id: 'inbox', services: { uses: { 'inbox-feed': 1 }, collects: ['inbox-feed'] } })
+    reg.setSpec(provider('chat', { 'inbox-feed': 1 }))
+    expect(() => reg.provider('inbox', 'inbox-feed')).toThrow('collects service "inbox-feed"')
+  })
+})
+
 describe('ServiceRegistry useAll (collectors)', () => {
   const collector = (id: string, uses: Record<string, number>, collects: string[]) => ({ id, services: { uses, collects } })
   const feed = (tag: string) => ({ items: () => [tag], fail: () => { throw new Error(`${tag} broke`) } })

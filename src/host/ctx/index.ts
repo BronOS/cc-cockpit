@@ -480,7 +480,10 @@ export class HostContexts {
         caller: () => servicesOf().caller(spec.id),
         // Resolved on every call (never cached): a provider enabled, disabled or re-picked since the
         // last ask is seen at once. A read with no side effect, so no alive() check either.
-        available: (name: string) => servicesOf().available(spec.id, name)
+        available: (name: string) => servicesOf().available(spec.id, name),
+        // Same rule and no cache as `available`, but it throws for an undeclared or collected name
+        // (ServiceRegistry.provider says why). A read, so no alive() check.
+        provider: (name: string) => servicesOf().provider(spec.id, name)
       }),
       log: Object.freeze(logger),
       notify,

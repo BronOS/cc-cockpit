@@ -367,6 +367,21 @@ describe('PluginLoader services', () => {
     await loader.unload('a.provider')
     expect(available('greet')).toBe(false)
   })
+
+  it('ctx.services.provider() names the provider for the bound plugin, fresh on each ask', async () => {
+    svc()
+    write(join(root, 'provider'), "exports.activate = (ctx) => { ctx.services.provide('greet', { hi: () => 'hi' }) }")
+    write(join(root, 'consumer'), "exports.activate = (ctx) => { __svc.provider = (n) => ctx.services.provider(n) }")
+    const loader = makeLoader()
+    await loader.activateAll([consumer()])
+    const providerOf = svc().provider as (name: unknown) => string | null
+    expect(providerOf('greet')).toBeNull()
+    await loader.activateAll([provider()])
+    expect(providerOf('greet')).toBe('a.provider')
+    expect(() => providerOf('unknown')).toThrow('does not declare service "unknown" in services.uses')
+    await loader.unload('a.provider')
+    expect(providerOf('greet')).toBeNull()
+  })
 })
 
 describe('PluginLoader timeouts', () => {

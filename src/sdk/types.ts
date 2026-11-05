@@ -846,6 +846,16 @@ export interface ServicesApi {
    */
   available(name: string): boolean
   /**
+   * The id of the plugin a call on service `name` would reach now (the only provider, or the
+   * project's pick among several), or `null` when none would: no enabled provider, several and no
+   * pick, or the selected one at another major. Same rule as a call and `available`, asked fresh on
+   * every call (call it when you need it, not once in `activate`). For checking who opened an overlay
+   * (`OverlayInfo.opener`) against the reviewer the project picked, say. Throws for a name not in
+   * this plugin's `services.uses`, and for one in its `services.collects` (the pick does not apply
+   * to a collector: `useAll(name).providers()`). An older app has no `provider`: feature-test it.
+   */
+  provider(name: string): string | null
+  /**
    * Every provider of service `name`, for a plugin that reads from all of them (Inbox collecting
    * each `inbox-feed`). `name` must be in both `services.uses` and `services.collects` (app 0.9.7+:
    * older apps refuse a manifest with `collects`). The project's provider pick does not apply, and

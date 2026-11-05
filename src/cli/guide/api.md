@@ -316,6 +316,14 @@ with full Node access.
     hide an Edit button when no editor is enabled) rather than once in `activate`. A provider
     still activating, or whose activate failed, counts: a call waits for it, or rejects with the
     failure.
+  - `ctx.services.provider(name)`: the id of the plugin a call on `name` would reach now (the
+    only provider, or the project's pick among several), or `null` when none would (no enabled
+    provider, several and no pick, the selected one at another major). Same rule as `available`,
+    asked fresh each time. Use it to check an overlay's `opener` against the provider the person
+    picked (a replacement reviewer, not a hardcoded `cockpit.reviewer`). It throws for a name not
+    in your `services.uses`, and for one in your `services.collects`: the pick does not apply to
+    a collector, read `useAll(name).providers()`. An older app has no `provider`: feature-test
+    `typeof ctx.services.provider === 'function'` and keep a fallback.
   - No limits: a service call is a plain call inside the host process, it never reaches main, so
     there is no rate, concurrency, argument or result size cap and no timeout. A provider that
     must protect itself counts and caps its own callers (`caller()` says who).

@@ -768,6 +768,40 @@ export class ServiceRegistry {
   }
 
   /**
+   * `ctx.services.provider(service)` for `pluginId`: the id of the plugin a call from its `use`
+   * handle would reach right now, or null when none would (no provider, several and no valid pick,
+   * the selected one at another major). The same `selectProvider` over the current specs and picks
+   * as a call, asked fresh on every call. Friction (sources): Gmail, Chat and Jira trusted an
+   * `inbox-item` overlay only when the hardcoded `cockpit.reviewer` opened it, so a reviewer the
+   * project picked instead got no item buttons; this names the pick.
+   *
+   * Throws, like `use`, for a name `pluginId` does not declare in `services.uses`: unlike
+   * `available` (a guard, false for anything a call rejects), the answer is an id the plugin acts
+   * on, and a typo must show rather than read as "no provider". Throws too for a name it collects
+   * (`services.collects`): the project's pick does not apply to a collector (it reads every
+   * provider through `useAll`), and the pick is not even kept for a name only collectors
+   * use, so null would claim "no provider" while several answer. `useAll(name).providers()` is the
+   * collector's answer.
+   *
+   * A provider still activating, or one whose activate failed, is named (as `available` counts it):
+   * the selection decides, and a call waits for it or reports the failure.
+   */
+  provider(pluginId: string, service: unknown): string | null {
+    if (typeof service !== 'string') throw new TypeError('services.provider: the service name must be a string')
+    const version = this.declared(pluginId, 'uses', service)
+    if (version === undefined) {
+      throw new Error(`plugin ${pluginId} does not declare service "${service}" in services.uses`)
+    }
+    if (this.collects(pluginId, service)) {
+      throw new Error(
+        `plugin ${pluginId} collects service "${service}" (services.collects): the project's pick does not apply; read useAll("${service}").providers()`
+      )
+    }
+    const sel = selectProvider(service, [...this.specs.values()], this.choices, { id: pluginId, version })
+    return sel.ok ? sel.provider : null
+  }
+
+  /**
    * `ctx.services.caller()` for `pluginId`: the plugin whose call `pluginId` is serving right now,
    * or undefined. Read from the innermost frame of the current chain only, and only when that frame
    * - is a `call` frame: an `activate` frame serves no one, and listeners run outside any chain

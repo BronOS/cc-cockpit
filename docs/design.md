@@ -911,6 +911,7 @@ dispatched inside the host with no round trip to main.
   B), and it is `undefined` in `activate`, in event listeners, outside a call and after the call returned. Not a
   security boundary (one JS realm); it guards against honest mistakes. A service call reaches no limits: no rate,
   size or time cap, since it never leaves the host; a provider that must protect itself counts its callers.
+- `ctx.services.provider(name)` is the plugin id a call on `name` would reach now, or `null` (the same `selectProvider` over the host's specs and picks, never cached, no round trip); it throws for a name not in `uses` and for one in `collects` (the pick does not apply to a collector, and null would read as "no provider" while several answer). Sources check an `inbox-item` overlay's `opener` against the picked `reviewer` with it.
 
 **Panel side**: a small `panel.js` SDK (`post`, `onMessage`, `theme`) that also installs the component stylesheet (§4 Panels). Panels have no direct
 API; everything goes through their own plugin backend, so the plugin decides what its panel may do.
