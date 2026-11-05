@@ -12,7 +12,7 @@ import {
   DEFAULT_MARKETPLACE_URL,
   MAX_PREVIEW_BYTES,
   STALE_AFTER_MS,
-  hasPngSignature,
+  previewPngProblem,
   parseMarketplaceIndex,
   previewPath,
   type MarketplaceIndex
@@ -311,8 +311,9 @@ export class MarketplaceService {
    * The preview of one listing (design-next §6.1), or null when it has none or it cannot be had. The
    * renderer names the listing only (`indexUrl` + `id`); the hash, commit and URL come from main's own
    * validated index, and the URL is the index's own folder (`previews/<id>/<commit>.png`), never one
-   * the renderer or the entry spells. The bytes must hash to the entry's sha256 and start with the PNG
-   * signature (the index CI checked the rest of the framing, and the hash pins those bytes); then they
+   * the renderer or the entry spells. The bytes must hash to the entry's sha256 and pass the PNG framing
+   * check (`previewPngProblem`: a third-party index controls bytes and hash, so the app does not lean on
+   * the index CI); then they
    * are cached under `<data>/marketplace/previews/<sha256>.png`, re-hashed on every read, so a
    * changed or truncated cache file is fetched again rather than shown.
    */
@@ -432,7 +433,12 @@ export class MarketplaceService {
   }
 }
 
-/** The bytes are the preview the index pinned: its sha256, and a PNG signature. */
+/**
+ * The bytes are the preview the index pinned: its sha256, and sound PNG framing. A third-party index
+ * controls both bytes and hash, so the hash alone proves nothing about size: the framing check
+ * (IHDR size in range, no APNG, not truncated; nothing is decoded) keeps a decompression bomb from
+ * reaching the shell renderer, on the fetch and on every cache read.
+ */
 function isPreviewOf(bytes: Uint8Array, sha256: string): boolean {
-  return bytes.length <= MAX_PREVIEW_BYTES && hasPngSignature(bytes) && createHash('sha256').update(bytes).digest('hex') === sha256
+  return bytes.length <= MAX_PREVIEW_BYTES && previewPngProblem(bytes) === null && createHash('sha256').update(bytes).digest('hex') === sha256
 }

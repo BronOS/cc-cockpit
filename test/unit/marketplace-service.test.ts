@@ -621,6 +621,14 @@ describe('MarketplaceService.preview', () => {
     expect(await s2.preview(URL1, 'a.b')).toBeNull()
   })
 
+  it('refuses a correctly hashed PNG whose IHDR size is out of range, and caches nothing', async () => {
+    // A third-party index controls bytes and hash: the hash matches, so only the framing check can refuse it.
+    const bomb = fakePng({ width: 30000, height: 30000 })
+    const { s } = await setup(async () => bomb, { text: listed(sha(bomb)) })
+    expect(await s.preview(URL1, 'a.b')).toBeNull()
+    expect(() => readdirSync(cacheDir())).toThrow()
+  })
+
   it('a fetch failure (redirect, oversized, HTTP error) is null and retried only after PREVIEW_RETRY_MS', async () => {
     let t = 1000
     let fail = true
