@@ -1088,9 +1088,9 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   forms in a panel), `src/main/claude-plugins/core-skill.md` (review rule), `docs/design.md` (§6 Settings list, "forms plus
   an optional page", §6 CLI table, secrets reserved keys), `test/e2e/panel-header.spec.ts`
 
-- [ ] the gear opens This Project at the plugin when it has project settings (schema or a page with project scope), else
+- [x] the gear opens This Project at the plugin when it has project settings (schema or a page with project scope), else
   its global page
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/panel-header.spec.ts`
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/panel-header.spec.ts`
   — done when green
 
 ### Phase I — Marketplace (repo `~/Projects/cc-cockpit`)

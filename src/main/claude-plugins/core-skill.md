@@ -32,4 +32,5 @@ Rules:
 - A plugin runs with full Node access: linking or installing one is the user's decision, never
   yours alone.
 - Reviewing or writing a plugin page: check it uses the components and follows the rules of `ccc guide style`
-  (rows for items, one primary button, empty/loading/error states drawn, a `title` on icon-only controls).
+  (rows for items, one primary button, empty/loading/error states drawn, a `title` on icon-only controls),
+  with no settings form and no `settings` header action in a panel: the app draws the panel gear and Settings holds the form.

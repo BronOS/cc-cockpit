@@ -20,7 +20,7 @@
 // window: it publishes only when the frames changed.
 import type { JsonValue } from '../../sdk/types'
 import type { PanelKind } from '../../shared/manifest'
-import type { LayoutView, PanelBadge, PanelHeaderInfo, PanelInfo, SlotFrameInfo } from '../../shared/ipc'
+import type { LayoutView, PanelBadge, PanelHeaderInfo, PanelInfo, PanelSettingsTarget, SlotFrameInfo } from '../../shared/ipc'
 import {
   APP_SLOT_TYPES,
   clampSlotHeight,
@@ -56,6 +56,8 @@ export interface PluginPanelDef {
   kind?: PanelKind
   /** The manifest's `slots`: the slot types this panel may place (HostApi checks a placement against it). */
   slots?: string[]
+  /** Where the panel's gear opens Settings (its plugin's settings); absent: the plugin has none, no gear. */
+  settings?: PanelSettingsTarget
 }
 
 /** Who draws slots of a type in a project now (HostManager.slotProvider). */
@@ -434,7 +436,8 @@ export class LayoutService {
             title: p.title,
             ...(p.icon ? { iconSrc: pluginFileUrl(pluginId, p.icon) } : {}),
             ...(p.entry ? { src: pluginFileUrl(pluginId, p.entry) } : {}),
-            ...(p.kind === 'webview' ? { kind: 'webview' as const } : {})
+            ...(p.kind === 'webview' ? { kind: 'webview' as const } : {}),
+            ...(p.settings !== undefined ? { settings: p.settings } : {})
           })
         )
       }

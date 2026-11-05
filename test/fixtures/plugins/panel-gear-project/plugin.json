@@ -1,0 +1,10 @@
+{
+  "id": "test.gearproject",
+  "name": "Gear project",
+  "version": "1.0.0",
+  "api": 1,
+  "contributes": {
+    "panels": [{ "id": "board", "title": "Gearproject", "entry": "board.html", "defaultZone": "left" }],
+    "settings": { "project": { "type": "object", "properties": { "board": { "type": "string", "title": "Board", "default": "main" } } } }
+  }
+}

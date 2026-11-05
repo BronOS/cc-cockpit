@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { ProjectPanelView, ProjectPluginView, ProjectSettingsView } from '../../shared/ipc'
 import { ZONE_IDS, type ZoneId } from '../../shared/layout'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, type PluginServicesView } from '../../shared/services'
@@ -27,7 +27,10 @@ const ZONE_LABEL: Record<ZoneId, string> = { left: 'Left', right: 'Right', botto
  * service picks. Every call acts on this window's own project; main decides which (nothing here
  * names a project) and validates again.
  */
-export function ProjectPage(): React.JSX.Element {
+export function ProjectPage(props: {
+  /** The panel gear opened Settings here (design-next §5.3): this plugin's settings show and scroll into view. */
+  openPlugin?: string | undefined
+}): React.JSX.Element {
   const project = useLoaded(loadProject)
   const services = useLoaded(loadServices)
   const { data, error: loadError } = project
@@ -65,7 +68,7 @@ export function ProjectPage(): React.JSX.Element {
             ) : (
               <ul className="settings-card settings-list">
                 {data.plugins.map((plugin) => (
-                  <ProjectPlugin key={plugin.id} plugin={plugin} busy={busy} run={run} reload={reload} />
+                  <ProjectPlugin key={plugin.id} plugin={plugin} open={props.openPlugin === plugin.id} busy={busy} run={run} reload={reload} />
                 ))}
               </ul>
             )}
@@ -104,9 +107,15 @@ function ProjectPlugin(props: {
   busy: string | null
   run: ReturnType<typeof useAction>['run']
   reload: () => void
+  /** Opened by a panel's gear: start with the settings shown and bring the row into view. */
+  open: boolean
 }): React.JSX.Element {
   const { plugin, busy, run, reload } = props
-  const [showSettings, setShowSettings] = useState(false)
+  const [showSettings, setShowSettings] = useState(props.open)
+  const row = useRef<HTMLLIElement>(null)
+  useEffect(() => {
+    if (props.open) row.current?.scrollIntoView?.({ block: 'start' })
+  }, [props.open])
   const id = useId()
   // A plugin that cannot run can still be switched off (a stale entry), never on. A bundled plugin
   // off in all projects (Settings > Plugins) cannot be turned on here either: main refuses it.
@@ -114,7 +123,7 @@ function ProjectPlugin(props: {
   const canToggle = busy === null && !offAll && (plugin.state.ok || plugin.enabled)
 
   return (
-    <li className="settings-item column" data-plugin={plugin.id}>
+    <li ref={row} className="settings-item column" data-plugin={plugin.id}>
       <div className="settings-item-head">
         <BlocksIcon className="settings-item-glyph" />
         <div className="settings-item-main">

@@ -320,6 +320,14 @@ describe('panel status', () => {
     expect(service.setError(P, 'jira/other', 'x')).toBe(false)
   })
 
+  it('carries the settings gear target of a panel into its info', () => {
+    const { service, published } = setup()
+    service.setPluginPanels(P, 'jira', [{ ...notes, settings: 'project' }])
+    expect(published.at(-1)!.panels.find((p) => p.panelKey === 'jira/notes')).toEqual({ panelKey: 'jira/notes', title: 'Notes', settings: 'project' })
+    service.setPluginPanels(P, 'jira', [notes])
+    expect(published.at(-1)!.panels.find((p) => p.panelKey === 'jira/notes')).toEqual({ panelKey: 'jira/notes', title: 'Notes' })
+  })
+
   it('sets the header apart from the badge and error, publishing only a change', () => {
     const { service, published } = setup()
     service.setPluginPanels(P, 'jira', [notes])

@@ -1145,7 +1145,12 @@ name, not which plugin is asking; installed plugins are trusted code.
 - Keybindings: the list with overrides (the new-tab menu entries included, §3 Custom commands ›
   Keys for entries).
 
-Plugin forms are rendered from the manifest's JSON Schema. For what a form cannot hold, a plugin may
+Plugin forms are rendered from the manifest's JSON Schema, plus an optional html page (below). A panel
+never holds a settings form: the app draws a gear in the header of every panel whose plugin has settings
+(`PanelInfo.settings`, `settingsGearOf` in `src/shared/settings-gear.ts`), after the plugin's actions and before
+the "…". It opens Settings > This Project at the plugin when it has project settings (a `project` schema or a
+page with the `project` scope), else the plugin's global page under Plugins (an `app` schema or a page with the
+`app` scope); the plugin's header action with the `settings` icon is then redundant. For what a form cannot hold, a plugin may
 add an html page with `contributes.settings.page` (`{ entry, scopes }`, scopes `app` and/or `project`),
 shown under the form; its backend is `ctx.settingsPage.onOpen` in the window's host. The page has no
 settings API of its own (the plugin stores what it edits via `ctx.appStorage` / `ctx.storage`) and never

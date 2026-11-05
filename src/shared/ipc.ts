@@ -220,6 +220,12 @@ export interface PanelHeaderInfo {
  * A panel that exists for the sender's project right now, as its icon strip needs it. Where it
  * sits (zone, open, size) is in the LayoutState, not here.
  */
+/**
+ * Where a panel's gear opens Settings (design-next §5.3): `project` = This Project at the plugin (it has
+ * project settings), `app` = the plugin's global page under Plugins.
+ */
+export type PanelSettingsTarget = 'project' | 'app'
+
 export interface PanelInfo {
   /** `<pluginId>/<panelId>` (core has no panels of its own since the Sessions panel became a plugin's). */
   panelKey: string
@@ -236,6 +242,8 @@ export interface PanelInfo {
   error?: string
   /** A plugin panel's title bar content (ctx.panels.header); cleared when its plugin stops. */
   header?: PanelHeaderInfo
+  /** The plugin has settings: the header draws a gear that opens them here (design-next §5.3). Absent: no gear. */
+  settings?: PanelSettingsTarget
   /**
    * A plugin panel's page: `cc-plugin://<pluginId>/<entry>` (main builds it from the manifest).
    * Absent for a panel declared without a page (a webview panel); PluginPanel loads it in a sandboxed iframe.

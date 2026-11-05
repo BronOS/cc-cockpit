@@ -3,7 +3,7 @@ import type { PanelInfo } from '../../shared/ipc'
 import { MIN_SIZE, type PanelPlacement, type ZoneId, type ZoneState } from '../../shared/layout'
 import { MoreGlyph } from '../window-icons'
 import { MENU_WIDTH, ZONE_MENU_TRIGGER } from './IconStrip'
-import { PanelHeaderActions, PanelHeaderMeta } from './PanelHeaderBar'
+import { PanelHeaderActions, PanelHeaderMeta, PanelSettingsGear } from './PanelHeaderBar'
 import { PluginPanel } from './PluginPanel'
 import { Splitter } from './Splitter'
 
@@ -108,6 +108,7 @@ export function PanelArea(props: {
                   <PanelHeaderMeta header={info.header} />
                   <span className="panel-header-spacer" />
                   <PanelHeaderActions panelKey={placement.panelKey} header={info.header} />
+                  <PanelSettingsGear panelKey={placement.panelKey} title={info.title} target={info.settings} />
                   {/* The zone menu (Move to … / Hide) without hunting for the icon's right-click,
                       which still works. Always last, after any plugin actions. Named after what it does, not "<title> menu": the specs
                       (and a screen-reader user) find the panel's icon by a name starting with

@@ -62,3 +62,33 @@ test('a plugin sets its panel header, hears a click, shows busy and clears it', 
   const view = await cockpit.hook<LayoutView>('layout', cockpit.projectDir)
   expect(view.panels.find((p) => p.panelKey === 'test.panelheader/board')?.header).toBeUndefined()
 })
+
+// The panel gear (design-next §5.3): a panel whose plugin has settings gets a gear after its actions and
+// before the "…". With project settings it opens This Project at that plugin's settings; with app
+// settings only it opens the plugin's global page under Plugins.
+for (const [scope, id, name, page] of [
+  ['project', 'test.gearproject', 'Gearproject', 'This Project'],
+  ['app', 'test.gearapp', 'Gearapp', 'Plugins']
+] as const) {
+  test(`the panel gear opens ${page} at the plugin (${scope} settings)`, async ({ cockpit }) => {
+    const { page: win } = cockpit
+    await cockpit.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', `panel-gear-${scope}`))
+    await cockpit.hook('enablePlugin', cockpit.projectDir, id)
+    // A static panel (no `main`): no host to wait for, the strip icon appears once the panel is declared.
+    await win.locator('.zone-left').getByRole('button', { name: new RegExp(`^${name}`) }).click()
+    const header = win.locator(`section.panel[aria-label="${name}"] header.panel-header`)
+    // The gear, then the "…" menu, still last.
+    const buttons = header.getByRole('button')
+    await expect(buttons).toHaveCount(2)
+    await expect(buttons.nth(0)).toHaveAccessibleName(`Settings of ${name}`)
+    await expect(buttons.nth(1)).toHaveAccessibleName(`Move or hide ${name}`)
+    await buttons.nth(0).click()
+    const settings = win.getByRole('dialog', { name: 'Settings' })
+    await expect(settings).toBeVisible()
+    await expect(settings.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: page, exact: true })).toHaveAttribute('aria-current', 'page')
+    const row = settings.locator(`li[data-plugin="${id}"]`)
+    await expect(row).toBeVisible()
+    // The plugin's settings form is already shown.
+    await expect(row.getByRole('textbox')).toBeVisible()
+  })
+}

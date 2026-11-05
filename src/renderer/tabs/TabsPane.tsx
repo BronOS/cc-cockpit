@@ -18,6 +18,7 @@ import { ipcErrorMessage } from '../ipc-error'
 import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
+import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
@@ -95,6 +96,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [paletteCommands, setPaletteCommands] = useState<CommandInfo[] | null>(null)
   // The settings screen (Cmd+,): a core overlay drawn by the renderer itself (SettingsOverlay).
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Set by a panel's gear (design-next §5.3): the page and plugin the screen opens at; null: where it opens by default.
+  const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | null>(null)
   // Tabs main closed (`tabs.removed`). A restart reply that lands after it must not touch the
   // tab's terminal: sessions.get would create a new one for a tab that is gone.
   const removed = useRef(new Set<string>())
@@ -467,8 +470,21 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const closeSettings = useCallback((): void => {
     settingsShown.current = false
     setSettingsOpen(false)
+    setSettingsTarget(null)
     requestAnimationFrame(focusActive)
   }, [focusActive])
+  // A panel's gear: Settings at that plugin. Nothing else can be on top (the zones are inert while
+  // the screen shows), so a request while it is already open is ignored.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const target = targetOf(e)
+      if (!target || settingsShown.current) return
+      setSettingsTarget(target)
+      openSettings()
+    }
+    window.addEventListener(OPEN_PLUGIN_SETTINGS_EVENT, onOpen)
+    return () => window.removeEventListener(OPEN_PLUGIN_SETTINGS_EVENT, onOpen)
+  }, [openSettings])
   // The one toggle behind both the app.openSettings command and the top strip's gear.
   const toggleSettings = useCallback((): void => {
     if (settingsShown.current) closeSettings()
@@ -771,7 +787,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         />
       )}
       {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}
-      {settingsOpen && <SettingsOverlay rootRef={settingsRoot} onClose={closeSettings} inert={covered} />}
+      {settingsOpen && <SettingsOverlay target={settingsTarget} rootRef={settingsRoot} onClose={closeSettings} inert={covered} />}
       <OverlayStack onChange={overlaysChanged} discussTabs={discussTabs} activeTabId={state.activeId} />
     </div>
   )

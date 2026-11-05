@@ -122,6 +122,11 @@ replaces the whole header; `null` clears it. Over a limit or for an undeclared p
 TypeError; all text is shown as text, never HTML. The header is cleared when the plugin stops or
 reloads, so set it again in `activate`.
 
+Do not add a `settings` action for your settings: the app draws a gear in the header of every panel
+whose plugin has settings (a schema or a settings page), after your actions and before "…". It opens
+Settings > This Project at your plugin when it has project settings, else its global page under
+Plugins. A panel does not draw settings forms of its own either: every setting lives in Settings.
+
 `ctx.panels.onAction(panelId, (actionId) => …)` hears the clicks and returns a disposer. A `busy`
 action spins and takes no clicks, a `disabled` one is greyed out; neither reaches `onAction`.
 

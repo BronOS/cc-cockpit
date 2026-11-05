@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
 import { BlocksIcon, GearIcon } from './icons'
@@ -43,6 +43,8 @@ export function PluginsPage(props: {
    * the manual test of the bundled browser went looking for an enable switch here and found none.
    */
   onOpenProject: () => void
+  /** The panel gear opened Settings here: this plugin's row shows its settings and scrolls into view. */
+  openPlugin?: string | undefined
 }): React.JSX.Element {
   const { data, error: loadError, reload: reloadPlugins } = useLoaded(loadPlugins)
   const market = useLoaded(loadMarketplace)
@@ -141,6 +143,7 @@ export function PluginsPage(props: {
                 run={run}
                 reload={reload}
                 onOpenProject={props.onOpenProject}
+                open={props.openPlugin === plugin.id}
               />
             ))}
           </ul>
@@ -161,18 +164,24 @@ function PluginItem(props: {
   run: ReturnType<typeof useAction>['run']
   reload: () => void
   onOpenProject: () => void
+  /** Opened by a panel's gear: start with the settings shown and bring the row into view. */
+  open: boolean
 }): React.JSX.Element {
   const { plugin, busy, run, reload } = props
   const [updateTag, setUpdateTag] = useState('')
   const [confirming, setConfirming] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
+  const [showSettings, setShowSettings] = useState(props.open)
+  const row = useRef<HTMLLIElement>(null)
+  useEffect(() => {
+    if (props.open) row.current?.scrollIntoView?.({ block: 'start' })
+  }, [props.open])
   const offId = useId()
   // Bundled plugins only (main sends the field for no other source): off in every project at once,
   // over each project's own switch, which comes back when this is undone.
   const offAll = plugin.offInAllProjects
 
   return (
-    <li className="settings-item column" data-plugin={plugin.id}>
+    <li ref={row} className="settings-item column" data-plugin={plugin.id}>
       <div className="settings-item-head">
         <BlocksIcon className="settings-item-glyph" />
         <div className="settings-item-main">

@@ -127,6 +127,7 @@ import { TabManager } from './tabs/tab-manager'
 import { isTestRun } from './test-run'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
+import { settingsGearOf } from '../shared/settings-gear'
 import { createIndexFetcher, type IndexFetcher } from './marketplace/fetch-index'
 import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-service'
 import { revocationNotice } from './marketplace/marketplace-view'
@@ -711,6 +712,8 @@ function start(): void {
       const plugin = plugins.get(id)
       const source = hostSourceOf(projectId, id)
       if (!plugin?.manifest || !source) continue
+      // The panel gear's target (design-next §5.3), the same for every panel of the plugin.
+      const gear = settingsGearOf(plugin.manifest)
       out.push({
         id,
         ...source,
@@ -735,7 +738,8 @@ function start(): void {
           ...(p.entry !== undefined ? { entry: p.entry } : {}),
           ...(p.kind !== undefined ? { kind: p.kind } : {}),
           ...(p.icon !== undefined ? { icon: p.icon } : {}),
-          ...(p.slots !== undefined ? { slots: p.slots } : {})
+          ...(p.slots !== undefined ? { slots: p.slots } : {}),
+          ...(gear !== undefined ? { settings: gear } : {})
         }))
       })
     }

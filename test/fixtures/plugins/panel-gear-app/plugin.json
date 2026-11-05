@@ -1,0 +1,10 @@
+{
+  "id": "test.gearapp",
+  "name": "Gear app",
+  "version": "1.0.0",
+  "api": 1,
+  "contributes": {
+    "panels": [{ "id": "board", "title": "Gearapp", "entry": "board.html", "defaultZone": "left" }],
+    "settings": { "app": { "type": "object", "properties": { "greeting": { "type": "string", "title": "Greeting", "default": "hello" } } } }
+  }
+}

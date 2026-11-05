@@ -4,7 +4,7 @@
 // drawn as React text, never as HTML. A click goes to main as `panels.action`, which checks it
 // again against the header it holds and hands it to the plugin's onAction.
 import { useState } from 'react'
-import type { PanelHeaderActionInfo, PanelHeaderInfo } from '../../shared/ipc'
+import type { PanelHeaderActionInfo, PanelHeaderInfo, PanelInfo } from '../../shared/ipc'
 import type { PanelHeaderIconName } from '../../shared/panel-header'
 import {
   CheckGlyph,
@@ -17,6 +17,7 @@ import {
   SortGlyph
 } from '../window-icons'
 import { MaskIcon } from './IconStrip'
+import { openPluginSettings } from '../settings/settings-target'
 
 /** The core icon set (shared/panel-header.ts PANEL_HEADER_ICONS), in the window's stroke style; the overlay toolbar draws it too. */
 export const GLYPHS: Record<PanelHeaderIconName, (props: { size?: number }) => React.JSX.Element> = {
@@ -92,5 +93,28 @@ export function PanelHeaderActions(props: { panelKey: string; header: PanelHeade
         </button>
       ))}
     </>
+  )
+}
+
+/**
+ * The gear of a panel whose plugin has settings (design-next §5.3): after the plugin's actions,
+ * before the "…". It opens Settings at This Project's entry for the plugin, or at its global page
+ * when the plugin has no project settings; main decided which (`PanelInfo.settings`). The plugin id
+ * is the panel key's first part, which main built as `<pluginId>/<panelId>`.
+ */
+export function PanelSettingsGear(props: { panelKey: string; title: string; target: PanelInfo['settings'] }): React.JSX.Element | null {
+  if (props.target === undefined) return null
+  const pluginId = props.panelKey.slice(0, props.panelKey.indexOf('/'))
+  if (pluginId === '') return null
+  return (
+    <button
+      type="button"
+      className="panel-action panel-settings-gear icon-button sm"
+      aria-label={`Settings of ${props.title}`}
+      title={props.target === 'project' ? 'Settings (This Project)' : 'Settings'}
+      onClick={() => openPluginSettings({ scope: props.target as 'project' | 'app', pluginId })}
+    >
+      <GearGlyph />
+    </button>
   )
 }

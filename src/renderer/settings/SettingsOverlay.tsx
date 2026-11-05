@@ -7,6 +7,7 @@ import { MarketplacePage } from './MarketplacePage'
 import { PluginsPage } from './PluginsPage'
 import { ProjectPage } from './ProjectPage'
 import { ProjectsPage } from './ProjectsPage'
+import type { SettingsTarget } from './settings-target'
 
 /**
  * The pages of design-next §5.1, in its order; every setting lives on exactly one of them. The
@@ -38,8 +39,12 @@ export function SettingsOverlay(props: {
   rootRef?: React.RefObject<HTMLDivElement | null>
   /** An overlay covers the screen: nothing here may take the keyboard meanwhile. */
   inert?: boolean
+  /** A panel's gear (design-next §5.3): open at This Project (`project`) or Plugins (`app`) with that plugin's settings shown. */
+  target?: SettingsTarget | null
 }): React.JSX.Element {
-  const [section, setSection] = useState<SectionId>('general')
+  const [section, setSection] = useState<SectionId>(props.target ? (props.target.scope === 'project' ? 'project' : 'plugins') : 'general')
+  // Only the section the screen was opened at: moving to another section by hand drops it.
+  const openPlugin = props.target && section === (props.target.scope === 'project' ? 'project' : 'plugins') ? props.target.pluginId : undefined
   const own = useRef<HTMLDivElement>(null)
   const root = props.rootRef ?? own
 
@@ -94,9 +99,9 @@ export function SettingsOverlay(props: {
             {section === 'general' && <GeneralPage />}
             {section === 'appearance' && <AppearancePage />}
             {section === 'keybindings' && <KeybindingsPage />}
-            {section === 'plugins' && <PluginsPage onOpenProject={() => setSection('project')} />}
+            {section === 'plugins' && <PluginsPage openPlugin={openPlugin} onOpenProject={() => setSection('project')} />}
             {section === 'marketplace' && <MarketplacePage onOpenProject={() => setSection('project')} />}
-            {section === 'project' && <ProjectPage />}
+            {section === 'project' && <ProjectPage openPlugin={openPlugin} />}
             {section === 'projects' && <ProjectsPage />}
           </div>
         </div>
