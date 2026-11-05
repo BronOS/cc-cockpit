@@ -57,7 +57,7 @@ export function StoreIcon(props: GlyphProps): React.JSX.Element {
   )
 }
 
-/** This project: three sliders. */
+/** This Project: three sliders. */
 export function SlidersIcon(props: GlyphProps): React.JSX.Element {
   return (
     <Glyph {...props}>
@@ -69,7 +69,28 @@ export function SlidersIcon(props: GlyphProps): React.JSX.Element {
   )
 }
 
-/** Appearance and keys: a half-filled disc (light and dark). */
+/** General: a gear (a ring with eight teeth around a hub). */
+export function GearIcon(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <circle cx="8" cy="8" r="2" />
+      <path d="M8 1.75v2M8 12.25v2M1.75 8h2M12.25 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M3.6 12.4L5 11M11 5l1.4-1.4" />
+      <circle cx="8" cy="8" r="4.25" />
+    </Glyph>
+  )
+}
+
+/** Keybindings: a keyboard. */
+export function KeyboardIcon(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <rect x="1.75" y="4" width="12.5" height="8" rx="1.5" />
+      <path d="M4.5 6.75h.01M7 6.75h.01M9.5 6.75h.01M12 6.75h.01M5.5 9.5h5" />
+    </Glyph>
+  )
+}
+
+/** Appearance: a half-filled disc (light and dark). */
 export function ContrastIcon(props: GlyphProps): React.JSX.Element {
   return (
     <Glyph {...props}>

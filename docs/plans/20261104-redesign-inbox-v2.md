@@ -1012,12 +1012,20 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `test/e2e/settings-*.spec.ts`, `test/e2e/tab-command-keys.spec.ts`, `test/e2e/theme.spec.ts`, any spec that
   navigates by section name; `src/cli/guide/*.md` and `docs/features.md` naming settings locations
 
-- [ ] design-next §5.1: every setting in exactly one page (General: tab behaviour, app-wide new-tab commands,
+- [x] design-next §5.1: every setting in exactly one page (General: tab behaviour, app-wide new-tab commands,
   notifications and sound, session gist, command line, update notice; Appearance: theme, window background, terminal
   font, tab close side; Keybindings: search, list, overrides, conflicts, Unbind, Reset; This Project: colour, enabled
   plugins, project new-tab commands, panel zones, slot and service picks, per plugin project settings)
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-*.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/settings-*.spec.ts
   test/e2e/tab-command-keys.spec.ts test/e2e/theme.spec.ts test/e2e/terminal-font.spec.ts` — done when green
+- ➕ Side panels (auto-hide, minimum terminal width) went to General: §5.1 names no page for them, and they are
+  behaviour, not looks. The screen now opens on General (the first page); Marketplace stays between Plugins and This Project.
+- ➕ The Services group (service, open-file and slot picks) moved from Plugins to This Project; a Plugins row still shows
+  provides / uses / problems, and the "both provide" message now says `pick one in Settings > This Project`.
+- ➕ The section is named "This Project" (design-next's capitalisation): the nav, page region, "Enable in This Project",
+  `ccc plugin config`'s refusal and the guide follow. Guide, README and features.md settings paths updated.
+- ⚠️ e2e: 72 passed over the 25 settings-touching specs; red only `project-color.spec.ts:63` (2.99805px, known above)
+  and `tab-command-overlays.spec.ts:51` (known).
 
 ### Task 38: Global values of project fields and overrides [model: opus] [SYNC]
 

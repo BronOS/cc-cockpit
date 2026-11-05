@@ -97,7 +97,7 @@ export function serviceProblemMessage(problem: ServiceProblem, nameOf: (id: stri
     case 'missing':
       return `no enabled plugin in this project provides service "${problem.service}"`
     case 'ambiguous':
-      return `plugins ${joinNames(problem.candidates.map(nameOf))} both provide service "${problem.service}"; pick one in Settings > Plugins`
+      return `plugins ${joinNames(problem.candidates.map(nameOf))} both provide service "${problem.service}"; pick one in Settings > This Project`
     case 'version-mismatch':
       return `"${problem.service}": ${nameOf(problem.consumer)} uses version ${problem.usesVersion}, ${nameOf(problem.provider)} provides version ${problem.providesVersion}`
     case 'collected-major':

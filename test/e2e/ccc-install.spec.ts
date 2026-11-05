@@ -1,4 +1,4 @@
-// Task 35: Settings > Appearance and keys > "Install `ccc` command". HOME is the harness's temp
+// Task 35: Settings > General > "Install `ccc` command". HOME is the harness's temp
 // home (fixtures.ts), so the link lands in <temp home>/.local/bin and nothing real is touched.
 // A foreign file at that path is refused and left as it was.
 import { execFileSync } from 'node:child_process'
@@ -11,7 +11,7 @@ test('install the ccc command: creates ~/.local/bin/ccc, which runs the CLI', as
   const link = join(cockpit.root, 'home', '.local', 'bin', 'ccc')
   await page.keyboard.press('ControlOrMeta+,')
   const settings = page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'General', exact: true }).click()
 
   const row = settings.getByTestId('ccc-command')
   const install = row.getByRole('button', { name: 'Install ccc command' })
@@ -36,7 +36,7 @@ test('install the ccc command: a foreign file at ~/.local/bin/ccc is left alone'
   writeFileSync(join(bin, 'ccc'), 'my own script\n')
   await page.keyboard.press('ControlOrMeta+,')
   const settings = page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'General', exact: true }).click()
 
   const row = settings.getByTestId('ccc-command')
   await expect(row).toContainText('is already something else')
@@ -113,7 +113,7 @@ test('start-up offer: No closes it; Don\'t ask again persists across a relaunch;
     await expect(page.getByRole('alertdialog')).toHaveCount(0)
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'General', exact: true }).click()
     const box = settings.getByRole('checkbox', { name: 'Offer to install at start-up' })
     await expect(box).not.toBeChecked()
     await box.click()

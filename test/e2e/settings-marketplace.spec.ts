@@ -228,8 +228,8 @@ test('marketplace: a pin mismatch is refused, Cancel installs nothing, then inst
   const appJson = JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { pluginRepos?: Record<string, string> }
   expect(appJson.pluginRepos?.[PLUGIN_ID]).toBeDefined()
 
-  await entry.getByRole('button', { name: 'Enable in This project' }).click()
-  const projectPage = settings.getByRole('region', { name: 'This project' })
+  await entry.getByRole('button', { name: 'Enable in This Project' }).click()
+  const projectPage = settings.getByRole('region', { name: 'This Project' })
   const enable = projectPage.getByRole('checkbox', { name: /^Enable / })
   await enable.click()
   await expect(enable).toBeChecked()

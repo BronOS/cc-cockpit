@@ -1,4 +1,4 @@
-// Settings › Appearance and keys › Terminal (design §4 Terminal font): a change goes to the open
+// Settings › Appearance › Terminal (design §4 Terminal font): a change goes to the open
 // terminal at once (xterm draws with it), the PTY learns the new cols x rows (the shell's own
 // `stty size` says so), the pick is saved to app.json, and Reset brings the defaults back. The
 // family is a dropdown (bundled fonts, installed fonts, Custom…); with nothing set the terminals
@@ -42,7 +42,7 @@ const faceLoaded = (page: Page, family: string): Promise<boolean> =>
 async function openAppearance(c: Cockpit) {
   await c.page.keyboard.press('ControlOrMeta+,')
   const settings = c.page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
   return settings
 }
 

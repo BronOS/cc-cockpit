@@ -121,12 +121,12 @@ with full Node access.
   `sessions-strip` (an app slot: the Claude sessions of other windows in one line, drawn in the top bar,
   which a panel may not place; core draws no strip of its own, the bundled `cockpit.sessions` provides it). A type is a name
   `^[a-z][a-z0-9-]{0,63}$`; any plugin defines one by using it. The user picks the provider per type under
-  Settings > Plugins > Services ("None" turns it off).
+  Settings > This Project > Services ("None" turns it off).
 - `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):
   `onOpen((page) => …)` is the backend of your html settings page (manifest
   `contributes.settings.page`, `ccc guide settings-secrets`); it throws when the manifest declares
   none and returns a disposer. `page` is `{ scope, post(message), onMessage(fn), onClose(fn) }`:
-  `scope` is `'app'` (the Plugins page) or `'project'` (This project), `post` / `onMessage` follow
+  `scope` is `'app'` (the Plugins page) or `'project'` (This Project), `post` / `onMessage` follow
   the panel message rules, `onClose` fires when the page goes. One page of a plugin is open at a time.
 - `ctx.webview`: drives the native web view of one of your `"kind": "webview"` panels (`ccc guide
   webview`). `navigate(panelId, target)` shows an http(s) URL or an absolute file path (a local
@@ -244,7 +244,7 @@ with full Node access.
   `/` separators, never outside the project) and the Claude tab whose list was clicked; both come
   from the app. `tabId` is absent when the open did not come from a tab (a `ctx.files.open` call
   without one), so check it before use. Opens reach the plugin only when the project uses it to open files: it is the
-  only enabled plugin declaring `openFile`, or the one picked in Settings > Plugins ("Plugin used
+  only enabled plugin declaring `openFile`, or the one picked in Settings > This Project ("Plugin used
   to open files", where "Built-in viewer" is also a choice). The built-in viewer (a diff or the
   file in a pager) opens instead when the plugin is not active, has no listener, or every listener
   throws or rejects within 1 s; a listener still running after 1 s counts as handled, so one that
@@ -324,7 +324,7 @@ with full Node access.
     class instance (`service "x": the implementation must be a plain object (not a class instance)`).
   - Errors a consumer can get (a call rejects, `use`/`on` throw): `plugin <id> does not declare
     service "x" in services.uses`; `no enabled plugin in this project provides service "x"`;
-    `plugins A and B both provide service "x"; pick one in Settings > Plugins`; `"x": A uses version
+    `plugins A and B both provide service "x"; pick one in Settings > This Project`; `"x": A uses version
     1, B provides version 2` (major versions differ); `service "x": plugin P failed to activate:
     <reason>`; `P declares service "x" but did not provide it`; `service "x" (plugin P) has no
     method "m"`; and the provider's own throw (a fresh Error with its message only). No timeout:
@@ -335,7 +335,7 @@ with full Node access.
     activate`. Calls started during `activate` (timers, unawaited calls) count while it runs. Call
     from commands, or after `activate` returned, to avoid it.
   - Events: `emit` only reaches consumers when the caller is the selected provider (with several
-    providers, the one picked in Settings > Plugins); a consumer whose `uses` major differs gets no
+    providers, the one picked in Settings > This Project); a consumer whose `uses` major differs gets no
     events; an `emit` with no subscriber is a silent no-op; the event name and data are checked
     even then (plain data, else it throws). A handle from before the consumer's reload (or
     deactivate, or failed `activate`) can no longer call or subscribe (`service "x": this handle
@@ -359,7 +359,7 @@ with full Node access.
   - `title`: plain text, 1 to 80 characters. Default `cc-cockpit: <pluginId>`.
   - `sound: true`: a short sound from the project window, the same on every OS (OS notification
     sounds are unreliable, most Linux daemons play none), and the OS notification is then silent.
-    It is the sound the person picked (Settings > Appearance and keys > Notifications > Sound: a
+    It is the sound the person picked (Settings > General > Notifications > Sound: a
     built-in tone or a system sound file). The person can turn every sound off there ("Notification
     sounds"); at most one chime per 5 s per window, however many plugins ask.
   - `sound: "<id>"`: the sound the person picked for this plugin, the value of a `"format": "sound"`

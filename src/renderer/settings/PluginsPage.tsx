@@ -1,11 +1,10 @@
 import { useId, useState } from 'react'
 import type { MarketplaceView, PluginView } from '../../shared/ipc'
-import { BUILTIN_VIEWER, OPEN_FILE_PICK, serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
-import { SLOT_NONE, slotPickKey } from '../../shared/slots'
+import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
 import { BlocksIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { PluginSettingsPage } from './PluginSettingsPage'
-import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
+import { Empty, Group, PageHeader, Switch } from './ui'
 import { useAction } from './use-action'
 import { useLoaded } from './use-loaded'
 
@@ -14,6 +13,7 @@ const loadPlugins = (): Promise<PluginView[]> => window.cockpit.invoke('settings
 const loadMarketplace = (): Promise<MarketplaceView | null> => window.cockpit.invoke('settings.marketplace').catch(() => null)
 
 // Services are this project's: main answers for the window's project and only over the plugins its host runs.
+// Only each row's provides / uses / problems are shown here; the picks themselves are on This Project.
 const loadServices = (): Promise<PluginServicesView | null> => window.cockpit.invoke('settings.pluginServices').catch(() => null)
 
 /**
@@ -39,7 +39,7 @@ function marketplaceNotes(view: MarketplaceView | null): Map<string, string> {
  */
 export function PluginsPage(props: {
   /**
-   * Switch Settings to This project, where a plugin is enabled per project. Each row offers it:
+   * Switch Settings to This Project, where a plugin is enabled per project. Each row offers it:
    * the manual test of the bundled browser went looking for an enable switch here and found none.
    */
   onOpenProject: () => void
@@ -54,18 +54,6 @@ export function PluginsPage(props: {
     services.reload()
   }
   const nameOf = (id: string): string => data?.find((p) => p.id === id)?.name ?? id
-  // A service only collectors read (`useAll`) has no pick: every provider is read.
-  const shared = (services.data?.services ?? []).filter((s) => s.candidates.length >= 2 && !s.collectedOnly)
-  // The open-file pick sits with the service picks (same rule, same record): shown as soon as one
-  // plugin offers to open files, since the built-in viewer is always the other choice.
-  const openFile = services.data?.openFile
-  const showOpenFile = openFile !== undefined && openFile.candidates.length > 0
-  // Slot picks (design-next §2) sit here too, under `@slot:<type>`: a row as soon as one plugin
-  // draws the type, since "None" (turn it off for the project) is always the other choice.
-  const slots = (services.data?.slots ?? []).filter((sl) => sl.candidates.length > 0)
-  const pickProvider = (service: string, pluginId: string | null): void => {
-    void run('provider', () => window.cockpit.invoke('settings.pluginServiceProvider', { service, pluginId })).then(reload)
-  }
   const { busy, error, run } = useAction()
   const [url, setUrl] = useState('')
   const [tag, setTag] = useState('')
@@ -87,7 +75,7 @@ export function PluginsPage(props: {
     <section aria-label="Plugins">
       <PageHeader
         title="Plugins"
-        description="Panels, commands, themes and data sources. Enable a plugin per project under This project."
+        description="Panels, commands, themes and data sources. Enable a plugin per project, and pick between plugins, under This Project."
       />
       {(error ?? loadError) && <p role="alert" className="settings-alert">{error ?? loadError}</p>}
       <Group title="Install">
@@ -135,81 +123,6 @@ export function PluginsPage(props: {
           </div>
         </form>
       </Group>
-      {(shared.length > 0 || showOpenFile || slots.length > 0) && (
-        <Group title="Services" description="Where this project has a choice of plugin, the one picked answers.">
-          <div className="settings-card" data-testid="service-picks">
-            {showOpenFile && (
-              <Row
-                label="Plugin used to open files"
-                help="A click on a changed file in the Sessions panel."
-                htmlFor="open-file-pick"
-              >
-                <Select
-                  id="open-file-pick"
-                  wide
-                  disabled={busy !== null}
-                  value={openFile.selected ?? ''}
-                  onChange={(e) => pickProvider(OPEN_FILE_PICK, e.target.value === '' ? null : e.target.value)}
-                >
-                  {openFile.selected === null && <option value="">Pick one (built-in viewer until then)</option>}
-                  {openFile.candidates.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {`${c.title} (${nameOf(c.id)})`}
-                    </option>
-                  ))}
-                  <option value={BUILTIN_VIEWER}>Built-in viewer</option>
-                </Select>
-              </Row>
-            )}
-            {shared.map((svc) => (
-              <Row key={svc.service} label={`Plugin used for ${svc.service}`} htmlFor={`service-pick-${svc.service}`}>
-                <Select
-                  id={`service-pick-${svc.service}`}
-                  wide
-                  disabled={busy !== null}
-                  value={svc.selected ?? ''}
-                  onChange={(e) => pickProvider(svc.service, e.target.value === '' ? null : e.target.value)}
-                >
-                  {svc.selected === null && <option value="">Pick one</option>}
-                  {svc.candidates.map((id) => (
-                    <option key={id} value={id}>
-                      {nameOf(id)}
-                    </option>
-                  ))}
-                </Select>
-              </Row>
-            ))}
-            {slots.map((sl) => (
-              <Row
-                key={sl.type}
-                label={`Plugin drawing the ${sl.type} slot`}
-                help={
-                  sl.selected === null
-                    ? 'Several plugins draw this slot: nothing is drawn until one is picked.'
-                    : 'Where a panel (or the app) places this slot, the plugin picked draws it.'
-                }
-                htmlFor={`slot-pick-${sl.type}`}
-              >
-                <Select
-                  id={`slot-pick-${sl.type}`}
-                  wide
-                  disabled={busy !== null}
-                  value={sl.selected ?? ''}
-                  onChange={(e) => pickProvider(slotPickKey(sl.type), e.target.value === '' ? null : e.target.value)}
-                >
-                  {sl.selected === null && <option value="">Pick one (nothing drawn until then)</option>}
-                  {sl.candidates.map((id) => (
-                    <option key={id} value={id}>
-                      {nameOf(id)}
-                    </option>
-                  ))}
-                  <option value={SLOT_NONE}>None</option>
-                </Select>
-              </Row>
-            ))}
-          </div>
-        </Group>
-      )}
       <Group title="Installed">
         {data === null ? null : data.length === 0 ? (
           <div className="settings-card">
@@ -349,7 +262,7 @@ function PluginItem(props: {
                 </label>
               )}
               <button type="button" className="quiet" onClick={props.onOpenProject}>
-                Enable in This project
+                Enable in This Project
               </button>
               {(plugin.appSettings || plugin.settingsPage) && (
                 <button type="button" aria-expanded={showSettings} onClick={() => setShowSettings((s) => !s)}>

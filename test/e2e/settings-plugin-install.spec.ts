@@ -140,8 +140,8 @@ test('settings: install a plugin from a git URL, update it to a new tag, uninsta
   await expect.poll(async () => (await hostStatus())?.plugins, { timeout: 15_000 }).toEqual([{ id: PLUGIN_ID, state: 'active' }])
 
   // The row points at where a plugin is enabled (per project): This project, with its switch on.
-  await plugin.getByRole('button', { name: 'Enable in This project' }).click()
-  const projectPage = settings.getByRole('region', { name: 'This project' })
+  await plugin.getByRole('button', { name: 'Enable in This Project' }).click()
+  const projectPage = settings.getByRole('region', { name: 'This Project' })
   await expect(projectPage).toBeVisible()
   await expect(projectPage.getByRole('checkbox', { name: /^Enable / })).toBeChecked()
   await settings.getByRole('button', { name: 'Plugins' }).click()

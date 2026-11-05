@@ -70,7 +70,7 @@ test('update notice: shown, dismissed for good, back for a newer version, off wi
     // Settings: the toggle is on and shows the version; off removes the bar and stops the check.
     await c.page.keyboard.press('ControlOrMeta+,')
     const settings = c.page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'General', exact: true }).click()
     // The bar is inert behind Settings: no Tab or Enter reaches its buttons.
     await expect(c.page.locator('.update-notice')).toHaveAttribute('inert', '')
     const toggle = settings.getByLabel('Check for new versions')

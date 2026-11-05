@@ -19,7 +19,7 @@ describe('selectProvider', () => {
   it('is ambiguous with two providers and no choice', () => {
     const r = selectProvider('triage', [prov('a', { triage: 1 }), prov('b', { triage: 1 })], {})
     expect(r).toEqual({ ok: false, problem: { kind: 'ambiguous', service: 'triage', candidates: ['a', 'b'] } })
-    if (!r.ok) expect(serviceProblemMessage(r.problem)).toBe('plugins a and b both provide service "triage"; pick one in Settings > Plugins')
+    if (!r.ok) expect(serviceProblemMessage(r.problem)).toBe('plugins a and b both provide service "triage"; pick one in Settings > This Project')
   })
 
   it('uses the pick among two providers', () => {
@@ -46,7 +46,7 @@ describe('selectProvider', () => {
 
   it('lists three candidates and maps ids to names', () => {
     const msg = serviceProblemMessage({ kind: 'ambiguous', service: 's', candidates: ['a', 'b', 'c'] }, (id) => id.toUpperCase())
-    expect(msg).toBe('plugins A, B and C both provide service "s"; pick one in Settings > Plugins')
+    expect(msg).toBe('plugins A, B and C both provide service "s"; pick one in Settings > This Project')
   })
 
   it('is not fooled by names that exist on Object.prototype', () => {

@@ -65,14 +65,14 @@ test('a relaunch that restores tabs adds no Claude tab', async () => {
   }
 })
 
-test('the setting is a checkbox in Appearance and keys, on by default, saved to app.json', async () => {
+test('the setting is a checkbox in General, on by default, saved to app.json', async () => {
   const { cockpit: c, close } = await launchCockpit({ claudeTabOnOpen: true })
   try {
     const { page } = c
     await expect(page.getByRole('tab')).toHaveCount(1)
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'General', exact: true }).click()
     const box = settings.getByRole('checkbox', { name: 'Open a Claude tab when a project opens with no tabs' })
     await expect(box).toBeChecked()
     // A controlled box: it shows the new state once main stored it and the page reloaded the view,

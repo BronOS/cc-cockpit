@@ -106,7 +106,7 @@ test('hello: panel, git status, badge ticks, command, overlays and theme', async
   // Theme contribution: it is in the picker and reaches the page.
   await page.keyboard.press(`${MOD}+,`)
   const settings = page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
   await settings.getByLabel('Theme', { exact: true }).selectOption({ label: 'Hello Dusk (dark)' })
   await expect.poll(() => cssVar(cockpit, '--cc-bg')).toBe('#1b1a2e')
   // ...and the panel follows (the SDK applies the theme variables to the page's :root).

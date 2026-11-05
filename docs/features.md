@@ -10,7 +10,7 @@ behind it are in [design.md](design.md).
   top holds the project's name and path, the other windows' Claude strip (the bundled Sessions plugin's), a "+" and
   the gear (on macOS it is the title bar, traffic lights included). The "+" (or File > Open Project…) brings the
   picker back to open another project.
-- A colour per project, to tell windows apart: Settings > This project > Colour picks None, one of
+- A colour per project, to tell windows apart: Settings > This Project > Colour picks None, one of
   eight palette colours (red, orange, yellow, green, teal, blue, purple, grey; each tuned per
   theme) or Custom… (the system colour panel). The project's window gets a 3px line along its top
   edge and a faint tint of its top bar, and a dot by its name there, on its entries in other
@@ -19,14 +19,14 @@ behind it are in [design.md](design.md).
   normally closes: a Claude or command tab on exit code 0 (`/exit`, a command that finishes), a
   terminal on any exit code (a shell reports its last command's status, so Ctrl+D can exit 1).
   Otherwise it stays with an "exited" banner with Restart / Close (a failed Claude or command, a
-  shell killed by a signal or ended within 1 s of starting). Settings > Appearance and keys > Tabs > "When a tab's
+  shell killed by a signal or ended within 1 s of starting). Settings > General > Tabs > "When a tab's
   process exits" can keep every exited tab instead.
 - A project that opens with no tabs (nothing restored, no plugin tab) starts one Claude tab in the
   project folder; closing the last tab later leaves the window empty. Settings > Appearance and
   keys > Tabs > "Open a Claude tab when a project opens with no tabs" (on by default) turns it off.
 - Closing a tab that is still running (the ×, Cmd+W, the palette's Close Tab, the tab menu) asks
   first, naming the tab and, for Claude, its status; Cancel is the default. "Don't ask again" in
-  the question, or Settings > Appearance and keys > Tabs > "Ask before closing a tab that is still
+  the question, or Settings > General > Tabs > "Ask before closing a tab that is still
   running" (on by default), turns it off. A tab whose process already ended closes at once.
 - Ctrl+Tab (Ctrl on every platform; Cmd+Tab is macOS's app switcher) goes back to the tab you were
   in before. Hold Ctrl and press Tab again to walk further back through the tabs in recent order,
@@ -39,10 +39,10 @@ behind it are in [design.md](design.md).
   new order is kept after a restart. The tab menu (right-click) has Move left / Move right too.
   The strip doesn't scroll by itself while you drag, so with more tabs than fit, move a tab out of
   view in steps.
-- Settings > Appearance and keys > Tabs > "Close button position" puts each tab's × before its
+- Settings > Appearance > Tabs > "Close button position" puts each tab's × before its
   label (Left) or after it (Right, the default), in every open window at once. An overlay's ×
   follows the same setting.
-- Transparent project windows: Settings > Appearance and keys > Window > "Transparent background"
+- Transparent project windows: Settings > Appearance > Window > "Transparent background"
   lets the desktop show through the top bar, tabs, terminal and side zones while text, menus,
   dialogs, overlays and the settings screen stay solid. A window is made see-through or solid when
   it opens, so after a change the window you changed it in offers "Reopen window": it closes and
@@ -53,7 +53,7 @@ behind it are in [design.md](design.md).
   bar, tabs and terminal see-through), "Background opacity" (40–100 %, default 80 %) and "Blur behind" (off by default; macOS vibrancy, Windows 11
   acrylic) change every transparent window at once. Linux has no blur, and needs a compositing
   window manager for transparency.
-- The terminal font, apart from the app's own: Settings > Appearance and keys > Terminal sets the
+- The terminal font, apart from the app's own: Settings > Appearance > Terminal sets the
   family, size, line height, letter spacing and weights of every terminal (tabs and overlays), live
   in every window; "Reset to defaults" goes back to JetBrains Mono Nerd Font 13. The family is a
   searchable dropdown: Bundled (two Nerd Fonts that come with the app, so a zsh or starship theme's
@@ -64,8 +64,8 @@ behind it are in [design.md](design.md).
   License 1.1, and MesloLGS NF (romkatv/powerlevel10k-media), Apache License 2.0; the licence
   texts sit next to the font files and ship in the packaged app (`Resources/fonts/`).
 - Your own commands in the new-tab menu: a label and a command line (`lazygit`, `npm run dev`,
-  `docker compose logs -f | grep api`), app-wide (Settings > Appearance and keys > Tabs) and per
-  project (Settings > This project); the menu lists Claude, Shell, the app-wide entries, then the
+  `docker compose logs -f | grep api`), app-wide (Settings > General) and per
+  project (Settings > This Project); the menu lists Claude, Shell, the app-wide entries, then the
   project's. An entry opens a tab named after its label that runs the command in your login shell
   (`$SHELL -l -i -c <command>`, so your aliases, functions and PATH work) in the project folder.
   The tab keeps its own copy of the command (editing the entry later does not change it). After a
@@ -90,7 +90,7 @@ behind it are in [design.md](design.md).
 - Changed files per session (the Sessions plugin's setting, Settings > Plugins > Sessions, 10 by default; a value set
   before 0.10 in Appearance and keys is moved there once): the Sessions panel lists that many of a session's changed
   files; the rest are behind Show all (N more) / Hide (N) under the list.
-- Session gist (off by default; Settings > Appearance and keys > Claude sessions): after a turn ends, Claude Haiku
+- Session gist (off by default; Settings > General > Claude sessions): after a turn ends, Claude Haiku
   writes a one-line summary of the session from its last five prompts, shown in the Sessions panel in place of the last
   prompt (which stays as the tooltip). It uses your Claude Code login (`claude -p --model haiku --safe-mode`, so none of
   your hooks or MCP servers run and no transcript is kept), one small request per gist: only when the prompts changed,
@@ -98,7 +98,7 @@ behind it are in [design.md](design.md).
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
-- Side zones give way to a narrow terminal (Settings > Appearance and keys > Side panels, on by default, minimum
+- Side zones give way to a narrow terminal (Settings > General > Side panels, on by default, minimum
   terminal width 720 px, 400 to 2000): when the window narrows so the terminal would be under the minimum, the right
   zone's panels hide first, then the left one's; as it widens they come back, left first, each once the terminal keeps
   the minimum plus 48 px with it shown (no flapping at the threshold). The icon strips stay; a click on an icon, the
@@ -114,7 +114,7 @@ behind it are in [design.md](design.md).
   system browser with `ctx.openExternal`...). A panel's icon is drawn in
   the strip's text colour (only its shape counts), so it follows the theme, hover and open states.
 - Plugin notifications: `ctx.notify(text, { title, sound, action })`. `sound` rings a short sound from the window (the
-  same on every OS; Settings > Appearance and keys > Notifications > "Notification sounds" turns it off; at most one per
+  same on every OS; Settings > General > Notifications > "Notification sounds" turns it off; at most one per
   5 s per window). "Sound" there picks it, one for all notifications: a built-in tone made in the app (Chime, the
   default, Bell, Ping, Soft pop, Two-tone, Marimba) or a sound file from the system's sound folders (Linux
   `/usr/share/sounds` and `~/.local/share/sounds`, macOS `/System/Library/Sounds` and `~/Library/Sounds`, Windows
@@ -141,7 +141,7 @@ behind it are in [design.md](design.md).
 - Plugin services: a plugin declares `services.provides` / `uses` (a name and a whole-number major version) in
   `plugin.json` and calls other plugins of the same project with `ctx.services` (`provide`, `use`, `emit`; handle
   methods are async, `handle.on(event, fn)` listens). Calls and events carry plain data only (copied with
-  `structuredClone`). With two providers of one service, Settings > Plugins > "Plugin used for <service>" picks
+  `structuredClone`). With two providers of one service, Settings > This Project > "Plugin used for <service>" picks
   one for the project (it restarts the project's plugin host). A missing provider does not block enabling a
   plugin: the consumer runs, its calls throw, and the Plugins page warns (also for a version mismatch).
   Inside a provider's method, `ctx.services.caller()` is the id of the calling plugin, for per-caller counts or caps.
@@ -150,11 +150,15 @@ behind it are in [design.md](design.md).
   Plugins page shows no pick or warning for a name only such plugins use.
 - Open-file hook: a plugin with `contributes.openFile` takes a click on a changed file in the Sessions panel
   through `ctx.files.onOpen({ path, tabId })` (path relative to the project; main checks the tab and the path).
-  With several such plugins, or to keep the built-in viewer, Settings > Plugins > "Plugin used to open files"
+  With several such plugins, or to keep the built-in viewer, Settings > This Project > "Plugin used to open files"
   picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
   fails, or it does not answer within 2 s, and for a file outside the project.
 - Thin themed scrollbars in the shell and in every plugin page (overridable by the plugin; macOS keeps its overlay scrollbars).
-- Themes, commands, a command palette and editable keybindings, a Settings screen.
+- Themes, commands, a command palette and editable keybindings, a Settings screen (`Cmd+,`) with one page per
+  kind of setting, each setting on exactly one: General (tabs, side panels, notifications and sound, session gist,
+  app-wide new-tab commands, the `ccc` command line, updates), Appearance (theme, window background, tab close
+  button, terminal font), Keybindings, Plugins, Marketplace, This Project (colour, enabled plugins and their project
+  settings, the project's new-tab commands, panel zones, slot and service picks) and Projects.
 - The `ccc` command line tool, the `hello` reference plugin and an example plugin to copy.
 - Operable by Claude: inside a tab, `ccc guide [topic]` prints bundled docs (CLI, plugin API,
   panels, web view, dev loop; works with the app closed) and a SessionStart note points Claude
@@ -220,7 +224,7 @@ behind it are in [design.md](design.md).
   upgrading, or restart it afterwards. Dismissing hides that version; a newer one shows again. The app never downloads
   or installs anything, because replacing it under running Claude sessions would restart them. Failures (offline, a
   private repo answering 404) are silent. Only a plain `vX.Y.Z` tag is accepted.
-- **The setting.** Settings > Appearance and keys > Updates > "Check for new versions" (on by default). Off makes no
+- **The setting.** Settings > General > Updates > "Check for new versions" (on by default). Off makes no
   request at all and clears the notice.
 - **Version warning.** After an upgrade over a running app, `ccc` is the new version and the app is the old one. A
   `ccc` command prints `ccc: the app is running version X, this ccc is version Y. Restart cc-cockpit.` on stderr (stdout
@@ -265,7 +269,7 @@ confirmation that shows the repo and the commit. Things to know:
 
 ## The `ccc` command
 
-Settings > Appearance and keys > Command line > "Install ccc command" symlinks
+Settings > General > Command line > "Install ccc command" symlinks
 `~/.local/bin/ccc` to the wrapper in the data dir (an existing different `ccc` is left alone;
 make sure `~/.local/bin` is on your PATH). At start-up, when nothing is at that path, the first project window asks once per
 launch whether to install it (Yes / No, "Don't ask again"); the same Settings group has "Offer to install at start-up" to turn it
@@ -328,7 +332,7 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z; the app may take some chords before plugins.
 - On Linux `Cmd` is Ctrl, so the default chords take Ctrl+T, Ctrl+W, Ctrl+B, Ctrl+J and Ctrl+O, which
   Claude Code and the shell use themselves (todos, delete-word, background, newline, transcript):
-  the window takes them before the terminal sees them. Rebind them in Settings > Appearance and keys.
+  the window takes them before the terminal sees them. Rebind them in Settings > Keybindings.
 - Plugin settings schemas may not use regexes (`pattern`, `patternProperties`).
 - On Linux the plugin secrets need a running, unlocked Secret Service keyring (gnome-keyring, KeePassXC) or KWallet; there
   is no plaintext fallback by design. The automatic Secret Service choice is made at start-up from the session bus.

@@ -55,7 +55,7 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   exits 1 with the schema's reasons and stores nothing), then the plugin gets
   `ctx.onSettingsChange`, or starts if it was off for invalid settings. Exit 1 also for an unknown
   plugin or key, and for a secret field: those are set by a person in Settings > Plugins (app) or
-  Settings > This project, never through `ccc`.
+  Settings > This Project, never through `ccc`.
 - `ccc panel show [--project <path>] <plugin>/<panel>` reveals one of a plugin's panels in this
   project's window: unhidden, opened, its zone expanded, and shown again if the window auto-hid
   it for a narrow terminal (what `ctx.panels.show` does for the

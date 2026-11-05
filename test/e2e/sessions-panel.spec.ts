@@ -262,11 +262,11 @@ test('a plugin that opens files takes the click; the built-in viewer opens when 
   await overlay.getByRole('button', { name: 'Close overlay' }).click()
   await expect(overlay).toHaveCount(0)
 
-  // Settings > Plugins: the pick offers the plugin (by its title), the reviewer and the built-in viewer.
+  // Settings > This Project: the pick offers the plugin (by its title), the reviewer and the built-in viewer.
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
   await expect(settings).toBeVisible()
-  await settings.getByRole('navigation').getByRole('button', { name: 'Plugins', exact: true }).click()
+  await settings.getByRole('navigation').getByRole('button', { name: 'This Project', exact: true }).click()
   const select = settings.getByLabel('Plugin used to open files')
   await expect(select).toHaveValue('test.openfile')
   await expect(select.locator('option')).toContainText(['Review (Open File Fixture)', 'Built-in viewer'])

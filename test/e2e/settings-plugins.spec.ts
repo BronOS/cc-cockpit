@@ -69,14 +69,19 @@ test('settings: link a plugin, save its app settings, an overlay over the screen
   await page.keyboard.press('ControlOrMeta+,')
   await expect(settings).toBeVisible()
   await expect(settings.getByRole('navigation').getByRole('button')).toHaveText([
-    'Projects',
+    'General',
+    'Appearance',
+    'Keybindings',
     'Plugins',
     'Marketplace',
-    'This project',
-    'Appearance and keys'
+    'This Project',
+    'Projects'
   ])
+  // The screen opens on General.
+  await expect(settings.getByRole('region', { name: 'General' })).toBeVisible()
 
   // Projects: this window's project is listed as open and cannot be removed.
+  await settings.getByRole('navigation').getByRole('button', { name: 'Projects', exact: true }).click()
   const projectRow = settings.locator('[data-project="project"]')
   await expect(projectRow).toContainText(cockpit.projectDir)
   await expect(projectRow.locator('.settings-badge')).toHaveText('open')
@@ -243,7 +248,10 @@ test('settings: services warn about a missing provider and offer the pick betwee
   await reopen()
   await expect(consumer.getByTestId('service-uses')).toHaveText('Uses: greet v1')
   await expect(consumer.getByTestId('service-warning')).toHaveText('no enabled plugin in this project provides service "greet"')
+  // The picks are This Project's (design-next §5.1), never on Plugins.
+  await nav('This Project').click()
   await expect(picks).toHaveCount(0)
+  await nav('Plugins').click()
 
   // One provider enabled: the warning goes, no pick is needed.
   await link('svc-provider')
@@ -252,20 +260,28 @@ test('settings: services warn about a missing provider and offer the pick betwee
   const first = settings.locator('[data-plugin="test.svcprovider"]')
   await expect(first.getByTestId('service-provides')).toHaveText('Provides: greet v1')
   await expect(consumer.getByTestId('service-warning')).toHaveCount(0)
+  await nav('This Project').click()
   await expect(picks).toHaveCount(0)
+  await nav('Plugins').click()
 
-  // Two providers: the consumer needs a pick, the select starts empty.
+  // Two providers: the consumer needs a pick, the select (on This Project) starts empty.
   await link('svc-provider-2')
   await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.svcprovider2')
   await reopen()
+  await expect(consumer.getByTestId('service-warning')).toContainText(
+    'Svc Provider and Svc Provider Two both provide service "greet"; pick one in Settings > This Project'
+  )
+  await expect(settings.getByLabel('Plugin used for greet')).toHaveCount(0)
+  await nav('This Project').click()
   const select = settings.getByLabel('Plugin used for greet')
   await expect(select).toHaveValue('')
   await expect(select.locator('option')).toHaveText(['Pick one', 'Svc Provider', 'Svc Provider Two'])
-  await expect(consumer.getByTestId('service-warning')).toContainText('Svc Provider and Svc Provider Two both provide')
 
   await select.selectOption('test.svcprovider2')
-  await expect(consumer.getByTestId('service-warning')).toHaveCount(0)
+  await expect(select).toHaveValue('test.svcprovider2')
   await reopen()
+  await expect(consumer.getByTestId('service-warning')).toHaveCount(0)
+  await nav('This Project').click()
   await expect(select).toHaveValue('test.svcprovider2')
   await expect(select.locator('option')).toHaveText(['Svc Provider', 'Svc Provider Two'])
   const recorded = (): string[] =>

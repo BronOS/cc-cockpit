@@ -1,4 +1,4 @@
-// Settings › Appearance and keys › Tabs › "Close button position" (design §3 Close): the × moves to
+// Settings › Appearance › Tabs › "Close button position" (design §3 Close): the × moves to
 // the start of every tab in every open window at once, stays a working close, is saved to app.json
 // and is what a window opened later starts with.
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
@@ -50,7 +50,7 @@ test('the close button moves to the left in every window, live, still closes, an
 
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
     const side = settings.getByRole('combobox', { name: 'Close button position' })
     await expect(side).toHaveValue('right')
     await side.selectOption('left')

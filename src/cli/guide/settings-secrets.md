@@ -57,7 +57,7 @@ For what a form cannot hold (a rules editor, a list with drag and drop), declare
 
 - It needs `main`, and `entry` is an `.html` file in your folder. `scopes`: `app` shows it under the
   app form on Settings > Plugins (your plugin's Settings), `project` under the project form on
-  Settings > This project; one or both.
+  Settings > This Project; one or both.
 - It is a sandboxed iframe like a panel: `cc-plugin://`, the panel CSP, the panel SDK
   (`/__sdk/panel.js`: `ccPanel.post` / `ccPanel.onMessage`, the theme and the component sheet). Its
   port goes to your backend in this window's host: `ctx.settingsPage.onOpen((page) => …)` with

@@ -34,7 +34,7 @@ test('settings page: not-enabled note, then a message round trip per scope', asy
   await expect(appRow.locator('iframe')).toHaveCount(0)
 
   // This project: the row offers Settings for the page alone (no form while off), with the same note.
-  await nav('This project')
+  await nav('This Project')
   const projectRow = settings.locator(`li[data-plugin="${ID}"]`)
   await unfold(projectRow)
   await expect(projectRow.getByTestId('settings-page-not-enabled')).toBeVisible()
@@ -69,7 +69,7 @@ test('settings page: not-enabled note, then a message round trip per scope', asy
   await expect(app.locator('#status')).toHaveText('Saved')
 
   // Back on This project: the backend answers the project's note again (a new page, a new port).
-  await nav('This project')
+  await nav('This Project')
   await unfold(projectRow)
   const again = projectRow.frameLocator('iframe')
   await expect(again.locator('#scope')).toHaveText('project', { timeout: 15_000 })

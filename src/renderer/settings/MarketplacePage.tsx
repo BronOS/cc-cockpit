@@ -29,7 +29,7 @@ const STATUS_TEXT: Record<MarketplaceEntryView['status'], string> = {
  * "Listed" means an index names this commit, not that anyone reviewed the code: the confirmation says so.
  */
 export function MarketplacePage(props: {
-  /** Switch Settings to This project, where an installed plugin is enabled. */
+  /** Switch Settings to This Project, where an installed plugin is enabled. */
   onOpenProject: () => void
 }): React.JSX.Element {
   const [view, setView] = useState<MarketplaceView | null>(null)
@@ -322,7 +322,7 @@ function EntryItem(props: {
             <div className="settings-item-meta" role="status" data-testid="marketplace-done">
               Done. A plugin is switched on per project; if this one is not on yet, enable it there.{' '}
               <button type="button" className="quiet" onClick={props.onOpenProject}>
-                Enable in This project
+                Enable in This Project
               </button>
             </div>
           )}

@@ -113,7 +113,7 @@ test('with Notification sounds off in Settings, a notification asking for a soun
   const { page } = cockpit
   await page.keyboard.press('ControlOrMeta+,')
   const settings = page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'General', exact: true }).click()
   const box = settings.getByRole('checkbox', { name: 'Notification sounds' })
   await expect(box).toBeChecked()
   // A controlled box (see first-tab.spec.ts): click, then wait for main's stored state.
@@ -145,7 +145,7 @@ test('Settings picks a built-in notification sound and plays it once, and the pi
   })
   await page.keyboard.press('ControlOrMeta+,')
   const settings = page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'General', exact: true }).click()
   const sound = settings.getByRole('combobox', { name: 'Sound' })
   await expect(sound).toHaveValue('builtin:chime')
   // The built-ins come first, in their own group; the OS folders (whatever this machine has) after.

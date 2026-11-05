@@ -71,7 +71,7 @@ test('an agenda slot: no provider picked, one picked, hidden panel, none, a prov
   const pick = async (value: string): Promise<void> => {
     await page.keyboard.press('ControlOrMeta+,')
     await expect(settings).toBeVisible()
-    await settings.getByRole('navigation').getByRole('button', { name: 'Plugins', exact: true }).click()
+    await settings.getByRole('navigation').getByRole('button', { name: 'This Project', exact: true }).click()
     const row = settings.getByLabel('Plugin drawing the agenda slot')
     await row.selectOption(value)
     await expect(row).toHaveValue(value)
@@ -79,7 +79,7 @@ test('an agenda slot: no provider picked, one picked, hidden panel, none, a prov
     await expect(settings).toBeHidden()
   }
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('navigation').getByRole('button', { name: 'Plugins', exact: true }).click()
+  await settings.getByRole('navigation').getByRole('button', { name: 'This Project', exact: true }).click()
   const row = settings.getByLabel('Plugin drawing the agenda slot')
   await expect(row).toHaveValue('')
   await expect(row.locator('option')).toHaveText(['Pick one (nothing drawn until then)', 'Slot provider one', 'Slot provider two', 'None'])

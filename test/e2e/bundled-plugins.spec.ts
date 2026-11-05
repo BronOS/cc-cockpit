@@ -111,7 +111,7 @@ const storedOff = (c: Cockpit): string[] | undefined =>
   (JSON.parse(readFileSync(join(c.dataDir, 'app.json'), 'utf8')) as { disabledBundled?: string[] }).disabledBundled
 
 /** Settings opened on one of its pages in `page`. */
-async function openSettings(page: Cockpit['page'], section: 'Plugins' | 'This project') {
+async function openSettings(page: Cockpit['page'], section: 'Plugins' | 'This Project') {
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
   await expect(settings).toBeVisible()
@@ -137,7 +137,7 @@ test('off in all projects stops a built-in plugin in every window, locks the pro
     await expect.poll(() => storedOff(cockpit)).toEqual(['cockpit.reviewer'])
 
     // This project: the reviewer is off and its switch cannot turn it on, with the note.
-    await settings.getByRole('navigation').getByRole('button', { name: 'This project', exact: true }).click()
+    await settings.getByRole('navigation').getByRole('button', { name: 'This Project', exact: true }).click()
     const row = settings.locator('[data-plugin="cockpit.reviewer"]')
     await expect(row.getByRole('checkbox', { name: 'Enable Reviewer' })).not.toBeChecked()
     await expect(row.getByRole('checkbox', { name: 'Enable Reviewer' })).toBeDisabled()
@@ -171,7 +171,7 @@ test('a third-party open-file plugin replaces the reviewer through the pick, and
   await expect.poll(() => existsSync(seenFile), { timeout: 15_000 }).toBe(true)
 
   // Both on: the pick lists both and has chosen neither (no priority for the built-in one).
-  const settings = await openSettings(page, 'Plugins')
+  const settings = await openSettings(page, 'This Project')
   const select = settings.getByLabel('Plugin used to open files')
   await expect(select).toHaveValue('')
   await expect(select.locator('option')).toHaveText([
@@ -183,10 +183,12 @@ test('a third-party open-file plugin replaces the reviewer through the pick, and
   ])
 
   // The reviewer off in this project: the fixture is the only candidate and is used without a pick.
-  await settings.getByRole('navigation').getByRole('button', { name: 'This project', exact: true }).click()
+  await settings.getByRole('navigation').getByRole('button', { name: 'This Project', exact: true }).click()
   await settings.locator('[data-plugin="cockpit.reviewer"]').getByRole('checkbox', { name: 'Enable Reviewer' }).click()
   await expect.poll(() => running(cockpit, projectDir), { timeout: 15_000 }).toEqual(['cockpit.browser', 'cockpit.editor', 'cockpit.files', 'cockpit.sessions', 'test.openfile'])
-  await settings.getByRole('navigation').getByRole('button', { name: 'Plugins', exact: true }).click()
+  // Read the picks again once the host restarted without the reviewer (the page loads them on open).
+  await settings.getByRole('navigation').getByRole('button', { name: 'Projects', exact: true }).click()
+  await settings.getByRole('navigation').getByRole('button', { name: 'This Project', exact: true }).click()
   await expect(select).toHaveValue('test.openfile')
   await page.keyboard.press('Escape')
   await expect(settings).toBeHidden()

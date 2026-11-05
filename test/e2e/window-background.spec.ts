@@ -1,4 +1,4 @@
-// Settings › Appearance and keys › Window (design §4 Window background): the "Transparent
+// Settings › Appearance › Window (design §4 Window background): the "Transparent
 // background" switch makes the project windows opened after it transparent (Electron cannot change
 // an open window). The window it was flipped in offers to reopen itself ("Reopen window": closed and
 // made again, its tabs restored as after a restart); "Later", and every other open window, keep how
@@ -77,7 +77,7 @@ test('a transparent background reaches project windows opened after the switch; 
 
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
     const transparent = settings.getByRole('checkbox', { name: 'Transparent background' })
     const opacity = settings.getByRole('slider', { name: 'Background opacity' })
     const blur = settings.getByRole('checkbox', { name: 'Blur behind' })
@@ -144,7 +144,7 @@ test('a transparent background reaches project windows opened after the switch; 
 
     // The slider, moved in the opaque window, reaches the transparent one live.
     await page.keyboard.press('ControlOrMeta+,')
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
     await opacity.focus()
     await page.keyboard.press('Home')
     await expect(opacity).toHaveValue('40')
@@ -244,7 +244,7 @@ test('"Reopen window" remakes this window from the setting; its Claude tab resum
     await page.bringToFront()
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
     const transparent = settings.getByRole('checkbox', { name: 'Transparent background' })
     const offer = settings.getByRole('group', { name: 'Reopen window' })
     await expect(offer).toHaveCount(0)
@@ -293,7 +293,7 @@ test('"Reopen window" remakes this window from the setting; its Claude tab resum
     await fresh.bringToFront()
     await fresh.keyboard.press('ControlOrMeta+,')
     const freshSettings = fresh.getByRole('dialog', { name: 'Settings' })
-    await freshSettings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await freshSettings.getByRole('button', { name: 'Appearance', exact: true }).click()
     const freshTransparent = freshSettings.getByRole('checkbox', { name: 'Transparent background' })
     const freshOffer = freshSettings.getByRole('group', { name: 'Reopen window' })
     await expect(freshTransparent).toBeChecked()

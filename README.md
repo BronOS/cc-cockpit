@@ -129,7 +129,7 @@ what you trust. The index pins each version to a commit, and it can revoke a bad
 but those hosts see them, and there is no setting to turn them off.
 
 The app also asks `api.github.com` once a day, and at launch, whether a newer release exists. It never downloads or
-installs anything; it only shows a notice. To turn this off, go to Settings > Appearance and keys > Updates and switch off
+installs anything; it only shows a notice. To turn this off, go to Settings > General > Updates and switch off
 "Check for new versions". Off means no request at all.
 
 ### Write your own
@@ -143,7 +143,7 @@ build. To go further:
 
 ## The `ccc` command
 
-Settings > Appearance and keys > Command line > **Install ccc command** links `~/.local/bin/ccc`, which must be on your
+Settings > General > Command line > **Install ccc command** links `~/.local/bin/ccc`, which must be on your
 PATH. It lets Claude, your scripts and plugins talk to the app:
 
 ```
@@ -162,7 +162,7 @@ Full reference and exit codes: [docs/features.md](docs/features.md#the-ccc-comma
 ## Known limitations
 
 - **Linux shortcuts:** `Cmd` becomes Ctrl, so the default chords take Ctrl+T, Ctrl+W, Ctrl+B, Ctrl+J and Ctrl+O before
-  the terminal sees them, and Claude Code and shells use those too. Rebind them in Settings > Appearance and keys.
+  the terminal sees them, and Claude Code and shells use those too. Rebind them in Settings > Keybindings.
 - **Closing a window doesn't ask:** closing a project window or quitting stops running tabs without a question.
 - **Sending text isn't perfectly safe:** the Enter that submits text is a real key, and in rare cases a permission dialog
   raised without a hook can receive it.

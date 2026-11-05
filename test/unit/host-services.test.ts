@@ -365,7 +365,7 @@ describe('ServiceRegistry errors', () => {
     reg.provide('a', 'triage', { who: () => 'a' })
     reg.provide('b', 'triage', { who: () => 'b' })
     const h = reg.use('c', 'triage')
-    await expect(call(h, 'who')).rejects.toThrow('plugins a and b both provide service "triage"; pick one in Settings > Plugins')
+    await expect(call(h, 'who')).rejects.toThrow('plugins a and b both provide service "triage"; pick one in Settings > This Project')
     reg.setChoices({ triage: 'b' })
     await expect(call(h, 'who')).resolves.toBe('b')
     // A stale pick (not a provider here) counts as no pick.
@@ -962,8 +962,8 @@ describe('ServiceRegistry events', () => {
     await flush()
     expect(got).toEqual([])
     expect(logs).toEqual([
-      ['a', 'service "s": events from a are dropped: plugins a and b both provide service "s"; pick one in Settings > Plugins'],
-      ['a', 'service "t": events from a are dropped: plugins a and b both provide service "t"; pick one in Settings > Plugins']
+      ['a', 'service "s": events from a are dropped: plugins a and b both provide service "s"; pick one in Settings > This Project'],
+      ['a', 'service "t": events from a are dropped: plugins a and b both provide service "t"; pick one in Settings > This Project']
     ])
     reg.setChoices({ s: 'b' })
     reg.emit('a', 's', 'e', 'a4')

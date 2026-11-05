@@ -71,7 +71,7 @@ test('with "Keep the tab open" a clean exit shows the exited banner', async ({ c
   const { page } = cockpit
   await page.keyboard.press('ControlOrMeta+,')
   const settings = page.getByRole('dialog', { name: 'Settings' })
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'General', exact: true }).click()
   const choice = settings.getByRole('combobox', { name: "When a tab's process exits" })
   await expect(choice).toHaveValue('close-clean')
   await choice.selectOption('keep')

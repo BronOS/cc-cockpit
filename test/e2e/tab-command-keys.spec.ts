@@ -31,13 +31,13 @@ test('a chord bound to a new-tab menu entry opens its tab, shows in the [+] menu
   const { page } = c
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'General', exact: true }).click()
   await addEntry(page, 'app', 'App keyed', APP_COMMAND)
-  await settings.getByRole('button', { name: 'This project' }).click()
+  await settings.getByRole('button', { name: 'This Project' }).click()
   await addEntry(page, 'project', 'Proj keyed', PROJECT_COMMAND)
 
   // Both are in the keybinding list, unbound (no default chord).
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Keybindings', exact: true }).click()
   await settings.getByLabel('Filter commands').fill('New tab:')
   const appRow = settings.locator('[data-command^="tab.newCommand.app."]')
   const projRow = settings.locator('[data-command^="tab.newCommand.project."]')
@@ -89,7 +89,7 @@ test('a chord bound to a new-tab menu entry opens its tab, shows in the [+] menu
 
   // Rebind Claude and unbind Shell in settings: the menu follows.
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Keybindings', exact: true }).click()
   await settings.getByLabel('Filter commands').fill('New ')
   const claudeRow = settings.locator('[data-command="tab.newClaude"]')
   const shellRow = settings.locator('[data-command="tab.newShell"]')
@@ -117,10 +117,10 @@ test('a chord bound to a new-tab menu entry opens its tab, shows in the [+] menu
 
   // Remove the entry: its row leaves the keybinding list (the window got the new key table) ...
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'This project' }).click()
+  await settings.getByRole('button', { name: 'This Project' }).click()
   await settings.getByRole('button', { name: 'Remove Proj keyed' }).click()
   await expect(settings.getByRole('button', { name: 'Remove Proj keyed' })).toHaveCount(0)
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Keybindings', exact: true }).click()
   await settings.getByLabel('Filter commands').fill('New tab:')
   await expect(appRow).toHaveCount(1)
   await expect(projRow).toHaveCount(0)

@@ -50,9 +50,9 @@ test('entries added in Settings appear in the [+] menu and run in the login shel
     const { page } = c
     const settings = page.getByRole('dialog', { name: 'Settings' })
     await page.keyboard.press('ControlOrMeta+,')
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'General', exact: true }).click()
     await addEntry(page, 'app', 'App tool', APP_COMMAND)
-    await settings.getByRole('button', { name: 'This project' }).click()
+    await settings.getByRole('button', { name: 'This Project' }).click()
     await addEntry(page, 'project', 'Proj tool', PROJECT_COMMAND)
     await expect
       .poll(() => (JSON.parse(readFileSync(join(c.dataDir, 'app.json'), 'utf8')) as { tabCommands?: unknown }).tabCommands)
@@ -131,7 +131,7 @@ test('a command that exits cleanly closes its tab; a failing one keeps the banne
   const { page } = c
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'This project' }).click()
+  await settings.getByRole('button', { name: 'This Project' }).click()
   await addEntry(page, 'project', 'Fails', 'echo ran >> runs.log; echo FAIL-MARKER; exit 3')
   await addEntry(page, 'project', 'Done', 'echo ok')
   await settings.getByRole('button', { name: 'Close settings' }).click()

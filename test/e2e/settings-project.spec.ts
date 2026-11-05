@@ -1,4 +1,4 @@
-// Task 33: the settings overlay's "This project" and "Appearance and keys" pages. A fixture plugin
+// Task 33: the settings overlay's "This Project", "Appearance" and "Keybindings" pages. A fixture plugin
 // with a panel is enabled for the project (its icon appears, the host restarts), moved to another
 // zone and disabled again (icon gone); a project settings form is saved (main validates) and no
 // account picker is shown (accounts left core, design §6); its secret field is set, replaced and
@@ -46,7 +46,7 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
 
   await page.keyboard.press('ControlOrMeta+,')
   await expect(settings).toBeVisible()
-  await settings.getByRole('button', { name: 'This project' }).click()
+  await settings.getByRole('button', { name: 'This Project' }).click()
   const panels = settings.locator('[data-plugin="test.panels"]')
   const enablePanels = settings.getByLabel('Enable Panels')
   await expect(panels).toBeVisible()
@@ -78,7 +78,7 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
 
   // A plugin with project settings: enable it. The page offers no account picker any more.
   await settings.getByRole('button', { name: 'Projects' }).click()
-  await settings.getByRole('button', { name: 'This project' }).click()
+  await settings.getByRole('button', { name: 'This Project' }).click()
   const ui = settings.locator('[data-plugin="test.settingsui"]')
   await ui.getByLabel('Enable Settings UI fixture').click()
   await expect(ui.getByLabel('Enable Settings UI fixture')).toBeChecked()
@@ -137,7 +137,7 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   await expect.poll(storedKeys, { timeout: 5_000 }).toEqual({})
 
   // Appearance: the theme picker reaches the page (and so the panels and terminals that follow it).
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Appearance', exact: true }).click()
   const theme = settings.getByLabel('Theme', { exact: true })
   await theme.selectOption({ label: 'Dark (dark)' })
   await expect.poll(() => cssVar(page, '--cc-bg')).toBe('#1a1817')
@@ -146,7 +146,8 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   await theme.selectOption({ label: 'Follow the system' })
   await expect(theme).toHaveValue('')
 
-  // Keys: record a new chord for "New Shell Tab".
+  // Keys (their own page): record a new chord for "New Shell Tab".
+  await settings.getByRole('button', { name: 'Keybindings', exact: true }).click()
   const shellRow = settings.locator('[data-command="tab.newShell"]')
   const closeRow = settings.locator('[data-command="tab.close"]')
   await settings.getByLabel('Filter commands').fill('tab')
@@ -178,7 +179,7 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
   await page.keyboard.press('Escape')
   await expect(settings).toBeHidden()
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Keybindings', exact: true }).click()
   await settings.getByLabel('Filter commands').fill('tab')
 
   // The menu's Open Folder accelerator follows a rebind (a menu accelerator wins over the page).
@@ -224,7 +225,7 @@ test('settings: enable a plugin for the project, its settings, a zone, a theme a
 
   // Reset puts the default back.
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+  await settings.getByRole('button', { name: 'Keybindings', exact: true }).click()
   await settings.getByLabel('Filter commands').fill('new shell')
   await settings.locator('[data-command="tab.newShell"]').getByRole('button', { name: 'Reset' }).click()
   await expect(settings.locator('[data-command="tab.newShell"]').getByText('custom')).toHaveCount(0)

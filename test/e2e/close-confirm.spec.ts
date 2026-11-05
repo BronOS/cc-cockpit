@@ -144,7 +144,7 @@ test('"Don\'t ask again" closes and turns the setting off; then a running tab cl
     // And Settings shows it off; turning it back on asks again.
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'Appearance and keys' }).click()
+    await settings.getByRole('button', { name: 'General', exact: true }).click()
     const box = settings.getByRole('checkbox', { name: 'Ask before closing a tab that is still running' })
     await expect(box).not.toBeChecked()
     // A controlled box (it shows main's stored state once the view reloads): click, then wait.

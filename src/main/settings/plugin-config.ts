@@ -48,7 +48,7 @@ const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 /** Where a scope's secret fields are set by hand. */
 const SECRET_HOME: Record<PluginConfigScope, string> = {
   app: 'Settings > Plugins',
-  project: 'Settings > This project'
+  project: 'Settings > This Project'
 }
 
 /** "an app setting", "a project setting". */

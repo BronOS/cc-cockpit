@@ -80,7 +80,7 @@ test('a project colour marks its window and reaches the picker live; None remove
     // Settings › This project › Colour: Blue.
     await page.keyboard.press('ControlOrMeta+,')
     const settings = page.getByRole('dialog', { name: 'Settings' })
-    await settings.getByRole('button', { name: 'This project' }).click()
+    await settings.getByRole('button', { name: 'This Project' }).click()
     const group = settings.getByRole('radiogroup', { name: 'Project colour' })
     await expect(group.getByRole('radio', { name: 'Colour: None' })).toBeChecked()
     await group.getByRole('radio', { name: 'Colour: Blue' }).click()

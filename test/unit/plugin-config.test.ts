@@ -394,7 +394,7 @@ describe('setPluginConfig', () => {
     await expect(setPluginConfig(deps, P, 'test.settingsui', [['token', 'abc']])).rejects.toThrow(
       'token is a secret field: ccc never handles secret values, set it in Settings > Plugins'
     )
-    await expect(setPluginConfig(deps, P, 'test.settingsui', [['key', 'abc']])).rejects.toThrow(/set it in Settings > This project/)
+    await expect(setPluginConfig(deps, P, 'test.settingsui', [['key', 'abc']])).rejects.toThrow(/set it in Settings > This Project/)
     // A secret among plain fields refuses the whole call.
     await expect(setPluginConfig(deps, P, 'test.settingsui', [['limit', 5], ['token', 'abc']])).rejects.toThrow(/secret field/)
     expect(secretWrites).toEqual([])

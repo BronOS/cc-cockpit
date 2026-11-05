@@ -54,7 +54,7 @@ test('an overlay entry opens a full-window terminal overlay, not a tab: Esc reac
   const { page } = c
   const settings = page.getByRole('dialog', { name: 'Settings' })
   await page.keyboard.press('ControlOrMeta+,')
-  await settings.getByRole('button', { name: 'This project' }).click()
+  await settings.getByRole('button', { name: 'This Project' }).click()
   await addEntry(page, 'project', 'Lazy', OVERLAY_COMMAND, 'overlay')
   await addEntry(page, 'project', 'Tabbed', TAB_COMMAND, 'tab')
   // Stored with `open` only on the overlay entry; the row's select shows it.

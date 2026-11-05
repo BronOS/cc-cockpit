@@ -1,18 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import { AppearancePage } from './AppearancePage'
-import { BlocksIcon, CloseIcon, ContrastIcon, FolderIcon, SlidersIcon, StoreIcon } from './icons'
+import { GeneralPage } from './GeneralPage'
+import { BlocksIcon, CloseIcon, ContrastIcon, FolderIcon, GearIcon, KeyboardIcon, SlidersIcon, StoreIcon } from './icons'
+import { KeybindingsPage } from './KeybindingsPage'
 import { MarketplacePage } from './MarketplacePage'
 import { PluginsPage } from './PluginsPage'
 import { ProjectPage } from './ProjectPage'
 import { ProjectsPage } from './ProjectsPage'
 
-/** The sections of design §6, in its order, plus the Marketplace after Plugins. */
+/**
+ * The pages of design-next §5.1, in its order; every setting lives on exactly one of them. The
+ * Marketplace keeps its own section after Plugins until the two merge into one Plugins page.
+ * General comes first and is where the screen opens: it holds what a person changes most.
+ */
 const SECTIONS = [
-  { id: 'projects', title: 'Projects', Icon: FolderIcon },
+  { id: 'general', title: 'General', Icon: GearIcon },
+  { id: 'appearance', title: 'Appearance', Icon: ContrastIcon },
+  { id: 'keybindings', title: 'Keybindings', Icon: KeyboardIcon },
   { id: 'plugins', title: 'Plugins', Icon: BlocksIcon },
   { id: 'marketplace', title: 'Marketplace', Icon: StoreIcon },
-  { id: 'project', title: 'This project', Icon: SlidersIcon },
-  { id: 'appearance', title: 'Appearance and keys', Icon: ContrastIcon }
+  { id: 'project', title: 'This Project', Icon: SlidersIcon },
+  { id: 'projects', title: 'Projects', Icon: FolderIcon }
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -31,7 +39,7 @@ export function SettingsOverlay(props: {
   /** An overlay covers the screen: nothing here may take the keyboard meanwhile. */
   inert?: boolean
 }): React.JSX.Element {
-  const [section, setSection] = useState<SectionId>('projects')
+  const [section, setSection] = useState<SectionId>('general')
   const own = useRef<HTMLDivElement>(null)
   const root = props.rootRef ?? own
 
@@ -83,11 +91,13 @@ export function SettingsOverlay(props: {
         {/* Keyed by section: a new section starts at its top, not at the last one's scroll. */}
         <div className="settings-page" key={section}>
           <div className="settings-content">
-            {section === 'projects' && <ProjectsPage />}
+            {section === 'general' && <GeneralPage />}
+            {section === 'appearance' && <AppearancePage />}
+            {section === 'keybindings' && <KeybindingsPage />}
             {section === 'plugins' && <PluginsPage onOpenProject={() => setSection('project')} />}
             {section === 'marketplace' && <MarketplacePage onOpenProject={() => setSection('project')} />}
             {section === 'project' && <ProjectPage />}
-            {section === 'appearance' && <AppearancePage />}
+            {section === 'projects' && <ProjectsPage />}
           </div>
         </div>
       </div>

@@ -60,7 +60,7 @@ so a person chooses to install or link it.
   without it they throw. An app before 0.10 ignores the key.
 - `openFile` (an object, not a list; needs `main`): the plugin can take over a click on a changed
   file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
-  names the choice in Settings > Plugins, where a project with several such plugins picks one (or
+  names the choice in Settings > This Project, where a project with several such plugins picks one (or
   the built-in viewer); with one, it gets the clicks unless the project picks the built-in viewer.
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
@@ -194,7 +194,7 @@ picker, `ctx.secrets` for stored credentials and
 
 The app ships `cockpit.browser`, `cockpit.reviewer`, `cockpit.editor`, `cockpit.files` and `cockpit.sessions` (the
 Sessions panel and the top bar's `sessions-strip` slot; core draws neither). They are on in every project
-until switched off: per project under This project, or for the whole app with "Off in all projects" on
+until switched off: per project under This Project, or for the whole app with "Off in all projects" on
 their row in Settings > Plugins. Off in all projects wins over every project's switch (which cannot turn
 it on meanwhile) and gives each project its own choice back when undone; only built-in plugins have it.
 A built-in plugin has no priority over yours. To replace one, provide the same thing under your own id:

@@ -59,7 +59,7 @@ A plugin with `contributes.settings` can be configured from the tab, no Settings
   the running plugin gets `ctx.onSettingsChange`, and a plugin that was off because its settings
   were invalid starts. A key declared in both scopes needs `--scope app` or `--scope project`.
 - **Secret fields cannot be set this way**: ask the person to enter them in Settings > Plugins
-  (app scope) or Settings > This project. Write the plugin so it starts without them and says
+  (app scope) or Settings > This Project. Write the plugin so it starts without them and says
   what is missing.
 
 ## 4. Inspect
