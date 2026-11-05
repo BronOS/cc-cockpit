@@ -121,7 +121,7 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
   const api = {
     list: (options?: { scope?: 'window' | 'all' }) =>
       guardAsync(async () => {
-        if (scopeOf('sessions.list', options, sessionsAll) === 'window') return (await call('sessions.list', {})) as SessionInfo[]
+        if (scopeOf('sessions.list', options, sessionsAll) === 'window') return (await call('sessions.list', { pluginId, scope: 'window' })) as SessionInfo[]
         return (await call('sessions.list', { pluginId, scope: 'all' })) as SessionSummary[]
       }),
     onChange: (listener: Listener | AllListener, options?: { scope?: 'window' | 'all' }): Disposer => {

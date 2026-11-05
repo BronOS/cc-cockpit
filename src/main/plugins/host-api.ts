@@ -893,9 +893,7 @@ export class HostApi {
     this.alive()
     const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.close')
-    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
-      throw new Error('sessions.close: unknown tab')
-    }
+    this.ownTab(tabId, 'sessions.close')
     if (!this.deps.closeTab) throw new Error('sessions.close: closing tabs is not available')
     if (!this.closes.take(plugin.id)) {
       throw new Error(`sessions.close: more than ${MAX_CLOSES_PER_WINDOW} closes in ${CLOSE_WINDOW_MS / 1000} s`)
@@ -918,9 +916,7 @@ export class HostApi {
     this.alive()
     const { pluginId, tabId, path } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.openFile')
-    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
-      throw new Error('sessions.openFile: unknown tab')
-    }
+    this.ownTab(tabId, 'sessions.openFile')
     if (typeof path !== 'string' || path === '') throw new Error('sessions.openFile: path must be a non-empty string')
     if (!this.deps.openSessionFile) throw new Error('sessions.openFile: opening files is not available')
     if (!this.sessionFiles.take(plugin.id)) {
@@ -951,9 +947,7 @@ export class HostApi {
     this.alive()
     const { pluginId, tabId, name } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.rename')
-    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
-      throw new Error('sessions.rename: unknown tab')
-    }
+    this.ownTab(tabId, 'sessions.rename')
     const checked = checkSessionName(name)
     if (!checked.ok) throw new Error(`sessions.rename: ${checked.reason}`)
     if (!this.deps.renameTab) throw new Error('sessions.rename: renaming tabs is not available')
@@ -969,6 +963,16 @@ export class HostApi {
     return null
   }
 
+  /**
+   * The tab id of a Claude tab of this project, or the one refusal every sessions method gives: another
+   * project's id (a guessed or leaked one) reads exactly like a tab that does not exist.
+   */
+  private ownTab(tabId: unknown, what: string): asserts tabId is string {
+    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
+      throw new Error(`${what}: unknown tab`)
+    }
+  }
+
   /** This project's tabs as plugins see them, the shown one marked (ctx.sessions.list and the event). */
   private sessionInfos(): SessionInfo[] {
     const active = this.deps.activeTab?.(this.scope.projectId)
@@ -980,9 +984,7 @@ export class HostApi {
     const { pluginId, tabId, text } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.send')
     // Another project's tab (a guessed or leaked id) reads exactly like a tab that does not exist.
-    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
-      throw new Error('sessions.send: unknown tab')
-    }
+    this.ownTab(tabId, 'sessions.send')
     // Validated before the budget is spent: a refused text (a "/" command) costs nothing.
     const clean = prepareText(text)
     if (!this.sends.take(plugin.id)) {

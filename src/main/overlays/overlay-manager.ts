@@ -51,6 +51,7 @@ import {
 } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPanelHeaderIcon } from '../../shared/panel-header'
+import { within } from '../../shared/timeout'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { composeDiscuss, DiscussSessionBudget } from './discuss'
@@ -356,15 +357,6 @@ interface Overlay {
 /** A click's key in `running`. */
 function clickKey(click: OverlayButtonClick): string {
   return click.source === 'opener' ? `opener/${click.buttonId}` : `type/${click.pluginId}/${click.buttonId}`
-}
-
-/** `promise`, or a rejection after `ms`; the timer never outlives the race. */
-function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms / 1000} s`)), ms)
-  })
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 export class OverlayManager {
@@ -799,7 +791,7 @@ export class OverlayManager {
     } catch (err) {
       sent = Promise.reject(toError(err))
     }
-    void within(sent, OVERLAY_CLICK_TIMEOUT_MS, what)
+    void within(sent, OVERLAY_CLICK_TIMEOUT_MS, `${what} took longer than ${OVERLAY_CLICK_TIMEOUT_MS / 1000} s`)
       .then((answer) => {
         const close = click.source === 'type' && (answer as { close?: unknown } | null)?.close === true
         if (close) this.finish(overlay, { kind: 'dismissed' })
@@ -881,7 +873,7 @@ export class OverlayManager {
         const ask = overlay.channel.onDiscuss.bind(overlay.channel)
         let answer: unknown
         try {
-          answer = await within(Promise.resolve().then(ask), DISCUSS_ASK_MS, 'onDiscuss')
+          answer = await within(Promise.resolve().then(ask), DISCUSS_ASK_MS, `onDiscuss took longer than ${DISCUSS_ASK_MS / 1000} s`)
         } catch (err) {
           return { ok: false, error: `${this.openerName(overlay)} could not give its context: ${toError(err).message}` }
         }

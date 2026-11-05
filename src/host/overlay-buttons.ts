@@ -22,6 +22,7 @@
 // (a source checks that the id is one of its own, the Editor resolves the path inside the project).
 import type { Disposer, JsonValue, OverlayInfo, OverlayTypeButton } from '../sdk/types'
 import { errorText } from '../shared/error-text'
+import { within } from '../shared/timeout'
 import {
   MAX_OVERLAY_BUTTONS,
   isOverlayTypeName,
@@ -78,15 +79,6 @@ function deepFreeze<T>(v: T): T {
     Object.freeze(v)
   }
   return v
-}
-
-/** `promise`, or the timeout's rejection after `ms`; the timer never outlives the race. */
-function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms)
-  })
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 export class OverlayButtonRegistry {
@@ -213,7 +205,7 @@ export class OverlayButtonRegistry {
       raw = await within(
         Promise.resolve().then(() => reg.provider(info)),
         this.timeoutMs,
-        what
+        `${what} took longer than ${this.timeoutMs} ms`
       )
     } catch (err) {
       this.log(reg.pluginId, `${what}: the provider is skipped: ${errorText(err)}`)

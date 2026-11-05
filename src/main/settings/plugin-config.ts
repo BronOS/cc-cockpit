@@ -157,19 +157,16 @@ export async function setPluginConfig(
   if (edits.length === 0) throw new Error('plugin config needs at least one key=value to set')
   const v = views(deps, projectId, pluginId)
   if (v.app === undefined && v.project === undefined) throw new Error(`${pluginId} declares no settings`)
-  let scope: PluginConfigScope | undefined
-  let first = ''
+  const [[first]] = edits as [readonly [string, unknown]]
+  if (RESERVED_KEYS.has(first)) throw new Error(`${first} is not allowed as a key`)
+  const target = scopeFor(pluginId, first, v, requested)
   for (const [key] of edits) {
     if (RESERVED_KEYS.has(key)) throw new Error(`${key} is not allowed as a key`)
     const s = scopeFor(pluginId, key, v, requested)
-    if (scope !== undefined && s !== scope) {
-      throw new Error(`${first} is ${aScope(scope)} and ${key} ${aScope(s)}: set them in two calls`)
+    if (s !== target) {
+      throw new Error(`${first} is ${aScope(target)} and ${key} ${aScope(s)}: set them in two calls`)
     }
-    scope = s
-    if (first === '') first = key
   }
-  if (scope === undefined) throw new Error('plugin config needs at least one key=value to set')
-  const target = scope
   // Read when the save runs in the plugin's queue, not now: a save queued ahead may still change what
   // is stored, and merging into this read would write its old values back (lost update).
   const values = (): Record<string, unknown> => {
@@ -187,14 +184,14 @@ export async function setPluginConfig(
     return merged
   }
   const saved =
-    scope === 'app'
+    target === 'app'
       ? await deps.saveApp(pluginId, values)
-      : scope === 'global'
+      : target === 'global'
         ? await deps.saveGlobal(pluginId, values)
         : await deps.saveProject(projectId, pluginId, values)
-  if (!saved.ok) throw new Error(`${pluginId}: nothing was stored, the ${scope} settings fail the schema: ${saved.errors.join('; ')}`)
+  if (!saved.ok) throw new Error(`${pluginId}: nothing was stored, the ${target} settings fail the schema: ${saved.errors.join('; ')}`)
   const keys = new Set(edits.map(([key]) => key))
-  return { id: pluginId, scope, values: Object.fromEntries([...keys].map((key) => [key, saved.values[key]])) }
+  return { id: pluginId, scope: target, values: Object.fromEntries([...keys].map((key) => [key, saved.values[key]])) }
 }
 
 /**

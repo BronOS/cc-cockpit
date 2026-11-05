@@ -63,7 +63,7 @@ describe('ctx.sessions', () => {
     await ctx.sessions.send('t1', 'hello')
     await expect(ctx.sessions.open({ cwd: 'sub', prompt: 'go' })).resolves.toEqual({ tabId: 't9' })
     expect(calls).toEqual([
-      { method: 'sessions.list', params: {} },
+      { method: 'sessions.list', params: { pluginId: 'a.one', scope: 'window' } },
       { method: 'sessions.send', params: { pluginId: 'a.one', tabId: 't1', text: 'hello' } },
       { method: 'sessions.open', params: { pluginId: 'a.one', cwd: 'sub', prompt: 'go' } }
     ])
@@ -126,7 +126,7 @@ describe('ctx.sessions scope all and the tab actions', () => {
     expect(calls).toEqual([])
     // Scope window is the old call.
     await ctx.sessions.list({ scope: 'window' })
-    expect(calls).toEqual([{ method: 'sessions.list', params: {} }])
+    expect(calls).toEqual([{ method: 'sessions.list', params: { pluginId: 'a.one', scope: 'window' } }])
   })
 
   it('asks main for summaries with the plugin id, and hands sessions.all only to scope all listeners', async () => {
