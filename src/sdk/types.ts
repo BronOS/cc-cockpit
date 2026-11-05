@@ -695,7 +695,7 @@ export interface PluginContext {
     /**
      * Name a Claude tab of this window (`SessionInfo.name`), shown in the tab strip and the Sessions
      * panel instead of Claude's topic; `null` goes back to Claude's title. 1-60 characters without
-     * control characters (rejects otherwise), and for a tab of this window only. The name survives a
+     * control, bidi or invisible format characters (rejects otherwise), and for a tab of this window only. The name survives a
      * restart of the app. At most 30 a minute. An older app has no `rename`: check `typeof ctx.sessions.rename`.
      */
     rename(tabId: string, name: string | null): Promise<void>

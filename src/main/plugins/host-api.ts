@@ -13,7 +13,7 @@
 //                                                                person's close path (the dialog may ask)
 //   sessions.openFile { pluginId, tabId, path } -> null          a file main recorded for a tab of THIS
 //                                                                project, routed like the panel's click
-//   sessions.rename { pluginId, tabId, name }  -> null           name (1-60 chars, no control characters) or
+//   sessions.rename { pluginId, tabId, name }  -> null           name (1-60 chars, no control/bidi/format chars) or
 //                                                                null for Claude's title; a tab of THIS project
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
 //   sessions.open   { pluginId, cwd?, prompt?, focus? } -> { tabId }  a new Claude tab in this project;

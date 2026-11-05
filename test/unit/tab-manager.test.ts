@@ -373,6 +373,30 @@ describe('rename', () => {
     expect(() => tabs.rename(A, claude.id, '')).toThrow(/empty/)
     expect(() => tabs.rename(A, claude.id, 'a'.repeat(61))).toThrow(/60/)
     expect(() => tabs.rename(A, claude.id, 'a\u0000b')).toThrow(/control/)
+    // A bidi override, isolate or mark could show a reversed label; a separator a second line; a
+    // zero-width space or BOM hides text.
+    for (const ch of ['\u202e', '\u2066', '\u2069', '\u200f', '\u061c', '\u2028', '\u2029', '\u200b', '\u2060', '\ufeff']) {
+      expect(() => tabs.rename(A, claude.id, `a${ch}b`)).toThrow(/bidi/)
+    }
+    // ZWJ (emoji sequences) and ZWNJ (Persian words) stay allowed.
+    tabs.rename(A, claude.id, '\u{1f469}\u200d\u{1f4bb} work')
+    tabs.rename(A, claude.id, 'می\u200cخواهم')
+    expect(tabs.list(A)[0]!.name).toBe('می\u200cخواهم')
+  })
+
+  it('a rename while the tab sits exited survives its restart, and the started event carries it', () => {
+    const started: Array<string | undefined> = []
+    const tabs = manager(undefined, { started: (t) => started.push(t.name) })
+    const tab = tabs.create(A, { kind: 'claude' })
+    backend.last.exit(0)
+    tabs.rename(A, tab.id, 'Later')
+    tabs.restart(A, tab.id)
+    expect(tabs.list(A)[0]!.name).toBe('Later')
+    expect(started).toEqual([undefined, 'Later'])
+    tabs.rename(A, tab.id, null)
+    backend.last.exit(0)
+    tabs.restart(A, tab.id)
+    expect(started.at(-1)).toBeUndefined()
   })
 
   it('a restored tab keeps its name, a restart keeps it, and the started event carries it', () => {

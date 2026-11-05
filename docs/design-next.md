@@ -300,7 +300,7 @@ interface SessionSummary {          // scope 'all': one per Claude tab of every 
 
 A plugin sees status, tool, title and name for other windows' tabs, never their prompts, notes, files, cwd or terminal
 content, and gets no new way to type: `send` stays this window's tabs and the gate. `scope: 'all'` needs the `access`
-declaration; without it the call throws. `rename`: 1-60 characters of plain text (control characters refused), stored
+declaration; without it the call throws. `rename`: 1-60 characters of plain text (control, bidi and invisible format characters refused), stored
 on the tab's restore record, shown by the tab strip and every plugin as `name` over `title`; core's tab menu gets
 Rename too, so renaming does not depend on the plugin. `close` goes through the person's close path: a running tab
 asks (`CloseTabDialog`, the `confirmTabClose` setting) in its window, which is shown first; `closed: false` on Cancel.
