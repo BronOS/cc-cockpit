@@ -872,12 +872,13 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `dist/lib/cli.js`, `test/cli.test.js`, `plugin.json` (CLI entry text if needed), `README.md`,
   `docs/design-v2.md` (status: "built as 0.2.0", deviations)
 
-- [ ] `ccc inbox [list]` (groups with numbered rows and reasons), `open <n|ref>`, `act <n|ref> <action>`, `done <n|ref>`,
+- [x] `ccc inbox [list]` (groups with numbered rows and reasons), `open <n|ref>`, `act <n|ref> <action>`, `done <n|ref>`,
   `undo`, `why <n|ref>` (the full trace), `snooze` (as v1), `help`; a ref is `<pluginId>:<id>`; bounded output
-- [ ] README: what Inbox 0.2.0 shows, the feed v2 contract summary for a new source, rules, settings page, keys, CLI, needs
+- [x] README: what Inbox 0.2.0 shows, the feed v2 contract summary for a new source, rules, settings page, keys, CLI, needs
   cc-cockpit 0.10.0 and the source versions (Gmail 0.5.0, Chat 0.3.0, Jira 0.7.0, Calendar 0.3.0 for the agenda)
-- [ ] write tests: each command, refs, bad arguments, empty inbox, `why` output
-- [ ] run `npm test` — done when green
+- [x] write tests: each command, refs, bad arguments, empty inbox, `why` output
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-inbox`; `list` prints a header per group and the placing rule under each numbered row; `why` uses `traceItem` with cached Jev answers only; `undo` honours the toast's 6 s window; README rewritten for 0.2.0 (it still described v1); `plugin.json` CLI usage updated
 
 ### Phase G — Sessions as a bundled plugin (repo `~/Projects/cc-cockpit`)
 
