@@ -584,6 +584,9 @@ export interface ProjectSettingsHandlerDeps {
   setTabExit(value: unknown): void
   setClaudeTabOnOpen(value: unknown): void
   setSessionGist(value: unknown): void
+  setDiscussPrompt(value: unknown): void
+  /** This window's own project (ProjectSettingsService.setDiscussPrompt checks the value). */
+  setProjectDiscussPrompt(projectId: string, value: unknown): void
   setNotificationSounds(value: unknown): void
   /** The "Sound" dropdown: built-ins, then the OS sound folders as listed now (SystemSounds.groups). */
   notificationSoundOptions(): Promise<NotificationSoundGroup[]>
@@ -638,6 +641,13 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   })
   router.handleProject('settings.sessionGistSet', (_ctx, payload) => {
     deps.setSessionGist(fields('settings.sessionGistSet', payload).value)
+  })
+  router.handleProject('settings.discussPromptSet', (_ctx, payload) => {
+    deps.setDiscussPrompt(fields('settings.discussPromptSet', payload).value)
+  })
+  // The sender's own project, whatever the payload says (like the colour).
+  router.handleProject('settings.projectDiscussPromptSet', (ctx, payload) => {
+    deps.setProjectDiscussPrompt(ctx.projectId, fields('settings.projectDiscussPromptSet', payload).value)
   })
   router.handleProject('settings.notificationSoundsSet', (_ctx, payload) => {
     deps.setNotificationSounds(fields('settings.notificationSoundsSet', payload).value)

@@ -30,3 +30,33 @@ export function preselectDiscussTarget(
   }
   return { kind: 'new' }
 }
+
+/** The person's closing prompt (Settings › General, per project): at most this many characters. */
+export const MAX_DISCUSS_PROMPT = 2000
+
+/**
+ * The prompt a stored value stands for, or undefined (absent). Lenient on purpose, like
+ * projectColorOf: app.json and the project record are user-writable, so a non-string or an
+ * oversized value reads as absent instead of failing the load. '' is a real value (a project's
+ * "off"), so it is kept.
+ */
+export function discussPromptOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length <= MAX_DISCUSS_PROMPT ? value : undefined
+}
+
+/** A prompt the person asked to save, checked strictly: a string within the cap, or it throws with the reason. */
+export function checkDiscussPrompt(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('give the prompt as text')
+  if (value.length > MAX_DISCUSS_PROMPT) throw new Error(`the prompt is too long: at most ${MAX_DISCUSS_PROMPT} characters`)
+  return value
+}
+
+/**
+ * The prompt Discuss appends: the project's own when its key is present (even '': off for this
+ * project), else the global one, else none. Blank counts as none. Both inputs are stored values
+ * (repaired on load, re-checked here).
+ */
+export function effectiveDiscussPrompt(projectValue: unknown, globalValue: unknown): string | undefined {
+  const text = discussPromptOf(projectValue) ?? discussPromptOf(globalValue)
+  return text !== undefined && text.trim() !== '' ? text.trim() : undefined
+}

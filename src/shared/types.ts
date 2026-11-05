@@ -110,6 +110,11 @@ export interface ProjectRecord {
    */
   color?: ProjectColor
   /**
+   * This project's own Discuss prompt: key absent = use the global one (AppSettings.discussPrompt),
+   * a string (also '' = off for this project) replaces it. Repaired to absent on load like `color`.
+   */
+  discussPrompt?: string
+  /**
    * Plugin services: `{ [service]: pluginId }`, which plugin answers a service that several enabled
    * plugins provide (Settings > Plugins). Absent in older records = no picks. A pick whose plugin is
    * no longer a provider in the project counts as no pick (shared/services.ts selectProvider) and is
@@ -218,6 +223,11 @@ export interface AppSettings {
   marketplaces?: string[]
   /** Look for a newer release once a day (main/updates). Absent or anything but `false` (the file is user-writable) reads as on. */
   updateCheck?: boolean
+  /**
+   * Text Discuss with Claude appends to every message (shared/discuss.ts). Absent = none. The file is
+   * user-writable: the registry repairs a non-string or an oversized value to absent when it loads.
+   */
+  discussPrompt?: string
   /**
    * Offer to install the `ccc` command at start-up when it is missing (main/hooks/ccc-offer.ts).
    * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").

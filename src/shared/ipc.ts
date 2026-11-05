@@ -542,6 +542,8 @@ export interface ProjectSettingsView {
   tabCommands: TabCommandEntry[]
   /** The project's colour; absent = none. */
   color?: ProjectColor
+  /** The project's own Discuss prompt; absent = it uses the global one (ProjectRecord.discussPrompt). */
+  discussPrompt?: string
 }
 
 /** A theme the picker offers. */
@@ -638,6 +640,8 @@ export interface AppearanceView {
   claudeTabOnOpen: boolean
   /** Haiku writes a one-line gist of each Claude session (AppSettings.sessionGist, default off). */
   sessionGist: boolean
+  /** The global Discuss prompt (AppSettings.discussPrompt; '' = none). */
+  discussPrompt: string
   /** A plugin's notification with `sound` rings a chime (AppSettings.notificationSounds, default on). */
   notificationSounds: boolean
   /**
@@ -1010,6 +1014,10 @@ export interface IpcInvokeMap {
   'settings.claudeTabOnOpenSet': { req: { value: boolean }; res: void }
   /** Turn the session gist on or off (AppSettings.sessionGist). Off cancels runs and removes every gist. */
   'settings.sessionGistSet': { req: { value: boolean }; res: void }
+  /** Set the global Discuss prompt; main refuses a non-string or one over MAX_DISCUSS_PROMPT. '' clears it. */
+  'settings.discussPromptSet': { req: { value: string }; res: void }
+  /** Set this project's own Discuss prompt ('' = off here), or null to use the global one again. */
+  'settings.projectDiscussPromptSet': { req: { value: string | null }; res: void }
   /** Let plugin notifications with `sound` chime, or never (AppSettings.notificationSounds). Read at each chime. */
   'settings.notificationSoundsSet': { req: { value: boolean }; res: void }
   /**
@@ -1345,6 +1353,8 @@ export const INVOKE_CHANNELS = [
   'settings.tabExitSet',
   'settings.claudeTabOnOpenSet',
   'settings.sessionGistSet',
+  'settings.discussPromptSet',
+  'settings.projectDiscussPromptSet',
   'settings.notificationSoundsSet',
   'settings.notificationSoundOptions',
   'settings.notificationSoundSet',

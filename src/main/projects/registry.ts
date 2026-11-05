@@ -10,6 +10,7 @@ import { dataPaths, PROJECT_ID_PATTERN, projectFile, projectId } from '../paths'
 import { JsonFile, type FsOps } from '../store/json-file'
 import { isPlainObject } from '../../shared/guards'
 import { defaultLayout, normalizeLayout, type LayoutState } from '../../shared/layout'
+import { discussPromptOf } from '../../shared/discuss'
 import { projectColorOf } from '../../shared/project-color'
 import { SERVICE_NAME_PATTERN } from '../../shared/manifest'
 import { OPEN_FILE_PICK } from '../../shared/services'
@@ -78,6 +79,9 @@ export class ProjectRegistry {
     const app = this.app.data
     app.openProjects = stringList(app.openProjects)
     app.recentProjects = stringList(app.recentProjects)
+    // A hand-edited prompt that is not text, or is over the cap, reads as none (like the colour).
+    const prompt = discussPromptOf(app.discussPrompt)
+    if (prompt === undefined) delete app.discussPrompt
   }
 
   /**
@@ -432,6 +436,9 @@ export class ProjectRegistry {
       const color = projectColorOf(file.data.color)
       if (color === undefined) delete file.data.color
       else file.data.color = color
+      // The project's own Discuss prompt: a damaged value reads as absent, i.e. "use the global".
+      const prompt = discussPromptOf(file.data.discussPrompt)
+      if (prompt === undefined) delete file.data.discussPrompt
       // Service picks: only `{ name: pluginId }` string pairs with a valid service name survive; a
       // value that is not a plain object reads as no picks (repaired in memory, like the colour).
       const picks = serviceProvidersOf(file.data.serviceProviders)

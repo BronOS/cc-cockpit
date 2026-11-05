@@ -154,6 +154,7 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
       tabExit: { get: () => undefined, set: () => {} },
       claudeTabOnOpen: { get: () => undefined, set: () => {} },
       sessionGist: { get: () => undefined, set: () => {} },
+      discussPrompt: { get: () => undefined, set: () => {} },
       sessionGistChanged: () => {},
       notificationSounds: { get: () => undefined, set: () => {} },
       notificationSound: { get: () => undefined, set: () => {}, systemHas: async () => false },

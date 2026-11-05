@@ -228,3 +228,49 @@ test('Discuss menu keys: Alt+ArrowDown opens it, Esc closes it and gives focus b
   await expect.poll(() => cockpit.pastes().length).toBe(1)
   expect(cockpit.claudeRuns()).toHaveLength(1)
 })
+
+test('Discuss prompt: a global one ends both messages, a project override of "" switches it off', async ({ cockpit }) => {
+  const { page } = cockpit
+  await enable(cockpit, [TOOLBAR, 'overlay-toolbar'])
+  const set = (channel: 'settings.discussPromptSet' | 'settings.projectDiscussPromptSet', value: string | null): Promise<void> =>
+    page.evaluate(
+      ([c, v]) => (window as unknown as { cockpit: { invoke(c: string, p: unknown): Promise<void> } }).cockpit.invoke(c as string, { value: v }),
+      [channel, value] as const
+    )
+  await set('settings.discussPromptSet', 'Answer first; change nothing.')
+
+  // New session: the prompt is the last thing of the first prompt.
+  await run(cockpit, 'thing')
+  await mainPart(cockpit).click()
+  await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(1)
+  const argv = cockpit.claudeRuns()[0]!
+  expect(argv[argv.indexOf('--') + 1]).toMatch(/context from the opener\n\nAnswer first; change nothing\.$/)
+
+  // Existing tab: the same text through the gate, once the tab waits for input.
+  await expect
+    .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status, { timeout: 15_000 })
+    .toBe('waiting')
+  await cockpit.typeLine('/prompt first')
+  await cockpit.typeLine('/stop')
+  await expect
+    .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
+    .toBe('waiting')
+  await run(cockpit, 'thing')
+  await discuss(cockpit)
+  await expect.poll(() => cockpit.pastes().length).toBe(1)
+  expect(cockpit.pastes()[0]).toContain('context from the opener\n\nAnswer first; change nothing.')
+
+  // The project's own empty prompt switches it off for this project.
+  await set('settings.projectDiscussPromptSet', '')
+  await expect
+    .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
+    .toBe('working')
+  await cockpit.typeLine('/stop')
+  await expect.poll(() => cockpit.pastes().length).toBeGreaterThanOrEqual(1)
+  await run(cockpit, 'thing')
+  await mainPart(cockpit).click()
+  await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(2)
+  const second = cockpit.claudeRuns()[1]!
+  const text = second[second.indexOf('--') + 1]!
+  expect(text.endsWith('context from the opener')).toBe(true)
+})

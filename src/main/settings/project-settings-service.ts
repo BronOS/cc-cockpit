@@ -31,6 +31,7 @@ import type {
   ProjectSettingsView
 } from '../../shared/ipc'
 import { isPlainObject } from '../../shared/guards'
+import { checkDiscussPrompt, discussPromptOf } from '../../shared/discuss'
 import { checkProjectColor, projectColorOf, type ProjectColor } from '../../shared/project-color'
 import { zoneOf } from '../../shared/layout'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
@@ -91,6 +92,8 @@ export class ProjectSettingsService {
     const view: ProjectSettingsView = { name: project.name, plugins, panels, tabCommands: tabCommandsOf(project.tabCommands) }
     const color = projectColorOf(project.color)
     if (color !== undefined) view.color = color
+    const discussPrompt = discussPromptOf(project.discussPrompt)
+    if (discussPrompt !== undefined) view.discussPrompt = discussPrompt
     return view
   }
 
@@ -107,6 +110,19 @@ export class ProjectSettingsService {
     })
     this.deps.colorChanged?.(projectId)
     return color
+  }
+
+  /**
+   * Set this project's own Discuss prompt ('' = off here), or null to use the global one again
+   * (the key is removed). Anything else, or text over the cap, throws and stores nothing.
+   */
+  setDiscussPrompt(projectId: string, value: unknown): void {
+    this.project(projectId)
+    const text = value === null ? null : checkDiscussPrompt(value)
+    this.deps.projects.update(projectId, (r) => {
+      if (text === null) delete r.discussPrompt
+      else r.discussPrompt = text
+    })
   }
 
   /** Enable or disable an installed plugin; the host restarts with the new set. */

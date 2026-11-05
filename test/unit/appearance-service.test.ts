@@ -27,6 +27,7 @@ function rig(initialOverrides: unknown = {}) {
     tabExit: undefined as unknown,
     claudeTabOnOpen: undefined as unknown,
     sessionGist: undefined as unknown,
+    discussPrompt: undefined as unknown,
     sessionGistChanged: 0,
     notificationSounds: undefined as unknown,
     notificationSound: undefined as unknown,
@@ -78,6 +79,12 @@ function rig(initialOverrides: unknown = {}) {
       get: () => state.sessionGist,
       set: (next) => {
         state.sessionGist = next
+      }
+    },
+    discussPrompt: {
+      get: () => state.discussPrompt,
+      set: (next) => {
+        state.discussPrompt = next
       }
     },
     sessionGistChanged: () => {

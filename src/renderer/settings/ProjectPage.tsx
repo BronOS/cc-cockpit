@@ -1,16 +1,19 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { ProjectPanelView, ProjectPluginView, ProjectSettingsView } from '../../shared/ipc'
+import type { AppearanceView, ProjectPanelView, ProjectPluginView, ProjectSettingsView } from '../../shared/ipc'
 import { ZONE_IDS, type ZoneId } from '../../shared/layout'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, type PluginServicesView } from '../../shared/services'
 import { SLOT_NONE, slotPickKey } from '../../shared/slots'
 import { BlocksIcon, PanelIcon } from './icons'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { PluginSettingsPage } from './PluginSettingsPage'
+import { DiscussPromptField } from './DiscussPromptField'
 import { ProjectColorSettings } from './ProjectColorSettings'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
 import { useLoaded } from './use-loaded'
+
+const loadAppearance = (): Promise<AppearanceView> => window.cockpit.invoke('settings.appearance')
 
 const loadProject = (): Promise<ProjectSettingsView> => window.cockpit.invoke('settings.project')
 
@@ -33,12 +36,14 @@ export function ProjectPage(props: {
 }): React.JSX.Element {
   const project = useLoaded(loadProject)
   const services = useLoaded(loadServices)
+  const appearance = useLoaded(loadAppearance)
   const { data, error: loadError } = project
   // A plugin switched on or off changes the candidates of every pick, and a pick changes nothing
   // else here but is cheap to re-read: both reload together.
   const reload = (): void => {
     project.reload()
     services.reload()
+    appearance.reload()
   }
   const { busy, error, run, setError } = useAction()
 
@@ -60,6 +65,13 @@ export function ProjectPage(props: {
       {data && (
         <>
           <ProjectColorSettings value={data.color} busy={busy} run={run} setError={setError} reload={reload} />
+          <ProjectDiscussPrompt
+            own={data.discussPrompt}
+            global={appearance.data?.discussPrompt ?? ''}
+            busy={busy}
+            run={run}
+            reload={reload}
+          />
           <Group title="Plugins" description="Which installed plugins run here, and their settings for this project.">
             {data.plugins.length === 0 ? (
               <div className="settings-card">
@@ -343,5 +355,56 @@ function PanelZones(props: {
         </li>
       ))}
     </ul>
+  )
+}
+
+/**
+ * This project's Discuss prompt (the global one is under General). "Use the global prompt" checked
+ * is the key absent in the project record; unchecking stores the global text as this project's
+ * own, to edit from there. Own and empty switches the prompt off here.
+ */
+function ProjectDiscussPrompt(props: {
+  /** The project's own prompt; undefined = it uses the global one. */
+  own: string | undefined
+  global: string
+  busy: string | null
+  run: ReturnType<typeof useAction>['run']
+  reload: () => void
+}): React.JSX.Element {
+  const { own, busy, run, reload } = props
+  const id = useId()
+  const save = (value: string | null): void => {
+    void run('discussPrompt', () => window.cockpit.invoke('settings.projectDiscussPromptSet', { value })).then(reload)
+  }
+  return (
+    <Group title="Discuss with Claude">
+      <div className="settings-card">
+        <Row
+          label="Use the global prompt"
+          htmlFor={`${id}-global`}
+          help="Checked: this project adds the prompt from General. Unchecked: it has its own below; empty adds nothing here."
+        >
+          <Switch
+            id={`${id}-global`}
+            checked={own === undefined}
+            disabled={busy !== null}
+            onChange={(e) => save(e.target.checked ? null : props.global)}
+          />
+        </Row>
+        <Row
+          label="Discuss prompt"
+          htmlFor={`${id}-prompt`}
+          help="Added at the end of every Discuss message sent to Claude from this project. Empty: nothing is added."
+        >
+          <DiscussPromptField
+            id={`${id}-prompt`}
+            label="Discuss prompt"
+            value={own ?? props.global}
+            disabled={busy !== null || own === undefined}
+            onCommit={(value) => save(value)}
+          />
+        </Row>
+      </div>
+    </Group>
   )
 }

@@ -200,6 +200,11 @@ export interface DiscussSessions {
   openSession(windowId: number, prompt: string): Promise<{ tabId: string }>
   /** Select the tab in the window (the person sees where the text went). */
   selectTab(windowId: number, tabId: string): void
+  /**
+   * The person's closing prompt for the window's own project, resolved by main at send time
+   * (effectiveDiscussPrompt), never taken from the renderer. Absent or undefined: none.
+   */
+  prompt?(windowId: number): string | undefined
 }
 
 /** A toolbar click as the renderer reports it: whose button, by id. */
@@ -916,7 +921,7 @@ export class OverlayManager {
       }
       // The overlay may have closed while the opener was asked: nothing to discuss any more.
       if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
-      const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context })
+      const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, prompt: sessions.prompt?.(windowId) })
       const late = targetProblem()
       if (late) return { ok: false, error: late }
       let tabId: string

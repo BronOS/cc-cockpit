@@ -28,6 +28,7 @@
 //    plugin's: user override > core default > plugin default). '' (unbound) is stored as is.
 //  - Overrides are keyed by commands main knows for the asking project; a payload cannot add an
 //    entry for an arbitrary id.
+import { checkDiscussPrompt, discussPromptOf } from '../../shared/discuss'
 import { own } from '../../shared/guards'
 import type { AppearanceView, KeyBindingRow, ShellPrefs } from '../../shared/ipc'
 import { normalizeChord, type KeyPlatform } from '../../shared/keys'
@@ -77,6 +78,8 @@ export interface AppearanceDeps {
   claudeTabOnOpen: { get(): unknown; set(next: boolean): void }
   /** `app.json` › `sessionGist`, as stored (unvalidated). */
   sessionGist: { get(): unknown; set(next: boolean): void }
+  /** `app.json` › `discussPrompt`, as stored (unvalidated). */
+  discussPrompt: { get(): unknown; set(next: string): void }
   /** The session gist was turned on or off: start or cancel runs, remove the gists (SessionGist.settingChanged). */
   sessionGistChanged(): void
   /** `app.json` › `notificationSounds`, as stored (unvalidated). Read at each chime, so it needs no event. */
@@ -182,6 +185,7 @@ export class AppearanceService {
       tabExit: tabExitOf(this.deps.tabExit.get()),
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
+      discussPrompt: discussPromptOf(this.deps.discussPrompt.get()) ?? '',
       notificationSounds: notificationSoundsOf(this.deps.notificationSounds.get()),
       notificationSound: notificationSoundOf(this.deps.notificationSound.get()),
       zoneAutoHide: zoneAutoHideOf(this.deps.zoneAutoHide.get()),
@@ -234,6 +238,11 @@ export class AppearanceService {
     const before = sessionGistOf(this.deps.sessionGist.get())
     this.deps.sessionGist.set(value)
     if (before !== value) this.deps.sessionGistChanged()
+  }
+
+  /** Save the global Discuss prompt, checked strictly (text within the cap); nothing is stored on a refusal. */
+  setDiscussPrompt(value: unknown): void {
+    this.deps.discussPrompt.set(checkDiscussPrompt(value))
   }
 
   /** Let plugin notifications with `sound` chime (true), or never; the next chime reads it. */

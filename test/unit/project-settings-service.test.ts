@@ -2,6 +2,7 @@
 // settings form validated against the manifest, and the panel zone. Fakes for the registry,
 // installer and layouts; the real settings validation (ajv).
 import { describe, expect, it } from 'vitest'
+import { MAX_DISCUSS_PROMPT } from '../../src/shared/discuss'
 import type { InstalledPlugin } from '../../src/main/plugins/installer'
 import { ProjectSettingsService, type ProjectSettingsDeps } from '../../src/main/settings/project-settings-service'
 import type { LayoutView } from '../../src/shared/ipc'
@@ -294,6 +295,29 @@ describe('movePanel', () => {
 
   it('refuses a project whose record is gone', () => {
     expect(() => rig().service.movePanel('ffffffffffffffff', 'core/sessions', 'left')).toThrow('record is gone')
+  })
+})
+
+describe('setDiscussPrompt', () => {
+  it('stores the project text, even empty, and null puts the key away again', () => {
+    const { service, record } = rig()
+    expect(service.view(P)).not.toHaveProperty('discussPrompt')
+    service.setDiscussPrompt(P, 'Answer first.')
+    expect(record.discussPrompt).toBe('Answer first.')
+    expect(service.view(P).discussPrompt).toBe('Answer first.')
+    service.setDiscussPrompt(P, '')
+    expect(record.discussPrompt).toBe('')
+    expect(service.view(P).discussPrompt).toBe('')
+    service.setDiscussPrompt(P, null)
+    expect(record).not.toHaveProperty('discussPrompt')
+  })
+
+  it('refuses a non-string or an oversized text and stores nothing', () => {
+    const { service, record } = rig()
+    record.discussPrompt = 'keep'
+    expect(() => service.setDiscussPrompt(P, 5)).toThrow(/text/)
+    expect(() => service.setDiscussPrompt(P, 'x'.repeat(MAX_DISCUSS_PROMPT + 1))).toThrow(/too long/)
+    expect(record.discussPrompt).toBe('keep')
   })
 })
 

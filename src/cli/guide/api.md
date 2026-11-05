@@ -163,7 +163,7 @@ with full Node access.
   `{ text }` (the context, within 5 s) or `null` for none, and a throw shows its error and sends
   nothing. `setDiscussPrimary(on)` draws Discuss as the accent (primary) button, or plain again
   (e.g. primary once there is something to send). The app sends `About: <title>`, the type, your text (20,000 characters at
-  most, your text cut first), closes the overlay with `{ kind: 'discussed', tabId, queued }` and
+  most, your text cut first; the person may add a closing prompt in Settings, which comes after your text and is never cut), closes the overlay with `{ kind: 'discussed', tabId, queued }` and
   shows the tab.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
   window, whoever opened it. `provider(info)` gets `{ type: { name, data }, title, opener }` and

@@ -116,7 +116,7 @@ behind it are in [design.md](design.md).
   side Settings > Appearance names). More than 6 buttons fold the rest into "…". An overlay opens at once with a spinner
   and "Still loading…" after 10 s; ✕ and Esc work throughout. Discuss with Claude is core's: it shows for a typed overlay
   (or one whose opener answers `onDiscuss`), lists this window's Claude tabs and New session, sends `About: <title>` and the context through the send gate (queued while the tab is busy) and selects the
-  tab. A plugin whose overlay has no type and no `onDiscuss` shows only ✕ (an older plugin looks as before).
+  tab. A "Discuss prompt" (Settings › General, overridable per project under This Project; empty by default) is appended to every such message, after the context and never cut. A plugin whose overlay has no type and no `onDiscuss` shows only ✕ (an older plugin looks as before).
 - Component stylesheet: the panel SDK adopts `components.css` (buttons, inputs, rows, chips, a spinner and the like, all
   in a low-priority `@layer cc`) before the plugin's own CSS, so plugin pages look like the app's and any rule of the
   plugin still wins; `ccc guide style` lists the classes, and the bundled plugins use them.

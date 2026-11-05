@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { MAX_DISCUSS_PROMPT } from '../../src/shared/discuss'
 import {
   existsSync,
   mkdirSync,
@@ -492,6 +493,19 @@ describe('colour', () => {
     const fresh = registry()
     expect(ids.map((id) => fresh.get(id)!.color)).toEqual([undefined, undefined, undefined, '#abcdef', 'teal'])
     expect(fresh.get(ids[0]!)).not.toHaveProperty('color')
+  })
+
+  it('repairs a damaged Discuss prompt, project and global, to absent but keeps an empty one', () => {
+    const reg = registry()
+    const ids = ['a', 'b', 'c', 'd'].map((name) => reg.openPath(folder(name)).id)
+    const stored: unknown[] = [5, 'x'.repeat(MAX_DISCUSS_PROMPT + 1), '', 'Be brief']
+    ids.forEach((id, i) => reg.update(id, (r) => void (r.discussPrompt = stored[i] as never)))
+    reg.flushAll()
+    writeFileSync(join(dataDir, 'app.json'), JSON.stringify({ schemaVersion: 1, discussPrompt: 7 }))
+
+    const fresh = registry()
+    expect(ids.map((id) => fresh.get(id)!.discussPrompt)).toEqual([undefined, undefined, '', 'Be brief'])
+    expect(fresh.app.data).not.toHaveProperty('discussPrompt')
   })
 })
 

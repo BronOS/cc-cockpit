@@ -2,6 +2,7 @@ import { useEffect, useId } from 'react'
 import type { AppearanceView, CccCommandView, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
 import type { TabExitBehavior } from '../../shared/types'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
+import { DiscussPromptField } from './DiscussPromptField'
 import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { NumberField } from './TerminalFontSettings'
@@ -157,6 +158,26 @@ export function GeneralPage(): React.JSX.Element {
                   onChange={(e) => {
                     const value = e.target.checked
                     void run('sessionGist', () => window.cockpit.invoke('settings.sessionGistSet', { value })).then(reload)
+                  }}
+                />
+              </Row>
+            </div>
+          </Group>
+
+          <Group title="Discuss with Claude">
+            <div className="settings-card">
+              <Row
+                label="Discuss prompt"
+                htmlFor={`${id}-discuss-prompt`}
+                help="Added at the end of every Discuss message sent to Claude. Empty: nothing is added. A project can use its own under This Project."
+              >
+                <DiscussPromptField
+                  id={`${id}-discuss-prompt`}
+                  label="Discuss prompt"
+                  value={data.discussPrompt}
+                  disabled={busy !== null}
+                  onCommit={(value) => {
+                    void run('discussPrompt', () => window.cockpit.invoke('settings.discussPromptSet', { value })).then(reload)
                   }}
                 />
               </Row>

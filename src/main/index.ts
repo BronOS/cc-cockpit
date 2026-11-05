@@ -8,6 +8,7 @@
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
 // Playwright e2e run exercises the real adapters.
+import { effectiveDiscussPrompt } from '../shared/discuss'
 import {
   app,
   BrowserWindow,
@@ -560,7 +561,15 @@ function start(): void {
         const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
         return { tabId: tab.id }
       },
-      selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId })
+      selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId }),
+      // The window's own project's override, else the global one; read now, at send time.
+      prompt: (windowId) => {
+        const projectId = projectOfWindow(windowId)
+        return effectiveDiscussPrompt(
+          projectId === undefined ? undefined : registry.get(projectId)?.discussPrompt,
+          registry.app.data.discussPrompt
+        )
+      }
     }
   })
   /** The project a project window shows, from main's own table. */
@@ -1496,6 +1505,15 @@ function start(): void {
         })
       }
     },
+    discussPrompt: {
+      get: () => registry.app.data.discussPrompt,
+      set: (next) => {
+        registry.app.update((a) => {
+          if (next === '') delete a.discussPrompt
+          else a.discussPrompt = next
+        })
+      }
+    },
     sessionGistChanged: () => sessionGist.settingChanged(),
     notificationSounds: {
       get: () => registry.app.data.notificationSounds,
@@ -1672,6 +1690,8 @@ function start(): void {
     setTabExit: (value) => appearance.setTabExit(value),
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
     setSessionGist: (value) => appearance.setSessionGist(value),
+    setDiscussPrompt: (value) => appearance.setDiscussPrompt(value),
+    setProjectDiscussPrompt: (projectId, value) => projectSettings.setDiscussPrompt(projectId, value),
     setNotificationSounds: (value) => appearance.setNotificationSounds(value),
     notificationSoundOptions: () => systemSounds.groups(),
     setNotificationSound: (value) => appearance.setNotificationSound(value),

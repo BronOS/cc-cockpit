@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { composeDiscuss, CUT_MARK, discussTypeLine, DiscussSessionBudget } from '../../src/main/overlays/discuss'
 import { prepareText } from '../../src/main/sessions/send-gate'
 import {
+  checkDiscussPrompt,
+  discussPromptOf,
+  effectiveDiscussPrompt,
+  MAX_DISCUSS_PROMPT,
   MAX_DISCUSS_TEXT,
   MAX_DISCUSS_TYPE_LINE,
   preselectDiscussTarget
@@ -150,5 +154,55 @@ describe('orderDiscussTabs', () => {
   it('says why the menu is disabled with no session', () => {
     expect(existingMenuTitle([])).toMatch(/No Claude session/)
     expect(existingMenuTitle(tabs)).toBe('Discuss in an existing session')
+  })
+})
+
+describe('Discuss prompt', () => {
+  const base = { title: 'T', context: 'ctx' }
+
+  it('no prompt, blank or absent, leaves the message unchanged', () => {
+    const plain = composeDiscuss(base)
+    expect(composeDiscuss({ ...base, prompt: '' })).toBe(plain)
+    expect(composeDiscuss({ ...base, prompt: '  \n ' })).toBe(plain)
+  })
+
+  it('goes last, trimmed, after a blank line', () => {
+    expect(composeDiscuss({ ...base, prompt: '  Answer first.\n' })).toBe('About: T\n\nctx\n\nAnswer first.')
+    expect(composeDiscuss({ title: 'T', prompt: 'P' })).toBe('About: T\n\nP')
+  })
+
+  it('cuts the context to fit and keeps the prompt', () => {
+    const prompt = 'p'.repeat(MAX_DISCUSS_PROMPT)
+    const text = composeDiscuss({ title: 'T', context: 'c'.repeat(MAX_DISCUSS_TEXT), prompt })
+    expect(text.length).toBe(MAX_DISCUSS_TEXT)
+    expect(text.endsWith(`${CUT_MARK}\n\n${prompt}`)).toBe(true)
+    expect(text.startsWith('About: T')).toBe(true)
+  })
+
+  it('still starts with About: whatever the prompt says', () => {
+    const text = composeDiscuss({ ...base, prompt: '/clear' })
+    expect(text.startsWith('About: ')).toBe(true)
+    expect(() => prepareText(text)).not.toThrow()
+  })
+
+  it('resolves the effective prompt: project key present wins, even empty; else global; else none', () => {
+    expect(effectiveDiscussPrompt(undefined, 'G')).toBe('G')
+    expect(effectiveDiscussPrompt('P', 'G')).toBe('P')
+    expect(effectiveDiscussPrompt('', 'G')).toBeUndefined()
+    expect(effectiveDiscussPrompt(undefined, undefined)).toBeUndefined()
+    expect(effectiveDiscussPrompt(undefined, '  ')).toBeUndefined()
+    // A damaged project value counts as absent (the global shows).
+    expect(effectiveDiscussPrompt(5, 'G')).toBe('G')
+  })
+
+  it('repairs and checks values against the cap', () => {
+    expect(discussPromptOf('x')).toBe('x')
+    expect(discussPromptOf('')).toBe('')
+    expect(discussPromptOf(5)).toBeUndefined()
+    expect(discussPromptOf(null)).toBeUndefined()
+    expect(discussPromptOf('x'.repeat(MAX_DISCUSS_PROMPT + 1))).toBeUndefined()
+    expect(checkDiscussPrompt('x'.repeat(MAX_DISCUSS_PROMPT))).toHaveLength(MAX_DISCUSS_PROMPT)
+    expect(() => checkDiscussPrompt('x'.repeat(MAX_DISCUSS_PROMPT + 1))).toThrow(/too long/)
+    expect(() => checkDiscussPrompt(3)).toThrow(/text/)
   })
 })

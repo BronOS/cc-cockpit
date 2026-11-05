@@ -6,12 +6,14 @@
 //
 //   <the opener's context text>
 //
-// at most MAX_DISCUSS_TEXT characters, the context cut to fit (the head is short and capped). It always starts
+// then the person's own closing prompt (Settings, optional), at most MAX_DISCUSS_TEXT characters, the context cut
+// to fit (the head is short and capped, the prompt is never cut). It always starts
 // with `About:`, so the send gate's refusal of a leading `/`, `!`, `#` or `&` (a slash command or a
 // bash line typed into Claude) can never fire on it, whatever the title or context say.
 import {
   DISCUSS_NEW_WINDOW_MS,
   MAX_DISCUSS_NEW_SESSIONS,
+  MAX_DISCUSS_PROMPT,
   MAX_DISCUSS_TEXT,
   MAX_DISCUSS_TYPE_LINE
 } from '../../shared/discuss'
@@ -24,6 +26,8 @@ export interface DiscussParts {
   type?: CleanOverlayType
   /** What the opener's onDiscuss answered (absent or empty: no extra context). */
   context?: string
+  /** The person's closing prompt (shared/discuss.ts effectiveDiscussPrompt); blank or absent: none. */
+  prompt?: string
 }
 
 /** Shown where the context was cut to fit, so Claude knows it did not get all of it. */
@@ -77,16 +81,19 @@ export function composeDiscuss(parts: DiscussParts): string {
   if (parts.type) head.push(discussTypeLine(parts.type))
   const headText = head.join('\n')
   let context = parts.context?.trim() ? parts.context.trim() : undefined
+  // The head and the prompt are fixed; only the context gives way (never the person's own words).
+  // Capped again here: the caller's value is a stored string, but this function must hold the limit alone.
+  const prompt = parts.prompt?.trim() ? parts.prompt.trim().slice(0, MAX_DISCUSS_PROMPT) : undefined
   if (context !== undefined) {
-    // What the head and the blank line after it leave for the context.
-    const fixed = headText.length + 2
+    // What the head, the prompt and the blank lines around the context leave for it.
+    const fixed = headText.length + 2 + (prompt !== undefined ? prompt.length + 2 : 0)
     const room = MAX_DISCUSS_TEXT - fixed
     if (context.length > room) {
       const keep = room - CUT_MARK.length
       context = keep > 0 ? `${context.slice(0, keep).trimEnd()}${CUT_MARK}` : undefined
     }
   }
-  return [headText, context].filter((p): p is string => p !== undefined).join('\n\n')
+  return [headText, context, prompt].filter((p): p is string => p !== undefined).join('\n\n')
 }
 
 /**

@@ -1167,7 +1167,7 @@ name, not which plugin is asking; installed plugins are trusted code.
   and one row per slot type with a candidate: "Plugin drawing the agenda slot", with "None").
 - General: what a tab does when its process exits (close when it ends normally, or keep; §3 Exit);
   whether a project that opens empty gets a Claude tab (§3 First tab); whether closing a running tab
-  asks first (§3 Close); side panels, Claude sessions, notifications, the app-wide commands in the
+  asks first (§3 Close); side panels, Claude sessions, the Discuss prompt (`app.json` › `discussPrompt`, text appended to every Discuss with Claude message; a project's `discussPrompt` overrides it, `''` switching it off there; design-next §3.5), notifications, the app-wide commands in the
   new-tab menu (an editable list: add, edit, remove, move up / down; §3 Custom commands), the
   command line install and updates.
 - Appearance: theme; the window background (transparent project windows, opacity, blur;

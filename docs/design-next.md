@@ -242,7 +242,7 @@ the main part also opens it; disabled when the window has no Claude tab) opens a
 Main asks the opener's `onDiscuss` (host RPC, 5 s bound) for the context text, then builds the message: `About: <title>`
 line, the type as a short line (`File: src/x.ts`, `Item: bronos.gmail thread`; unknown types as `name: key=value`
 pairs, at most 500 characters), the opener's text; the whole capped at 20,000 characters (the context is
-cut to fit). It always starts with `About:`, so the send gate's `/ ! # &` refusal never fires. An
+cut to fit). The person's **Discuss prompt** (Settings › General, `app.json` › `discussPrompt`; a project overrides it under This Project, `discussPrompt` in the project record: key absent = the global one, `''` = off for the project; at most 2,000 characters, damaged values repair to absent on load) is appended last after a blank line, never cut: the head and the prompt are fixed and the context gives way. Main resolves it for the window's own project at send time, for both targets; empty by default, so the message is then unchanged. It always starts with `About:`, so the send gate's `/ ! # &` refusal never fires. An
 `onDiscuss` that throws or times out shows its error in the popover and sends nothing; one that returns `null` means
 "no extra context". An existing tab gets the text through the send gate (queued while busy, the queued chip as today);
 New session opens a Claude tab in the project folder with the text as its first prompt (main's own open path, the

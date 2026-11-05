@@ -1599,6 +1599,19 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(sessions.selected).toEqual([{ windowId: W1, tabId: 't2' }])
   })
 
+  it('appends the window project prompt for an existing tab and for New session', async () => {
+    const sessions = fakeSessions()
+    const prompts: Record<number, string | undefined> = { [W1]: 'Answer first.' }
+    sessions.deps.prompt = (windowId) => prompts[windowId]
+    const m = withDiscuss(sessions)
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'tab', tabId: 't1' })
+    void m.open(W1, fileSpec, 'plugin p.rev', undefined, undefined, 'p.rev')
+    await m.discuss(W1, m.infos(W1)[0]!.id, { kind: 'new' })
+    expect(sessions.sent[0]!.text).toBe('About: Review src/x.ts\nFile: src/x.ts\n\nAnswer first.')
+    expect(sessions.opened[0]!.prompt).toBe('About: Review src/x.ts\nFile: src/x.ts\n\nAnswer first.')
+  })
+
   it('a busy tab queues it: the result says queued', async () => {
     const sessions = fakeSessions()
     sessions.delivered = false
