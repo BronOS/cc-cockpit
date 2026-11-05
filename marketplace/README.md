@@ -50,7 +50,7 @@ is public and a PR picks the host; run `git clone --branch <tag> <repo>` yoursel
 
 ## Preview and category
 
-**Preview.** Put `preview.png` at the root of your repo, in the tagged commit: the app shows it on the plugin's card.
+**Preview.** Put `preview.png` at the root of your repo, in the tagged commit: the app shows it on the plugin's card. The card shows it at 96×60, where a screenshot is a blur: make it a logo, the plugin's icon large on a plain colour or gradient, with no text.
 
 - PNG, at most 512 KiB, 1280×800 recommended (16:10); anything from 640×400 to 1600×1000 is accepted;
 - a still image: an animated PNG (an `acTL` chunk) is refused;

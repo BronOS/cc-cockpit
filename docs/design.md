@@ -1031,7 +1031,7 @@ default fetch fails and the page shows the error. The template for it is `market
   refused, so the default index's repo must never be renamed or transferred: installed copies would keep their cache and a fetch error.
   The Plugins page refetches when an index is stale or failed (Refresh forces it), and adding or removing an index fetches. The cache is read first, so an offline start still lists plugins and still enforces
   revocations. The page touches the network only through that fetch and the lazy preview fetch below. The repo of an entry is shown as plain text, not a link.
-- **Category.** An entry may name one of `sources views tools themes claude other`; the app reads an unknown or absent
+- **Category.** An entry may name one of `integrations productivity ai developer appearance other`; the app reads an unknown or absent
   one as `other`, the index CI refuses an unknown one. The page's category filter uses it.
 - **Preview.** A plugin repo may hold a `preview.png` at its root (PNG, ≤ 512 KiB, 640×400 to 1600×1000, 1280×800
   recommended, not animated, a regular file). The index CI checks it and publishes it as `previews/<id>/<commit>.png`

@@ -317,7 +317,8 @@ tag: tag a new version and send a PR that changes `version`, `tag` and `commit`.
 by itself when checks pass. A plugin whose id and commit are in `revoked.json` is disabled in apps where that index is the default one or the one the
 plugin was installed from; any other index only produces a warning.
 
-Put `preview.png` at the root of the tagged commit: the card's picture on the Plugins page. A still PNG (no `acTL`),
+Put `preview.png` at the root of the tagged commit: the card's picture on the Plugins page, shown at
+96×60: make it a logo (your icon large on a plain colour or gradient, no text), not a screenshot. A still PNG (no `acTL`),
 at most 512 KiB, from 640×400 to 1600×1000 (1280×800 recommended), a regular file, not a symlink. The index CI checks
 it: a broken one fails, a missing one is a warning until the date in the index's `preview-policy.json` (`requiredFrom`),
 after which a new or changed listing without one is refused. An entry may set `category` (`integrations` for an outside

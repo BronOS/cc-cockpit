@@ -430,7 +430,8 @@ plus an optional page), §6 CLI table (`plugin config`), secrets reserved keys.
 ### 6.1 Preview image
 
 - The plugin repo holds `preview.png` at the root at the pinned tag: PNG, at most 512 KiB, 1280×800 (16:10; 640×400 to
-  1600×1000 accepted), no animation chunk.
+  1600×1000 accepted), no animation chunk. It is a logo card (the icon large on a colour, no text), not a
+  screenshot: the card draws it at 96×60, where a screenshot cannot be read.
 - The index repo's CI (`check-entry`) already clones the tag; it reads `preview.png` from the checkout (regular file, no
   symlink), checks the PNG signature, IHDR size and the byte cap without decoding anything else, and publishes the bytes
   next to `index.json` as `previews/<id>/<commit>.png`. The entry gets `preview: { sha256 }` (`build-index`).

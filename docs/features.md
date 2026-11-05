@@ -286,8 +286,8 @@ confirmation (the same checks as a single update; a failure names its plugin and
 - **The official index** is the repo [BronOS/cc-cockpit-marketplace](https://github.com/BronOS/cc-cockpit-marketplace), made from
   the `marketplace/` template. Its setup steps (`PUBLISH_TOKEN`, branch protection with no required approvals) are in
   [marketplace/README.md](../marketplace/README.md). Add your own index under Settings > Plugins › Marketplace indexes.
-- **Previews and categories.** A listing may carry a `preview.png` (PNG, at most 512 KiB, 640x400 to 1600x1000,
-  1280x800 recommended) and one category (`sources views tools themes claude other`). The official index's CI checks and
+- **Previews and categories.** A listing may carry a `preview.png`, a logo card rather than a screenshot (the card shows it at 96x60) (PNG, at most 512 KiB, 640x400 to 1600x1000,
+  1280x800 recommended) and one category (`integrations productivity ai developer appearance other`). The official index's CI checks and
   republishes the image beside `index.json`; the app fetches it lazily from the index's own folder, checks its sha256
   and caches it. A listing without a preview shows the name's initial; the index requires one only after the date in
   its `preview-policy.json`.
