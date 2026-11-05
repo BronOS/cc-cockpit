@@ -58,14 +58,17 @@ is public and a PR picks the host; run `git clone --branch <tag> <repo>` yoursel
 
 The `check` workflow reads only the PNG's framing (signature, size, chunk headers) and decodes nothing. A preview that
 breaks a rule fails the check. A missing one passes with a warning on the PR until the date in `preview-policy.json`
-(`requiredFrom`, `YYYY-MM-DD`, UTC; `null` means warnings only); from that day a new listing or a new version without
-one is refused. Listings already on `main` without a preview stay listed, with a warning in every publish run.
+(`requiredFrom`, `YYYY-MM-DD`, UTC; `null` means warnings only); from that day any PR that adds or changes an entry
+whose tagged commit has no preview is refused, a fix to the description or `owners` of an older listing included.
+Listings already on `main` without a preview stay listed, with a warning in every publish run.
 
 After a merge, `publish-index.yml` clones each listing whose commit has no preview yet (in a job with no token), copies
 the image to `previews/<id>/<commit>.png` next to `index.json`, and the entry in `index.json` gets
 `"preview": { "sha256": "…" }`. A commit whose repo had no usable preview gets the marker `previews/<id>/<commit>.none`
-instead, so it is not cloned again every hour; delete the marker to make the next run look again. The app fetches the
-image from this repo, never from yours, and checks it against that hash.
+instead, so it is not cloned again every hour; delete the marker to make the next run look again. A clone that fails,
+or a tag that no longer points at `commit`, gets `previews/<id>/<commit>.failed` (the time of the try), and the
+listing is tried again a day later. One run fetches at most 20 previews and starts no clone after 10 minutes; the rest
+wait for the next run. The app fetches the image from this repo, never from yours, and checks it against that hash.
 
 **Category.** `category` is one of `sources`, `views`, `tools`, `themes`, `claude`, `other`; leaving it out means
 `other`. Any other value fails the check. The Plugins page filters by it.

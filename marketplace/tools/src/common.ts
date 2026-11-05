@@ -142,6 +142,15 @@ export function noPreviewMarker(id: string, commit: string): string {
 }
 
 /**
+ * Next to it: the marker that the last try at that commit could not clone it or found the tag elsewhere,
+ * holding the time of that try (ISO 8601). Unlike `.none` it only defers the next try (check-entry.ts,
+ * PREVIEW_RETRY_AFTER_MS), since a repo can come back.
+ */
+export function failedPreviewMarker(id: string, commit: string): string {
+  return `previews/${id}/${commit}.failed`
+}
+
+/**
  * The same entry path holds the same thing in both checkouts. Compares what git tracks without judging
  * it, so a file the tools refuse to read (a symlink, one over the size cap) is comparable too: otherwise
  * one bad file on main would stop every PR, and a PR could not be told from main by a thrown error.

@@ -31,6 +31,8 @@ permissions:
 jobs:
   previews:
     runs-on: ubuntu-latest
+    # Above the tool's own worst case (check-entry.ts PREVIEW_FETCH_BUDGET_MS plus one last clone):
+    # a job killed here never uploads, so the previews this run did fetch would be lost.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

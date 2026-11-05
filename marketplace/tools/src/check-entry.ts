@@ -35,6 +35,7 @@ import {
   ToolError,
   entryPath,
   listEntryFiles,
+  failedPreviewMarker,
   noPreviewMarker,
   parseFlags,
   parseSourceEntry,
@@ -49,7 +50,19 @@ const MAX_MANIFEST_BYTES = 256 * 1024
 // of repos because one PR said so.
 const MAX_CHANGED_ENTRIES = 20
 // The same bound for one publish run's preview fetches; the hourly run picks up the rest.
-const MAX_PREVIEW_FETCHES = 20
+export const MAX_PREVIEW_FETCHES = 20
+// A preview fetch has a tighter clone timeout and an overall budget, after which no new clone starts:
+// the `previews` job in publish-index.yml has a timeout-minutes, and a job killed by it never reaches
+// upload-artifact, so every preview that run did fetch would be lost and the next run would repeat the
+// same slow clones. Worst case: the budget, plus one clone and one rev-parse started just before it ran
+// out. A unit test holds the job's timeout above that.
+export const PREVIEW_CLONE_TIMEOUT_MS = 60_000
+export const PREVIEW_FETCH_BUDGET_MS = 10 * 60_000
+// A listing whose clone failed or landed on another commit (a repo gone private, a moved tag) is not
+// tried again for this long. Without it such listings would be recloned every hour and, sitting early in
+// the fixed entry order, keep every later listing out of the run's MAX_PREVIEW_FETCHES slots for good.
+export const PREVIEW_RETRY_AFTER_MS = 24 * 60 * 60_000
+const MAX_FAILED_MARKER_BYTES = 64
 
 export interface CheckOptions {
   /** The env git runs with; the process env when absent. */
@@ -246,15 +259,41 @@ async function checkFile(
   return { problems, warnings }
 }
 
+/** True while the failure marker at `path` is younger than PREVIEW_RETRY_AFTER_MS. */
+function recentlyFailed(path: string, now: Date): boolean {
+  if (!existsSync(path)) return false
+  let at: number
+  try {
+    at = Date.parse(readRegularFile(path, MAX_FAILED_MARKER_BYTES).trim())
+  } catch {
+    return false
+  }
+  // An unreadable or future time (a hand edit, a skewed clock) means try again: a marker must never
+  // keep a listing from its preview for good.
+  const age = now.getTime() - at
+  return !Number.isNaN(at) && age >= 0 && age < PREVIEW_RETRY_AFTER_MS
+}
+
 /**
  * The previews the index checkout at `root` lacks, fetched into `out`/previews/. Run by publish-index.yml
  * in a job with no token (it clones repos somebody else controls); the publish job copies the result in
  * and build-index checks every image again before listing its hash. An entry already holding a
  * `<commit>.png` or the `<commit>.none` marker is skipped: a commit never changes, so one clone per
- * commit is enough. A clone that fails or lands on another commit writes nothing and is retried next run.
+ * commit is enough. A clone that fails or lands on another commit writes the `<commit>.failed` marker
+ * (the time of the attempt) and is retried once it is PREVIEW_RETRY_AFTER_MS old. At most
+ * MAX_PREVIEW_FETCHES clones start, and none after PREVIEW_FETCH_BUDGET_MS.
  */
-export async function fetchPreviews(root: string, out: string, indexUrl: string, opts: CheckOptions = {}): Promise<string[]> {
+export async function fetchPreviews(
+  root: string,
+  out: string,
+  indexUrl: string,
+  opts: CheckOptions & { budgetMs?: number } = {}
+): Promise<string[]> {
   const log: string[] = []
+  const now = opts.now ?? (() => new Date())
+  const cloneOpts: CheckOptions = { ...opts, timeoutMs: opts.timeoutMs ?? PREVIEW_CLONE_TIMEOUT_MS }
+  const budgetMs = opts.budgetMs ?? PREVIEW_FETCH_BUDGET_MS
+  const started = now().getTime()
   let fetched = 0
   for (const name of listEntryFiles(join(root, 'plugins'))) {
     let parsed: ReturnType<typeof parseSourceEntry>
@@ -267,14 +306,22 @@ export async function fetchPreviews(root: string, out: string, indexUrl: string,
     if (!parsed.ok || name !== `${parsed.entry.id}.json`) continue
     const { id, commit } = parsed.entry
     if (existsSync(join(root, previewPath(id, commit))) || existsSync(join(root, noPreviewMarker(id, commit)))) continue
+    if (recentlyFailed(join(root, failedPreviewMarker(id, commit)), now())) continue
     if (fetched >= MAX_PREVIEW_FETCHES) {
       log.push(`more than ${MAX_PREVIEW_FETCHES} previews to fetch: the rest wait for the next run`)
       break
     }
+    if (now().getTime() - started >= budgetMs) {
+      log.push(`out of time for this run: the rest wait for the next run`)
+      break
+    }
     fetched++
-    const seen = await inspectEntry(parsed.entry, opts)
+    const seen = await inspectEntry(parsed.entry, cloneOpts)
     if (!seen.atCommit) {
-      log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned`)
+      const marker = join(out, failedPreviewMarker(id, commit))
+      mkdirSync(join(marker, '..'), { recursive: true })
+      writeFileSync(marker, `${now().toISOString()}\n`)
+      log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned; retried in a day`)
       continue
     }
     const target = join(out, seen.preview !== null ? previewPath(id, commit) : noPreviewMarker(id, commit))

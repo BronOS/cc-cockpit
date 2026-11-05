@@ -457,6 +457,9 @@ function entryPath(root, name) {
 function noPreviewMarker(id, commit) {
   return `previews/${id}/${commit}.none`;
 }
+function failedPreviewMarker(id, commit) {
+  return `previews/${id}/${commit}.failed`;
+}
 function sameEntryFile(base, head, name) {
   const basePath = entryPath(base, name);
   const headPath = entryPath(head, name);
@@ -489,6 +492,10 @@ var GIT_TIMEOUT_MS = 12e4;
 var MAX_MANIFEST_BYTES = 256 * 1024;
 var MAX_CHANGED_ENTRIES = 20;
 var MAX_PREVIEW_FETCHES = 20;
+var PREVIEW_CLONE_TIMEOUT_MS = 6e4;
+var PREVIEW_FETCH_BUDGET_MS = 10 * 6e4;
+var PREVIEW_RETRY_AFTER_MS = 24 * 60 * 6e4;
+var MAX_FAILED_MARKER_BYTES = 64;
 function readPreview(dir) {
   const path = (0, import_node_path3.join)(dir, PREVIEW_FILE);
   const stats = (0, import_node_fs2.lstatSync)(path, { throwIfNoEntry: false });
@@ -617,8 +624,23 @@ async function checkFile(path, indexUrl, opts, expectedName, basePath) {
   const { problems, warnings } = await inspectEntry(parsed.entry, opts);
   return { problems, warnings };
 }
+function recentlyFailed(path, now) {
+  if (!(0, import_node_fs2.existsSync)(path)) return false;
+  let at;
+  try {
+    at = Date.parse(readRegularFile(path, MAX_FAILED_MARKER_BYTES).trim());
+  } catch {
+    return false;
+  }
+  const age = now.getTime() - at;
+  return !Number.isNaN(at) && age >= 0 && age < PREVIEW_RETRY_AFTER_MS;
+}
 async function fetchPreviews(root, out, indexUrl, opts = {}) {
   const log = [];
+  const now = opts.now ?? (() => /* @__PURE__ */ new Date());
+  const cloneOpts = { ...opts, timeoutMs: opts.timeoutMs ?? PREVIEW_CLONE_TIMEOUT_MS };
+  const budgetMs = opts.budgetMs ?? PREVIEW_FETCH_BUDGET_MS;
+  const started = now().getTime();
   let fetched = 0;
   for (const name of listEntryFiles((0, import_node_path3.join)(root, "plugins"))) {
     let parsed;
@@ -630,14 +652,23 @@ async function fetchPreviews(root, out, indexUrl, opts = {}) {
     if (!parsed.ok || name !== `${parsed.entry.id}.json`) continue;
     const { id, commit } = parsed.entry;
     if ((0, import_node_fs2.existsSync)((0, import_node_path3.join)(root, previewPath(id, commit))) || (0, import_node_fs2.existsSync)((0, import_node_path3.join)(root, noPreviewMarker(id, commit)))) continue;
+    if (recentlyFailed((0, import_node_path3.join)(root, failedPreviewMarker(id, commit)), now())) continue;
     if (fetched >= MAX_PREVIEW_FETCHES) {
       log.push(`more than ${MAX_PREVIEW_FETCHES} previews to fetch: the rest wait for the next run`);
       break;
     }
+    if (now().getTime() - started >= budgetMs) {
+      log.push(`out of time for this run: the rest wait for the next run`);
+      break;
+    }
     fetched++;
-    const seen = await inspectEntry(parsed.entry, opts);
+    const seen = await inspectEntry(parsed.entry, cloneOpts);
     if (!seen.atCommit) {
-      log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned`);
+      const marker = (0, import_node_path3.join)(out, failedPreviewMarker(id, commit));
+      (0, import_node_fs2.mkdirSync)((0, import_node_path3.join)(marker, ".."), { recursive: true });
+      (0, import_node_fs2.writeFileSync)(marker, `${now().toISOString()}
+`);
+      log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned; retried in a day`);
       continue;
     }
     const target = (0, import_node_path3.join)(out, seen.preview !== null ? previewPath(id, commit) : noPreviewMarker(id, commit));

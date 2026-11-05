@@ -10,6 +10,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { bumpedId, decideAutoMerge, listAll, main as autoMergeMain, resolvePullRequest, type DecisionInput, type FetchLike, type PullFile, type PullSummary } from '../../marketplace/tools/src/auto-merge'
 import { PARTIAL_EXIT, buildIndex } from '../../marketplace/tools/src/build-index'
 import {
+  MAX_PREVIEW_FETCHES,
+  PREVIEW_CLONE_TIMEOUT_MS,
+  PREVIEW_FETCH_BUDGET_MS,
+  PREVIEW_RETRY_AFTER_MS,
   changedEntryFiles,
   checkEntry,
   fetchPreviews,
@@ -489,19 +493,64 @@ describe('check-entry', () => {
       expect(readFileSync(join(out, previewPath('acme.tool', commits['preview-good']!))).equals(fakePng())).toBe(true)
       expect(existsSync(join(out, `previews/bare.tool/${commits.good!}.none`))).toBe(true)
       expect(existsSync(join(out, `previews/anim.tool/${commits['preview-animated']!}.none`))).toBe(true)
-      expect(existsSync(join(out, 'previews/moved.tool'))).toBe(false)
+      // A moved tag only defers the next try: the marker holds the time of this one.
+      expect(Number.isNaN(Date.parse(readFileSync(join(out, `previews/moved.tool/${COMMIT_A}.failed`), 'utf8').trim()))).toBe(false)
+      expect(existsSync(join(out, `previews/moved.tool/${COMMIT_A}.png`))).toBe(false)
       expect(log.join('\n')).toMatch(/"moved\.tool\.json": not fetched/)
 
-      // Once published (copied into the index checkout), neither is cloned again.
+      // Once published (copied into the index checkout), nothing is cloned again, the failed one included.
       execFileSync('cp', ['-R', join(out, 'previews'), root])
       const again = join(tmp, 'again')
       const second = await fetchPreviews(root, again, FILE_INDEX, quiet)
-      expect(second).toEqual(['"moved.tool.json": not fetched, the tag is not at the pinned commit or could not be cloned'])
+      expect(second).toEqual([])
       expect(existsSync(join(again, 'previews'))).toBe(false)
       // And build-index lists the hash of the image it finds there.
       const built = JSON.parse(buildIndex(root, FILE_INDEX).text) as { plugins: Record<string, unknown>[] }
       expect(built.plugins.find((p) => p.id === 'acme.tool')).toHaveProperty('preview.sha256', createHash('sha256').update(fakePng()).digest('hex'))
       expect(built.plugins.find((p) => p.id === 'bare.tool')).not.toHaveProperty('preview')
+    })
+
+    it('fetches at most the cap per run, and failed listings do not keep later ones out', async () => {
+      // More failing listings than the cap, all sorted before the one that works.
+      const missing = pathToFileURL(join(tmp, 'missing.git')).href
+      const failing = Array.from({ length: MAX_PREVIEW_FETCHES + 1 }, (_, i) => ({
+        ...entryAt('good', { id: `fail${String.fromCharCode(97 + i)}.tool`, repo: missing }),
+        owners: [OWNER]
+      }))
+      const root = indexRepo(join(tmp, 'index'), [...failing, { ...entryAt('preview-good', { id: 'zz.tool' }), owners: [OWNER] }])
+      const t0 = new Date('2027-01-10T12:00:00Z')
+      const run = async (dir: string, at: Date): Promise<string[]> => {
+        const log = await fetchPreviews(root, join(tmp, dir), FILE_INDEX, { ...quiet, now: () => at })
+        if (existsSync(join(tmp, dir, 'previews'))) execFileSync('cp', ['-R', join(tmp, dir, 'previews'), root])
+        return log
+      }
+      const first = await run('one', t0)
+      expect(first.filter((l) => l.includes('not fetched'))).toHaveLength(MAX_PREVIEW_FETCHES)
+      expect(first.at(-1)).toBe(`more than ${MAX_PREVIEW_FETCHES} previews to fetch: the rest wait for the next run`)
+      expect(existsSync(join(tmp, 'one/previews/zz.tool'))).toBe(false)
+
+      // An hour later the failed ones wait their day, so the last failing one and the good one get their turn.
+      const second = await run('two', new Date(t0.getTime() + 60 * 60_000))
+      expect(second).toEqual([
+        `"fail${String.fromCharCode(97 + MAX_PREVIEW_FETCHES)}.tool.json": not fetched, the tag is not at the pinned commit or could not be cloned; retried in a day`,
+        '"zz.tool.json": preview fetched'
+      ])
+
+      // A day after the first run, the first batch is tried again.
+      const third = await run('three', new Date(t0.getTime() + PREVIEW_RETRY_AFTER_MS))
+      expect(third.filter((l) => l.includes('not fetched'))).toHaveLength(MAX_PREVIEW_FETCHES)
+      expect(third[0]).toMatch(/^"faila\.tool\.json": not fetched/)
+      // A marker from the future (a skewed clock, a hand edit) does not block a listing for good.
+      writeFileSync(join(root, `previews/faila.tool/${commits.good!}.failed`), '2999-01-01T00:00:00.000Z\n')
+      const fourth = await run('four', new Date(t0.getTime() + PREVIEW_RETRY_AFTER_MS + 60 * 60_000))
+      expect(fourth[0]).toMatch(/^"faila\.tool\.json": not fetched/)
+    }, 30_000)
+
+    it('starts no clone once the time budget is spent', async () => {
+      const root = indexRepo(join(tmp, 'index'), [{ ...entryAt('preview-good'), owners: [OWNER] }])
+      const out = join(tmp, 'out')
+      expect(await fetchPreviews(root, out, FILE_INDEX, { ...quiet, budgetMs: 0 })).toEqual(['out of time for this run: the rest wait for the next run'])
+      expect(existsSync(join(out, 'previews'))).toBe(false)
     })
 
     it('runs as a command from the committed bundle', () => {
@@ -1127,6 +1176,10 @@ describe('the workflows', () => {
     const fetch = previews.steps![stepIndex(previews.steps!, 'Fetch missing previews')]!
     expect(fetch.run).toContain('node tools/dist/check-entry.js --fetch-previews . --out "$RUNNER_TEMP/fetched"')
     expect((fetch as { 'continue-on-error'?: boolean })['continue-on-error']).toBe(true)
+    // The job outlasts the tool's budget plus one last clone and rev-parse, with room for setup: a job
+    // killed by its timeout never uploads what it fetched.
+    const jobMs = (previews as { 'timeout-minutes'?: number })['timeout-minutes']! * 60_000
+    expect(jobMs).toBeGreaterThanOrEqual(PREVIEW_FETCH_BUDGET_MS + 2 * PREVIEW_CLONE_TIMEOUT_MS + 5 * 60_000)
     const publish = w.jobs.publish!
     expect(publish.needs).toBe('previews')
     // A preview must never hold a revocation back.
