@@ -58,6 +58,7 @@ extraResources:
     to: plugins/browser
     filter:
       - plugin.json
+      - preview.png
       - dist/**
       - skills/**
       - '!**/*.map'
@@ -65,6 +66,7 @@ extraResources:
     to: plugins/reviewer
     filter:
       - plugin.json
+      - preview.png
       - README.md
       - dist/**
       - overlay/**
@@ -73,6 +75,7 @@ extraResources:
     to: plugins/editor
     filter:
       - plugin.json
+      - preview.png
       - README.md
       - dist/**
       - '!**/*.map'
@@ -80,6 +83,7 @@ extraResources:
     to: plugins/files
     filter:
       - plugin.json
+      - preview.png
       - README.md
       - dist/**
       - panels/**
@@ -89,6 +93,7 @@ extraResources:
     to: plugins/sessions
     filter:
       - plugin.json
+      - preview.png
       - README.md
       - dist/**
       - panels/**

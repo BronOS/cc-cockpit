@@ -503,14 +503,15 @@ export class SettingsService {
     if (p.state.ok && p.manifest?.contributes?.settings?.page?.scopes.includes('app') === true) view.settingsPage = true
     if (p.source.kind === 'bundled') view.offInAllProjects = offAppWide(p, this.deps.bundledOff.get())
     if (seesAllSessions(p.manifest)) view.seesAllSessions = true
-    if (p.source.kind !== 'bundled' && hasOwnPreview(p.dir)) view.preview = true
+    // Bundled plugins too: they ship their logo card (electron-builder.yml filters) like a listed plugin.
+    if (hasOwnPreview(p.dir)) view.preview = true
     if (p.source.kind === 'git' && p.marketplace !== undefined) view.marketplace = p.marketplace
     return view
   }
 }
 
 /**
- * A folder or git plugin's own `preview.png` (design-next §6.1) is a regular file at its root: the page
+ * A bundled, folder or git plugin's own `preview.png` (design-next §6.1) is a regular file at its root: the page
  * then shows it through `cc-plugin://<id>/preview.png`, which serves a plugin's files with its own
  * containment checks (and only while the plugin is on in an open window; otherwise the image fails and
  * the card keeps its placeholder). A symlink is not followed here: the protocol decides what it serves.

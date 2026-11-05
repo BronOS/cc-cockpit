@@ -187,7 +187,7 @@ describe('marketplace view statuses', () => {
     expect(statusOf(service.marketplace())).toMatchObject({ status: 'installed', action: null })
   })
 
-  it('says whether a listing has a preview, and an installed git or folder plugin its own preview.png', async () => {
+  it('says whether a listing has a preview, and an installed plugin its own preview.png', async () => {
     const withPreview = JSON.stringify({
       schema: 1,
       plugins: [{ ...entry(), preview: { sha256: 'e'.repeat(64) } }, entry({ id: 'bronos.chat' })],
@@ -205,6 +205,17 @@ describe('marketplace view statuses', () => {
     const views = service.plugins()
     expect(views.find((p) => p.id === 'bronos.jira')?.preview).toBe(true)
     expect(views.find((p) => p.id === 'bronos.chat')).not.toHaveProperty('preview')
+  })
+
+  it('a bundled plugin shows its own preview.png too (its logo card ships with the app)', async () => {
+    const own = mkdtempSync(join(tmpdir(), 'cc-mkt-bundled-'))
+    dirs.push(own)
+    writeFileSync(join(own, 'preview.png'), 'x')
+    const bundled: InstalledPlugin = { ...installedGit({ dir: own }), source: { kind: 'bundled', path: own } }
+    delete bundled.marketplace
+    delete bundled.commit
+    const { service } = await rig({ texts: { [A]: indexOf([{}]) }, installed: [bundled] })
+    expect(service.plugins().find((v) => v.id === bundled.id)?.preview).toBe(true)
   })
 
   it('carries the category (unknown or absent reads as other) and the index recorded on a git install', async () => {
