@@ -2071,6 +2071,8 @@ iframe:focus-visible {
 .settings-plugin-add {
   display: flex;
   justify-content: flex-end;
+  /* The opened card follows directly: the same gap a group heading keeps above its card. */
+  margin: 0 2px 10px;
 }
 .settings-plugin-filters {
   display: flex;
