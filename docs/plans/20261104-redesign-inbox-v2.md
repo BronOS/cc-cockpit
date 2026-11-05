@@ -838,15 +838,16 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify (rewrite): `panels/main.html`, `panels/main.js`, `panels/rowlogic.js`; Delete: `panels/timeline.js`,
   `panels/settings.js`, `panels/settingslogic.js`, `test/settings-view.test.js`; Modify: `test/panel.test.js`
 
-- [ ] design-v2 "The panel": toolbar (search `/`, chips All / per source / Done), source error lines `.cc-error-line` with
+- [x] design-v2 "The panel": toolbar (search `/`, chips All / per source / Done), source error lines `.cc-error-line` with
   refused and over-cap counts, groups `details.cc-group` with counts (Rest collapsed, open state remembered), rows
   `.cc-row` (badge, title, from · place · time, preview line muted, ≤ 3 labels `.cc-chip`, reason muted; actions on hover
   and focus: the source's actions except `open`, then Done), Done view, undo toast, snooze menu (v1)
-- [ ] keys: `j`/`k`, Enter, `e`, `u`, `s` then `1`-`4`, `/`, Esc; everything from sources as text (no `innerHTML` of
+- [x] keys: `j`/`k`, Enter, `e`, `u`, `s` then `1`-`4`, `/`, Esc; everything from sources as text (no `innerHTML` of
   provider strings), colours by palette name; the components stylesheet, no own controls where one fits
-- [ ] write tests for the pure render and key functions: rows, groups, reasons, chips, Done view, search results, error
+- [x] write tests for the pure render and key functions: rows, groups, reasons, chips, Done view, search results, error
   lines, empty states, hostile titles escaped
-- [ ] run `npm test` — done when green
+- [x] run `npm test` — done when green
+- ➕ commit in `cc-cockpit-inbox`; `rowlogic.js` is pure over host state v2 (`rowModel`, `doneRowModel`, `sourceLine(s)`, `chipsModel`, `viewModel` → groups / done / search / empty, `selectableKeys`, `keyAction`); search is the host's (the page posts the query, 200 ms debounce; the source chip narrows results, the Done chip keeps Done hits); a group's open state is remembered for the page's life only (a panel page has no localStorage; the host was not changed); a source line also shows for an ok source with refused or over-cap items (design "2 items from Mail were refused"); rows show a Snooze button after Done (v1 menu, keys `s` 1-4); Enter opens only an item with `open`; row actions sit absolutely over the row's right end (in the flow they would take the title's room)
 
 ### Task 31: Inbox settings page [model: opus]
 
