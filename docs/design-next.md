@@ -1,6 +1,12 @@
 # cc-cockpit — next design (real-work round)
 
-Status: draft for review, 2026-11-04. Turns decisions 9-14 of `docs/feedback/20261104-real-work.md` into designs;
+Status: built (app 0.10, 2026-11-05); unreleased until the version bump. Deviations from the text below, all additive:
+`ctx.slots.available(type)` answers a `Promise<boolean>` (only main knows the project's pick); a provider slot needs `type`
+and `entry`, `title` is optional; the Services group (service, open-file and slot picks) moved from Plugins to This Project;
+side-panel settings sit on General; the bare-element rules of the component stylesheet are scoped to `:root:not(.cc-shell)`
+so the shell keeps its own controls; the reviewer no longer `uses` the editor (its toolbar Edit is a type button that opens
+micro at line 1); `SessionInfo` also gained `gist`. The plan with its per-task notes is
+`docs/plans/completed/20261104-redesign-inbox-v2.md`. Turns decisions 9-14 of `docs/feedback/20261104-real-work.md` into designs;
 decisions 1-8 and 15 (Inbox and its feed) are in the Inbox repo, `docs/design-v2.md`. `docs/design.md` stays the
 source of truth for everything not named here; each section below ends with what it changes there. Where a decision
 left a detail open, the simplest choice is written in and repeated under Open questions.

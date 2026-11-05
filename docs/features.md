@@ -105,10 +105,27 @@ behind it are in [design.md](design.md).
   zone's toggle key or `ctx.panels.show` shows a hidden zone, and it stays until the window next shrinks. Only zones the
   app hid come back: one the person closed stays closed, and the saved layout never records an auto-hide. A zone dragged
   wider never pushes the other one out; the window's next shrink decides.
-- Two-way html overlays: `ctx.overlay.start(spec)` returns `{ result, post, onMessage, close }`; the page's
-  `ccPanel.post(message)` without a `result` key reaches `onMessage` and keeps the overlay open, `ccPanel.post({ result })`
-  still closes it, and the host's posts wait until the page has loaded. Messages up to 1 MiB less 8 KiB, routed by main
-  only between the overlay and the plugin and window that opened it. Esc dismisses without asking the page.
+- Two-way html overlays: `ctx.overlay.start(spec)` returns `{ result, post, onMessage, close, focus, onButton, setButtons,
+  onDiscuss }`; the page's `ccPanel.post(message)` without a `result` key reaches `onMessage` and keeps the overlay open,
+  `ccPanel.post({ result })` still closes it, and the host's posts wait until the page has loaded. Messages up to 1 MiB
+  less 8 KiB, routed by main only between the overlay and the plugin and window that opened it. Esc dismisses without
+  asking the page.
+- Overlay toolbar, loader and Discuss with Claude: every overlay (terminal, html, url) has one header row with its title,
+  the opener's buttons (up to 4), the buttons other plugins add to overlays of the same `type` (`ctx.overlay.buttons`:
+  the Inbox's Done on a Gmail message, the reviewer's Edit on a file), Discuss with Claude and the close button (✕ on the
+  side Settings > Appearance names). More than 6 buttons fold the rest into "…". An overlay opens at once with a spinner
+  and "Still loading…" after 10 s; ✕ and Esc work throughout. Discuss with Claude is core's: it shows for a typed overlay
+  (or one whose opener answers `onDiscuss`), lists this window's Claude tabs and New session, takes an optional note,
+  sends `About: <title>`, the context and the note through the send gate (queued while the tab is busy) and selects the
+  tab. A plugin whose overlay has no type and no `onDiscuss` shows only ✕ (an older plugin looks as before).
+- Component stylesheet: the panel SDK adopts `components.css` (buttons, inputs, rows, chips, a spinner and the like, all
+  in a low-priority `@layer cc`) before the plugin's own CSS, so plugin pages look like the app's and any rule of the
+  plugin still wins; `ccc guide style` lists the classes, and the bundled plugins use them.
+- Slots: a plugin can place a slot in one of its panels (`ctx.panels.slots`, at the top or the bottom) and another plugin
+  draws it (`contributes.slots`, `ctx.slots.onOpen`): the Inbox places an `agenda` slot, the Calendar fills it. The
+  shell draws the frame and a port joins it to the provider only. With several providers of a type, Settings > This Project
+  picks one (or "None"); with none picked nothing is drawn. The top bar's strip of other windows' sessions is the
+  app slot `sessions-strip`.
 - Plugin system: install from git, from the Marketplace, or link a folder, per-project enable, a sandboxed panel
   per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify, opening a web page in the
   system browser with `ctx.openExternal`...). A panel's icon is drawn in
@@ -157,8 +174,15 @@ behind it are in [design.md](design.md).
 - Themes, commands, a command palette and editable keybindings, a Settings screen (`Cmd+,`) with one page per
   kind of setting, each setting on exactly one: General (tabs, side panels, notifications and sound, session gist,
   app-wide new-tab commands, the `ccc` command line, updates), Appearance (theme, window background, tab close
-  button, terminal font), Keybindings, Plugins, Marketplace, This Project (colour, enabled plugins and their project
-  settings, the project's new-tab commands, panel zones, slot and service picks) and Projects.
+  button, terminal font), Keybindings, Plugins (installed plugins and the marketplace in one list; a card's gear opens
+  the plugin's global settings), This Project (colour, enabled plugins and their project settings, the project's
+  new-tab commands, panel zones, slot and service picks) and Projects.
+- Global values and project overrides: a plugin's project settings have a global value (Settings > Plugins, the card's
+  gear), and Settings > This Project shows each field under "Use global" (the default) or an override of its own; a
+  secret field works the same way. A plugin's app settings stay app-wide. A panel header shows a gear for a plugin with
+  settings, which opens This Project at that plugin (its global page when it has no project settings). A plugin whose
+  form cannot hold its settings can add an html page under the form (`contributes.settings.page`); the Inbox's rules
+  editor is one. `ccc plugin config <id> --scope global|project key=value` and `--use-global key` do the same from a tab.
 - The `ccc` command line tool, the `hello` reference plugin and an example plugin to copy.
 - Operable by Claude: inside a tab, `ccc guide [topic]` prints bundled docs (CLI, plugin API,
   panels, web view, dev loop; works with the app closed) and a SessionStart note points Claude
@@ -241,7 +265,9 @@ behind it are in [design.md](design.md).
 
 Settings > Plugins lists the installed plugins together with the plugins of one or more static `index.json` files
 (20 per page, with a search and the Installed / Available / Updates and category filters) and installs one after a
-confirmation that shows the repo and the commit. Things to know:
+confirmation that shows the repo and the commit. A card shows the plugin's preview image when it has one. "Update all"
+lists each marketplace-installed plugin with a newer listed version and updates them one at a time after one
+confirmation (the same checks as a single update; a failure names its plugin and stops nothing else). Things to know:
 
 - **Network.** At every launch the app fetches the default index from `raw.githubusercontent.com`, plus every index
   you added and every index an installed plugin was installed from, so those hosts see the request too. While the app
@@ -261,6 +287,11 @@ confirmation that shows the repo and the commit. Things to know:
 - **The official index** is the repo [BronOS/cc-cockpit-marketplace](https://github.com/BronOS/cc-cockpit-marketplace), made from
   the `marketplace/` template. Its setup steps (`PUBLISH_TOKEN`, branch protection with no required approvals) are in
   [marketplace/README.md](../marketplace/README.md). Add your own index under Settings > Plugins › Marketplace indexes.
+- **Previews and categories.** A listing may carry a `preview.png` (PNG, at most 512 KiB, 640x400 to 1600x1000,
+  1280x800 recommended) and one category (`sources views tools themes claude other`). The official index's CI checks and
+  republishes the image beside `index.json`; the app fetches it lazily from the index's own folder, checks its sha256
+  and caches it. A listing without a preview shows the name's initial; the index requires one only after the date in
+  its `preview-policy.json`.
 - **Index URLs** are https (or `file:` for a local index). `marketplaces` in app settings holds the list; it replaces
   the default list, while the default index is still fetched and still enforces revocations.
 - Repos are shown as plain text, and from an index only as ASCII. Installing a plugin id through the Marketplace from a
@@ -334,6 +365,12 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - On Linux `Cmd` is Ctrl, so the default chords take Ctrl+T, Ctrl+W, Ctrl+B, Ctrl+J and Ctrl+O, which
   Claude Code and the shell use themselves (todos, delete-word, background, newline, transcript):
   the window takes them before the terminal sees them. Rebind them in Settings > Keybindings.
+- A slot type with several providers and no pick draws nothing (the Plugins page asks for a pick). A url overlay's
+  "…" menu (more than 6 buttons) hides the page under it while open, because a native view paints over the window.
+  Discuss with Claude sends only into a Claude tab of the same window, or starts a new one.
+- A plugin that uses an app member added in 0.10 (slots, overlay buttons, `ctx.settingsPage`, a session `name`) checks
+  `typeof` for it and says the app version in its README; the plugin API stays `api: 1`, so an older app runs it
+  without the feature.
 - Plugin settings schemas may not use regexes (`pattern`, `patternProperties`).
 - On Linux the plugin secrets need a running, unlocked Secret Service keyring (gnome-keyring, KeePassXC) or KWallet; there
   is no plaintext fallback by design. The automatic Secret Service choice is made at start-up from the session bus.

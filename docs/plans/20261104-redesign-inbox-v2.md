@@ -1210,12 +1210,12 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - ➕ verified: decisions 1-15 map to the tests of tasks 1-44 (inbox `node:test` suites for 1-4, 6-8, 15; `slots.spec.ts`, `ctx-slots.test.ts` for 5, 9; `overlay-toolbar` and `discuss` tests for 10; `plugin-sessions.spec.ts` and `plugins/sessions/test` for 11; `settings-*.spec.ts` and `ctx-settings-page.test.ts` for 12; the components drift test for 13; `marketplace-update-all.spec.ts`, `plugin-preview.test.ts` for 14). Edge cases each have a test. Results: `npm test` 3742 passed, typecheck, lint, `test:plugins` (193) clean; inbox 193, gmail 256, chat 186, jira 230, calendar 211 passed. e2e: 188 passed, 4 failed: `tab-command-overlays.spec.ts:51` and both `window-bounds.spec.ts` (known), ⚠️ `project-color.spec.ts:63` (height "2.99805px" vs "3px", a fractional display scale in this Linux session, not a logic failure; not in the known list). Privacy scan of all six repos since the plan commit: no employer name, no non-example email (two false matches in minified bundle bytes). `diff src/sdk/types.ts examples/plugin/sdk/types.ts` is empty; example changes to push: tasks 1, 3, 6, 9, 15, 33, 34, 38 (`examples/plugin` and `sdk/types.ts`).
 
 ### Task 46: [Final] Update documentation [model: sonnet]
-- [ ] `docs/design.md`: every "Changes to design.md" line of design-next §1-§6 applied (check each); `docs/design-next.md`
+- [x] `docs/design.md`: every "Changes to design.md" line of design-next §1-§6 applied (check each); `docs/design-next.md`
   status "built", with deviations; `docs/features.md`, `README.md` for the new features and known limitations
-- [ ] `CLAUDE.md` "Implementation patterns": slots (`@slot:` picks, app slot types, frames drawn by the shell), overlay
+- [x] `CLAUDE.md` "Implementation patterns": slots (`@slot:` picks, app slot types, frames drawn by the shell), overlay
   buttons (host registry, main checks), settings overrides storage, `cockpit.sessions` in the bundled list
-- [ ] source plugin READMEs state their scope line and the app/Inbox versions they need
-- [ ] move this plan to `docs/plans/completed/`
+- [x] source plugin READMEs state their scope line and the app/Inbox versions they need
+- [x] move this plan to `docs/plans/completed/` (moved by the orchestrator after review phases)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

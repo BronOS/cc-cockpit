@@ -1101,7 +1101,8 @@ ignored and can be deleted by hand.) Core keeps only what main alone can do:
 - **Secret settings field**: a top-level string property with `"format": "secret"` in a plugin's
   settings schema. A token-style sign-in is one password field in the plugin's own settings
   form. The value is stored encrypted under `setting:app:<field>` or
-  `setting:project:<projectId>:<field>`, never in the settings files, and never reaches a
+  `setting:project:<projectId>:<field>` (a project field's global value is `setting:projectDefault:<field>`),
+  never in the settings files, and never reaches a
   renderer: the form shows "Set" / "Not set" with Replace and Clear. The plugin host receives the
   plaintext in `ctx.settings`. An unset secret, even a required one, does not mark the plugin's
   settings invalid or disable the plugin: `ctx.settings` just lacks the field and the form shows
@@ -1151,10 +1152,13 @@ name, not which plugin is asking; installed plugins are trusted code.
 - Plugins: one page of cards for the installed plugins and the configured indexes' listings (paging, search,
   filters, categories, previews), install or update from a listing, Update all, "Add plugin…" (git URL install, link
   a local folder), update to a newer tag, uninstall, app-wide settings form, and the folded index management (add or
-  remove an index, refresh); see §5 Marketplace. The Services group holds this project's picks (a service with several
-  providers, the open-file plugin, and one row per slot type with a candidate: "Plugin drawing the agenda slot", with "None").
-- This project: the project's colour (below, Project colour), enable plugins, project settings
-  form, panel zones, the project's commands in the new-tab menu (§3 Custom commands).
+  remove an index, refresh); see §5 Marketplace. A plugin's gear opens its global page: the app form, the global values of
+  its project fields and its html page (Global values and project overrides, below). A row still names a problem with a
+  service the plugin uses.
+- This project: the project's colour (below, Project colour), enable plugins, each enabled plugin's project settings
+  (every top-level field under "Use global" or an override), panel zones, the project's commands in the new-tab menu (§3
+  Custom commands), and the Services group, this project's picks (a service with several providers, the open-file plugin,
+  and one row per slot type with a candidate: "Plugin drawing the agenda slot", with "None").
 - General: what a tab does when its process exits (close when it ends normally, or keep; §3 Exit);
   whether a project that opens empty gets a Claude tab (§3 First tab); whether closing a running tab
   asks first (§3 Close); side panels, Claude sessions, notifications, the app-wide commands in the
@@ -1165,6 +1169,21 @@ name, not which plugin is asking; installed plugins are trusted code.
   dropdown: bundled, installed, Custom…), with a preview and Reset to defaults (§4 Terminal font).
 - Keybindings: the list with overrides (the new-tab menu entries included, §3 Custom commands ›
   Keys for entries).
+
+**Global values and project overrides** (design-next §5.2). A plugin's `settings.app` fields are app-wide by meaning and
+edited only on its global page (Plugins, the card's gear). Its `settings.project` fields also have a **global value** on
+that page, and This Project shows each with "Use global" (the default) or an override. `ctx.settings.project[field]` is the
+project's override, else the global value, else the schema default; only top-level fields are overridden (an object field
+whole), and the schema validates the merged object, so a save that would make any open project's effective values invalid is
+refused with that project named. Storage: the global values are `app.json` › `pluginProjectDefaults[pluginId]`
+(main-owned, like `ctx.appStorage`), an override stays in the project record, and "use global" is the key being absent. A
+secret project field's global value is the secret `setting:projectDefault:<field>` (a third reserved form under `setting:`,
+next to `setting:app:` and `setting:project:<projectId>:`), an override `setting:project:<projectId>:<field>`; the host gets
+the effective plaintext, and a secret override cleared goes back to the global value. `ctx.onSettingsChange` fires in every
+project whose effective values changed, so a global edit reaches each project that uses global. At first start a stored
+project value equal to the schema default is dropped (it becomes "use global"; the global value starts as the default, so
+nothing changes) and every other value stays an override. `ccc plugin config` reads the three scopes and sets `--scope global`
+(a project field's global value) or `--scope project` (an override); `--use-global <key>` drops an override.
 
 Plugin forms are rendered from the manifest's JSON Schema, plus an optional html page (below). A panel
 never holds a settings form: the app draws a gear in the header of every panel whose plugin has settings
@@ -1252,7 +1271,7 @@ un-maximising lands there. New projects and the picker keep the default sizes
 | `sessions --json` | scripts: current Claude status |
 | `guide [topic]`, `<command> --help` | Claude or a person: bundled docs; works with the app closed |
 | `guide types` | the SDK types (`src/sdk/types.ts`, bundled with the CLI by a `?raw` import); works with the app closed |
-| `plugin config <id> [--json]` / `plugin config <id> [--scope app\|project] key=value…` | the plugin's settings (one `scope key = JSON` line per top-level field, a secret only `set` / `not set`) or a save through the Settings form's own path (`settings.pluginSettingsSave`: the same schema check, then `ctx.onSettingsChange`); a value is JSON if it parses, else text; the scope is the one whose schema declares the key (both: `--scope` needed); a secret field is refused, a person sets it in Settings |
+| `plugin config <id> [--json]` / `plugin config <id> [--scope app\|global\|project] key=value…` / `plugin config <id> --use-global key…` | the plugin's settings (one `scope key = JSON` line per top-level field, a secret only `set` / `not set`) or a save through the Settings form's own path (`settings.pluginSettingsSave`: the same schema check, then `ctx.onSettingsChange`); a value is JSON if it parses, else text; the scope is the one whose schema declares the key (both: `--scope` needed); `global` is the global value of a project field, `project` an override, `--use-global` drops an override; a secret field is refused, a person sets it in Settings |
 | `panel show <plugin>/<panel>` | reveals the panel in the caller's project window (unhidden, opened, its zone expanded: what `ctx.panels.show` does); refused for an unknown or not enabled plugin, an undeclared panel, or a project with no open window |
 | `plugin new <dir>` / `link <dir>` / `unlink <id>` / `list` / `logs <id> [--follow]` | the plugin dev loop; `new` and `logs` are local, `link` asks the person to confirm in a native dialog (Deny is the default); the dialog rate limit is per window and counts only requests that reach a dialog; linking an already-linked folder (same id and path) only enables it in the calling project after the confirm; the manifest is re-checked against the inspected id, so a swap between dialog and link is refused |
 | `<name> …` | a command a plugin declared in `contributes.cli`; main routes it to the owning plugin of the caller's project (30 s limit, 256 KiB each for stdin, stdout and stderr); `ccc help` lists them inside a tab |

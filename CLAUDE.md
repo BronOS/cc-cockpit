@@ -86,6 +86,21 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
   The Claude status view is `cockpit.sessions` (Sessions panel, `sessions-strip` top-bar slot): the renderer draws no session
   list of its own, and a stored `core/sessions` layout key is read as `cockpit.sessions/sessions` (`RENAMED_PANEL_KEYS`,
   `src/shared/layout.ts`).
+- Slots (`src/shared/slots.ts`, design.md §5 "Slots"): a host plugin only *places* a slot (`ctx.panels.slots`), the shell draws
+  the provider's page in its own frame with its own `MessagePort` to the provider's backend (`ctx.slots.onOpen`); plugin code
+  never runs in another plugin's page. The project's provider is picked under `serviceProviders` key `@slot:<type>` (plugin id
+  or `@none`, resolved by `slotStatus` over `selectProvider`); every walk of the picks as services skips `@` keys. App slot
+  types (`sessions-strip`) are a constant list; a plugin panel may not place one. Heights, counts and `params` are clamped in
+  main, never trusted from the host.
+- Overlay buttons (`src/shared/overlay-buttons.ts`, design.md §4 "Overlay toolbar"): the opener's buttons and the by-type buttons
+  other plugins add (`ctx.overlay.buttons`) live in the plugin host's registry; main asks the window's host, shows only what
+  it got and accepts a click only for a button it currently shows, from that window's host. A click never reaches the page, and
+  the overlay `type` is untrusted data from the opener. Discuss with Claude is core's (`main/overlays/discuss.ts`): main asks
+  the opener's `onDiscuss`, re-checks the target tab and sends through the send gate; the text always starts with `About:`.
+- Settings overrides (design.md §6): a plugin's project fields have a global value (`app.json` › `pluginProjectDefaults[id]`,
+  secret `setting:projectDefault:<field>`) and a project override (the project record, secret
+  `setting:project:<projectId>:<field>`); "use global" is the key absent, effective = override, global, schema default, and a
+  save is checked against every open project's merged values. `app` fields are never overridden.
 - Plugin settings schemas may not use regexes (ReDoS in main). `"format": "secret"` goes only on a
   top-level string property, with no `default` and no keyword but type/format/title/description/
   `$comment`, and a schema with one has no `$ref`/`$anchor`/`$id` or other reference keyword

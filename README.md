@@ -16,10 +16,13 @@ tested).
   one-line gist written by Claude Haiku says what each session is about.
 - **Safe text sending.** Plugins and tools can send text to a session. It is delivered only while Claude is waiting for
   input and queued otherwise, so a keystroke doesn't answer a permission prompt by accident.
-- **Plugins.** A plugin can add panels, settings, commands, `ccc` commands and Claude skills. Install from the
+- **Plugins.** A plugin can add panels, slots in other plugins' panels, buttons on overlays, settings (with global values
+  and per-project overrides), commands, `ccc` commands and Claude skills. Install from the
   Marketplace or a git URL, or link a folder while developing, then turn it on per project.
 - **Built for Claude to operate.** Inside a tab, `ccc guide` gives Claude the docs for the app and the plugin API, so
   it can write and debug plugins with you.
+- **Discuss with Claude.** Any overlay a plugin opens (a diff, a mail, a ticket) has a toolbar with Discuss: pick a
+  Claude tab or a new session, add a note, and the item goes to Claude as a prompt.
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
@@ -123,6 +126,9 @@ Open **Settings > Plugins** to browse, search and install: installed plugins and
 **A plugin runs with full access to your computer: your files, your accounts and the network.** "Listed" means the index
 names that exact version and checks that it matches its repo. It does not mean anyone reviewed the code, so install only
 what you trust. The index pins each version to a commit, and it can revoke a bad one, which stops the plugin in your app.
+
+Each listing can show a preview image and a category, and **Update all** moves every marketplace-installed plugin to its
+newest listed version after one confirmation.
 
 **Network use:** at every launch, and about hourly while open, the app fetches the plugin index from
 `raw.githubusercontent.com`, plus any index you added or installed a plugin from. These requests send no account data,
