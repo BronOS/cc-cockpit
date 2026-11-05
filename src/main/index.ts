@@ -1369,7 +1369,7 @@ function start(): void {
   registerSettingsHandlers(router, settings)
   registerServiceHandlers(router, serviceChoices)
 
-  // "This project" and "Appearance and keys": per-project plugin set, project settings
+  // "This Project", "General" and "Appearance": per-project plugin set, project settings
   // and panel zones, then the app-wide theme and key overrides. The router hands each handler the
   // asking window's project; nothing else names one.
   const projectSettings = new ProjectSettingsService({

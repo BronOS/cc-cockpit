@@ -79,7 +79,7 @@ export class TerminalSession {
       allowProposedApi: true,
       scrollback: 10_000,
       cursorBlink: true,
-      // Settings › Appearance and keys › Terminal; loaded before the first window rendered
+      // Settings › Appearance › Terminal; loaded before the first window rendered
       // (startPrefs), so the first cell measurement uses it.
       ...xtermFontOptions(currentPrefs().terminalFont),
       // The palette (transparent behind a see-through tab terminal) and allowTransparency with it.

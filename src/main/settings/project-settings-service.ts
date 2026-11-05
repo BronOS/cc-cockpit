@@ -1,4 +1,4 @@
-// "This project" in the settings overlay (design §6): which plugins are enabled for the
+// "This Project" in the settings overlay (design §6): which plugins are enabled for the
 // project, the plugins' project-level settings, the zone of each panel, and the project's new-tab
 // menu entries (shown here; saved by TabCommandsService, main/tabs/tab-commands.ts). Plain
 // TypeScript over injected pieces, like settings-service.ts; the router

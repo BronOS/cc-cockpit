@@ -14,7 +14,7 @@ import { Group, Row } from './ui'
 const CUSTOM_START = '#7f7f7f'
 
 /**
- * Settings › This project › Colour (shared/project-color.ts): None, the eight palette colours and
+ * Settings › This Project › Colour (shared/project-color.ts): None, the eight palette colours and
  * Custom… (the platform's colour panel through a native `<input type="color">`). None and the
  * palette are native radio buttons drawn as swatches, in a radio group: arrow keys move between
  * them, Space picks, and each is named "Colour: Blue" for screen readers and the specs. The custom

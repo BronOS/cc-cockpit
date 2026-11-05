@@ -1,4 +1,4 @@
-// The terminal font (Settings › Appearance and keys › Terminal; `app.json` › `terminalFont`): what
+// The terminal font (Settings › Appearance › Terminal; `app.json` › `terminalFont`): what
 // every xterm in the app draws with (tabs and terminal overlays), apart from the app UI's own
 // font. Shared so main validates against the same limits the settings page puts on its inputs.
 

@@ -257,7 +257,7 @@ export interface NotifyOptions {
   title?: string
   /**
    * A short sound from the project window (the same on every OS), unless the person turned off
-   * "Notification sounds" (Settings > Appearance and keys > Notifications). At most one chime per
+   * "Notification sounds" (Settings > General > Notifications). At most one chime per
    * 5 s per window, however many plugins ask. The OS notification itself is then silent.
    * - `true`: the app's sound, the one picked there under "Sound".
    * - a string: the value of one of this plugin's `"format": "sound"` settings fields, as it is
@@ -792,7 +792,7 @@ export interface PluginContext {
  * keeps working across provider reloads and restarts. Arguments and results are copied as plain
  * data (structured clone): a function or symbol in them fails the call, a class instance arrives as
  * a plain object. A call waits for a still-activating provider; it rejects when no enabled plugin
- * provides the service, two do and none is picked in Settings > Plugins, the major versions differ,
+ * provides the service, two do and none is picked in Settings > This Project, the major versions differ,
  * the provider failed to activate or never called `provide`, the method does not exist, or the
  * provider threw (a fresh Error with its message). There is no timeout: race your own.
  */
@@ -839,7 +839,7 @@ export interface ServicesApi {
    * Every provider of service `name`, for a plugin that reads from all of them (Inbox collecting
    * each `inbox-feed`). `name` must be in both `services.uses` and `services.collects` (app 0.9.7+:
    * older apps refuse a manifest with `collects`). The project's provider pick does not apply, and
-   * the Plugins page offers no pick for a name only collectors use. Throws for an undeclared name.
+   * This Project offers no pick for a name only collectors use. Throws for an undeclared name.
    */
   useAll(name: string): ServiceSet
 }

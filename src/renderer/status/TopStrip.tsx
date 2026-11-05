@@ -28,7 +28,7 @@ import { topStripClass } from './strip-order'
  * is one click away from any window; it is always there, so the bar is always shown. The gear
  * opens settings; it sits outside the slot's space so a wide strip never pushes it out of view.
  *
- * A project with a colour (Settings › This project) marks its bar three ways: a 3px line along
+ * A project with a colour (Settings › This Project) marks its bar three ways: a 3px line along
  * the window's top edge, a faint tint of the whole bar, and a dot by its name. The bar carries the
  * colour as `--cc-project-color` with `data-project-color` set (styles.css); with no colour neither
  * is set and the bar is as it always was.

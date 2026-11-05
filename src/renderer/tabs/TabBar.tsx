@@ -140,7 +140,7 @@ export function TabBar(props: {
   onCancelQueued: (tabId: string, itemId: string) => void
 }): React.JSX.Element {
   const { tabs, activeId } = props
-  // Settings › Appearance and keys › Tabs; pushed by main, so every window's strip follows a pick.
+  // Settings › Appearance › Tabs; pushed by main, so every window's strip follows a pick.
   const { tabCloseSide } = usePrefs()
   const [createOpen, setCreateOpen] = useState(false)
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)

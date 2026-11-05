@@ -60,7 +60,7 @@ body {
   color: var(--cc-fg);
 }
 
-/* See-through window (Settings › Appearance and keys › Window; renderer/theme/see-through.ts).
+/* See-through window (Settings › Appearance › Window; renderer/theme/see-through.ts).
    Only in a window main created transparent: `html.see-through` is set from `window.info`, never
    from the setting (an open window keeps what it was made as). The glass tokens are the theme's
    colours mixed with transparent at --cc-window-alpha (the opacity slider, pushed live), so a theme
@@ -295,7 +295,7 @@ iframe:focus-visible {
   padding: 0 8px;
 }
 
-/* Project colour (Settings › This project; shared/project-color.ts). TopStrip sets
+/* Project colour (Settings › This Project; shared/project-color.ts). TopStrip sets
    `data-project-color` and `--cc-project-color` (a palette token or the custom hex) on the bar only
    when the project has one, so with none no rule here applies. The bar gets a faint tint of it, a
    10 % mix that keeps the bar's own text colours readable in both themes, and a 3px line along the

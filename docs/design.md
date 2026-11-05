@@ -120,7 +120,7 @@ shell's PATH, so main reads the environment from `$SHELL -l -i` once at startup 
 every PTY.
 
 **Custom commands.** The [+] menu lists Claude and Shell, then the user's own entries: the
-app-wide ones (Settings › Appearance and keys › Tabs; `app.json` › `tabCommands`), then this
+app-wide ones (Settings › General › Commands in the new-tab menu; `app.json` › `tabCommands`), then this
 project's (Settings › This project; the project record's `tabCommands`), a separator before each
 group. An entry is a label (1-60 characters, one line) and a command line (1-4096 characters, no
 NUL), at most 50 per level: `lazygit`, `npm run dev`, `docker compose logs -f | grep api`.
@@ -167,7 +167,7 @@ up. Plugins still cannot start entries.
 chord).
 An app-wide entry's command exists in every project window, a project entry's only in that
 project's (like a plugin's commands). None has a default chord: the user binds one in the
-keybinding list (Settings › Appearance and keys) like any command, with the same overrides
+keybinding list (Settings › Keybindings) like any command, with the same overrides
 (`app.json` › `keyOverrides`, keyed by the command id, so a rename keeps the chord), conflict
 warnings, Unbind and Reset. The [+] menu shows an entry's chord next to its label, and the
 palette lists the entries. The chord opens the tab the menu's way, by level and id (main looks
@@ -194,7 +194,7 @@ so a failure stays visible. Exceptions that never close: a Claude tab started wi
 that has not reported its SessionStart yet, or whose resume failed (its saved id must survive
 until a fresh process replaces it), and tabs that end because the app is quitting (they restore
 next launch). The last tab closing leaves the window open and empty. The app setting "When a
-tab's process exits" (Settings › Appearance and keys; `app.json` › `tabExit`) switches between
+tab's process exits" (Settings › General › Tabs; `app.json` › `tabExit`) switches between
 this (`close-clean`, the default) and `keep`: every exited tab stays with its banner. It is read
 at each exit, so a change applies to open tabs. Terminal overlays are not tabs: they close when
 their program ends, whatever the code.
@@ -212,11 +212,11 @@ scope for now). The question is a modal of the renderer (`CloseTabDialog`): the 
 zones under it are inert and the key handler runs no command while it is up, so no key typed there
 can reach a terminal; Esc and a click outside cancel; an overlay opening dismisses it as a Cancel,
 and so does its tab going meanwhile. The app setting "Ask before closing a tab that is still
-running" (Settings › Appearance and keys; `app.json` › `confirmTabClose`, default on; only `false`
+running" (Settings › General › Tabs; `app.json` › `confirmTabClose`, default on; only `false`
 turns it off) is read from main at each close (`settings.confirmTabClose`), so a change made in one
 window applies to the next close in every window.
 The × sits after the tab's label (status dot, name, queued chip, then ×) or, with "Close button
-position: Left" (Settings › Appearance and keys › Tabs; `app.json` › `tabCloseSide`, `'right'`
+position: Left" (Settings › Appearance › Tabs; `app.json` › `tabCloseSide`, `'right'`
 by default; anything but `'left'` reads as right), before it. It moves in the DOM, not by CSS
 order, so keyboard focus follows what is drawn. An overlay's header ✕ follows the same setting
 (before or after its title), so it sits where the hand already goes for a tab's ×.
@@ -232,7 +232,7 @@ resolved and the login env is known (as restored tabs do, so no early output is 
 the project has no live tab at that moment: a tab a plugin opened during startup wins. It fires at
 most once per window open; a page reload or the last tab closing later (by hand or by a clean
 exit) never brings one back. A missing `claude` gives the usual exited banner. The app setting
-"Open a Claude tab when a project opens with no tabs" (Settings › Appearance and keys; `app.json`
+"Open a Claude tab when a project opens with no tabs" (Settings › General › Tabs; `app.json`
 › `claudeTabOnOpen`, default on; only `false` turns it off) is read at that attach.
 
 **Wiring.** Main launches `claude --settings <app>/hooks.json` with `APP_TAB_ID` and
@@ -338,7 +338,7 @@ plugins", design-next §4), built on the public API only:
   card's own state, not stored. It was the core `app.json` › `sessionFilesShown` until 0.10: main
   copies a valid value into the plugin's setting once at start and drops the old key
   (`main/settings/sessions-migration.ts`).
-- **Session gist** (Settings › Appearance and keys › Claude sessions; `app.json` › `sessionGist`, off
+- **Session gist** (Settings › General › Claude sessions; `app.json` › `sessionGist`, off
   unless exactly `true`): after a turn ends (entry
   moves into *waiting*) and the tab's last five cleaned prompts changed since its last run, main
   runs `claude -p --model haiku --safe-mode --strict-mcp-config --no-session-persistence
@@ -385,7 +385,7 @@ keeps its strip, captioned "Bottom zone collapsed" with its key.
 **Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and the width left once its page has a port (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3).
 
 **Auto-hide.** The terminal is the priority. When the window narrows so the centre would be under
-the minimum terminal width (Settings › Appearance and keys › Side panels; `app.json` › `zoneAutoHide`,
+the minimum terminal width (Settings › General › Side panels; `app.json` › `zoneAutoHide`,
 default on, and `minTerminalWidth`, default 720 px, 400 to 2000), the right zone's panel area hides
 first, then the left one's; widening brings them back in reverse (left, then right), each only when
 the centre keeps the minimum plus a 48 px margin with it shown, so a window resting at the threshold
@@ -509,7 +509,7 @@ plugins add more. The active theme is app-wide. A plugin theme inherits every va
 not set from the built-in of its kind (accent, surfaces and focus tokens came later than some
 themes). Colour tokens only; radii, fonts and the type scale are fixed in the shell's stylesheet.
 
-**Window background** (Settings › Appearance and keys › Window; `app.json` › `windowBackground`,
+**Window background** (Settings › Appearance › Window; `app.json` › `windowBackground`,
 `{ transparent, opacity, blur, area }`, defaults off / 80 / off / `'window'`; checks in
 `main/settings/window-background.ts`: booleans, opacity a whole percent 40–100, area `'window'` or
 `'main'`, a damaged stored
@@ -572,7 +572,7 @@ made in one window's settings shows in all of them at once. Main applies the def
 `app.json` value never reaches a window.
 
 **Terminal font**: every xterm (tabs and terminal overlays; there is one place one is made,
-`TerminalSession`) draws with Settings › Appearance and keys › Terminal, apart from the app UI's
+`TerminalSession`) draws with Settings › Appearance › Terminal, apart from the app UI's
 own font: family (a CSS font list), size (6–72 px), line height (1–2; xterm throws below 1),
 letter spacing (−5–10 px), weight and bold weight (`normal`, `bold`, `100`–`900`). `app.json` ›
 `terminalFont`; the defaults are `"Cockpit JetBrains Mono NF", monospace` (the bundled font below),
@@ -817,7 +817,7 @@ logic (a test run swaps in a recording backend the e2e clicks through test hooks
   person's per-app settings), so `sound: true` rings the app's own sound: main sends `notify.chime` with
   the picked sound's id to the project window and its renderer plays it (`renderer/notify/chime.ts`,
   `sound-player.ts`). The OS notification is then `silent`, so there are never two sounds. Main
-  gates it (`ChimeGate`): the app setting "Notification sounds" (Settings › Appearance and keys ›
+  gates it (`ChimeGate`): the app setting "Notification sounds" (Settings › General ›
   Notifications; `app.json` › `notificationSounds`, default on, only `false` turns it off; read at each
   chime) and at most one chime per 5 s per window. Without `sound` the OS notification is made as before
   (the platform's default sound, if any). The chime ignores the OS's do-not-disturb mode; the setting is the
@@ -1134,15 +1134,16 @@ name, not which plugin is asking; installed plugins are trusted code.
   see §5 Marketplace.
 - This project: the project's colour (below, Project colour), enable plugins, project settings
   form, panel zones, the project's commands in the new-tab menu (§3 Custom commands).
-- Appearance and keys: theme; the window background (transparent project windows, opacity, blur;
-  §4 Window background); what a tab does when its process exits (close when it ends normally, or
-  keep; §3 Exit); whether a project that opens empty gets a Claude tab (§3 First tab); whether
-  closing a running tab asks first, and which end of a tab its × sits at (§3 Close); the terminal
-  font (a family dropdown: bundled, installed, Custom…), with a preview and Reset to defaults
-  (§4 Terminal font); the
-  app-wide commands in the new-tab menu (an editable list: add, edit, remove, move up / down;
-  §3 Custom commands); keybinding list with overrides (the new-tab menu entries included, §3
-  Custom commands › Keys for entries).
+- General: what a tab does when its process exits (close when it ends normally, or keep; §3 Exit);
+  whether a project that opens empty gets a Claude tab (§3 First tab); whether closing a running tab
+  asks first (§3 Close); side panels, Claude sessions, notifications, the app-wide commands in the
+  new-tab menu (an editable list: add, edit, remove, move up / down; §3 Custom commands), the
+  command line install and updates.
+- Appearance: theme; the window background (transparent project windows, opacity, blur;
+  §4 Window background); which end of a tab its × sits at (§3 Close); the terminal font (a family
+  dropdown: bundled, installed, Custom…), with a preview and Reset to defaults (§4 Terminal font).
+- Keybindings: the list with overrides (the new-tab menu entries included, §3 Custom commands ›
+  Keys for entries).
 
 Plugin forms are rendered from the manifest's JSON Schema. For what a form cannot hold, a plugin may
 add an html page with `contributes.settings.page` (`{ entry, scopes }`, scopes `app` and/or `project`),
@@ -1153,7 +1154,7 @@ no backend there, so the page shows an enable hint.
 Besides `"format": "secret"` (§6) the form knows two more formats. `"multiline"`: a string drawn as
 a growing text area, allowed anywhere in the schema. It is a hint to the form only (main's ajv does
 not validate formats), so it needs no check in main. `"sound"`: a notification sound picker, the
-app's "Sound" dropdown (`renderer/settings/sound-options.tsx`, shared with Appearance and keys) with
+app's "Sound" dropdown (`renderer/settings/sound-options.tsx`, shared with General) with
 "App default" (stored as `""`) first and ▶ Play (which plays at once, even with "Notification sounds"
 off: it is a preview), so a plugin can let the person pick its own sound and pass the value to
 `ctx.notify(text, { sound })` (§5 Notifications). Allowed anywhere, but main checks the field
@@ -1354,7 +1355,7 @@ All decided in phase 1:
   replace, so a Yes could only fail and the Settings row explains it), once per launch to the first project
   window that asks (a second window or a page reload never asks again), never when the link cannot be
   inspected, and never in a test run unless `CC_COCKPIT_CCC_OFFER=1` (itself honoured only in a test run).
-  "Don't ask again" sets `cccOffer: false` in `app.json`; Settings > Appearance and keys > Command line >
+  "Don't ask again" sets `cccOffer: false` in `app.json`; Settings > General > Command line >
   "Offer to install at start-up" turns it back on.
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z (they would be eaten from the terminal).
 - "Cmd = Ctrl" on Linux is kept as decided: the defaults Cmd+T/W/B/J/O become Ctrl chords that

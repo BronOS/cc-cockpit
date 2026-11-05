@@ -1,4 +1,4 @@
-// The terminal font dropdown's pure logic (Settings › Appearance and keys › Terminal › Font
+// The terminal font dropdown's pure logic (Settings › Appearance › Terminal › Font
 // family): which sections and options it lists for a filter, what a pick stores, which option the
 // stored value is, and where the keyboard highlight goes. DOM-free so the unit tests (plain Node)
 // cover it; the component is TerminalFontPicker.tsx.

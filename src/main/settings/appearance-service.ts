@@ -1,4 +1,4 @@
-// "Appearance and keys" in the settings overlay (design §6): the app-wide theme, the
+// The appearance and general pages of the settings overlay (design §6): the app-wide theme, the
 // keybinding overrides, what a tab does when its process exits (`tabExit`) and whether a project
 // that opens empty gets a Claude tab (`claudeTabOnOpen`), whether Haiku writes a gist of each Claude
 // session (`sessionGist`, main/sessions/session-gist.ts), whether a plugin notification with `sound`

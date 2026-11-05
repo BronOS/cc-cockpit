@@ -1,4 +1,4 @@
-// "Install `ccc` command" (Settings > Appearance and keys): a symlink `~/.local/bin/ccc` to the
+// "Install `ccc` command" (Settings > General > Command line): a symlink `~/.local/bin/ccc` to the
 // generated wrapper `<data>/bin/ccc`, so the CLI works from any terminal, not only from the app's
 // own tabs (whose PATH already has `<data>/bin`, pty-env.ts). Pure Node over the real fs: unit
 // tests give it a temp HOME. main calls it, never the renderer (the renderer only asks).

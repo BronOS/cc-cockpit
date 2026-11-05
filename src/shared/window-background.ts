@@ -1,4 +1,4 @@
-// The see-through window background (Settings › Appearance and keys › Window; `app.json` ›
+// The see-through window background (Settings › Appearance › Window; `app.json` ›
 // `windowBackground`). Only the backgrounds of a project window's own surfaces (the top bar, the
 // tab bar, the terminal, the side and bottom zones) let the desktop through; text, icons, borders
 // and the accent stay solid, and so do menus, the palette, dialogs, overlays and the settings

@@ -548,7 +548,7 @@ export function registerServiceHandlers(router: IpcRouter, deps: ServiceHandlerD
 }
 
 /**
- * What the "This project" and "Appearance and keys" handlers need (ProjectSettingsService and
+ * What the "This Project", "General" and "Appearance" handlers need (ProjectSettingsService and
  * AppearanceService, joined in main's index.ts). A per-project method gets the sender's project id
  * from the router, never from the payload; the payload's fields arrive as `unknown` and the
  * service checks them.
@@ -683,7 +683,7 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
   router.handleWindow('updates.openRelease', () => deps.openRelease())
 }
 
-/** The "Install ccc command" row of Appearance and keys (CccCommandInstaller, main/hooks/ccc-install.ts). */
+/** The "Install ccc command" row of General (CccCommandInstaller, main/hooks/ccc-install.ts). */
 export interface CccCommandHandlerDeps {
   status(): CccCommandView | Promise<CccCommandView>
   install(): CccCommandView | Promise<CccCommandView>

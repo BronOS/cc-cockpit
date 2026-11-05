@@ -248,7 +248,7 @@ function MultilineWidget(props: WidgetProps): React.JSX.Element {
 
 /**
  * The `sound` widget (`"format": "sound"`, design §6): the notification sound picker of Settings ›
- * Appearance and keys with "App default" (stored as "") first, and ▶ Play. The value is an id from
+ * General with "App default" (stored as "") first, and ▶ Play. The value is an id from
  * main's list, which the plugin passes to ctx.notify; main checks it again at every ring, so this
  * list is a convenience, not the guard. Played at once, whatever the "Notification sounds" switch
  * says: hearing a sound before picking it is the point of the button.

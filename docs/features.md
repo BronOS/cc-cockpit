@@ -22,8 +22,8 @@ behind it are in [design.md](design.md).
   shell killed by a signal or ended within 1 s of starting). Settings > General > Tabs > "When a tab's
   process exits" can keep every exited tab instead.
 - A project that opens with no tabs (nothing restored, no plugin tab) starts one Claude tab in the
-  project folder; closing the last tab later leaves the window empty. Settings > Appearance and
-  keys > Tabs > "Open a Claude tab when a project opens with no tabs" (on by default) turns it off.
+  project folder; closing the last tab later leaves the window empty. Settings > General >
+  Tabs > "Open a Claude tab when a project opens with no tabs" (on by default) turns it off.
 - Closing a tab that is still running (the ×, Cmd+W, the palette's Close Tab, the tab menu) asks
   first, naming the tab and, for Claude, its status; Cancel is the default. "Don't ask again" in
   the question, or Settings > General > Tabs > "Ask before closing a tab that is still

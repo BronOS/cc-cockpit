@@ -28,7 +28,7 @@ function OpenSelect(props: {
 
 /**
  * The editable list of one level's new-tab menu entries (design §3 Tabs, "Custom commands"):
- * Settings › Appearance and keys › Tabs for the app-wide ones, Settings › This project for the
+ * Settings › General for the app-wide ones, Settings › This Project for the
  * project's. Every change (add, edit, remove, move) sends the whole list to main, which checks it,
  * keeps the ids of the entries it already has and mints new ones (TabCommandsService.set); the
  * page then reloads what main stored. An edit is sent with Enter or its Save button, not on blur:

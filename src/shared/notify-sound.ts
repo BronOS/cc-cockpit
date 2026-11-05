@@ -1,4 +1,4 @@
-// The notification sound the person picked (app setting "Sound", Settings › Appearance and keys ›
+// The notification sound the person picked (app setting "Sound", Settings › General ›
 // Notifications; design §5 "Notifications"): the sound of every ctx.notify with `sound: true`. A
 // plugin may also pass an id the person picked in its own settings form (`"format": "sound"`, design
 // §6); it never names a file, and main checks that id with these same rules at every use.

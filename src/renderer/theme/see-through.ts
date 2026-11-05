@@ -1,4 +1,4 @@
-// The see-through background of a window main made transparent (Settings › Appearance and keys ›
+// The see-through background of a window main made transparent (Settings › Appearance ›
 // Window; shared/window-background.ts). DOM-free like theme-store.ts, so unit tests cover it with
 // a fake root; apply-see-through.ts wires it to the real document, the prefs and the theme.
 //

@@ -19,7 +19,7 @@ import { Group, Row, Select } from './ui'
 const ICONS = '  '
 
 /**
- * Settings › Appearance and keys › Terminal: the font every terminal draws with (tabs and terminal
+ * Settings › Appearance › Terminal: the font every terminal draws with (tabs and terminal
  * overlays), apart from the app UI's own. Main checks every value; each change goes to every open
  * terminal at once (`prefs.changed`). Text and number fields send on Enter or when they lose focus,
  * not per keystroke: "1" on the way to "16" is not a size, and each send refits every terminal.

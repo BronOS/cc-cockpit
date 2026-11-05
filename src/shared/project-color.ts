@@ -1,4 +1,4 @@
-// A project's colour (Settings › This project › Colour; `ProjectRecord.color`): a mark to tell
+// A project's colour (Settings › This Project › Colour; `ProjectRecord.color`): a mark to tell
 // project windows apart, shown as a line along the window's top edge, a tint of its top bar and a
 // dot wherever the project is named (its title-bar chip, other windows' top strips, the picker).
 // None by default. Shared so main validates against the same palette the settings page offers and
@@ -61,7 +61,7 @@ export function projectColorOf(value: unknown): ProjectColor | undefined {
 }
 
 /**
- * A colour the user asked for, checked strictly (Settings › This project): a palette name, a
+ * A colour the user asked for, checked strictly (Settings › This Project): a palette name, a
  * `#rrggbb` (normalised to lower case), or null for none. Anything else throws with the reason,
  * and nothing is stored.
  */

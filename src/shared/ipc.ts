@@ -443,7 +443,7 @@ export type PluginSettingsSaveResult =
   | { ok: true; values: Record<string, unknown>; secretFields?: SecretFieldsView }
   | { ok: false; errors: string[] }
 
-/** A plugin as the "This project" page lists it. */
+/** A plugin as the "This Project" page lists it. */
 export interface ProjectPluginView {
   id: string
   name: string
@@ -476,7 +476,7 @@ export interface ProjectPanelView {
   zone: ZoneId | 'hidden'
 }
 
-/** Everything the "This project" page shows (main/settings/project-settings-service.ts). */
+/** Everything the "This Project" page shows (main/settings/project-settings-service.ts). */
 export interface ProjectSettingsView {
   name: string
   plugins: ProjectPluginView[]
@@ -567,7 +567,7 @@ export interface NotificationSoundData {
   type: string
 }
 
-/** Everything the "Appearance and keys" page shows (main/settings/appearance-service.ts). */
+/** Everything the "General" and "Appearance" pages show (main/settings/appearance-service.ts). */
 export interface AppearanceView {
   themes: ThemeChoice[]
   /** The user's pick; null = follow the OS. */
@@ -616,7 +616,7 @@ export type CccCommandState =
   /** Something else is at the link path: left alone. */
   | 'foreign'
 
-/** What the "Install ccc command" row of Appearance and keys shows. */
+/** What the "Install ccc command" row of General shows. */
 export interface CccCommandView {
   state: CccCommandState
   /** `~/.local/bin/ccc`, absolute. */
@@ -893,7 +893,7 @@ export interface IpcInvokeMap {
     res: PluginSettingsSaveResult
   }
 
-  // Settings overlay, "This project" and "Appearance and keys". They act on the
+  // Settings overlay, "This Project", "General" and "Appearance". They act on the
   // sender's own project (ids in a payload are looked up inside it) and the app-wide theme/keys.
   'settings.project': { req: void; res: ProjectSettingsView }
   /** Enable or disable an installed plugin for this project; its host restarts with the new set. */
@@ -1113,7 +1113,7 @@ export interface IpcEventMap {
   'updates.changed': UpdateState
   /** The active theme changed (a pick, the OS appearance, a plugin theme added or removed). */
   'theme.changed': Theme
-  /** An app setting the shell page applies itself changed (Settings › Appearance and keys). */
+  /** An app setting the shell page applies itself changed (Settings › General or Appearance). */
   'prefs.changed': ShellPrefs
   /**
    * Play the notification sound once (a plugin's ctx.notify with `sound`). Main already applied the

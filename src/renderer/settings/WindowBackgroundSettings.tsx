@@ -25,7 +25,7 @@ const REOPEN_CONFIRM =
   'Reopen this window to apply? Claude conversations resume; shells start fresh, and anything running now is stopped.'
 
 /**
- * Settings › Appearance and keys › Window: the see-through background of project windows
+ * Settings › Appearance › Window: the see-through background of project windows
  * (shared/window-background.ts). The switch is creation-only (main reads it when it makes a project
  * window; Electron cannot make an open window transparent or opaque), so after a flip that leaves
  * this window looking otherwise, an in-page confirm offers to reopen it now (`window.reopen`: main

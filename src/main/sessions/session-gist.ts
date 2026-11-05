@@ -65,7 +65,7 @@ export class SessionGist {
     this.unsubscribe = options.sessions.onChange((change) => this.onChange(change))
   }
 
-  /** The setting flipped (Settings › Appearance and keys). */
+  /** The setting flipped (Settings › General › Claude sessions). */
   settingChanged(): void {
     if (this.options.enabled()) {
       for (const entry of this.options.sessions.list()) if (entry.status === 'waiting') this.request(entry.tabId)

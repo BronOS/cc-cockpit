@@ -1,4 +1,4 @@
-// The terminal font family dropdown (Settings › Appearance and keys › Terminal): an editable
+// The terminal font family dropdown (Settings › Appearance › Terminal): an editable
 // combobox (WAI-ARIA APG "combobox with listbox popup, list autocomplete"). Closed, the field
 // shows the font's name in its own face; a click, ↓ or typing opens the list and what is typed
 // filters it. ↑/↓ move the highlight, Enter picks, Esc closes (and only closes: the Settings
