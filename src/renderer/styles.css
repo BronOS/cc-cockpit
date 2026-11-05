@@ -618,6 +618,12 @@ iframe:focus-visible {
 .context-menu {
   position: fixed;
 }
+.tab-rename {
+  padding: 6px;
+}
+.tab-rename input {
+  width: 220px;
+}
 .menu-empty {
   padding: 6px 9px;
   color: var(--cc-fg-subtle);

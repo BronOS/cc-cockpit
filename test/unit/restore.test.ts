@@ -130,6 +130,25 @@ describe('buildRestorePlan', () => {
   })
 })
 
+describe('session names', () => {
+  it('are saved, restored for Claude tabs only, and dropped when invalid', () => {
+    expect(tabRecordsOf([{ id: 'a', gen: 1, kind: 'claude', cwd: '/p', name: 'Mine' }])).toEqual([
+      { id: 'a', kind: 'claude', cwd: '/p', name: 'Mine' }
+    ])
+    const plan = buildRestorePlan({
+      path: projectDir,
+      tabs: [
+        rec({ kind: 'claude', name: ' Mine ' }, 1),
+        rec({ kind: 'claude', name: 'x'.repeat(61) }, 2),
+        rec({ kind: 'claude', name: 'a\u001bb' }, 3),
+        rec({ kind: 'claude', name: 7 as unknown as string }, 4),
+        rec({ kind: 'shell', name: 'Nope' }, 5)
+      ]
+    })
+    expect(plan.map((t) => t.name)).toEqual(['Mine', undefined, undefined, undefined, undefined])
+  })
+})
+
 describe('tabRecordsOf', () => {
   it('keeps kind, cwd and the session id when known', () => {
     const tabs: TabInfo[] = [

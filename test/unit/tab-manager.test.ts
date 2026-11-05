@@ -346,6 +346,47 @@ describe('reorder', () => {
   })
 })
 
+describe('rename', () => {
+  it('names a Claude tab, tells the lifecycle and the saver, shows it in info, clears with null', () => {
+    const renamed: Array<[string, string | null]> = []
+    let saved = 0
+    const tabs = manager(undefined, { renamed: (id, name) => renamed.push([id, name]) }, () => saved++)
+    const tab = tabs.create(A, { kind: 'claude' })
+    const before = saved
+    tabs.rename(A, tab.id, '  My name ')
+    expect(tabs.list(A)[0]!.name).toBe('My name')
+    expect(renamed).toEqual([[tab.id, 'My name']])
+    expect(saved).toBe(before + 1)
+    tabs.rename(A, tab.id, 'My name')
+    expect(renamed).toHaveLength(1)
+    tabs.rename(A, tab.id, null)
+    expect(tabs.list(A)[0]!.name).toBeUndefined()
+    expect(renamed.at(-1)).toEqual([tab.id, null])
+  })
+
+  it('refuses another project, a shell tab and a bad name', () => {
+    const tabs = manager()
+    const claude = tabs.create(A, { kind: 'claude' })
+    const shell = tabs.create(A, { kind: 'shell' })
+    expect(() => tabs.rename(B, claude.id, 'x')).toThrow(/unknown tab/)
+    expect(() => tabs.rename(A, shell.id, 'x')).toThrow(/Claude tab/)
+    expect(() => tabs.rename(A, claude.id, '')).toThrow(/empty/)
+    expect(() => tabs.rename(A, claude.id, 'a'.repeat(61))).toThrow(/60/)
+    expect(() => tabs.rename(A, claude.id, 'a\u0000b')).toThrow(/control/)
+  })
+
+  it('a restored tab keeps its name, a restart keeps it, and the started event carries it', () => {
+    const started: Array<string | undefined> = []
+    const tabs = manager(undefined, { started: (t) => started.push(t.name) })
+    const tab = tabs.restoreTab(A, { kind: 'claude', name: 'Saved' })
+    expect(tab.name).toBe('Saved')
+    expect(started).toEqual(['Saved'])
+    // A bad saved name loses only the name.
+    expect(tabs.restoreTab(A, { kind: 'claude', name: 'bad\u0007' }).name).toBeUndefined()
+    expect(() => tabs.restoreTab(A, { kind: 'shell', name: 'x' })).toThrow(/Claude tab/)
+  })
+})
+
 describe('restart', () => {
   it('relaunches an exited Claude tab with the same id, cwd and a new token', () => {
     const tabs = manager()

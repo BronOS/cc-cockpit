@@ -12,6 +12,7 @@
 // a plugin. focus reaches any window's tab, close and openFile only this window's (main decides).
 import type { Disposer, PluginContext, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
+import { checkSessionName } from '../../shared/session-name'
 
 type Listener = (sessions: SessionInfo[]) => void
 type AllListener = (sessions: SessionSummary[]) => void
@@ -146,6 +147,14 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         checkTabId('sessions.openFile', tabId)
         if (typeof path !== 'string' || path === '') throw new TypeError('sessions.openFile needs a path')
         await call('sessions.openFile', { pluginId, tabId, path })
+      }),
+    rename: (tabId: string, name: string | null) =>
+      guardAsync(async () => {
+        checkTabId('sessions.rename', tabId)
+        // Checked here for the fast error; main checks again (shared/session-name.ts).
+        const checked = checkSessionName(name)
+        if (!checked.ok) throw new TypeError(`sessions.rename: ${checked.reason}`)
+        await call('sessions.rename', { pluginId, tabId, name: checked.value })
       }),
     send: (tabId: string, text: string) =>
       guardAsync(async () => {

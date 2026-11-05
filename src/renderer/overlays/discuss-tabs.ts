@@ -19,7 +19,7 @@ export function discussTabsOf(tabs: readonly TabInfo[], own: ReadonlyMap<string,
     if (tab.kind !== 'claude') continue
     const session = own.get(tab.id)
     if (!session || session.status === 'ended') continue
-    const entry: DiscussTab = { tabId: tab.id, label: tabLabel(tab, session.title), status: session.status }
+    const entry: DiscussTab = { tabId: tab.id, label: tabLabel(tab, session.title, session.name), status: session.status }
     if (session.tool !== undefined) entry.tool = session.tool
     out.push(entry)
   }

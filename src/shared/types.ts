@@ -56,6 +56,8 @@ export interface TabRecord {
    */
   label?: string
   command?: string
+  /** A Claude tab's name given by the person (shared/session-name.ts); shown over Claude's topic. */
+  name?: string
 }
 
 /**

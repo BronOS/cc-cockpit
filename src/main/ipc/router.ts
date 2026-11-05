@@ -735,6 +735,7 @@ export interface TabHandlerDeps {
   commands(projectId: string): TabCommandMenu
   close(projectId: string, tabId: string): void
   reorder(projectId: string, tabId: string, toIndex: number): void
+  rename(projectId: string, tabId: string, name: string | null): void
   restart(projectId: string, tabId: string, windowId: number): TabInfo | Promise<TabInfo>
   input(projectId: string, tabId: string, data: string): void
   resize(projectId: string, tabId: string, cols: number, rows: number): void
@@ -787,6 +788,12 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
       throw new Error('tabs.reorder: toIndex must be an integer')
     }
     tabs.reorder(ctx.projectId, tabIdOf('tabs.reorder', payload), toIndex)
+  })
+
+  router.handleProject('tabs.rename', (ctx, payload) => {
+    const name = fields('tabs.rename', payload).name
+    if (name !== null && typeof name !== 'string') throw new Error('tabs.rename: name must be a string or null')
+    tabs.rename(ctx.projectId, tabIdOf('tabs.rename', payload), name)
   })
 
   router.handleProject('tabs.restart', (ctx, payload) =>

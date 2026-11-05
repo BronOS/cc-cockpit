@@ -73,7 +73,7 @@ export function TabSwitcher(props: {
                   {tab.kind === 'shell' && <ShellGlyph size={14} className="tab-kind" />}
                   {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
                 </span>
-                <span className="switcher-label">{tabLabel(tab, status?.title)}</span>
+                <span className="switcher-label">{tabLabel(tab, status?.title, status?.name)}</span>
                 <span className="switcher-note">{note || folder}</span>
               </li>
             )

@@ -13,6 +13,8 @@
 //                                                                person's close path (the dialog may ask)
 //   sessions.openFile { pluginId, tabId, path } -> null          a file main recorded for a tab of THIS
 //                                                                project, routed like the panel's click
+//   sessions.rename { pluginId, tabId, name }  -> null           name (1-60 chars, no control characters) or
+//                                                                null for Claude's title; a tab of THIS project
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
 //   sessions.open   { pluginId, cwd?, prompt?, focus? } -> { tabId }  a new Claude tab in this project;
 //                                                                `focus: true` selects it in the window
@@ -168,6 +170,7 @@ import type { SessionEntry } from '../sessions/status-reducer'
 import { checkOAuthSpec, checkRefreshToken, type PluginOAuthApi } from '../oauth/plugin-oauth'
 import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
+import { checkSessionName } from '../../shared/session-name'
 import { resolveCwd } from '../tabs/tab-manager'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
 import { pluginFileUrl } from './plugin-protocol'
@@ -190,6 +193,9 @@ export const CLOSE_WINDOW_MS = 60_000
 export const MAX_CLOSES_PER_WINDOW = 10
 export const SESSION_FILE_WINDOW_MS = 10_000
 export const MAX_SESSION_FILES_PER_WINDOW = 20
+/** ctx.sessions.rename per plugin: a label on the person's tab, a few per click at most. */
+export const RENAME_WINDOW_MS = 60_000
+export const MAX_RENAMES_PER_WINDOW = 30
 /** ctx.overlay.open per plugin: started per window, and open at the same time. */
 export const OVERLAY_WINDOW_MS = 60_000
 export const MAX_OVERLAYS_PER_WINDOW = 10
@@ -273,6 +279,11 @@ export interface HostApiDeps {
    * caller's project's or the file is not one main recorded for it. Without it ctx.sessions.openFile is refused.
    */
   openSessionFile?(caller: { windowId: number; projectId: string }, tabId: string, file: string): Promise<boolean>
+  /**
+   * Name a tab of `projectId` (TabManager.rename, which checks the name again; the registry and the
+   * saved record follow). Without it ctx.sessions.rename is refused.
+   */
+  renameTab?(projectId: string, tabId: string, name: string | null): void
   /** Subscribe to registry changes (SessionRegistry.onChange); returns the unsubscribe. */
   onSessionsChange(listener: (change: SessionChange) => void): () => void
   /**
@@ -454,6 +465,7 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   if (e.tool !== undefined) out.tool = e.tool
   if (e.lastPrompt !== undefined) out.lastPrompt = e.lastPrompt
   if (e.title !== undefined) out.title = e.title
+  if (e.name !== undefined) out.name = e.name
   if (e.steps !== undefined) out.steps = { ...e.steps }
   if (active) out.active = true
   return out
@@ -533,6 +545,7 @@ export class HostApi {
   private readonly focuses = new RateWindow(MAX_FOCUSES_PER_WINDOW, FOCUS_WINDOW_MS)
   private readonly closes = new RateWindow(MAX_CLOSES_PER_WINDOW, CLOSE_WINDOW_MS)
   private readonly sessionFiles = new RateWindow(MAX_SESSION_FILES_PER_WINDOW, SESSION_FILE_WINDOW_MS)
+  private readonly renames = new RateWindow(MAX_RENAMES_PER_WINDOW, RENAME_WINDOW_MS)
   /**
    * Plugins whose webviews this host drove, or whose earlier copy declared webview panels (a dev reload
    * may drop them from the scope before that copy's ctx ends): torn down when their ctx ends (contextDisposed) or the process goes.
@@ -602,6 +615,7 @@ export class HostApi {
       'sessions.focus': (params) => this.focus(params),
       'sessions.close': (params) => this.close(params),
       'sessions.openFile': (params) => this.sessionFile(params),
+      'sessions.rename': (params) => this.rename(params),
       badge: (params) => this.badge(params),
       'panels.show': (params) => this.showPanel(params),
       'panels.header': (params) => this.panelHeader(params),
@@ -922,6 +936,33 @@ export class HostApi {
     if (!opened) {
       this.sessionFiles.refund(plugin.id)
       throw new Error('sessions.openFile: not a file of that tab')
+    }
+    return null
+  }
+
+  /**
+   * ctx.sessions.rename: a tab of this project only (another project's id reads like an unknown one).
+   * The rule for the name is shared/session-name.ts; a refusal spends nothing, so a plugin that
+   * validates late does not lock itself out.
+   */
+  private rename(params: unknown): null {
+    this.alive()
+    const { pluginId, tabId, name } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'sessions.rename')
+    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
+      throw new Error('sessions.rename: unknown tab')
+    }
+    const checked = checkSessionName(name)
+    if (!checked.ok) throw new Error(`sessions.rename: ${checked.reason}`)
+    if (!this.deps.renameTab) throw new Error('sessions.rename: renaming tabs is not available')
+    if (!this.renames.take(plugin.id)) {
+      throw new Error(`sessions.rename: more than ${MAX_RENAMES_PER_WINDOW} renames in ${RENAME_WINDOW_MS / 1000} s`)
+    }
+    try {
+      this.deps.renameTab(this.scope.projectId, tabId, checked.value)
+    } catch (err) {
+      this.renames.refund(plugin.id)
+      throw withMethod('sessions.rename', err)
     }
     return null
   }

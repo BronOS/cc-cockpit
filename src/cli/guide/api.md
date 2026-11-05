@@ -223,6 +223,12 @@ with full Node access.
 - `ctx.sessions.openFile(tabId, path)`: open one of the tab's `files` (verbatim) as a click in the
   Sessions panel would: through the plugin picked to open files when it is inside the project, else in
   the built-in viewer. Rejects for another window's tab or a path not in its list. At most 20 in 10 s.
+- `ctx.sessions.rename(tabId, name)`: name a Claude tab of this window (`SessionInfo.name`, also in the scope
+  `all` summaries); the tab strip and the Sessions panel show it instead of Claude's topic. `name` is 1-60
+  characters without control characters (surrounding spaces trimmed), or `null` to go back to Claude's
+  title; a bad name rejects with an Error naming the rule. It survives a restart of the app. A tab of
+  another window rejects as unknown; at most 30 a minute per plugin. The tab menu's Rename does the same
+  for the person. An older app has no `rename`: check `typeof ctx.sessions.rename === 'function'`.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
 - `ctx.sessions.open({ cwd, prompt, focus })`: a new Claude tab; the prompt is an argument, never typed.

@@ -68,12 +68,12 @@ function SessionItem(props: { session: SessionDetail; index: number }): React.JS
         <button
           type="button"
           className="session-title"
-          title={session.title ? `${session.title}\nGo to this tab` : 'Go to this tab'}
+          title={session.name ?? session.title ? `${session.name ?? session.title}\nGo to this tab` : 'Go to this tab'}
           onClick={() => {
             window.cockpit.invoke('sessions.focus', { tabId: session.tabId }).catch(() => {})
           }}
         >
-          {session.title ?? `Claude ${props.index}`}
+          {session.name ?? session.title ?? `Claude ${props.index}`}
         </button>
         <span className="session-status">{statusText(session.status, session.tool)}</span>
         {steps && (

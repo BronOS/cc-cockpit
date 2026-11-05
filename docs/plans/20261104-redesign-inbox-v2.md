@@ -927,12 +927,13 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
 - Modify: `test/unit/restore.test.ts`, `session-registry.test.ts`, `host-api.test.ts`; Create/Modify an e2e
   `test/e2e/session-rename.spec.ts`
 
-- [ ] 1-60 characters, control characters refused, `null` back to Claude's title; 30 a minute per plugin and window;
+- [x] 1-60 characters, control characters refused, `null` back to Claude's title; 30 a minute per plugin and window;
   this window's tabs only; persisted over restore
-- [ ] guide `api.md` sessions section (scope, focus, close, rename, openFile, the declaration) — together with task 33's
+- [x] guide `api.md` sessions section (scope, focus, close, rename, openFile, the declaration) — together with task 33's
   members if task 33 did not write them; `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/session-rename.spec.ts
+- [x] run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `npx playwright test test/e2e/session-rename.spec.ts
   test/e2e/restore.spec.ts test/e2e/plugin-sessions.spec.ts` — done when green
+- ➕ the name lives on the tab (`TabInfo.name`, `TabRecord.name`), is told to the registry by a `renamed` lifecycle callback and reaches windows in `SessionDetail.name`; the core Rename is a context-menu entry for Claude tabs (IPC `tabs.rename`) with an inline editor; an empty name there clears it. The name is trimmed before the 1-60 check (`src/shared/session-name.ts`). The guide text for rename went into `api.md`.
 
 ### Task 35: `cockpit.sessions` bundled plugin [model: opus]
 

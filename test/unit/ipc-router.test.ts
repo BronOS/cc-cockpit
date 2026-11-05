@@ -482,6 +482,7 @@ describe('registerTabHandlers', () => {
       commands: rec('commands', { app: [], project: [] }) as TabHandlerDeps['commands'],
       close: rec('close') as TabHandlerDeps['close'],
       reorder: rec('reorder') as TabHandlerDeps['reorder'],
+      rename: rec('rename') as TabHandlerDeps['rename'],
       restart: rec('restart', info) as TabHandlerDeps['restart'],
       input: rec('input') as TabHandlerDeps['input'],
       resize: rec('resize') as TabHandlerDeps['resize'],
@@ -497,6 +498,8 @@ describe('registerTabHandlers', () => {
     await ipc.invoke('tabs.create', 12, [{ kind: 'claude', cwd: 'sub', projectId: PROJECT_A }])
     await ipc.invoke('tabs.close', 11, [{ tabId: 't1', projectId: PROJECT_B }])
     await ipc.invoke('tabs.reorder', 11, [{ tabId: 't1', toIndex: 2 }])
+    await ipc.invoke('tabs.rename', 11, [{ tabId: 't1', name: 'Mine' }])
+    await ipc.invoke('tabs.rename', 11, [{ tabId: 't1', name: null }])
     await ipc.invoke('tabs.restart', 12, [{ tabId: 't1' }])
     await ipc.invoke('tabs.input', 11, [{ tabId: 't1', data: 'ls\r' }])
     await ipc.invoke('tabs.resize', 11, [{ tabId: 't1', cols: 80, rows: 24 }])
@@ -507,6 +510,8 @@ describe('registerTabHandlers', () => {
       ['create', PROJECT_B, { kind: 'claude', cwd: 'sub' }, 2],
       ['close', PROJECT_A, 't1'],
       ['reorder', PROJECT_A, 't1', 2],
+      ['rename', PROJECT_A, 't1', 'Mine'],
+      ['rename', PROJECT_A, 't1', null],
       ['restart', PROJECT_B, 't1', 2],
       ['input', PROJECT_A, 't1', 'ls\r'],
       ['resize', PROJECT_A, 't1', 80, 24],
@@ -573,6 +578,7 @@ describe('registerTabHandlers', () => {
       ['tabs.close', [null]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 'first' }]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 1.5 }]],
+      ['tabs.rename', [{ tabId: 't1', name: 5 }]],
       ['tabs.restart', [{}]],
       ['tabs.input', [{ tabId: 't1', data: 5 }]],
       ['tabs.resize', [{ tabId: 't1', cols: '80', rows: 24 }]],

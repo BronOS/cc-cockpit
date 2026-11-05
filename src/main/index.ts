@@ -838,6 +838,8 @@ function start(): void {
       // see it); an idle tab closes without moving their focus. The renderer decides the rest
       // exactly as for its own × (close-confirm.ts) and answers through CloseAsks.
       closeTab: (windowId, projectId, tabId) => closeTabForPlugin(windowId, projectId, tabId),
+      // ctx.sessions.rename: HostApi checked the tab is this project's and the name.
+      renameTab: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
       // ctx.sessions.openFile: the Sessions panel's click (the recorded-file check is routeOpenFile's).
       openSessionFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
@@ -967,6 +969,7 @@ function start(): void {
       // The signal too: a signal death can arrive as code 0 (tabExited maps it to 128 + n).
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
       closed: (tabId) => sessions.tabClosed(tabId),
+      renamed: (tabId, name) => void sessions.setName(tabId, name),
       output: (tabId, chunk) => sessions.tabOutput(tabId, chunk)
     },
     // Every create / close / reorder / restart / new session id: save the project's tabs.
@@ -1687,6 +1690,7 @@ function start(): void {
     },
     close: (projectId, tabId) => tabs.close(projectId, tabId),
     reorder: (projectId, tabId, toIndex) => tabs.reorder(projectId, tabId, toIndex),
+    rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
     // Renderer keystrokes only (the send gate writes through `tabs.input` directly): a key that
     // answers a permission dialog also clears the tab's needs-permission (status-reducer.ts).
     input: (projectId, tabId, data) => {

@@ -106,6 +106,28 @@ describe('entries', () => {
   })
 })
 
+describe('setName', () => {
+  it('names an entry, shows it in the detail and the summary, clears with null, reports a change', () => {
+    start('c1')
+    const seen: string[] = []
+    reg.onChange((c) => seen.push(`${c.entry?.name}`))
+    expect(reg.setName('c1', 'Mine')).toBe(true)
+    expect(reg.get('c1')!.name).toBe('Mine')
+    expect(reg.snapshotFor(P1).own[0]!.name).toBe('Mine')
+    expect(reg.summariesFor(P1)[0]!.name).toBe('Mine')
+    reg.setName('c1', 'Mine')
+    expect(seen).toEqual(['Mine'])
+    reg.setName('c1', null)
+    expect(reg.get('c1')!.name).toBeUndefined()
+    expect(reg.setName('nope', 'x')).toBe(false)
+  })
+
+  it('is born with the tab (a restored tab) and survives a restart of the entry', () => {
+    reg.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj', name: 'Saved' })
+    expect(reg.get('c1')!.name).toBe('Saved')
+  })
+})
+
 describe('onChange', () => {
   it('reports start, change, exit and close synchronously, with the previous entry', () => {
     const changes: SessionChange[] = []

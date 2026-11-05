@@ -55,6 +55,8 @@ export interface SessionDetail {
   lastPrompt?: string
   /** The topic Claude set as its terminal title; the tab's name when present (else "Claude N"). */
   title?: string
+  /** The name the person gave the tab (Rename); it wins over `title`. */
+  name?: string
   /**
    * A one-line summary of the session (the app setting `sessionGist`, written by Claude Haiku
    * after a turn); shown under the name in place of the last prompt. Absent while the setting is off.
@@ -152,6 +154,11 @@ export interface TabInfo {
   label?: string
   /** A command tab's command line (copied when opened; Restart runs this copy). */
   command?: string
+  /**
+   * A Claude tab's name given by the person (Rename, ctx.sessions.rename); main keeps it for restore.
+   * The renderer shows it from `SessionDetail.name`, which changes with the registry's broadcast.
+   */
+  name?: string
 }
 
 /** One user entry of the new-tab menu as the menu shows it: no command text, main runs it by id. */
@@ -1102,6 +1109,8 @@ export interface IpcInvokeMap {
   'tabs.close': { req: { tabId: string }; res: void }
   /** Move a tab to a position in the project's tab order (clamped to the ends). */
   'tabs.reorder': { req: { tabId: string; toIndex: number }; res: void }
+  /** Give a Claude tab a name (1-60 characters, shared/session-name.ts), or `null` for Claude's own title. */
+  'tabs.rename': { req: { tabId: string; name: string | null }; res: void }
   /**
    * Relaunch an exited tab (same kind and cwd; `--resume` when a session id is known; a command
    * tab runs its own copy of the command again), or start a restored command tab (`notStarted`).
@@ -1323,6 +1332,7 @@ export const INVOKE_CHANNELS = [
   'tabs.commands',
   'tabs.close',
   'tabs.reorder',
+  'tabs.rename',
   'tabs.restart',
   'tabs.input',
   'tabs.resize',

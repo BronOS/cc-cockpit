@@ -23,6 +23,8 @@ import {
   FOCUS_WINDOW_MS,
   HostApi,
   MAX_CLOSES_PER_WINDOW,
+  MAX_RENAMES_PER_WINDOW,
+  RENAME_WINDOW_MS,
   MAX_FOCUSES_PER_WINDOW,
   MAX_SESSION_FILES_PER_WINDOW,
   SESSION_FILE_WINDOW_MS,
@@ -104,7 +106,8 @@ beforeEach(() => {
     lifecycle: {
       started: (tab) => registry.tabStarted(tab),
       exited: (tabId, code) => registry.tabExited(tabId, code),
-      closed: (tabId) => registry.tabClosed(tabId)
+      closed: (tabId) => registry.tabClosed(tabId),
+      renamed: (tabId, name) => void registry.setName(tabId, name)
     },
     emit: () => {},
     log: () => {}
@@ -1552,6 +1555,33 @@ describe('sessions scope all, focus, close, openFile', () => {
     await expect(host('sessions.close', { pluginId: 'a.one', tabId: mine.id })).rejects.toThrow(
       `more than ${MAX_CLOSES_PER_WINDOW} closes in ${CLOSE_WINDOW_MS / 1000} s`
     )
+  })
+
+  it('rename: own tabs only, the name checked, shown in list, null clears, at most 30 a minute', async () => {
+    deps.renameTab = (projectId, tabId, name) => tabs.rename(projectId, tabId, name)
+    const mine = tabs.create(A, { kind: 'claude' })
+    const theirs = tabs.create(B, { kind: 'claude' })
+    const host = hostA()
+    const nameOf = async (): Promise<string | undefined> =>
+      ((await host('sessions.list', {})) as Array<{ tabId: string; name?: string }>).find((s) => s.tabId === mine.id)?.name
+    await expect(host('sessions.rename', { pluginId: 'a.one', tabId: theirs.id, name: 'x' })).rejects.toThrow('sessions.rename: unknown tab')
+    await expect(host('sessions.rename', { pluginId: 'a.one', tabId: 'nope', name: 'x' })).rejects.toThrow('unknown tab')
+    for (const bad of ['', '   ', 'a'.repeat(61), 'tab\u001b[31m', 'a\nb', 5]) {
+      await expect(host('sessions.rename', { pluginId: 'a.one', tabId: mine.id, name: bad })).rejects.toThrow('sessions.rename:')
+    }
+    expect(await nameOf()).toBeUndefined()
+    await host('sessions.rename', { pluginId: 'a.one', tabId: mine.id, name: '  Release prep  ' })
+    expect(await nameOf()).toBe('Release prep')
+    await host('sessions.rename', { pluginId: 'a.one', tabId: mine.id, name: 'a'.repeat(60) })
+    await host('sessions.rename', { pluginId: 'a.one', tabId: mine.id, name: null })
+    expect(await nameOf()).toBeUndefined()
+    // The refusals above spent nothing: 3 renames so far.
+    for (let i = 3; i < MAX_RENAMES_PER_WINDOW; i++) await host('sessions.rename', { pluginId: 'a.one', tabId: mine.id, name: `n${i}` })
+    await expect(host('sessions.rename', { pluginId: 'a.one', tabId: mine.id, name: 'more' })).rejects.toThrow(
+      `more than ${MAX_RENAMES_PER_WINDOW} renames in ${RENAME_WINDOW_MS / 1000} s`
+    )
+    // Per plugin.
+    await expect(host('sessions.rename', { pluginId: 'a.two', tabId: mine.id, name: 'ok' })).resolves.toBeNull()
   })
 
   it('openFile: own tabs only, an unrecorded file refused without spending, at most 20 in 10 s', async () => {

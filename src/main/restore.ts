@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto'
 import { errorText } from '../shared/error-text'
 import type { TabInfo } from '../shared/ipc'
+import { checkSessionName } from '../shared/session-name'
 import { checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
 import type { ProjectView, TabKind, TabRecord } from '../shared/types'
 import type { ProjectRegistry } from './projects/registry'
@@ -27,6 +28,8 @@ export interface RestoredTab {
   cwd?: string
   /** Claude tabs only; absent = a fresh session. */
   resumeId?: string
+  /** Claude tabs only: the name the person gave the tab. */
+  name?: string
   /** Command tabs only (and always): the tab's own saved copy of its entry. */
   command?: TabCommand
 }
@@ -40,6 +43,7 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     // the entry was edited or deleted since.
     if (t.label !== undefined) record.label = t.label
     if (t.command !== undefined) record.command = t.command
+    if (t.name !== undefined) record.name = t.name
     return record
   })
 }
@@ -66,7 +70,7 @@ export function buildRestorePlan(project: Pick<ProjectView, 'path' | 'tabs'>): R
   if (!Array.isArray(records)) return plan
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, name } = raw as Record<string, unknown>
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') continue
     const tab: RestoredTab = { kind }
     if (kind === 'command') {
@@ -78,6 +82,11 @@ export function buildRestorePlan(project: Pick<ProjectView, 'path' | 'tabs'>): R
     if (typeof cwd === 'string' && cwdUsable(project.path, cwd)) tab.cwd = cwd
     if (kind === 'claude' && typeof sessionId === 'string' && SESSION_ID.test(sessionId)) {
       tab.resumeId = sessionId
+    }
+    // A saved name that fails the rule is dropped, not the tab: the file is user-writable.
+    if (kind === 'claude' && name !== undefined) {
+      const n = checkSessionName(name)
+      if (n.ok && n.value !== null) tab.name = n.value
     }
     plan.push(tab)
   }
@@ -217,6 +226,7 @@ export class TabRestorer {
     if (cwd === undefined) return undefined
     const record: TabRecord = { id: randomUUID(), kind: tab.kind, cwd }
     if (tab.resumeId !== undefined) record.sessionId = tab.resumeId
+    if (tab.name !== undefined) record.name = tab.name
     if (tab.command !== undefined) {
       record.label = tab.command.label
       record.command = tab.command.command

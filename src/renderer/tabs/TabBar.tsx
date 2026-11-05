@@ -131,6 +131,8 @@ export function TabBar(props: {
   onMenuOpen: () => void
   /** `delta` is -1 for left, +1 for right. */
   onMove: (tabId: string, delta: -1 | 1) => void
+  /** Name a Claude tab, or `null` for Claude's own title (main checks the name). */
+  onRename: (tabId: string, name: string | null) => void
   /** A drag ended: put the tab at `toIndex` (its index after being taken out, as main's reorder). */
   onReorder: (tabId: string, toIndex: number) => void
   /** Status of the window's Claude tabs by tab id (shell tabs have none). */
@@ -142,9 +144,11 @@ export function TabBar(props: {
   const { tabCloseSide } = usePrefs()
   const [createOpen, setCreateOpen] = useState(false)
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
+  // The Rename entry swaps the context menu for a one-line editor at the same place.
+  const [renaming, setRenaming] = useState<{ tabId: string; x: number; y: number; value: string } | null>(null)
 
   // Any click elsewhere or Escape closes whichever menu is open.
-  const anyOpen = createOpen || menu !== null
+  const anyOpen = createOpen || menu !== null || renaming !== null
   // A webview panel's native view would paint over the menu (shell-layers.ts).
   useShellLayer(anyOpen)
   useEffect(() => {
@@ -152,6 +156,7 @@ export function TabBar(props: {
     const dismiss = (): void => {
       setCreateOpen(false)
       setMenu(null)
+      setRenaming(null)
     }
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') dismiss()
@@ -256,7 +261,7 @@ export function TabBar(props: {
             <button
               type="button"
               className="tab-close"
-              aria-label={`Close ${tabLabel(tab, status?.title)}`}
+              aria-label={`Close ${tabLabel(tab, status?.title, status?.name)}`}
               onClick={() => props.onClose(tab.id)}
             >
               <CloseGlyph size={12} />
@@ -304,7 +309,7 @@ export function TabBar(props: {
               {tab.kind === 'shell' && <ShellGlyph size={14} className="tab-kind" />}
               {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
               <span className="tab-text">
-                {tabLabel(tab, status?.title)}
+                {tabLabel(tab, status?.title, status?.name)}
                 {tab.notStarted ? ' (not started)' : tab.exit ? ' (exited)' : ''}
               </span>
             </button>
@@ -394,10 +399,50 @@ export function TabBar(props: {
           >
             Move right
           </button>
+          {tabs[menuIndex]?.kind === 'claude' && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(e) => {
+                // Else the window's click listener closes the editor this opens.
+                e.stopPropagation()
+                const sid = menu.tabId
+                const current = props.sessions.get(sid)
+                setRenaming({ tabId: sid, x: menu.x, y: menu.y, value: current?.name ?? current?.title ?? '' })
+                setMenu(null)
+              }}
+            >
+              Rename
+            </button>
+          )}
           <button type="button" role="menuitem" onClick={() => props.onClose(menu.tabId)}>
             Close
           </button>
         </div>
+      )}
+      {renaming && (
+        <form
+          className="menu context-menu tab-rename"
+          style={{ left: renaming.x, top: renaming.y }}
+          // The window's click listener would close the editor under the pointer.
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => {
+            e.preventDefault()
+            // Empty goes back to Claude's own title.
+            const name = renaming.value.trim()
+            props.onRename(renaming.tabId, name === '' ? null : name)
+            setRenaming(null)
+          }}
+        >
+          <input
+            autoFocus
+            aria-label="Tab name"
+            placeholder="Name (empty: Claude's title)"
+            maxLength={60}
+            value={renaming.value}
+            onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+          />
+        </form>
       )}
     </div>
   )

@@ -114,7 +114,7 @@ export class SessionRegistry {
    * it again. The old process's queue was already dropped at its exit; its delivery timer must
    * not outlive it and clear a `delivering` flag of the new process.
    */
-  tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string }): void {
+  tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string }): void {
     if (tab.kind !== 'claude') return
     const prev = this.entries.get(tab.tabId)
     this.clearDeliveryTimer(tab.tabId)
@@ -136,6 +136,21 @@ export class SessionRegistry {
     const prev = this.entries.get(tabId)
     if (title === undefined || !prev || prev.title === title) return
     this.set(prev, { ...prev, title })
+  }
+
+  /**
+   * Store (or with null, remove) the name the person gave the tab (TabManager.rename checked it).
+   * False when the tab has no entry.
+   */
+  setName(tabId: string, name: string | null): boolean {
+    const prev = this.entries.get(tabId)
+    if (!prev) return false
+    if (prev.name === (name ?? undefined)) return true
+    const next = { ...prev }
+    if (name === null) delete next.name
+    else next.name = name
+    this.set(prev, next)
+    return true
   }
 
   /**
@@ -343,6 +358,7 @@ export class SessionRegistry {
       }
       if (e.tool !== undefined) out.tool = e.tool
       if (e.title !== undefined) out.title = e.title
+      if (e.name !== undefined) out.name = e.name
       return out
     })
   }
@@ -484,6 +500,7 @@ function detailOf(e: SessionEntry): SessionDetail {
   if (e.tool !== undefined) out.tool = e.tool
   if (e.lastPrompt !== undefined) out.lastPrompt = e.lastPrompt
   if (e.title !== undefined) out.title = e.title
+  if (e.name !== undefined) out.name = e.name
   if (e.gist !== undefined) out.gist = e.gist
   if (e.steps !== undefined) out.steps = { ...e.steps }
   return out

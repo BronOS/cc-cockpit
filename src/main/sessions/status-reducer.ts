@@ -69,6 +69,8 @@ export interface SessionEntry {
   recentPrompts?: string[]
   /** The topic Claude put in the terminal title (terminal-title.ts), the tab's name when set. */
   title?: string
+  /** The name the person gave the tab (shared/session-name.ts); wins over `title`. */
+  name?: string
   /** The one-line summary of the session gist setting (session-gist.ts); set by main only. */
   gist?: string
   /** Free-form notes (plugins add them in later tasks); capped at MAX_NOTES x MAX_NOTE_CHARS. */
@@ -125,6 +127,7 @@ export function newEntry(init: {
   kind: TabKind
   cwd: string
   sessionId?: string
+  name?: string
 }): SessionEntry {
   const entry: SessionEntry = {
     tabId: init.tabId,
@@ -138,6 +141,7 @@ export function newEntry(init: {
     delivering: false
   }
   if (init.sessionId !== undefined) entry.sessionId = init.sessionId
+  if (init.name !== undefined) entry.name = init.name
   return entry
 }
 

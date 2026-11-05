@@ -291,6 +291,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       })
     )
 
+  // The tab menu's Rename. main checks the name; the new one reaches the strip with the next
+  // sessions snapshot, so nothing changes here.
+  const rename = (tabId: string, name: string | null): void =>
+    run(window.cockpit.invoke('tabs.rename', { tabId, name }))
+
   const move = (tabId: string, delta: -1 | 1): void => {
     const from = state.tabs.findIndex((t) => t.id === tabId)
     if (from < 0) return
@@ -719,6 +724,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           commands={menuCommands}
           onMenuOpen={loadMenuCommands}
           onMove={move}
+          onRename={rename}
           onReorder={reorder}
           sessions={own}
           onCancelQueued={cancelQueued}

@@ -332,6 +332,8 @@ export interface SessionInfo {
    * removed; what the Sessions panel and the tab strip name the tab. Absent until Claude has one.
    */
   readonly title?: string
+  /** The name the person (or a plugin, `ctx.sessions.rename`) gave the tab; shown instead of `title`. */
+  readonly name?: string
   readonly notes: readonly string[]
   readonly steps?: { readonly done: number; readonly total: number }
   /**
@@ -368,6 +370,8 @@ export interface SessionSummary {
   readonly status: SessionStatus
   readonly tool?: string
   readonly title?: string
+  /** The name the person gave the tab; shown instead of `title`. */
+  readonly name?: string
 }
 
 /** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */
@@ -688,6 +692,13 @@ export interface PluginContext {
      * viewer. Rejects for a tab of another window and a path that is not in the tab's list. At most 20 in 10 s.
      */
     openFile(tabId: string, path: string): Promise<void>
+    /**
+     * Name a Claude tab of this window (`SessionInfo.name`), shown in the tab strip and the Sessions
+     * panel instead of Claude's topic; `null` goes back to Claude's title. 1-60 characters without
+     * control characters (rejects otherwise), and for a tab of this window only. The name survives a
+     * restart of the app. At most 30 a minute. An older app has no `rename`: check `typeof ctx.sessions.rename`.
+     */
+    rename(tabId: string, name: string | null): Promise<void>
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
      * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute.

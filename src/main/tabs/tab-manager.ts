@@ -10,6 +10,7 @@ import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, IpcEventMap, TabInfo } from '../../shared/ipc'
+import { checkSessionName } from '../../shared/session-name'
 import { checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
 import type { TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
@@ -95,7 +96,7 @@ export interface TabManagerOptions {
  */
 export interface TabLifecycle {
   /** After a successful spawn: a new tab or a restart (the tab keeps its id on restart). */
-  started?(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string }): void
+  started?(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string }): void
   /**
    * The process exited. The tab is still open (it can be restarted), unless a clean exit closes
    * it, in which case `closed` follows at once (TabManagerOptions.closeOnCleanExit).
@@ -103,6 +104,8 @@ export interface TabLifecycle {
   exited?(tabId: string, code: number, signal: number | null): void
   /** The tab no longer exists: closed by the user or its window closed. */
   closed?(tabId: string): void
+  /** The person (or a plugin) named the tab, or cleared the name (`null`). */
+  renamed?(tabId: string, name: string | null): void
   /**
    * A Claude tab's PTY printed `chunk` (each batch PtyService flushes, so a few per frame at most).
    * For the terminal title (session-registry.ts tabOutput); shell and command tabs are not reported.
@@ -134,6 +137,8 @@ export interface RestoreTabOptions {
   resumeId?: string
   /** A command tab's saved copy of its entry; required for, and only for, kind 'command'. */
   command?: TabCommand
+  /** A Claude tab's saved name (restore.ts validated it; re-checked here). */
+  name?: string
 }
 
 interface Tab {
@@ -150,6 +155,8 @@ interface Tab {
   spawnedAt: number
   /** Kind 'command' only: the entry copied when the tab was opened; every (re)start runs this. */
   command?: TabCommand
+  /** Kind 'claude' only: the name the person gave the tab (rename); saved and restored with it. */
+  name?: string
   /**
    * This tab's socket token, regenerated on every (re)start and gone with the tab. A Claude tab's
    * is a session token (hooks, `session note`, everything); a shell or command tab's is a window
@@ -249,7 +256,7 @@ export class TabManager {
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name }: RestoreTabOptions): TabInfo {
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') throw new Error('unknown tab kind')
     if (resumeId !== undefined && kind !== 'claude') throw new Error('only a Claude tab resumes')
     if (kind === 'command') {
@@ -260,14 +267,18 @@ export class TabManager {
       return this.add(projectId, kind, cwd, { command: tabCommand(command), start: false })
     }
     if (command !== undefined) throw new Error('only a command tab has a command')
-    return this.add(projectId, kind, cwd, resumeId === undefined ? {} : { resumeId })
+    if (name !== undefined && kind !== 'claude') throw new Error('only a Claude tab has a name')
+    const checked = name === undefined ? undefined : checkSessionName(name)
+    // A bad saved name only loses the name: the tab and its session still come back.
+    const kept = checked?.ok ? (checked.value ?? undefined) : undefined
+    return this.add(projectId, kind, cwd, { ...(resumeId === undefined ? {} : { resumeId }), ...(kept === undefined ? {} : { name: kept }) })
   }
 
   private add(
     projectId: string,
     kind: TabKind,
     cwd: string | undefined,
-    opts: { prompt?: string; resumeId?: string; command?: TabCommand; start?: boolean }
+    opts: { prompt?: string; resumeId?: string; command?: TabCommand; start?: boolean; name?: string }
   ): TabInfo {
     const root = this.projectRoot(projectId)
     const tab: Tab = {
@@ -283,6 +294,8 @@ export class TabManager {
       resumeFailed: false
     }
     if (opts.command) tab.command = opts.command
+    // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
+    if (opts.name !== undefined) tab.name = opts.name
     const started = opts.start !== false
     if (started) {
       this.start(tab, opts.prompt, opts.resumeId)
@@ -323,6 +336,23 @@ export class TabManager {
     this.remove(tab)
     this.pty.terminate(tab.id)
     this.changed(tab.projectId)
+  }
+
+  /**
+   * Name a Claude tab (`null`: back to Claude's own title). The tab is looked up in `projectId`
+   * only, so another project's id reads as unknown. Saved with the tab (changed) and told to the
+   * registry, whose snapshot the windows show it from. Throws for a bad name (shared/session-name.ts).
+   */
+  rename(projectId: string, tabId: string, name: string | null): void {
+    const tab = this.require(projectId, tabId)
+    if (tab.kind !== 'claude') throw new Error('only a Claude tab can be renamed')
+    const checked = checkSessionName(name)
+    if (!checked.ok) throw new Error(checked.reason)
+    if ((tab.name ?? null) === checked.value) return
+    if (checked.value === null) delete tab.name
+    else tab.name = checked.value
+    this.notify((l) => l.renamed?.(tab.id, checked.value))
+    this.changed(projectId)
   }
 
   /** Move to `toIndex` in the project's order, clamped to the ends. */
@@ -608,8 +638,8 @@ export class TabManager {
   }
 }
 
-function tabEvent(tab: Tab): { tabId: string; projectId: string; kind: TabKind; cwd: string } {
-  return { tabId: tab.id, projectId: tab.projectId, kind: tab.kind, cwd: tab.cwd }
+function tabEvent(tab: Tab): { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string } {
+  return { tabId: tab.id, projectId: tab.projectId, kind: tab.kind, cwd: tab.cwd, ...(tab.name === undefined ? {} : { name: tab.name }) }
 }
 
 /** Reports `sessionId` only once it is resumable: that is what restore saves and resumes. */
@@ -618,6 +648,7 @@ function info(tab: Tab): TabInfo {
   if (tab.sessionId !== undefined && tab.resumable) out.sessionId = tab.sessionId
   if (tab.exit) out.exit = { ...tab.exit }
   if (tab.gen === 0) out.notStarted = true
+  if (tab.name !== undefined) out.name = tab.name
   if (tab.command) {
     out.label = tab.command.label
     out.command = tab.command.command
