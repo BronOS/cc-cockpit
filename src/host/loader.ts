@@ -79,6 +79,11 @@ export interface HostPluginSpec {
    */
   settingsPage?: SettingsPageScope[]
   /**
+   * The manifest declares `"access": { "sessions": "all-windows" }`: `ctx.sessions` accepts
+   * `scope: 'all'` (a fast error otherwise; main checks again). Absent is false.
+   */
+  sessionsAll?: boolean
+  /**
    * Set by `parsePluginSpecs`, never sent by main: why this plugin's spec cannot run (a malformed
    * `services` field). The loader marks only this plugin errored; the rest of the batch activates.
    */
@@ -92,7 +97,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, panelSlots, services, openFile, settingsPage, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, panelSlots, services, openFile, settingsPage, sessionsAll, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -135,6 +140,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     // throw here would keep every plugin of the project from running.
     const parsed = services === undefined ? undefined : parseServicesField(services)
     if (openFile !== undefined && typeof openFile !== 'boolean') throw new Error(`activate: plugin ${i} openFile must be a boolean`)
+    if (sessionsAll !== undefined && typeof sessionsAll !== 'boolean') throw new Error(`activate: plugin ${i} sessionsAll must be a boolean`)
     if (settingsPage !== undefined && (!Array.isArray(settingsPage) || !settingsPage.every(isSettingsPageScope))) {
       throw new Error(`activate: plugin ${i} settingsPage must be an array of "app" / "project"`)
     }
@@ -160,6 +166,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),
       ...(openFile === true ? { openFile: true } : {}),
       ...(settingsPage !== undefined ? { settingsPage: settingsPage as SettingsPageScope[] } : {}),
+      ...(sessionsAll === true ? { sessionsAll: true } : {}),
       settings: { project, app }
     }
   })

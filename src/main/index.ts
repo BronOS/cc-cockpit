@@ -107,6 +107,7 @@ import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
+import { CloseAsks } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
@@ -411,6 +412,8 @@ function start(): void {
       overlays.closeWindow(windowId)
       // Its webview panels' views close too, and their preview tokens stop serving.
       webviews.closeWindow(windowId)
+      // A plugin's close waiting on this window's dialog is answered: not closed by it.
+      closeAsks.windowClosed(windowId)
     },
     // The folder went missing between the close and the new window (WindowManager logs it): the
     // project is closed after all. Its queued plan goes, as when a launch cannot open a window;
@@ -459,6 +462,14 @@ function start(): void {
     const win = BrowserWindow.fromId(windowId)
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
   }
+  // ctx.sessions.close's asks to a window's tab pane (close-asks.ts): settled by that window's
+  // `sessions.closeAnswer`, or false when it closes or the wait runs out.
+  const closeAsks = new CloseAsks((windowId, ask) => {
+    const win = BrowserWindow.fromId(windowId)
+    if (!win || win.isDestroyed()) return false
+    win.webContents.send('sessions.closeAsk', ask)
+    return true
+  })
   /** The command a chord fires in a project window (main's registry, the user's overrides applied). */
   const commandForChord = (windowId: number, chord: string): string | undefined => {
     const projectId = windows.projectWindows().find((w) => w.windowId === windowId)?.projectId
@@ -678,6 +689,7 @@ function start(): void {
         ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
         ...(plugin.manifest.contributes?.slots !== undefined ? { slots: plugin.manifest.contributes.slots } : {}),
         ...(plugin.manifest.contributes?.settings?.page !== undefined ? { settingsPage: plugin.manifest.contributes.settings.page } : {}),
+        ...(plugin.manifest.access !== undefined ? { access: plugin.manifest.access } : {}),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -809,6 +821,22 @@ function start(): void {
       // The send gate, as for every programmatic text (send-gate.ts).
       send: (tabId, text) => sessions.send(tabId, text),
       onSessionsChange: (listener) => sessions.onChange(listener),
+      // ctx.sessions scope 'all' (HostApi checks the manifest's `access` declaration first).
+      summaries: (projectId) => sessions.summariesFor(projectId),
+      // ctx.sessions.focus: the strip's click, from a plugin (any window's Claude tab).
+      focusTab: (tabId) => focusClaudeTab(tabId),
+      // ctx.sessions.close: HostApi checked the tab is this project's. A running tab asks in its
+      // window, so that window is raised first when it will (the dialog is the person's, they must
+      // see it); an idle tab closes without moving their focus. The renderer decides the rest
+      // exactly as for its own × (close-confirm.ts) and answers through CloseAsks.
+      closeTab: (windowId, projectId, tabId) => {
+        const tab = tabs.list(projectId).find((t) => t.id === tabId)
+        if (!tab) return Promise.resolve(false)
+        if (tab.exit === undefined && appearance.confirmTabClose()) windows.focusProject(projectId)
+        return closeAsks.ask(windowId, tabId)
+      },
+      // ctx.sessions.openFile: the Sessions panel's click (the recorded-file check is routeOpenFile's).
+      openSessionFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
       openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
@@ -1749,19 +1777,22 @@ function start(): void {
     builtinFile: (caller, projectDir, path) => openProjectFileDiff(diffOptions, caller, projectDir, path),
     delivering: new Set()
   }
+  // The strip's click and ctx.sessions.focus may name a tab of any project; main finds its window
+  // from its own registry entry and only moves focus there, then tells that window's renderer to
+  // select it. False for an id that is no Claude tab (any more).
+  const focusClaudeTab = (tabId: string): boolean => {
+    const entry = sessions.get(tabId)
+    if (!entry || !windows.focusProject(entry.projectId)) return false
+    sendToProject(entry.projectId, 'tabs.select', { tabId })
+    return true
+  }
   registerSessionHandlers(router, {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
-    // The strip's click may name a tab of any project; main finds its window from its own
-    // registry entry and only moves focus there, then tells that window's renderer to select it.
-    focusTab: (tabId) => {
-      const entry = sessions.get(tabId)
-      if (!entry || !windows.focusProject(entry.projectId)) return false
-      sendToProject(entry.projectId, 'tabs.select', { tabId })
-      return true
-    },
-    openFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file)
+    focusTab: (tabId) => focusClaudeTab(tabId),
+    openFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
+    closeAnswer: (windowId, requestId, closed) => closeAsks.answer(windowId, requestId, closed)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

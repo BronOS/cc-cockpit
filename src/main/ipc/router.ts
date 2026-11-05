@@ -829,6 +829,8 @@ export interface SessionHandlerDeps {
   focusTab(tabId: string): boolean
   /** The file-click diff (open-diff.ts); resolves once the overlay is up. */
   openFile(caller: ProjectContext, tabId: string, file: string): Promise<boolean>
+  /** A window's answer to a plugin's close ask (CloseAsks.answer); false for an ask it was not sent. */
+  closeAnswer(windowId: number, requestId: string, closed: boolean): boolean
 }
 
 /**
@@ -855,6 +857,15 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     const file = fields('sessions.openFile', payload).file
     if (typeof file !== 'string') throw new Error('sessions.openFile: file must be a string')
     return deps.openFile(ctx, tabIdOf('sessions.openFile', payload), file)
+  })
+
+  // The window is the sender's (ctx), never a value in the payload: only the window an ask went to
+  // can settle it.
+  router.handleProject('sessions.closeAnswer', (ctx, payload) => {
+    const { requestId, closed } = fields('sessions.closeAnswer', payload)
+    if (typeof requestId !== 'string') throw new Error('sessions.closeAnswer: requestId must be a string')
+    if (typeof closed !== 'boolean') throw new Error('sessions.closeAnswer: closed must be a boolean')
+    return deps.closeAnswer(ctx.windowId, requestId, closed)
   })
 }
 

@@ -607,10 +607,24 @@ describe('registerSessionHandlers', () => {
       openFile: async (caller, tabId, file) => {
         calls.push(['openFile', caller, tabId, file])
         return true
+      },
+      closeAnswer: (windowId, requestId, closed) => {
+        calls.push(['closeAnswer', windowId, requestId, closed])
+        return true
       }
     })
     return { ipc, calls }
   }
+
+  it('sessions.closeAnswer passes the sender’s window, never one from the payload', async () => {
+    const { ipc, calls } = sessionsSetup()
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: true, windowId: 1 }])).resolves.toBe(true)
+    expect(calls).toEqual([['closeAnswer', 2, 'close-1', true]])
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 5, closed: true }])).rejects.toThrow()
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: 'yes' }])).rejects.toThrow()
+    await expect(ipc.invoke('sessions.closeAnswer', 13, [{ requestId: 'close-1', closed: false }])).rejects.toThrow()
+    expect(calls).toHaveLength(1)
+  })
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {
     const { ipc, calls } = sessionsSetup()

@@ -4,7 +4,15 @@
 // a request names a project or window, and every id a request does name (a tab, a panel, a plugin)
 // is only looked up inside that scope (CLAUDE.md: main is the only authority):
 //
-//   sessions.list   {}                         -> SessionInfo[]  this project's Claude tabs only
+//   sessions.list   { pluginId?, scope? }      -> SessionInfo[]  this project's Claude tabs only;
+//                                                                `scope: 'all'`: SessionSummary[] of every
+//                                                                window, only for a plugin whose manifest
+//                                                                declares `access.sessions: 'all-windows'`
+//   sessions.focus  { pluginId, tabId }        -> boolean        select a Claude tab of ANY window, raising it
+//   sessions.close  { pluginId, tabId }        -> { closed }     a Claude tab of THIS project, through the
+//                                                                person's close path (the dialog may ask)
+//   sessions.openFile { pluginId, tabId, path } -> null          a file main recorded for a tab of THIS
+//                                                                project, routed like the panel's click
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
 //   sessions.open   { pluginId, cwd?, prompt?, focus? } -> { tabId }  a new Claude tab in this project;
 //                                                                `focus: true` selects it in the window
@@ -58,6 +66,9 @@
 //                                                                normalized href is what is opened
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
+//   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
+//                                                                only to a host running a plugin with the
+//                                                                `access` declaration)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
 //   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
 //   panel.action    { pluginId, panelId, actionId }              a click on a header action this host set
@@ -129,7 +140,7 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler } from '../../host/rpc'
-import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, SessionInfo } from '../../sdk/types'
+import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
@@ -168,6 +179,17 @@ export const MAX_SENDS_PER_WINDOW = 30
 /** ctx.sessions.open per plugin: each one starts a `claude` process. */
 export const OPEN_WINDOW_MS = 60_000
 export const MAX_OPENS_PER_WINDOW = 5
+/**
+ * ctx.sessions.focus / close / openFile per plugin (design-next §4.1). focus moves the person's
+ * window and selection, close may put a dialog in front of them, openFile opens a viewer or wakes
+ * the picked plugin (the `files.open` budget): each is one per click in a real plugin.
+ */
+export const FOCUS_WINDOW_MS = 10_000
+export const MAX_FOCUSES_PER_WINDOW = 10
+export const CLOSE_WINDOW_MS = 60_000
+export const MAX_CLOSES_PER_WINDOW = 10
+export const SESSION_FILE_WINDOW_MS = 10_000
+export const MAX_SESSION_FILES_PER_WINDOW = 20
 /** ctx.overlay.open per plugin: started per window, and open at the same time. */
 export const OVERLAY_WINDOW_MS = 60_000
 export const MAX_OVERLAYS_PER_WINDOW = 10
@@ -230,6 +252,27 @@ export interface HostApiDeps {
   activeTab?(projectId: string): string | undefined
   /** The send gate (SessionRegistry.send): types now only when the tab is waiting, else queues. */
   send(tabId: string, text: string): { id: string; delivered: boolean }
+  /**
+   * Every window's Claude tabs from this project's view (SessionRegistry.summariesFor), for
+   * `scope: 'all'`. Without it that scope is refused.
+   */
+  summaries?(projectId: string): SessionSummary[]
+  /**
+   * Raise the window of any Claude tab and have it select the tab (the strip's click, the router's
+   * `sessions.focus`); false for an id that is no Claude tab. Without it ctx.sessions.focus is refused.
+   */
+  focusTab?(tabId: string): boolean
+  /**
+   * Close a tab of `projectId` in its window `windowId` through the person's close path (the close
+   * dialog when it is running and the setting asks): true once it closed, false on Cancel or when the
+   * window could not ask. Without it ctx.sessions.close is refused.
+   */
+  closeTab?(windowId: number, projectId: string, tabId: string): Promise<boolean>
+  /**
+   * The Sessions panel's file click (open-file.ts routeOpenFile): false when the tab is not the
+   * caller's project's or the file is not one main recorded for it. Without it ctx.sessions.openFile is refused.
+   */
+  openSessionFile?(caller: { windowId: number; projectId: string }, tabId: string, file: string): Promise<boolean>
   /** Subscribe to registry changes (SessionRegistry.onChange); returns the unsubscribe. */
   onSessionsChange(listener: (change: SessionChange) => void): () => void
   /**
@@ -325,6 +368,8 @@ export interface HostApiPlugin {
   webviewPanels?: readonly string[]
   /** Panel id -> its manifest `slots`: the only types ctx.panels.slots may place there. Absent is none. */
   panelSlots?: Readonly<Record<string, readonly string[]>>
+  /** The manifest declares `access.sessions: 'all-windows'`: ctx.sessions scope `all`. Absent is false. */
+  sessionsAll?: boolean
 }
 
 /** Who is asking: fixed when main spawned the host process. */
@@ -485,6 +530,9 @@ export class HostApi {
   private readonly panelSlotCalls = new RateWindow(MAX_PANEL_SLOTS_PER_WINDOW, PANEL_SLOTS_WINDOW_MS)
   private readonly fileOpens = new RateWindow(MAX_FILE_OPENS_PER_WINDOW, FILE_OPEN_WINDOW_MS)
   private readonly externalOpens = new RateWindow(MAX_EXTERNAL_OPENS_PER_WINDOW, EXTERNAL_OPEN_WINDOW_MS)
+  private readonly focuses = new RateWindow(MAX_FOCUSES_PER_WINDOW, FOCUS_WINDOW_MS)
+  private readonly closes = new RateWindow(MAX_CLOSES_PER_WINDOW, CLOSE_WINDOW_MS)
+  private readonly sessionFiles = new RateWindow(MAX_SESSION_FILES_PER_WINDOW, SESSION_FILE_WINDOW_MS)
   /**
    * Plugins whose webviews this host drove, or whose earlier copy declared webview panels (a dev reload
    * may drop them from the scope before that copy's ctx ends): torn down when their ctx ends (contextDisposed) or the process goes.
@@ -523,6 +571,8 @@ export class HostApi {
   private readonly interval: number
   private readonly log: (message: string) => void
   private timer: ReturnType<typeof setTimeout> | undefined
+  /** The pending `sessions.all` event (its own throttle: other windows' changes do not delay this one's). */
+  private allTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
   /** Set by revoke() (and dispose()): every request refused, no sessions events. */
   private revoked = false
@@ -546,9 +596,12 @@ export class HostApi {
   /** The RPC methods, to merge into the host's endpoint handlers. */
   get handlers(): Record<string, RpcHandler> {
     return {
-      'sessions.list': () => this.list(),
+      'sessions.list': (params) => this.list(params),
       'sessions.send': (params) => this.send(params),
       'sessions.open': (params) => this.open(params),
+      'sessions.focus': (params) => this.focus(params),
+      'sessions.close': (params) => this.close(params),
+      'sessions.openFile': (params) => this.sessionFile(params),
       badge: (params) => this.badge(params),
       'panels.show': (params) => this.showPanel(params),
       'panels.header': (params) => this.panelHeader(params),
@@ -705,6 +758,8 @@ export class HostApi {
     for (const controller of this.signIns.values()) controller.abort()
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
+    if (this.allTimer !== undefined) clearTimeout(this.allTimer)
+    this.allTimer = undefined
   }
 
   /**
@@ -772,9 +827,103 @@ export class HostApi {
 
   // -------------------------------------------------------------------------------------------
 
-  private list(): SessionInfo[] {
+  private list(params: unknown): SessionInfo[] | SessionSummary[] {
     this.alive()
-    return this.sessionInfos()
+    const { pluginId, scope } = (params ?? {}) as Record<string, unknown>
+    // Absent or 'window' is the call as it always was (an older host sends no params at all).
+    if (scope === undefined || scope === 'window') return this.sessionInfos()
+    if (scope !== 'all') throw new Error('sessions.list: scope must be "window" or "all"')
+    const plugin = this.plugin(pluginId, 'sessions.list')
+    if (plugin.sessionsAll !== true) {
+      throw new Error(`sessions.list: scope "all" needs "access": { "sessions": "all-windows" } in ${plugin.id}'s plugin.json`)
+    }
+    return this.summaries()
+  }
+
+  /** Every window's Claude tabs, summaries only (SessionRegistry.summariesFor builds them field by field). */
+  private summaries(): SessionSummary[] {
+    if (!this.deps.summaries) throw new Error('sessions.list: scope "all" is not available')
+    return this.deps.summaries(this.scope.projectId)
+  }
+
+  /**
+   * ctx.sessions.focus: any window's Claude tab, by design (the top strip's click does the same):
+   * it only moves the person's focus, reveals nothing and types nothing. main resolves the tab's
+   * window from its own registry (focusTab), never from anything in the request.
+   */
+  private focus(params: unknown): boolean {
+    this.alive()
+    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'sessions.focus')
+    if (typeof tabId !== 'string') throw new Error('sessions.focus: tabId must be a string')
+    if (!this.deps.focusTab) throw new Error('sessions.focus: focusing tabs is not available')
+    if (!this.focuses.take(plugin.id)) {
+      throw new Error(`sessions.focus: more than ${MAX_FOCUSES_PER_WINDOW} focuses in ${FOCUS_WINDOW_MS / 1000} s`)
+    }
+    // An id that is no Claude tab moved nothing: it costs nothing either.
+    if (this.deps.session(tabId) === undefined || !this.deps.focusTab(tabId)) {
+      this.focuses.refund(plugin.id)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * ctx.sessions.close: only this project's Claude tabs (another project's id reads like an unknown
+   * one), and only the way the person closes one: a running tab may ask first in its window, so the
+   * answer can be `closed: false` (Cancel). No bypass of the dialog: a plugin is not the person.
+   */
+  private async close(params: unknown): Promise<{ closed: boolean }> {
+    this.alive()
+    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'sessions.close')
+    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
+      throw new Error('sessions.close: unknown tab')
+    }
+    if (!this.deps.closeTab) throw new Error('sessions.close: closing tabs is not available')
+    if (!this.closes.take(plugin.id)) {
+      throw new Error(`sessions.close: more than ${MAX_CLOSES_PER_WINDOW} closes in ${CLOSE_WINDOW_MS / 1000} s`)
+    }
+    let closed: boolean
+    try {
+      closed = await this.deps.closeTab(this.scope.windowId, this.scope.projectId, tabId)
+    } catch (err) {
+      throw withMethod('sessions.close', err)
+    }
+    return { closed }
+  }
+
+  /**
+   * ctx.sessions.openFile: the old Sessions panel's click. Only a tab of this project and only a
+   * file main recorded for it (routeOpenFile checks both against its own registry and the window);
+   * a refusal spends nothing, so a plugin with a stale list does not lock itself out.
+   */
+  private async sessionFile(params: unknown): Promise<null> {
+    this.alive()
+    const { pluginId, tabId, path } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'sessions.openFile')
+    if (typeof tabId !== 'string' || this.deps.session(tabId)?.projectId !== this.scope.projectId) {
+      throw new Error('sessions.openFile: unknown tab')
+    }
+    if (typeof path !== 'string' || path === '') throw new Error('sessions.openFile: path must be a non-empty string')
+    if (!this.deps.openSessionFile) throw new Error('sessions.openFile: opening files is not available')
+    if (!this.sessionFiles.take(plugin.id)) {
+      throw new Error(
+        `sessions.openFile: more than ${MAX_SESSION_FILES_PER_WINDOW} files in ${SESSION_FILE_WINDOW_MS / 1000} s`
+      )
+    }
+    let opened: boolean
+    try {
+      opened = await this.deps.openSessionFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, tabId, path)
+    } catch (err) {
+      this.sessionFiles.refund(plugin.id)
+      throw withMethod('sessions.openFile', err)
+    }
+    if (!opened) {
+      this.sessionFiles.refund(plugin.id)
+      throw new Error('sessions.openFile: not a file of that tab')
+    }
+    return null
   }
 
   /** This project's tabs as plugins see them, the shown one marked (ctx.sessions.list and the event). */
@@ -1570,7 +1719,9 @@ export class HostApi {
    * once per interval (a burst of hooks is one event), built at send time so it is the latest.
    */
   private sessionsChanged(change: SessionChange): void {
-    if (this.revoked || this.timer !== undefined) return
+    if (this.revoked) return
+    this.allSessionsChanged()
+    if (this.timer !== undefined) return
     const projectId = (change.entry ?? change.prev)?.projectId
     if (projectId !== this.scope.projectId) return
     this.timer = setTimeout(() => {
@@ -1584,5 +1735,25 @@ export class HostApi {
     }, this.interval)
     // A pending event must not keep main alive at quit.
     this.timer.unref?.()
+  }
+
+  /**
+   * Any window's tab changed: a host running a plugin with the `access` declaration hears the
+   * summaries of all of them, at most once per interval. Other hosts get nothing, so another
+   * window's activity is not even a timing signal to them.
+   */
+  private allSessionsChanged(): void {
+    if (this.allTimer !== undefined || !this.deps.summaries) return
+    if (!this.scope.plugins.some((p) => p.sessionsAll === true)) return
+    this.allTimer = setTimeout(() => {
+      this.allTimer = undefined
+      if (this.revoked) return
+      try {
+        this.emit('sessions.all', { sessions: this.summaries() })
+      } catch (err) {
+        this.log(`plugin host ${this.scope.projectId}: sessions.all event failed: ${errorText(err)}`)
+      }
+    }, this.interval)
+    this.allTimer.unref?.()
   }
 }

@@ -40,10 +40,10 @@ so a person chooses to install or link it.
 - All paths are plugin-relative, with `/` separators, no `..`, no absolute path. They must exist.
 - `contributes` ids (panel, command, theme) match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
 - Known top-level keys: `id`, `name`, `version`, `api` (all four required), `main`, `contributes`,
-  `services`. Every other key (`description`, `author`, `license`, `homepage`, ...) is tolerated
+  `services`, `access`. Every other key (`description`, `author`, `license`, `homepage`, ...) is tolerated
   and ignored: nothing in the app shows it (a marketplace entry has its own `description`). Known
   keys are strict. Unknown keys inside `contributes` and its entries are ignored as well; only
-  `services` rejects them.
+  `services` and `access` reject them.
 - Fields per contribution: panel `id`, `title`, `kind`, `icon`, `entry`, `defaultZone`; command
   `id`, `title`, `key`; theme `id`, `file`; skill `id`, `dir`; cli `name`, `summary`, `usage`,
   `stdin`; openFile `title`. There is no `description` field on a command or a cli entry: a command is one palette
@@ -54,6 +54,10 @@ so a person chooses to install or link it.
   provider with `ctx.services.useAll`; each must also be in `uses`. No other key inside `services`
   (unlike the top level, an unknown one is an error, so an app before 0.9.7 refuses `collects`).
   Only declared names work with `ctx.services` (`api` topic).
+- `access` (optional, top level): what the plugin sees beyond its own window, shown on its row in
+  Settings > Plugins. Only `"access": { "sessions": "all-windows" }` exists: `ctx.sessions.list` and
+  `onChange` with `{ scope: 'all' }` then answer a summary of every window's Claude tabs (`api` topic);
+  without it they throw. An app before 0.10 ignores the key.
 - `openFile` (an object, not a list; needs `main`): the plugin can take over a click on a changed
   file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
   names the choice in Settings > Plugins, where a project with several such plugins picks one (or

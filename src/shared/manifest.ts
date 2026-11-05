@@ -224,6 +224,18 @@ export interface PluginManifest {
    * the app shows. Absent means none, so existing plugins are unaffected.
    */
   services?: { provides?: Record<string, number>; uses?: Record<string, number>; collects?: string[] }
+  /**
+   * What the plugin may see beyond its own window (design-next §4.1), shown on the Plugins page.
+   * `sessions: 'all-windows'`: `ctx.sessions.list/onChange({ scope: 'all' })` answer with a summary of
+   * every window's Claude tabs (status, tool, title, project); without it those calls throw. Top level,
+   * like `services`: an older app tolerates the unknown key and simply never offers the scope.
+   */
+  access?: { sessions?: 'all-windows' }
+}
+
+/** The manifest declares `"access": { "sessions": "all-windows" }` (ctx.sessions scope `all`). */
+export function seesAllSessions(manifest: Pick<PluginManifest, 'access'> | undefined): boolean {
+  return manifest?.access?.sessions === 'all-windows'
 }
 
 const MAX_PATH_LENGTH = 260
@@ -273,6 +285,13 @@ export const MANIFEST_SCHEMA = {
         uses: serviceMap,
         collects: { type: 'array', maxItems: MAX_SERVICES, uniqueItems: true, items: { type: 'string', pattern: SERVICE_NAME_PATTERN.source } }
       }
+    },
+    // Strict inside like `services`: a misspelt key (`session`) or value would be a declaration that
+    // silently grants nothing, and the person reads this on the Plugins page.
+    access: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { sessions: { enum: ['all-windows'] } }
     },
     contributes: {
       type: 'object',

@@ -149,6 +149,46 @@ describe('onChange', () => {
   })
 })
 
+describe('summariesFor (ctx.sessions scope all, design-next §4.1)', () => {
+  it('gives every tab of every project: status, tool, title, project name and colour as CSS, own for the caller', () => {
+    const colored = new SessionRegistry({
+      projectName: (id) => names[id],
+      projectColor: (id) => (id === P1 ? 'blue' : id === P2 ? '#12abef' : undefined),
+      broadcast: () => {},
+      write: () => {}
+    })
+    try {
+      colored.tabStarted({ tabId: 'a', projectId: P1, kind: 'claude', cwd: '/alpha' })
+      colored.tabStarted({ tabId: 'b', projectId: P2, kind: 'claude', cwd: '/beta' })
+      colored.tabStarted({ tabId: 's', projectId: P2, kind: 'shell', cwd: '/beta' })
+      colored.applyHook('a', 'UserPromptSubmit', { prompt: 'alpha secret prompt' })
+      colored.applyHook('a', 'PreToolUse', { tool_name: 'Bash' })
+      colored.applyHook('b', 'UserPromptSubmit', { prompt: 'beta secret prompt' })
+      colored.applyHook('b', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/beta/secret.ts' } })
+      colored.addNote('b', 'beta secret note')
+      colored.send('b', 'beta queued text')
+      colored.tabOutput('b', '\x1b]0;✳ Beta topic\x07')
+      expect(colored.summariesFor(P1)).toEqual([
+        { tabId: 'a', own: true, project: { name: 'alpha', color: 'var(--cc-project-blue)' }, status: 'working', tool: 'Bash' },
+        { tabId: 'b', own: false, project: { name: 'beta', color: '#12abef' }, status: 'working', title: 'Beta topic' }
+      ])
+      expect(colored.summariesFor(P2).map((s) => s.own)).toEqual([false, true])
+      // Nothing private of any tab, the caller's own included.
+      const text = JSON.stringify(colored.summariesFor(P1))
+      for (const secret of ['secret', '/alpha', '/beta', 'queued', 'sessionId', 'cwd', 'notes', 'files']) {
+        expect(text).not.toContain(secret)
+      }
+    } finally {
+      colored.dispose()
+    }
+  })
+
+  it('leaves the colour out for a project without one', () => {
+    start('a', P1)
+    expect(reg.summariesFor('other')).toEqual([{ tabId: 'a', own: false, project: { name: 'alpha' }, status: 'starting' }])
+  })
+})
+
 describe('snapshotFor (the per-window split)', () => {
   /** Two projects with private data in both. */
   function seed(): void {

@@ -156,6 +156,13 @@ var MANIFEST_SCHEMA = {
         collects: { type: "array", maxItems: MAX_SERVICES, uniqueItems: true, items: { type: "string", pattern: SERVICE_NAME_PATTERN.source } }
       }
     },
+    // Strict inside like `services`: a misspelt key (`session`) or value would be a declaration that
+    // silently grants nothing, and the person reads this on the Plugins page.
+    access: {
+      type: "object",
+      additionalProperties: false,
+      properties: { sessions: { enum: ["all-windows"] } }
+    },
     contributes: {
       type: "object",
       properties: {

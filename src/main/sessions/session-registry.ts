@@ -14,7 +14,8 @@ import { randomUUID } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
 import type { HookEvent } from '../../shared/hooks'
 import type { SessionDetail, SessionsSnapshot, SessionStripEntry } from '../../shared/ipc'
-import type { ProjectColor } from '../../shared/project-color'
+import { projectColorCss, type ProjectColor } from '../../shared/project-color'
+import type { SessionSummary } from '../../sdk/types'
 import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
@@ -323,6 +324,27 @@ export class SessionRegistry {
       }),
       own: entries.filter((e) => e.projectId === projectId).map(detailOf)
     }
+  }
+
+  /**
+   * Every Claude tab of every window as a plugin with the `access` declaration sees it
+   * (ctx.sessions.list({ scope: 'all' }), design-next §4.1), from the view of a host of `projectId`:
+   * status, tool, title and the project's name and colour (as CSS), `own` for that project's tabs.
+   * Field by field like snapshotFor: prompts, notes, files, cwd and the queue never leave main here.
+   */
+  summariesFor(projectId: string): SessionSummary[] {
+    return this.list().map((e) => {
+      const color = this.options.projectColor?.(e.projectId)
+      const out: { -readonly [K in keyof SessionSummary]: SessionSummary[K] } = {
+        tabId: e.tabId,
+        own: e.projectId === projectId,
+        project: { name: this.options.projectName(e.projectId) ?? '', ...(color !== undefined ? { color: projectColorCss(color) } : {}) },
+        status: e.status
+      }
+      if (e.tool !== undefined) out.tool = e.tool
+      if (e.title !== undefined) out.title = e.title
+      return out
+    })
   }
 
   /**

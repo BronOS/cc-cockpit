@@ -54,7 +54,7 @@ import { errorText } from '../../shared/error-text'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
-import type { CliContribution, OpenFileContribution, PluginManifest, SettingsPageContribution, SettingsPageScope, SlotContribution } from '../../shared/manifest'
+import { seesAllSessions, type CliContribution, type OpenFileContribution, type PluginManifest, type SettingsPageContribution, type SettingsPageScope, type SlotContribution } from '../../shared/manifest'
 import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCliResult } from '../../shared/plugin-cli'
 import { capText } from '../../shared/text'
 import { selectSlotProvider } from '../../shared/services'
@@ -210,6 +210,8 @@ export interface HostPlugin {
   slots?: SlotContribution[]
   /** The manifest's `contributes.settings.page`: its html settings page (design-next §5.4). */
   settingsPage?: SettingsPageContribution
+  /** The manifest's `access` (validated): `sessions: 'all-windows'` opens ctx.sessions scope `all`. */
+  access?: PluginManifest['access']
 }
 
 /**
@@ -1089,7 +1091,8 @@ export class HostManager {
               dir: s.dir,
               panels: s.panels,
               webviewPanels: s.webviewPanels ?? [],
-              panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id))
+              panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id)),
+              ...(s.sessionsAll === true ? { sessionsAll: true } : {})
             }))
           },
           (event, params) => rpc.emit(event, params),
@@ -1204,6 +1207,7 @@ export class HostManager {
       ...(p.services !== undefined ? { services: p.services } : {}),
       ...(p.openFile !== undefined ? { openFile: true } : {}),
       ...(p.settingsPage !== undefined ? { settingsPage: [...p.settingsPage.scopes] } : {}),
+      ...(seesAllSessions(p) ? { sessionsAll: true } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']
@@ -1301,7 +1305,14 @@ export class HostManager {
     }
     rec.status.set(id, { id, state: 'starting' })
     this.setPanelError(rec, id, undefined)
-    rec.api?.updatePlugin({ id, dir: next.dir, panels: spec.panels, webviewPanels: spec.webviewPanels ?? [], panelSlots: panelSlotsOf(next) })
+    rec.api?.updatePlugin({
+      id,
+      dir: next.dir,
+      panels: spec.panels,
+      webviewPanels: spec.webviewPanels ?? [],
+      panelSlots: panelSlotsOf(next),
+      ...(spec.sessionsAll === true ? { sessionsAll: true } : {})
+    })
     let state: unknown
     try {
       state = await rec.rpc?.call('plugin.reload', { plugin: spec }, {

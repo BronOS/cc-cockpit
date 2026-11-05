@@ -208,6 +208,21 @@ with full Node access.
   selected. Selection only: the window may be in the background.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
   included (at most 4 a second).
+- `ctx.sessions.list({ scope: 'all' })` and `onChange(listener, { scope: 'all' })`: every window's
+  Claude tabs as summaries `{ tabId, own, project: { name, color? }, status, tool?, title? }` (`own`: a
+  tab of this window; `color` a CSS value, `var(--cc-project-blue)` or `#rrggbb`), never prompts, notes,
+  files, cwd or terminal content. Only with `"access": { "sessions": "all-windows" }` in plugin.json
+  (`plugins` topic); without it both throw. An older app ignores the option and answers this window's
+  list: check `typeof ctx.sessions.focus === 'function'` first.
+- `ctx.sessions.focus(tabId)`: select a Claude tab of any window and raise that window; `false` for an
+  id that is no Claude tab. At most 10 in 10 s.
+- `ctx.sessions.close(tabId)`: close a Claude tab of this window the person's way: a running tab asks
+  first (the close dialog, unless they turned it off) in this window, raised for it. Resolves
+  `{ closed: false }` on Cancel or when the dialog could not be shown (another dialog, an overlay, the
+  settings screen up). Rejects for another window's tab. At most 10 a minute.
+- `ctx.sessions.openFile(tabId, path)`: open one of the tab's `files` (verbatim) as a click in the
+  Sessions panel would: through the plugin picked to open files when it is inside the project, else in
+  the built-in viewer. Rejects for another window's tab or a path not in its list. At most 20 in 10 s.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise. Refuses text starting with `/`, `!`, `#` or `&`.
 - `ctx.sessions.open({ cwd, prompt, focus })`: a new Claude tab; the prompt is an argument, never typed.

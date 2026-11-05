@@ -67,6 +67,13 @@ const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta'])
  */
 const inPageTitleBar = navigator.platform.toLowerCase().includes('mac')
 
+/** The dialog went: answer the plugin close waiting on it (`confirmDone`), if one is, once. */
+function settleClose(confirmDone: { current: ((closed: boolean) => void) | null }, closed: boolean): void {
+  const done = confirmDone.current
+  confirmDone.current = null
+  done?.(closed)
+}
+
 /** The project window's terminal tabs: tab bar plus one mounted terminal per tab. */
 export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean }): React.JSX.Element {
   // macOS hides the traffic lights in full screen; main tells the page when that changes (the
@@ -127,6 +134,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The tab whose close dialog is up, else null: modal like the settings screen (the key handler
   // and focusActive read it), and set before the render for the same reason as settingsShown.
   const confirmFor = useRef<string | null>(null)
+  // A plugin's ctx.sessions.close waiting on the dialog that is up (`sessions.closeAsk`): told
+  // whether the tab closed once the dialog goes, however it goes. Null for the person's own close.
+  const confirmDone = useRef<((closed: boolean) => void) | null>(null)
   // The window's own Claude statuses, for the dialog's "Claude is working" (read when it opens).
   const ownRef = useRef(own)
   // The Ctrl+Tab switcher (tab-switcher.ts): open while non-null, mirrored in a ref for the window
@@ -166,6 +176,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if (confirmFor.current === tabId) {
         confirmFor.current = null
         setConfirm(null)
+        // The tab is gone, which is what a plugin's close asked for.
+        settleClose(confirmDone, true)
       }
       sessions.dispose(tabId)
       dispatch({ type: 'removed', tabId, gen })
@@ -234,13 +246,21 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
   }
 
-  // The close itself, with no question: what a confirmed or unguarded close ends in.
-  const close = (tabId: string): void =>
+  // The close itself, with no question: what a confirmed or unguarded close ends in. `done` is a
+  // plugin's close waiting for the outcome.
+  const close = (tabId: string, done?: (closed: boolean) => void): void =>
     run(
-      window.cockpit.invoke('tabs.close', { tabId }).then(() => {
-        sessions.dispose(tabId)
-        dispatch({ type: 'closed', tabId })
-      })
+      window.cockpit.invoke('tabs.close', { tabId }).then(
+        () => {
+          sessions.dispose(tabId)
+          dispatch({ type: 'closed', tabId })
+          done?.(true)
+        },
+        (err: unknown) => {
+          done?.(false)
+          throw err
+        }
+      )
     )
 
   const restart = (tabId: string): void =>
@@ -281,11 +301,18 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // comes here; main's own closes (a clean exit, a plugin) never do. A tab with nothing running
   // closes at once; for a running one the setting is read from main at each close (a change made in
   // another window applies too), and a failed read asks, the safe side.
-  const requestClose = (tabId: string): void => {
-    if (confirmFor.current !== null) return
+  //
+  // A plugin's ctx.sessions.close comes here too (`sessions.closeAsk`), so it can never close a
+  // running tab the person would have been asked about: `done` hears whether the tab closed, false
+  // for every way the request is dropped or cancelled.
+  const requestClose = (tabId: string, done?: (closed: boolean) => void): void => {
+    if (confirmFor.current !== null) {
+      done?.(false)
+      return
+    }
     const tab = stateRef.current.tabs.find((t) => t.id === tabId)
     if (!tab || !tabIsRunning(tab)) {
-      close(tabId)
+      close(tabId, done)
       return
     }
     window.cockpit
@@ -295,20 +322,30 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         // What changed during the round trip: a screen or overlay opened over the window (the
         // request is dropped rather than asked under it), another dialog opened, the tab went or
         // its process ended (read again: an exited tab no longer asks).
-        if (confirmFor.current !== null || settingsShown.current || overlayOpen.current) return
+        if (confirmFor.current !== null || settingsShown.current || overlayOpen.current) {
+          done?.(false)
+          return
+        }
         const now = stateRef.current.tabs.find((t) => t.id === tabId)
-        if (!now) return
+        if (!now) {
+          done?.(false)
+          return
+        }
         const question = closeQuestion(now, ownRef.current.get(tabId)?.status, enabled)
         if (!question) {
-          close(tabId)
+          close(tabId, done)
           return
         }
         // Set before the render, as settingsShown is: a focus frame queued just before (the palette
         // closing as it runs Close Tab) must find the dialog up and leave the terminal alone.
         confirmFor.current = tabId
+        confirmDone.current = done ?? null
         setConfirm(question)
       })
-      .catch((err: unknown) => setError(ipcErrorMessage(err)))
+      .catch((err: unknown) => {
+        done?.(false)
+        setError(ipcErrorMessage(err))
+      })
   }
 
   // Commands (Task 11). Main resolves the key table; the handlers below act through the same tab
@@ -320,6 +357,19 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     paletteOpen.current = paletteCommands !== null
     settingsShown.current = settingsOpen
   })
+  // A plugin's ctx.sessions.close (main's `sessions.closeAsk`): the person's own close path, the
+  // dialog included, and main hears the outcome. A failed answer only logs: main's wait ends anyway.
+  useEffect(
+    () =>
+      window.cockpit.on('sessions.closeAsk', ({ requestId, tabId }) => {
+        actions.current.close(tabId, (closed) => {
+          window.cockpit.invoke('sessions.closeAnswer', { requestId, closed }).catch((err: unknown) => {
+            console.warn('answering a plugin close failed', err)
+          })
+        })
+      }),
+    []
+  )
   /**
    * Give the keyboard back to what the user was in once a palette or overlay goes: the settings
    * screen while it is shown, else the active terminal. Decided when the frame fires, never when
@@ -436,6 +486,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (count > 0) {
       confirmFor.current = null
       setConfirm(null)
+      settleClose(confirmDone, false)
     }
     setCovered(count > 0)
   }, [endSwitcher])
@@ -449,7 +500,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           .invoke('settings.confirmTabCloseSet', { value: false })
           .catch((err: unknown) => setError(ipcErrorMessage(err)))
       }
-      if (doClose) actions.current.closeNow(tabId)
+      if (doClose) {
+        const done = confirmDone.current ?? undefined
+        confirmDone.current = null
+        actions.current.closeNow(tabId, done)
+      } else settleClose(confirmDone, false)
     },
     []
   )

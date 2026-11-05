@@ -892,17 +892,31 @@ Read Technical Details "In-flight fixes" before tasks 9, 10 and 12.
   `src/renderer/settings/PluginsPage.tsx` and the install confirmation (show the declaration)
 - Modify: `test/unit/host-api.test.ts`, `session-registry.test.ts`, `manifest.test.ts`, `open-file.test.ts`
 
-- [ ] `list({ scope })` / `onChange(listener, { scope })` (4/s); `scope: 'all'` only with the declaration (throws
+- [x] `list({ scope })` / `onChange(listener, { scope })` (4/s); `scope: 'all'` only with the declaration (throws
   otherwise) and only `SessionSummary` fields (status, tool, title, name, project name/colour, `own`) — never prompts,
   notes, files, cwd or terminal content
-- [ ] `focus(tabId)` any Claude tab (raises its window); `close`, `openFile` only this window's tabs (main's lookup of the
+- [x] `focus(tabId)` any Claude tab (raises its window); `close`, `openFile` only this window's tabs (main's lookup of the
   host's project); `close` through the person's close path (`closed: false` on Cancel); `openFile` only a file main
   recorded for that tab, routed by the `@open-file` pick else the built-in viewer
-- [ ] limits per Technical Details "Sessions limits"; `send` unchanged (this window and the gate)
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
-- [ ] write tests: scope refusal without the declaration, field filtering, other-window ids refused for close/openFile,
+- [x] limits per Technical Details "Sessions limits"; `send` unchanged (this window and the gate)
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`
+- [x] write tests: scope refusal without the declaration, field filtering, other-window ids refused for close/openFile,
   focus across windows, each limit, an unrecorded file refused
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` — done when green
+- ➕ `SessionSummary` has no `name` yet: `name` exists only with rename, so task 34 adds it to `SessionInfo` and
+  `SessionSummary` together. `project.color` is a CSS value (`var(--cc-project-<name>)` or `#rrggbb`, theme tokens
+  panel pages have). The guide text for scope / focus / close / openFile / `access` is written here (api.md,
+  plugins.md); task 34 adds rename.
+- ➕ close path: main asks the window (`sessions.closeAsk` → `sessions.closeAnswer`, `src/main/sessions/close-asks.ts`,
+  5-minute bound, `false` when the window closes); the renderer runs its own `requestClose` with a completion, so every
+  dropped or cancelled dialog answers `closed: false`. The window is raised only when the tab is running and
+  `confirmTabClose` is on (the dialog will show); an idle tab closes without moving the person's focus.
+- ⚠️ install confirmation: a marketplace listing carries no manifest before the clone, so the declaration shows only on
+  the plugin's row in Settings › Plugins (`PluginView.seesAllSessions`); the install prompt already says "full access
+  to this computer". `validate.ts`, `window-manager.ts` (`focusProject` exists) and `open-file.ts` (routeOpenFile
+  already checks the recorded file) needed no change; the schema in `manifest.ts` covers `access`.
+- ➕ `sessions.all` goes out on tab changes only; a project's colour or name change alone does not resend it (the next
+  tab change carries it).
 
 ### Task 34: Session rename [model: sonnet] [SYNC]
 

@@ -285,6 +285,11 @@ function PluginItem(props: {
               Off in all projects: it runs nowhere, whatever each project's switch says.
             </div>
           )}
+          {plugin.seesAllSessions === true && (
+            <div className="settings-item-meta" data-testid="plugin-access-sessions">
+              Sees the Claude sessions of every window: status, tool, title and project (never prompts, notes or files).
+            </div>
+          )}
           {props.note !== undefined && <div className="settings-item-meta" data-testid="marketplace-note">{props.note}</div>}
           {props.services !== undefined && props.services.provides.length > 0 && (
             <div className="settings-item-meta" data-testid="service-provides">

@@ -17,9 +17,15 @@ import {
   type UrlView
 } from '../../src/main/overlays/overlay-manager'
 import {
+  CLOSE_WINDOW_MS,
   EXTERNAL_OPEN_WINDOW_MS,
   FILE_OPEN_WINDOW_MS,
+  FOCUS_WINDOW_MS,
   HostApi,
+  MAX_CLOSES_PER_WINDOW,
+  MAX_FOCUSES_PER_WINDOW,
+  MAX_SESSION_FILES_PER_WINDOW,
+  SESSION_FILE_WINDOW_MS,
   MAX_EXTERNAL_OPENS_PER_WINDOW,
   MAX_FILE_OPENS_PER_WINDOW,
   MAX_OPEN_OVERLAYS,
@@ -1422,5 +1428,155 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     await vi.waitFor(() => expect(channel).toBeDefined())
     await expect(channel!.onDiscuss!()).resolves.toEqual({ text: 'ctx' })
     expect(hostCalls).toEqual([{ method: 'overlay.discuss', params: { pluginId: 'a.one', handle: H }, timeoutMs: 5_000 }])
+  })
+})
+
+// design-next §4.1: scope 'all' with the manifest's declaration, focus any window's tab, close and
+// openFile only this window's, each with its own budget per plugin.
+describe('sessions scope all, focus, close, openFile', () => {
+  const declared = (): HostScope => ({
+    ...scopeA(),
+    plugins: [
+      { id: 'a.one', dir: pluginOne, panels: ['board'], sessionsAll: true },
+      { id: 'a.two', dir: pluginTwo, panels: ['inbox'] }
+    ]
+  })
+
+  it('refuses scope all without the declaration, and answers summaries with it', async () => {
+    deps.summaries = (projectId) => registry.summariesFor(projectId)
+    const mine = tabs.create(A, { kind: 'claude' })
+    const theirs = tabs.create(B, { kind: 'claude' })
+    registry.applyHook(theirs.id, 'UserPromptSubmit', { prompt: 'their private prompt' })
+    const plain = hostA()
+    await expect(plain('sessions.list', { pluginId: 'a.one', scope: 'all' })).rejects.toThrow(
+      `needs "access": { "sessions": "all-windows" } in a.one's plugin.json`
+    )
+    const host = hostFor(declared())
+    await expect(host('sessions.list', { pluginId: 'a.two', scope: 'all' })).rejects.toThrow('needs "access"')
+    await expect(host('sessions.list', { pluginId: 'a.one', scope: 'everything' })).rejects.toThrow('scope must be')
+    await expect(host('sessions.list', { pluginId: 'nobody', scope: 'all' })).rejects.toThrow('unknown plugin')
+    const all = (await host('sessions.list', { pluginId: 'a.one', scope: 'all' })) as Record<string, unknown>[]
+    expect(all).toEqual([
+      { tabId: mine.id, own: true, project: { name: 'p' }, status: 'starting' },
+      { tabId: theirs.id, own: false, project: { name: 'p' }, status: 'working' }
+    ])
+    expect(JSON.stringify(all)).not.toMatch(/private|cwd|files|notes/)
+    // Scope window (or none) is the call as it always was, for any plugin.
+    await expect(host('sessions.list', { pluginId: 'a.two', scope: 'window' })).resolves.toHaveLength(1)
+    await expect(host('sessions.list', {})).resolves.toHaveLength(1)
+  })
+
+  it('sends sessions.all on any window’s change only to a host running a declaring plugin', async () => {
+    vi.useFakeTimers()
+    deps.summaries = (projectId) => registry.summariesFor(projectId)
+    const withDecl: { event: string; params: unknown }[] = []
+    const without: { event: string; params: unknown }[] = []
+    hostFor(declared(), withDecl)
+    hostA(without)
+    const theirs = tabs.create(B, { kind: 'claude' })
+    vi.advanceTimersByTime(SESSIONS_EVENT_INTERVAL_MS)
+    expect(withDecl.map((e) => e.event)).toEqual(['sessions.all'])
+    expect(withDecl[0]!.params).toEqual({ sessions: [{ tabId: theirs.id, own: false, project: { name: 'p' }, status: 'starting' }] })
+    // The other host hears nothing of project B at all.
+    expect(without).toEqual([])
+  })
+
+  it('focus reaches a tab of any window, false for no Claude tab, at most 10 in 10 s', async () => {
+    const focused: string[] = []
+    deps.focusTab = (tabId) => {
+      focused.push(tabId)
+      return true
+    }
+    const theirs = tabs.create(B, { kind: 'claude' })
+    const shell = tabs.create(A, { kind: 'shell' })
+    const host = hostA()
+    await expect(host('sessions.focus', { pluginId: 'a.one', tabId: theirs.id })).resolves.toBe(true)
+    expect(focused).toEqual([theirs.id])
+    // A shell tab or an unknown id is no Claude tab: false, nothing moved, nothing spent.
+    for (let i = 0; i < 20; i++) {
+      await expect(host('sessions.focus', { pluginId: 'a.one', tabId: shell.id })).resolves.toBe(false)
+      await expect(host('sessions.focus', { pluginId: 'a.one', tabId: 'nope' })).resolves.toBe(false)
+    }
+    expect(focused).toEqual([theirs.id])
+    for (let i = 1; i < MAX_FOCUSES_PER_WINDOW; i++) await host('sessions.focus', { pluginId: 'a.one', tabId: theirs.id })
+    await expect(host('sessions.focus', { pluginId: 'a.one', tabId: theirs.id })).rejects.toThrow(
+      `more than ${MAX_FOCUSES_PER_WINDOW} focuses in ${FOCUS_WINDOW_MS / 1000} s`
+    )
+    // Per plugin.
+    await expect(host('sessions.focus', { pluginId: 'a.two', tabId: theirs.id })).resolves.toBe(true)
+    await expect(host('sessions.focus', { pluginId: 'a.one', tabId: 5 })).rejects.toThrow('tabId must be a string')
+  })
+
+  it("close goes to the host's own window for its own tabs only, relays closed, at most 10 a minute", async () => {
+    const asked: unknown[][] = []
+    let answer = true
+    deps.closeTab = async (windowId, projectId, tabId) => {
+      asked.push([windowId, projectId, tabId])
+      return answer
+    }
+    const mine = tabs.create(A, { kind: 'claude' })
+    const theirs = tabs.create(B, { kind: 'claude' })
+    const host = hostA()
+    await expect(host('sessions.close', { pluginId: 'a.one', tabId: theirs.id })).rejects.toThrow('sessions.close: unknown tab')
+    await expect(host('sessions.close', { pluginId: 'a.one', tabId: 'nope' })).rejects.toThrow('unknown tab')
+    expect(asked).toEqual([])
+    await expect(host('sessions.close', { pluginId: 'a.one', tabId: mine.id })).resolves.toEqual({ closed: true })
+    answer = false
+    await expect(host('sessions.close', { pluginId: 'a.one', tabId: mine.id })).resolves.toEqual({ closed: false })
+    expect(asked).toEqual([
+      [WIN_A, A, mine.id],
+      [WIN_A, A, mine.id]
+    ])
+    for (let i = 2; i < MAX_CLOSES_PER_WINDOW; i++) await host('sessions.close', { pluginId: 'a.one', tabId: mine.id })
+    await expect(host('sessions.close', { pluginId: 'a.one', tabId: mine.id })).rejects.toThrow(
+      `more than ${MAX_CLOSES_PER_WINDOW} closes in ${CLOSE_WINDOW_MS / 1000} s`
+    )
+  })
+
+  it('openFile: own tabs only, an unrecorded file refused without spending, at most 20 in 10 s', async () => {
+    const opened: unknown[][] = []
+    deps.openSessionFile = async (caller, tabId, file) => {
+      opened.push([caller, tabId, file])
+      return registry.get(tabId)?.files.includes(file) === true
+    }
+    const mine = tabs.create(A, { kind: 'claude' })
+    registry.applyHook(mine.id, 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: join(projA, 'a.ts') } })
+    const theirs = tabs.create(B, { kind: 'claude' })
+    registry.applyHook(theirs.id, 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: join(projB, 'b.ts') } })
+    const host = hostA()
+    await expect(host('sessions.openFile', { pluginId: 'a.one', tabId: theirs.id, path: join(projB, 'b.ts') })).rejects.toThrow(
+      'sessions.openFile: unknown tab'
+    )
+    expect(opened).toEqual([])
+    for (let i = 0; i < MAX_SESSION_FILES_PER_WINDOW + 5; i++) {
+      await expect(host('sessions.openFile', { pluginId: 'a.one', tabId: mine.id, path: '/etc/passwd' })).rejects.toThrow(
+        'not a file of that tab'
+      )
+    }
+    await expect(host('sessions.openFile', { pluginId: 'a.one', tabId: mine.id, path: '' })).rejects.toThrow('non-empty string')
+    for (let i = 0; i < MAX_SESSION_FILES_PER_WINDOW; i++) {
+      await expect(host('sessions.openFile', { pluginId: 'a.one', tabId: mine.id, path: join(projA, 'a.ts') })).resolves.toBeNull()
+    }
+    expect(opened.at(-1)).toEqual([{ windowId: WIN_A, projectId: A }, mine.id, join(projA, 'a.ts')])
+    await expect(host('sessions.openFile', { pluginId: 'a.one', tabId: mine.id, path: join(projA, 'a.ts') })).rejects.toThrow(
+      `more than ${MAX_SESSION_FILES_PER_WINDOW} files in ${SESSION_FILE_WINDOW_MS / 1000} s`
+    )
+  })
+
+  it('refuses all four once the host is revoked', async () => {
+    deps.summaries = (projectId) => registry.summariesFor(projectId)
+    deps.focusTab = () => true
+    deps.closeTab = async () => true
+    deps.openSessionFile = async () => true
+    const mine = tabs.create(A, { kind: 'claude' })
+    const api = new HostApi(deps, declared(), () => {})
+    apis.push(api)
+    api.revoke()
+    const h = api.handlers
+    const call = (m: string, p: unknown): Promise<unknown> => Promise.resolve().then(() => h[m]!(p))
+    await expect(call('sessions.list', { pluginId: 'a.one', scope: 'all' })).rejects.toThrow('stopping')
+    await expect(call('sessions.focus', { pluginId: 'a.one', tabId: mine.id })).rejects.toThrow('stopping')
+    await expect(call('sessions.close', { pluginId: 'a.one', tabId: mine.id })).rejects.toThrow('stopping')
+    await expect(call('sessions.openFile', { pluginId: 'a.one', tabId: mine.id, path: 'x' })).rejects.toThrow('stopping')
   })
 })

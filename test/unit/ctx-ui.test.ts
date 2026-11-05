@@ -110,6 +110,65 @@ describe('ctx.sessions', () => {
   })
 })
 
+// design-next §4.1: scope all (the declaration checked here first), focus, close, openFile.
+describe('ctx.sessions scope all and the tab actions', () => {
+  function declaring(answer: (c: Call) => unknown = () => null) {
+    const base = setup(answer)
+    const seer = base.contexts.create(hostSpec({ id: 'a.seer', dir: '/p/seer', main: 'h.js', sessionsAll: true }))
+    return { ...base, seer }
+  }
+
+  it('throws for scope all without the declaration, before asking main', async () => {
+    const { ctx, calls } = setup()
+    await expect(ctx.sessions.list({ scope: 'all' })).rejects.toThrow('needs "access": { "sessions": "all-windows" }')
+    expect(() => ctx.sessions.onChange(() => {}, { scope: 'all' })).toThrow('needs "access"')
+    await expect(ctx.sessions.list({ scope: 'x' as 'all' })).rejects.toThrow('scope must be')
+    expect(calls).toEqual([])
+    // Scope window is the old call.
+    await ctx.sessions.list({ scope: 'window' })
+    expect(calls).toEqual([{ method: 'sessions.list', params: {} }])
+  })
+
+  it('asks main for summaries with the plugin id, and hands sessions.all only to scope all listeners', async () => {
+    const { contexts, ctx, seer, calls } = declaring(() => [])
+    await seer.sessions.list({ scope: 'all' })
+    expect(calls).toEqual([{ method: 'sessions.list', params: { pluginId: 'a.seer', scope: 'all' } }])
+    const all: unknown[] = []
+    const own: unknown[] = []
+    seer.sessions.onChange((s) => all.push(s), { scope: 'all' })
+    seer.sessions.onChange((s) => own.push(s))
+    const plain: unknown[] = []
+    ctx.sessions.onChange((s) => plain.push(s))
+    const summaries = [{ tabId: 't1', own: false, project: { name: 'p' }, status: 'working' }]
+    contexts.handleEvent('sessions.all', { sessions: summaries })
+    expect(all).toEqual([summaries])
+    expect(own).toEqual([])
+    expect(plain).toEqual([])
+    contexts.handleEvent('sessions', { sessions: [] })
+    expect(all).toHaveLength(1)
+    expect(own).toEqual([[]])
+    contexts.dispose('a.seer')
+    contexts.handleEvent('sessions.all', { sessions: summaries })
+    expect(all).toHaveLength(1)
+  })
+
+  it('sends focus, close (no RPC timeout) and openFile with the plugin id, checking the arguments', async () => {
+    const { ctx, calls } = setup((c) => (c.method === 'sessions.focus' ? true : c.method === 'sessions.close' ? { closed: false } : null))
+    await expect(ctx.sessions.focus('t1')).resolves.toBe(true)
+    await expect(ctx.sessions.close('t1')).resolves.toEqual({ closed: false })
+    await expect(ctx.sessions.openFile('t1', '/p/a.ts')).resolves.toBeUndefined()
+    expect(calls).toEqual([
+      { method: 'sessions.focus', params: { pluginId: 'a.one', tabId: 't1' } },
+      { method: 'sessions.close', params: { pluginId: 'a.one', tabId: 't1' }, options: { timeoutMs: Infinity } },
+      { method: 'sessions.openFile', params: { pluginId: 'a.one', tabId: 't1', path: '/p/a.ts' } }
+    ])
+    await expect(ctx.sessions.focus(5 as unknown as string)).rejects.toThrow('needs a tab id')
+    await expect(ctx.sessions.close('')).rejects.toThrow('needs a tab id')
+    await expect(ctx.sessions.openFile('t1', '')).rejects.toThrow('needs a path')
+    expect(calls).toHaveLength(3)
+  })
+})
+
 describe('ctx.badge', () => {
   it("sends a badge for the plugin's own declared panel only", async () => {
     const { ctx, calls } = setup()

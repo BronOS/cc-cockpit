@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadManifest, validateManifest } from '../../src/main/plugins/validate'
-import { PLUGIN_ID_PATTERN, isReservedPluginId, relativePathProblem } from '../../src/shared/manifest'
+import { PLUGIN_ID_PATTERN, isReservedPluginId, relativePathProblem, seesAllSessions } from '../../src/shared/manifest'
 
 let dir: string
 let outside: string
@@ -508,6 +508,27 @@ describe('services', () => {
     expect((await errorsOf(withServices({ provides: [] }))).join()).toMatch(/services\/provides/)
     expect((await errorsOf(withServices({ uses: 'x' }))).join()).toMatch(/services\/uses/)
   })
+})
+
+describe('access (design-next §4.1)', () => {
+  it('accepts "access": { "sessions": "all-windows" } and keeps it', async () => {
+    const r = await validateManifest(manifest({ access: { sessions: 'all-windows' } }), dir)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.manifest.access).toEqual({ sessions: 'all-windows' })
+      expect(seesAllSessions(r.manifest)).toBe(true)
+    }
+    expect((await validateManifest(manifest({ access: {} }), dir)).ok).toBe(true)
+    expect(seesAllSessions(manifest() as never)).toBe(false)
+    expect(seesAllSessions(undefined)).toBe(false)
+  })
+
+  it.each([{ sessions: 'all' }, { sessions: true }, { session: 'all-windows' }, 'all-windows', []])(
+    'refuses the declaration %j',
+    async (access) => {
+      expect((await errorsOf(manifest({ access }))).join()).toMatch(/access/)
+    }
+  )
 })
 
 describe('slots (design-next §2)', () => {

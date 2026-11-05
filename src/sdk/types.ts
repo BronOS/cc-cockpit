@@ -351,6 +351,25 @@ export interface SessionInfo {
   readonly active?: boolean
 }
 
+/**
+ * One Claude tab of any window (`ctx.sessions.list({ scope: 'all' })`, which needs the manifest's
+ * `"access": { "sessions": "all-windows" }`). Only what tells the tabs apart and what they are doing:
+ * never prompts, notes, files, cwd or terminal content.
+ */
+export interface SessionSummary {
+  readonly tabId: string
+  /** A tab of the caller's own window; its full `SessionInfo` is in `list()`. */
+  readonly own: boolean
+  /**
+   * The tab's project: its name, and its colour as a CSS value when it has one (`var(--cc-project-blue)`
+   * for a palette colour, a theme token panel pages have; `#rrggbb` for a custom one).
+   */
+  readonly project: { readonly name: string; readonly color?: string }
+  readonly status: SessionStatus
+  readonly tool?: string
+  readonly title?: string
+}
+
 /** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */
 export type SendResult = { readonly delivered: true } | { readonly queued: true; readonly itemId: string }
 
@@ -638,9 +657,37 @@ export interface PluginContext {
 
   // sessions
   readonly sessions: {
-    list(): Promise<SessionInfo[]>
-    /** The whole list again whenever one of this window's Claude tabs changes (at most 4 per second). */
-    onChange(listener: (sessions: SessionInfo[]) => void): Disposer
+    /**
+     * This window's Claude tabs. `{ scope: 'all' }`: a summary of every window's Claude tabs instead,
+     * only with the manifest's `"access": { "sessions": "all-windows" }` (throws otherwise). An older
+     * app ignores the option and answers this window's tabs: check `typeof ctx.sessions.focus`.
+     */
+    list(options?: { scope?: 'window' }): Promise<SessionInfo[]>
+    list(options: { scope: 'all' }): Promise<SessionSummary[]>
+    /**
+     * The whole list again whenever one of this window's Claude tabs changes (at most 4 per second).
+     * `{ scope: 'all' }`: the summaries of every window whenever any Claude tab changes; the same
+     * declaration as `list`.
+     */
+    onChange(listener: (sessions: SessionInfo[]) => void, options?: { scope?: 'window' }): Disposer
+    onChange(listener: (sessions: SessionSummary[]) => void, options: { scope: 'all' }): Disposer
+    /**
+     * Select a Claude tab of any window, raising that window. False for an id that is no Claude tab
+     * (any more). At most 10 in 10 s.
+     */
+    focus(tabId: string): Promise<boolean>
+    /**
+     * Close a Claude tab of this window the way the person would: a running tab asks first (the close
+     * dialog, unless the person turned it off), in this window, which is raised for it. `closed: false`
+     * when they cancel or the dialog could not be shown. Rejects for a tab of another window. At most 10 a minute.
+     */
+    close(tabId: string): Promise<{ closed: boolean }>
+    /**
+     * Open one of a tab's changed `files` (an entry of its `SessionInfo.files`, verbatim) as the person's
+     * click would: the plugin picked to open files when it is inside the project, else the built-in
+     * viewer. Rejects for a tab of another window and a path that is not in the tab's list. At most 20 in 10 s.
+     */
+    openFile(tabId: string, path: string): Promise<void>
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
      * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute.

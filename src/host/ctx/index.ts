@@ -445,7 +445,7 @@ export class HostContexts {
           rt.webviewUsed = true
         }
       }),
-      sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions }),
+      sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions, sessionsAll: spec.sessionsAll === true }),
       commands: Object.freeze({ register }),
       cli: Object.freeze({ register: registerCli }),
       files: createFilesApi({
@@ -640,8 +640,8 @@ export class HostContexts {
   }
 
   /**
-   * One-way events from main: `settings` `{ pluginId, project, app }` and `sessions`
-   * `{ sessions }` (this project's tabs changed).
+   * One-way events from main: `settings` `{ pluginId, project, app }`, `sessions` `{ sessions }`
+   * (this project's tabs changed) and `sessions.all` `{ sessions }` (any window's, summaries).
    */
   handleEvent(event: string, params: unknown): void {
     if (event === 'cli.cancel') {
@@ -653,6 +653,10 @@ export class HostContexts {
     }
     if (event === 'sessions') {
       this.sessions.handleEvent(params)
+      return
+    }
+    if (event === 'sessions.all') {
+      this.sessions.handleAllEvent(params)
       return
     }
     if (event === 'overlay.ended') {

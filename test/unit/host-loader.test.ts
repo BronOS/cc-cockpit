@@ -528,6 +528,11 @@ describe('parsePluginSpecs', () => {
     expect(() => parsePluginSpecs({ plugins: [{ ...good, slotTypes: 'agenda' }] })).toThrow('slotTypes must be an array of strings')
     expect(() => parsePluginSpecs({ plugins: [{ ...good, panelSlots: { main: 'agenda' } }] })).toThrow('panelSlots must map')
     expect(() => parsePluginSpecs({ plugins: [{ ...good, panelSlots: ['agenda'] }] })).toThrow('panelSlots must map')
+    // sessionsAll (the manifest's `access` declaration): absent is false, present a boolean.
+    expect(parsePluginSpecs({ plugins: [good] })[0]?.sessionsAll).toBeUndefined()
+    expect(parsePluginSpecs({ plugins: [{ ...good, sessionsAll: true }] })[0]?.sessionsAll).toBe(true)
+    expect(parsePluginSpecs({ plugins: [{ ...good, sessionsAll: false }] })[0]?.sessionsAll).toBeUndefined()
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, sessionsAll: 'yes' }] })).toThrow('sessionsAll must be a boolean')
     // services: absent is none (left out of the spec); present, it is kept as main sent it.
     expect(parsePluginSpecs({ plugins: [good] })[0]?.services).toBeUndefined()
     const services = { provides: { triage: 1 }, uses: { mail: 2 } }

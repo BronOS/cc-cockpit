@@ -375,6 +375,11 @@ export interface PluginView {
   settingsPage?: true
   /** Bundled plugins only: switched off in every project (`AppSettings.disabledBundled`). Absent for any other source. */
   offInAllProjects?: boolean
+  /**
+   * The manifest declares `"access": { "sessions": "all-windows" }`: it sees the status, tool, title and
+   * project of every window's Claude tabs (design-next §4.1). Shown on the plugin's row. Absent: no.
+   */
+  seesAllSessions?: true
 }
 
 /** The repository and commit a confirmation displayed; main compares them with its own pin before it installs. */
@@ -787,6 +792,11 @@ export interface IpcInvokeMap {
    * itself (main/sessions/open-diff.ts). False when any of that does not hold.
    */
   'sessions.openFile': { req: { tabId: string; file: string }; res: boolean }
+  /**
+   * The answer to a `sessions.closeAsk` (a plugin's ctx.sessions.close): whether the tab closed.
+   * Settles only an ask main sent to the sender's own window; false for any other id.
+   */
+  'sessions.closeAnswer': { req: { requestId: string; closed: boolean }; res: boolean }
 
   // Zones.
   /** The sender's project layout, reconciled with the panels that exist. Plain query. */
@@ -1140,6 +1150,12 @@ export interface IpcEventMap {
   /** This window's view of the Claude tabs (see SessionsSnapshot); throttled to 10 per second. */
   'sessions.snapshot': SessionsSnapshot
   /**
+   * A plugin asks to close this Claude tab of the window (ctx.sessions.close): run the person's own
+   * close (the dialog when it is running and the setting asks), then answer `sessions.closeAnswer`
+   * with the same `requestId`, `closed: false` on Cancel or when the close could not be asked.
+   */
+  'sessions.closeAsk': { requestId: string; tabId: string }
+  /**
    * This window's project changed on main's side (its colour was set, from this window's settings
    * or any other way): what `window.info` would now say about it. Project windows only.
    */
@@ -1227,6 +1243,7 @@ export const INVOKE_CHANNELS = [
   'sessions.cancelQueued',
   'sessions.focus',
   'sessions.openFile',
+  'sessions.closeAnswer',
   'layout.get',
   'layout.set',
   'commands.list',
@@ -1323,6 +1340,7 @@ export const EVENT_CHANNELS = [
   'prefs.changed',
   'notify.chime',
   'sessions.snapshot',
+  'sessions.closeAsk',
   'project.updated',
   'projects.changed',
   'tabs.select',

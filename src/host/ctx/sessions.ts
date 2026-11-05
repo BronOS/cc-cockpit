@@ -5,43 +5,56 @@
 //
 // onChange: main pushes a `sessions` event with the project's whole list whenever one of its tabs
 // changes (throttled there); the hub here fans it out to every plugin's listeners.
-import type { Disposer, PluginContext, SendResult, SessionInfo } from '../../sdk/types'
+//
+// Scope `all` (design-next §4.1): summaries of every window's Claude tabs, for a plugin whose
+// manifest declares `"access": { "sessions": "all-windows" }`. The check here is the fast error;
+// main checks the declaration again for list, and sends `sessions.all` only to a host that runs such
+// a plugin. focus reaches any window's tab, close and openFile only this window's (main decides).
+import type { Disposer, PluginContext, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 
 type Listener = (sessions: SessionInfo[]) => void
+type AllListener = (sessions: SessionSummary[]) => void
 
 export interface SessionsApiDeps {
   pluginId: string
-  call(method: string, params: unknown): Promise<unknown>
+  call(method: string, params: unknown, options?: { timeoutMs?: number }): Promise<unknown>
   /** Throws when the plugin is deactivated. */
   alive(): void
   /** Rejects (instead of throwing) when the plugin is deactivated. */
   guardAsync<T>(body: () => Promise<T>): Promise<T>
   hub: SessionsHub
+  /** The manifest declares `access.sessions: 'all-windows'` (scope `all`). */
+  sessionsAll?: boolean
 }
 
 /** The `sessions` listeners of every plugin of one host. */
 export class SessionsHub {
   private readonly listeners = new Map<string, Set<Listener>>()
+  /** Scope `all` listeners (the `sessions.all` event). */
+  private readonly allListeners = new Map<string, Set<AllListener>>()
 
   constructor(private readonly log: (pluginId: string, message: string) => void) {}
 
   add(pluginId: string, listener: Listener): Disposer {
-    const set = this.listeners.get(pluginId) ?? new Set<Listener>()
-    // A wrapper per registration: the same function added twice is two subscriptions, and each
-    // disposer removes only its own.
-    const entry: Listener = (sessions) => listener(sessions)
-    set.add(entry)
-    this.listeners.set(pluginId, set)
-    return () => {
-      set.delete(entry)
-      if (set.size === 0 && this.listeners.get(pluginId) === set) this.listeners.delete(pluginId)
-    }
+    return addTo(this.listeners, pluginId, listener)
+  }
+
+  addAll(pluginId: string, listener: AllListener): Disposer {
+    return addTo(this.allListeners, pluginId, listener)
   }
 
   /** The plugin is gone: its listeners hear nothing more. */
   removePlugin(pluginId: string): void {
     this.listeners.delete(pluginId)
+    this.allListeners.delete(pluginId)
+  }
+
+  /** Main's `sessions.all` event: `{ sessions: SessionSummary[] }`, to the scope `all` listeners. */
+  handleAllEvent(params: unknown): void {
+    const sessions = (params as { sessions?: unknown } | null)?.sessions
+    if (!Array.isArray(sessions)) return
+    fanOut(this.allListeners, sessions, this.log)
   }
 
   /**
@@ -52,27 +65,88 @@ export class SessionsHub {
   handleEvent(params: unknown): void {
     const sessions = (params as { sessions?: unknown } | null)?.sessions
     if (!Array.isArray(sessions)) return
-    for (const [pluginId, set] of [...this.listeners]) {
-      for (const listener of [...set]) {
-        try {
-          listener(structuredClone(sessions) as SessionInfo[])
-        } catch (err) {
-          this.log(pluginId, `a sessions.onChange listener threw: ${errorText(err)}`)
-        }
+    fanOut(this.listeners, sessions, this.log)
+  }
+}
+
+function addTo<L extends (sessions: never[]) => void>(map: Map<string, Set<L>>, pluginId: string, listener: L): Disposer {
+  const set = map.get(pluginId) ?? new Set<L>()
+  // A wrapper per registration: the same function added twice is two subscriptions, and each
+  // disposer removes only its own.
+  const entry = ((sessions: never[]) => listener(sessions)) as L
+  set.add(entry)
+  map.set(pluginId, set)
+  return () => {
+    set.delete(entry)
+    if (set.size === 0 && map.get(pluginId) === set) map.delete(pluginId)
+  }
+}
+
+/** Each listener gets its own copy; a throwing one is logged against its plugin and does not stop the others. */
+function fanOut<L extends (sessions: never[]) => void>(
+  map: Map<string, Set<L>>,
+  sessions: unknown[],
+  log: (pluginId: string, message: string) => void
+): void {
+  for (const [pluginId, set] of [...map]) {
+    for (const listener of [...set]) {
+      try {
+        listener(structuredClone(sessions) as never[])
+      } catch (err) {
+        log(pluginId, `a sessions.onChange listener threw: ${errorText(err)}`)
       }
     }
   }
 }
 
+/** The scope option of list / onChange: 'window' (the default) or 'all', which needs the declaration. */
+function scopeOf(what: string, options: unknown, sessionsAll: boolean): 'window' | 'all' {
+  if (options === undefined || options === null) return 'window'
+  if (typeof options !== 'object') throw new TypeError(`${what}: options must be an object`)
+  const scope = (options as { scope?: unknown }).scope
+  if (scope === undefined || scope === 'window') return 'window'
+  if (scope !== 'all') throw new TypeError(`${what}: scope must be "window" or "all"`)
+  if (!sessionsAll) throw new Error(`${what}: scope "all" needs "access": { "sessions": "all-windows" } in plugin.json`)
+  return 'all'
+}
+
+function checkTabId(what: string, tabId: unknown): asserts tabId is string {
+  if (typeof tabId !== 'string' || tabId === '') throw new TypeError(`${what} needs a tab id`)
+}
+
 export function createSessionsApi(deps: SessionsApiDeps): PluginContext['sessions'] {
   const { pluginId, call, guardAsync } = deps
-  return Object.freeze({
-    list: () => guardAsync(async () => (await call('sessions.list', {})) as SessionInfo[]),
-    onChange: (listener: Listener): Disposer => {
+  const sessionsAll = deps.sessionsAll === true
+  const api = {
+    list: (options?: { scope?: 'window' | 'all' }) =>
+      guardAsync(async () => {
+        if (scopeOf('sessions.list', options, sessionsAll) === 'window') return (await call('sessions.list', {})) as SessionInfo[]
+        return (await call('sessions.list', { pluginId, scope: 'all' })) as SessionSummary[]
+      }),
+    onChange: (listener: Listener | AllListener, options?: { scope?: 'window' | 'all' }): Disposer => {
       deps.alive()
       if (typeof listener !== 'function') throw new TypeError('sessions.onChange needs a function')
-      return deps.hub.add(pluginId, listener)
+      if (scopeOf('sessions.onChange', options, sessionsAll) === 'all') return deps.hub.addAll(pluginId, listener as AllListener)
+      return deps.hub.add(pluginId, listener as Listener)
     },
+    focus: (tabId: string) =>
+      guardAsync(async () => {
+        checkTabId('sessions.focus', tabId)
+        return (await call('sessions.focus', { pluginId, tabId })) as boolean
+      }),
+    close: (tabId: string) =>
+      guardAsync(async () => {
+        checkTabId('sessions.close', tabId)
+        // No RPC timeout: a running tab's dialog waits for the person, and main bounds that wait itself
+        // (answering `closed: false` when it gives up), so the call always settles.
+        return (await call('sessions.close', { pluginId, tabId }, { timeoutMs: Infinity })) as { closed: boolean }
+      }),
+    openFile: (tabId: string, path: string) =>
+      guardAsync(async () => {
+        checkTabId('sessions.openFile', tabId)
+        if (typeof path !== 'string' || path === '') throw new TypeError('sessions.openFile needs a path')
+        await call('sessions.openFile', { pluginId, tabId, path })
+      }),
     send: (tabId: string, text: string) =>
       guardAsync(async () => {
         if (typeof tabId !== 'string' || typeof text !== 'string') {
@@ -91,5 +165,6 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         // Sent only when asked for: a request without it is the same as before the option existed.
         return (await call('sessions.open', { pluginId, cwd, prompt, ...(focus ? { focus: true } : {}) })) as { tabId: string }
       })
-  })
+  }
+  return Object.freeze(api) as PluginContext['sessions']
 }

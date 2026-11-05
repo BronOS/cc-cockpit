@@ -19,6 +19,7 @@
 //    ever learns whether each one is set.
 import type { MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
 import type { ProjectRecord, ProjectView } from '../../shared/types'
+import { seesAllSessions } from '../../shared/manifest'
 import { checkMarketplaceUrl } from '../marketplace/fetch-index'
 import type { MarketplaceService } from '../marketplace/marketplace-service'
 import { buildMarketplaceView, repoChangeFrom, resolveMarketplace, type MarketplaceViewInput } from '../marketplace/marketplace-view'
@@ -379,6 +380,7 @@ export class SettingsService {
     // asked by the page itself (`settingsPage.info`, the window's project).
     if (p.state.ok && p.manifest?.contributes?.settings?.page?.scopes.includes('app') === true) view.settingsPage = true
     if (p.source.kind === 'bundled') view.offInAllProjects = offAppWide(p, this.deps.bundledOff.get())
+    if (seesAllSessions(p.manifest)) view.seesAllSessions = true
     return view
   }
 }

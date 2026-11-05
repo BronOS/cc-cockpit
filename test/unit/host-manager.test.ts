@@ -1911,6 +1911,24 @@ describe('HostManager', () => {
       expect(hostEvents).toContainEqual({ event: 'settingsPage.close', params: { pluginId: 'a.one', id: 'p1' } })
       slotted.closeSettingsPage('p2', 'a.one', 'p1')
     })
+
+    it('the access declaration (design-next §4.1) rides in the spec as sessionsAll, for that plugin only', async () => {
+      enabled.p1 = [plugin('a.one', { access: { sessions: 'all-windows' } }), plugin('a.two')]
+      let activateParams: unknown
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) => {
+          activateParams = p
+          return okHandlers().activate!(p)
+        }
+      })
+      await slotted.open('p1', 1)
+      const params = activateParams as { plugins: { id: string; sessionsAll?: boolean }[] }
+      expect(params.plugins.map((p) => [p.id, p.sessionsAll])).toEqual([
+        ['a.one', true],
+        ['a.two', undefined]
+      ])
+    })
   })
 
   describe('devReload (linked dev plugin changed, Task 29)', () => {
