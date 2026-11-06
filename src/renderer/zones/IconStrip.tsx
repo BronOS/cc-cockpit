@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { DRAG_THRESHOLD, dropIndex } from '../tabs/tab-drag'
 import { chordKeys, chordOf } from '../commands/keybindings'
 import type { PanelInfo } from '../../shared/ipc'
 import { ZONE_IDS, type PanelPlacement, type ZoneId } from '../../shared/layout'
@@ -72,7 +73,7 @@ function PanelGlyph({ info }: { info: PanelInfo }): React.JSX.Element {
  * a header's "…" puts the menu's left edge (PanelArea). Matches `.context-menu`'s min-width.
  */
 export const MENU_WIDTH = 168
-const MENU_HEIGHT = 120
+const MENU_HEIGHT = 190
 
 /**
  * A collapsed bottom zone is a bar of icons only, easy to take for a status bar: say what it is,
@@ -122,6 +123,11 @@ export function IconStrip(props: {
   hidden: PanelInfo[]
   onToggle: (panelKey: string) => void
   onMove: (panelKey: string, zone: ZoneId) => void
+  /**
+   * Put a panel in `zone` at `index` among the icons that zone's strip shows without it (a menu's
+   * Move up / down / to top, or a drag that ended over a strip). Zone.tsx maps it to the layout.
+   */
+  onPlace: (panelKey: string, zone: ZoneId, index: number) => void
   onHide: (panelKey: string) => void
   onUnhide: (panelKey: string) => void
   menu: MenuState | null
@@ -160,6 +166,9 @@ export function IconStrip(props: {
     }
   }, [open, zone, setMenu])
 
+  const drag = usePanelDrag(props.onPlace, () => setMenu(null))
+  const menuIndex = menu?.kind === 'panel' ? placed.findIndex((p) => p.placement.panelKey === menu.panelKey) : -1
+
   return (
     <div
       ref={root}
@@ -177,7 +186,10 @@ export function IconStrip(props: {
           aria-pressed={placement.open}
           title={info.title}
           data-panel={placement.panelKey}
+          onPointerDown={(e) => drag.press(e, placement.panelKey)}
           onClick={() => {
+            // The click that ends a drag is not a toggle.
+            if (drag.consumeClick()) return
             setMenu(null)
             props.onToggle(placement.panelKey)
           }}
@@ -222,6 +234,28 @@ export function IconStrip(props: {
             top: Math.max(0, Math.min(menu.y, window.innerHeight - MENU_HEIGHT))
           }}
         >
+          {/* Order inside this zone; an item that cannot do anything is disabled, not hidden,
+              so the menu keeps its shape and a keyboard user sees why. */}
+          {(
+            [
+              ['Move up', menuIndex <= 0, menuIndex - 1],
+              ['Move down', menuIndex < 0 || menuIndex >= placed.length - 1, menuIndex + 1],
+              ['Move to top', menuIndex <= 0, 0]
+            ] as const
+          ).map(([label, disabled, to]) => (
+            <button
+              key={label}
+              type="button"
+              role="menuitem"
+              disabled={disabled}
+              onClick={() => {
+                setMenu(null)
+                props.onPlace(menu.panelKey, zone, to)
+              }}
+            >
+              {label}
+            </button>
+          ))}
           {ZONE_IDS.filter((z) => z !== zone).map((z) => (
             <button
               key={z}
@@ -271,4 +305,148 @@ export function IconStrip(props: {
       )}
     </div>
   )
+}
+
+/**
+ * Drag an icon to reorder its strip or move it to another strip. Pointer events, not HTML5 drag
+ * and drop (as TabBar.tsx, which explains why: a native drag session swallows the events and the
+ * synthetic drags of the specs). A press moves nothing until the pointer travels DRAG_THRESHOLD, so
+ * a click still toggles the panel. While dragging, one fixed line shows the slot the icon would
+ * take, in whichever strip the pointer is over; Escape, a lost capture or a release off every
+ * strip cancels. The state is imperative (a DOM line, a `data-dragging` attribute React does not
+ * own) because the strips are separate components and the drag crosses them.
+ */
+function usePanelDrag(
+  onPlace: (panelKey: string, zone: ZoneId, index: number) => void,
+  closeMenu: () => void
+): {
+  press: (e: React.PointerEvent<HTMLButtonElement>, panelKey: string) => void
+  consumeClick: () => boolean
+} {
+  const latest = useRef({ onPlace, closeMenu })
+  useEffect(() => {
+    latest.current = { onPlace, closeMenu }
+  })
+  const cleanup = useRef<(() => void) | null>(null)
+  const swallow = useRef(false)
+  // An unmount (the window closing) mid-drag must not leave the line or the key listener behind.
+  useEffect(() => () => cleanup.current?.(), [])
+
+  const press = (e: React.PointerEvent<HTMLButtonElement>, panelKey: string): void => {
+    if (e.button !== 0 || cleanup.current) return
+    const button = e.currentTarget
+    const { pointerId, clientX: startX, clientY: startY } = e
+    let dragging = false
+    let target: { zone: ZoneId; index: number } | null = null
+    let line: HTMLDivElement | null = null
+
+    /** Where the pointer would drop the icon: strip, index among the strip's other icons, line rect. */
+    const locate = (x: number, y: number): { zone: ZoneId; index: number; rect: DOMRect | null; vertical: boolean } | null => {
+      const strip = document.elementFromPoint(x, y)?.closest<HTMLElement>('.icon-strip[data-zone]')
+      const zone = strip?.dataset.zone as ZoneId | undefined
+      if (!strip || !zone || !ZONE_IDS.includes(zone)) return null
+      const horizontal = zone === 'bottom'
+      const others = Array.from(strip.querySelectorAll<HTMLElement>('.panel-icon[data-panel]')).filter(
+        (el) => el !== button
+      )
+      const rects = others.map((el) => el.getBoundingClientRect())
+      const index = dropIndex(
+        rects.map((r) => (horizontal ? r.left + r.width / 2 : r.top + r.height / 2)),
+        horizontal ? x : y
+      )
+      const sr = strip.getBoundingClientRect()
+      let at: number
+      if (rects.length === 0) at = horizontal ? sr.left + 4 : sr.top + 4
+      else if (index < rects.length) at = (horizontal ? rects[index]!.left : rects[index]!.top) - 2
+      else at = (horizontal ? rects[index - 1]!.right : rects[index - 1]!.bottom) + 2
+      const ref = rects[0] ?? sr
+      const rect = horizontal
+        ? new DOMRect(at - 1, sr.top + 4, 2, sr.height - 8)
+        : new DOMRect(ref.left, at - 1, ref.width, 2)
+      return { zone, index, rect, vertical: !horizontal }
+    }
+    // The icon's own slot is no drop: the order would stay, so show no line.
+    const isOwnSlot = (zone: ZoneId, index: number): boolean => {
+      const strip = button.closest<HTMLElement>('.icon-strip[data-zone]')
+      if (strip?.dataset.zone !== zone) return false
+      const all = Array.from(strip.querySelectorAll<HTMLElement>('.panel-icon[data-panel]'))
+      return all.indexOf(button) === index
+    }
+
+    const onMove = (ev: PointerEvent): void => {
+      if (ev.pointerId !== pointerId) return
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return
+        dragging = true
+        latest.current.closeMenu()
+        // Keep the pointer's events on this icon when it leaves the strip, so the release is seen.
+        try {
+          button.setPointerCapture(pointerId)
+        } catch {
+          // The pointer is already gone (a cancelled touch): the drag ends at its next event.
+        }
+        button.dataset.dragging = 'true'
+        line = document.createElement('div')
+        line.className = 'panel-drop-line'
+        line.setAttribute('aria-hidden', 'true')
+        document.body.appendChild(line)
+      }
+      const at = locate(ev.clientX, ev.clientY)
+      target = at && { zone: at.zone, index: at.index }
+      if (!line) return
+      if (!at || !at.rect || isOwnSlot(at.zone, at.index)) {
+        line.style.display = 'none'
+        return
+      }
+      line.style.display = 'block'
+      line.style.left = `${at.rect.x}px`
+      line.style.top = `${at.rect.y}px`
+      line.style.width = `${at.rect.width}px`
+      line.style.height = `${at.rect.height}px`
+    }
+    const end = (): void => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      window.removeEventListener('keydown', onKey, true)
+      button.removeEventListener('lostpointercapture', onCancel)
+      line?.remove()
+      delete button.dataset.dragging
+      cleanup.current = null
+      if (dragging) {
+        // The click the release fires on the icon is not the person's toggle; it comes before any
+        // timer, so clear the flag afterwards for a drag whose release landed elsewhere.
+        swallow.current = true
+        setTimeout(() => (swallow.current = false), 0)
+      }
+    }
+    const onUp = (ev: PointerEvent): void => {
+      if (ev.pointerId !== pointerId) return
+      const drop = dragging ? target : null
+      end()
+      if (drop) latest.current.onPlace(panelKey, drop.zone, drop.index)
+    }
+    const onCancel = (): void => end()
+    // Capture phase: Escape must cancel the drag before the strip's menu or a panel sees it.
+    const onKey = (ev: KeyboardEvent): void => {
+      if (ev.key !== 'Escape' || !dragging) return
+      ev.stopPropagation()
+      end()
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+    window.addEventListener('keydown', onKey, true)
+    button.addEventListener('lostpointercapture', onCancel)
+    cleanup.current = end
+  }
+
+  return {
+    press,
+    consumeClick: () => {
+      const v = swallow.current
+      swallow.current = false
+      return v
+    }
+  }
 }

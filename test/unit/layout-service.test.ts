@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LayoutService } from '../../src/main/layout/layout-service'
 import type { LayoutView } from '../../src/shared/ipc'
-import { defaultLayout, hidePanel, movePanel, zoneOf, type LayoutState } from '../../src/shared/layout'
+import { defaultLayout, hidePanel, movePanel, placePanelAt, zoneOf, type LayoutState } from '../../src/shared/layout'
 
 const P = 'aaaaaaaaaaaaaaaa'
 
@@ -99,6 +99,31 @@ describe('LayoutService.set', () => {
     expect(zoneOf(view.layout, 'evil/panel')).toBeUndefined()
     expect(zoneOf(view.layout, 'base/sessions')).toBe('right')
     expect(service.set(P, 'nonsense')!.layout.zones.right.panels).toHaveLength(1)
+  })
+
+  it('accepts a reorder, and a forged order stays a permutation of existing panels', () => {
+    const { service, stored } = setup()
+    service.setPluginPanels(P, 'jira', [notes, { id: 'board', title: 'Board', defaultZone: 'right' }])
+    const base = service.view(P)!.layout
+    const order = (l: LayoutState): string[] => l.zones.right.panels.map((p) => p.panelKey)
+    const all = order(base).sort()
+    expect(all).toHaveLength(3)
+    const top = service.set(P, placePanelAt(base, 'jira/board', 'right', 0))!
+    expect(order(top.layout)[0]).toBe('jira/board')
+    expect(order(stored.get(P)!)[0]).toBe('jira/board')
+    // Duplicates, an unknown key and an omitted panel: nothing is invented, nothing is lost.
+    const mk = (panelKey: string) => ({ panelKey, open: false, size: 100 })
+    const forged = {
+      zones: {
+        left: { collapsed: false, size: 280, panels: [mk('evil/x'), mk('jira/board'), mk('jira/board')] },
+        right: { collapsed: false, size: 320, panels: [mk('jira/board'), mk('base/sessions')] }
+      }
+    }
+    const view = service.set(P, forged)!
+    const placed = ['left', 'right', 'bottom'].flatMap((z) =>
+      view.layout.zones[z as 'left'].panels.map((p) => p.panelKey)
+    )
+    expect(placed.sort()).toEqual(all)
   })
 
   it('keeps a hidden panel hidden', () => {

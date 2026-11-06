@@ -126,7 +126,26 @@ export function togglePanel(layout: LayoutState, panelKey: string): LayoutState 
  * by the move (the user picked a place for it). Moving within the same zone sends it to the end.
  */
 export function movePanel(layout: LayoutState, panelKey: string, zone: ZoneId): LayoutState {
-  if (!isZoneId(zone)) return layout
+  return placePanelAt(layout, panelKey, zone, Infinity)
+}
+
+/**
+ * Put a panel in `zone` at `index`, keeping its open state and size: the one operation behind the
+ * menus' Move up / down / to top, a drag in the icon strips and `movePanel`. `index` counts the
+ * zone's OTHER panels (the panel is taken out first, then put back, as `dropIndex` in tab-drag.ts
+ * and main's `tabs.reorder` do), so "the number of icons left of the pointer" is the index and the
+ * same index means the same thing inside a zone and across zones. It is clamped to 0..length
+ * (Infinity is the end); NaN is no index at all. A hidden panel is unhidden by the move. Returns
+ * the SAME object for an unknown key or zone, a NaN index, and a placement that changes nothing
+ * (same zone, same slot), so callers can skip the store write.
+ */
+export function placePanelAt(
+  layout: LayoutState,
+  panelKey: string,
+  zone: ZoneId,
+  index: number
+): LayoutState {
+  if (!isZoneId(zone) || typeof index !== 'number' || Number.isNaN(index)) return layout
   const from = zoneOf(layout, panelKey)
   let placement: PanelPlacement
   if (from) {
@@ -138,7 +157,40 @@ export function movePanel(layout: LayoutState, panelKey: string, zone: ZoneId): 
     return layout
   }
   const next = removePlaced(layout, panelKey)
-  return withZone(next, zone, (z) => ({ ...z, panels: [...z.panels, placement] }))
+  const at = Math.min(next.zones[zone].panels.length, Math.max(0, Math.trunc(index)))
+  const placed = withZone(next, zone, (z) => {
+    const panels = [...z.panels]
+    panels.splice(at, 0, placement)
+    return { ...z, panels }
+  })
+  // Dropping a panel where it already is must not look like a change (a click-sized drag, the
+  // first row's "Move up" is disabled anyway): same content, same object.
+  return from === zone && layout.zones[zone].panels.findIndex((p) => p.panelKey === panelKey) === at
+    ? layout
+    : placed
+}
+
+/**
+ * The layout index (among the zone's panels without `panelKey`) for a drop index counted among the
+ * panels the strip SHOWS. A placed panel main has no info for (its plugin is still starting) has
+ * no icon, so the number of icons left of a pointer is not an index into `zones[zone].panels`:
+ * this maps it, landing before the first shown panel at or after the slot, else at the end.
+ */
+export function layoutIndexOf(
+  layout: LayoutState,
+  zone: ZoneId,
+  panelKey: string,
+  shownIndex: number,
+  isShown: (panelKey: string) => boolean
+): number {
+  const others = layout.zones[zone].panels.filter((p) => p.panelKey !== panelKey)
+  let seen = 0
+  for (let i = 0; i < others.length; i++) {
+    if (!isShown(others[i]!.panelKey)) continue
+    if (seen === shownIndex) return i
+    seen++
+  }
+  return others.length
 }
 
 /** Take a placed panel out of the zones into `hidden`, remembering where it was. */

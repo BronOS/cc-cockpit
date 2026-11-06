@@ -87,7 +87,7 @@ test('move a panel to the bottom zone, hide and unhide it, collapse a zone, reop
 
     // Move: the right-click menu offers the other two zones and Hide, not the current zone.
     await sessionsIcon(page, 'left').click({ button: 'right' })
-    await expect(page.getByRole('menuitem')).toHaveText(['Move to right', 'Move to bottom', 'Hide'])
+    await expect(page.getByRole('menuitem')).toHaveText(['Move up', 'Move down', 'Move to top', 'Move to right', 'Move to bottom', 'Hide'])
     await page.getByRole('menuitem', { name: 'Move to bottom' }).click()
     await expect(sessionsPanel(page, 'bottom')).toBeVisible()
     await expect(sessionsIcon(page, 'left')).toHaveCount(0)
@@ -359,7 +359,7 @@ test("a panel header's … button opens the same zone menu as a right-click on t
   // The click that opened it must not also close it (the strip's outside-click dismiss skips it).
   await expect(page.getByRole('menu')).toHaveCount(1)
   await expect(page.locator('.zone-right [role="menu"]')).toHaveCount(1)
-  await expect(page.getByRole('menuitem')).toHaveText(['Move to left', 'Move to bottom', 'Hide'])
+  await expect(page.getByRole('menuitem')).toHaveText(['Move up', 'Move down', 'Move to top', 'Move to left', 'Move to bottom', 'Hide'])
   // A second click closes it, as does a click elsewhere.
   await more.click()
   await expect(page.getByRole('menu')).toHaveCount(0)
@@ -376,7 +376,7 @@ test("a panel header's … button opens the same zone menu as a right-click on t
 
   // The right-click on the icon still opens it too.
   await sessionsIcon(page, 'left').click({ button: 'right' })
-  await expect(page.getByRole('menuitem')).toHaveText(['Move to right', 'Move to bottom', 'Hide'])
+  await expect(page.getByRole('menuitem')).toHaveText(['Move up', 'Move down', 'Move to top', 'Move to right', 'Move to bottom', 'Hide'])
   await page.keyboard.press('Escape')
   await expect(page.getByRole('menu')).toHaveCount(0)
 })

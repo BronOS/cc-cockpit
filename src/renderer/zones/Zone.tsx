@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { PanelInfo } from '../../shared/ipc'
 import {
   hidePanel,
+  layoutIndexOf,
+  placePanelAt,
   movePanel,
   resizePanel,
   resizeZone,
@@ -82,6 +84,12 @@ export function Zone(props: {
         })
       }}
       onMove={(key, to) => controller.commit((l) => movePanel(l, key, to))}
+      onPlace={(key, to, index) =>
+        controller.commit((l) =>
+          // `index` counts icons; the layout may hold panels main has no info for yet.
+          placePanelAt(l, key, to, layoutIndexOf(l, to, key, index, (k) => byKey.has(k)))
+        )
+      }
       onHide={(key) => controller.commit((l) => hidePanel(l, key))}
       onUnhide={(key) => controller.commit((l) => unhidePanel(l, key))}
       menu={menu}

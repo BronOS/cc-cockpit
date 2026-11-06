@@ -3661,3 +3661,15 @@ ul.settings-alert {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* Panel icon drag (IconStrip.tsx): the dragged icon dims, one fixed line marks the slot it takes. */
+.panel-icon[data-dragging='true'] {
+  opacity: 0.45;
+}
+.panel-drop-line {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  border-radius: 1px;
+  background: var(--cc-accent);
+}

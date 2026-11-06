@@ -2,7 +2,8 @@
 
 A panel contribution (`contributes.panels`) gives `id`, `title`, `entry` (the html page),
 optional `icon` and `defaultZone` (`left`, `right` or `bottom`). The user can move it between
-zones. With `"kind": "webview"` the panel is a web view instead and has no `entry`: see
+zones and reorder it inside one (menu items or dragging its icon); the order is saved per project.
+With `"kind": "webview"` the panel is a web view instead and has no `entry`: see
 `ccc guide webview`.
 
 The `icon` (a path in the plugin folder) is an SVG or PNG used as a single-colour mask: only its

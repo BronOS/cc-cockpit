@@ -410,8 +410,13 @@ queued from the live ones as the window closes (`TabRestorer.requeue`), overlays
 with draggable splitters. Bottom: the same, panels side by side. A click on an icon toggles its
 panel; each zone collapses with a keybinding. Sizes, open panels and order are saved per project.
 Plugins set a badge on their icon (a count or a "needs you" dot). The zone menu (move to
-left / right / bottom, or hide) opens from the "…" button in a panel's header or a right-click on
-its icon. Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
+left / right / bottom, or hide, and Move up / down / to top within the zone) opens from the "…" button in a panel's header or a right-click on
+its icon. The order of a zone's panels is the order of its `panels` list in the saved layout
+(`placePanelAt`, `src/shared/layout.ts`: panel, zone and an index among the zone's other panels, the
+panel taken out first and put back). An icon dragged in a strip (pointer events, `IconStrip.tsx`, with the
+tab drag's threshold) calls it for the strip under the pointer, so one gesture reorders and moves across
+zones. Main stays the authority: it normalizes and reconciles every layout the renderer sends, so
+only existing panels in some order are stored (a forged list cannot add, duplicate or drop one). Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
 keeps its strip, captioned "Bottom zone collapsed" with its key.
 
 **Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and, once its page has a port, the width the page reports (`ccPanel.slot.setWidth`; before a report the most the bar allows), capped so a drag gap always remains (design-next §2 "App slots") (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3).

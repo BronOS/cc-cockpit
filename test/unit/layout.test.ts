@@ -9,6 +9,8 @@ import {
   defaultLayout,
   hidePanel,
   movePanel,
+  placePanelAt,
+  layoutIndexOf,
   normalizeLayout,
   reconcile,
   resizePanel,
@@ -472,5 +474,61 @@ describe('renamed panel keys (the core Sessions panel became cockpit.sessions/se
     const l = reconcile(stored, [{ panelKey: NEW, defaultZone: 'left' }])
     expect(keys(l, 'right')).toEqual([NEW])
     expect(panel(l, NEW)).toEqual({ panelKey: NEW, open: true, size: 260 })
+  })
+})
+
+describe('placePanelAt', () => {
+  const avail = ['a', 'b', 'c', 'd'].map((id) => ({ panelKey: `t/${id}`, defaultZone: 'right' as const }))
+  const base = reconcile(defaultLayout(), avail)
+  const keys = (l: LayoutState, z: 'left' | 'right' | 'bottom' = 'right'): string[] =>
+    l.zones[z].panels.map((p) => p.panelKey.slice(2))
+
+  it('puts a panel at an index among the zone\'s other panels', () => {
+    expect(keys(placePanelAt(base, 't/d', 'right', 0))).toEqual(['d', 'a', 'b', 'c'])
+    expect(keys(placePanelAt(base, 't/a', 'right', 1))).toEqual(['b', 'a', 'c', 'd'])
+    expect(keys(placePanelAt(base, 't/a', 'right', 3))).toEqual(['b', 'c', 'd', 'a'])
+  })
+
+  it('clamps an index out of range and treats Infinity as the end', () => {
+    expect(keys(placePanelAt(base, 't/a', 'right', 99))).toEqual(['b', 'c', 'd', 'a'])
+    expect(keys(placePanelAt(base, 't/d', 'right', -5))).toEqual(['d', 'a', 'b', 'c'])
+    expect(keys(placePanelAt(base, 't/a', 'right', Infinity))).toEqual(['b', 'c', 'd', 'a'])
+    expect(keys(placePanelAt(base, 't/b', 'right', 0.9))).toEqual(['b', 'a', 'c', 'd'])
+  })
+
+  it('moves to another zone at the index, keeping open state and size', () => {
+    let l = togglePanel(base, 't/c')
+    l = placePanelAt(l, 't/a', 'left', 0)
+    l = placePanelAt(l, 't/c', 'left', 0)
+    expect(keys(l, 'left')).toEqual(['c', 'a'])
+    expect(l.zones.left.panels[0]).toMatchObject({ open: true })
+    expect(keys(l)).toEqual(['b', 'd'])
+  })
+
+  it('returns the same object for a no-op, an unknown key or zone, and NaN', () => {
+    expect(placePanelAt(base, 't/b', 'right', 1)).toBe(base)
+    expect(placePanelAt(base, 't/d', 'right', 99)).toBe(base)
+    expect(placePanelAt(base, 'nope/x', 'right', 0)).toBe(base)
+    expect(placePanelAt(base, 't/a', 'top' as never, 0)).toBe(base)
+    expect(placePanelAt(base, 't/a', 'right', NaN)).toBe(base)
+  })
+
+  it('unhides a hidden panel into the slot', () => {
+    const l = placePanelAt(hidePanel(base, 't/b'), 't/b', 'left', 0)
+    expect(keys(l, 'left')).toEqual(['b'])
+    expect(l.hidden).toEqual([])
+  })
+
+  it('maps a shown-icon index past panels that have no icon', () => {
+    // t/b has no info yet: the icon index 1 (after a) is layout index 2 (before c).
+    const shown = (k: string): boolean => k !== 't/b'
+    expect(layoutIndexOf(base, 'right', 't/d', 1, shown)).toBe(2)
+    expect(layoutIndexOf(base, 'right', 't/d', 0, shown)).toBe(0)
+    expect(layoutIndexOf(base, 'right', 't/d', 9, shown)).toBe(3)
+  })
+
+  it('survives normalize: the order is the stored list', () => {
+    const l = placePanelAt(base, 't/d', 'right', 0)
+    expect(normalizeLayout(JSON.parse(JSON.stringify(l)))).toEqual(l)
   })
 })

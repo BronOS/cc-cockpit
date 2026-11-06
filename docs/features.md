@@ -117,6 +117,12 @@ behind it are in [design.md](design.md).
 - Typing in a Claude tab takes it over from plugins: once you type or paste there, plugins can no longer send text into it and their queued texts are dropped (clicks, focus and terminal replies do not count; Discuss with Claude still works).
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
+- Panel order: each zone keeps one ordered list of panels, saved per project and applied the same after a restart.
+  Move up, Move down and Move to top (disabled at the first or last panel) are in both the icon's right-click menu
+  and the header "…" menu. An icon can also be dragged in its strip: a line shows where it lands, a drop on the
+  other zone's strip moves it there at that place, Escape cancels, and a press that barely moves is still a click.
+  A strip stays a drop target while its zone is collapsed or auto-hidden. "Move to …" still puts a panel at the end
+  of the other zone. Dragging is mouse only; the keyboard has the menu items.
 - Side zones give way to a narrow terminal (Settings > General > Side panels, on by default, minimum
   terminal width 720 px, 400 to 2000): when the window narrows so the terminal would be under the minimum, the right
   zone's panels hide first, then the left one's; as it widens they come back, left first, each once the terminal keeps
@@ -417,4 +423,4 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   that `transparent` needs a frameless window, which project windows are not there; untested.
 - On Linux and Windows the File / Edit / Window menu bar is hidden; its shortcuts still work (the "+"
   in the top bar opens the project picker).
-- Windows is not supported. Also not built: a plugin registry server, binary downloads and panel drag-and-drop.
+- Windows is not supported. Also not built: a plugin registry server and binary downloads.
