@@ -84,6 +84,10 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   enforces it: a plugin `sessions.send` to a typed tab is rejected and that tab's queued plugin texts are dropped, so a plugin
   never has to be trusted to check. `QueuedText.origin` in the send gate (`send-gate.ts`) tells a plugin's text from the
   person's (Discuss), and only plugin-origin texts are dropped.
+- A tab's flag (`shared/tab-flag.ts`, design.md §3 "Tab flags") is the person's alone: `TabManager.setFlag` / `toggleFlag`
+  are its only writers, reached only from the shell page's `tabs.flag` / `tabs.toggleFlag` (top frame, sender's own tabs);
+  the registry mirrors it for `SessionInfo.flag` (summaries get the colour only). Never give host-api or a plugin a way to
+  write it, nor read a flag from a hook or plugin payload: a mark a plugin could set would mean nothing.
 - `CliCall.tabId` is set by main only when the `ccc` caller is a Claude tab (never from anything the caller sends); a plugin
   command may use it to know which tab ran it (`ccc autopilot stop`) and must answer an unknown and a foreign id the same way.
 - `sessions.open({ model, effort })` is validated in `src/shared/session-options.ts` (one list for host, main and the guide) and

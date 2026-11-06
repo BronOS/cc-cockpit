@@ -39,6 +39,20 @@ behind it are in [design.md](design.md).
   stays open after the release, for a click. Both chords can be rebound in Settings (Switch to
   Recent Tab). Known limit: the chord is not seen while the keyboard is in a plugin's panel page
   (a sandboxed frame keeps its keys); a web panel forwards it, and the overlay then waits for a click or Enter.
+- Tab flags, to come back to the tab that matters while Claude works in many: right-click a tab
+  (or Shift+F10 on it) > Flag and pick one of six colours (red, orange, yellow, green, blue,
+  purple), Edit note… for a short reminder (up to 80 characters; Enter saves, Esc cancels), Clear
+  flag to remove it. Toggle Tab Flag (Cmd+Shift+F, Ctrl+Shift+F on Linux; in the palette and
+  Settings > Keybindings) flags the current tab with the last colour you picked, or clears its flag.
+  Any tab kind can be flagged. A flagged tab gets a coloured bar along its bottom edge, its note as
+  the first line of the tooltip, and stays wider than other tabs when the strip is crowded; when it
+  scrolls out of view, that edge of the strip shows its colour, the All tabs button gets a dot, and
+  All tabs lists flagged tabs first with colour and note, as the Ctrl+Tab switcher does. When a
+  flagged Claude tab finishes and waits for input while you are in another tab, its bar pulses
+  until you select it (a steady tint instead when the OS asks for reduced motion). Flags are kept
+  until cleared, also across a restart of the app; the Sessions panel lists flagged sessions in a
+  group at the top, and other windows' top bars underline a flagged entry in its colour. Only you
+  set a flag: plugins can read it, never write it.
 - Drag a tab left or right to move it; a bar shows where it lands, Escape puts it back, and the
   new order is kept after a restart. The tab menu (right-click) has Move left / Move right too.
   The strip doesn't scroll by itself while you drag, so with more tabs than fit, move a tab out of

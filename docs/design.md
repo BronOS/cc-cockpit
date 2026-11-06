@@ -358,8 +358,33 @@ plugins", design-next §4), built on the public API only:
   in place of the last prompt. Off cancels runs and clears every gist
   (`main/sessions/session-gist.ts`, `gist-run.ts`).
 
-**Restore.** Main saves each project's tabs (kind, cwd, `session_id`, order; a command tab's own
-label and command); on next start Claude tabs reopen with `claude --resume <id>`, shell tabs start
+- **Tab flags** (`shared/tab-flag.ts`): the person marks the tab they must come back to while Claude
+  works in many others. A flag is `{ color, note? }` on any tab kind: `color` one of six theme tokens
+  (`--cc-flag-red`, `-orange`, `-yellow`, `-green`, `-blue`, `-purple`, in both built-in themes), `note`
+  a reminder of 1 to 80 characters (control, bidi and invisible characters stripped, line breaks
+  folded to spaces, trimmed). Main owns it on the tab (`TabManager.setFlag` / `toggleFlag`, the only
+  writers) and only the person sets it: the shell page's `tabs.flag` / `tabs.toggleFlag`, which the
+  router takes from the project window's top frame only and scopes to the sender's own tabs, as every
+  tab channel. No plugin path reaches it (host-api has no flag dependency; a plugin panel is a
+  subframe the router refuses): a flag means "the person marked this". It is sticky until cleared,
+  saved with the tab (`TabRecord.flag`, read back leniently: a damaged flag is dropped, a damaged note
+  only loses the note) and survives a restart of the tab and of the app. The UI: the tab menu's Flag
+  row (six swatches), Edit note… (an inline editor; on an unflagged tab it flags with the last-used
+  colour) and Clear flag; the Toggle Tab Flag command (Cmd+Shift+F, Ctrl+Shift+F on Linux), which
+  clears a flag or sets the last-used colour (main keeps that colour app-wide in memory, red at
+  first); a 3px stripe along the tab's bottom with the note as the tooltip's first line; a flagged
+  tab keeps a 150px minimum width while others shrink to 112px; flagged tabs listed first in All
+  tabs, and the colour of the nearest hidden flagged tab at each faded edge of a scrolled strip (and
+  a dot on the All tabs button); the colour and note in the Ctrl+Tab switcher and All tabs. When a
+  flagged Claude tab becomes waiting for input while another tab is selected, its stripe pulses until
+  the person selects it (a steady tint under `prefers-reduced-motion`); a tab first seen already
+  waiting (a page load) does not pulse. Plugins read `SessionInfo.flag` (`{ color, note? }`,
+  emitted on change like any field) and, in the scope `all` summaries, `{ color }` only: the note is
+  the person's words and stays with the tab's window. `cockpit.sessions` shows a Flagged group at
+  the top of the Sessions panel and the colour on its strip entries.
+
+**Restore.** Main saves each project's tabs (kind, cwd, `session_id`, order; a Claude tab's name;
+any tab's flag; a command tab's own label and command); on next start Claude tabs reopen with `claude --resume <id>`, shell tabs start
 fresh. Command tabs come back **not started**: a re-run of something like a deploy on app launch
 would be a nasty surprise, so the tab is restored without a process (gen 0), shows "not started"
 with Restart · Close, and runs only when the user clicks Restart. A saved command tab whose label
@@ -1380,7 +1405,8 @@ All decided in phase 1:
 - Keybindings: Cmd-based, mac-first (on Linux Cmd = Ctrl), e.g. Cmd+T new Claude tab,
   Cmd+Shift+T shell tab, Cmd+W close tab, Cmd+B / Cmd+J / Cmd+Shift+B toggle zones, Cmd+, settings,
   Cmd+Shift+P palette, Cmd+Shift+W close the top overlay, Ctrl+Tab / Ctrl+Shift+Tab switch tabs in
-  recent order (held: an overlay lists them; Ctrl on every platform). All editable in Settings.
+  recent order (held: an overlay lists them; Ctrl on every platform), Cmd+Shift+F toggle the current
+  tab's flag. All editable in Settings.
 - Hooks: `PreToolUse` on every tool (`*`); `PostToolUse` only for `Edit|Write|MultiEdit|NotebookEdit` and the
   dialog tools `AskUserQuestion|ExitPlanMode` (§3 Status per tab).
   All hooks are synchronous, so arrival order equals event order. No hook fires when a permission
