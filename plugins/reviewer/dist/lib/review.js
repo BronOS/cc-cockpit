@@ -443,7 +443,8 @@ function checkAssets(list, where = 'assets', budget = { count: 0, total: 0, seen
   if (list === undefined || list === null) return []
   if (!Array.isArray(list)) throw new ReviewError(`${where} must be an array`)
   const shared = budget.count > 0 || where !== 'assets'
-  const together = shared ? ' (assets and companion.assets together)' : ''
+  // update's assets join the ones the document already has (annotate's and the companion's).
+  const together = where === 'update.assets' ? ' (with the assets the document already has)' : shared ? ' (assets and companion.assets together)' : ''
   if (budget.count + list.length > MAX_ASSETS) throw new ReviewError(`at most ${MAX_ASSETS} assets${together}`)
   budget.count += list.length
   return list.map((a, i) => {
@@ -506,7 +507,7 @@ function checkCompanion(c, budget) {
  * checkCompanion's answer.
  */
 function annotateInput(o) {
-  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start?, type? }')
+  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start?, type?, kind? }')
   const title = checkTitle(o.title, 'title')
   // The main column's header bar, shown only beside a companion (the title cut, when not given).
   const label = checkLabel(o.label, 'label', MAX_ANNOTATE_LABEL) || shorten(title, MAX_ANNOTATE_LABEL)
@@ -544,7 +545,86 @@ function annotateInput(o) {
   // The caller's overlay type (a mail thread as `inbox-item { source, id }`): the overlay gets it, so
   // the caller's buttons for its own items show here too. Absent: no type (Discuss still shows).
   const type = checkType(o.type)
-  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start, type }
+  // The kind of document (feature 'mail', app 0.13.0): 'mail' gives the main document the mail
+  // reading layout (a narrow column, larger text, calm links, the `mail-*` classes styled); absent,
+  // the generic HTML look. Opt-in, so no other caller's document changes. HTML only: a text pane has
+  // no layout to change.
+  if (given(o.kind) && o.kind !== 'mail') throw new ReviewError("kind must be 'mail' (or absent)")
+  if (given(o.kind) && html === null) throw new ReviewError('kind goes with html, not text')
+  const kind = o.kind === 'mail' ? 'mail' : null
+  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start, type, kind }
+}
+
+// ---- actions and update (features 'actions' and 'update', app 0.13.0) ----
+//
+// A caller's document may hold buttons of its own: `<span data-action="<id>">Label</span>`, which
+// the page draws as a button (feature 'actions'). A click comes back to the host as `{ type:
+// 'action', id }`; the host emits the service event `action` { key, id, caller } only for an id the
+// caller's own html, aside or companion has (actionSet, read from the strings it passed, as linkSet
+// reads links), so a page that misbehaves cannot make up a click on something the caller never
+// offered. The caller answers with `update({ key, assets?, hide?, status? })`: more images for the
+// open document (a mail's remote pictures, loaded once the person asked), `data-part` regions to
+// hide (the bar that offered them) and a status line. Nothing of the document is re-rendered, so
+// the notes' anchors stay where they were.
+
+const ACTION_ID = /^[a-z][a-z0-9-]{0,39}$/
+const PART_NAME = ACTION_ID // `data-part` names: the same shape
+const MAX_HIDE = 20
+const MAX_STATUS = 200
+
+/** The ids of the `data-action` attributes in the given HTML strings (entities decoded, shape checked). */
+function actionSet(...htmls) {
+  const set = new Set()
+  const attr = /\sdata-action\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi
+  for (const html of htmls) {
+    if (typeof html !== 'string') continue
+    let m
+    while ((m = attr.exec(html))) {
+      const id = decodeAttr(m[1] ?? m[2] ?? m[3] ?? '').trim()
+      if (ACTION_ID.test(id)) set.add(id)
+    }
+  }
+  return set
+}
+
+/**
+ * update's options, checked: { key, assets, hide, status }. key as annotate's (required); assets an
+ * array checked later against what the document already has (checkAssets with its budget); hide at
+ * most MAX_HIDE `data-part` names; status a line of at most MAX_STATUS characters ('' clears it, null
+ * leaves it). At least one of the three.
+ */
+function updateInput(o) {
+  if (!isObj(o)) throw new ReviewError('update takes { key, assets?, hide?, status? }')
+  const key = checkKey(o.key)
+  const given = (v) => v !== undefined && v !== null
+  if (given(o.assets) && !Array.isArray(o.assets)) throw new ReviewError('assets must be an array')
+  let hide = []
+  if (given(o.hide)) {
+    if (!Array.isArray(o.hide) || o.hide.length > MAX_HIDE) throw new ReviewError(`hide must be an array of at most ${MAX_HIDE} part names`)
+    hide = [...new Set(o.hide)]
+    for (const h of hide) if (typeof h !== 'string' || !PART_NAME.test(h)) throw new ReviewError('a hide name is 1-40 of a-z 0-9 - starting with a letter')
+  }
+  let status = null
+  if (given(o.status)) {
+    if (typeof o.status !== 'string') throw new ReviewError('status must be a string')
+    status = shorten(oneLine(o.status), MAX_STATUS)
+  }
+  const assets = given(o.assets) ? o.assets : []
+  if (!assets.length && !hide.length && status === null) throw new ReviewError('update needs assets, hide or status')
+  return { key, assets, hide, status }
+}
+
+/** The asset budget a document already spent: what checkAssets carries across calls. */
+function assetBudget(lists) {
+  const budget = { count: 0, total: 0, seen: new Set() }
+  for (const list of lists) {
+    for (const a of list) {
+      budget.count++
+      budget.total += a.dataUrl.length
+      budget.seen.add(a.id)
+    }
+  }
+  return budget
 }
 
 /** An annotate key: 1-MAX_ANNOTATE_KEY chars of ANNOTATE_KEY_CHARS. */
@@ -733,6 +813,10 @@ module.exports = {
   linkHrefs,
   linkSet,
   linkVerdict,
+  actionSet,
+  updateInput,
+  assetBudget,
+  checkAssets,
   MAX_MESSAGE,
   MAX_CONTEXT,
   MAX_TYPE_DATA,

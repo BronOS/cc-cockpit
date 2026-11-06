@@ -239,7 +239,11 @@ behind it are in [design.md](design.md).
   a header row that stays put (each column's label, an "Open in Gmail ↗" / "Open in Jira ↗" style button and its key
   fields, both cells the same height), a divider you drag (remembered), each header above its own document when the
   overlay is narrow; notes go on either, and Claude is told which document each is in. Esc closes the review even while an
-  image is shown larger. The tab picker starts on the tab you are looking at unless the caller names one.
+  image is shown larger. The tab picker starts on the tab you are looking at unless the caller names one. A mail
+  (`kind: 'mail'`, app 0.13.0) is shown in a reading layout: a narrow column of larger text, calm links, the subject
+  first, the sender with an avatar and the time, no tint on unread mail; its remote pictures are quiet placeholders that
+  the caller can fill later without the document moving (`update`), and buttons in the document (`data-action`, e.g.
+  Show images) come back to the caller as a service event.
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour
   scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it

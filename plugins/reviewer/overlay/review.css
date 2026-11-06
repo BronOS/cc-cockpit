@@ -221,3 +221,76 @@ button.link.outdated { color: var(--cc-fg-muted); text-align: left; }
 #lightbox { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--cc-bg) 85%, transparent); cursor: zoom-out; outline: none; }
 #lightbox[hidden] { display: none; }
 #lightbox img { max-width: 95vw; max-height: 95vh; box-shadow: 0 4px 24px var(--cc-shadow); background: var(--cc-bg); }
+
+/* annotate's `kind: 'mail'` (app 0.13.0): the mail reading layout, only on a document that asked for
+   it, so every other caller's document keeps the look above. A reading column (760 px, 15 px text,
+   1.6 line height); calm links (accent text, a faint underline that strengthens on hover); the header
+   (subject first, then avatar, sender and address, "to …", the time at the right with an unread
+   chip under it); a related item's card (a Jira issue); the remote-images bar; remote pictures as
+   quiet dashed chips until loaded, logos and avatars hidden until then; a lone "View …" link drawn
+   as a button; the sender's footer folded. Neutral: no tint and no stripe on an unread message (the
+   source's colour is in the toolbar). Classes: sanitize.mjs MAIL_CLASSES. */
+.doc-body.mail { max-width: 760px; padding: 24px 28px 48px; font-size: 15px; line-height: 1.6; }
+.doc-body.mail p { margin: 0 0 12px; }
+.doc-body.mail > h1:first-child { margin: 0 0 14px; font-size: 21px; line-height: 1.3; font-weight: 650; letter-spacing: -.01em; }
+.doc-body.mail a { color: var(--cc-accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--cc-accent) 35%, transparent); }
+.doc-body.mail a:hover, .doc-body.mail a:focus-visible { border-bottom-color: var(--cc-accent); }
+.doc-body.mail .mail-msg + .mail-msg { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--cc-border); }
+.doc-body.mail .mail-head { display: flex; gap: 12px; align-items: flex-start; padding-bottom: 14px; margin-bottom: 16px; border-bottom: 1px solid var(--cc-border); font-size: 14px; line-height: 1.45; }
+.doc-body.mail .mail-avatar {
+  flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700;
+  background: color-mix(in srgb, var(--cc-status-working) 16%, transparent); color: color-mix(in srgb, var(--cc-status-working) 75%, var(--cc-fg));
+}
+.doc-body.mail .mail-who { flex: 1; min-width: 0; }
+.doc-body.mail .mail-from { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; }
+.doc-body.mail .mail-name { font-weight: 600; }
+.doc-body.mail .mail-addr { color: var(--cc-fg-subtle); font-size: 13px; }
+.doc-body.mail .mail-to { color: var(--cc-fg-muted); font-size: 13px; }
+.doc-body.mail .mail-when { flex: none; text-align: right; color: var(--cc-fg-muted); font-size: 13px; }
+.doc-body.mail .mail-chip {
+  display: inline-block; margin-top: 4px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .03em;
+  text-transform: uppercase; background: color-mix(in srgb, var(--cc-status-working) 16%, transparent); color: color-mix(in srgb, var(--cc-status-working) 75%, var(--cc-fg));
+}
+.doc-body.mail .mail-related {
+  display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 10px 14px; font-size: 14px; line-height: 1.45;
+  border: 1px solid var(--cc-border); border-radius: 10px; background: var(--cc-surface-1);
+}
+.doc-body.mail .mail-badge {
+  flex: none; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  background: color-mix(in srgb, var(--cc-status-working) 16%, transparent); color: color-mix(in srgb, var(--cc-status-working) 75%, var(--cc-fg));
+}
+.doc-body.mail .mail-related-main { flex: 1; min-width: 0; }
+.doc-body.mail .mail-related-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 550; }
+.doc-body.mail .mail-related-meta { color: var(--cc-fg-muted); font-size: 12px; }
+.doc-body.mail .mail-arrow { color: var(--cc-fg-subtle); }
+.doc-body.mail .mail-status-to { color: var(--cc-status-waiting); font-weight: 600; }
+/* The card's Open and a lone "View …" link: a quiet button, not underlined text. */
+.doc-body.mail a.mail-related-open, .doc-body.mail a.mail-cta {
+  display: inline-block; padding: 5px 12px; border: 1px solid var(--cc-border-strong); border-radius: 7px; color: var(--cc-fg);
+  font-size: 13px; font-weight: 550; line-height: 1.4; background: var(--cc-bg);
+}
+.doc-body.mail a.mail-related-open { flex: none; }
+.doc-body.mail a.mail-related-open:hover, .doc-body.mail a.mail-cta:hover { border-color: var(--cc-accent); }
+.doc-body.mail .mail-images-bar {
+  display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin: 0 0 14px; padding: 8px 12px; border-radius: 8px;
+  background: var(--cc-surface-1); color: var(--cc-fg-muted); font-size: 12px; line-height: 1.45;
+}
+.doc-body.mail .mail-images-text { flex: 1 1 260px; min-width: 0; }
+.doc-body.mail .mail-images-bar button.doc-action { font-size: 12px; }
+.doc-body.mail .mail-note { color: var(--cc-fg-muted); font-size: 13px; }
+/* A remote picture not loaded: a quiet dashed chip with its alt text, inline with the text. */
+.doc-body.mail .asset-box.failed:has(> img.mail-remote), .doc-body.mail .asset-box.pending:has(> img.mail-remote) {
+  display: inline-flex; align-items: center; min-width: 0; min-height: 0; padding: 0 7px; vertical-align: 1px;
+  border: 1px dashed var(--cc-border-strong); border-radius: 5px; color: var(--cc-fg-subtle); font-size: 12px; line-height: 1.6;
+}
+.doc-body.mail .asset-box.pending:has(> img.mail-remote)::after { content: attr(data-alt); font-style: normal; }
+.doc-body.mail .asset-box.failed:has(> img.mail-remote)::after { font-style: normal; }
+/* A logo, an avatar or a tiny picture: nothing to read, so hidden until the pictures are loaded. */
+.doc-body.mail .asset-box.pending:has(> img.mail-minor), .doc-body.mail .asset-box.failed:has(> img.mail-minor) { display: none; }
+.doc-body.mail details.mail-footer { margin-top: 22px; padding: 10px 0 0; border: none; border-top: 1px solid var(--cc-border); border-radius: 0; color: var(--cc-fg-subtle); font-size: 12.5px; }
+.doc-body.mail details.mail-footer > summary { font-weight: 500; color: var(--cc-fg-muted); }
+.doc-body.mail details.mail-footer a { color: var(--cc-fg-muted); border-bottom-color: color-mix(in srgb, var(--cc-fg-muted) 35%, transparent); }
+/* A caller's button (feature 'actions'), in any document: the component sheet draws it; busy while its
+   caller answers. A region update() hid. */
+.doc-body button.doc-action.busy { opacity: .6; cursor: progress; }
+.doc-body [data-part][hidden] { display: none !important; }

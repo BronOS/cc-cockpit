@@ -125,7 +125,7 @@ test('the page enforces the note count and draft size caps of the host', () => {
 test('annotateInput: checks and caps every field', () => {
   const { annotateInput, MAX_ANNOTATE_TITLE, MAX_ANNOTATE_TEXT, MAX_ANNOTATE_KEY } = require('../dist/lib/review')
   const ok = annotateInput({ title: '  PROJ-1:\n Fix\tlogin ', text: '', url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1' })
-  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null, start: 'top', type: null })
+  assert.deepEqual(ok, { title: 'PROJ-1: Fix login', text: '', html: null, aside: null, assets: [], url: 'http://jira.local/browse/PROJ-1', key: 'jira:PROJ-1', tabId: 't1', label: 'PROJ-1: Fix login', urlLabel: null, companion: null, start: 'top', type: null, kind: null })
   // start: where the main document opens; 'top' (default) or 'end'.
   assert.equal(annotateInput({ title: 't', html: '<p>x</p>', start: 'end' }).start, 'end')
   assert.equal(annotateInput({ title: 't', html: '<p>x</p>', start: null }).start, 'top')
@@ -447,4 +447,23 @@ test('htmlText: tags out, block ends and br as line breaks, list items and facts
   assert.equal(htmlText(null), '')
   // Unclosed script: dropped to the end, never shown.
   assert.equal(htmlText('<p>ok</p><script>never'), 'ok')
+})
+
+test('actionSet: the data-action ids of the caller\'s strings, decoded and shape-checked', () => {
+  const { actionSet } = require('../dist/lib/review')
+  const set = actionSet('<span data-action="show-images">x</span><span DATA-ACTION=\'always-sender\'>y</span>', null, '<span data-action=open>z</span> <span data-action="Bad Id">', '<i data-action="&#x61;b">')
+  assert.deepEqual([...set].sort(), ['ab', 'always-sender', 'open', 'show-images'])
+  // Text that only mentions the attribute (no space before it) is no attribute.
+  assert.equal(actionSet('xdata-action="nope"').size, 0)
+})
+
+test('updateInput: key, assets, hide names and a one-line status; at least one of them', () => {
+  const { updateInput } = require('../dist/lib/review')
+  assert.deepEqual(updateInput({ key: 'gmail:1', hide: ['images-bar', 'images-bar'], status: ' a\n b ' }), { key: 'gmail:1', assets: [], hide: ['images-bar'], status: 'a b' })
+  assert.deepEqual(updateInput({ key: 'k', status: '' }).status, '')
+  assert.throws(() => updateInput({ key: 'k' }), /needs assets, hide or status/)
+  assert.throws(() => updateInput({ key: 'k', assets: 'x' }), /assets must be an array/)
+  assert.throws(() => updateInput({ key: 'k', hide: Array(21).fill('a') }), /at most 20/)
+  assert.throws(() => updateInput({ key: 'bad key', status: 'x' }), /key may only use/)
+  assert.equal(updateInput({ key: 'k', status: 'x'.repeat(500) }).status.length, 200)
 })

@@ -768,11 +768,12 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare', 'type'])
-  assert.deepEqual(host.FEATURES, ['companion', 'prepare', 'type'])
+  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update']
+  assert.deepEqual(await f.provided.reviewer.features(), all)
+  assert.deepEqual(host.FEATURES, all)
   // A copy: a caller changing the answer changes nothing here.
   ;(await f.provided.reviewer.features()).push('x')
-  assert.deepEqual(await f.provided.reviewer.features(), ['companion', 'prepare', 'type'])
+  assert.deepEqual(await f.provided.reviewer.features(), all)
   host.deactivate()
 })
 
@@ -1034,5 +1035,102 @@ test('prepare: a loading overlay the person closed is not reopened by its annota
   await assert.rejects(f.provided.reviewer.prepare({ key: 'k', title: '' }), /^Error: reviewer: title must not be empty/)
   await assert.rejects(f.provided.reviewer.cancel('k'), /^Error: reviewer: cancel takes \{ key \}/)
   assert.equal(f.handles.length, 2)
+  host.deactivate()
+})
+
+// The service's caller and emit, as the app's host gives them: `caller` is the plugin of the call running now.
+function withServices(f, caller) {
+  const emits = []
+  f.ctx.services.caller = () => caller.id
+  f.ctx.services.emit = (name, event, data) => emits.push({ name, event, data: structuredClone(data) })
+  return emits
+}
+
+test("annotate kind 'mail': the init carries it for the page's mail layout; html only, one value only", async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Lunch', html: '<h1>Lunch</h1><p>x</p>', kind: 'mail', key: 'gmail:1' })
+  assert.equal(f.handles[0].posts[0].sides.kind, 'mail')
+  await f.provided.reviewer.annotate({ title: 'Other', html: '<p>x</p>', key: 'k2' })
+  assert.equal('kind' in f.handles[1].posts[0].sides, false)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 'T', text: 'x', kind: 'mail' }), /reviewer: kind goes with html/)
+  await assert.rejects(f.provided.reviewer.annotate({ title: 'T', html: '<p>x</p>', kind: 'newsletter' }), /reviewer: kind must be 'mail'/)
+  host.deactivate()
+})
+
+test('annotate actions: a click on a button of the caller emits `action` with key, id and caller; any other id is dropped', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  const emits = withServices(f, caller)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const html = '<div data-part="images-bar">2 images <span data-action="show-images">Show images</span> <span data-action=always-sender>Always</span></div>'
+  await f.provided.reviewer.annotate({ title: 'Mail', html, key: 'gmail:t1', aside: '<span data-action="from-aside">x</span>' })
+  caller.id = 'example.other' // the event names who annotated, not who calls later
+  const h = f.handles[0]
+  for (const id of ['show-images', 'always-sender', 'from-aside', 'made-up', 42]) h.say({ type: 'action', id })
+  assert.deepEqual(emits, [
+    { name: 'reviewer', event: 'action', data: { key: 'gmail:t1', id: 'show-images', caller: 'example.mail' } },
+    { name: 'reviewer', event: 'action', data: { key: 'gmail:t1', id: 'always-sender', caller: 'example.mail' } },
+    { name: 'reviewer', event: 'action', data: { key: 'gmail:t1', id: 'from-aside', caller: 'example.mail' } },
+  ])
+  // A text annotation has no actions.
+  await f.provided.reviewer.annotate({ title: 'T', text: '<span data-action="go">x</span>', key: 'txt' })
+  f.handles[1].say({ type: 'action', id: 'go' })
+  assert.equal(emits.length, 3)
+  host.deactivate()
+})
+
+test('update: more images, hidden parts and a status for an open annotation of the same caller, within the asset budget', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const own = [{ id: 'cid1', mime: 'image/png', dataUrl: PNG }]
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p><img data-asset="r1" alt="Hero"></p>', assets: own, key: 'gmail:t1', kind: 'mail' })
+  const h = f.handles[0]
+  const before = h.posts.length
+  assert.deepEqual(await f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png', dataUrl: PNG }], hide: ['images-bar'], status: 'Images\nloaded' }), { updated: true })
+  assert.deepEqual(h.posts.slice(before), [
+    { type: 'update', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png' }], hide: ['images-bar'], status: 'Images loaded' },
+    { type: 'asset', id: 'r1', dataUrl: PNG },
+  ])
+  // The ids are one namespace with the annotate's (and the earlier update's).
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'cid1', mime: 'image/png', dataUrl: PNG }] }), /reviewer: update\.assets\[0\]\.id cid1 is used twice/)
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'r1', mime: 'image/png', dataUrl: PNG }] }), /used twice/)
+  // An SVG is no image here either.
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 's', mime: 'image/svg+xml', dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }] }), /mime must be one of/)
+  // 30 in all: two are used, so 28 more fit and 29 do not; a refused update spends nothing.
+  const many = (n, p) => Array.from({ length: n }, (_, i) => ({ id: `${p}${i}`, mime: 'image/png', dataUrl: PNG }))
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', assets: many(29, 'a') }), /at most 30 assets \(with the assets the document already has\)/)
+  await f.provided.reviewer.update({ key: 'gmail:t1', assets: many(28, 'b') })
+  // Another plugin, an unknown key, a text annotation: the same refusal, nothing posted.
+  const n = h.posts.length
+  caller.id = 'example.other'
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', status: 'x' }), /reviewer: no open HTML annotation with the key gmail:t1/)
+  caller.id = 'example.mail'
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:none', status: 'x' }), /no open HTML annotation/)
+  await f.provided.reviewer.annotate({ title: 'T', text: 'x', key: 'txt' })
+  await assert.rejects(f.provided.reviewer.update({ key: 'txt', status: 'x' }), /no open HTML annotation/)
+  assert.equal(h.posts.length, n)
+  // Bad input.
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1' }), /update needs assets, hide or status/)
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', hide: ['Bad Name'] }), /hide name/)
+  await assert.rejects(f.provided.reviewer.update('x'), /update takes/)
+  // Closed: the key is free again.
+  h.end({ kind: 'dismissed' })
+  await wait(10)
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', status: 'x' }), /no open HTML annotation/)
+  host.deactivate()
+})
+
+test('update: an app without ctx.services.caller cannot update (no caller to match)', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>x</p>', key: 'gmail:t1' })
+  await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', status: 'x' }), /no open HTML annotation/)
   host.deactivate()
 })

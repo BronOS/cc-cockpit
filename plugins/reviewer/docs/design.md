@@ -247,6 +247,35 @@ the first instead.
   would show the mail alone, silently), so a caller asks first; the older one has no `features` and the call
   rejects with "has no method", read as none.
 
+### Mail: kind, actions and update (added to v1, app 0.13.0)
+
+```js
+annotate({ ..., html, kind: 'mail' })            // the mail reading layout
+update({ key, assets?, hide?, status? })          // an open annotation of the same caller
+reviewer.on('action', ({ key, id, caller }) => …) // a click on <span data-action="id">
+features()  // -> [..., 'mail', 'actions', 'update']
+```
+
+The Gmail plugin's mail overlay redesign: a mail read like a mail, not like a ticket, and remote pictures loaded only
+when the person asks.
+
+- **Opt-in layout.** The generic HTML look stays for every other caller; `kind: 'mail'` adds `.mail` to the main
+  document, and every rule naming a `mail-*` class sits under `.doc-body.mail` (a unit test reads the stylesheet). The
+  classes are kept on any element by the allow-list, so a caller's markup does not depend on the kind to survive.
+- **Placeholders for free.** An image whose `asset:` id the init did not declare already rendered as a failed box with
+  its alt text (CSS text, not a text node). The mail layout draws that box as a dashed chip for `img.mail-remote` and
+  hides it for `img.mail-minor`. Loading a picture later is then only a matter of declaring its asset and sending it:
+  `assetLoaded` turns the box into the picture, with no change to the document's text, so note anchors stay true.
+- **Actions.** Service calls go one way (caller to reviewer) and carry plain data, so a click comes back as a service
+  event. Events have no single addressee: the payload names the `key` and the `caller` (read with
+  `ctx.services.caller()` at the annotate), and a consumer acts only on its own. The host emits only an id the caller's
+  strings hold (`actionSet`), like links. The page disables the button until the caller's `update`.
+- **Update.** Only the plugin that annotated may update (an app without `ctx.services.caller` cannot), and a key that
+  is not open gets the same refusal, so a caller learns nothing of another plugin's keys. Assets go through the same
+  `checkAssets` with the document's budget, on a copy.
+- **Detection.** As with `companion`: additive in v1, listed by `features()`; an older reviewer ignores `kind` and has
+  no `update` (rejects with "has no method").
+
 ### Which tab Discuss starts on
 
 For `open`, `annotate` and a click alike, `tabId` goes to the overlay as `discuss: { tabId }` (a click names the

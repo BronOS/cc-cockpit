@@ -677,6 +677,7 @@ function renderHtml(view, source) {
   view.texts = texts
   showAssets(view.body)
   prepareLinks(view.body)
+  hideParts(view.body)
   placeOpenUrl() // after the text walk: the button holds no text, so the offsets would not move anyway
   if (view === htmlView && state.sides && state.sides.start === 'end') stickToEnd(view)
   refreshHighlights() // finds the draft's notes first: the list says which were not found
@@ -987,6 +988,12 @@ for (const root of assetRoots()) {
     linkDown = { x: e.clientX, y: e.clientY, sel: selectionNow() }
   })
   root.addEventListener('click', (e) => {
+    const action = e.target.closest && e.target.closest('button.doc-action[data-action]')
+    if (action) {
+      e.preventDefault()
+      onAction(action)
+      return
+    }
     const a = e.target.closest && e.target.closest('a')
     if (a) {
       e.preventDefault()
@@ -1029,6 +1036,48 @@ function renderAside(m) {
   target.hidden = false
   showAssets(target)
   prepareLinks(target)
+  hideParts(target)
+}
+
+// ---- actions and update (features 'actions' and 'update') ----
+//
+// A caller's button (`data-action`, drawn by sanitize.mjs) posts { type: 'action', id } and stays
+// disabled until the caller's update() answers (or the overlay closes): a second click while the
+// caller works would only ask twice. update() adds images (declared here, then one `asset` message
+// each, as the init's), hides `data-part` regions and sets the status line. The rendered document is
+// not touched otherwise, so the notes keep their anchors; an image that was a placeholder (an asset
+// the init did not declare) turns into the picture when its asset comes.
+
+const hiddenParts = new Set()
+
+/** Hides the `data-part` regions update() named, under `root` (also for a document rendered later). */
+function hideParts(root) {
+  if (!hiddenParts.size) return
+  for (const e of root.querySelectorAll('[data-part]')) if (hiddenParts.has(e.dataset.part)) e.hidden = true
+}
+
+function onUpdate(m) {
+  if (!isHtml()) return
+  for (const a of Array.isArray(m.assets) ? m.assets : []) {
+    if (a && typeof a.id === 'string' && !assetStore.declared.has(a.id)) assetStore.declared.set(a.id, a)
+  }
+  for (const name of Array.isArray(m.hide) ? m.hide : []) if (typeof name === 'string') hiddenParts.add(name)
+  for (const root of assetRoots()) {
+    hideParts(root)
+    for (const b of root.querySelectorAll('button.doc-action')) {
+      b.disabled = false
+      b.classList.remove('busy')
+    }
+  }
+  if (typeof m.status === 'string') setStatus(m.status)
+}
+
+function onAction(button) {
+  if (button.disabled) return
+  button.disabled = true
+  button.classList.add('busy')
+  setStatus('')
+  ccPanel.post({ type: 'action', id: button.dataset.action })
 }
 
 // The lightbox: an image shown larger above the review. A click or a key closes it; Esc is not
@@ -1126,6 +1175,8 @@ function init(m) {
   $('note').hidden = !s.note
   $('global').value = state.draft.global
   limitInput($('global'), $('global-limit'), GLOBAL_MAX)
+  // annotate's `kind: 'mail'`: the main document in the mail reading layout (review.css `.doc-body.mail`).
+  htmlView.body.classList.toggle('mail', isHtml() && s.kind === 'mail')
   if (isHtml()) startHtml(s)
   buildEditors()
   renderNotes()
@@ -1172,6 +1223,7 @@ ccPanel.onMessage((m) => {
   else if (m.type === 'aside') renderAside(m)
   else if (m.type === 'asset') htmlAsset(m)
   else if (m.type === 'assets-done') htmlAssetsDone()
+  else if (m.type === 'update') onUpdate(m)
 })
 
 // The theme arrives in a message after load (`ccc guide panels`): swap the syntax colours then.

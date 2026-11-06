@@ -17,6 +17,9 @@
 //   (FEATURES), so a caller can tell;
 //   prepare({ key, title, type?, tabId? }) opens that overlay at once with a loader, for a caller that still fetches
 //   what it shows (the annotate with the same key fills it), and cancel({ key }) closes one never filled;
+//   for a mail (app 0.13.0): annotate's `kind: 'mail'` (the reading layout), `data-action` buttons in
+//   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
+//   assets?, hide?, status? }), which adds images to an open document without rendering it again;
 // - `ccc review <path>`.
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
@@ -39,7 +42,11 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // one, since an older reviewer ignores an option it does not know (a companion would just not be
 // shown); an older reviewer has no features() at all, and the call rejects with "has no method".
 // 'type': annotate and prepare take an overlay type (and the toolbar's Discuss replaced the page's).
-const FEATURES = ['companion', 'prepare', 'type']
+// App 0.13.0, for a mail: 'mail' (annotate's `kind: 'mail'`, the mail reading layout), 'actions'
+// (`<span data-action>` buttons in the document, a click emitted as the service event `action`) and
+// 'update' (update({ key, assets?, hide?, status? }) on an open annotation: a mail's remote pictures
+// once the person asked for them).
+const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update']
 // prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
 // caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
 const PREPARE_MS = 60000
@@ -123,6 +130,14 @@ const flushers = new Set()
 
 exports.activate = (ctx) => {
   const root = async () => ctx.projectDir
+  /** The plugin whose service call this is (null on an app without ctx.services.caller). */
+  const callerOf = () => {
+    try {
+      return typeof ctx.services.caller === 'function' ? ctx.services.caller() || null : null
+    } catch {
+      return null
+    }
+  }
   const exec = (argv) => ctx.exec(argv, { timeoutMs: 15000 })
 
   // One overlay per file (`file:<path>`) and per annotated text (`text:<key>`): a second open of
@@ -301,7 +316,7 @@ exports.activate = (ctx) => {
    * messages or 8 MiB for it and drops (logs) the rest, which 10 MiB of content would overflow;
    * once the page asks, it has loaded and each post goes straight out, in order.
    */
-  async function openAnnotation(options) {
+  async function openAnnotation(options, caller = null) {
     const a = review.annotateInput(options)
     const base = { path: a.title, url: a.url, old: '', oldMissing: true, newMissing: false, note: null }
     const c = a.companion
@@ -312,6 +327,7 @@ exports.activate = (ctx) => {
       // One asset namespace for both documents (annotateInput checked the ids and the shared budget).
       const assets = c ? [...a.assets, ...c.assets] : a.assets
       sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), start: a.start }
+      if (a.kind) sides.kind = a.kind
       // The companion's html comes in parts of its own ({ doc: 'companion' }), after the main
       // document's, so the one the person reads first renders first.
       const cParts = c ? review.splitParts(c.html) : []
@@ -355,6 +371,14 @@ exports.activate = (ctx) => {
         // The links of the caller's own html and aside (and the companion's html and facts), read
         // from the strings it passed (built once, here): a link click opens one of these or nothing.
         links: review.linkSet(a.html, a.aside, c && c.html, c && c.facts),
+        // The buttons the caller's own strings offer (`data-action`): a click on any other id is dropped.
+        actions: a.html !== null ? review.actionSet(a.html, a.aside, c && c.html, c && c.facts) : null,
+        // update() checks its assets against what the document has: one budget and one id namespace.
+        assets: a.html !== null ? (c ? [...a.assets, ...c.assets] : a.assets) : null,
+        // Who annotated (ctx.services.caller() at the call): the `action` event names it, so a consumer
+        // acts only on its own documents, and only that plugin may update this one.
+        caller,
+        key: a.key,
         companion: c !== null,
         build: (d) => review.buildAnnotation(d, a, review.MAX_CONTEXT),
         tooLarge: 'the text is too large to show (with escaping and its saved draft)',
@@ -427,7 +451,19 @@ exports.activate = (ctx) => {
     let settle
     const opening = new Promise((resolve, reject) => (settle = { resolve, reject }))
     opening.catch(() => {}) // observed by focusExisting only when a second open comes in the wait
-    const entry = { handle, opening }
+    const entry = { handle, opening, caller: subject.caller || null, html: !!subject.assets }
+    // update(): more images for the open document (they join its asset budget), parts of it hidden,
+    // a status line. Posted to the page as is: the page adds the images to the ones it has and leaves
+    // the rendered document alone, so a note's anchor does not move.
+    let budget = subject.assets ? review.assetBudget([subject.assets]) : null
+    entry.update = (u) => {
+      // Checked on a copy: a refused update spends nothing of the budget.
+      const next = { count: budget.count, total: budget.total, seen: new Set(budget.seen) }
+      const assets = review.checkAssets(u.assets, 'update.assets', next)
+      budget = next
+      post({ type: 'update', assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), hide: u.hide, ...(u.status !== null ? { status: u.status } : {}) })
+      for (const { id, dataUrl } of assets) post({ type: 'asset', id, dataUrl })
+    }
     open.set(openKey, entry)
     // Drafts arrive on every change: Esc closes the overlay without asking the page, so the last
     // posted draft is what Close keeps. Writes are coalesced: `pending` is the newest draft not
@@ -546,6 +582,15 @@ exports.activate = (ctx) => {
         const v = review.linkVerdict(links, m.href)
         if (v.refuse) post({ type: 'error', message: v.refuse })
         else ctx.openExternal(v.open).catch((e) => post({ type: 'error', message: `Not opened in the browser: ${e.message.replace(/^openExternal: /, '')}` }))
+      } else if (m.type === 'action' && subject.actions && typeof m.id === 'string' && subject.actions.has(m.id)) {
+        // A button of the caller's document (`data-action`): told to every consumer of the service
+        // (events have no single addressee), with the key and the caller, so the one that annotated
+        // acts and the others ignore it. An id the caller's strings never had is dropped above.
+        try {
+          ctx.services.emit('reviewer', 'action', { key: subject.key, id: m.id, caller: subject.caller })
+        } catch (e) {
+          ctx.log.warn(`action ${m.id}: ${e.message}`)
+        }
       } else if (m.type === 'content' && after) {
         // Once: the content is let go after it went out (it can be 10 MiB). A post that fails is
         // logged and the page lives without it (an image shows its alt text after assets-done).
@@ -693,8 +738,11 @@ exports.activate = (ctx) => {
     // Additive in v1: a provider without it answers a call with "has no method", so a caller can
     // tell an older reviewer apart and fall back.
     async annotate(options) {
+      // Read before the first await: the caller of this call (the `action` event names it, and only
+      // it may update the document). An app without ctx.services.caller: null, and update refuses.
+      const caller = callerOf()
       try {
-        const r = await openAnnotation(options)
+        const r = await openAnnotation(options, caller)
         // The person closed its loading overlay while the caller fetched: nothing opens.
         return { opened: !(r && r.dismissed) }
       } catch (e) {
@@ -725,6 +773,22 @@ exports.activate = (ctx) => {
     // rejects with "has no method", which a caller reads as none.
     async features() {
       return [...FEATURES]
+    },
+    // Additive in v1 (feature 'update', app 0.13.0): more images, hidden parts or a status line for an
+    // open annotation of the same caller. The same answer for a key that is not open and one another
+    // plugin annotated, so a caller learns nothing of the others' keys.
+    async update(options) {
+      const caller = callerOf()
+      try {
+        const u = review.updateInput(options)
+        const entry = open.get(`text:${u.key}`)
+        if (!entry || !entry.html || !caller || entry.caller !== caller) throw new files.ReviewError(`no open HTML annotation with the key ${u.key}`)
+        await entry.opening
+        entry.update(u)
+        return { updated: true }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
     },
   })
 

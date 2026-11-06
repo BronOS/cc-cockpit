@@ -274,3 +274,46 @@ test('openLabel: the header button names the site the caller gave, else the brow
   assert.equal(openLabel(null), 'Open in browser ↗')
   assert.equal(openLabel('Example Mail', false), 'Open in Example Mail')
 })
+
+test('sanitizeTree: the mail classes on any element (styled only under .doc-body.mail), never a page UI class', async () => {
+  const { sanitizeTree, MAIL_CLASSES, ALLOWED_CLASSES } = await load('sanitize.mjs')
+  const [div] = sanitizeTree(body(h('div', { class: 'mail-head mail-related banner doc-action' }, 'x')))
+  assert.deepEqual(div.attrs, [['class', 'mail-head mail-related']])
+  const [img] = sanitizeTree(body(h('img', { 'data-asset': 'r1', alt: 'Logo', class: 'mail-remote mail-minor asset-box' })))
+  assert.deepEqual(img.attrs, [['data-asset', 'r1'], ['alt', 'Logo'], ['class', 'mail-remote mail-minor']])
+  for (const ui of ['banner', 'note', 'doc', 'doc-body', 'asset-box', 'doc-action', 'busy', 'mail']) {
+    assert.ok(!MAIL_CLASSES.has(ui) && !ALLOWED_CLASSES.has(ui), ui)
+  }
+  for (const c of MAIL_CLASSES) assert.match(c, /^mail-[a-z-]+$/)
+})
+
+test('sanitizeTree: a data-action span becomes a page button labelled with its text; data-part names a region', async () => {
+  const { sanitizeTree } = await load('sanitize.mjs')
+  const [b] = sanitizeTree(body(h('span', { 'data-action': 'show-images', class: 'mail-cta', title: 'Load' }, h('em', {}, 'Show'), ' images', h('script', {}, 'evil()'))))
+  assert.deepEqual(b, { tag: 'button', attrs: [['type', 'button'], ['class', 'doc-action'], ['data-action', 'show-images'], ['title', 'Load']], children: [{ text: 'Show images' }] })
+  // A bad id, or no label: the span's text stays text, no button.
+  for (const id of ['Show', '1x', 'a b', 'x'.repeat(41), '']) {
+    const [s] = sanitizeTree(body(h('span', { 'data-action': id }, 'Go')))
+    assert.equal(s.tag, 'span', id)
+    assert.deepEqual(s.attrs, [])
+  }
+  const [empty] = sanitizeTree(body(h('span', { 'data-action': 'go' }, '  ')))
+  assert.equal(empty.tag, 'span')
+  // data-action on anything but a span is dropped; data-part kept on div, p and span when well formed.
+  const [d] = sanitizeTree(body(h('div', { 'data-action': 'go', 'data-part': 'images-bar' }, 'x')))
+  assert.deepEqual(d.attrs, [['data-part', 'images-bar']])
+  const [bad] = sanitizeTree(body(h('p', { 'data-part': 'Images Bar' }, 'x')))
+  assert.deepEqual(bad.attrs, [])
+  const [li] = sanitizeTree(body(h('ul', {}, h('li', { 'data-part': 'x' }, 'y'))))
+  assert.deepEqual(li.children[0].attrs, [])
+})
+
+test('review.css: the mail layout is opt-in, scoped under .doc-body.mail', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../overlay/review.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  // Every rule naming a mail class sits under .doc-body.mail, so no other document changes.
+  for (const rule of css.match(/[^{}]+\{[^}]*\}/g)) {
+    const sel = rule.slice(0, rule.indexOf('{'))
+    if (/\.mail-/.test(sel)) for (const one of sel.split(',')) assert.match(one, /\.doc-body\.mail /, one)
+  }
+  assert.match(css, /\.doc-body\.mail \{[^}]*max-width: 760px[^}]*font-size: 15px[^}]*line-height: 1\.6/)
+})

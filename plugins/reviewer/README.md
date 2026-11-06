@@ -25,7 +25,10 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     when the app refuses the overlay. An overlay's type and Discuss tab are set when
     it starts, so pass them here: the filling annotate's own `type` and `tabId` are not used then. `cancel({ key })` closes one no annotate filled (a no-op
     after the fill, so call it in a `finally`). An older reviewer has no `prepare` (rejects with "has no method").
-  - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type']`); an older reviewer has no such
+  - `kind: 'mail'` (HTML form, optional, app 0.13.0): the mail reading layout; see "Mail" below. Buttons in the document
+    (`data-action`) and `update({ key, assets?, hide?, status? })` go with it.
+  - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type', 'mail', 'actions',
+    'update']`); an older reviewer has no such
     method (the call rejects with `has no method "features"`: read it as none).
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
@@ -90,6 +93,29 @@ if (features.includes('companion')) {
   })
 }
 ```
+
+## Mail
+
+For a mail (the Gmail plugin), three additive parts of v1, listed by `features()` as `'mail'`, `'actions'` and `'update'`:
+
+- `kind: 'mail'` on an HTML annotate gives the main document the mail reading layout (`.doc-body.mail` in
+  `overlay/review.css`): a 760 px column, 15 px text, 1.6 line height, accent links with a faint underline that
+  strengthens on hover, and the `mail-*` classes (`MAIL_CLASSES` in `src/page/sanitize.mjs`, kept on any element but
+  styled only here): the header (`mail-head`: avatar initials, sender and address, "to …", the time with an unread chip),
+  a related item's card (`mail-related`), the remote-images bar, `a.mail-cta` as a button, `details.mail-footer` for the
+  sender's boilerplate, and `img.mail-remote` (an `asset:` id the init did not send shows as a dashed chip with its alt
+  text until `update` brings it) with `mail-minor` (logos and avatars: hidden until loaded). No tint on unread mail. A
+  document without `kind` looks as before.
+- `<span data-action="<id>">Label</span>` in the caller's `html`, `aside` or companion is drawn as a page button
+  labelled with the span's text (no markup of the caller's in a control). A click disables it and posts `{ type:
+  'action', id }`; the host emits the service event `action` `{ key, id, caller }` (events reach every consumer, so a
+  consumer checks `caller` against its own id), only for an id the caller's own strings have (`actionSet`, read like
+  `linkSet`). `data-part="<name>"` on a `div`, `p` or `span` names a region.
+- `update({ key, assets?, hide?, status? })`: for the caller's own open HTML annotation of that key (`caller` matched,
+  else the same refusal as for a key not open). `assets` join the document's (one budget of 30 and 8 MiB, one id
+  namespace; checked on a copy, so a refused update spends nothing); `hide` hides `data-part` regions; `status` sets the
+  status line. The page declares the new assets and fills the images that name them; nothing is rendered again, so
+  the notes keep their anchors. Every update re-enables the document's buttons.
 
 ## HTML mode
 

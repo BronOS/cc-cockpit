@@ -37,6 +37,26 @@ export const TAG_CLASSES = new Map([
   ['span', new Set(['person', 'lozenge-neutral', 'lozenge-danger'])],
 ])
 
+/**
+ * The mail reading layout's classes (annotate's `kind: 'mail'`, app 0.13.0), on any element. They are
+ * styled only under `.doc-body.mail` (review.css), so a document that is not a mail keeps its look
+ * whatever classes it names: the header (subject, avatar, sender, recipients, time and an unread
+ * chip), a card of a related item (a Jira issue), the remote-images bar, a call-to-action link, the
+ * folded sender's footer, and a remote picture shown as a placeholder until it is loaded (`mail-minor`:
+ * a logo or an avatar, hidden while it is not).
+ */
+export const MAIL_CLASSES = new Set([
+  'mail-msg', 'mail-head', 'mail-avatar', 'mail-who', 'mail-from', 'mail-name', 'mail-addr', 'mail-to', 'mail-when',
+  'mail-chip', 'mail-body', 'mail-related', 'mail-badge', 'mail-related-main', 'mail-related-title', 'mail-related-meta',
+  'mail-status-to', 'mail-arrow', 'mail-related-open', 'mail-images-bar', 'mail-images-text', 'mail-cta', 'mail-footer',
+  'mail-remote', 'mail-minor', 'mail-note',
+])
+
+// `data-action` ids and `data-part` names (features 'actions' and 'update'): what the host's
+// review.actionSet and updateInput accept.
+const NAME = /^[a-z][a-z0-9-]{0,39}$/
+const MAX_ACTION_LABEL = 60
+
 // A lozenge has one colour: past the first tone named, the others are dropped (the CSS would
 // otherwise pick by rule order, which a caller cannot see). `lozenge-error` is the older name of
 // `lozenge-danger` and styled the same.
@@ -97,7 +117,7 @@ function classesOf(tag, value) {
   let tone = false
   const kept = []
   for (const c of new Set(String(value).split(/\s+/))) {
-    if (!ALLOWED_CLASSES.has(c) && !(onTag && onTag.has(c))) continue
+    if (!ALLOWED_CLASSES.has(c) && !MAIL_CLASSES.has(c) && !(onTag && onTag.has(c))) continue
     if (LOZENGE_TONES.has(c)) {
       if (tone) continue
       tone = true
@@ -117,6 +137,8 @@ function cleanAttrs(tag, a) {
     const href = safeHref(a.get('href'))
     if (href) out.push(['href', href])
   }
+  // A named region the caller may hide later (update's `hide`): a block or a span.
+  if ((tag === 'div' || tag === 'p' || tag === 'span') && a.has('data-part') && NAME.test(a.get('data-part'))) out.push(['data-part', a.get('data-part')])
   if (tag === 'td' || tag === 'th') {
     for (const name of ['colspan', 'rowspan']) {
       const v = a.get(name)
@@ -124,6 +146,17 @@ function cleanAttrs(tag, a) {
     }
   }
   return out
+}
+
+/** The text of a node and its descendants (bounded by MAX_DEPTH, as the walk is). */
+function textOf(node, depth = 0) {
+  if (node.nodeType === 3) return String(node.nodeValue || '')
+  if (node.nodeType !== 1 || depth >= MAX_DEPTH) return ''
+  // What the walk drops is no label either (a script's source, an SVG's text).
+  if ((node.namespaceURI && node.namespaceURI !== HTML_NS) || DROP.has(String(node.nodeName).toLowerCase())) return ''
+  let t = ''
+  for (const c of node.childNodes || []) t += textOf(c, depth + 1)
+  return t
 }
 
 /**
@@ -162,6 +195,20 @@ export function sanitizeTree(parent, depth = 0) {
       if (cls) attrs.push(['class', cls])
       out.push({ tag: 'img', attrs, children: [] })
       continue
+    }
+    // A caller's button (feature 'actions'): `<span data-action="id">Label</span>` becomes a button
+    // of the page's own, labelled with the span's text only (no markup of the caller's inside a
+    // control), which the page posts as { type: 'action', id }. The host emits only an id the
+    // caller's strings have. No label, or a bad id: the span's text stays as text.
+    if (tag === 'span' && a.has('data-action')) {
+      const id = a.get('data-action')
+      const label = textOf(node).replace(/\s+/g, ' ').trim().slice(0, MAX_ACTION_LABEL)
+      if (NAME.test(id) && label) {
+        const attrs = [['type', 'button'], ['class', 'doc-action'], ['data-action', id]]
+        if (a.has('title')) attrs.push(['title', short(a.get('title'))])
+        out.push({ tag: 'button', attrs, children: [{ text: label }] })
+        continue
+      }
     }
     const children = tag === 'br' || tag === 'hr' ? [] : sanitizeTree(node, depth + 1)
     out.push({ tag, attrs: cleanAttrs(tag, a), children })

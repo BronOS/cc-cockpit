@@ -277,7 +277,28 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   older reviewer rejects `prepare` with "has no method": just annotate when ready. The pattern:
   `const p = await reviewer.prepare({ key, title }).then(() => true, () => false)`, fetch, annotate, and
   `finally { if (p) await reviewer.cancel({ key }).catch(() => {}) }`.
-- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type']`. An older
+- `kind: 'mail'` (optional, HTML form; feature `'mail'`, app 0.13.0): the main document in the mail reading layout, a
+  760 px column of 15 px text, calm links, no other document restyled. It styles the `mail-*` classes (any element, kept
+  by the allow-list, styled only in this layout): `mail-msg` per message; `mail-head` with `mail-avatar` (initials),
+  `mail-who` (`mail-from` with `mail-name` and `mail-addr`, then `mail-to`) and `mail-when` (with `mail-chip`, e.g.
+  Unread); `mail-related` (a related item's card: `mail-badge`, `mail-related-main` with `mail-related-title` and
+  `mail-related-meta`, `mail-arrow` and `mail-status-to` for a status change, and an `a.mail-related-open` button);
+  `mail-images-bar` (`mail-images-text`); `a.mail-cta` (a link drawn as a button); `details.mail-footer`; `mail-note`;
+  and on an image `mail-remote` (an `asset:` the init did not send shows as a dashed chip with its alt text) and
+  `mail-minor` (a logo or avatar: hidden until its asset comes).
+- Buttons in your document (feature `'actions'`, app 0.13.0): `<span data-action="<id>">Label</span>` (id
+  `^[a-z][a-z0-9-]{0,39}$`, in your `html`, `aside` or companion) is drawn as a button labelled with its text. A click
+  disables it and emits the service event `action` `{ key, id, caller }` to every consumer of `reviewer`
+  (`reviewer.on('action', fn)`): act only when `caller` is your plugin id and the key is yours. An id your strings do
+  not have is dropped. `data-part="<name>"` (same shape, on a `div`, `p` or `span`) names a region `update` may hide.
+- `update({ key, assets?, hide?, status? })` (feature `'update'`, app 0.13.0): changes your open HTML annotation of that
+  key without rendering it again (the notes keep their places): `assets` are added (checked as annotate's, in the same
+  30 / 8 MiB budget and id namespace; an image the document names by such an id shows once it comes), `hide` lists
+  `data-part` names to hide (at most 20), `status` sets the status line (one line, 200 characters). It re-enables the
+  document's buttons, so answer every `action` with one, even only a status. It rejects when no annotation of yours
+  with that key is open (closed, or another plugin's).
+- `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type',
+  'mail', 'actions', 'update']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall
