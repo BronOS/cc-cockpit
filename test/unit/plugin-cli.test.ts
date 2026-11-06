@@ -511,7 +511,18 @@ describe('socket handlers', () => {
 
   it('routes a call to the owner in the caller\'s project', async () => {
     expect(await pluginCliHandler(options)(args(), tab)).toEqual({ stdout: 'ok', stderr: '', code: 0 })
-    expect(calls).toEqual([{ projectId: 'p1', pluginId: 'test.hostcli', call: { name: 'demo', argv: ['a'], stdin: '', cwd: '/w' } }])
+    expect(calls).toEqual([{ projectId: 'p1', pluginId: 'test.hostcli', call: { name: 'demo', argv: ['a'], stdin: '', cwd: '/w', tabId: 't1' } }])
+  })
+
+  it('tabId: a Claude tab\'s own id; none for a window token, --project or anonymous; never from args', async () => {
+    const h = pluginCliHandler(options)
+    // A tabId in the request is a caller's claim and is ignored, for every kind of caller.
+    const forged = args({ tabId: 'forged', callerTabId: 'forged' })
+    await h(forged, tab)
+    await h(forged, { kind: 'window', projectId: 'p1' })
+    await h(forged, { kind: 'project', path: '/x', projectId: 'p1' })
+    expect(calls.map((c) => c.call.tabId)).toEqual(['t1', undefined, undefined])
+    for (const c of calls.slice(1)) expect(c.call).not.toHaveProperty('tabId')
   })
 
   it('an unknown name, a plugin not enabled here, a closed window: the reason', async () => {
@@ -685,6 +696,19 @@ describe('HostManager.runCli with a real host context', () => {
       code: 5
     })
     expect(seen).toEqual({ argv: ['echo', 'a'], stdin: 'in', cwd: '/w' })
+  })
+
+  it('hands the handler the caller\'s tab id as CliCall.tabId, and none when there is none', async () => {
+    const seen: unknown[] = []
+    activators['a.cli'] = (ctx) =>
+      ctx.cli.register('demo', (_argv, c) => {
+        seen.push(c.tabId)
+        return {}
+      })
+    await manager.open('p1', 1)
+    await manager.runCli('p1', 'a.cli', { ...call(), tabId: 't9' })
+    await manager.runCli('p1', 'a.cli', call())
+    expect(seen).toEqual(['t9', undefined])
   })
 
   it('a name the plugin does not declare, another project, a plugin not in the launch: unknown command', async () => {

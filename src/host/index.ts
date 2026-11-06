@@ -12,7 +12,7 @@
 //   plugin.reload { plugin: HostPluginSpec } -> PluginRunState     deactivate, forget its modules,
 //                                                                  activate again (linked dev plugin)
 //   plugin.unload { pluginId }              -> null               deactivate one plugin, keep the rest
-//   cli.run    { pluginId, name, argv, stdin, cwd, callId } -> { stdout, stderr, code }
+//   cli.run    { pluginId, name, argv, stdin, cwd, tabId?, callId } -> { stdout, stderr, code }
 //                                                                  run a ctx.cli.register handler (`ccc <name>`)
 //   files.open { pluginId, path, tabId? }   -> boolean            a Sessions panel file click (or a
 //                                                                  ctx.files.open main routed here) for

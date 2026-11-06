@@ -315,7 +315,10 @@ export function pluginCliHandler(options: PluginCliOptions): Handler {
       name: owner.cli.name,
       argv: argv as string[],
       stdin: owner.cli.stdin === true && typeof stdin === 'string' ? stdin : '',
-      cwd
+      cwd,
+      // Only a Claude tab's session token names a tab (a window token, `--project` and an anonymous
+      // caller do not); `args` is never read for it.
+      ...(caller.kind === 'session' ? { tabId: caller.tabId } : {})
     }
     return options.runCli(projectId, owner.pluginId, call, peerGone)
   }

@@ -181,12 +181,14 @@ External review: sol / high
   `src/main/plugins/host-manager.ts` (`HostCliCall`), the host's CLI dispatch (`src/host/`, where handlers are called)
 - Modify tests: `test/unit/plugin-cli.test.ts`, the host CLI dispatch tests
 
-- [ ] main sets `tabId` from the caller's token when the caller is a Claude tab of this window (as `ccc session note`
+- [x] main sets `tabId` from the caller's token when the caller is a Claude tab of this window (as `ccc session note`
       resolves it); absent for a shell tab, a command tab or outside a tab; never taken from the request's args
-- [ ] the host passes it to the handler as `CliCall.tabId`
-- [ ] tests: a Claude tab caller gets its id; a shell-tab or window-token caller gets none; a `tabId` in the request
+- [x] the host passes it to the handler as `CliCall.tabId`
+- [x] tests: a Claude tab caller gets its id; a shell-tab or window-token caller gets none; a `tabId` in the request
       args is ignored
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 5
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 5
+
+- ➕ Main sets `tabId` only for `caller.kind === 'session'` (a Claude tab's session token, bound to a tab of the caller's own window); the host (`parseCliRun`) accepts it only as a non-empty string and leaves the key off `CliCall` otherwise. Guide text for `CliCall.tabId` comes in Task 5 (the drift test did not require it).
 
 ### Task 5: guide, SDK copy and core docs [model: sonnet]
 

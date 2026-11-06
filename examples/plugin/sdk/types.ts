@@ -416,6 +416,12 @@ export interface CliCall {
   readonly stdin: string
   /** The caller's working directory (absolute): resolve relative path arguments against it. */
   readonly cwd: string
+  /**
+   * The Claude tab that ran the command, set by the app from the caller's session token (never from its
+   * arguments), so `ccc` in that tab cannot name another. Absent when the caller is a shell tab, a command
+   * tab, a terminal overlay or outside a tab (`--project`), and on an app older than 0.11.
+   */
+  readonly tabId?: string
   /** Aborted when the call is cancelled: the caller pressed Ctrl+C, it timed out (30 s), or the plugin is deactivated. */
   readonly signal: AbortSignal
 }

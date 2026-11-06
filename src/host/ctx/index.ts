@@ -701,7 +701,7 @@ export class HostContexts {
   }
 
   /**
-   * Main runs `ccc <name> …` (`cli.run { pluginId, name, argv, stdin, cwd, callId }`). Resolves
+   * Main runs `ccc <name> …` (`cli.run { pluginId, name, argv, stdin, cwd, tabId?, callId }`). Resolves
    * with the result, capped (main caps again: it does not trust the host). A handler that throws
    * or rejects is exit 1 with its message on stderr; one that is cancelled (dispose, or main's
    * `cli.cancel`) is exit 1 right away, whatever the handler does after.
@@ -737,7 +737,12 @@ export class HostContexts {
       }
       rt.cliCalls.add(run)
       if (call.callId !== undefined) this.cliById.set(call.callId, run)
-      const callInfo = Object.freeze({ stdin: call.stdin, cwd: call.cwd, signal: controller.signal })
+      const callInfo = Object.freeze({
+        stdin: call.stdin,
+        cwd: call.cwd,
+        ...(call.tabId !== undefined ? { tabId: call.tabId } : {}),
+        signal: controller.signal
+      })
       // Through a resolved promise: a handler that throws synchronously lands in the same catch.
       // So does a result whose normalizing throws (a plugin's `get stdout() { throw … }`): in the
       // fulfilment callback it was an unhandled rejection, and this call hung until main's timeout.
@@ -816,9 +821,10 @@ function parseCliRun(params: unknown): {
   argv: string[]
   stdin: string
   cwd: string
+  tabId: string | undefined
   callId: number | undefined
 } {
-  const { pluginId, name, argv, stdin, cwd, callId } = (params ?? {}) as Record<string, unknown>
+  const { pluginId, name, argv, stdin, cwd, tabId, callId } = (params ?? {}) as Record<string, unknown>
   if (typeof pluginId !== 'string' || typeof name !== 'string') throw new Error('cli.run: pluginId and name must be strings')
   if (!Array.isArray(argv) || argv.some((a) => typeof a !== 'string')) throw new Error('cli.run: argv must be an array of strings')
   if (typeof cwd !== 'string') throw new Error('cli.run: cwd must be a string')
@@ -828,6 +834,7 @@ function parseCliRun(params: unknown): {
     argv: argv as string[],
     stdin: typeof stdin === 'string' ? stdin : '',
     cwd,
+    tabId: typeof tabId === 'string' && tabId !== '' ? tabId : undefined,
     callId: typeof callId === 'number' ? callId : undefined
   }
 }

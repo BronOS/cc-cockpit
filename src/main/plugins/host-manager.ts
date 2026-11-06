@@ -242,6 +242,8 @@ export interface HostCliCall {
   stdin: string
   /** The caller's working directory (absolute). */
   cwd: string
+  /** The Claude tab that ran it, from its session token; absent for any other caller. */
+  tabId?: string
 }
 
 /** Settings of one plugin in one project, validated against its manifest schemas. */
@@ -743,7 +745,14 @@ export class HostManager {
       }
       return await callCli(
         rpc,
-        { pluginId, name: call.name, argv: call.argv, stdin: call.stdin, cwd: call.cwd },
+        {
+          pluginId,
+          name: call.name,
+          argv: call.argv,
+          stdin: call.stdin,
+          cwd: call.cwd,
+          ...(call.tabId !== undefined ? { tabId: call.tabId } : {})
+        },
         {
           name: call.name,
           callId: this.nextCliCall++,
