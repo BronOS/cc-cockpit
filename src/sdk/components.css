@@ -423,6 +423,65 @@
     visibility: visible;
   }
 
+  /* ---- Menu: a context menu or dropdown a page draws itself, in the shell's menu look -------- */
+  /* Fixed, so the page places it at the pointer or under a row with left/top; the page also owns
+     the keys (arrows, Home/End, Escape) and closing it, as `ccc guide style` says. */
+  :where(.cc-menu) {
+    position: fixed;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    min-width: 168px;
+    max-width: calc(100vw - 8px);
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
+    margin: 0;
+    padding: 5px;
+    box-sizing: border-box;
+    border: 1px solid var(--cc-border-strong);
+    border-radius: var(--cc-radius-l);
+    background: var(--cc-bg-menu);
+    box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+    color: var(--cc-fg);
+    font-size: var(--cc-text-m);
+  }
+  :where(.cc-menu > [role='menuitem']) {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--cc-radius-m);
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  /* The highlight is the focus mark: arrows move focus, so hover and focus look alike. */
+  :where(.cc-menu > [role='menuitem']:hover:not(:disabled, [aria-disabled='true']), .cc-menu > [role='menuitem']:focus-visible) {
+    outline: none;
+    background: var(--cc-accent-soft);
+  }
+  :where(.cc-menu > [role='menuitem']:disabled, .cc-menu > [role='menuitem'][aria-disabled='true']) {
+    opacity: 0.4;
+    cursor: default;
+  }
+  :where(.cc-menu > [role='menuitem'].cc-danger) {
+    border: 0;
+    color: var(--cc-status-ended);
+  }
+  :where(.cc-menu-separator) {
+    flex: none;
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--cc-border);
+  }
+
   /* ---- Group header: lanes, Inbox groups; `details.cc-group` collapses ----------------------- */
 
   :where(.cc-group) {
