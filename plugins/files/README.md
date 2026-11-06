@@ -10,7 +10,12 @@ project, changed or not, to read it, attach notes and discuss it with Claude.
 - Git marks: M modified, A added, ? untracked, R renamed, U conflict; a dot on a folder with a change.
 - Filter box (`/`): every word must appear in the path; searches git's tracked and untracked files
   (not ignored ones), or up to 20,000 files outside git.
-- Keys: arrows, Right/Left expand and collapse, Enter open, `e` edit, `/` filter, Esc clear.
+- Right-click menu (also the context-menu key and Shift+F10): on a file Open, Open with default app,
+  Reveal in Finder (Show in Explorer, Open in file manager), Ask Claude about this file, Copy path,
+  Copy relative path, Rename…, Move to Trash; on a folder Reveal, New file…, New folder…, the copies,
+  Rename…, Move to Trash; on the empty area New file…, New folder…, Reveal, Copy path. Move to Trash
+  asks first (the app's dialog); Open with default app refuses scripts and programs.
+- Keys: arrows, Right/Left expand and collapse, Enter open, `e` edit, F2 rename, `/` filter, Esc clear.
 - Open folders are watched and remembered per project.
 
 Design: `docs/design.md`. Tests: `node --test plugins/files/test/` (part of `npm run test:plugins`).

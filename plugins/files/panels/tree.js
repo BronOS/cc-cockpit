@@ -2,6 +2,12 @@
 // The Files panel page. It only draws: the host reads folders, asks git and watches for changes,
 // and sends `dir`, `marks`, `results` messages; the page sends `expand`, `collapse`, `open`, `edit`,
 // `search`, `refresh`. Paths are relative to the project folder, '' being the folder itself.
+//
+// The right-click menu (also the context-menu key and Shift+F10) is drawn here with the SDK's
+// `.cc-menu`; each item is one message to the host (`reveal`, `open-system`, `trash`, `ask`,
+// `create`, `rename`) except the two copies, which write the clipboard from the page inside the
+// click, the only place a sandboxed frame may (document.execCommand('copy') needs the click's user
+// activation; navigator.clipboard is refused to the frame's opaque origin).
 
 const list = document.getElementById('list')
 const filter = document.getElementById('filter')
@@ -13,6 +19,8 @@ let marks = { files: {}, dirs: new Set(), untracked: [] }
 let results = null // { query, paths, total } while the filter has text
 let selected = null // rel of the selected row
 let rows = [] // the visible rows, in order: { rel, kind, el }
+/** From the host's `reset`: the project folder's absolute path and separator, the OS, and whether ctx.files.reveal exists. */
+let env = { root: '', sep: '/', platform: '', system: false }
 
 const joinRel = (dir, name) => (dir === '' ? name : `${dir}/${name}`)
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
@@ -171,6 +179,15 @@ list.addEventListener('keydown', (ev) => {
     const r = rows[Math.max(0, Math.min(rows.length - 1, k))]
     if (r) select(r.rel)
   }
+  // The context-menu key and Shift+F10 open the menu of the selected row (the project folder's when
+  // none is), placed under the row. Chromium may also send a `contextmenu` event for them;
+  // preventDefault here stops it, and openMenu is idempotent anyway.
+  if (ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) {
+    ev.preventDefault()
+    if (cur) openMenu(cur, null)
+    else openMenu({ rel: '', kind: 'root' }, null)
+    return
+  }
   switch (ev.key) {
     case 'ArrowDown':
       go(i < 0 ? 0 : i + 1)
@@ -200,6 +217,9 @@ list.addEventListener('keydown', (ev) => {
       break
     case 'e':
       if (cur && cur.kind === 'file') ccPanel.post({ type: 'edit', path: cur.rel })
+      break
+    case 'F2':
+      if (cur) askName({ action: 'rename', rel: cur.rel, kind: cur.kind })
       break
     case '/':
       filter.focus()
@@ -256,11 +276,21 @@ ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return
   if (m.type === 'reset') {
     expanded = new Set(['', ...(m.expanded || [])])
+    if (m.env && typeof m.env === 'object') env = { ...env, ...m.env }
   } else if (m.type === 'dir') {
     dirs.set(m.path, { entries: m.entries || [], more: m.more || 0, error: m.error })
   } else if (m.type === 'gone') {
     dirs.delete(m.path)
     for (const p of [...expanded]) if (p === m.path || p.startsWith(m.path + '/')) expanded.delete(p)
+    if (selected !== null && (selected === m.path || selected.startsWith(m.path + '/'))) selected = parentOf(m.path) || null
+  } else if (m.type === 'select') {
+    // A new or renamed entry: selected once its folder's listing (sent just before) is drawn. The
+    // write worked, so an earlier refusal (a name that existed) is no longer the news.
+    showError('')
+    selected = m.path
+    render()
+    select(m.path)
+    return
   } else if (m.type === 'marks') {
     marks = { files: m.files || {}, dirs: new Set(m.dirs || []), untracked: m.untracked || [] }
   } else if (m.type === 'results') {
@@ -274,6 +304,253 @@ ccPanel.onMessage((m) => {
     return
   }
   render()
+})
+
+// ---- the right-click menu ----
+
+const menuState = { el: null, restore: null }
+
+/** The reveal item's name in the person's system. */
+function revealLabel() {
+  if (env.platform === 'darwin') return 'Reveal in Finder'
+  if (env.platform === 'win32') return 'Show in Explorer'
+  return 'Open in file manager'
+}
+
+/** The absolute path of `rel` with the system's separator (Copy path). */
+function absolutePath(rel) {
+  if (rel === '') return env.root
+  return env.root + env.sep + (env.sep === '/' ? rel : rel.split('/').join(env.sep))
+}
+
+/**
+ * Write `text` to the clipboard from inside a click or key press: a hidden textarea, selected, and
+ * the copy command, which Chromium allows a frame with user activation. False when it was refused.
+ */
+function copyText(text) {
+  const back = document.activeElement
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  ta.style.left = '-1000px'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  ta.remove()
+  if (back instanceof HTMLElement) back.focus()
+  return ok
+}
+
+function copy(text) {
+  if (!copyText(text)) showError('Could not copy: the clipboard refused it.')
+}
+
+/** The items for a row (`file`, `dir`) or the project folder (`root`): [label, run, danger?] or 'sep'. */
+function menuItems(target) {
+  const { rel, kind } = target
+  const post = (type, extra = {}) => () => ccPanel.post({ type, path: rel, ...extra })
+  const items = []
+  if (kind === 'file') {
+    items.push(['Open', () => activate(rel, 'file', target.entry)])
+    if (env.system) items.push(['Open with default app', post('open-system')])
+    if (env.system) items.push([revealLabel(), post('reveal')])
+    items.push(['Ask Claude about this file', post('ask')])
+  } else {
+    if (env.system) items.push([revealLabel(), post('reveal')])
+    items.push(['New file…', () => askName({ action: 'create', kind: 'file', rel })])
+    items.push(['New folder…', () => askName({ action: 'create', kind: 'dir', rel })])
+  }
+  items.push('sep')
+  items.push(['Copy path', () => copy(absolutePath(rel))])
+  if (kind !== 'root') {
+    items.push(['Copy relative path', () => copy(rel)])
+    items.push('sep')
+    items.push(['Rename…', () => askName({ action: 'rename', rel, kind })])
+    if (env.system) items.push(['Move to Trash', post('trash'), true])
+  }
+  return items
+}
+
+function closeMenu(focusBack = true) {
+  const { el, restore } = menuState
+  if (!el) return
+  // State first: removing the focused menu fires its focusout, which calls back in here, and a
+  // second remove() of a node in the middle of its removal throws.
+  menuState.el = null
+  menuState.restore = null
+  el.remove()
+  if (focusBack && restore && document.contains(restore)) restore.focus()
+}
+
+/**
+ * Open the menu for `target` ({ rel, kind, entry? }) at the pointer (`at`: { x, y }) or, from the
+ * keyboard (`at` null), under the target's row. Focus goes to the first item and comes back to the
+ * tree (or wherever it was) when the menu closes.
+ */
+function openMenu(target, at) {
+  closeMenu(false)
+  menuState.restore = document.activeElement instanceof HTMLElement ? document.activeElement : list
+  const menu = document.createElement('div')
+  menu.className = 'cc-menu'
+  menu.setAttribute('role', 'menu')
+  menu.setAttribute('aria-label', target.rel === '' ? 'Project folder' : baseOf(target.rel))
+  for (const item of menuItems(target)) {
+    if (item === 'sep') {
+      const sep = document.createElement('div')
+      sep.className = 'cc-menu-separator'
+      sep.setAttribute('role', 'separator')
+      menu.appendChild(sep)
+      continue
+    }
+    const [label, run, danger] = item
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.setAttribute('role', 'menuitem')
+    b.tabIndex = -1
+    if (danger) b.classList.add('cc-danger')
+    b.textContent = label
+    // The copies must run inside this click (user activation); everything else could wait, but one
+    // order for all: run, then close (a name bar the run opened keeps the focus).
+    b.addEventListener('click', () => {
+      closeMenu(!label.endsWith('…'))
+      run()
+    })
+    menu.appendChild(b)
+  }
+  menu.addEventListener('keydown', (ev) => {
+    const items = [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')]
+    const at = items.indexOf(document.activeElement)
+    const go = (i) => items[(i + items.length) % items.length]?.focus()
+    if (ev.key === 'ArrowDown') go(at + 1)
+    else if (ev.key === 'ArrowUp') go(at < 0 ? -1 : at - 1)
+    else if (ev.key === 'Home') go(0)
+    else if (ev.key === 'End') go(-1)
+    else if (ev.key === 'Escape' || (ev.key === 'F10' && ev.shiftKey) || ev.key === 'ContextMenu') closeMenu()
+    else if (ev.key === 'Tab') closeMenu()
+    else return
+    ev.preventDefault()
+    ev.stopPropagation()
+  })
+  // Leaving the menu (a click elsewhere, the window losing focus) closes it, without stealing the
+  // focus back from where it went.
+  menu.addEventListener('focusout', (ev) => {
+    if (menuState.el === menu && !menu.contains(ev.relatedTarget)) closeMenu(false)
+  })
+  document.body.appendChild(menu)
+  menuState.el = menu
+  // Place it, then keep it inside the frame (a panel is narrow, and a row near the bottom is common).
+  let x
+  let y
+  if (at) {
+    x = at.x
+    y = at.y
+  } else {
+    const row = rows.find((r) => r.rel === target.rel)
+    const box = row ? row.el.getBoundingClientRect() : list.getBoundingClientRect()
+    x = box.left + 16
+    y = row ? box.bottom : box.top
+  }
+  const { width, height } = menu.getBoundingClientRect()
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - width - 4))}px`
+  menu.style.top = `${Math.max(4, y + height > window.innerHeight - 4 ? y - height : y)}px`
+  menu.querySelector('[role="menuitem"]')?.focus()
+}
+
+list.addEventListener('contextmenu', (ev) => {
+  ev.preventDefault()
+  const rowEl = ev.target instanceof Element ? ev.target.closest('.row') : null
+  const row = rowEl ? rows.find((r) => r.el === rowEl) : null
+  // A keyboard-made event (the key on some systems) has no pointer position: place it under the row.
+  const fromKeys = ev.button !== 2 && ev.clientX === 0 && ev.clientY === 0
+  if (row) {
+    select(row.rel)
+    openMenu(row, fromKeys ? null : { x: ev.clientX, y: ev.clientY })
+  } else if (fromKeys && selected !== null && rows.some((r) => r.rel === selected)) {
+    openMenu(rows.find((r) => r.rel === selected), null)
+  } else {
+    openMenu({ rel: '', kind: 'root' }, fromKeys ? null : { x: ev.clientX, y: ev.clientY })
+  }
+})
+list.addEventListener('scroll', () => closeMenu(false))
+window.addEventListener('blur', () => closeMenu(false))
+
+// ---- the name bar: Rename…, New file…, New folder… ----
+
+const namebar = document.getElementById('namebar')
+const nameLabel = document.getElementById('namebar-label')
+const nameInput = document.getElementById('namebar-input')
+const nameOk = document.getElementById('namebar-ok')
+let naming = null // { action: 'create' | 'rename', kind, rel }
+
+/** The same rules the host applies (lib/ops.js checkName), so a mistake shows before a round trip. */
+function nameProblem(name) {
+  if (name.trim() === '') return 'Type a name.'
+  if (name === '.' || name === '..') return `"${name}" cannot be a name.`
+  if (name.includes('/')) return 'A name cannot contain "/".'
+  if (name.includes('\0')) return 'A name cannot contain a NUL character.'
+  return null
+}
+
+function askName(req) {
+  naming = req
+  const where = req.rel === '' ? 'the project folder' : req.rel
+  if (req.action === 'rename') {
+    nameLabel.textContent = `Rename ${req.rel} to`
+    nameOk.textContent = 'Rename'
+    nameInput.value = baseOf(req.rel)
+  } else {
+    nameLabel.textContent = req.kind === 'dir' ? `New folder in ${where}` : `New file in ${where}`
+    nameOk.textContent = 'Create'
+    nameInput.value = ''
+  }
+  namebar.hidden = false
+  nameInput.focus()
+  if (req.action === 'rename') {
+    // The name without its extension selected, as file managers do: typing replaces the stem.
+    const dot = nameInput.value.lastIndexOf('.')
+    nameInput.setSelectionRange(0, req.kind === 'file' && dot > 0 ? dot : nameInput.value.length)
+  }
+}
+
+function endNaming() {
+  naming = null
+  namebar.hidden = true
+  list.focus()
+}
+
+function submitName() {
+  if (!naming) return
+  const name = nameInput.value
+  const problem = nameProblem(name)
+  if (problem) return showError(problem)
+  if (naming.action === 'rename') {
+    ccPanel.post({ type: 'rename', path: naming.rel, name })
+  } else {
+    // Open the folder first, so the new entry shows where it was made (the host follows).
+    if (naming.rel !== '') expand(naming.rel)
+    ccPanel.post({ type: 'create', dir: naming.rel, kind: naming.kind, name })
+  }
+  endNaming()
+}
+
+nameOk.addEventListener('click', submitName)
+document.getElementById('namebar-cancel').addEventListener('click', endNaming)
+nameInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault()
+    submitName()
+  } else if (ev.key === 'Escape') {
+    ev.preventDefault()
+    ev.stopPropagation()
+    endNaming()
+  }
 })
 
 render()

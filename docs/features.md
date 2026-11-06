@@ -242,7 +242,11 @@ behind it are in [design.md](design.md).
   ones dimmed) unless the app settings "Hide hidden files" / "Hide ignored files" are on; `.git` is never shown.
   Folders load when expanded and are watched (`fs.watch`) while open; git marks (M, A, ?, R, U, D) follow the work
   tree and the index. The filter box searches git's tracked and untracked files (not ignored ones), or a bounded walk
-  outside git. No create, rename or delete, and no copy path (a panel cannot write the clipboard).
+  outside git. A right-click menu (also the context-menu key and Shift+F10; files 0.2.0): Open, Open with default app,
+  Reveal in Finder / Show in Explorer / Open in file manager, Ask Claude about this file (a new Claude tab whose prompt names
+  the path), Copy path, Copy relative path, Rename…, New file…, New folder… and Move to Trash. Move to Trash asks in the
+  app's own dialog and is recoverable; Open with default app refuses folders, executables, app bundles and script or
+  program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...). No "Open terminal here": plugins cannot open a shell tab.
 - Bundled plugins (browser, reviewer, editor, files, sessions) can be switched off for the whole app (Settings > Plugins, "Off in all
   projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
   the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for

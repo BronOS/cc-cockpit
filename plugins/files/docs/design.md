@@ -1,6 +1,7 @@
 # Files: a project tree (cockpit.files)
 
-Status: agreed with the user on 2026-11-02; first version on branch `files-tree`.
+Status: agreed with the user on 2026-11-02; first version on branch `files-tree`. The right-click menu
+(0.2.0) approved by the owner on 2026-11-06.
 
 ## What it is for
 
@@ -40,8 +41,39 @@ public plugin API (plus `ctx.files.open`, added to core in the same change, belo
   replaced reviewer, or the built-in viewer when the pick is "Built-in viewer", is honoured.
 - Each row also has **Edit** (the `editor` service: micro by default), on hover and on the
   keyboard (`e`).
-- No create, rename, delete or drag in v1: Claude and the editor change files.
-- No "Copy path": a sandboxed panel cannot write the clipboard (FRICTION.md).
+- No drag in the tree: Claude and the editor change files; the menu below covers the rest.
+
+## Right-click menu (0.2.0)
+
+A menu in the panel page (the SDK's `.cc-menu`), opened by a right click, the context-menu key or
+Shift+F10 (under the selected row); arrows, Home/End, Enter, Escape (focus back to the tree).
+
+- **File:** Open (the `@open-file` pick, as a click), Open with default app, Reveal in Finder (the
+  label per OS: "Show in Explorer", "Open in file manager"), Ask Claude about this file, Copy path,
+  Copy relative path, Rename…, Move to Trash.
+- **Folder:** Reveal, New file…, New folder…, Copy path, Copy relative path, Rename…, Move to Trash.
+- **Empty area (the project folder):** New file…, New folder…, Reveal, Copy path.
+- **Left out: Open terminal here.** The public API cannot open a shell tab (only Claude tabs,
+  `ctx.sessions.open`), and a bundled plugin gets no privileged path (FRICTION.md).
+
+Who does what:
+
+- Reveal, Open with default app and Move to Trash are core calls (`ctx.files.reveal`,
+  `openWithSystem`, `trash`, added for this): main resolves the path inside the project by its real
+  path, refuses to open runnable files (a script, a program, an app bundle, the exec bit) and asks
+  the person before the Trash; a no is an `AbortError`, which the tree ignores.
+- New file, New folder and Rename run in the host with Node fs (`lib/ops.js`): the folder is
+  realpath'd and must be inside the project, the name is one segment (no `/`, not `.` or `..`, no
+  NUL, at most 255 bytes), and an existing name is refused, never replaced. The name is typed in a
+  bar under the header (not a `<form>`: the sandboxed frame has no `allow-forms`). The tree is
+  re-read at once and the new entry selected; a renamed open folder stays open.
+- Ask Claude opens a focused Claude tab whose prompt names the relative path only (never the file's
+  content).
+- Copy path / Copy relative path are the page's: `document.execCommand('copy')` inside the click,
+  which the sandboxed frame may do (navigator.clipboard is refused to its opaque origin). The host
+  sends the project folder's absolute path and separator in its `reset` message, so the copy needs
+  no round trip.
+- Errors show in the panel's notice line.
 
 ## Refresh
 

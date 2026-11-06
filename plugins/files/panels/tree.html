@@ -37,6 +37,10 @@
       .row.file:hover .edit, .row.file.sel .edit { display: inline-block; }
       .note { padding: 3px 8px 3px 24px; color: var(--cc-fg-subtle); font-style: italic; }
       .empty { padding: 12px; color: var(--cc-fg-muted); }
+      /* The name bar of Rename… / New file… / New folder…: the toolbar component, under the header. */
+      #namebar { padding: 6px; border-bottom: 1px solid var(--cc-border); flex-wrap: wrap; }
+      #namebar label { flex: 1 0 100%; color: var(--cc-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #namebar input { flex: 1; min-width: 0; }
     </style>
   </head>
   <body>
@@ -45,6 +49,13 @@
       <button id="collapse" class="cc-btn cc-ghost cc-icon" type="button" title="Collapse all">⊟</button>
       <button id="refresh" class="cc-btn cc-ghost cc-icon" type="button" title="Refresh">⟳</button>
     </header>
+    <!-- Not a <form>: the sandboxed frame has no allow-forms, so a submit never fires; Enter is handled in tree.js. -->
+    <div id="namebar" class="cc-toolbar" hidden>
+      <label id="namebar-label" for="namebar-input"></label>
+      <input id="namebar-input" type="text" spellcheck="false" autocomplete="off" />
+      <button id="namebar-ok" class="cc-primary" type="button">OK</button>
+      <button id="namebar-cancel" class="cc-ghost" type="button">Cancel</button>
+    </div>
     <div id="error" class="cc-error-line" role="alert"></div>
     <div id="list" tabindex="0" role="tree" aria-label="Project files"></div>
   </body>

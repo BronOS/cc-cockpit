@@ -7,10 +7,17 @@
 // The host owns the file system work: the page asks for a folder, the host reads it (full Node),
 // asks git what is ignored and what changed, and watches every expanded folder so the tree follows
 // what Claude writes. Design: docs/design.md.
+//
+// The right-click menu (0.2.0): the page draws it and sends one message per item. New file, New
+// folder and Rename run here (lib/ops.js, confined to the project by real path); Reveal, Open with
+// default app and Move to Trash go to main (ctx.files.reveal / openWithSystem / trash), which checks
+// the path again, refuses runnable files and asks the person before the Trash; Ask Claude opens a
+// Claude tab with a prompt naming the file (never its content). Copy path is the page's own.
 
 const fs = require('node:fs')
 const path = require('node:path')
 const tree = require('./lib/tree')
+const ops = require('./lib/ops')
 
 const PANEL = 'tree'
 const EXPANDED_KEY = 'expanded' // ctx.storage (per project): the folders the person left open
@@ -18,6 +25,15 @@ const MAX_EXPANDED = 500
 const MAX_WATCHERS = 200
 const LIST_DEBOUNCE_MS = 250
 const MARKS_DEBOUNCE_MS = 1000
+
+const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
+
+/**
+ * The prompt of "Ask Claude about this file": the path only. The file's content is never put in the
+ * prompt (Claude reads it itself, with the person's permissions, and a prompt is an argv element
+ * with a size limit); it starts with a letter, so it is never a slash command or a bash line.
+ */
+const askPrompt = (rel) => `Have a look at ${rel} in this project and tell me briefly what it does. Then wait for my questions.`
 
 let disposers = []
 
@@ -89,7 +105,15 @@ exports.activate = (ctx) => {
 
   async function sendAll() {
     await loaded
-    post({ type: 'reset', expanded: [...expanded], settings: { hideHidden: options().hideHidden, hideIgnored: options().hideIgnored } })
+    post({
+      type: 'reset',
+      expanded: [...expanded],
+      settings: { hideHidden: options().hideHidden, hideIgnored: options().hideIgnored },
+      // What the menu needs up front: Copy path writes the clipboard inside the click (the page's
+      // user activation), so it cannot wait for an answer; the reveal label is per system; an older
+      // app without ctx.files.reveal (and its siblings) gets a menu without those items.
+      env: { root, sep: path.sep, platform: process.platform, system: typeof ctx.files.reveal === 'function' }
+    })
     // Parents before children, so the page always has the row it opens.
     const order = [...expanded].sort((a, b) => a.split('/').length - b.split('/').length)
     for (const rel of order) {
@@ -153,6 +177,66 @@ exports.activate = (ctx) => {
     for (const rel of [...watchers.keys()]) unwatch(rel)
   })
 
+  // ---- the menu's writes ----
+
+  /** Forget expanded folders (and their watchers) at or under `rel`: it was renamed or trashed. */
+  function forget(rel) {
+    const gone = []
+    for (const p of [...expanded]) {
+      if (p !== '' && (p === rel || p.startsWith(rel + '/'))) {
+        expanded.delete(p)
+        unwatch(p)
+        gone.push(p)
+      }
+    }
+    return gone
+  }
+
+  /** After a write: re-read the folder that changed now (the watcher would, a little later) and the marks. */
+  async function refreshAfter(dir, select) {
+    if (expanded.has(dir) && (await sendDir(dir))) watch(dir)
+    if (select !== undefined) post({ type: 'select', path: select })
+    scheduleMarks()
+  }
+
+  async function create(m) {
+    const dir = tree.normalizeRelative(m.dir)
+    const rel = m.kind === 'dir' ? await ops.createFolder(root, dir, m.name) : await ops.createFile(root, dir, m.name)
+    // The page expanded the folder before asking, so the new entry shows; the host follows.
+    if (!expanded.has(dir)) {
+      expanded.add(dir)
+      saveExpanded()
+    }
+    await refreshAfter(dir, rel)
+  }
+
+  async function rename(m) {
+    const from = tree.normalizeRelative(m.path)
+    const to = await ops.renameEntry(root, from, m.name)
+    if (to === from) return
+    // An open folder stays open under its new name, with its open subfolders.
+    const moved = forget(from).map((p) => to + p.slice(from.length))
+    for (const p of moved) expanded.add(p)
+    saveExpanded()
+    if (moved.length === 0) return refreshAfter(parentOf(to), to)
+    // Open folders moved: the page's expanded set and every listing below change, so all of it again.
+    await sendAll()
+    post({ type: 'select', path: to })
+  }
+
+  async function trash(rel) {
+    try {
+      await ctx.files.trash(rel)
+    } catch (e) {
+      // The person said no in the app's dialog: nothing happened, nothing to report.
+      if (e && e.name === 'AbortError') return
+      throw e
+    }
+    if (forget(rel).length > 0) saveExpanded()
+    post({ type: 'gone', path: rel })
+    await refreshAfter(parentOf(rel))
+  }
+
   // ---- the page ----
 
   let searchSeq = 0
@@ -189,6 +273,20 @@ exports.activate = (ctx) => {
             const missing = /no enabled plugin/.test(e.message) && /"editor"/.test(e.message)
             throw new Error(missing ? 'No editor: turn on "Editor (micro)" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
           }
+        } else if (m.type === 'reveal') {
+          await ctx.files.reveal(tree.normalizeRelative(m.path))
+        } else if (m.type === 'open-system') {
+          await ctx.files.openWithSystem(tree.normalizeRelative(m.path))
+        } else if (m.type === 'trash') {
+          await trash(tree.normalizeRelative(m.path))
+        } else if (m.type === 'ask') {
+          const rel = tree.normalizeRelative(m.path)
+          if (rel === '') return
+          await ctx.sessions.open({ prompt: askPrompt(rel), focus: true })
+        } else if (m.type === 'create') {
+          await create(m)
+        } else if (m.type === 'rename') {
+          await rename(m)
         } else if (m.type === 'search') {
           const seq = ++searchSeq
           const all = await tree.searchablePaths(exec, root)
