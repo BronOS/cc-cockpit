@@ -35,8 +35,11 @@
       .dot[data-status='needs-permission'] { background: var(--cc-status-needs-permission); }
       .dot[data-status='waiting'] { background: var(--cc-status-waiting); }
       .dot[data-status='ended'] { background: var(--cc-status-ended); }
-      /* The topic can be long: it shrinks with an ellipsis, the full text is the tooltip. */
-      .title { min-width: 0; flex: 0 1 auto; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; height: auto; }
+      /* The topic can be long: it shrinks with an ellipsis, the full text is the tooltip. `display:
+         block`: the stylesheet's base button is an inline-flex box that centres its content, and a
+         centred text node too long for it is clipped at both ends with no ellipsis (a narrow panel
+         showed the middle of the title). As a block it starts at the left and ends in the ellipsis. */
+      .title { display: block; min-width: 0; flex: 0 1 auto; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; height: auto; }
       .title:hover { text-decoration: underline; text-underline-offset: 2px; }
       .status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--cc-text-s); color: var(--cc-fg-muted); }
       .steps { flex: none; margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; font-size: var(--cc-text-s); color: var(--cc-fg-subtle); font-variant-numeric: tabular-nums; }
