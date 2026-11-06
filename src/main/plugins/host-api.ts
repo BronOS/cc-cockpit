@@ -16,7 +16,7 @@
 //   sessions.rename { pluginId, tabId, name }  -> null           name (1-60 chars, no control/bidi/format chars) or
 //                                                                null for Claude's title; a tab of THIS project
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
-//   sessions.open   { pluginId, cwd?, prompt?, focus? } -> { tabId }  a new Claude tab in this project;
+//   sessions.open   { pluginId, cwd?, prompt?, focus?, model?, effort? } -> { tabId }  a new Claude tab in this project;
 //                                                                `focus: true` selects it in the window
 //   badge           { pluginId, panelId, value}-> null           a panel the plugin itself declares
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
@@ -173,6 +173,7 @@ import { checkOAuthSpec, checkRefreshToken, type PluginOAuthApi } from '../oauth
 import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
 import { checkSessionName } from '../../shared/session-name'
+import { checkSessionOptions } from '../../shared/session-options'
 import { resolveCwd } from '../tabs/tab-manager'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
 import { pluginFileUrl } from './plugin-protocol'
@@ -297,7 +298,7 @@ export interface HostApiDeps {
    */
   openTab(
     projectId: string,
-    options: { cwd?: string; prompt?: string },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string },
     windowId: number,
     focus?: boolean
   ): Promise<{ id: string }>
@@ -1010,10 +1011,14 @@ export class HostApi {
 
   private async open(params: unknown): Promise<{ tabId: string }> {
     this.alive()
-    const { pluginId, cwd, prompt, focus } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, cwd, prompt, focus, model, effort } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.open')
     if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.open: cwd must be a string')
     if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.open: focus must be a boolean')
+    // Closed lists (shared/session-options.ts), checked before the budget is spent; the values end up
+    // as `--model` / `--effort` argv elements, so nothing outside the lists gets that far.
+    const checked = checkSessionOptions({ model, effort })
+    if (!checked.ok) throw new Error(`sessions.open: ${checked.reason}`)
     // Checked here too, before the budget is spent, so a bad cwd costs nothing; the tab manager
     // checks it again (same rule) when it spawns.
     try {
@@ -1040,7 +1045,9 @@ export class HostApi {
       this.scope.projectId,
       {
         ...(cwd !== undefined && cwd !== '' ? { cwd } : {}),
-        ...(text !== undefined ? { prompt: text } : {})
+        ...(text !== undefined ? { prompt: text } : {}),
+        ...(checked.model ? { model: checked.model } : {}),
+        ...(checked.effort ? { effort: checked.effort } : {})
       },
       this.scope.windowId,
       // Only the host's own window, the one the tab opens in, is ever told to select it: a plugin

@@ -115,16 +115,18 @@ External review: sol / high
   (accept and echo both flags)
 - Modify tests: the `claudeArgv` test, the host-api and host ctx sessions tests
 
-- [ ] verify under a PTY (`script -q /dev/null claude --help`) that the installed Claude accepts `--effort` and `--model`;
+- [x] verify under a PTY (`script -q /dev/null claude --help`) that the installed Claude accepts `--effort` and `--model`;
       record the finding in `claude-argv.ts` next to `PROMPT_AFTER_DOUBLE_DASH`
-- [ ] add `src/shared/session-options.ts` (constants + `checkSessionOptions`), imported by host ctx and main (never by
+- [x] add `src/shared/session-options.ts` (constants + `checkSessionOptions`), imported by host ctx and main (never by
       `src/sdk/panel.ts`: the shared-chunk rule in CLAUDE.md)
-- [ ] `claudeArgv`: `--model` / `--effort` before the prompt; never on resume; argv only
-- [ ] host ctx `sessions.open` checks both (TypeError naming the field); main `open` re-checks and passes them to the
+- [x] `claudeArgv`: `--model` / `--effort` before the prompt; never on resume; argv only
+- [x] host ctx `sessions.open` checks both (TypeError naming the field); main `open` re-checks and passes them to the
       tab; unknown values reject with an Error naming the field
-- [ ] tests: argv with each, both, neither; resume ignores them; a prompt starting with `-` still handled as before;
+- [x] tests: argv with each, both, neither; resume ignores them; a prompt starting with `-` still handled as before;
       ctx and main reject a bad model, a bad effort, a non-string, and accept each listed value
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 2
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 2
+
+- ➕ `claude --help` (2.1.318, PTY) lists `--model <model>` and `--effort <level>` (low, medium, high, xhigh, max). `fable` is not in the model list (needs Oleg's approval). Also copied `src/sdk/types.ts` to `examples/plugin/sdk/types.ts` and updated the `api.md` guide; the example repo push is left for the release.
 
 ### Task 2: detect the person's input per tab (`typed`) [model: opus]
 

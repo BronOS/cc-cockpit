@@ -120,6 +120,9 @@ export interface CreateTabOptions {
   cwd?: string
   /** Initial prompt for a Claude tab, passed as an argv argument and never typed. */
   prompt?: string
+  /** `--model` / `--effort` of a new Claude tab (shared/session-options.ts); never on a restart or restore. */
+  model?: string
+  effort?: string
 }
 
 /** A command tab's own copy of its new-tab menu entry (TabCommandsService.resolve). */
@@ -228,12 +231,19 @@ export class TabManager {
   }
 
   /** Start a tab. Throws (and creates nothing) for an unknown project, a bad cwd or a failed spawn. */
-  create(projectId: string, { kind, cwd, prompt }: CreateTabOptions): TabInfo {
+  create(projectId: string, { kind, cwd, prompt, model, effort }: CreateTabOptions): TabInfo {
     // Checked at run time as well: a command tab must come through createCommand, whose caller
     // looked the command up in main's settings, never through a kind someone passed along.
     if (kind !== 'claude' && kind !== 'shell') throw new Error('unknown tab kind')
     if (prompt && kind !== 'claude') throw new Error('only a Claude tab takes a prompt')
-    const out = this.add(projectId, kind, cwd, prompt === undefined ? {} : { prompt })
+    if ((model !== undefined || effort !== undefined) && kind !== 'claude') {
+      throw new Error('only a Claude tab takes a model or effort')
+    }
+    const out = this.add(projectId, kind, cwd, {
+      ...(prompt === undefined ? {} : { prompt }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort })
+    })
     this.changed(projectId)
     return out
   }
@@ -278,7 +288,7 @@ export class TabManager {
     projectId: string,
     kind: TabKind,
     cwd: string | undefined,
-    opts: { prompt?: string; resumeId?: string; command?: TabCommand; start?: boolean; name?: string }
+    opts: { prompt?: string; model?: string; effort?: string; resumeId?: string; command?: TabCommand; start?: boolean; name?: string }
   ): TabInfo {
     const root = this.projectRoot(projectId)
     const tab: Tab = {
@@ -298,7 +308,7 @@ export class TabManager {
     if (opts.name !== undefined) tab.name = opts.name
     const started = opts.start !== false
     if (started) {
-      this.start(tab, opts.prompt, opts.resumeId)
+      this.start(tab, opts.prompt, opts.resumeId, opts.model, opts.effort)
     } else {
       // Not spawned: gen stays 0 and the tab reads as exited, so the banner, the strip's
       // "(exited)" mark, restart()'s guard and close()'s no-op terminate treat it like any
@@ -486,7 +496,7 @@ export class TabManager {
    * Spawn the tab's process. `prompt` is for a brand-new Claude tab only; a restart passes the
    * session id to resume instead. Throws before touching any state when the spawn fails.
    */
-  private start(tab: Tab, prompt?: string, resumeId?: string): void {
+  private start(tab: Tab, prompt?: string, resumeId?: string, model?: string, effort?: string): void {
     const token = randomBytes(32).toString('hex')
     const argv =
       tab.kind === 'claude'
@@ -494,7 +504,9 @@ export class TabManager {
             hooksPath: this.options.hooksPath,
             pluginDirs: this.options.pluginDirsFor?.(tab.projectId) ?? [],
             resumeId,
-            prompt
+            prompt,
+            model,
+            effort
           })
         : tab.kind === 'command'
           ? commandArgv(this.shell(), requireCommand(tab).command)

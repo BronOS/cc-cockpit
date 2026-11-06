@@ -238,9 +238,12 @@ with full Node access.
   for the person. An older app has no `rename`: check `typeof ctx.sessions.rename === 'function'`.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise (a just-opened tab takes it about a second after Claude is at its prompt). Refuses text starting with `/`, `!`, `#` or `&`.
-- `ctx.sessions.open({ cwd, prompt, focus })`: a new Claude tab; the prompt is an argument, never typed.
+- `ctx.sessions.open({ cwd, prompt, focus, model, effort })`: a new Claude tab; the prompt is an argument, never typed.
+  `model` (`haiku`, `sonnet`, `opus`) and `effort` (`low`, `medium`, `high`, `xhigh`, `max`) start it with
+  `--model` / `--effort`; leave them out for the person's default, anything else rejects naming the field.
   The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
-  window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores it.
+  window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores
+  `focus`, `model` and `effort`.
 
 ## Files
 

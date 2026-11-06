@@ -591,7 +591,7 @@ function start(): void {
    */
   const openClaudeTab = async (
     projectId: string,
-    options: { cwd?: string; prompt?: string },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string },
     windowId: number,
     focus: boolean
   ): Promise<TabInfo> => {

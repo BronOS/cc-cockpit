@@ -293,6 +293,27 @@ describe('sessions.send', () => {
 })
 
 describe('sessions.open', () => {
+  it('passes model and effort to the tab as --model / --effort, and rejects anything else naming the field', async () => {
+    const open = hostA()
+    const both = (await open('sessions.open', { pluginId: 'a.one', prompt: 'go', model: 'haiku', effort: 'xhigh' })) as { tabId: string }
+    expect(ptyOf(both.tabId).argv).toEqual([
+      'claude', '--settings', '/data/hooks.json', '--model', 'haiku', '--effort', 'xhigh', '--', ' go'
+    ])
+    // A fresh host per value: each has its own 5-a-minute open budget.
+    for (const model of ['haiku', 'sonnet', 'opus']) {
+      const t = (await hostA()('sessions.open', { pluginId: 'a.one', model })) as { tabId: string }
+      expect(ptyOf(t.tabId).argv.slice(-2)).toEqual(['--model', model])
+    }
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      const t = (await hostA()('sessions.open', { pluginId: 'a.one', effort })) as { tabId: string }
+      expect(ptyOf(t.tabId).argv.slice(-2)).toEqual(['--effort', effort])
+    }
+    await expect(open('sessions.open', { pluginId: 'a.one', model: 'gpt' })).rejects.toThrow('sessions.open: model must be one of')
+    await expect(open('sessions.open', { pluginId: 'a.one', model: 5 })).rejects.toThrow('model must be one of')
+    await expect(open('sessions.open', { pluginId: 'a.one', effort: 'extreme' })).rejects.toThrow('sessions.open: effort must be one of')
+    await expect(open('sessions.open', { pluginId: 'a.one', effort: ['low'] })).rejects.toThrow('effort must be one of')
+  })
+
   it('starts a Claude tab in the project with the prompt as one argv element, and tells the window', async () => {
     const open = hostA()
     const { tabId } = (await open('sessions.open', { pluginId: 'a.one', cwd: 'sub', prompt: '-rf --settings x' })) as {

@@ -13,6 +13,7 @@
 import type { Disposer, PluginContext, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { checkSessionName } from '../../shared/session-name'
+import { checkSessionOptions } from '../../shared/session-options'
 
 type Listener = (sessions: SessionInfo[]) => void
 type AllListener = (sessions: SessionSummary[]) => void
@@ -163,16 +164,32 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         }
         return (await call('sessions.send', { pluginId, tabId, text })) as SendResult
       }),
-    open: (options: { cwd?: string; prompt?: string; focus?: boolean } = {}) =>
+    open: (options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string } = {}) =>
       guardAsync(async () => {
-        const { cwd, prompt, focus } = (options ?? {}) as { cwd?: unknown; prompt?: unknown; focus?: unknown }
+        const { cwd, prompt, focus, model, effort } = (options ?? {}) as {
+          cwd?: unknown
+          prompt?: unknown
+          focus?: unknown
+          model?: unknown
+          effort?: unknown
+        }
         if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.open: cwd must be a string')
         if (prompt !== undefined && typeof prompt !== 'string') {
           throw new TypeError('sessions.open: prompt must be a string')
         }
         if (focus !== undefined && typeof focus !== 'boolean') throw new TypeError('sessions.open: focus must be a boolean')
-        // Sent only when asked for: a request without it is the same as before the option existed.
-        return (await call('sessions.open', { pluginId, cwd, prompt, ...(focus ? { focus: true } : {}) })) as { tabId: string }
+        // Fast error naming the field; main checks again (shared/session-options.ts).
+        const checked = checkSessionOptions({ model, effort })
+        if (!checked.ok) throw new TypeError(`sessions.open: ${checked.reason}`)
+        // Sent only when asked for: a request without them is the same as before the options existed.
+        return (await call('sessions.open', {
+          pluginId,
+          cwd,
+          prompt,
+          ...(focus ? { focus: true } : {}),
+          ...(checked.model ? { model: checked.model } : {}),
+          ...(checked.effort ? { effort: checked.effort } : {})
+        })) as { tabId: string }
       })
   }
   return Object.freeze(api) as PluginContext['sessions']

@@ -67,6 +67,8 @@ const argv = process.argv.slice(2)
 const operands = []
 let settings
 let resume
+let model
+let effort
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i]
   if (arg === '--') {
@@ -76,6 +78,10 @@ for (let i = 0; i < argv.length; i++) {
   if (arg === '--settings') settings = argv[++i]
   // `--plugin-dir <path>` (repeatable): skip the value, or it would read as the prompt operand.
   else if (arg === '--plugin-dir') i++
+  // `--model <alias>` / `--effort <level>` (claude 2.1.318, see claude-argv.ts): taken with their
+  // value so it is not read as the prompt operand, and echoed below.
+  else if (arg === '--model') model = argv[++i]
+  else if (arg === '--effort') effort = argv[++i]
   else if (arg === '--resume' || arg === '-r') {
     // `[value]`: optional, taken only when the next token is not an option.
     if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('-')) resume = argv[++i]
@@ -94,6 +100,8 @@ if (operands.length > 0 && SUBCOMMANDS.has(operands[0])) {
 console.log(`FAKE-CLAUDE banner argv=${JSON.stringify(argv)}`)
 if (settings !== undefined) console.log(`FAKE-CLAUDE settings=${settings}`)
 if (resume !== undefined) console.log(`FAKE-CLAUDE resume=${resume}`)
+if (model !== undefined) console.log(`FAKE-CLAUDE model=${model}`)
+if (effort !== undefined) console.log(`FAKE-CLAUDE effort=${effort}`)
 if (operands.length > 0) console.log(`FAKE-CLAUDE prompt=${JSON.stringify(operands[0])}`)
 
 if (process.env.FAKE_CLAUDE_EXIT !== undefined) {

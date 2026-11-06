@@ -2,6 +2,8 @@
 // the shape. Exec is argv-only (CLAUDE.md), so the prompt and the session id each travel as one
 // argument and are never parsed by a shell.
 
+import { checkSessionOptions } from '../../shared/session-options'
+
 /**
  * Whether `claude` accepts a positional prompt after a `--` end-of-options marker.
  *
@@ -15,6 +17,12 @@
  * behaviour was NOT exercised by running a session (that would start one); test/fixtures/bin/claude
  * records the same finding. If a real run shows `--` is not accepted, set this to false:
  * `claudeArgv` then passes the prompt bare and refuses a prompt starting with `-`.
+ *
+ * Finding (autopilot v2 Task 1), claude 2.1.318, same PTY help: `--model <model>` ("Model for the
+ * current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a
+ * model's full name") and `--effort <level>` ("low, medium, high, xhigh, max") exist as plain
+ * single-value options, so `--model opus --effort high` before the `--` is the right shape.
+ * Not exercised against a live session (that would start one and spend tokens).
  */
 export const PROMPT_AFTER_DOUBLE_DASH = true
 
@@ -39,12 +47,20 @@ export interface ClaudeArgvOptions {
   resumeId?: string
   /** Initial prompt, passed as a positional argument and never typed into the session. */
   prompt?: string
+  /**
+   * `--model <alias>` / `--effort <level>` for a brand-new tab (ctx.sessions.open). Already checked
+   * by checkSessionOptions in main; checked again here because this is the last stop before the
+   * argv, and a value starting with `-` would be read as an option. Ignored on a resume: the
+   * conversation keeps the model and effort it had, and a restart must not change them.
+   */
+  model?: string
+  effort?: string
   /** Injectable for tests; production uses PROMPT_AFTER_DOUBLE_DASH. */
   doubleDash?: boolean
 }
 
 export function claudeArgv(options: ClaudeArgvOptions): string[] {
-  const { hooksPath, pluginDirs = [], resumeId, prompt, doubleDash = PROMPT_AFTER_DOUBLE_DASH } = options
+  const { hooksPath, pluginDirs = [], resumeId, prompt, model, effort, doubleDash = PROMPT_AFTER_DOUBLE_DASH } = options
   const argv = ['claude', '--settings', hooksPath]
   // Right after --settings and before --resume / `--`, so the order is the same for a fresh tab,
   // a restart and a restore (tests and the e2e compare whole argv arrays).
@@ -55,6 +71,12 @@ export function claudeArgv(options: ClaudeArgvOptions): string[] {
   if (resumeId !== undefined) {
     if (!SESSION_ID.test(resumeId)) throw new Error('invalid Claude session id')
     argv.push('--resume', resumeId)
+  } else {
+    // Before the prompt (and its `--`), after the fixed flags; a fresh tab only.
+    const checked = checkSessionOptions({ model, effort })
+    if (!checked.ok) throw new Error(`invalid session option: ${checked.reason}`)
+    if (checked.model) argv.push('--model', checked.model)
+    if (checked.effort) argv.push('--effort', checked.effort)
   }
   if (prompt) {
     if (doubleDash) {

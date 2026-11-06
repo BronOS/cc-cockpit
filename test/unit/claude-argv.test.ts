@@ -11,6 +11,22 @@ import {
 const hooksPath = '/data/hooks.json'
 
 describe('claudeArgv', () => {
+  it('puts --model and --effort before the prompt, each alone or both', () => {
+    expect(claudeArgv({ hooksPath, model: 'opus' })).toEqual(['claude', '--settings', hooksPath, '--model', 'opus'])
+    expect(claudeArgv({ hooksPath, effort: 'max' })).toEqual(['claude', '--settings', hooksPath, '--effort', 'max'])
+    expect(claudeArgv({ hooksPath, model: 'sonnet', effort: 'high', prompt: '-x' })).toEqual([
+      'claude', '--settings', hooksPath, '--model', 'sonnet', '--effort', 'high', '--', ' -x'
+    ])
+  })
+
+  it('ignores model and effort on a resume, and refuses a value outside the lists', () => {
+    expect(claudeArgv({ hooksPath, resumeId: 'abc', model: 'opus', effort: 'low' })).toEqual([
+      'claude', '--settings', hooksPath, '--resume', 'abc'
+    ])
+    expect(() => claudeArgv({ hooksPath, model: '--settings' })).toThrow(/model/)
+    expect(() => claudeArgv({ hooksPath, effort: 'extreme' })).toThrow(/effort/)
+  })
+
   it('starts a new session with only our settings file', () => {
     expect(claudeArgv({ hooksPath })).toEqual(['claude', '--settings', hooksPath])
   })
