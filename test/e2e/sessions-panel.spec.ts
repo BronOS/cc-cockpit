@@ -312,3 +312,37 @@ test('past the plugin\'s "Changed files shown per session" setting the rest are 
   await expect(item.locator('.file')).toHaveCount(3, { timeout: 15_000 })
   await expect(item.locator('.more')).toHaveCount(0)
 })
+
+test('a flagged tab is listed first, under Flagged, with its colour and note (the person flags it, the plugin only reads)', async ({ cockpit }) => {
+  const { page } = cockpit
+  await openPanel(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
+  await cockpit.newTab('claude')
+  await expect(panel(cockpit).locator('.card')).toHaveCount(2)
+  await expect(panel(cockpit).locator('#flagged-box')).toBeHidden()
+
+  // Flag the second tab from its menu, with a note.
+  await page.getByRole('tab').nth(1).click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Tab', exact: true }).getByRole('menuitemradio', { name: 'Flag Green' }).click()
+  await page.getByRole('tab').nth(1).click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Tab', exact: true }).getByRole('menuitem', { name: 'Edit note…' }).click()
+  const note = page.getByRole('dialog', { name: 'Flag note' }).getByRole('textbox', { name: 'Note' })
+  await note.fill('Ship it')
+  await note.press('Enter')
+
+  const flagged = panel(cockpit).locator('#flagged .card')
+  await expect(flagged).toHaveCount(1)
+  await expect(flagged).toHaveAttribute('data-flag', 'green')
+  await expect(flagged).toContainText('Claude 2')
+  await expect(flagged.locator('.flag')).toHaveText('Ship it')
+  await expect(panel(cockpit).getByRole('heading', { name: 'Flagged' })).toBeVisible()
+  await expect(panel(cockpit).locator('#list .card')).toHaveCount(1)
+  await expect(panel(cockpit).locator('#list .card')).toContainText('Claude 1')
+
+  // Cleared: back to one list, no captions.
+  await page.getByRole('tab').nth(1).click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Tab', exact: true }).getByRole('menuitem', { name: 'Clear flag' }).click()
+  await expect(panel(cockpit).locator('#flagged-box')).toBeHidden()
+  await expect(panel(cockpit).locator('#list .card')).toHaveCount(2)
+})

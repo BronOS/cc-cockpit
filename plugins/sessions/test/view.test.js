@@ -115,3 +115,34 @@ test('strip: empty when no other window has a session', () => {
   assert.deepEqual(view.stripView([summary('mine', 'idle', { own: true })]), [])
   assert.deepEqual(view.stripView(undefined), [])
 })
+
+test('flag: only the six colours, drawn through their token; the note only when it is text', () => {
+  assert.deepEqual(view.flagOf({ color: 'red', note: 'come back' }), { color: 'red', css: 'var(--cc-flag-red)', note: 'come back' })
+  assert.deepEqual(view.flagOf({ color: 'purple' }), { color: 'purple', css: 'var(--cc-flag-purple)' })
+  assert.deepEqual(view.flagOf({ color: 'blue', note: '' }), { color: 'blue', css: 'var(--cc-flag-blue)' })
+  for (const bad of [undefined, null, 'red', {}, { color: 'teal' }, { color: 'red); background: url(x' }]) {
+    assert.equal(view.flagOf(bad), undefined, JSON.stringify(bad))
+  }
+  assert.deepEqual(view.cardView(session({ flag: { color: 'green', note: 'n' } })).flag, { color: 'green', css: 'var(--cc-flag-green)', note: 'n' })
+  assert.equal(view.cardView(session()).flag, undefined)
+})
+
+test('groups: flagged first, then the rest, each in list order, with each tab\'s place in the whole list', () => {
+  const g = view.groupSessions([
+    session({ tabId: 'a' }),
+    session({ tabId: 'b', flag: { color: 'red' } }),
+    session({ tabId: 'c' }),
+    session({ tabId: 'd', flag: { color: 'blue', note: 'n' } }),
+    session({ tabId: 'e', flag: { color: 'teal' } }),
+  ])
+  assert.deepEqual(g.flagged.map((x) => [x.session.tabId, x.index]), [['b', 2], ['d', 4]])
+  assert.deepEqual(g.rest.map((x) => [x.session.tabId, x.index]), [['a', 1], ['c', 3], ['e', 5]])
+  assert.deepEqual(view.groupSessions([]), { flagged: [], rest: [] })
+  assert.deepEqual(view.groupSessions(undefined), { flagged: [], rest: [] })
+})
+
+test('strip: a flagged tab of another window carries its colour, never a note', () => {
+  const [a, b] = view.stripView([summary('a', 'idle', { flag: { color: 'orange', note: 'x' } }), summary('b', 'idle', { flag: { color: 'grey' } })])
+  assert.deepEqual(a.flag, { color: 'orange', css: 'var(--cc-flag-orange)' })
+  assert.equal(b.flag, undefined)
+})

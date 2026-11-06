@@ -15,7 +15,17 @@
       ul { margin: 0; padding: 0; list-style: none; }
       /* A card per Claude tab: cc-card's frame, the page's own inner layout (no component has a
          head row with a status dot and a steps bar). */
-      #list { display: flex; flex-direction: column; gap: 10px; }
+      .cards { display: flex; flex-direction: column; gap: 10px; }
+      /* The Flagged group (the tabs the person marked to come back to) sits above the rest; the
+         captions show only while both groups have cards. */
+      .group { margin: 0 0 var(--cc-space-2); font-size: var(--cc-text-s); font-weight: 600; color: var(--cc-fg-muted); }
+      #rest-h { margin-top: var(--cc-space-3); }
+      #flagged-box[hidden], .group[hidden] { display: none; }
+      /* A flagged card: the flag's colour down its left edge (the token comes from view.js flagOf,
+         set as --flag), and the note under the head. */
+      .card[data-flag] { border-left: 3px solid var(--flag); }
+      .flag { display: flex; align-items: center; gap: var(--cc-space-2); margin-top: var(--cc-space-2); font-size: var(--cc-text-s); overflow-wrap: anywhere; }
+      .fdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--flag); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent); }
       .card { cursor: pointer; overflow: hidden; }
       .card[data-active] { border-color: var(--cc-border-strong); }
       .head { display: flex; align-items: center; gap: var(--cc-space-2); }
@@ -52,7 +62,12 @@
   <body>
     <main>
       <div id="empty" class="cc-empty" hidden><p>No Claude sessions in this window.</p></div>
-      <ul id="list" aria-label="Claude sessions"></ul>
+      <section id="flagged-box" aria-labelledby="flagged-h" hidden>
+        <h2 id="flagged-h" class="group">Flagged</h2>
+        <ul id="flagged" class="cards" aria-label="Flagged Claude sessions"></ul>
+      </section>
+      <h2 id="rest-h" class="group" hidden>Other sessions</h2>
+      <ul id="list" class="cards" aria-label="Claude sessions"></ul>
     </main>
   </body>
 </html>

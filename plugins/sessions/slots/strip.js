@@ -16,8 +16,12 @@ function entryEl(entry) {
   b.className = 'cc-btn cc-ghost entry'
   b.dataset.status = entry.status
   b.dataset.tabId = entry.tabId
-  b.title = entry.tooltip
-  b.setAttribute('aria-label', entry.text)
+  b.title = entry.flag ? `${entry.tooltip}\nFlagged` : entry.tooltip
+  b.setAttribute('aria-label', entry.flag ? `${entry.text}, flagged` : entry.text)
+  if (entry.flag && ccSessionsView.flagOf(entry.flag)) {
+    b.dataset.flag = entry.flag.color
+    b.style.setProperty('--flag', ccSessionsView.flagOf(entry.flag).css)
+  }
   const dot = document.createElement('span')
   dot.className = 'dot'
   dot.dataset.status = entry.status

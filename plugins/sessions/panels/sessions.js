@@ -6,6 +6,9 @@
 
 const list = document.getElementById('list')
 const empty = document.getElementById('empty')
+const flaggedBox = document.getElementById('flagged-box')
+const flaggedList = document.getElementById('flagged')
+const restHeading = document.getElementById('rest-h')
 
 let sessions = []
 let filesShown = ccSessionsView.FILES_SHOWN.default
@@ -31,6 +34,11 @@ function cardEl(session, index) {
   li.dataset.tabId = card.tabId
   li.dataset.status = card.status
   if (card.active) li.dataset.active = ''
+  if (card.flag) {
+    // Only a token view.js built from one of the six names (flagOf), never the raw value.
+    li.dataset.flag = card.flag.color
+    li.style.setProperty('--flag', card.flag.css)
+  }
   // A click anywhere on the card (not on one of its own buttons) goes to the tab.
   li.addEventListener('click', (ev) => {
     if (ev.target instanceof Element && ev.target.closest('button')) return
@@ -61,6 +69,17 @@ function cardEl(session, index) {
     head.appendChild(steps)
   }
   li.appendChild(head)
+
+  if (card.flag) {
+    // The person's reminder (or just "Flagged" without one), with the colour as a dot.
+    const flag = el('p', 'flag')
+    const fdot = el('span', 'fdot')
+    fdot.setAttribute('aria-hidden', 'true')
+    flag.appendChild(fdot)
+    flag.appendChild(el('span', '', card.flag.note || 'Flagged'))
+    flag.setAttribute('aria-label', card.flag.note ? `Flag: ${card.flag.note}` : 'Flagged')
+    li.appendChild(flag)
+  }
 
   if (card.summary) {
     const p = el('p', card.summary.gist ? 'summary gist' : 'summary', card.summary.text)
@@ -123,7 +142,13 @@ function cardEl(session, index) {
 
 function render() {
   empty.hidden = sessions.length > 0
-  list.replaceChildren(...sessions.map((s, i) => cardEl(s, i + 1)))
+  // Flagged tabs first, in a group of their own (ccSessionsView.groupSessions); each card keeps its
+  // place in the whole list for its "Claude N".
+  const { flagged, rest } = ccSessionsView.groupSessions(sessions)
+  flaggedBox.hidden = flagged.length === 0
+  restHeading.hidden = flagged.length === 0 || rest.length === 0
+  flaggedList.replaceChildren(...flagged.map(({ session, index }) => cardEl(session, index)))
+  list.replaceChildren(...rest.map(({ session, index }) => cardEl(session, index)))
 }
 
 ccPanel.onMessage((m) => {

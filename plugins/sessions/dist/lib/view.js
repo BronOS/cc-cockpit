@@ -30,8 +30,42 @@
     ended: 'ended'
   }
 
+  /**
+   * The six flag colours the app has (SessionInfo.flag.color, shared/tab-flag.ts). A page draws a
+   * flag only through its theme token, `var(--cc-flag-<color>)`, and only for one of these names, so
+   * a value the app never sends cannot reach a style.
+   */
+  const FLAG_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple']
+
   /** A dialog tool's `needs-permission` is Claude asking the person, not a permission prompt. */
   const DIALOG_WORD = { AskUserQuestion: 'question', ExitPlanMode: 'plan approval' }
+
+  /**
+   * The person's flag on a tab as a page may draw it: `{ color, css, note? }` for a known colour (a
+   * note only when it is a non-empty string), else undefined. Read-only: the app's, set by the person.
+   */
+  function flagOf(flag) {
+    if (!flag || typeof flag !== 'object' || !FLAG_COLORS.includes(flag.color)) return undefined
+    const out = { color: flag.color, css: `var(--cc-flag-${flag.color})` }
+    if (typeof flag.note === 'string' && flag.note !== '') out.note = flag.note
+    return out
+  }
+
+  /**
+   * The panel's two groups: the flagged tabs first ("Flagged", the ones the person marked to come
+   * back to), then the rest, each in the list's order (tab creation order). `index` is each tab's
+   * 1-based place in the whole list, so "Claude N" names a tab the same in either group.
+   */
+  function groupSessions(sessions) {
+    const flagged = []
+    const rest = []
+    if (!Array.isArray(sessions)) return { flagged, rest }
+    sessions.forEach((session, i) => {
+      if (!session || typeof session !== 'object') return
+      ;(flagOf(session.flag) ? flagged : rest).push({ session, index: i + 1 })
+    })
+    return { flagged, rest }
+  }
 
   /** The stored setting, default applied: settings.json is user-writable, so a bad value is the default, never "show none". */
   function filesShownOf(stored) {
@@ -75,6 +109,8 @@
       fileCount: files.length,
       hiddenFiles: Math.max(0, files.length - cap)
     }
+    const flag = flagOf(session.flag)
+    if (flag) card.flag = flag
     if (typeof session.gist === 'string' && session.gist !== '') {
       card.summary = { text: session.gist, title: session.lastPrompt || session.gist, gist: true }
     } else if (typeof session.lastPrompt === 'string' && session.lastPrompt !== '') {
@@ -127,9 +163,12 @@
           needsYou: s.status === 'needs-permission'
         }
         if (s.project && isColor(s.project.color)) entry.color = s.project.color
+        // The other window's tab is flagged: its colour on the entry (the note stays in that window).
+        const flag = flagOf(s.flag)
+        if (flag) entry.flag = { color: flag.color, css: flag.css }
         return entry
       })
   }
 
-  return { FILES_SHOWN, filesShownOf, isColor, statusText, splitPath, cardView, metaText, stripView }
+  return { FILES_SHOWN, FLAG_COLORS, filesShownOf, flagOf, groupSessions, isColor, statusText, splitPath, cardView, metaText, stripView }
 })
