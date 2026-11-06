@@ -449,6 +449,8 @@
     display: flex;
     flex: none;
     align-items: center;
+    /* The base button rule above centres its content; a menu reads down a left edge. */
+    justify-content: flex-start;
     gap: 9px;
     width: 100%;
     min-height: 28px;
