@@ -45,10 +45,19 @@ import type { TabKind } from '../../shared/types'
 
 export type { TabStatus }
 
+/**
+ * Who handed a text to the send gate. `plugin`: a plugin's `ctx.sessions.send` (host-api), which
+ * the person's takeover of the tab (SessionEntry.typed) refuses and whose queued texts it drops.
+ * `core`: main's own senders acting for the person (Discuss with Claude, the e2e test hook): the
+ * person started them, so typing in the tab neither refuses nor drops them.
+ */
+export type SendOrigin = 'plugin' | 'core'
+
 /** Text queued for a tab until the send gate may deliver it (send-gate.ts). */
 export interface QueuedText {
   id: string
   text: string
+  origin: SendOrigin
 }
 
 export interface SessionEntry {

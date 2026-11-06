@@ -56,6 +56,7 @@ import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { composeDiscuss, DiscussSessionBudget } from './discuss'
 import { PtyService } from '../pty/pty-service'
+import type { SendOrigin } from '../sessions/status-reducer'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
 type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
@@ -191,8 +192,12 @@ export interface DiscussSessions {
    * discuss-tabs.ts, `not-ready`). A starting tab is not: SessionStart makes it sendable.
    */
   notReady(tabId: string): boolean
-  /** The send gate (SessionRegistry.send): typed now when the tab waits for input, else queued. Throws when refused. */
-  send(tabId: string, text: string): { delivered: boolean }
+  /**
+   * The send gate (SessionRegistry.send): typed now when the tab waits for input, else queued.
+   * Throws when refused. Discuss passes `core`: the person clicked Send, so their typing in the
+   * tab neither refuses the text nor drops it from the queue (send-gate.ts takenOver).
+   */
+  send(tabId: string, text: string, origin: SendOrigin): { delivered: boolean }
   /**
    * Open a Claude tab in the window's project folder with `prompt` as its first prompt (main's own
    * open path, the ctx.sessions.open argument rule) and tell the window. Throws when refused.
@@ -928,7 +933,7 @@ export class OverlayManager {
       let queued: boolean
       if (target.kind === 'tab') {
         try {
-          queued = !sessions.send(target.tabId, text).delivered
+          queued = !sessions.send(target.tabId, text, 'core').delivered
         } catch (err) {
           return { ok: false, error: `Not sent: ${toError(err).message}` }
         }

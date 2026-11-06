@@ -24,7 +24,9 @@
 // writes `write` to the PTY. What it never allows is a write in any status but waiting.
 //
 // Residuals the gate cannot see (Task 27 and the plugin docs must not assume more than this):
-//   - a typing user can race a delivery (no view of keystrokes); the plan accepts that;
+//   - a typing user can race a delivery: the takeover (takenOver, SessionEntry.typed) stops plugin
+//     texts only from the first keystroke main has read, so a paste main writes before that
+//     keystroke reaches it still lands; the plan accepts that;
 //   - delivery is synchronous inside our Stop hook. If another Stop hook of the user returns
 //     decision "block" (loop-style plugins), Claude keeps working and the paste lands mid-turn;
 //   - a permission dialog raised while the main agent is waiting (background task, subagent) is on
@@ -67,7 +69,7 @@ export interface GateStep {
   write?: string
   /** The queue item `write` carries (so the registry can put it back if the write fails). */
   delivered?: QueuedText
-  /** Items thrown away because the session ended, oldest first. */
+  /** Items thrown away because the session ended or the person took the tab over, oldest first. */
   dropped?: QueuedText[]
 }
 
@@ -166,14 +168,48 @@ export function maySend(entry: SessionEntry): boolean {
 }
 
 /**
+ * What a plugin's send to a tab the person took over gets (SessionEntry.typed). Worded for the
+ * plugin's log and the person reading it: the tab is theirs now, so the plugin should stop, not
+ * retry (Autopilot v2 "Core change" 2).
+ */
+export const TYPED_ERROR = 'the person is typing in this tab'
+
+/**
  * Queue `item` (already prepared), then deliver the queue head if the tab may take text now.
  * Appending first keeps the order: an older item queued while busy goes before this one. Throws
- * when the session has ended (the item would only be dropped) or the queue is full.
+ * when the session has ended (the item would only be dropped), when a plugin sends to a tab the
+ * person took over (TYPED_ERROR), or when the queue is full.
+ *
+ * The takeover check is here, at the chokepoint every sender passes, and not in host-api:
+ * a send that queued nothing is the plugin's to see as an error (host-api refunds its budget,
+ * as for every gate refusal), and no other way in can skip it. A `core` item (Discuss) is the
+ * person's own action, so it still goes in.
  */
 export function send(entry: SessionEntry, item: QueuedText): GateStep {
   if (entry.status === 'ended') throw new Error('the session has ended')
+  if (item.origin === 'plugin' && entry.typed) throw new Error(TYPED_ERROR)
   if (entry.queue.length >= MAX_QUEUE) throw new Error(`the queue is full (${MAX_QUEUE} items)`)
   return deliverHead({ ...entry, queue: [...entry.queue, item] })
+}
+
+/**
+ * The person's first input in the tab (SessionRegistry.userInput, terminal-reports.ts
+ * isPersonInput): `typed` is set and every queued `plugin` item is dropped at once, so the next
+ * Stop cannot paste a plugin's text into a session the person is now driving (their half-typed
+ * prompt would be glued to it, or the turn they are running would be followed by one they never
+ * asked for). `core` items stay queued and are delivered as before: the person sent them.
+ *
+ * A plugin paste already written (`delivering`) is not undone: it is in Claude's input box, and
+ * the gate's only tool is typing more. Nothing is delivered here either: a takeover never types.
+ * An entry already typed passes through untouched (the flag never flips back, so nothing new
+ * from a plugin can have been queued since).
+ */
+export function takenOver(entry: SessionEntry): GateStep {
+  if (entry.typed) return { entry }
+  const kept = entry.queue.filter((q) => q.origin !== 'plugin')
+  const step: GateStep = { entry: { ...entry, typed: true, queue: kept } }
+  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => q.origin === 'plugin')
+  return step
 }
 
 /** Remove a queued item by id; undefined when no such item is queued (already sent, or never). */

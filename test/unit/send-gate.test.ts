@@ -16,11 +16,13 @@ import {
   SESSION_START_SETTLE_MS,
   settled,
   stripControls,
-  stripMarkers
+  stripMarkers,
+  takenOver,
+  TYPED_ERROR
 } from '../../src/main/sessions/send-gate'
 import { hookHandler } from '../../src/main/sessions/hook-handler'
 import { SessionRegistry, type SessionChange } from '../../src/main/sessions/session-registry'
-import { newEntry, type SessionEntry, type TabStatus } from '../../src/main/sessions/status-reducer'
+import { newEntry, type QueuedText, type SendOrigin, type SessionEntry, type TabStatus } from '../../src/main/sessions/status-reducer'
 
 const ESC = '\x1b'
 const paste = (text: string): string => `${ESC}[200~${text}${ESC}[201~\r`
@@ -29,7 +31,7 @@ const entryIn = (status: TabStatus, extra: Partial<SessionEntry> = {}): SessionE
   status,
   ...extra
 })
-const item = (id: string, text = id): { id: string; text: string } => ({ id, text })
+const item = (id: string, text = id, origin: SendOrigin = 'plugin'): QueuedText => ({ id, text, origin })
 const hook = (event: HookEvent) => ({ type: 'hook', event, payload: {} }) as const
 
 describe('settled (end of the SessionStart window)', () => {
@@ -182,6 +184,35 @@ describe('cancel (pure)', () => {
   })
 })
 
+describe('takeover (pure)', () => {
+  it("send refuses a plugin's text to a typed tab, before the queue cap, and takes a core text", () => {
+    expect(() => send(entryIn('waiting', { typed: true }), item('a'))).toThrow(TYPED_ERROR)
+    const full = Array.from({ length: MAX_QUEUE }, (_, i) => item(`q${i}`, `q${i}`, 'core'))
+    expect(() => send(entryIn('working', { typed: true, queue: full }), item('a'))).toThrow(TYPED_ERROR)
+    const step = send(entryIn('waiting', { typed: true }), item('d', 'discuss', 'core'))
+    expect(step.write).toBe(paste('discuss'))
+    // An ended session still reads as ended, whoever sends.
+    expect(() => send(entryIn('ended', { typed: true }), item('a'))).toThrow(/ended/)
+  })
+
+  it('takenOver sets typed, drops the plugin items oldest first and keeps the core ones in order', () => {
+    const queue = [item('p1'), item('c1', 'c1', 'core'), item('p2'), item('c2', 'c2', 'core')]
+    const step = takenOver(entryIn('working', { queue }))
+    expect(step.entry.typed).toBe(true)
+    expect(step.entry.queue.map((q) => q.id)).toEqual(['c1', 'c2'])
+    expect(step.dropped?.map((q) => q.id)).toEqual(['p1', 'p2'])
+    expect(step.write).toBeUndefined()
+  })
+
+  it('takenOver never types, reports nothing dropped for a core-only queue, and leaves a delivery in flight', () => {
+    const step = takenOver(entryIn('waiting', { queue: [item('c', 'c', 'core')], delivering: true }))
+    expect(step).toEqual({ entry: expect.objectContaining({ typed: true, delivering: true, queue: [item('c', 'c', 'core')] }) })
+    // Already typed: the same entry back (no change to report).
+    const typed = entryIn('waiting', { typed: true })
+    expect(takenOver(typed).entry).toBe(typed)
+  })
+})
+
 describe('afterEvent (pure)', () => {
   it('Stop delivers only the queue head', () => {
     const step = afterEvent(entryIn('waiting', { queue: [item('a'), item('b')] }), hook('Stop'))
@@ -278,19 +309,19 @@ describe('registry wiring', () => {
 
   it('sent when waiting, written to the entry’s own tab and project', () => {
     ev('Stop')
-    expect(reg.send('t1', 'hello')).toMatchObject({ delivered: true })
+    expect(reg.send('t1', 'hello', 'plugin')).toMatchObject({ delivered: true })
     expect(writes).toEqual([{ tabId: 't1', projectId: 'p1', data: paste('hello') }])
     expect(reg.get('t1')).toMatchObject({ queue: [], delivering: true })
   })
 
   it('queued in starting, idle, working and needs-permission; nothing written', () => {
-    expect(reg.send('t1', 'a').delivered).toBe(false) // starting
+    expect(reg.send('t1', 'a', 'plugin').delivered).toBe(false) // starting
     ev('SessionStart')
-    reg.send('t1', 'b') // idle: a trust dialog may be on screen
+    reg.send('t1', 'b', 'plugin') // idle: a trust dialog may be on screen
     ev('UserPromptSubmit')
-    reg.send('t1', 'c') // working
+    reg.send('t1', 'c', 'plugin') // working
     ev('Notification', { notification_type: 'permission_prompt' })
-    reg.send('t1', 'd') // needs-permission
+    reg.send('t1', 'd', 'plugin') // needs-permission
     expect(writes).toEqual([])
     expect(reg.get('t1')?.queue.map((q) => q.text)).toEqual(['a', 'b', 'c', 'd'])
   })
@@ -301,7 +332,7 @@ describe('registry wiring', () => {
     it.each(['startup', 'resume', 'clear'])('source %s: held for the settle window, then sendable', (source) => {
       ev('SessionStart', { source })
       expect(reg.get('t1')).toMatchObject({ status: 'waiting', settling: true })
-      expect(reg.send('t1', 'early').delivered).toBe(false)
+      expect(reg.send('t1', 'early', 'plugin').delivered).toBe(false)
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS - 1)
       expect(writes).toEqual([])
       vi.advanceTimersByTime(1)
@@ -311,8 +342,8 @@ describe('registry wiring', () => {
     })
 
     it('text sent while starting goes in when the window ends; one item, the rest on Stops', () => {
-      reg.send('t1', 'a')
-      reg.send('t1', 'b')
+      reg.send('t1', 'a', 'plugin')
+      reg.send('t1', 'b', 'plugin')
       ev('SessionStart', { source: 'startup' })
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
       expect(texts()).toEqual([paste('a')])
@@ -326,7 +357,7 @@ describe('registry wiring', () => {
       ev('UserPromptSubmit')
       ev('Stop')
       expect(reg.get('t1')?.settling).toBeFalsy()
-      expect(reg.send('t1', 'next').delivered).toBe(true)
+      expect(reg.send('t1', 'next', 'plugin').delivered).toBe(true)
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
       expect(texts()).toEqual([paste('next')])
     })
@@ -335,12 +366,12 @@ describe('registry wiring', () => {
       ev('SessionStart', { source: 'resume' })
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
       expect(writes).toEqual([])
-      expect(reg.send('t1', 'now').delivered).toBe(true)
+      expect(reg.send('t1', 'now', 'plugin').delivered).toBe(true)
     })
 
     it('the person typed a prompt during the window: nothing is typed when it ends', () => {
       ev('SessionStart', { source: 'startup' })
-      reg.send('t1', 'later')
+      reg.send('t1', 'later', 'plugin')
       ev('UserPromptSubmit')
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
       expect(writes).toEqual([])
@@ -350,7 +381,7 @@ describe('registry wiring', () => {
 
     it('an exit or a close during the window: the timer writes nothing', () => {
       ev('SessionStart', { source: 'startup' })
-      reg.send('t1', 'x')
+      reg.send('t1', 'x', 'plugin')
       reg.tabExited('t1', 1)
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
       expect(writes).toEqual([])
@@ -372,7 +403,7 @@ describe('registry wiring', () => {
 
   it('never writes in needs-permission, even with a non-empty queue on a Notification', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     ev('Notification', { notification_type: 'permission_prompt' })
     ev('Notification', { notification_type: 'permission_prompt' })
     ev('Notification', { message: 'Claude needs your permission to use Bash' })
@@ -384,8 +415,9 @@ describe('registry wiring', () => {
     ev('UserPromptSubmit', { prompt: 'plan it' })
     ev('PreToolUse', { tool_name: 'AskUserQuestion' })
     expect(reg.get('t1')).toMatchObject({ status: 'needs-permission', tool: 'AskUserQuestion' })
-    // The Enter this would type picks an option in the dialog: it must wait.
-    expect(reg.send('t1', 'a').delivered).toBe(false)
+    // The Enter this would type picks an option in the dialog: it must wait. A `core` text (Discuss):
+    // the person answering the dialog below is typing, which would drop a plugin's (takenOver).
+    expect(reg.send('t1', 'a', 'core').delivered).toBe(false)
     // The user's own keys in the dialog (one per question) neither deliver nor leave it.
     reg.userInput('p1', 't1', '1')
     reg.userInput('p1', 't1', '\r')
@@ -404,7 +436,7 @@ describe('registry wiring', () => {
   it('the plan-approval dialog (ExitPlanMode) holds a send the same way', () => {
     ev('UserPromptSubmit')
     ev('PreToolUse', { tool_name: 'ExitPlanMode' })
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'core') // core: the Enter below is the person's and would drop a plugin's
     reg.userInput('p1', 't1', '\r')
     expect(reg.get('t1')?.status).toBe('needs-permission')
     expect(writes).toEqual([])
@@ -415,7 +447,7 @@ describe('registry wiring', () => {
 
   it('an idle Notification that promotes to waiting does not deliver; the next Stop does', () => {
     ev('SessionStart')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     ev('Notification', { notification_type: 'idle_prompt' })
     expect(reg.get('t1')?.status).toBe('waiting')
     expect(writes).toEqual([])
@@ -425,8 +457,8 @@ describe('registry wiring', () => {
 
   it('two Stops before UserPromptSubmit deliver only one item; the next Stop the second', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
-    reg.send('t1', 'b')
+    reg.send('t1', 'a', 'plugin')
+    reg.send('t1', 'b', 'plugin')
     ev('Stop')
     ev('Stop')
     expect(texts()).toEqual([paste('a')])
@@ -438,15 +470,15 @@ describe('registry wiring', () => {
 
   it('a send while a paste is in flight (status still waiting) is queued', () => {
     ev('Stop')
-    reg.send('t1', 'a')
-    expect(reg.send('t1', 'b').delivered).toBe(false)
+    reg.send('t1', 'a', 'plugin')
+    expect(reg.send('t1', 'b', 'plugin').delivered).toBe(false)
     expect(texts()).toEqual([paste('a')])
   })
 
   it('a permission Notification while delivering writes nothing; UserPromptSubmit then clears the flag', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
-    reg.send('t1', 'b')
+    reg.send('t1', 'a', 'plugin')
+    reg.send('t1', 'b', 'plugin')
     ev('Stop') // delivers a
     ev('Notification', { notification_type: 'permission_prompt' })
     ev('Stop') // still delivering: nothing
@@ -459,7 +491,7 @@ describe('registry wiring', () => {
 
   it('markers are stripped before the text is queued', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', `x${ESC}[201~y`)
+    reg.send('t1', `x${ESC}[201~y`, 'plugin')
     expect(reg.get('t1')?.queue[0]?.text).toBe('xy')
     ev('Stop')
     expect(texts()).toEqual([paste('xy')])
@@ -467,8 +499,8 @@ describe('registry wiring', () => {
 
   it('cancel removes a queued item; it is never written', () => {
     ev('UserPromptSubmit')
-    const a = reg.send('t1', 'a')
-    reg.send('t1', 'b')
+    const a = reg.send('t1', 'a', 'plugin')
+    reg.send('t1', 'b', 'plugin')
     expect(reg.cancelQueued('t1', a.id)).toBe(true)
     expect(reg.cancelQueued('t1', a.id)).toBe(false)
     expect(reg.cancelQueued('nope', a.id)).toBe(false)
@@ -478,7 +510,7 @@ describe('registry wiring', () => {
 
   it('an item already delivered cannot be cancelled', () => {
     ev('Stop')
-    const a = reg.send('t1', 'a')
+    const a = reg.send('t1', 'a', 'plugin')
     expect(reg.cancelQueued('t1', a.id)).toBe(false)
   })
 
@@ -486,32 +518,32 @@ describe('registry wiring', () => {
     const changes: SessionChange[] = []
     reg.onChange((c) => changes.push(c))
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     reg.tabExited('t1', 0)
     expect(reg.get('t1')).toMatchObject({ status: 'ended', queue: [] })
     expect(changes.at(-1)?.dropped?.map((q) => q.text)).toEqual(['a'])
     expect(logs.some((l) => l.includes('dropped 1'))).toBe(true)
-    expect(() => reg.send('t1', 'b')).toThrow(/ended/)
+    expect(() => reg.send('t1', 'b', 'plugin')).toThrow(/ended/)
     ev('Stop') // a late hook of the dead process
     expect(writes).toEqual([])
   })
 
   it('SessionEnd drops the queue too', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     ev('SessionEnd')
     expect(reg.get('t1')?.queue).toEqual([])
   })
 
   it('/clear (SessionEnd then SessionStart): refused in between, queues again after, timer cleared', () => {
     ev('Stop')
-    reg.send('t1', 'a') // delivering, timer armed
+    reg.send('t1', 'a', 'plugin') // delivering, timer armed
     ev('SessionEnd')
     expect(reg.get('t1')).toMatchObject({ status: 'ended', delivering: false })
-    expect(() => reg.send('t1', 'b')).toThrow(/ended/)
+    expect(() => reg.send('t1', 'b', 'plugin')).toThrow(/ended/)
     ev('SessionStart')
     expect(reg.get('t1')?.status).toBe('idle')
-    expect(reg.send('t1', 'c').delivered).toBe(false) // idle: queued, not typed
+    expect(reg.send('t1', 'c', 'plugin').delivered).toBe(false) // idle: queued, not typed
     expect(reg.get('t1')?.queue.map((q) => q.text)).toEqual(['c'])
     vi.advanceTimersByTime(DELIVERING_TIMEOUT_MS * 2)
     expect(logs.some((l) => l.includes('no longer delivering'))).toBe(false)
@@ -522,16 +554,16 @@ describe('registry wiring', () => {
     const changes: SessionChange[] = []
     reg.onChange((c) => changes.push(c))
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     reg.tabClosed('t1')
     expect(changes.at(-1)).toMatchObject({ entry: undefined, dropped: [{ text: 'a' }] })
-    expect(() => reg.send('t1', 'b')).toThrow(/unknown tab/)
+    expect(() => reg.send('t1', 'b', 'plugin')).toThrow(/unknown tab/)
   })
 
   it('the delivering timeout clears the flag, is logged, and does not itself deliver', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
-    reg.send('t1', 'b')
+    reg.send('t1', 'a', 'plugin')
+    reg.send('t1', 'b', 'plugin')
     ev('Stop')
     expect(texts()).toEqual([paste('a')])
     vi.advanceTimersByTime(DELIVERING_TIMEOUT_MS - 1)
@@ -548,7 +580,7 @@ describe('registry wiring', () => {
 
   it('UserPromptSubmit cancels the timeout', () => {
     ev('Stop')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     ev('UserPromptSubmit')
     vi.advanceTimersByTime(DELIVERING_TIMEOUT_MS * 2)
     expect(logs.some((l) => l.includes('no longer delivering'))).toBe(false)
@@ -556,9 +588,9 @@ describe('registry wiring', () => {
 
   it('a restart (same tab id, new process) starts with an empty queue and no stale timer', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'old')
+    reg.send('t1', 'old', 'plugin')
     ev('Stop') // old delivered, delivering
-    reg.send('t1', 'queued')
+    reg.send('t1', 'queued', 'plugin')
     vi.advanceTimersByTime(DELIVERING_TIMEOUT_MS / 2)
     reg.tabExited('t1', 1)
     reg.tabStarted({ tabId: 't1', projectId: 'p1', kind: 'claude', cwd: '/proj' })
@@ -567,7 +599,7 @@ describe('registry wiring', () => {
     ev('Stop') // nothing of the old process's queue survives
     expect(texts()).toEqual([paste('old')])
     // A delivery of the new process; the old process's timer would fire half way through it.
-    expect(reg.send('t1', 'new').delivered).toBe(true)
+    expect(reg.send('t1', 'new', 'plugin').delivered).toBe(true)
     vi.advanceTimersByTime(DELIVERING_TIMEOUT_MS / 2)
     expect(reg.get('t1')?.delivering).toBe(true)
     vi.advanceTimersByTime(DELIVERING_TIMEOUT_MS / 2 - 1)
@@ -577,25 +609,86 @@ describe('registry wiring', () => {
 
   it('a write that throws keeps the item queued and not delivering', () => {
     ev('UserPromptSubmit')
-    const a = reg.send('t1', 'a')
+    const a = reg.send('t1', 'a', 'plugin')
     failWrite = true
     ev('Stop')
     expect(reg.get('t1')).toMatchObject({ queue: [{ id: a.id, text: 'a' }], delivering: false })
     expect(logs.some((l) => l.includes('pty gone'))).toBe(true)
-    expect(reg.send('t1', 'b').delivered).toBe(false)
+    expect(reg.send('t1', 'b', 'plugin').delivered).toBe(false)
     failWrite = false
     ev('Stop')
     expect(texts()).toEqual([paste('a')])
   })
 
   it('send refuses an unknown tab and bad text', () => {
-    expect(() => reg.send('nope', 'a')).toThrow(/unknown tab/)
-    expect(() => reg.send('t1', '')).toThrow(/empty/)
+    expect(() => reg.send('nope', 'a', 'plugin')).toThrow(/unknown tab/)
+    expect(() => reg.send('t1', '', 'plugin')).toThrow(/empty/)
+  })
+
+  describe('the person takes the tab over (typed)', () => {
+    let changes: SessionChange[]
+    beforeEach(() => {
+      changes = []
+      reg.onChange((c) => changes.push(c))
+    })
+
+    it('drops queued plugin texts on the first person input; the next Stop delivers the core text instead', () => {
+      ev('UserPromptSubmit')
+      const p = reg.send('t1', 'from a plugin', 'plugin')
+      const c = reg.send('t1', 'About: discuss', 'core')
+      // A focus report (just switching to the tab) is not typing: nothing dropped yet.
+      reg.userInput('p1', 't1', `${ESC}[I`)
+      expect(reg.get('t1')?.queue.map((q) => q.id)).toEqual([p.id, c.id])
+      changes.length = 0
+      reg.userInput('p1', 't1', 'h')
+      expect(reg.get('t1')).toMatchObject({ typed: true, queue: [{ id: c.id }] })
+      expect(changes).toHaveLength(1)
+      expect(changes[0]!.dropped?.map((q) => q.id)).toEqual([p.id])
+      expect(logs.some((l) => l.includes('dropped 1 queued plugin text'))).toBe(true)
+      ev('Stop')
+      expect(texts()).toEqual([paste('About: discuss')])
+      ev('UserPromptSubmit')
+      ev('Stop')
+      expect(texts()).toEqual([paste('About: discuss')]) // the plugin text never comes
+    })
+
+    it("refuses a plugin's send afterwards; a core send still delivers, and later keys drop nothing more", () => {
+      ev('Stop')
+      expect(reg.send('t1', 'before', 'plugin').delivered).toBe(true)
+      ev('UserPromptSubmit')
+      ev('Stop')
+      reg.userInput('p1', 't1', 'x')
+      expect(() => reg.send('t1', 'after', 'plugin')).toThrow(TYPED_ERROR)
+      expect(reg.get('t1')?.queue).toEqual([])
+      expect(reg.send('t1', 'discuss', 'core').delivered).toBe(true)
+      ev('UserPromptSubmit')
+      const queued = reg.send('t1', 'discuss again', 'core')
+      changes.length = 0
+      reg.userInput('p1', 't1', 'y')
+      expect(changes).toEqual([]) // already typed: no change, the core item stays
+      expect(reg.get('t1')?.queue.map((q) => q.id)).toEqual([queued.id])
+      expect(texts()).toEqual([paste('before'), paste('discuss')])
+    })
+
+    it('the existing rules hold for core texts on a typed tab: waiting only, prefixes refused, one per Stop', () => {
+      reg.userInput('p1', 't1', 'x')
+      ev('UserPromptSubmit')
+      expect(reg.send('t1', 'a', 'core').delivered).toBe(false) // working
+      reg.send('t1', 'b', 'core')
+      expect(() => reg.send('t1', '/clear', 'core')).toThrow('"/", "!", "#" or "&"')
+      ev('Stop')
+      expect(texts()).toEqual([paste('a')])
+      ev('Stop') // still delivering a: nothing more
+      expect(texts()).toEqual([paste('a')])
+      ev('UserPromptSubmit')
+      ev('Stop')
+      expect(texts()).toEqual([paste('a'), paste('b')])
+    })
   })
 
   it('a Stop through the hook handler delivers synchronously, before the handler returns', () => {
     ev('UserPromptSubmit')
-    reg.send('t1', 'a')
+    reg.send('t1', 'a', 'plugin')
     hookHandler(reg)({ event: 'Stop', payload: {} }, { kind: 'session', tabId: 't1', projectId: 'p1' })
     expect(texts()).toEqual([paste('a')])
   })

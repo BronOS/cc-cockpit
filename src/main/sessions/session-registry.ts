@@ -19,7 +19,7 @@ import type { SessionSummary } from '../../sdk/types'
 import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
-import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SessionEntry } from './status-reducer'
+import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SendOrigin, type SessionEntry } from './status-reducer'
 import { isPersonInput } from './terminal-reports'
 import { cleanTitle, TitleParser } from './terminal-title'
 
@@ -35,8 +35,9 @@ export interface SessionChange {
   entry: SessionEntry | undefined
   prev: SessionEntry | undefined
   /**
-   * Queued texts thrown away by this change because the session ended or the tab closed, oldest
-   * first (the plan's "queue cleared (and reported)"). Absent when nothing was dropped.
+   * Queued texts thrown away by this change because the session ended, the tab closed or the
+   * person took the tab over (its plugin texts only), oldest first (the plan's "queue cleared (and
+   * reported)"). Absent when nothing was dropped.
    */
   dropped?: QueuedText[]
 }
@@ -199,11 +200,21 @@ export class SessionRegistry {
    * Nothing main types reaches this method: the send gate writes its paste through the registry's
    * `write` option (TabManager.input directly, index.ts), so neither a plugin's `ctx.sessions.send`
    * nor Discuss can set the flag.
+   *
+   * The flip is enforced here, not left to plugins reading the flag (send-gate.ts takenOver): the
+   * tab's queued plugin texts are dropped in the same change, before the chunk's answer step, so
+   * no later Stop can deliver one, and `send` refuses plugin texts from now on.
    */
   userInput(projectId: string, tabId: string, data: string): void {
     const entry = this.entries.get(tabId)
     if (!entry || entry.projectId !== projectId) return
-    if (!entry.typed && isPersonInput(data)) this.set(entry, { ...entry, typed: true })
+    if (!entry.typed && isPersonInput(data)) {
+      const step = gate.takenOver(entry)
+      if (step.dropped) {
+        this.log(`session ${tabId}: the person typed, dropped ${step.dropped.length} queued plugin text(s)`)
+      }
+      this.set(entry, step.entry, step.dropped)
+    }
     if (isAnswerKey(data)) this.apply(tabId, { type: 'answer' })
   }
 
@@ -237,12 +248,17 @@ export class SessionRegistry {
    * scoped to their own project by the caller). Written at once as one bracketed paste when the tab
    * is waiting for input and no earlier paste is in flight; otherwise queued, and the next `Stop`
    * delivers one item. Throws for an unknown tab, an ended session, a full queue or unusable text
-   * (send-gate.ts prepareText).
+   * (send-gate.ts prepareText), and for a `plugin` text once the person took the tab over
+   * (send-gate.ts TYPED_ERROR).
+   *
+   * `origin` has no default on purpose: every sender must say whose text it is, so a new way in
+   * cannot slip past the takeover by forgetting to (host-api passes `plugin`; Discuss and the
+   * test hook `core`, index.ts and overlay-manager.ts).
    */
-  send(tabId: string, text: string): SendResult {
+  send(tabId: string, text: string, origin: SendOrigin): SendResult {
     const prev = this.entries.get(tabId)
     if (!prev) throw new Error('unknown tab')
-    const item: QueuedText = { id: randomUUID(), text: gate.prepareText(text) }
+    const item: QueuedText = { id: randomUUID(), text: gate.prepareText(text), origin }
     const step = gate.send(prev, item)
     const entry = this.commit(prev, step)
     // Delivered only when this very item left the queue and was not put back by a failed write.

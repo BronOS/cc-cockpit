@@ -160,16 +160,19 @@ External review: sol / high
   :1966), `src/main/overlays/overlay-manager.ts` (Discuss sends with `origin: 'core'`, or through its deps type)
 - Modify tests: `test/unit/send-gate.test.ts`, the session-registry, host-api and overlay-manager (Discuss) tests
 
-- [ ] `QueuedText.origin` set from `SessionRegistry.send`'s new `origin` parameter: `'plugin'` from host-api,
+- [x] `QueuedText.origin` set from `SessionRegistry.send`'s new `origin` parameter: `'plugin'` from host-api,
       `'core'` from Discuss and the test hook
-- [ ] a plugin send to a typed tab rejects with "the person is typing in this tab" and refunds the `sends` budget (the
+- [x] a plugin send to a typed tab rejects with "the person is typing in this tab" and refunds the `sends` budget (the
       existing refund pattern at host-api :1003)
-- [ ] when `typed` turns true, drop the tab's queued `plugin` items at once (never delivered on the next `Stop`); `core`
+- [x] when `typed` turns true, drop the tab's queued `plugin` items at once (never delivered on the next `Stop`); `core`
       items stay
-- [ ] tests: queued plugin text dropped on the first person input and not delivered at the next `Stop`; Discuss text
+- [x] tests: queued plugin text dropped on the first person input and not delivered at the next `Stop`; Discuss text
       kept and delivered; a send after typed rejects and refunds; a send before typed delivers as before; the existing
       gate rules unchanged (waiting only, `/ ! # &` refused, one delivery per Stop)
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 4
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 4
+
+- ➕ The takeover lives in the gate (`send-gate.ts`): `send` throws `TYPED_ERROR` for a `plugin` item on a typed tab (after the ended check, before the queue cap), and `takenOver(entry)` sets `typed` and returns the dropped plugin items; `userInput` applies it and reports them as `SessionChange.dropped` (logged). `SessionRegistry.send`'s `origin` (`SendOrigin`, `status-reducer.ts`) has no default, so a new sender must name it; host-api passes `'plugin'` itself, Discuss passes `'core'` through its deps, the test hook `'core'`.
+- ➕ A plugin paste already written (`delivering`) is not undone at the takeover; only queued items are dropped. Plugins get no event for a dropped text (only the registry's change and log); the guide (Task 5) says so.
 
 ### Task 4: plugin commands know the caller's tab (`CliCall.tabId`) [model: sonnet]
 

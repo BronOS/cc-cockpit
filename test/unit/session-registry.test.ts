@@ -137,7 +137,7 @@ describe('entries', () => {
     r.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj' })
     r.applyHook('c1', 'SessionStart', { session_id: 's' })
     r.applyHook('c1', 'Stop', {})
-    expect(r.send('c1', 'from a plugin').delivered).toBe(true)
+    expect(r.send('c1', 'from a plugin', 'plugin').delivered).toBe(true)
     expect(written).toHaveLength(1)
     expect(r.get('c1')?.typed).toBe(false)
     r.applyHook('c1', 'UserPromptSubmit', { prompt: 'from a plugin' })
@@ -248,7 +248,7 @@ describe('summariesFor (ctx.sessions scope all, design-next §4.1)', () => {
       colored.applyHook('b', 'UserPromptSubmit', { prompt: 'beta secret prompt' })
       colored.applyHook('b', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/beta/secret.ts' } })
       colored.addNote('b', 'beta secret note')
-      colored.send('b', 'beta queued text')
+      colored.send('b', 'beta queued text', 'plugin')
       colored.tabOutput('b', '\x1b]0;✳ Beta topic\x07')
       expect(colored.summariesFor(P1)).toEqual([
         { tabId: 'a', own: true, project: { name: 'alpha', color: 'var(--cc-project-blue)' }, status: 'working', tool: 'Bash' },
@@ -281,7 +281,7 @@ describe('snapshotFor (the per-window split)', () => {
     reg.applyHook('a', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/alpha/secret.ts' } })
     reg.applyHook('b', 'UserPromptSubmit', { prompt: 'beta secret prompt' })
     reg.applyHook('b', 'PostToolUse', { tool_name: 'Edit', tool_input: { file_path: '/beta/secret.ts' } })
-    reg.send('b', 'beta queued text')
+    reg.send('b', 'beta queued text', 'plugin')
   }
 
   it('lists no other project\'s tab at all: the other windows\' strip is a plugin\'s (scope all)', () => {
@@ -335,7 +335,7 @@ describe('snapshotFor (the per-window split)', () => {
   it('a queue change reaches the owning window’s next snapshot', () => {
     start('b', P2)
     const sentTo = (): SessionsSnapshot => reg.snapshotFor(P2)
-    const { id } = reg.send('b', 'later')
+    const { id } = reg.send('b', 'later', 'plugin')
     expect(sentTo().own[0]?.queue).toEqual([{ id, text: 'later' }])
     expect(reg.cancelQueued('b', id)).toBe(true)
     expect(sentTo().own[0]?.queue).toEqual([])
@@ -392,14 +392,14 @@ describe('setActive (the tab the window shows)', () => {
 describe('cancelQueuedFor', () => {
   it('cancels an item of the project’s own tab', () => {
     start('a', P1)
-    const { id } = reg.send('a', 'x')
+    const { id } = reg.send('a', 'x', 'plugin')
     expect(reg.cancelQueuedFor(P1, 'a', id)).toBe(true)
     expect(reg.get('a')?.queue).toEqual([])
   })
 
   it('treats another project’s tab as unknown and leaves its queue alone', () => {
     start('a', P1)
-    const { id } = reg.send('a', 'x')
+    const { id } = reg.send('a', 'x', 'plugin')
     expect(reg.cancelQueuedFor(P2, 'a', id)).toBe(false)
     expect(reg.get('a')?.queue).toHaveLength(1)
     expect(reg.cancelQueuedFor(P1, 'nope', id)).toBe(false)

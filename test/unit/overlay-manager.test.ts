@@ -1481,6 +1481,8 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     const s = {
       claude: new Map<number, Set<string>>([[W1, new Set(['t1', 't2'])], [W2, new Set(['t9'])]]),
       sent: [] as { tabId: string; text: string }[],
+      // Kept apart from `sent` so its toEqual checks stay as they were.
+      origins: [] as string[],
       opened: [] as { windowId: number; prompt: string }[],
       selected: [] as { windowId: number; tabId: string }[],
       notReady: new Set<string>(),
@@ -1493,9 +1495,10 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     s.deps = {
       isClaudeTab: (windowId, tabId) => s.claude.get(windowId)?.has(tabId) === true,
       notReady: (tabId) => s.notReady.has(tabId),
-      send: (tabId, text) => {
+      send: (tabId, text, origin) => {
         if (s.sendError) throw s.sendError
         s.sent.push({ tabId, text })
+        s.origins.push(origin)
         return { delivered: s.delivered }
       },
       openSession: (windowId, prompt) => {
@@ -1593,6 +1596,8 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect(sessions.sent).toEqual([
       { tabId: 't2', text: 'About: Review src/x.ts\nFile: src/x.ts\n\nThe review so far' }
     ])
+    // `core`: the person clicked Send, so their typing in the tab neither refuses nor drops it.
+    expect(sessions.origins).toEqual(['core'])
     await flush()
     expect(r.results).toEqual([{ kind: 'discussed', tabId: 't2', queued: false }])
     expect(m.infos(W1)).toEqual([])

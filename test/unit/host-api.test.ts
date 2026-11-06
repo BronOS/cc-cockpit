@@ -137,7 +137,7 @@ beforeEach(() => {
     listSessions: (projectId) => registry.listByProject(projectId),
     session: (tabId) => registry.get(tabId),
     activeTab: (projectId) => registry.activeTab(projectId),
-    send: (tabId, text) => registry.send(tabId, text),
+    send: (tabId, text, origin) => registry.send(tabId, text, origin),
     onSessionsChange: (listener) => registry.onChange(listener),
     openTab: async (projectId, options, windowId, focus) => {
       const tab = tabs.create(projectId, { kind: 'claude', ...options })
@@ -213,7 +213,7 @@ describe('sessions.list', () => {
     tabs.create(A, { kind: 'shell' })
     tabs.create(B, { kind: 'claude' })
     registry.applyHook(mine.id, 'UserPromptSubmit', { prompt: 'fix it' })
-    registry.send(mine.id, 'queued text')
+    registry.send(mine.id, 'queued text', 'plugin')
     registry.tabOutput(mine.id, '\x1b]0;✳ Fixing it\x07')
     // The gist reaches plugins (design-next §4.1: the cockpit.sessions cards show it); the recent prompts do not.
     registry.setGist(mine.id, 'a gist')
@@ -289,6 +289,44 @@ describe('sessions.send', () => {
     await expect(send('sessions.send', { pluginId: 'a.one', tabId: live, text: 'one more' })).rejects.toThrow(
       `more than ${MAX_SENDS_PER_WINDOW} texts`
     )
+  })
+
+  it('refuses a tab the person typed in, without spending the budget; before that it delivers as always', async () => {
+    const tab = waitingTab(A)
+    const live = waitingTab(A)
+    const send = hostA()
+    // Before the person types: the plugin's text goes in as before.
+    await expect(send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'first' })).resolves.toEqual({ delivered: true })
+    registry.applyHook(tab, 'UserPromptSubmit', { prompt: 'first' })
+    registry.applyHook(tab, 'Stop', {})
+    registry.userInput(A, tab, 'h')
+    const before = ptyOf(tab).writes.length
+    for (let i = 0; i < MAX_SENDS_PER_WINDOW + 5; i++) {
+      await expect(send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'more' })).rejects.toThrow(
+        'the person is typing in this tab'
+      )
+    }
+    expect(ptyOf(tab).writes).toHaveLength(before)
+    expect(registry.get(tab)!.queue).toEqual([])
+    // Refunded each time: the whole budget minus the one delivered text is still there.
+    for (let i = 1; i < MAX_SENDS_PER_WINDOW; i++) {
+      await send('sessions.send', { pluginId: 'a.one', tabId: live, text: `t${i}` })
+    }
+    await expect(send('sessions.send', { pluginId: 'a.one', tabId: live, text: 'one more' })).rejects.toThrow(
+      `more than ${MAX_SENDS_PER_WINDOW} texts`
+    )
+  })
+
+  it("drops a plugin's queued text when the person types, so the next Stop types nothing", async () => {
+    const tab = tabs.create(A, { kind: 'claude' })
+    registry.applyHook(tab.id, 'SessionStart', { session_id: 's' })
+    registry.applyHook(tab.id, 'UserPromptSubmit', { prompt: 'working on it' })
+    const send = hostA()
+    await expect(send('sessions.send', { pluginId: 'a.one', tabId: tab.id, text: 'next step' })).resolves.toMatchObject({ queued: true })
+    registry.userInput(A, tab.id, 'x')
+    expect(registry.get(tab.id)!.queue).toEqual([])
+    registry.applyHook(tab.id, 'Stop', {})
+    expect(ptyOf(tab.id).writes).toEqual([])
   })
 })
 

@@ -553,7 +553,8 @@ function start(): void {
         return projectId !== undefined && entry?.projectId === projectId && entry.status !== 'ended'
       },
       notReady: (tabId) => sessions.get(tabId)?.status === 'idle',
-      send: (tabId, text) => sessions.send(tabId, text),
+      // Discuss names its origin (`core`, overlay-manager.ts): passed through, not chosen here.
+      send: (tabId, text, origin) => sessions.send(tabId, text, origin),
       openSession: async (windowId, prompt) => {
         const projectId = projectOfWindow(windowId)
         if (projectId === undefined) throw new Error('the window is gone')
@@ -881,8 +882,8 @@ function start(): void {
       listSessions: (projectId) => sessions.listByProject(projectId),
       session: (tabId) => sessions.get(tabId),
       activeTab: (projectId) => sessions.activeTab(projectId),
-      // The send gate, as for every programmatic text (send-gate.ts).
-      send: (tabId, text) => sessions.send(tabId, text),
+      // The send gate, as for every programmatic text (send-gate.ts); HostApi passes `plugin`.
+      send: (tabId, text, origin) => sessions.send(tabId, text, origin),
       onSessionsChange: (listener) => sessions.onChange(listener),
       // ctx.sessions scope 'all' (HostApi checks the manifest's `access` declaration first).
       summaries: (projectId) => sessions.summariesFor(projectId),
@@ -1965,8 +1966,9 @@ function start(): void {
             return closeTabForPlugin(windowId, project.id, tabId)
           },
           // The main-internal send / cancel (no IPC reaches them yet), for a tab id the test read
-          // from `sessions` or `tabs`.
-          send: (tabId: string, text: string) => sessions.send(tabId, text),
+          // from `sessions` or `tabs`. `core`, like Discuss: a spec drives main's own path, so the
+          // takeover neither refuses nor drops it (the takeover's own tests go through HostApi).
+          send: (tabId: string, text: string) => sessions.send(tabId, text, 'core'),
           cancelQueued: (tabId: string, itemId: string) => sessions.cancelQueued(tabId, itemId),
           // Open an overlay in a project folder's window the way the CLI / a plugin will; returns
           // a handle for overlayResult, or undefined when the folder has no open window.

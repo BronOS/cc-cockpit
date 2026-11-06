@@ -168,7 +168,7 @@ import {
 import { checkWebUrl, MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
 import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
-import type { SessionEntry } from '../sessions/status-reducer'
+import type { SendOrigin, SessionEntry } from '../sessions/status-reducer'
 import { checkOAuthSpec, checkRefreshToken, type PluginOAuthApi } from '../oauth/plugin-oauth'
 import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
@@ -259,8 +259,12 @@ export interface HostApiDeps {
    * `SessionInfo.active`. Without it no tab is ever marked active.
    */
   activeTab?(projectId: string): string | undefined
-  /** The send gate (SessionRegistry.send): types now only when the tab is waiting, else queues. */
-  send(tabId: string, text: string): { id: string; delivered: boolean }
+  /**
+   * The send gate (SessionRegistry.send): types now only when the tab is waiting, else queues.
+   * HostApi always passes `plugin`, so the person's takeover of the tab (SessionEntry.typed)
+   * refuses the text and drops it from the queue (send-gate.ts takenOver).
+   */
+  send(tabId: string, text: string, origin: SendOrigin): { id: string; delivered: boolean }
   /**
    * Every window's Claude tabs from this project's view (SessionRegistry.summariesFor), for
    * `scope: 'all'`. Without it that scope is refused.
@@ -1001,10 +1005,12 @@ export class HostApi {
       throw new Error(`sessions.send: more than ${MAX_SENDS_PER_WINDOW} texts in ${SEND_WINDOW_MS / 1000} s`)
     }
     // The gate is the only way in: typed now only while the tab waits for input, else queued.
-    // It throws before queueing anything (an ended session, a full queue): no text, no cost.
+    // It throws before queueing anything (an ended session, a full queue, a tab the person took
+    // over: "the person is typing in this tab"): no text, no cost. Every text from here is a
+    // plugin's, whatever the plugin says it is: the origin is main's to state, never the host's.
     let result: { id: string; delivered: boolean }
     try {
-      result = this.deps.send(tabId, clean)
+      result = this.deps.send(tabId, clean, 'plugin')
     } catch (err) {
       this.sends.refund(plugin.id)
       throw err
