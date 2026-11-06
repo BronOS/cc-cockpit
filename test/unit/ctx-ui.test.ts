@@ -91,6 +91,22 @@ describe('ctx.sessions', () => {
     expect('model' in (calls[4]?.params as object)).toBe(false)
   })
 
+  it('openShell sends only cwd and focus, checking their types first', async () => {
+    const { ctx, calls } = setup((c) => (c.method === 'sessions.openShell' ? { tabId: 't7' } : []))
+    await expect(ctx.sessions.openShell({ cwd: 'src', focus: true })).resolves.toEqual({ tabId: 't7' })
+    await ctx.sessions.openShell()
+    // Whatever else a plugin passes stays in the host.
+    await ctx.sessions.openShell({ focus: false, command: 'rm -rf ~', env: { X: '1' } } as unknown as { focus: boolean })
+    expect(calls).toEqual([
+      { method: 'sessions.openShell', params: { pluginId: 'a.one', cwd: 'src', focus: true } },
+      { method: 'sessions.openShell', params: { pluginId: 'a.one' } },
+      { method: 'sessions.openShell', params: { pluginId: 'a.one' } }
+    ])
+    await expect(ctx.sessions.openShell({ cwd: 5 as unknown as string })).rejects.toThrow('sessions.openShell: cwd must be a string')
+    await expect(ctx.sessions.openShell({ focus: 'yes' as unknown as boolean })).rejects.toThrow('focus must be a boolean')
+    expect(calls).toHaveLength(3)
+  })
+
   it("delivers main's sessions event to every plugin's listeners, each its own copy", () => {
     const { contexts, ctx, other, logs } = setup()
     const seen: unknown[] = []

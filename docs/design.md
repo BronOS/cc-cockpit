@@ -740,7 +740,7 @@ that project.
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | services | `ctx.services.available(name)` (host-local, same `serviceStatus` rule as a call, never cached, false for an unknown name) |
-| sessions | `ctx.sessions.list({scope?})`, `onChange(fn, {scope?})` (`scope: 'all'`: every window's tabs as `SessionSummary`, status/tool/title/name/project only, needs `"access": { "sessions": "all-windows" }`), `send(tabId, text)` (this window, waiting-only, else queued), `open({cwd, prompt, focus})`, `focus(tabId)` (any window's tab), `close`, `rename`, `openFile` (this window's tabs; limits per plugin and window) |
+| sessions | `ctx.sessions.list({scope?})`, `onChange(fn, {scope?})` (`scope: 'all'`: every window's tabs as `SessionSummary`, status/tool/title/name/project only, needs `"access": { "sessions": "all-windows" }`), `send(tabId, text)` (this window, waiting-only, else queued), `open({cwd, prompt, focus})`, `openShell({cwd, focus})` (a plain shell tab), `focus(tabId)` (any window's tab), `close`, `rename`, `openFile` (this window's tabs; limits per plugin and window) |
 | commands | `ctx.commands.register(id, fn)` |
 | services | `ctx.services.provide(name, impl)`, `use(name)` → handle (async methods, `on(event, fn)` → disposer), `emit(name, event, data)`, `caller()` → the calling plugin's id or `undefined` |
 | misc | `ctx.log`, `ctx.notify(text, {title?, sound?, action?})` → `{clicked}` (below), `ctx.openExternal(url)` (system browser; below) |
@@ -749,6 +749,13 @@ that project.
 person is typing in could answer Claude's trust dialog). `focus: true` selects it as well: main sends the window a
 `tabs.select` right after `tabs.added`, only to the host's own window. It is for a click the person made that means
 "go there" (the reviewer's New session). An older app ignores the option.
+
+`sessions.openShell` opens a plain shell tab, the kind the person's "+" > shell opens (the files tree's "Open
+terminal here"). Main reads only `cwd` and `focus`: no command, argv or env comes from the plugin, so the tab
+manager starts the person's login shell (`shellArgv`) and nothing is typed into it. The cwd rule is
+`sessions.open`'s (`resolveCwd`: realpath on both sides, inside the project folder, a symlink escape refused,
+the folder itself by default), checked before the budget is spent; the budget is the same per-plugin
+5 a minute, one `RateWindow` for both calls. The window is the calling host's own; `focus` works as for `open`.
 
 `activate`'s return value is ignored; a plugin offers an API to others with `ctx.services`.
 

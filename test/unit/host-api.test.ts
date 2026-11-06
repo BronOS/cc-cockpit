@@ -32,6 +32,7 @@ import {
   MAX_FILE_OPENS_PER_WINDOW,
   MAX_OPEN_OVERLAYS,
   MAX_OPENS_PER_WINDOW,
+  OPEN_WINDOW_MS,
   MAX_OVERLAYS_PER_WINDOW,
   MAX_SENDS_PER_WINDOW,
   RateWindow,
@@ -144,6 +145,11 @@ beforeEach(() => {
     onSessionsChange: (listener) => registry.onChange(listener),
     openTab: async (projectId, options, windowId, focus) => {
       const tab = tabs.create(projectId, { kind: 'claude', ...options })
+      announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
+      return tab
+    },
+    openShellTab: async (projectId, options, windowId, focus) => {
+      const tab = tabs.create(projectId, { kind: 'shell', ...options })
       announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
       return tab
     },
@@ -428,6 +434,90 @@ describe('sessions.open', () => {
   })
 })
 
+describe('sessions.openShell', () => {
+  it("starts the person's login shell with nothing from the plugin: no command, argv, env or typing", async () => {
+    const open = hostA()
+    const { tabId } = (await open('sessions.openShell', {
+      pluginId: 'a.one',
+      // Riding along, never read: only cwd and focus are.
+      command: 'rm -rf ~',
+      argv: ['/bin/rm', '-rf', '/'],
+      env: { EVIL: '1', PATH: '/tmp/evil' },
+      prompt: 'hi'
+    })) as { tabId: string }
+    const pty = ptyOf(tabId)
+    // shellArgv: the same `$SHELL -l` as the person's "+" > shell.
+    expect(pty.argv).toEqual(['/bin/sh', '-l'])
+    expect(pty.options.cwd).toBe(projA)
+    expect(pty.options.env.EVIL).toBeUndefined()
+    expect(pty.options.env.PATH).not.toContain('/tmp/evil')
+    expect(pty.writes).toEqual([])
+    expect(tabs.list(A).find((t) => t.id === tabId)?.kind).toBe('shell')
+    // Told to the host's own window, never another project's.
+    expect(announced).toEqual([{ projectId: A, tab: expect.objectContaining({ id: tabId, kind: 'shell' }), windowId: WIN_A }])
+    expect(tabs.list(B)).toEqual([])
+    // Not a Claude tab: no session in the registry for plugins to see.
+    expect(registry.listByProject(A)).toEqual([])
+  })
+
+  it('starts in a folder inside the project, and refuses one outside by path, absolute path or symlink', async () => {
+    const open = hostA()
+    const { tabId } = (await open('sessions.openShell', { pluginId: 'a.one', cwd: 'sub' })) as { tabId: string }
+    expect(ptyOf(tabId).options.cwd).toBe(join(projA, 'sub'))
+    const abs = (await open('sessions.openShell', { pluginId: 'a.one', cwd: join(projA, 'sub') })) as { tabId: string }
+    expect(ptyOf(abs.tabId).options.cwd).toBe(join(projA, 'sub'))
+    await expect(open('sessions.openShell', { pluginId: 'a.one', cwd: '../outside' })).rejects.toThrow('sessions.openShell: cwd is outside the project')
+    await expect(open('sessions.openShell', { pluginId: 'a.one', cwd: outside })).rejects.toThrow('outside the project')
+    await expect(open('sessions.openShell', { pluginId: 'a.one', cwd: projB })).rejects.toThrow('outside the project')
+    await expect(open('sessions.openShell', { pluginId: 'a.one', cwd: 'link-out' })).rejects.toThrow('outside the project')
+    await expect(open('sessions.openShell', { pluginId: 'a.one', cwd: 5 })).rejects.toThrow('cwd must be a string')
+    await expect(open('sessions.openShell', { pluginId: 'a.one', cwd: 'missing' })).rejects.toThrow('cwd does not exist')
+    await expect(open('sessions.openShell', { pluginId: 'nope' })).rejects.toThrow('unknown plugin')
+    expect(tabsBackend.spawned).toHaveLength(2)
+    // None of the refusals spent the budget: three more fit.
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW - 2; i++) await open('sessions.openShell', { pluginId: 'a.one' })
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
+  })
+
+  it('selects the tab only with focus: true, in the host\'s own window', async () => {
+    const open = hostA()
+    const plain = (await open('sessions.openShell', { pluginId: 'a.one' })) as { tabId: string }
+    const shown = (await open('sessions.openShell', { pluginId: 'a.one', focus: true })) as { tabId: string }
+    const off = (await open('sessions.openShell', { pluginId: 'a.one', focus: false })) as { tabId: string }
+    expect(announced.map((a) => [a.tab.id, a.windowId, a.focus])).toEqual([
+      [plain.tabId, WIN_A, undefined],
+      [shown.tabId, WIN_A, true],
+      [off.tabId, WIN_A, undefined]
+    ])
+    await expect(open('sessions.openShell', { pluginId: 'a.one', focus: 'yes' })).rejects.toThrow('focus must be a boolean')
+    expect(tabsBackend.spawned).toHaveLength(3)
+  })
+
+  it("shares sessions.open's budget of 5 a minute per plugin", async () => {
+    vi.useFakeTimers()
+    const open = hostA()
+    for (let i = 0; i < 3; i++) await open('sessions.open', { pluginId: 'a.one' })
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW - 3; i++) await open('sessions.openShell', { pluginId: 'a.one' })
+    await expect(open('sessions.openShell', { pluginId: 'a.one' })).rejects.toThrow(
+      `sessions.openShell: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`
+    )
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
+    // Per plugin: another plugin of the host has its own.
+    await open('sessions.openShell', { pluginId: 'a.two' })
+    // And a minute later the first one may open again.
+    vi.advanceTimersByTime(OPEN_WINDOW_MS + 1)
+    await open('sessions.openShell', { pluginId: 'a.one' })
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW + 2)
+  })
+
+  it('is refused when main has no shell tabs to give', async () => {
+    delete deps.openShellTab
+    await expect(hostA()('sessions.openShell', { pluginId: 'a.one' })).rejects.toThrow('sessions.openShell: shell tabs are not available')
+    expect(tabsBackend.spawned).toEqual([])
+  })
+})
+
 describe('badge', () => {
   const badgeOf = (projectId: string, key: string): unknown => layouts.view(projectId)!.panels.find((p) => p.panelKey === key)?.badge
 
@@ -476,6 +566,7 @@ describe('badge', () => {
       ['sessions.list', {}],
       ['sessions.send', { pluginId: 'a.one', tabId, text: 'hello' }],
       ['sessions.open', { pluginId: 'a.one' }],
+      ['sessions.openShell', { pluginId: 'a.one' }],
       ['badge', { pluginId: 'a.one', panelId: 'board', value: 1 }],
       ['overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com' } }]
     ] as const) {

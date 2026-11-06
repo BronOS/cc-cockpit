@@ -761,6 +761,14 @@ export interface PluginContext {
      * An older app ignores `focus`, `model` and `effort`.
      */
     open(options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string }): Promise<{ tabId: string }>
+    /**
+     * A plain shell tab in this window, the kind the person gets from "+" > shell: their login shell,
+     * with no command, arguments or environment from the plugin and nothing typed into it. `cwd` must
+     * resolve inside the project folder (the folder itself when absent). `focus: true` selects it (for
+     * a click such as "Open terminal here"); without it the tab opens unselected. Counts against the
+     * same 5 a minute as `open`. An older app has no `openShell`: check `typeof ctx.sessions.openShell`.
+     */
+    openShell(options?: { cwd?: string; focus?: boolean }): Promise<{ tabId: string }>
   }
 
   // commands

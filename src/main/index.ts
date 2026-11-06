@@ -627,6 +627,24 @@ function start(): void {
     if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
     return tab
   }
+  /**
+   * Start a shell tab a plugin asked for (ctx.sessions.openShell, the files tree's "Open terminal
+   * here"), the way openClaudeTab does: the same kind as the person's "+" > shell, so the tab manager
+   * starts their login shell with nothing typed; only `cwd` is the plugin's, realpath'd inside the project.
+   */
+  const openShellTab = async (
+    projectId: string,
+    options: { cwd?: string },
+    windowId: number,
+    focus: boolean
+  ): Promise<TabInfo> => {
+    await spawnReady
+    requireWindow(projectId, windowId)
+    const tab = tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    sendToProject(projectId, 'tabs.added', tab)
+    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    return tab
+  }
   /** Open an overlay once the login env is known (a terminal overlay's PATH depends on it). */
   const openOverlay = async (
     windowId: number,
@@ -922,6 +940,8 @@ function start(): void {
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
       openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
+      // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
+      openShellTab: (projectId, options, windowId, focus) => openShellTab(projectId, options, windowId, focus === true),
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),

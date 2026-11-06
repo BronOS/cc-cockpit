@@ -259,6 +259,11 @@ with full Node access.
   The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
   window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores
   `focus`, `model` and `effort`, silently: it starts the tab with the default model.
+- `ctx.sessions.openShell({ cwd, focus })`: a plain shell tab in this window, the kind the person gets from
+  "+" > shell: their login shell, with no command, arguments or environment from the plugin and nothing typed
+  into it. `cwd` resolves inside the project folder by its real path (a link out of it is refused; absent means
+  the folder itself). Unselected unless `focus: true` (for a click such as "Open terminal here"). It shares the
+  5 a minute of `open`. An older app has no `openShell`: check `typeof ctx.sessions.openShell === 'function'`.
 
 ## Files
 

@@ -190,6 +190,21 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
           ...(checked.model ? { model: checked.model } : {}),
           ...(checked.effort ? { effort: checked.effort } : {})
         })) as { tabId: string }
+      }),
+    // A plain shell tab (the person's "+" > shell): only a cwd and focus, never a command, argv or
+    // env; main checks the cwd and the shared open budget again.
+    openShell: (options: { cwd?: string; focus?: boolean } = {}) =>
+      guardAsync(async () => {
+        const { cwd, focus } = (options ?? {}) as { cwd?: unknown; focus?: unknown }
+        if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.openShell: cwd must be a string')
+        if (focus !== undefined && typeof focus !== 'boolean') {
+          throw new TypeError('sessions.openShell: focus must be a boolean')
+        }
+        return (await call('sessions.openShell', {
+          pluginId,
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(focus ? { focus: true } : {})
+        })) as { tabId: string }
       })
   }
   return Object.freeze(api) as PluginContext['sessions']
