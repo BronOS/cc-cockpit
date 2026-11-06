@@ -135,18 +135,22 @@ External review: sol / high
 - Modify: `src/main/sessions/session-registry.ts` (`userInput`), `src/shared/ipc.ts`, `src/sdk/types.ts`
   (`SessionInfo.typed: boolean`), wherever `SessionInfo` is built for plugins (`ctx.sessions.list/onChange`)
 
-- [ ] `isPersonInput(chunk)` per Technical Details; a chunk of several reports is still not person input
-- [ ] `userInput` sets `typed = true` on the first person-input chunk for that tab (only the IPC path calls it; the
+- [x] `isPersonInput(chunk)` per Technical Details; a chunk of several reports is still not person input
+- [x] `userInput` sets `typed = true` on the first person-input chunk for that tab (only the IPC path calls it; the
       gate writes through `tabs.input`, `index.ts:995`: say so in a comment); never cleared while the tab exists; not
       persisted (a restored tab starts at false)
-- [ ] `SessionInfo.typed` reaches plugins through `list` and `onChange` (an `onChange` fires when it flips); existing
+- [x] `SessionInfo.typed` reaches plugins through `list` and `onChange` (an `onChange` fires when it flips); existing
       tests comparing whole `SessionInfo` objects (`toEqual` in host-api, registry and e2e specs) get `typed: false`
-- [ ] mouse wheel: xterm's alternate-scroll turns a wheel into `CSI A` / `CSI B` arrow keys in alt-screen mode, which
+- [x] mouse wheel: xterm's alternate-scroll turns a wheel into `CSI A` / `CSI B` arrow keys in alt-screen mode, which
       reach Claude's prompt as history keys. Count them as typing (they change what is in Claude's input box, so a
       later paste would be glued to it); write that decision as a comment and a test
-- [ ] tests: every report kind alone and repeated → false; a letter, Enter, an arrow key, a paste, Ctrl+C, a report
+- [x] tests: every report kind alone and repeated → false; a letter, Enter, an arrow key, a paste, Ctrl+C, a report
       glued to a letter → true; the registry flips once, stays true; a gate delivery does not set it; a new tab is false
-- [ ] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 3
+- [x] run `npm test`, `npm run typecheck`, `npm run lint` - must pass before Task 3
+
+- ➕ Also recognized as reports: DCS replies (`DCS … ST`, DECRQSS / XTVERSION; not in the design's list, the same kind) and the ANSI DECRPM form without `?`. Unterminated OSC/DCS (Alt+] / Alt+P) stay person input. Shift/Ctrl+F3 (`CSI 1 ; Pm R`) has the bytes of a cursor position report and reads as one; F3 changes nothing in Claude's input box (comment in `terminal-reports.ts`).
+- ➕ `typed` survives a restart of the tab (`tabStarted` carries it like `sessionId`): the same tab, "never cleared while the tab exists"; a closed tab's id starting again is a new tab at false.
+- ➕ `src/shared/ipc.ts` unchanged: the renderer's `SessionDetail` does not need `typed` (only plugins read it, through `sessionInfoOf`); no e2e spec compares whole `SessionInfo` objects. Guide text is left to Task 5 (no drift test needed it).
 
 ### Task 3: enforce the takeover in main [model: opus]
 

@@ -20,6 +20,7 @@ import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
 import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SessionEntry } from './status-reducer'
+import { isPersonInput } from './terminal-reports'
 import { cleanTitle, TitleParser } from './terminal-title'
 
 /** The longest gist kept (the gist run asks for ~80 characters; a chatty answer is cut). */
@@ -123,7 +124,9 @@ export class SessionRegistry {
     this.clearDeliveryTimer(tab.tabId)
     this.clearSettleTimer(tab.tabId)
     this.titles.set(tab.tabId, new TitleParser())
-    this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId }))
+    // `typed` survives the restart too: the tab is the same one the person took over (and the
+    // restart is theirs), and the flag is never cleared while the tab exists.
+    this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId, typed: prev?.typed }))
   }
 
   /**
@@ -188,11 +191,20 @@ export class SessionRegistry {
    * answers a permission dialog moves a `needs-permission` tab to `working` (status-reducer.ts
    * isAnswerKey says why and which keys). `projectId` is the window's project as main resolved it:
    * a tab of another project is ignored, as TabManager.input ignores it.
+   *
+   * The first chunk that is the person's (terminal-reports.ts isPersonInput: not only focus, mouse
+   * and other replies xterm sends by itself) sets `typed`, the takeover flag plugins read as
+   * SessionInfo.typed; it reports one change and never flips back. That this means a PERSON rests
+   * on the one caller: main's `tabs.input` IPC handler, fed by the renderer's terminal `onData`.
+   * Nothing main types reaches this method: the send gate writes its paste through the registry's
+   * `write` option (TabManager.input directly, index.ts), so neither a plugin's `ctx.sessions.send`
+   * nor Discuss can set the flag.
    */
   userInput(projectId: string, tabId: string, data: string): void {
     const entry = this.entries.get(tabId)
-    if (!entry || entry.projectId !== projectId || !isAnswerKey(data)) return
-    this.apply(tabId, { type: 'answer' })
+    if (!entry || entry.projectId !== projectId) return
+    if (!entry.typed && isPersonInput(data)) this.set(entry, { ...entry, typed: true })
+    if (isAnswerKey(data)) this.apply(tabId, { type: 'answer' })
   }
 
   /**

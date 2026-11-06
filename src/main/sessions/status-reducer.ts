@@ -92,6 +92,13 @@ export interface SessionEntry {
   settling?: boolean
   /** Set by a PTY exit; an ended entry with an exit code is final (see reduce). */
   exitCode?: number
+  /**
+   * The person typed or pasted into the tab's terminal (SessionInfo.typed, Autopilot v2 "Core
+   * change" 2): set by SessionRegistry.userInput on the first chunk terminal-reports.ts calls the
+   * person's, never cleared while the tab exists (a restart keeps it), never persisted. The reducer
+   * never touches it.
+   */
+  typed: boolean
 }
 
 /** Caps for text a hook (or a plugin) hands us: a token only proves WHICH tab sent it. */
@@ -134,6 +141,8 @@ export function newEntry(init: {
   cwd: string
   sessionId?: string
   name?: string
+  /** A restart carries the old entry's flag (SessionRegistry.tabStarted); a new tab starts at false. */
+  typed?: boolean
 }): SessionEntry {
   const entry: SessionEntry = {
     tabId: init.tabId,
@@ -144,7 +153,8 @@ export function newEntry(init: {
     notes: [],
     files: [],
     queue: [],
-    delivering: false
+    delivering: false,
+    typed: init.typed ?? false
   }
   if (init.sessionId !== undefined) entry.sessionId = init.sessionId
   if (init.name !== undefined) entry.name = init.name

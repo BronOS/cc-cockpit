@@ -750,7 +750,7 @@ describe('HostManager', () => {
         api: {
           listSessions: (projectId) =>
             projectId === 'p1'
-              ? [{ tabId: 't1', projectId: 'p1', kind: 'claude', cwd: '/projects/p1', status: 'idle', notes: [], files: [], queue: [], delivering: false }]
+              ? [{ tabId: 't1', projectId: 'p1', kind: 'claude', cwd: '/projects/p1', status: 'idle', notes: [], files: [], queue: [], delivering: false, typed: false }]
               : [],
           session: () => undefined,
           send: () => ({ id: 'q', delivered: false }),
@@ -779,7 +779,7 @@ describe('HostManager', () => {
       await manager.open('p1', 7)
       const host = factory.last.host
       await expect(host.call('sessions.list')).resolves.toEqual([
-        { tabId: 't1', status: 'idle', cwd: '/projects/p1', notes: [], files: [] }
+        { tabId: 't1', status: 'idle', cwd: '/projects/p1', notes: [], files: [], typed: false }
       ])
       await host.call('badge', { pluginId: 'a.one', panelId: 'main', value: 2 })
       expect(badges).toEqual([{ projectId: 'p1', key: 'a.one/main', badge: { kind: 'count', count: 2 } }])
@@ -924,7 +924,7 @@ describe('HostManager', () => {
     it("a host still deactivating after its window closed cannot reach the reopened window's tabs", async () => {
       const sent: string[] = []
       const opened: number[] = []
-      const p1Tab = { tabId: 't1', projectId: 'p1', kind: 'claude' as const, cwd: '/projects/p1', status: 'waiting' as const, notes: [], files: [], queue: [], delivering: false }
+      const p1Tab = { tabId: 't1', projectId: 'p1', kind: 'claude' as const, cwd: '/projects/p1', status: 'waiting' as const, notes: [], files: [], queue: [], delivering: false, typed: false }
       const notified: string[] = []
       manager = new HostManager({
         factory,

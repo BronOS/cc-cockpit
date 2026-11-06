@@ -466,7 +466,10 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
     status: e.status,
     cwd: e.cwd,
     notes: [...e.notes],
-    files: [...e.files]
+    files: [...e.files],
+    // Always present (false until the person types), unlike `active`: a plugin tells an app that
+    // detects the takeover from an older one by `typeof typed === 'boolean'` (Autopilot v2).
+    typed: e.typed
   }
   if (e.sessionId !== undefined) out.sessionId = e.sessionId
   if (e.tool !== undefined) out.tool = e.tool

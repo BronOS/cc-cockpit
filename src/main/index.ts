@@ -991,7 +991,8 @@ function start(): void {
     },
     // The send gate's only way into a terminal (send-gate.ts decides when). Through TabManager
     // with the entry's own project, so the write cannot land in another project's tab; `tabs` is
-    // defined below and is only reached once a tab exists.
+    // defined below and is only reached once a tab exists. Never through `sessions.userInput`: a
+    // delivery must not set SessionInfo.typed (the person's takeover flag).
     write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
   })
   // The session gist (app setting, off by default): Haiku summarises a tab's last prompts after a
@@ -1770,7 +1771,9 @@ function start(): void {
     reorder: (projectId, tabId, toIndex) => tabs.reorder(projectId, tabId, toIndex),
     rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
     // Renderer keystrokes only (the send gate writes through `tabs.input` directly): a key that
-    // answers a permission dialog also clears the tab's needs-permission (status-reducer.ts).
+    // answers a permission dialog also clears the tab's needs-permission (status-reducer.ts), and
+    // the person's first real input sets SessionInfo.typed. The ONLY caller of userInput: the flag
+    // means "the person typed" because nothing main or a plugin types ever comes through here.
     input: (projectId, tabId, data) => {
       tabs.input(projectId, tabId, data)
       sessions.userInput(projectId, tabId, data)

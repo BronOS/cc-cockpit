@@ -97,6 +97,57 @@ describe('entries', () => {
     expect(reg.list().map((e) => e.tabId)).toEqual(['c1', 'c2'])
   })
 
+  it('typed: a new tab is false; terminal reports leave it; the first key flips it once, for good', () => {
+    const changes: SessionChange[] = []
+    start('c1')
+    start('c2')
+    expect(reg.get('c1')?.typed).toBe(false)
+    reg.onChange((c) => changes.push(c))
+    // Switching to the tab, a click, a cursor report: no change at all.
+    reg.userInput(P1, 'c1', '\x1b[I')
+    reg.userInput(P1, 'c1', '\x1b[<0;10;5M\x1b[<0;10;5m')
+    reg.userInput(P1, 'c1', '\x1b[12;40R')
+    // Another project's window and an unknown tab are ignored, as for answer keys.
+    reg.userInput(P2, 'c1', 'x')
+    reg.userInput(P1, 'nope', 'x')
+    expect(changes).toEqual([])
+    expect(reg.get('c1')?.typed).toBe(false)
+    reg.userInput(P1, 'c1', 'h')
+    expect(reg.get('c1')?.typed).toBe(true)
+    expect(changes.map((c) => [c.tabId, c.prev?.typed, c.entry?.typed])).toEqual([['c1', false, true]])
+    // More keys, hook events, an exit and a restart: still true, and no second flip reported.
+    reg.userInput(P1, 'c1', 'i')
+    reg.applyHook('c1', 'SessionStart', { session_id: 'sess' })
+    reg.applyHook('c1', 'Stop', {})
+    reg.tabExited('c1', 0)
+    start('c1')
+    expect(reg.get('c1')?.typed).toBe(true)
+    expect(changes.filter((c) => c.prev?.typed === false && c.entry?.typed === true)).toHaveLength(1)
+    // The other tab never saw input.
+    expect(reg.get('c2')?.typed).toBe(false)
+    // A closed tab is forgotten: the same id starting again is a new tab, false.
+    reg.tabClosed('c1')
+    start('c1')
+    expect(reg.get('c1')?.typed).toBe(false)
+  })
+
+  it('typed: a gate delivery (send) does not set it; an answer key both sets it and answers', () => {
+    const written: string[] = []
+    const r = new SessionRegistry({ projectName: () => 'x', broadcast: () => {}, write: (_e, d) => void written.push(d) })
+    r.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj' })
+    r.applyHook('c1', 'SessionStart', { session_id: 's' })
+    r.applyHook('c1', 'Stop', {})
+    expect(r.send('c1', 'from a plugin').delivered).toBe(true)
+    expect(written).toHaveLength(1)
+    expect(r.get('c1')?.typed).toBe(false)
+    r.applyHook('c1', 'UserPromptSubmit', { prompt: 'from a plugin' })
+    r.applyHook('c1', 'PreToolUse', { tool_name: 'Bash' })
+    r.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+    r.userInput(P1, 'c1', '1')
+    expect(r.get('c1')).toMatchObject({ status: 'working', typed: true })
+    r.dispose()
+  })
+
   it('lists by project', () => {
     start('a', P1)
     start('b', P2)

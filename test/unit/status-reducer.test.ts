@@ -53,7 +53,8 @@ describe('newEntry', () => {
       notes: [],
       files: [],
       queue: [],
-      delivering: false
+      delivering: false,
+      typed: false
     })
   })
 })

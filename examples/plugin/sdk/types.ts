@@ -372,6 +372,15 @@ export interface SessionInfo {
    * window itself may be in the background.
    */
   readonly active?: boolean
+  /**
+   * `true` once the person typed or pasted into the tab's terminal: they took it over. Set on the
+   * first key or paste (a key before Enter counts), never by terminal reports the terminal sends by
+   * itself (focus on switching to the tab, mouse clicks and scrolls, replies to queries), nor by
+   * `ctx.sessions.send` or anything else the app types. Never cleared while the tab exists (a
+   * restart keeps it); not persisted, so a tab restored at app start is `false`. The flip reaches
+   * `onChange`. Always present on an app that detects it: an older app has no such field.
+   */
+  readonly typed: boolean
 }
 
 /**

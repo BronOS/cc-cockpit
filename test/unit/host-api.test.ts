@@ -219,7 +219,7 @@ describe('sessions.list', () => {
     registry.setGist(mine.id, 'a gist')
     const list = (await hostA()('sessions.list', {})) as Record<string, unknown>[]
     expect(list).toEqual([
-      { tabId: mine.id, status: 'working', cwd: join(projA, 'sub'), lastPrompt: 'fix it', title: 'Fixing it', gist: 'a gist', notes: [], files: [] }
+      { tabId: mine.id, status: 'working', cwd: join(projA, 'sub'), lastPrompt: 'fix it', title: 'Fixing it', gist: 'a gist', notes: [], files: [], typed: false }
     ])
     // Nothing of main's bookkeeping: the queue, the project id, the delivering flag.
     expect(Object.keys(list[0]!)).not.toContain('queue')
@@ -1110,7 +1110,7 @@ describe('the sessions event', () => {
     expect(events).toEqual([
       {
         event: 'sessions',
-        params: { sessions: [{ tabId: mine.id, status: 'working', cwd: projA, sessionId: 's1', lastPrompt: 'p', notes: [], files: [] }] }
+        params: { sessions: [{ tabId: mine.id, status: 'working', cwd: projA, sessionId: 's1', lastPrompt: 'p', notes: [], files: [], typed: false }] }
       }
     ])
     // Gone: nothing more.
@@ -1142,6 +1142,28 @@ describe('the sessions event', () => {
     expect(events).toHaveLength(1)
     const pushed = (events[0]!.params as { sessions: { tabId: string; active?: boolean }[] }).sessions
     expect(pushed.filter((s) => s.active).map((s) => s.tabId)).toEqual([two.id])
+  })
+
+  it('carries typed (false until the person types), and its flip reaches the sessions event', async () => {
+    vi.useFakeTimers()
+    const events: { event: string; params: unknown }[] = []
+    const call = hostA(events)
+    const tab = waitingTab(A)
+    // A plugin's send is delivered through the gate's write (tabs.input), never userInput: still false.
+    await call('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'hello' })
+    await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS)
+    const typedOf = async () => ((await call('sessions.list', {})) as { typed: boolean }[]).map((s) => s.typed)
+    expect(await typedOf()).toEqual([false])
+    events.length = 0
+    // A focus report (switching to the tab) is not typing; a key is.
+    registry.userInput(A, tab, '\x1b[I')
+    await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS)
+    expect(events).toEqual([])
+    registry.userInput(A, tab, 'x')
+    await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS)
+    expect(events).toHaveLength(1)
+    expect((events[0]!.params as { sessions: { typed: boolean }[] }).sessions.map((s) => s.typed)).toEqual([true])
+    expect(await typedOf()).toEqual([true])
   })
 })
 
