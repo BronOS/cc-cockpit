@@ -309,7 +309,7 @@ plugins", design-next §4), built on the public API only:
   this window"). A layout stored before 0.10 holds the old core key `core/sessions`: it is read as
   `cockpit.sessions/sessions` in the same zone, order, open state and size
   (`RENAMED_PANEL_KEYS`, `shared/layout.ts`).
-- **Sessions API additions (0.11)**: `ctx.sessions.open` takes `model` (`haiku`, `sonnet`, `opus`) and `effort` (`low`..`max`),
+- **Sessions API additions (0.11)**: `ctx.sessions.open` takes `model` (`haiku`, `sonnet`, `opus`, `fable`) and `effort` (`low`..`max`),
   closed lists in `shared/session-options.ts` checked in the host and again in main, passed as `--model` / `--effort` before
   the prompt on a fresh tab only (never a resumed one). `SessionInfo.typed` is set by main on the first renderer input chunk
   that is the person's (`main/sessions/terminal-reports.ts`: focus, mouse, cursor, device-attribute, DECRPM, OSC and DCS

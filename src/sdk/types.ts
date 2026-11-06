@@ -745,7 +745,7 @@ export interface PluginContext {
      * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute.
      * `focus: true` also selects the new tab in this window (for a click the person made, such as
      * "Discuss in a new session"); without it the tab opens beside the one they are in, unselected.
-     * `model` (`haiku`, `sonnet` or `opus`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`) start
+     * `model` (`haiku`, `sonnet`, `opus` or `fable`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`) start
      * the tab with `--model` / `--effort`; absent means the person's default, anything else rejects.
      * An older app ignores `focus`, `model` and `effort`.
      */

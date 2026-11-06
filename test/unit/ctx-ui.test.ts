@@ -86,7 +86,7 @@ describe('ctx.sessions', () => {
     // Each listed model and effort passes through; absent ones are not sent.
     await ctx.sessions.open({ model: 'opus', effort: 'max' })
     expect(calls[calls.length - 1]?.params).toMatchObject({ model: 'opus', effort: 'max' })
-    for (const model of ['haiku', 'sonnet', 'opus']) await ctx.sessions.open({ model })
+    for (const model of ['haiku', 'sonnet', 'opus', 'fable']) await ctx.sessions.open({ model })
     for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) await ctx.sessions.open({ effort })
     expect('model' in (calls[4]?.params as object)).toBe(false)
   })

@@ -338,7 +338,7 @@ describe('sessions.open', () => {
       'claude', '--settings', '/data/hooks.json', '--model', 'haiku', '--effort', 'xhigh', '--', ' go'
     ])
     // A fresh host per value: each has its own 5-a-minute open budget.
-    for (const model of ['haiku', 'sonnet', 'opus']) {
+    for (const model of ['haiku', 'sonnet', 'opus', 'fable']) {
       const t = (await hostA()('sessions.open', { pluginId: 'a.one', model })) as { tabId: string }
       expect(ptyOf(t.tabId).argv.slice(-2)).toEqual(['--model', model])
     }

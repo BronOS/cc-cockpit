@@ -6,10 +6,10 @@
 // Both are closed lists on purpose: the value becomes the argument of `--model` / `--effort`, and an
 // open string would let a plugin pass something that starts with `-` (read as a flag) or name a
 // model the person never chose. Full model names are left out: an alias follows the person's
-// installed Claude, a pinned name goes stale. `fable` is left out too: it needs the person's
-// explicit approval (their global rules), so a plugin may not pick it.
+// installed Claude, a pinned name goes stale. `fable` is allowed: the person picks the model in
+// their own plugin rules (autopilot), so it is their choice, not the plugin's.
 
-export const SESSION_MODELS = ['haiku', 'sonnet', 'opus'] as const
+export const SESSION_MODELS = ['haiku', 'sonnet', 'opus', 'fable'] as const
 export const SESSION_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 export type SessionModel = (typeof SESSION_MODELS)[number]
