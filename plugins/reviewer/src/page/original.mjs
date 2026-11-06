@@ -58,6 +58,12 @@ import { safeHref, assetRef, isImageDataUrl } from './sanitize.mjs'
  */
 export const FRAME_SANDBOX = 'allow-popups'
 
+/**
+ * The frame element's `color-scheme` (set by the page on the <iframe> itself): it decides the frame's
+ * `prefers-color-scheme`, so a mail's dark-mode rules stay off on the white paper (see BASE_CSS).
+ */
+export const FRAME_COLOR_SCHEME = 'light'
+
 /** The meta CSP at the top of every frame document (see the header for the header policy it adds to). */
 export const ORIGINAL_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
 
@@ -65,9 +71,18 @@ export const ORIGINAL_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-
  * The frame's own defaults, before the caller's styles (which may override them): a white "paper"
  * page in light colours whatever the app's theme, and pictures not loaded yet drawn as a dashed box of
  * their declared size (logos and avatars, `data-minor`, kept invisible until then).
+ *
+ * Light, and light only, because the paper is white: a mail's own `@media (prefers-color-scheme: dark)`
+ * rules (a Google Calendar invite's "When", "Guests", names and Yes/No/Maybe) turn its text light grey,
+ * and in the app's dark theme they matched, washing the text out on white. What decides that query in
+ * a frame is the iframe element's used `color-scheme` in the page (the panel SDK sets the page's root to
+ * the theme's kind, and the frame inherited dark), so the page sets `color-scheme: light` on the frame
+ * element itself (FRAME_COLOR_SCHEME, review.js). Inside, the meta `color-scheme` and this root rule
+ * make the document's own defaults (canvas, form controls, scrollbars) light. `:where(:root)` has no
+ * specificity, so a mail's own `html` or `:root` rule, written after, still wins.
  */
 export const BASE_CSS =
-  'html{background:#fff;color:#222;color-scheme:light}' +
+  ':where(:root){color-scheme:light;background:#fff;color:#202124}' +
   'body{margin:0;padding:16px 20px;font:14px/1.5 Arial,Helvetica,sans-serif;overflow-wrap:break-word}' +
   'img{max-width:100%}' +
   'img[data-cc-pending]{outline:1px dashed #b4b4b4;outline-offset:-1px;color:#888;font-size:12px}' +

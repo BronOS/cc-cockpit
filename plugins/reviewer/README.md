@@ -158,8 +158,9 @@ reviewer.on('view', ({ key, view, caller }) => { if (caller === ctx.pluginId) re
   notes need the Reader view.
 - **Height.** Nothing can read the height of a frame without script and same origin, so each frame is as tall as the
   visible document area and scrolls on its own; the wheel goes on to the document at its end.
-- **Look.** A white "paper" page (the frame's own default is white with dark text, `color-scheme: light`) under your
-  header in the app's theme; the column is 860 px in this view.
+- **Look.** A white "paper" page (the frame's own default is white with dark text, `color-scheme: light`, and the frame
+  element is `color-scheme: light` too, so your mail's `prefers-color-scheme: dark` rules stay off in the app's dark
+  theme) under your header in the app's theme; the column is 860 px in this view.
 - **Limits.** Ids `^[a-z][a-z0-9-]{0,39}$`, unique, at most 50, 2 MiB of UTF-8 in all (apart from `html`'s 2 MiB), no
   NUL; on the page, at most 512 KiB of style text and 200,000 nodes per original and 16 MiB per frame document
   (pictures included), past which that message shows Reader.

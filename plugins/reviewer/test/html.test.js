@@ -348,6 +348,36 @@ test('originalDocument: the CSP meta is the first thing in the head, before any 
   )
 })
 
+test('originalDocument: a light page, its color-scheme meta and base colours before any of the mail\'s styles', async () => {
+  const { originalDocument, BASE_CSS } = await load('original.mjs')
+  // The mail's own dark-mode rule (a Google Calendar invite's) comes after the base, in source order.
+  const dark = '@media (prefers-color-scheme: dark){.guest{color:#e8eaed}}'
+  const { html } = originalDocument(body(h('style', {}, dark), h('p', { class: 'guest' }, 'Ann Lee')))
+  const meta = html.indexOf('<meta name="color-scheme" content="light">')
+  const base = html.indexOf(`<style>${BASE_CSS}</style>`)
+  const mail = html.indexOf(`<style>${dark}</style>`)
+  assert.ok(meta > 0 && meta < base && base < mail, html)
+  // Light, white paper, dark text, with no specificity, so a mail's html or :root rule still wins.
+  assert.ok(BASE_CSS.startsWith(':where(:root){color-scheme:light;background:#fff;color:#202124}'), BASE_CSS)
+  assert.doesNotMatch(BASE_CSS, /dark|opacity|filter/)
+})
+
+test('the original frame element is a light color-scheme (its prefers-color-scheme follows it), with no dimming', async () => {
+  const { FRAME_COLOR_SCHEME } = await load('original.mjs')
+  assert.equal(FRAME_COLOR_SCHEME, 'light')
+  const page = fs.readFileSync(path.join(__dirname, '../src/page/review.js'), 'utf8')
+  const at = page.indexOf('frame.style.colorScheme = FRAME_COLOR_SCHEME')
+  assert.ok(at > 0 && at < page.indexOf('frame.srcdoc = built.html'))
+  const css = fs.readFileSync(path.join(__dirname, '../overlay/review.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const frameRule = css.match(/\.doc-body \.original-frame \{([^}]*)\}/)
+  assert.ok(frameRule)
+  assert.match(frameRule[1], /color-scheme: light/)
+  // Nothing dims the frame or its wrappers.
+  for (const rule of css.match(/[^{}]+\{[^}]*\}/g)) {
+    if (/original|rv-original|view-original/.test(rule.slice(0, rule.indexOf('{')))) assert.doesNotMatch(rule, /opacity|filter/, rule)
+  }
+})
+
 test('originalDocument: a breakout attempt keeps nothing that runs, loads or navigates', async () => {
   const { originalDocument } = await load('original.mjs')
   const r = originalDocument(

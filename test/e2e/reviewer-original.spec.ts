@@ -100,6 +100,8 @@ test('original view: the mail in a sandboxed frame keeps its styling, loads and 
   expect(await page.locator(`iframe[title="${TITLE}"]`).getAttribute('sandbox')).toBe('allow-scripts allow-popups')
   expect(await iframe.getAttribute('referrerpolicy')).toBe('no-referrer')
   expect(await iframe.getAttribute('allow')).toBeNull()
+  // A light page whatever the app's theme: the frame's prefers-color-scheme follows the element's.
+  expect(await iframe.evaluate((f) => getComputedStyle(f).colorScheme)).toBe('light')
   const srcdoc = (await iframe.getAttribute('srcdoc')) ?? ''
   expect(
     srcdoc.startsWith(
@@ -114,6 +116,7 @@ test('original view: the mail in a sandboxed frame keeps its styling, loads and 
   expect(await mail.locator('#designed span[style]').evaluate((e) => getComputedStyle(e).backgroundColor)).toBe('rgb(227, 252, 239)')
   // The picture from the asset (a data: URL, built into the frame once the assets are in).
   await expect(mail.locator('#pic')).toHaveAttribute('src', /^data:image\/png;base64,/)
+  expect(await mail.locator('body').evaluate((b) => b.ownerDocument.defaultView?.matchMedia('(prefers-color-scheme: light)').matches)).toBe(true)
   // In the Original view the Reader rendering of that message is hidden.
   await expect(review.locator('.mail-body[data-reader="m1"]')).toBeHidden()
   await expect(review.locator('.view-opt[data-view="original"]')).toHaveAttribute('aria-pressed', 'true')

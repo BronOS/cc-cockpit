@@ -67,7 +67,7 @@ import { sanitizeTree, render, isImageDataUrl } from './sanitize.mjs'
 import { makeAnchor, locate } from './anchor.mjs'
 import { isPlainClick, selectionKey } from './links.mjs'
 import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
-import { originalDocument, FRAME_SANDBOX } from './original.mjs'
+import { originalDocument, FRAME_SANDBOX, FRAME_COLOR_SCHEME } from './original.mjs'
 
 /* global ccPanel */
 
@@ -1122,6 +1122,9 @@ function attachOriginal(id) {
   // loads in a less restricted frame.
   frame.setAttribute('sandbox', FRAME_SANDBOX)
   frame.setAttribute('referrerpolicy', 'no-referrer')
+  // A light page whatever the app's theme: the element's color-scheme is what the frame's
+  // prefers-color-scheme follows (original.mjs BASE_CSS), so a mail's dark-mode CSS stays off.
+  frame.style.colorScheme = FRAME_COLOR_SCHEME
   frame.setAttribute('title', 'Original message')
   frame.className = 'original-frame'
   frame.srcdoc = built.html

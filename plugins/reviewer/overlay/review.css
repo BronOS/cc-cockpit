@@ -308,6 +308,9 @@ button.link.outdated { color: var(--cc-fg-muted); text-align: left; }
 .doc-body .original-frame {
   display: block; width: 100%; height: var(--rv-frame-h, 70vh); border: 1px solid var(--cc-border); border-radius: 8px;
   background: #fff; box-shadow: 0 1px 6px var(--cc-shadow);
+  /* Repeats the page's inline style (review.js): the frame's prefers-color-scheme follows it. No opacity or filter here or
+     on the wrappers: the paper is drawn as the sender made it. */
+  color-scheme: light;
 }
 /* The Original view's message is designed for 600-700 px: its column is a little wider than a mail's. */
 .doc-body.mail.view-original:has(.rv-original) { max-width: 860px; }
