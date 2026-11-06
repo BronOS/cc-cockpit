@@ -44,3 +44,36 @@ export function scrollToReveal(
 export function wheelScrollsSideways(deltaX: number, deltaY: number, hasOverflow: boolean): boolean {
   return hasOverflow && Math.abs(deltaY) > Math.abs(deltaX)
 }
+
+/** Where a tab sits in the strip's viewport coordinates, and its flag colour (only flagged tabs are passed). */
+export interface FlaggedRect<C extends string = string> {
+  left: number
+  right: number
+  color: C
+}
+
+/**
+ * The colour hint each edge of the strip shows: the flag of the hidden flagged tab nearest that
+ * edge, so the person sees which of their marked tabs is out of view and on which side. A tab
+ * counts as hidden past an edge once its centre is under that edge's fade (`fade` px wide, the
+ * mask in styles.css): a sliver at the edge is not readable as a tab. `listLeft` / `listRight` are
+ * the strip's visible edges in the same coordinates as the rects.
+ */
+export function hiddenFlags<C extends string>(
+  listLeft: number,
+  listRight: number,
+  tabs: readonly FlaggedRect<C>[],
+  fade: number
+): { start?: C; end?: C } {
+  let start: FlaggedRect<C> | undefined
+  let end: FlaggedRect<C> | undefined
+  for (const t of tabs) {
+    const centre = (t.left + t.right) / 2
+    if (centre < listLeft + fade && (!start || t.right > start.right)) start = t
+    else if (centre > listRight - fade && (!end || t.left < end.left)) end = t
+  }
+  const out: { start?: C; end?: C } = {}
+  if (start) out.start = start.color
+  if (end) out.end = end.color
+  return out
+}

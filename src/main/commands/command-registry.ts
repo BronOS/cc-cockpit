@@ -8,6 +8,7 @@
 import type { CommandInfo, CommandSource, CommandsView, KeyBindingRow } from '../../shared/ipc'
 import { normalizeChord, resolveKeys, type KeyPlatform } from '../../shared/keys'
 import { tabCommandId, tabCommandTitle } from '../../shared/tab-commands'
+import { TOGGLE_FLAG_COMMAND } from '../../shared/tab-flag'
 import type { TabCommandEntry } from '../../shared/types'
 
 interface CommandDef {
@@ -33,6 +34,11 @@ export const CORE_COMMANDS: readonly CommandDef[] = [
   core('tab.newClaude', 'New Claude Tab', 'Cmd+T'),
   core('tab.newShell', 'New Shell Tab', 'Cmd+Shift+T'),
   core('tab.close', 'Close Tab', 'Cmd+W'),
+  // Flag or unflag the current tab with the last-used colour (shared/tab-flag.ts). Cmd+Shift+F:
+  // free in this table and in every bundled plugin's; on macOS no system chord, on Linux
+  // Ctrl+Shift+F reaches no terminal program as anything but Ctrl+F (a terminal cannot send Shift
+  // with Ctrl+letter), and Ctrl+F, which readline and Claude Code use, stays theirs.
+  core(TOGGLE_FLAG_COMMAND, 'Toggle Tab Flag', 'Cmd+Shift+F'),
   ...tabSelect,
   // Ctrl, not Cmd, on every platform: Cmd+Tab is macOS's app switcher. Held, it walks the tabs in
   // recent order with an overlay; released, it picks (tabs/tab-switcher.ts).

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SessionDetail, TabCommandMenu, TabInfo } from '../../shared/ipc'
+import type { SessionDetail, TabCommandMenu, TabInfo, TabStatus } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import { splitChord } from '../../shared/keys'
+import { FLAG_COLOR_LABEL, FLAG_COLORS, MAX_FLAG_NOTE_CHARS, type FlagColor, type FlagPatch } from '../../shared/tab-flag'
 import { chordKeys, chordOf } from '../commands/keybindings'
 import { usePrefs } from '../prefs/prefs-store'
 import { QueuedChip } from '../status/QueuedChip'
@@ -10,7 +11,9 @@ import { useShellLayer } from '../zones/use-shell-layer'
 import { ChevronDownGlyph, CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
 import { tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
-import { type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
+import { hiddenFlags, type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
+import { allTabsOrder, nextAttention, sameIds, statusesOf } from './tab-flags'
+import { FlagSwatch } from './FlagSwatch'
 
 /** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
 interface TabDrag {
@@ -29,6 +32,27 @@ const COMMAND_GROUPS: Array<{ level: TabCommandLevel; name: string }> = [
 ]
 
 const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
+
+/** The width of the strip's edge fade (the mask in styles.css): a tab whose centre is under it counts as hidden. */
+const FADE_PX = 22
+
+/**
+ * Arrow keys walk a menu's enabled entries, wrapping, Home and End jump to the ends (a menu's own
+ * convention; Escape is the window's). Left and Right walk too, so the flag colour row, laid out
+ * sideways, reads naturally.
+ */
+function walkMenu(e: React.KeyboardEvent<HTMLElement>, sideways: boolean): void {
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)')]
+  const at = items.indexOf(document.activeElement as HTMLElement)
+  const go = (i: number): void => {
+    e.preventDefault()
+    items[(i + items.length) % items.length]?.focus()
+  }
+  if (e.key === 'ArrowDown' || (sideways && e.key === 'ArrowRight')) go(at + 1)
+  else if (e.key === 'ArrowUp' || (sideways && e.key === 'ArrowLeft')) go(at < 0 ? -1 : at - 1)
+  else if (e.key === 'Home') go(0)
+  else if (e.key === 'End') go(-1)
+}
 
 /** A canonical chord (`shift+meta+l`) as aria-keyshortcuts writes it (`Shift+Meta+L`); `+` is `Plus` there. */
 function ariaShortcut(chord: string): string | undefined {
@@ -134,6 +158,13 @@ export function TabBar(props: {
   onMove: (tabId: string, delta: -1 | 1) => void
   /** Name a Claude tab, or `null` for Claude's own title (main checks the name). */
   onRename: (tabId: string, name: string | null) => void
+  /** The person's flag: a colour, a note, both, or `null` to clear (main checks and stores it). */
+  onFlag: (tabId: string, patch: FlagPatch | null) => void
+  /**
+   * The tab menu or one of its editors (rename, flag note) closed: they took the keyboard, so the
+   * pane gives it back to the active terminal (TabsPane focusActive, which knows what is modal).
+   */
+  onMenuClosed: () => void
   /** A drag ended: put the tab at `toIndex` (its index after being taken out, as main's reorder). */
   onReorder: (tabId: string, toIndex: number) => void
   /** Status of the window's Claude tabs by tab id (shell tabs have none). */
@@ -149,9 +180,11 @@ export function TabBar(props: {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   // The Rename entry swaps the context menu for a one-line editor at the same place.
   const [renaming, setRenaming] = useState<{ tabId: string; x: number; y: number; value: string } | null>(null)
+  // "Edit note…" swaps it for a one-line note editor the same way.
+  const [noting, setNoting] = useState<{ tabId: string; x: number; y: number; value: string } | null>(null)
 
   // Any click elsewhere or Escape closes whichever menu is open.
-  const anyOpen = createOpen || allOpen || menu !== null || renaming !== null
+  const anyOpen = createOpen || allOpen || menu !== null || renaming !== null || noting !== null
   // A webview panel's native view would paint over the menu (shell-layers.ts).
   useShellLayer(anyOpen)
   useEffect(() => {
@@ -161,6 +194,7 @@ export function TabBar(props: {
       setAllOpen(false)
       setMenu(null)
       setRenaming(null)
+      setNoting(null)
     }
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') dismiss()
@@ -174,6 +208,40 @@ export function TabBar(props: {
   }, [anyOpen])
 
   const menuIndex = menu ? tabs.findIndex((t) => t.id === menu.tabId) : -1
+  const menuTab = menuIndex >= 0 ? tabs[menuIndex] : undefined
+
+  // The tab menu takes the keyboard when it opens (its first entry), so it works from Shift+F10 or
+  // the context-menu key as well as from a right click; the editors take it with autoFocus. Once
+  // the last of them goes, the pane gives the keyboard back to the terminal (onMenuClosed), else
+  // it would be left on <body>, where typing reaches nothing.
+  const ctxRef = useRef<HTMLDivElement>(null)
+  const menuOpenId = menu?.tabId
+  useEffect(() => {
+    if (menuOpenId === undefined) return
+    ctxRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not(:disabled)')?.focus()
+  }, [menuOpenId])
+  const tookFocus = menu !== null || renaming !== null || noting !== null
+  const hadFocus = useRef(false)
+  const onMenuClosed = props.onMenuClosed
+  useEffect(() => {
+    if (hadFocus.current && !tookFocus) onMenuClosed()
+    hadFocus.current = tookFocus
+  }, [tookFocus, onMenuClosed])
+
+  // Flagged Claude tabs that became waiting for input while another tab was shown pulse until the
+  // person selects them (tab-flags.ts nextAttention). `seen` is each tab's status at the last pass.
+  const seen = useRef(new Map<string, TabStatus>())
+  const [attention, setAttention] = useState<ReadonlySet<string>>(() => new Set())
+  const sessions = props.sessions
+  useEffect(() => {
+    const statusOf = (id: string): TabStatus | undefined => sessions.get(id)?.status
+    const before = seen.current
+    seen.current = statusesOf(tabs, statusOf)
+    setAttention((a) => {
+      const next = nextAttention(a, before, tabs, statusOf, activeId)
+      return sameIds(a, next) ? a : next
+    })
+  }, [tabs, sessions, activeId])
 
   // Dragging. `press` is a primary-button press on a tab label that has not moved far enough to be
   // a drag yet (below DRAG_THRESHOLD it stays a click); `drag` is set once it has, and drives the
@@ -181,11 +249,21 @@ export function TabBar(props: {
   const listRef = useRef<HTMLDivElement>(null)
   // Tabs hidden past either edge of the strip: drives the edge fades and the all-tabs button.
   const [overflow, setOverflow] = useState<OverflowState>({ start: false, end: false })
+  // The flag colour each edge hints at, when a flagged tab is hidden past it (hiddenFlags): a
+  // flagged tab may scroll out of a crowded strip, but never without a mark saying it is there.
+  const [flagHints, setFlagHints] = useState<{ start?: FlagColor; end?: FlagColor }>({})
   const measure = (): void => {
     const el = listRef.current
     if (!el) return
     const next = overflowState(el.scrollLeft, el.clientWidth, el.scrollWidth)
     setOverflow((o) => (o.start === next.start && o.end === next.end ? o : next))
+    const b = el.getBoundingClientRect()
+    const flagged = [...el.querySelectorAll<HTMLElement>('[data-tab-id][data-flag]')].map((t) => {
+      const r = t.getBoundingClientRect()
+      return { left: r.left, right: r.right, color: t.dataset.flag as FlagColor }
+    })
+    const hints = next.start || next.end ? hiddenFlags(b.left, b.right, flagged, FADE_PX) : {}
+    setFlagHints((h) => (h.start === hints.start && h.end === hints.end ? h : hints))
   }
   // Re-measure on scroll (the listener below), when the strip is resized (a zone opens or closes,
   // the window changes) and when tabs come or go.
@@ -223,6 +301,11 @@ export function TabBar(props: {
     el.scrollLeft = scrollToReveal(el.scrollLeft, el.clientWidth, left, left + l.width, 16)
     measure()
   }, [activeId, tabs.length])
+  // A flag set or cleared changes the hints (and a flagged tab's minimum width, styles.css).
+  const flagKey = tabs.map((t) => t.flag?.color ?? '').join(',')
+  useEffect(() => {
+    measure()
+  }, [flagKey])
   const press = useRef<{ tabId: string; pointerId: number; startX: number } | null>(null)
   const [drag, setDrag] = useState<TabDrag | null>(null)
   const dragRef = useRef<TabDrag | null>(null)
@@ -300,6 +383,9 @@ export function TabBar(props: {
 
   return (
     <div className="tab-bar" data-close-side={tabCloseSide}>
+      <div className="tab-strip">
+      {flagHints.start && <span className="tab-flag-hint" data-side="start" data-flag={flagHints.start} aria-hidden="true" />}
+      {flagHints.end && <span className="tab-flag-hint" data-side="end" data-flag={flagHints.end} aria-hidden="true" />}
       <div
         ref={listRef}
         role="tablist"
@@ -324,11 +410,21 @@ export function TabBar(props: {
           )
           const dragged = drag?.tabId === tab.id
           const markEdge = marker?.tabId === tab.id ? marker.edge : undefined
+          const where =
+            tab.kind === 'command' && tab.command !== undefined
+              ? `${tab.command}\n${tab.cwd}`
+              : status?.title
+                ? `${status.title}\n${tab.cwd}`
+                : tab.cwd
+          const flag = tab.flag
           return (
           <div
             key={tab.id}
             data-tab-id={tab.id}
             data-drop={markEdge}
+            // The stripe (styles.css .tab[data-flag]) and, while it waits for the person, its pulse.
+            data-flag={flag?.color}
+            data-attention={attention.has(tab.id) || undefined}
             className={`tab${tab.id === activeId ? ' active' : ''}${tab.exit ? ' exited' : ''}${dragged ? ' dragged' : ''}`}
             style={dragged ? { transform: `translateX(${drag.dx}px)` } : undefined}
           >
@@ -338,12 +434,10 @@ export function TabBar(props: {
               role="tab"
               aria-selected={tab.id === activeId}
               className="tab-label"
-              title={
-                tab.kind === 'command' && tab.command !== undefined
-                  ? `${tab.command}\n${tab.cwd}`
-                  : status?.title
-                    ? `${status.title}\n${tab.cwd}`
-                    : tab.cwd
+              // The note is the tooltip's first line: the reminder is what the person flagged it for.
+              title={flag?.note ? `${flag.note}\n${where}` : where}
+              aria-description={
+                flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined
               }
               onClick={() => props.onSelect(tab.id)}
               onPointerDown={(e) => onPointerDown(e, tab.id)}
@@ -379,6 +473,7 @@ export function TabBar(props: {
           )
         })}
       </div>
+      </div>
       {(overflow.start || overflow.end || allOpen) && (
         <div className="tab-all">
           <button
@@ -386,6 +481,9 @@ export function TabBar(props: {
             aria-label="All tabs"
             aria-haspopup="menu"
             aria-expanded={allOpen}
+            // A flagged tab is hidden: the button carries its colour too (a dot), since the edge
+            // hint alone is easy to miss next to the fade.
+            data-flag={flagHints.start ?? flagHints.end}
             onClick={(e) => {
               e.stopPropagation()
               setMenu(null)
@@ -401,20 +499,10 @@ export function TabBar(props: {
               role="menu"
               aria-label="All tabs"
               // Arrow keys walk the entries (a menu's own convention); Escape is the window's.
-              onKeyDown={(e) => {
-                const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-                const at = items.indexOf(document.activeElement as HTMLElement)
-                const go = (i: number): void => {
-                  e.preventDefault()
-                  items[(i + items.length) % items.length]?.focus()
-                }
-                if (e.key === 'ArrowDown') go(at + 1)
-                else if (e.key === 'ArrowUp') go(at < 0 ? -1 : at - 1)
-                else if (e.key === 'Home') go(0)
-                else if (e.key === 'End') go(-1)
-              }}
+              onKeyDown={(e) => walkMenu(e, false)}
             >
-              {tabs.map((tab) => {
+              {/* Flagged tabs first (tab-flags.ts allTabsOrder): what the person must not lose. */}
+              {allTabsOrder(tabs).map((tab) => {
                 const status = props.sessions.get(tab.id)
                 return (
                   <button
@@ -428,9 +516,17 @@ export function TabBar(props: {
                       if (el && tab.id === activeId && document.activeElement === document.body) el.focus()
                     }}
                     onClick={() => props.onSelect(tab.id)}
+                    data-flag={tab.flag?.color}
+                    aria-description={tab.flag ? `flagged${tab.flag.note ? `: ${tab.flag.note}` : ''}` : undefined}
                   >
                     {status && <StatusDot status={status.status} {...(status.tool ? { tool: status.tool } : {})} />}
                     <span className="menu-label">{tabLabel(tab, status?.title, status?.name)}</span>
+                    {tab.flag && (
+                      <span className="menu-flag" aria-hidden="true">
+                        {tab.flag.note && <span className="menu-flag-note">{tab.flag.note}</span>}
+                        <FlagSwatch color={tab.flag.color} />
+                      </span>
+                    )}
                   </button>
                 )
               })}
@@ -495,8 +591,15 @@ export function TabBar(props: {
           </div>
         )}
       </div>
-      {menu && menuIndex >= 0 && (
-        <div className="menu context-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
+      {menu && menuTab && (
+        <div
+          ref={ctxRef}
+          className="menu context-menu"
+          role="menu"
+          aria-label="Tab"
+          style={{ left: menu.x, top: menu.y }}
+          onKeyDown={(e) => walkMenu(e, true)}
+        >
           <button
             type="button"
             role="menuitem"
@@ -529,10 +632,79 @@ export function TabBar(props: {
               Rename
             </button>
           )}
+          <div role="separator" className="menu-separator" />
+          {/* The person's flag (shared/tab-flag.ts), on any tab kind: a colour row, the note, clear. */}
+          <div role="group" aria-label="Flag" className="menu-flag-row">
+            <span className="menu-caption" aria-hidden="true">
+              Flag
+            </span>
+            {FLAG_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                role="menuitemradio"
+                aria-checked={menuTab.flag?.color === color}
+                aria-label={`Flag ${FLAG_COLOR_LABEL[color]}`}
+                title={FLAG_COLOR_LABEL[color]}
+                className="flag-choice"
+                data-flag={color}
+                onClick={() => props.onFlag(menu.tabId, { color })}
+              >
+                <FlagSwatch color={color} />
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={(e) => {
+              // Else the window's click listener closes the editor this opens.
+              e.stopPropagation()
+              setNoting({ tabId: menu.tabId, x: menu.x, y: menu.y, value: menuTab.flag?.note ?? '' })
+              setMenu(null)
+            }}
+          >
+            Edit note…
+          </button>
+          <button type="button" role="menuitem" disabled={!menuTab.flag} onClick={() => props.onFlag(menu.tabId, null)}>
+            Clear flag
+          </button>
+          <div role="separator" className="menu-separator" />
           <button type="button" role="menuitem" onClick={() => props.onClose(menu.tabId)}>
             Close
           </button>
         </div>
+      )}
+      {noting && (
+        <form
+          className="menu context-menu tab-rename tab-flag-note"
+          role="dialog"
+          aria-label="Flag note"
+          style={{ left: noting.x, top: noting.y }}
+          // The window's click listener would close the editor under the pointer.
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => {
+            e.preventDefault()
+            const note = noting.value.trim()
+            const flagged = tabs.find((t) => t.id === noting.tabId)?.flag !== undefined
+            // An empty note on an unflagged tab sets nothing; otherwise main keeps the colour (or
+            // takes the last-used one for an unflagged tab) and stores the note cleaned.
+            if (note !== '' || flagged) props.onFlag(noting.tabId, { note: note === '' ? null : note })
+            setNoting(null)
+          }}
+        >
+          <input
+            autoFocus
+            aria-label="Note"
+            placeholder="Note (empty: none)"
+            maxLength={MAX_FLAG_NOTE_CHARS}
+            value={noting.value}
+            onChange={(e) => setNoting({ ...noting, value: e.target.value })}
+          />
+          <div className="menu-hint" aria-hidden="true">
+            Enter saves · Esc cancels
+          </div>
+        </form>
       )}
       {renaming && (
         <form

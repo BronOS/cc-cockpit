@@ -503,6 +503,166 @@ iframe:focus-visible {
   background: color-mix(in srgb, var(--cc-fg) 9%, transparent);
   color: var(--cc-fg);
 }
+/* ── Tab flags (shared/tab-flag.ts): the person's "come back to this" mark ──
+   Every flag surface maps `data-flag` to its theme token here, never through a style attribute:
+   only the six `--cc-flag-*` colours can ever be drawn. */
+[data-flag='red'] { --flag: var(--cc-flag-red); }
+[data-flag='orange'] { --flag: var(--cc-flag-orange); }
+[data-flag='yellow'] { --flag: var(--cc-flag-yellow); }
+[data-flag='green'] { --flag: var(--cc-flag-green); }
+[data-flag='blue'] { --flag: var(--cc-flag-blue); }
+[data-flag='purple'] { --flag: var(--cc-flag-purple); }
+/* The strip wraps the track so the edge hints can sit over its faded edges (the track's own mask
+   would fade anything drawn inside it). */
+.tab-strip {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+/* A flagged tab keeps a readable width in a crowded strip (others shrink to 112px first). */
+.tab[data-flag] {
+  min-width: 150px;
+}
+/* The stripe: a 3px bar along the tab's bottom edge, inside its rounded box. ::after, because
+   ::before is the drag marker. */
+.tab[data-flag]::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 0;
+  height: 3px;
+  border-radius: 2px 2px 0 0;
+  background: var(--flag);
+  pointer-events: none;
+}
+/* Waiting for the person and not looked at: the stripe pulses (taller, a glow) until the tab is
+   selected (tab-flags.ts nextAttention). */
+.tab[data-flag][data-attention]::after {
+  animation: cc-flag-pulse 1.4s ease-in-out infinite;
+}
+@keyframes cc-flag-pulse {
+  0%,
+  100% {
+    height: 3px;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    height: 5px;
+    box-shadow: 0 0 8px 1px var(--flag);
+  }
+}
+/* No motion when the OS asks for less: a steady tint of the whole tab says the same thing. */
+@media (prefers-reduced-motion: reduce) {
+  .tab[data-flag][data-attention]::after {
+    animation: none;
+    height: 4px;
+  }
+  .tab[data-flag][data-attention] {
+    background: color-mix(in srgb, var(--flag) 16%, transparent);
+  }
+}
+/* A flagged tab scrolled out of view: its colour at that edge of the strip, over the fade. */
+.tab-flag-hint {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  bottom: 4px;
+  width: 14px;
+  pointer-events: none;
+}
+.tab-flag-hint[data-side='start'] {
+  left: 0;
+  border-left: 3px solid var(--flag);
+  border-radius: 3px 0 0 3px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--flag) 30%, transparent), transparent);
+}
+.tab-flag-hint[data-side='end'] {
+  right: 0;
+  border-right: 3px solid var(--flag);
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(to left, color-mix(in srgb, var(--flag) 30%, transparent), transparent);
+}
+.tab-all > button[data-flag] {
+  position: relative;
+}
+.tab-all > button[data-flag]::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--flag);
+}
+.flag-swatch {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--flag);
+  /* A hairline ring keeps a light colour visible on a light menu. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent);
+}
+/* The tab menu's colour row: caption, then six swatches side by side. */
+.menu-flag-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+}
+.menu-flag-row .menu-caption {
+  flex: 1;
+  padding: 0 9px;
+}
+.menu .flag-choice {
+  flex: none;
+  justify-content: center;
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+}
+.menu .flag-choice .flag-swatch {
+  width: 12px;
+  height: 12px;
+}
+.menu .flag-choice[aria-checked='true'] .flag-swatch {
+  box-shadow: 0 0 0 2px var(--cc-bg-menu), 0 0 0 3.5px var(--flag);
+}
+.menu .flag-choice:focus-visible {
+  outline: 2px solid var(--cc-focus);
+  outline-offset: -2px;
+}
+/* All tabs and the switcher: the note, then the swatch, right of the label. */
+.menu-flag,
+.switcher-flag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 45%;
+  min-width: 0;
+}
+.menu-flag-note,
+.switcher-flag-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-muted);
+}
+.tab-flag-note input {
+  width: 260px;
+}
+.menu-hint {
+  padding: 5px 2px 0;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-subtle);
+}
+
 .tab-new,
 .tab-all {
   position: relative;

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CommandRegistry, CORE_COMMANDS } from '../../src/main/commands/command-registry'
 import {
@@ -32,6 +33,26 @@ describe('CommandRegistry', () => {
     for (const platform of ['darwin', 'linux'] as const) {
       expect(new CommandRegistry(platform, () => ({})).view('p').conflicts).toEqual([])
     }
+  })
+
+  it('binds Toggle Tab Flag to Cmd+Shift+F (Ctrl+Shift+F on Linux), a chord no core command, bundled plugin or terminal key takes', () => {
+    const mac = new CommandRegistry('darwin', () => ({})).view('p')
+    const linux = new CommandRegistry('linux', () => ({})).view('p')
+    expect(find(mac, 'tab.toggleFlag')).toMatchObject({ key: 'shift+meta+f', source: 'core', title: 'Toggle Tab Flag' })
+    expect(find(linux, 'tab.toggleFlag')?.key).toBe('ctrl+shift+f')
+    for (const view of [mac, linux]) {
+      expect(view.commands.filter((c) => c.key === find(view, 'tab.toggleFlag')!.key).map((c) => c.id)).toEqual(['tab.toggleFlag'])
+    }
+    // The bundled plugins and the hello template declare no chord that could meet it.
+    const keys = ['hello', 'browser', 'reviewer', 'editor', 'files', 'sessions'].flatMap((dir) => {
+      const manifest = JSON.parse(readFileSync(new URL(`../../plugins/${dir}/plugin.json`, import.meta.url), 'utf8')) as {
+        contributes?: { commands?: { key?: string }[] }
+      }
+      return (manifest.contributes?.commands ?? []).flatMap((c) => (c.key ? [c.key.toLowerCase()] : []))
+    })
+    expect(keys).not.toContain('cmd+shift+f')
+    // Ctrl+F (no Shift), which readline and Claude Code use, stays the terminal's.
+    expect(linux.commands.some((c) => c.key === 'ctrl+f')).toBe(false)
   })
 
   it('maps Cmd to Ctrl on Linux', () => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { CccCommandView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
+import { TOGGLE_FLAG_COMMAND, type FlagPatch } from '../../shared/tab-flag'
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { CommandPalette } from '../commands/CommandPalette'
 import { commandAllowed } from '../commands/command-gate'
@@ -295,6 +296,21 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const rename = (tabId: string, name: string | null): void =>
     run(window.cockpit.invoke('tabs.rename', { tabId, name }))
 
+  // The person's flag (tab menu, Toggle Tab Flag command). main checks the patch and answers the flag as
+  // it stored it (note cleaned, colour filled in), which is what the strip then shows.
+  const flag = (tabId: string, patch: FlagPatch | null): void =>
+    run(
+      window.cockpit.invoke('tabs.flag', { tabId, flag: patch }).then((stored) => {
+        dispatch({ type: 'flagged', tabId, flag: stored })
+      })
+    )
+  const toggleFlag = (tabId: string): void =>
+    run(
+      window.cockpit.invoke('tabs.toggleFlag', { tabId }).then((stored) => {
+        dispatch({ type: 'flagged', tabId, flag: stored })
+      })
+    )
+
   const move = (tabId: string, delta: -1 | 1): void => {
     const from = state.tabs.findIndex((t) => t.id === tabId)
     if (from < 0) return
@@ -354,10 +370,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   // Commands (Task 11). Main resolves the key table; the handlers below act through the same tab
   // IPC as the buttons, so the router's project scoping applies to keys and palette alike.
-  const actions = useRef({ create, createCommand, close: requestClose, closeNow: close })
+  const actions = useRef({ create, createCommand, close: requestClose, closeNow: close, toggleFlag })
   useEffect(() => {
     ownRef.current = own
-    actions.current = { create, createCommand, close: requestClose, closeNow: close }
+    actions.current = { create, createCommand, close: requestClose, closeNow: close, toggleFlag }
     paletteOpen.current = paletteCommands !== null
     settingsShown.current = settingsOpen
   })
@@ -393,6 +409,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const id = stateRef.current.activeId
     if (id) sessions.get(id).focus()
   }, [sessions])
+  // The tab menu and its editors took the keyboard; give it back once they are gone. In a frame,
+  // like every other give-back here: an item's action (Close's dialog) may raise a modal first.
+  const refocusAfterMenu = useCallback((): void => {
+    requestAnimationFrame(focusActive)
+  }, [focusActive])
   const setSwitcher = useCallback((next: SwitcherState | null): void => {
     switcherRef.current = next
     setSwitcherState(next)
@@ -578,6 +599,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         const id = stateRef.current.activeId
         if (id) actions.current.close(id)
       },
+      [TOGGLE_FLAG_COMMAND]: () => {
+        const id = stateRef.current.activeId
+        if (id) actions.current.toggleFlag(id)
+      },
       'palette.open': () => {
         setPaletteCommands((open) => (open ? null : runnableCommands()))
       },
@@ -736,6 +761,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onMenuOpen={loadMenuCommands}
           onMove={move}
           onRename={rename}
+          onFlag={flag}
+          onMenuClosed={refocusAfterMenu}
           onReorder={reorder}
           sessions={own}
           onCancelQueued={cancelQueued}

@@ -3,6 +3,7 @@ import type { SessionDetail, TabInfo } from '../../shared/ipc'
 import { StatusDot } from '../status/StatusDot'
 import { CommandGlyph, ShellGlyph } from '../window-icons'
 import { tabLabel } from './tab-label'
+import { FlagSwatch } from './FlagSwatch'
 
 /**
  * The Ctrl+Tab overlay (tab-switcher.ts has the rules): the window's tabs, most recent first, with
@@ -59,6 +60,8 @@ export function TabSwitcher(props: {
                 role="option"
                 aria-selected={i === props.index}
                 data-tab-id={tab.id}
+                data-flag={tab.flag?.color}
+                aria-description={tab.flag ? `flagged${tab.flag.note ? `: ${tab.flag.note}` : ''}` : undefined}
                 className={i === props.index ? 'selected' : ''}
                 onMouseMove={(e) => {
                   if (moved(e)) props.onHover(i)
@@ -74,6 +77,13 @@ export function TabSwitcher(props: {
                   {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
                 </span>
                 <span className="switcher-label">{tabLabel(tab, status?.title, status?.name)}</span>
+                {/* The flag: its note (the reminder) then its colour, before the folder. */}
+                {tab.flag && (
+                  <span className="switcher-flag" aria-hidden="true">
+                    {tab.flag.note && <span className="switcher-flag-note">{tab.flag.note}</span>}
+                    <FlagSwatch color={tab.flag.color} />
+                  </span>
+                )}
                 <span className="switcher-note">{note || folder}</span>
               </li>
             )

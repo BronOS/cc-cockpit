@@ -34,6 +34,8 @@
 //     /idle               Notification { notification_type: idle_prompt }
 //     /stop               Stop
 //     /end                SessionEnd { reason: other }
+//     /later <ms> <line>  run the scripted <line> after <ms> milliseconds (a turn that ends while
+//                         the person is in another tab: the tab flag's attention pulse)
 //     /ccc <args...>      run `ccc <args>` the way Claude would from its Bash tool: found on PATH
 //                         (main prepends <data>/bin), with the tab's env (APP_TAB_TOKEN,
 //                         CC_COCKPIT_SOCK); args split on whitespace, no shell. Prints
@@ -139,6 +141,11 @@ function fireHook(event, fields) {
 
 // Input line -> hook event, for the scripted lines described at the top.
 function scripted(line) {
+  const later = /^\/later\s+(\d+)\s+(.*)$/.exec(line)
+  if (later) {
+    setTimeout(() => scripted(later[2]), Number(later[1]))
+    return true
+  }
   const c = /^\/ccc(?:\s+(.*))?$/.exec(line)
   if (c) {
     const args = (c[1] || '').split(/\s+/).filter(Boolean)

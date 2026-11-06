@@ -1,7 +1,9 @@
 // Renderer-side tab list: a pure reducer, so the selection rules are unit-testable without a DOM.
 // main owns the real list and its order (src/main/tabs/tab-manager.ts); this mirrors it after each
-// invoke that succeeded, plus the `tabs.exit`, `tabs.added` and `tabs.removed` events.
+// invoke that succeeded, plus the `tabs.exit`, `tabs.added` and `tabs.removed` events. A tab's
+// flag comes the same way: main answers `tabs.flag` / `tabs.toggleFlag` with the flag as stored.
 import type { TabInfo } from '../../shared/ipc'
+import type { TabFlag } from '../../shared/tab-flag'
 
 type Exit = NonNullable<TabInfo['exit']>
 
@@ -70,6 +72,11 @@ export type TabsAction =
   /** Mirror of main's reorder: move to `toIndex`, clamped to the ends. */
   | { type: 'moved'; tabId: string; toIndex: number }
   | { type: 'exited'; tabId: string; exit: Exit; gen: number }
+  /**
+   * main stored the tab's flag (`null`: cleared), as its `tabs.flag` reply says. Not by
+   * generation: a flag belongs to the tab, not to a process, and only this page sets it.
+   */
+  | { type: 'flagged'; tabId: string; flag: TabFlag | null }
 
 export const initialTabsState: TabsState = {
   tabs: [],
@@ -167,6 +174,17 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
       const tabs = [...state.tabs]
       const [tab] = tabs.splice(from, 1)
       tabs.splice(to, 0, tab!)
+      return { ...state, tabs }
+    }
+    case 'flagged': {
+      if (!state.tabs.some((t) => t.id === action.tabId)) return state
+      const tabs = state.tabs.map((t) => {
+        if (t.id !== action.tabId) return t
+        const next = { ...t }
+        if (action.flag === null) delete next.flag
+        else next.flag = { ...action.flag }
+        return next
+      })
       return { ...state, tabs }
     }
     case 'exited': {

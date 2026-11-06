@@ -1,0 +1,13 @@
+{
+  "id": "test.flagreader",
+  "name": "Flag reader",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "read", "title": "Flag reader: list the window's sessions with their flags" },
+      { "id": "tryWrite", "title": "Flag reader: try every way a plugin has to change a flag" }
+    ]
+  }
+}
