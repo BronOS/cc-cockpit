@@ -20,6 +20,8 @@
 //   for a mail (app 0.13.0): annotate's `kind: 'mail'` (the reading layout), `data-action` buttons in
 //   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
 //   assets?, hide?, status? }), which adds images to an open document without rendering it again;
+//   annotate's `originals` [{ id, html }] and `view` (feature 'original'): the mail's own HTML and CSS
+//   in sandboxed frames (the Original view), with an Original | Reader switch told as the event `view`;
 // - `ccc review <path>`.
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
@@ -46,7 +48,9 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // (`<span data-action>` buttons in the document, a click emitted as the service event `action`) and
 // 'update' (update({ key, assets?, hide?, status? }) on an open annotation: a mail's remote pictures
 // once the person asked for them).
-const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update']
+// 'original' (annotate's `originals` and `view`: the main document's parts as their sender made them,
+// each in a sandboxed frame, with an Original | Reader switch on the page told as the event `view`).
+const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original']
 // prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
 // caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
 const PREPARE_MS = 60000
@@ -328,6 +332,14 @@ exports.activate = (ctx) => {
       const assets = c ? [...a.assets, ...c.assets] : a.assets
       sides = { ...base, mode: 'html', new: '', htmlParts: parts.length, assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), start: a.start }
       if (a.kind) sides.kind = a.kind
+      // The originals (feature 'original'): named in the init with their part counts, their html
+      // after the documents' parts (the Reader rendering comes first, so a slow original never holds
+      // up the text) and before the pictures, which a frame is built with.
+      const oParts = a.originals ? a.originals.map((o) => ({ id: o.id, parts: review.splitParts(o.html) })) : []
+      if (a.originals) {
+        sides.originals = oParts.map((o) => ({ id: o.id, parts: o.parts.length }))
+        sides.view = a.view
+      }
       // The companion's html comes in parts of its own ({ doc: 'companion' }), after the main
       // document's, so the one the person reads first renders first.
       const cParts = c ? review.splitParts(c.html) : []
@@ -340,6 +352,7 @@ exports.activate = (ctx) => {
       after = [
         ...parts.map((part, index) => ({ type: 'html', index, part })),
         ...cParts.map((part, index) => ({ type: 'html', doc: 'companion', index, part })),
+        ...oParts.flatMap((o) => o.parts.map((part, index) => ({ type: 'original', id: o.id, index, part }))),
         ...assets.map(({ id, dataUrl }) => ({ type: 'asset', id, dataUrl })),
         { type: 'assets-done' },
       ]
@@ -370,7 +383,7 @@ exports.activate = (ctx) => {
         companionUrl: c ? c.url : null,
         // The links of the caller's own html and aside (and the companion's html and facts), read
         // from the strings it passed (built once, here): a link click opens one of these or nothing.
-        links: review.linkSet(a.html, a.aside, c && c.html, c && c.facts),
+        links: review.linkSet(a.html, a.aside, c && c.html, c && c.facts, ...(a.originals || []).map((o) => o.html)),
         // The buttons the caller's own strings offer (`data-action`): a click on any other id is dropped.
         actions: a.html !== null ? review.actionSet(a.html, a.aside, c && c.html, c && c.facts) : null,
         // update() checks its assets against what the document has: one budget and one id namespace.
@@ -380,6 +393,8 @@ exports.activate = (ctx) => {
         caller,
         key: a.key,
         companion: c !== null,
+        // The page's Original | Reader switch is passed on (event `view`) only for a document with originals.
+        originals: Boolean(a.originals),
         build: (d) => review.buildAnnotation(d, a, review.MAX_CONTEXT),
         tooLarge: 'the text is too large to show (with escaping and its saved draft)',
       },
@@ -590,6 +605,15 @@ exports.activate = (ctx) => {
           ctx.services.emit('reviewer', 'action', { key: subject.key, id: m.id, caller: subject.caller })
         } catch (e) {
           ctx.log.warn(`action ${m.id}: ${e.message}`)
+        }
+      } else if (m.type === 'view' && subject.originals && review.VIEWS.includes(m.view)) {
+        // The person switched between the Original and the Reader view (feature 'original'): told to
+        // every consumer like an action, with the key and the caller, so the caller can remember it
+        // (the Gmail plugin keeps it per sender). The page has already switched.
+        try {
+          ctx.services.emit('reviewer', 'view', { key: subject.key, view: m.view, caller: subject.caller })
+        } catch (e) {
+          ctx.log.warn(`view ${m.view}: ${e.message}`)
         }
       } else if (m.type === 'content' && after) {
         // Once: the content is let go after it went out (it can be 10 MiB). A post that fails is

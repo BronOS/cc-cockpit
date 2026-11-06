@@ -80,7 +80,7 @@ annotate({ title, html, assets?, url?, key?, tabId? })  // ... or on sanitized H
 annotate({ title, html, ..., label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })  // with a second document beside it (below)
 annotate({ ..., type? })  // the overlay's type, passed through (a source's own inbox-item { source, id })
 prepare({ key, title, type?, tabId? }), cancel({ key })  // a loading overlay an annotate fills
-features()  // the optional annotate features: ['companion', 'prepare', 'type']
+features()  // the optional annotate features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original']
 // editor v1 (implemented by the editor plugin)
 open(path, { line? })
 ```
@@ -275,6 +275,41 @@ when the person asks.
   `checkAssets` with the document's budget, on a copy.
 - **Detection.** As with `companion`: additive in v1, listed by `features()`; an older reviewer ignores `kind` and has
   no `update` (rejects with "has no method").
+
+### Original view: originals and view (added to v1, app 0.13.0)
+
+```js
+annotate({ ..., html, originals: [{ id, html }], view?: 'original' | 'reader' })
+reviewer.on('view', ({ key, view, caller }) => …)
+features()  // -> [..., 'original']
+```
+
+The allow-list rendering keeps no style, so a designed mail (a Jira notification's card, struck-out old values in red,
+new ones on green, layout tables) lost its look. Gmail shows the sender's styling; this does too, safely.
+
+- **The wall is the frame, not a sanitizer.** `<iframe sandbox="">` (no `allow-*`), a `srcdoc` document that inherits
+  this page's header CSP (pluginCsp) and starts with its own meta CSP (`default-src 'none'; style-src 'unsafe-inline';
+  img-src data:; font-src data:; form-action 'none'; base-uri 'none'`). Checked in Electron 45 before building: an
+  http image, a CSS url(), `@import`, `<link rel=stylesheet>` and `<base href>` each print two violations (one per
+  policy); script, handlers and a meta refresh print "Blocked ... sandboxed"; a form submission and a popup are
+  refused; `frame-src 'none'` does not stop the srcdoc frame itself. The comment at the top of `src/page/original.mjs`
+  says why srcdoc beats a custom protocol with a header CSP here. The caller's sanitizer (Gmail's original mode) and
+  this page's rebuild of the markup (presentational elements and attributes, links with `target="_blank"`, pictures
+  from assets) are further walls; the e2e test hands the frame a breakout attempt with neither in front.
+- **Links.** Without script in the frame and without same origin, the page cannot learn which link was clicked; a
+  plain link would navigate the frame onto an error page (the page's `frame-src`). Every link asks for a new window,
+  which the sandbox refuses, so nothing happens in the frame; the page's Links list (built from the same walk) opens
+  one through `open-link`, whose allow-set includes the originals' links.
+- **Height.** No script and no same origin: no measuring. CSS `frame-sizing: content-height` parses in Chromium 156 but
+  did not size a srcdoc frame in Electron 45 (with or without the ResponsiveIframes flag). Each frame is the visible
+  area's height (a ResizeObserver on the scroller) and scrolls inside.
+- **Views.** Both renderings stay in the DOM; the view is `.view-original` on the document, hiding the Reader body of a
+  message that has a frame (`.rv-has-original`) or the frame. The notes' offsets are over the Reader text, which is
+  always there, so a switch moves nothing. The page switches at once and posts `{ type: 'view', view }`; the host
+  emits `view` `{ key, view, caller }` (only for a document with originals), and the caller remembers it.
+- **Transport.** The init's `sides.originals` is `[{ id, parts }]` with `sides.view`; after the documents' parts come
+  `{ type: 'original', id, index, part }` (`splitParts`), then the pictures. A frame is built when both its original
+  and the main document are in, and again with the pictures at `assets-done` (and 150 ms after an `update`'s).
 
 ### Which tab Discuss starts on
 

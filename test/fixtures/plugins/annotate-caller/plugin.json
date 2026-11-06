@@ -8,7 +8,8 @@
     "commands": [
       { "id": "html", "title": "Annotate: HTML" },
       { "id": "companion", "title": "Annotate: with a companion" },
-      { "id": "filetype", "title": "Annotate: a file review" }
+      { "id": "filetype", "title": "Annotate: a file review" },
+      { "id": "original", "title": "Annotate: a mail with its original HTML" }
     ]
   },
   "services": { "uses": { "reviewer": 1 } }

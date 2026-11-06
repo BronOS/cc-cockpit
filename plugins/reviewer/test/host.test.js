@@ -768,7 +768,7 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update']
+  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original']
   assert.deepEqual(await f.provided.reviewer.features(), all)
   assert.deepEqual(host.FEATURES, all)
   // A copy: a caller changing the answer changes nothing here.
@@ -1132,5 +1132,81 @@ test('update: an app without ctx.services.caller cannot update (no caller to mat
   host.activate(f.ctx)
   await f.provided.reviewer.annotate({ title: 'Mail', html: '<p>x</p>', key: 'gmail:t1' })
   await assert.rejects(f.provided.reviewer.update({ key: 'gmail:t1', status: 'x' }), /no open HTML annotation/)
+  host.deactivate()
+})
+
+test('annotate originals: the init names them with the view, their parts follow the documents, before the pictures; links count', async () => {
+  const f = setup({ editorAvailable: false })
+  const opened = []
+  f.ctx.openExternal = async (u) => opened.push(u)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const big = '<table><tr><td style="background:#e3fcef">' + 'x'.repeat(400000) + '</td></tr></table>'
+  await f.provided.reviewer.annotate({
+    title: 'Mail',
+    kind: 'mail',
+    html: '<div data-reader="m1"><p>Reader</p></div><div data-original="m1"></div>',
+    originals: [{ id: 'm1', html: `<p>Original <a href="https://jira.example/browse/PROJ-1">PROJ-1</a></p>${big}` }],
+    assets: [{ id: 'r1', mime: 'image/png', dataUrl: PNG }],
+    key: 'gmail:t1',
+  })
+  const h = f.handles[0]
+  assert.deepEqual(h.posts[0].sides.originals, [{ id: 'm1', parts: 3 }])
+  assert.equal(h.posts[0].sides.view, 'original')
+  h.say({ type: 'content' })
+  await wait(10)
+  const types = h.posts.slice(1).map((m) => (m.type === 'original' ? `original:${m.id}:${m.index}` : m.type))
+  assert.deepEqual(types, ['html', 'original:m1:0', 'original:m1:1', 'original:m1:2', 'asset', 'assets-done'])
+  const parts = h.posts.filter((m) => m.type === 'original')
+  assert.ok(parts.every((m) => JSON.stringify(m).length <= 1040384))
+  assert.equal(parts.map((m) => m.part).join(''), `<p>Original <a href="https://jira.example/browse/PROJ-1">PROJ-1</a></p>${big}`)
+  // A link of the original is one of the caller's: the page's Links list opens it.
+  h.say({ type: 'open-link', href: 'https://jira.example/browse/PROJ-1' })
+  await wait(10)
+  assert.deepEqual(opened, ['https://jira.example/browse/PROJ-1'])
+  // view: 'reader' opens the Reader view; without originals there is no view at all.
+  await f.provided.reviewer.annotate({ title: 'Mail 2', html: '<p>x</p>', originals: [{ id: 'm1', html: '<p>o</p>' }], view: 'reader', key: 'gmail:t2' })
+  assert.equal(f.handles[1].posts[0].sides.view, 'reader')
+  await f.provided.reviewer.annotate({ title: 'Mail 3', html: '<p>x</p>', key: 'gmail:t3' })
+  assert.equal('originals' in f.handles[2].posts[0].sides, false)
+  assert.equal('view' in f.handles[2].posts[0].sides, false)
+  host.deactivate()
+})
+
+test('annotate originals: checked (ids, size, html only, view)', async () => {
+  const { annotateInput, MAX_ORIGINALS, MAX_ANNOTATE_HTML } = require('../dist/lib/review')
+  const base = { title: 'T', html: '<p>x</p>' }
+  assert.equal(annotateInput({ ...base, originals: [] }).originals, null)
+  assert.equal(annotateInput({ ...base, originals: [] }).view, null)
+  assert.deepEqual(annotateInput({ ...base, originals: [{ id: 'm1', html: '<p>o</p>', extra: 1 }] }).originals, [{ id: 'm1', html: '<p>o</p>' }])
+  assert.throws(() => annotateInput({ title: 'T', text: 'x', originals: [{ id: 'm1', html: '' }] }), /originals go with html/)
+  assert.throws(() => annotateInput({ ...base, originals: 'x' }), /originals must be an array/)
+  assert.throws(() => annotateInput({ ...base, originals: [{ id: 'M1', html: '' }] }), /originals\[0\]\.id is 1-40/)
+  assert.throws(() => annotateInput({ ...base, originals: [{ id: 'm1', html: '' }, { id: 'm1', html: '' }] }), /used twice/)
+  assert.throws(() => annotateInput({ ...base, originals: [{ id: 'm1', html: 1 }] }), /html must be a string/)
+  assert.throws(() => annotateInput({ ...base, originals: [{ id: 'm1', html: 'a\0b' }] }), /NUL/)
+  const many = Array.from({ length: MAX_ORIGINALS + 1 }, (_, i) => ({ id: `m${i}`, html: '' }))
+  assert.throws(() => annotateInput({ ...base, originals: many }), /at most 50 originals/)
+  const half = 'é'.repeat(MAX_ANNOTATE_HTML / 4 + 1) // two UTF-8 bytes each: just over half the budget
+  assert.throws(() => annotateInput({ ...base, originals: [{ id: 'a', html: half }, { id: 'b', html: half }] }), /originals are larger than 2 MiB in all/)
+  assert.throws(() => annotateInput({ ...base, originals: [{ id: 'm1', html: '' }], view: 'raw' }), /view must be 'original' or 'reader'/)
+})
+
+test('annotate originals: the page\'s Original | Reader switch is the event `view` with key and caller, only for a document with originals', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  const emits = withServices(f, caller)
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<div data-original="m1"></div>', originals: [{ id: 'm1', html: '<p>o</p>' }], key: 'gmail:t1' })
+  const h = f.handles[0]
+  for (const view of ['reader', 'original', 'raw', 42]) h.say({ type: 'view', view })
+  assert.deepEqual(emits, [
+    { name: 'reviewer', event: 'view', data: { key: 'gmail:t1', view: 'reader', caller: 'example.mail' } },
+    { name: 'reviewer', event: 'view', data: { key: 'gmail:t1', view: 'original', caller: 'example.mail' } },
+  ])
+  await f.provided.reviewer.annotate({ title: 'Plain', html: '<p>x</p>', key: 'k2' })
+  f.handles[1].say({ type: 'view', view: 'reader' })
+  assert.equal(emits.length, 2)
   host.deactivate()
 })

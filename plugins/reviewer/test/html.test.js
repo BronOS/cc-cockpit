@@ -317,3 +317,111 @@ test('review.css: the mail layout is opt-in, scoped under .doc-body.mail', () =>
   }
   assert.match(css, /\.doc-body\.mail \{[^}]*max-width: 760px[^}]*font-size: 15px[^}]*line-height: 1\.6/)
 })
+
+// ---- the Original view (src/page/original.mjs, feature 'original') ----
+
+test('the original frame: sandbox with no allow token, and the CSP exactly as designed', async () => {
+  const { FRAME_SANDBOX, ORIGINAL_CSP } = await load('original.mjs')
+  assert.equal(FRAME_SANDBOX, '')
+  assert.equal(ORIGINAL_CSP, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'")
+  // The page sets the attribute before srcdoc, and nothing else of the sandbox anywhere.
+  const page = fs.readFileSync(path.join(__dirname, '../src/page/review.js'), 'utf8')
+  const at = page.indexOf("frame.setAttribute('sandbox', FRAME_SANDBOX)")
+  assert.ok(at > 0 && at < page.indexOf('frame.srcdoc = built.html'))
+  assert.doesNotMatch(page, /allow-(?:scripts|same-origin|forms|popups|top-navigation|modals|downloads|presentation|pointer-lock|orientation-lock|storage-access)/)
+  assert.match(page, /frame\.setAttribute\('referrerpolicy', 'no-referrer'\)/)
+})
+
+test('originalDocument: the CSP meta is the first thing in the head, before any of the caller\'s markup or styles', async () => {
+  const { originalDocument, ORIGINAL_CSP, BASE_CSS } = await load('original.mjs')
+  const r = originalDocument(body(h('style', {}, 'p{color:red}'), h('p', {}, 'Hi')))
+  assert.equal(
+    r.html,
+    '<!doctype html><html><head><meta charset="utf-8">' +
+      `<meta http-equiv="Content-Security-Policy" content="${ORIGINAL_CSP.replace(/'/g, "'")}">` +
+      '<meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light">' +
+      `<style>${BASE_CSS}</style><style>p{color:red}</style></head><body><p>Hi</p></body></html>`,
+  )
+})
+
+test('originalDocument: a breakout attempt keeps nothing that runs, loads or navigates', async () => {
+  const { originalDocument } = await load('original.mjs')
+  const r = originalDocument(
+    h(
+      '#document',
+      {},
+      h(
+        'html',
+        {},
+        h('head', {}, h('meta', { 'http-equiv': 'refresh', content: '0;url=https://evil.example/' }), h('base', { href: 'https://evil.example/' }), h('link', { rel: 'stylesheet', href: 'https://evil.example/x.css' }), h('style', {}, '@import url(https://evil.example/i.css); body{background:url(https://evil.example/bg.png)}'), h('script', {}, 'alert(1)')),
+        body(
+          h('script', {}, 'alert(2)'),
+          h('img', { src: 'https://evil.example/t.gif', onerror: 'alert(3)', alt: 'pic' }),
+          h('svg', { $ns: 'http://www.w3.org/2000/svg', onload: 'alert(4)' }, h('style', { $ns: 'http://www.w3.org/2000/svg' }, '</style><script>alert(5)</script>')),
+          h('form', { action: 'https://evil.example/f' }, h('input', { name: 'q' }), h('button', {}, 'Go'), 'Search'),
+          h('a', { href: 'javascript:alert(6)', onclick: 'alert(7)' }, 'js'),
+          h('a', { href: 'https://jira.example/browse/PROJ-1', target: '_top', ping: 'https://evil.example/p' }, 'View issue'),
+          h('iframe', { src: 'https://evil.example/' }),
+          h('object', { data: 'https://evil.example/o' }),
+          h('embed', { src: 'https://evil.example/e' }),
+          h('video', { src: 'https://evil.example/v.mp4', poster: 'https://evil.example/p.png' }),
+          h('td', { background: 'https://evil.example/td.png' }, 'cell'),
+          h('div', { style: 'position:fixed;inset:0', onmouseover: 'alert(8)' }, 'styled'),
+        ),
+      ),
+    ),
+  )
+  const html = r.html
+  for (const bad of [/<script/i, /<iframe/i, /<object/i, /<embed/i, /<video/i, /<form/i, /<input/i, /<button/i, /<link/i, /<base/i, /<svg/i, /http-equiv="refresh"/i, /\son[a-z]+=/i, /javascript:/i, /ping=/, /background=/, /poster=/, /target="_top"/, /evil\.example\/(?:t\.gif|f|o|e|v|td)/, /alert\(5\)/]) {
+    assert.doesNotMatch(html, bad)
+  }
+  // The CSS stays (the frame's CSP is what keeps its url()s from loading; the caller's sanitizer drops them first).
+  assert.match(html, /<style>@import url\(https:\/\/evil\.example\/i\.css\); body\{background:url\(https:\/\/evil\.example\/bg\.png\)\}<\/style>/)
+  // The link keeps its look and its URL as a tooltip, and asks for a new window, which the sandbox refuses.
+  assert.match(html, /<a href="https:\/\/jira\.example\/browse\/PROJ-1" target="_blank" rel="noopener noreferrer" title="https:\/\/jira\.example\/browse\/PROJ-1">View issue<\/a>/)
+  assert.match(html, /<img alt="pic">/)
+  assert.match(html, /Search/) // a form's text stays, its controls go
+  assert.deepEqual(r.links, [{ href: 'https://jira.example/browse/PROJ-1', text: 'View issue' }])
+})
+
+test('originalDocument: layout tables, inline styles and classes stay; pictures from assets, pending until they come', async () => {
+  const { originalDocument } = await load('original.mjs')
+  const PNG = 'data:image/png;base64,iVBORw0KGgo='
+  const tree = body(
+    h('table', { role: 'presentation', width: '600', cellpadding: '0', bgcolor: '#f4f5f7' }, h('tbody', {}, h('tr', {}, h('td', { class: 'card', style: 'background-color:#e3fcef;text-decoration:line-through' }, 'Done')))),
+    h('img', { 'data-asset': 'r1', alt: 'Avatar', width: '24', height: '24', 'data-minor': '' }),
+    h('img', { src: 'asset:cid1', alt: 'Shot' }),
+    h('img', { src: PNG, alt: 'inline' }),
+    h('img', { src: 'data:image/svg+xml;base64,PHN2Zz4=', alt: 'svg' }),
+  )
+  const before = originalDocument(tree)
+  assert.match(before.html, /<table role="presentation" width="600" cellpadding="0" bgcolor="#f4f5f7"><tbody><tr><td class="card" style="background-color:#e3fcef;text-decoration:line-through">Done<\/td><\/tr><\/tbody><\/table>/)
+  assert.match(before.html, /<img alt="Avatar" width="24" height="24" data-cc-pending data-minor>/)
+  assert.match(before.html, /<img alt="Shot" data-cc-pending>/)
+  assert.match(before.html, new RegExp(`<img alt="inline" src="${PNG.replace(/[+/.]/g, '\\$&')}">`))
+  assert.match(before.html, /<img alt="svg">/)
+  assert.deepEqual([...before.assets], ['r1', 'cid1'])
+  const after = originalDocument(tree, { asset: (id) => (id === 'r1' ? PNG : id === 'cid1' ? 'https://evil.example/x.png' : null) })
+  assert.match(after.html, /<img alt="Avatar" width="24" height="24" src="data:image\/png;base64,iVBORw0KGgo=" data-minor>/)
+  assert.match(after.html, /<img alt="Shot" data-cc-pending>/) // not a data: image URL: never a src
+})
+
+test('originalDocument: over a limit (style text, nodes) it answers null, and the page keeps the Reader rendering', async () => {
+  const { originalDocument } = await load('original.mjs')
+  assert.equal(originalDocument(body(h('style', {}, 'a{}'.repeat(200000)))), null)
+  const wide = body()
+  wide.childNodes = Array.from({ length: 200001 }, () => ({ nodeType: 3, nodeValue: 'x' }))
+  assert.equal(originalDocument(wide), null)
+  assert.ok(originalDocument(body(h('style', {}, 'a{}'.repeat(1000)), h('p', {}, 'ok'))))
+})
+
+test('sanitizeTree keeps the Original view\'s markers on a div only, with a name-shaped id', async () => {
+  const { sanitizeTree } = await load('sanitize.mjs')
+  const tree = sanitizeTree(body(h('div', { 'data-original': 'm1' }), h('div', { 'data-reader': 'm1' }, 'r'), h('div', { 'data-original': 'Bad id' }), h('span', { 'data-original': 'm2' }, 's')))
+  assert.deepEqual(tree, [
+    { tag: 'div', attrs: [['data-original', 'm1']], children: [] },
+    { tag: 'div', attrs: [['data-reader', 'm1']], children: [{ text: 'r' }] },
+    { tag: 'div', attrs: [], children: [] },
+    { tag: 'span', attrs: [], children: [{ text: 's' }] },
+  ])
+})

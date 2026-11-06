@@ -27,8 +27,10 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     after the fill, so call it in a `finally`). An older reviewer has no `prepare` (rejects with "has no method").
   - `kind: 'mail'` (HTML form, optional, app 0.13.0): the mail reading layout; see "Mail" below. Buttons in the document
     (`data-action`) and `update({ key, assets?, hide?, status? })` go with it.
+  - `originals: [{ id, html }]` and `view` (HTML form, optional, app 0.13.0): the Original view; see "Original view"
+    below. The page's Original | Reader switch is the service event `view` `{ key, view, caller }`.
   - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type', 'mail', 'actions',
-    'update']`); an older reviewer has no such
+    'update', 'original']`); an older reviewer has no such
     method (the call rejects with `has no method "features"`: read it as none).
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
@@ -116,6 +118,49 @@ For a mail (the Gmail plugin), three additive parts of v1, listed by `features()
   namespace; checked on a copy, so a refused update spends nothing); `hide` hides `data-part` regions; `status` sets the
   status line. The page declares the new assets and fills the images that name them; nothing is rendered again, so
   the notes keep their anchors. Every update re-enables the document's buttons.
+
+## Original view
+
+A designed mail (a Jira notification: the issue card, the old value struck through in red and the new one on green,
+layout tables, spacing) loses its look in the allow-list rendering, which keeps no style. `originals` shows it as its
+sender made it, listed by `features()` as `'original'`:
+
+```js
+await reviewer.annotate({
+  title, kind: 'mail', key,
+  // Your header in the app's theme, then per message its Reader rendering and the place of its frame.
+  html: `<h1>${esc(subject)}</h1><div class="mail-msg">…<div class="mail-body" data-reader="m1">${readerBody}</div><div data-original="m1"></div></div>`,
+  originals: [{ id: 'm1', html: originalBody }], // your own sanitizer's output: styles kept, script and url() gone
+  view: 'original', // or 'reader' (the person's last choice for the sender, say)
+  assets,
+})
+reviewer.on('view', ({ key, view, caller }) => { if (caller === ctx.pluginId) remember(key, view) })
+```
+
+- **The frame.** Each original is a `<iframe sandbox="">` (every restriction, no `allow-*`: no script, an opaque origin,
+  no forms, popups or navigation) whose `srcdoc` starts with the CSP `default-src 'none'; style-src 'unsafe-inline';
+  img-src data:; font-src data:; form-action 'none'; base-uri 'none'`, and inherits the page's own header CSP on top.
+  Nothing in it runs or loads from the network even when your sanitizer misses something; the page also rebuilds the
+  markup from a list of presentational elements and attributes (`src/page/original.mjs`). Clean it anyway: that is
+  the second wall.
+- **Where.** At your `div[data-original=<id>]`, in place of `div[data-reader=<id>]`; both stay in the document and the
+  view is a class, so switching re-renders nothing and notes keep their places (they go on the Reader text: a
+  selection inside the frame is out of the page's reach, so a note needs the Reader view, and a note clicked in the
+  list switches to it). A message without a frame (no original, or one over a limit) shows its Reader rendering in both.
+- **Pictures.** `<img data-asset="<id>">` or `src="asset:<id>"` of your assets, built into the frame as data: URLs; a
+  picture not sent yet is a dashed box of its declared size (`data-minor`: hidden), and the frame is built again when
+  its asset comes (with `update`, it reloads at its top). A `data:` png, jpeg, gif or webp `src` stays; any other goes.
+- **Links** keep their look and their URL as a tooltip, but a click does nothing inside the frame (it asks for a new
+  window, which the sandbox refuses: a frame without script cannot tell the page which link it was). The page's
+  **Links (n)** button above the document lists them and opens one as any link of yours is opened (in your strings,
+  http(s), `ctx.openExternal`). The status line says so once, at the first click into the frame.
+- **Height.** Nothing can read the height of a frame without script and same origin, so each frame is as tall as the
+  visible document area and scrolls on its own; the wheel goes on to the document at its end.
+- **Look.** A white "paper" page (the frame's own default is white with dark text, `color-scheme: light`) under your
+  header in the app's theme; the column is 860 px in this view.
+- **Limits.** Ids `^[a-z][a-z0-9-]{0,39}$`, unique, at most 50, 2 MiB of UTF-8 in all (apart from `html`'s 2 MiB), no
+  NUL; on the page, at most 512 KiB of style text and 200,000 nodes per original and 16 MiB per frame document
+  (pictures included), past which that message shows Reader.
 
 ## HTML mode
 

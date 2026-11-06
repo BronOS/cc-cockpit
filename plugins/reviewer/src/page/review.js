@@ -67,6 +67,7 @@ import { sanitizeTree, render, isImageDataUrl } from './sanitize.mjs'
 import { makeAnchor, locate } from './anchor.mjs'
 import { isPlainClick, selectionKey } from './links.mjs'
 import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
+import { originalDocument, FRAME_SANDBOX } from './original.mjs'
 
 /* global ccPanel */
 
@@ -646,6 +647,7 @@ function startHtml(s) {
   htmlView.parts = parts(s.htmlParts)
   assetStore.declared = new Map((Array.isArray(s.assets) ? s.assets : []).filter((a) => a && typeof a.id === 'string').map((a) => [a.id, a]))
   htmlView.body.replaceChildren(el('p', 'muted', 'Loading…'))
+  startOriginals(s)
   if (s.companion) {
     companionView.parts = parts(s.companion.htmlParts)
     companionView.body.replaceChildren(el('p', 'muted', 'Loading…'))
@@ -679,6 +681,7 @@ function renderHtml(view, source) {
   prepareLinks(view.body)
   hideParts(view.body)
   placeOpenUrl() // after the text walk: the button holds no text, so the offsets would not move anyway
+  if (view === htmlView) for (const id of originals.list.keys()) attachOriginal(id)
   if (view === htmlView && state.sides && state.sides.start === 'end') stickToEnd(view)
   refreshHighlights() // finds the draft's notes first: the list says which were not found
   renderNotes()
@@ -735,10 +738,12 @@ function htmlAsset(m) {
   if (!want || !isImageDataUrl(m.dataUrl) || !m.dataUrl.startsWith(`data:${want.mime};base64,`)) return
   assetStore.data.set(m.id, m.dataUrl)
   for (const root of assetRoots()) for (const img of root.querySelectorAll('img[data-asset]')) if (img.dataset.asset === m.id) assetLoaded(img, m.dataUrl)
+  originalAssetCame(m.id)
 }
 
 function htmlAssetsDone() {
   assetStore.done = true
+  rebuildOriginals()
   for (const root of assetRoots()) for (const img of root.querySelectorAll('.asset-box.pending > img')) assetFailed(img)
 }
 
@@ -864,6 +869,8 @@ function scrollToHtml(note) {
   refreshHtmlHighlights()
   const r = rangeOf(at.view, at.start, at.end)
   const target = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement
+  // A note on the mail's text is on the Reader rendering, which the Original view hides: show it.
+  if (target && originals.view === 'original' && target.closest('.rv-has-original')) setView('reader', true)
   if (target) target.scrollIntoView({ block: 'center' })
 }
 
@@ -1038,6 +1045,211 @@ function renderAside(m) {
   prepareLinks(target)
   hideParts(target)
 }
+
+// ---- the Original view (feature 'original') ----
+//
+// annotate's `originals` [{ id, html }] are the caller's documents as their sender made them (a
+// designed mail), each shown in a sandboxed srcdoc frame (original.mjs says why that frame holds even
+// if every sanitizer misses something) at the caller's `div[data-original=id]`, in place of the
+// allow-list rendering `div[data-reader=id]`. Both stay in the DOM: the view is a class on the
+// document, so switching re-renders nothing and the notes keep their anchors (they are on the Reader
+// text, which the Original view only hides). The html of each original comes in parts after the main
+// document's, as { type: 'original', id, index, part }.
+//
+// Height: the frame has no script and an opaque origin, so nothing can read its content height (no
+// message from inside, no contentDocument from here; CSS `frame-sizing: content-height` parses in
+// Chromium 156 but did not size a frame in Electron 45, with or without the ResponsiveIframes flag).
+// So each frame is as tall as the visible document area (--rv-frame-h, kept by a ResizeObserver) and
+// scrolls on its own; at its end the wheel goes on to the document around it (scroll chaining).
+//
+// A frame is built again (its srcdoc replaced, so it reloads at its top) when a picture it names
+// comes: the first ones together at `assets-done`, a Show images' together after a short wait.
+// An original over a limit (originalDocument answers null) leaves the Reader rendering in its place.
+
+const originals = {
+  list: new Map(), // id -> { parts, source, frame, links, assets }
+  view: 'reader', // 'original' | 'reader': the class on the main document
+  bar: null, // the Original | Reader switch and the Links list, above the document
+  hinted: false, // the status line said once how links and notes work in the Original view
+  pending: new Set(), // ids whose frame waits to be built again with new pictures
+  timer: 0,
+}
+
+function startOriginals(s) {
+  originals.list = new Map()
+  for (const o of Array.isArray(s.originals) ? s.originals : []) {
+    if (!o || typeof o.id !== 'string' || !Number.isInteger(o.parts) || o.parts < 1 || originals.list.has(o.id)) continue
+    originals.list.set(o.id, { parts: new Array(o.parts).fill(null), source: null, frame: null, links: [], assets: new Set() })
+  }
+  originals.view = s.view === 'reader' ? 'reader' : 'original'
+  htmlView.body.classList.toggle('view-original', originals.view === 'original')
+}
+
+function originalPart(m) {
+  const o = typeof m.id === 'string' ? originals.list.get(m.id) : undefined
+  if (!o || o.source !== null || !Number.isInteger(m.index) || m.index < 0 || m.index >= o.parts.length || typeof m.part !== 'string') return
+  o.parts[m.index] = m.part
+  if (!o.parts.every((p) => p !== null)) return
+  o.source = o.parts.join('')
+  o.parts = []
+  attachOriginal(m.id)
+}
+
+/** The frame document of `o` with the pictures that came so far, or null (over a limit, or unparsable). */
+function buildOriginal(o) {
+  let r = null
+  try {
+    r = originalDocument(new DOMParser().parseFromString(o.source, 'text/html'), { asset: (id) => assetStore.data.get(id) || null })
+  } catch {
+    r = null
+  }
+  if (!r) return null
+  o.links = r.links
+  o.assets = r.assets
+  return r
+}
+
+/** Puts original `id`'s frame at its marker once both the main document and the original are in. */
+function attachOriginal(id) {
+  const o = originals.list.get(id)
+  if (!o || o.source === null || o.frame || !htmlView.rendered) return
+  const slot = [...htmlView.body.querySelectorAll('div[data-original]')].find((d) => d.dataset.original === id)
+  if (!slot) return
+  const built = buildOriginal(o)
+  if (!built) return // the Reader rendering stays (rv-has-original is never set for it)
+  const frame = document.createElement('iframe')
+  // Present and empty: every sandbox restriction, no allow-* token (original.mjs). Set before srcdoc,
+  // so the document never loads in a less restricted frame.
+  frame.setAttribute('sandbox', FRAME_SANDBOX)
+  frame.setAttribute('referrerpolicy', 'no-referrer')
+  frame.setAttribute('title', 'Original message')
+  frame.className = 'original-frame'
+  frame.srcdoc = built.html
+  slot.replaceChildren(frame)
+  slot.classList.add('rv-original')
+  for (const r of htmlView.body.querySelectorAll('div[data-reader]')) if (r.dataset.reader === id) r.classList.add('rv-has-original')
+  o.frame = frame
+  showViewBar()
+}
+
+/** A picture came: the frames that name it are built again (batched: Show images sends several). */
+function originalAssetCame(id) {
+  for (const [key, o] of originals.list) if (o.frame && o.assets.has(id)) originals.pending.add(key)
+  if (!originals.pending.size || !assetStore.done) return // the first pictures: all at assets-done
+  clearTimeout(originals.timer)
+  originals.timer = setTimeout(rebuildOriginals, 150)
+}
+
+function rebuildOriginals() {
+  clearTimeout(originals.timer)
+  for (const key of originals.pending) {
+    const o = originals.list.get(key)
+    const built = o && o.frame ? buildOriginal(o) : null
+    if (built) o.frame.srcdoc = built.html
+  }
+  originals.pending.clear()
+  renderOriginalLinks()
+}
+
+/** The links of the frames shown, once each, in document order. */
+function originalLinks() {
+  const seen = new Map()
+  for (const o of originals.list.values()) if (o.frame) for (const l of o.links) if (!seen.has(l.href)) seen.set(l.href, l)
+  return [...seen.values()]
+}
+
+function showViewBar() {
+  if (originals.bar) return renderOriginalLinks()
+  const bar = el('div', 'view-bar')
+  const group = el('div', 'view-switch')
+  group.setAttribute('role', 'group')
+  group.setAttribute('aria-label', 'View')
+  for (const [v, label, title] of [
+    ['original', 'Original', 'The message as its sender made it (no script, nothing loaded from the web)'],
+    ['reader', 'Reader', 'A plain reading layout: notes go on its text'],
+  ]) {
+    const b = el('button', 'view-opt', label)
+    b.type = 'button'
+    b.dataset.view = v
+    b.title = title
+    b.addEventListener('click', () => setView(v, true))
+    group.append(b)
+  }
+  const linksBtn = el('button', 'view-links-btn', 'Links')
+  linksBtn.type = 'button'
+  linksBtn.title = "The links of the original message: they open from here, not inside it"
+  linksBtn.setAttribute('aria-expanded', 'false')
+  const list = el('ul', 'view-links')
+  list.hidden = true
+  linksBtn.addEventListener('click', () => {
+    list.hidden = !list.hidden
+    linksBtn.setAttribute('aria-expanded', String(!list.hidden))
+  })
+  bar.append(group, linksBtn, list)
+  originals.bar = { bar, linksBtn, list, group }
+  // Outside the article: its text is not in a note's offsets.
+  htmlView.scroller.insertBefore(bar, htmlView.body)
+  // Each frame is as tall as the visible document area (see the section's header).
+  if (typeof ResizeObserver === 'function') {
+    const fit = () => htmlView.scroller.style.setProperty('--rv-frame-h', `${Math.max(240, htmlView.scroller.clientHeight - 32)}px`)
+    new ResizeObserver(fit).observe(htmlView.scroller)
+    fit()
+  }
+  setView(originals.view, false)
+  renderOriginalLinks()
+}
+
+function renderOriginalLinks() {
+  const b = originals.bar
+  if (!b) return
+  const links = originalLinks()
+  b.linksBtn.textContent = `Links (${links.length})`
+  b.linksBtn.hidden = originals.view !== 'original' || !links.length
+  if (b.linksBtn.hidden) b.list.hidden = true
+  b.list.replaceChildren(
+    ...links.map((l) => {
+      const li = el('li')
+      const btn = el('button', 'link', l.text || l.href)
+      btn.type = 'button'
+      btn.title = l.href
+      btn.addEventListener('click', () => {
+        b.list.hidden = true
+        b.linksBtn.setAttribute('aria-expanded', 'false')
+        // The same path as a link click in the Reader view: the host opens only a link of the caller's.
+        if (!state.canOpenLinks) return setStatus(`Link (not opened from here): ${l.href}`)
+        setStatus('')
+        ccPanel.post({ type: 'open-link', href: l.href })
+      })
+      let host = ''
+      try {
+        host = new URL(l.href).host
+      } catch {}
+      li.append(btn)
+      if (host && l.text) li.append(el('span', 'muted', ` ${host}`))
+      return li
+    }),
+  )
+}
+
+/** Shows the Original or the Reader view; `tell`: the person chose it (the host passes it on, to be remembered). */
+function setView(v, tell) {
+  originals.view = v === 'reader' ? 'reader' : 'original'
+  htmlView.body.classList.toggle('view-original', originals.view === 'original')
+  if (originals.bar) for (const b of originals.bar.group.children) b.setAttribute('aria-pressed', String(b.dataset.view === originals.view))
+  renderOriginalLinks()
+  if (tell) ccPanel.post({ type: 'view', view: originals.view })
+  updateAddButton()
+}
+
+// A click into a frame moves the focus into it, and this page's window loses it: the one sign of a
+// click there it gets. Said once: a link in the original does not open from inside it, and a note
+// needs the Reader view (a selection in the frame is out of this page's reach).
+window.addEventListener('blur', () => {
+  const f = document.activeElement
+  if (originals.hinted || !f || !f.classList || !f.classList.contains('original-frame')) return
+  originals.hinted = true
+  setStatus('Original view: links open from Links above, notes go on the Reader view')
+})
 
 // ---- actions and update (features 'actions' and 'update') ----
 //
@@ -1224,6 +1436,7 @@ ccPanel.onMessage((m) => {
   else if (m.type === 'asset') htmlAsset(m)
   else if (m.type === 'assets-done') htmlAssetsDone()
   else if (m.type === 'update') onUpdate(m)
+  else if (m.type === 'original') originalPart(m)
 })
 
 // The theme arrives in a message after load (`ccc guide panels`): swap the syntax colours then.

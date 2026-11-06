@@ -297,8 +297,24 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   `data-part` names to hide (at most 20), `status` sets the status line (one line, 200 characters). It re-enables the
   document's buttons, so answer every `action` with one, even only a status. It rejects when no annotation of yours
   with that key is open (closed, or another plugin's).
+- `originals: [{ id, html }]` and `view` (optional, HTML form; feature `'original'`, app 0.13.0): your document's parts
+  as their sender made them (a designed mail: its layout tables, `<style>` and `style`), each shown in a frame at your
+  empty `<div data-original="<id>"></div>`, in place of your `<div data-reader="<id>">` (its allow-list rendering).
+  The frame is `<iframe sandbox="">` (no script, an opaque origin, no forms, popups or navigation) with the CSP
+  `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'`
+  on top of the page's own: nothing in it runs or loads from the network, whatever your sanitizer missed, but clean it
+  anyway (drop script, url() and the rest; the reviewer keeps your markup's styling, not its behaviour). Pictures are
+  `<img data-asset="<id>">` (or `src="asset:<id>"`) of your assets, a dashed box of their size until the asset comes,
+  `data-minor` hiding a logo until then; a `data:` image (png, jpeg, gif, webp) stays. Links keep their look but do not
+  open inside the frame: the page's **Links** list opens them, as your links are opened. A note needs the Reader view
+  (a selection in the frame is out of the page's reach). Ids `^[a-z][a-z0-9-]{0,39}$`, unique, at most 50, 2 MiB of
+  UTF-8 in all (apart from `html`). `view`: `'original'` (default) or `'reader'`, the view it opens in. The page
+  shows an **Original | Reader** switch above the document, and each switch is the service event `view` `{ key,
+  view, caller }` (`reviewer.on('view', fn)`; check `caller`), so you can remember the person's choice. An original
+  over the page's limits shows its Reader rendering instead. Each frame is as tall as the visible area and scrolls
+  on its own (nothing can measure a frame without script).
 - `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type',
-  'mail', 'actions', 'update']`. An older
+  'mail', 'actions', 'update', 'original']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall

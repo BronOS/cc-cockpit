@@ -294,3 +294,38 @@ button.link.outdated { color: var(--cc-fg-muted); text-align: left; }
    caller answers. A region update() hid. */
 .doc-body button.doc-action.busy { opacity: .6; cursor: progress; }
 .doc-body [data-part][hidden] { display: none !important; }
+
+/* annotate's `originals` (feature 'original', app 0.13.0): the Original view. The caller's message as
+   its sender made it, in a sandboxed frame (src/page/original.mjs), drawn as a light "paper" page in
+   the overlay whatever the app's theme; the header above it (subject, sender, the related card, the
+   images bar, the caller's buttons) stays the app's. The view is a class on the document: in the
+   Original view the Reader rendering of a message with a frame is hidden, in the Reader view the
+   frame. A message without a frame (no original, or one over a limit) shows its Reader rendering in
+   both. Each frame is as tall as the visible area (--rv-frame-h, set by the page) and scrolls inside. */
+.doc-body.view-original .rv-has-original { display: none; }
+.doc-body:not(.view-original) .rv-original { display: none; }
+.doc-body .rv-original { margin: 0 0 12px; }
+.doc-body .original-frame {
+  display: block; width: 100%; height: var(--rv-frame-h, 70vh); border: 1px solid var(--cc-border); border-radius: 8px;
+  background: #fff; box-shadow: 0 1px 6px var(--cc-shadow);
+}
+/* The Original view's message is designed for 600-700 px: its column is a little wider than a mail's. */
+.doc-body.mail.view-original:has(.rv-original) { max-width: 860px; }
+.view-bar {
+  position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; max-width: 860px;
+  margin: 10px auto -14px; padding: 0 28px; font-size: 12px;
+}
+.view-switch { display: inline-flex; border: 1px solid var(--cc-border); border-radius: 7px; overflow: hidden; }
+.view-switch .view-opt { height: auto; padding: 3px 10px; border: none; border-radius: 0; background: none; color: var(--cc-fg-muted); font-size: 12px; }
+.view-switch .view-opt + .view-opt { border-left: 1px solid var(--cc-border); }
+.view-switch .view-opt[aria-pressed='true'] { background: var(--cc-surface-2); color: var(--cc-fg); font-weight: 600; }
+.view-links-btn { height: auto; padding: 3px 10px; font-size: 12px; }
+.view-links-btn[hidden] { display: none; }
+.view-links {
+  position: absolute; top: 100%; right: 28px; z-index: 6; margin: 4px 0 0; padding: 6px 0; list-style: none;
+  min-width: 260px; max-width: min(520px, 90vw); max-height: 50vh; overflow-y: auto;
+  background: var(--cc-bg); border: 1px solid var(--cc-border); border-radius: 8px; box-shadow: 0 4px 16px var(--cc-shadow);
+}
+.view-links[hidden] { display: none; }
+.view-links li { padding: 3px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.view-links li button.link { text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }

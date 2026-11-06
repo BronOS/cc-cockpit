@@ -52,8 +52,9 @@ export const MAIL_CLASSES = new Set([
   'mail-remote', 'mail-minor', 'mail-note',
 ])
 
-// `data-action` ids and `data-part` names (features 'actions' and 'update'): what the host's
-// review.actionSet and updateInput accept.
+// `data-action` ids and `data-part` names (features 'actions' and 'update'), and the original ids of
+// `data-original` / `data-reader` (feature 'original'): what the host's review.actionSet, updateInput
+// and the originals check accept.
 const NAME = /^[a-z][a-z0-9-]{0,39}$/
 const MAX_ACTION_LABEL = 60
 
@@ -139,6 +140,12 @@ function cleanAttrs(tag, a) {
   }
   // A named region the caller may hide later (update's `hide`): a block or a span.
   if ((tag === 'div' || tag === 'p' || tag === 'span') && a.has('data-part') && NAME.test(a.get('data-part'))) out.push(['data-part', a.get('data-part')])
+  // annotate's `originals` (feature 'original'): `div[data-original=id]` is where the page puts the
+  // frame of original `id`, and `div[data-reader=id]` the allow-list rendering it stands for (hidden
+  // in the Original view once that frame is there). Empty markers: the page fills them, not the caller.
+  if (tag === 'div') {
+    for (const name of ['data-original', 'data-reader']) if (a.has(name) && NAME.test(a.get(name))) out.push([name, a.get(name)])
+  }
   if (tag === 'td' || tag === 'th') {
     for (const name of ['colspan', 'rowspan']) {
       const v = a.get(name)

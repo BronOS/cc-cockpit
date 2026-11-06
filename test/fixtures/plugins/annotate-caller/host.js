@@ -61,6 +61,38 @@ const ISSUE_FACTS =
   '<dt>Reporter</dt><dd><span class="person">Bob Stone</span></dd><dt>Sprint</dt><dd>Sprint 7</dd>' +
   '<dt>Labels</dt><dd>login, redirect</dd><dt>Components</dt><dd>Auth</dd><dt>Fix version</dt><dd>2.0</dd></dl>'
 
+// The original command (feature 'original'): a mail whose original HTML is a breakout attempt handed
+// to the reviewer as is, with no sanitizer of a caller in front (the frame must hold on its own):
+// script, event handlers, an SVG onload, CSS url() and @import to http, a meta refresh, a form, a
+// javascript: link, a base href, a stylesheet link, an iframe. Next to it, what the Original view is
+// for: a layout table with inline background colours, a struck-out old value, a picture from an
+// asset, and a link (it must not navigate the frame). Every URL points at 127.0.0.1:9 (nothing
+// listens there): the test records every request the app makes and expects none to it.
+const EVIL = 'http://127.0.0.1:9'
+const ORIGINAL = `<!doctype html><html><head>
+<meta http-equiv="refresh" content="0;url=${EVIL}/refresh">
+<base href="${EVIL}/base/">
+<link rel="stylesheet" href="${EVIL}/link.css">
+<style>@import url(${EVIL}/import.css); .hero { background-image: url(${EVIL}/style-bg.png); } .old { color: #bf2600; text-decoration: line-through }</style>
+<script>console.log('PWNED head script'); fetch('${EVIL}/script')</script>
+</head><body style="background:#fff">
+<script>console.log('PWNED body script')</script>
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#f4f5f7"><tr><td class="hero" style="padding:12px;background:url(${EVIL}/inline-bg.png)">
+<p id="designed">Status: <span class="old">To Do</span> <span style="background-color:#e3fcef;color:#006644">In Progress</span></p>
+<p><a id="view" href="https://jira.example.com/browse/PROJ-7" style="display:inline-block;padding:20px">View issue</a></p>
+<p><a id="js" href="javascript:console.log('PWNED link')">Run</a></p>
+<img id="pic" data-asset="org-1" alt="Diagram" width="40" height="40">
+<img src="${EVIL}/remote.png" onerror="console.log('PWNED onerror')" alt="remote">
+<svg onload="console.log('PWNED svg')"><circle r="4"/></svg>
+<form action="${EVIL}/form"><input name="q" value="typed"><button>Send</button></form>
+<iframe src="${EVIL}/frame"></iframe>
+</td></tr></table>
+</body></html>`
+const MAIL_HTML = `
+<h1>[JIRA] PROJ-7 moved to In Progress</h1>
+<div class="mail-msg"><div class="mail-head"><div class="mail-who">Jira</div></div>
+<div class="mail-body" data-reader="m1"><p>Reader text: Status To Do, now In Progress.</p></div><div data-original="m1"></div></div>`
+
 exports.activate = (ctx) => {
   const file = path.join(process.env.HOME, 'annotate-caller.json')
   const seen = { calls: [] }
@@ -107,6 +139,28 @@ exports.activate = (ctx) => {
     } catch (err) {
       seen.calls.push({ ok: false, error: String(err && err.message ? err.message : err) })
     }
+    save()
+  })
+  ctx.commands.register('original', async () => {
+    try {
+      const r = await reviewer.annotate({
+        title: '[JIRA] PROJ-7 moved to In Progress',
+        kind: 'mail',
+        html: MAIL_HTML,
+        originals: [{ id: 'm1', html: ORIGINAL }],
+        assets: [{ id: 'org-1', name: 'diagram.png', mime: 'image/png', dataUrl: PNG }],
+        key: 'mail:original',
+      })
+      seen.calls.push({ ok: true, value: r })
+    } catch (err) {
+      seen.calls.push({ ok: false, error: String(err && err.message ? err.message : err) })
+    }
+    save()
+  })
+  // The Original | Reader switch of the page comes back as the service event `view`.
+  seen.views = []
+  if (typeof reviewer.on === 'function') reviewer.on('view', (d) => {
+    seen.views.push(d)
     save()
   })
   // The well-known `file` type (design-next §3.3): the bundled editor adds "Edit" to the toolbar for

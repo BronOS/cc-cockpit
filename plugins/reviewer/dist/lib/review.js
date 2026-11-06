@@ -491,6 +491,39 @@ function checkCompanion(c, budget) {
   return { title, html, assets, url, facts, label, urlLabel }
 }
 
+// annotate's `originals` (feature 'original', app 0.13.0): the main document's parts as their sender
+// made them (a designed mail's own HTML and CSS), each shown by the page in a sandboxed frame at the
+// caller's `div[data-original=<id>]`, in place of `div[data-reader=<id>]` (src/page/original.mjs).
+const MAX_ORIGINALS = 50
+const ORIGINAL_ID = /^[a-z][a-z0-9-]{0,39}$/ // the shape of sanitize.mjs's data-original values
+const VIEWS = ['original', 'reader']
+
+/**
+ * annotate's `originals`: absent/null/empty (null), or at most MAX_ORIGINALS { id, html }, ids of
+ * ORIGINAL_ID unique, each html a string without NUL, MAX_ANNOTATE_HTML UTF-8 bytes in all (a budget
+ * apart from `html`'s: a thread is in both, once per view).
+ */
+function checkOriginals(list) {
+  if (list === undefined || list === null) return null
+  if (!Array.isArray(list)) throw new ReviewError('originals must be an array of { id, html }')
+  if (list.length > MAX_ORIGINALS) throw new ReviewError(`at most ${MAX_ORIGINALS} originals`)
+  const seen = new Set()
+  let bytes = 0
+  const out = list.map((o, i) => {
+    const at = `originals[${i}]`
+    if (!isObj(o)) throw new ReviewError(`${at} must be { id, html }`)
+    if (typeof o.id !== 'string' || !ORIGINAL_ID.test(o.id)) throw new ReviewError(`${at}.id is 1-40 of a-z 0-9 - starting with a letter`)
+    if (seen.has(o.id)) throw new ReviewError(`${at}.id ${o.id} is used twice`)
+    seen.add(o.id)
+    if (typeof o.html !== 'string') throw new ReviewError(`${at}.html must be a string`)
+    if (o.html.includes('\0')) throw new ReviewError(`${at}.html contains a NUL byte`)
+    bytes += Buffer.byteLength(o.html, 'utf8')
+    if (bytes > MAX_ANNOTATE_HTML) throw new ReviewError(`originals are larger than ${MAX_ANNOTATE_HTML / 1024 / 1024} MiB in all`)
+    return { id: o.id, html: o.html }
+  })
+  return out.length ? out : null
+}
+
 /**
  * annotate's options, checked: { title, text, html, aside, assets, url, key, tabId, companion }
  * (exactly one of text and html is a string, the other null), or a ReviewError naming the bad
@@ -507,7 +540,7 @@ function checkCompanion(c, budget) {
  * checkCompanion's answer.
  */
 function annotateInput(o) {
-  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start?, type?, kind? }')
+  if (!isObj(o)) throw new ReviewError('annotate takes { title, text | html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion?, start?, type?, kind?, originals?, view? }')
   const title = checkTitle(o.title, 'title')
   // The main column's header bar, shown only beside a companion (the title cut, when not given).
   const label = checkLabel(o.label, 'label', MAX_ANNOTATE_LABEL) || shorten(title, MAX_ANNOTATE_LABEL)
@@ -552,7 +585,13 @@ function annotateInput(o) {
   if (given(o.kind) && o.kind !== 'mail') throw new ReviewError("kind must be 'mail' (or absent)")
   if (given(o.kind) && html === null) throw new ReviewError('kind goes with html, not text')
   const kind = o.kind === 'mail' ? 'mail' : null
-  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start, type, kind }
+  // The Original view (feature 'original'): the main document's originals, and which view opens
+  // ('original' by default when there are originals; the person's switch is told as the `view` event).
+  if (given(o.originals) && html === null) throw new ReviewError('originals go with html, not text')
+  const originals = html === null ? null : checkOriginals(o.originals)
+  if (given(o.view) && !VIEWS.includes(o.view)) throw new ReviewError("view must be 'original' or 'reader'")
+  const view = originals ? (o.view === 'reader' ? 'reader' : 'original') : null
+  return { title, text, html, aside, assets, url, key, tabId: typeof o.tabId === 'string' ? o.tabId : undefined, label, urlLabel, companion, start, type, kind, originals, view }
 }
 
 // ---- actions and update (features 'actions' and 'update', app 0.13.0) ----
@@ -817,6 +856,9 @@ module.exports = {
   updateInput,
   assetBudget,
   checkAssets,
+  checkOriginals,
+  MAX_ORIGINALS,
+  VIEWS,
   MAX_MESSAGE,
   MAX_CONTEXT,
   MAX_TYPE_DATA,
