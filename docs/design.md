@@ -309,6 +309,12 @@ plugins", design-next §4), built on the public API only:
   this window"). A layout stored before 0.10 holds the old core key `core/sessions`: it is read as
   `cockpit.sessions/sessions` in the same zone, order, open state and size
   (`RENAMED_PANEL_KEYS`, `shared/layout.ts`).
+- **Sessions API additions (0.11)**: `ctx.sessions.open` takes `model` (`haiku`, `sonnet`, `opus`) and `effort` (`low`..`max`),
+  closed lists in `shared/session-options.ts` checked in the host and again in main, passed as `--model` / `--effort` before
+  the prompt on a fresh tab only (never a resumed one). `SessionInfo.typed` is set by main on the first renderer input chunk
+  that is the person's (`main/sessions/terminal-reports.ts`: focus, mouse, cursor, device-attribute, DECRPM, OSC and DCS
+  replies alone do not count; keys, a paste, a wheel scroll as arrows do). Only the `tabs.input` handler sets it, so a gate
+  delivery never does. It survives a restart of the same tab and is not persisted.
 - **Replacing it**: another plugin provides `sessions-strip` and appears in its pick; the panel is
   replaced by turning `cockpit.sessions` off (project or app-wide) and enabling one's own. With
   neither there is no strip and no Sessions panel; the tab dots, `ccc sessions` and notifications
@@ -1281,7 +1287,7 @@ un-maximising lands there. New projects and the picker keep the default sizes
 | `plugin config <id> [--json]` / `plugin config <id> [--scope app\|global\|project] key=value…` / `plugin config <id> --use-global key…` | the plugin's settings (one `scope key = JSON` line per top-level field, a secret only `set` / `not set`) or a save through the Settings form's own path (`settings.pluginSettingsSave`: the same schema check, then `ctx.onSettingsChange`); a value is JSON if it parses, else text; the scope is the one whose schema declares the key (both: `--scope` needed); `global` is the global value of a project field, `project` an override, `--use-global` drops an override; a secret field is refused, a person sets it in Settings |
 | `panel show <plugin>/<panel>` | reveals the panel in the caller's project window (unhidden, opened, its zone expanded: what `ctx.panels.show` does); refused for an unknown or not enabled plugin, an undeclared panel, or a project with no open window |
 | `plugin new <dir>` / `link <dir>` / `unlink <id>` / `list` / `logs <id> [--follow]` | the plugin dev loop; `new` and `logs` are local, `link` asks the person to confirm in a native dialog (Deny is the default); the dialog rate limit is per window and counts only requests that reach a dialog; linking an already-linked folder (same id and path) only enables it in the calling project after the confirm; the manifest is re-checked against the inspected id, so a swap between dialog and link is refused |
-| `<name> …` | a command a plugin declared in `contributes.cli`; main routes it to the owning plugin of the caller's project (30 s limit, 256 KiB each for stdin, stdout and stderr); `ccc help` lists them inside a tab |
+| `<name> …` | a command a plugin declared in `contributes.cli`; main routes it to the owning plugin of the caller's project (30 s limit, 256 KiB each for stdin, stdout and stderr); `CliCall.tabId` is the caller's Claude tab, from its session token only (`caller.kind === 'session'`), never from args; `ccc help` lists them inside a tab |
 
 A plugin command never waits without a bound. A plugin that is reloading or still starting is waited for
 inside the same 30 s (`HostManager.waitCliReady`), and the command then runs in the new copy; if it is not
@@ -1385,6 +1391,10 @@ All decided in phase 1:
 
 ### Implementation notes (differences from the sections above)
 
+- Send origin and takeover: every queued text has an `origin`, `plugin` (`ctx.sessions.send`) or `core` (Discuss, the test
+  hook); `SessionRegistry.send` has no default. Once a tab is `typed`, a plugin send rejects ("the person is typing in this
+  tab", the `sends` budget refunded) and the moment it turns true the tab's queued `plugin` texts are dropped (logged, no
+  event to plugins). `core` texts stay (the person started them) and a paste already being delivered is not undone.
 - The send gate also refuses text starting with `/`, `!`, `#` or `&` (slash commands, bash mode,
   memory and background prompts could bypass a permission prompt).
 - Plugin settings schemas may not use regexes (`pattern`, `patternProperties`): ReDoS in main.

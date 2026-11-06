@@ -213,6 +213,13 @@ with full Node access.
   setting is on and after its first run. `active: true` marks the tab the window shows (selected in its tab pane), the one
   the person is looking at; absent on the others, and on all of them while a shell tab is
   selected. Selection only: the window may be in the background.
+  `typed` is `true` once the person typed or pastes into the tab (a key before Enter counts); `false` until then. Terminal
+  reports the terminal sends by itself (focus on switching to the tab, mouse clicks, cursor position and device replies) do
+  not count; a wheel scroll does (it arrives as arrow keys). It is never cleared while the tab exists (a restart of the same
+  tab keeps it), not persisted across an app restart, and reaches `onChange`. An older app has no `typed`: detect support with
+  `typeof typed === 'boolean'` on some session (unknown until a Claude tab exists). Once `typed`, `ctx.sessions.send` to the
+  tab rejects with "the person is typing in this tab", and texts already queued by plugins for it are dropped at that moment,
+  with no event to the plugin; a paste already being delivered is not undone. Discuss with Claude is unaffected.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
   included (at most 4 a second).
 - `ctx.sessions.list({ scope: 'all' })` and `onChange(listener, { scope: 'all' })`: every window's
@@ -243,7 +250,7 @@ with full Node access.
   `--model` / `--effort`; leave them out for the person's default, anything else rejects naming the field.
   The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
   window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores
-  `focus`, `model` and `effort`.
+  `focus`, `model` and `effort`, silently: it starts the tab with the default model.
 
 ## Files
 
@@ -279,7 +286,10 @@ with full Node access.
   cwd (resolve relative paths against it) and an AbortSignal (Ctrl+C, the 30 s limit, deactivate).
   It returns `{ stdout?, stderr?, code? }` (code 0-255, default 0); each output is cut at 256 KiB
   once JSON-encoded. A throw is exit 1 with the message on stderr, 30 s without an answer is exit
-  124, and at most 4 calls of one plugin run at once.
+  124, and at most 4 calls of one plugin run at once. The call also has `tabId`: the Claude tab that ran
+  the command, set by the app from the caller's session token (never from the arguments, so a tab cannot name
+  another); absent for a shell tab, a command tab, an overlay terminal, `--project` and on an app older than 0.11.
+  Use it to accept a command only from the tab you opened (`ccc myplugin stop` from its own session).
 - `ctx.services`: calls between the plugins of one project window, declared in the manifest's
   `services` (`plugins` topic). Only names declared there are accepted, else it throws.
   - `ctx.services.provide(name, impl)`: `impl` is a plain object of functions (no method `on`,

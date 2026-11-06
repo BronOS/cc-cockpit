@@ -197,12 +197,14 @@ External review: sol / high
   `docs/design.md`, `docs/features.md`, `~/Projects/cc-cockpit-autopilot/docs/design-v2.md`
 - Modify tests: `test/unit/cli-guide.test.ts` if the drift test needs the new members
 
-- [ ] guide: `sessions.open` `model` / `effort` (values, absent = default, an older app drops them); `SessionInfo.typed`
+- [x] guide: `sessions.open` `model` / `effort` (values, absent = default, an older app drops them); `SessionInfo.typed`
       (what counts as typing, what does not, the send refusal and the dropped queue); `CliCall.tabId`
-- [ ] copy the SDK types to the example; `docs/design.md` sessions API, send gate and plugin CLI sections;
+- [x] copy the SDK types to the example; `docs/design.md` sessions API, send gate and plugin CLI sections;
       `docs/features.md`
-- [ ] design-v2: `typed` is a boolean on 0.11 and how Autopilot detects support; `myNames`; `CliCall.tabId` for stop
-- [ ] run the drift tests and `npm test` - must pass before Task 6
+- [x] design-v2: `typed` is a boolean on 0.11 and how Autopilot detects support; `myNames`; `CliCall.tabId` for stop
+- [x] run the drift tests and `npm test` - must pass before Task 6
+
+- ➕ Guide: `model`/`effort` text was already in api.md from Task 1; added `typed` (with the detect-by-`typeof` hint) and `CliCall.tabId`. design.md: one bullet each under Sessions panel, send gate notes and the plugin CLI table row. No drift-test change needed.
 
 ### Task 6: e2e for typing and session options [model: sonnet]
 

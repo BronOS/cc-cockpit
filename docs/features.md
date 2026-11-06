@@ -96,6 +96,7 @@ behind it are in [design.md](design.md).
   your hooks or MCP servers run and no transcript is kept), one small request per gist: only when the prompts changed,
   at most one a minute per tab and two at once. Failures are logged only. Turning it off cancels runs and hides gists.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
+- Typing in a Claude tab takes it over from plugins: once you type or paste there, plugins can no longer send text into it and their queued texts are dropped (clicks, focus and terminal replies do not count; Discuss with Claude still works).
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
   right-click on its icon); an overlay stack (terminal, html, url).
 - Side zones give way to a narrow terminal (Settings > General > Side panels, on by default, minimum
