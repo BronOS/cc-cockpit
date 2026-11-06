@@ -106,6 +106,16 @@ withSessions('a tab needing permission in window B leads window A’s strip, and
     await expect(strip.nth(0)).toContainText(`${nameB} · needs permission`)
     await expect(strip.nth(1)).toHaveAttribute('data-status', 'waiting')
     await expect(strip.filter({ hasText: 'working' })).toHaveCount(0)
+    // The strip reports its entries' width (ccPanel.slot.setWidth) and the frame takes it, so the
+    // rest of the bar is left to drag the window on macOS (rounded up; the bar may cap it lower).
+    const stripFrame = pageA.locator('.top-strip [data-slot-frame][data-slot-plugin="cockpit.sessions"]')
+    const rowWidth = await pageA
+      .frameLocator('.top-strip iframe[title="sessions-strip slot"]')
+      .locator('#row')
+      .evaluate((el) => Math.ceil(el.getBoundingClientRect().width))
+    expect(rowWidth).toBeGreaterThan(0)
+    await expect(stripFrame).toHaveAttribute('data-page-width', String(rowWidth))
+    expect((await stripFrame.boundingBox())!.width).toBeLessThanOrEqual(rowWidth + 1)
     // The status dot of A's own tab.
     await expect(pageA.locator('.tab .status-dot')).toHaveAttribute('data-status', 'working')
 

@@ -5,13 +5,18 @@
     <title>Other windows' sessions</title>
     <script src="/__sdk/panel.js"></script>
     <script src="/dist/lib/view.js"></script>
+    <script src="/dist/lib/strip-width.js"></script>
     <script src="strip.js" defer></script>
     <style>
-      /* The app's top bar: this page has the bar's height and the width left between the project
-         name and the "+". Transparent, so the bar (and its project tint) shows through; with no
-         entry nothing is drawn at all. */
+      /* The app's top bar: this page has the bar's height and the width it reports (strip.js), which
+         the bar caps so a drag gap is always left. Transparent, so the bar (and its project tint)
+         shows through; with no entry nothing is drawn at all. #list scrolls sideways when the cap
+         is less than the row; #row is the entries at their own width (max-content), which is what
+         is reported: measuring #list, the frame's width, would only echo the frame back. */
       html, body { height: 100%; margin: 0; background: transparent; overflow: hidden; }
-      #list { height: 100%; display: flex; align-items: center; gap: 4px; padding: 0 4px; overflow-x: auto; scrollbar-width: none; }
+      #list { height: 100%; display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; }
+      #row { flex: none; width: max-content; display: flex; align-items: center; gap: 4px; padding: 0 4px; }
+      #row:empty { padding: 0; }
       .entry { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px 0 9px; font-size: var(--cc-text-s); color: var(--cc-fg-muted); background: none; border: 1px solid transparent; white-space: nowrap; }
       .entry:hover { border-color: var(--cc-border-strong); color: var(--cc-fg); }
       .entry .project { color: var(--cc-fg); font-weight: 500; }
@@ -29,6 +34,6 @@
     </style>
   </head>
   <body>
-    <nav id="list" aria-label="Other windows' Claude sessions"></nav>
+    <nav id="list" aria-label="Other windows' Claude sessions"><div id="row"></div></nav>
   </body>
 </html>

@@ -3,8 +3,12 @@
 // first (ccSessionsView.stripView, dist/lib/view.js). The host sends `strip`; the page sends `hello`
 // and `focus`. With no entry the page draws nothing, so the bar keeps only its "+". Texts are other
 // projects' names and Claude's status words: textContent only.
+//
+// The page reports the entries' width (ccStripWidth, dist/lib/strip-width.js): the bar sizes the
+// frame to it, so the rest of the bar still drags the window (macOS) and zooms it on a double-click.
 
-const list = document.getElementById('list')
+const row = document.getElementById('row')
+const width = ccStripWidth.watchWidth(row, () => ccPanel.slot, typeof ResizeObserver === 'function' ? ResizeObserver : undefined)
 
 function entryEl(entry) {
   const b = document.createElement('button')
@@ -37,7 +41,10 @@ function entryEl(entry) {
 
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object' || m.type !== 'strip' || !Array.isArray(m.entries)) return
-  list.replaceChildren(...m.entries.map(entryEl))
+  row.replaceChildren(...m.entries.map(entryEl))
+  // The first strip comes after the shell said this is a slot (`ccPanel.slot` is set by then), and
+  // an empty strip changes no size the observer would see: report on every strip, repeats are dropped.
+  width.report()
 })
 
 ccPanel.post({ type: 'hello' })
