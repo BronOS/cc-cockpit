@@ -228,13 +228,17 @@ External review: sol / high
 - Create: `dist/lib/sources.js` (adapted from Inbox's `dist/lib/sources.js`), `test/sources.test.js`
 - Modify tests: `test/host.test.js`, `test/fakes.js`
 
-- [ ] item validation copied from Inbox (caps, unknown fields dropped, a bad item logged and skipped)
-- [ ] baseline and news per design-v2 "Sources": the first snapshot per source per host start and switch-on is a
+- [x] item validation copied from Inbox (caps, unknown fields dropped, a bad item logged and skipped)
+- [x] baseline and news per design-v2 "Sources": the first snapshot per source per host start and switch-on is a
       baseline; later `item` and `sync` compared with the in-memory `seen`; prune on `gone` and on a sync without the key
-- [ ] events during a pending `snapshot()` buffered and applied after it; the latest copy of each item kept
-- [ ] tests: baseline fires nothing; a later sync with a new item is news (the outage case); a read change (same rev)
+- [x] events during a pending `snapshot()` buffered and applied after it; the latest copy of each item kept
+- [x] tests: baseline fires nothing; a later sync with a new item is news (the outage case); a read change (same rev)
       is not; buffered events applied in order; prune on gone
-- [ ] run `npm test` - must pass before Task 8
+- [x] run `npm test` - must pass before Task 8
+
+- ➕ `dist/lib/sources.js` is Inbox's store plus `seen`/`baselined` per source and `onNews(pluginId, items)`; `rebaseline()` is called on switch-on (the store tracks while off, the host judges only while on). `tick()` no longer re-reads every source: sources push, so the 60 s pass snapshots only a source that never loaded or has an error; the panel refresh (`tick(true)`) snapshots all, and a later snapshot finds news like a sync. `dist/lib/util.js` (isObj, why, withTimeout with injectable timers) added; `feed.js` is now Inbox's v2 `feed.js` without `actReplyOf`, and its v1 `LEVELS`/`itemsOf` are gone.
+- ➕ Temporarily until Tasks 8-9: `host.js` `legacy(it)` maps a v2 item to the v1 shape (`where` = `place.name`, `from` = `from.name`/address) for `matchRule`, the prompt and Jev; v2 items have no level, so a rule's `match.level` never holds. `fakes.js` `item()`/`fakeFeed` are v2 now (`t.push` emits a `sync`); `ap.sources` is `{ list }`.
+- Tests: 104 pass, 0 fail (was 88).
 
 ### Task 8: v2 rule format with required sources [model: sonnet]
 
@@ -244,13 +248,19 @@ External review: sol / high
 - Modify: `dist/lib/schema.js`, `dist/lib/rules.js`, `dist/lib/format.js`, `examples/rules.json` (v2, every rule off)
 - Modify tests: `test/rules.test.js`, `test/format.test.js`
 
-- [ ] schema: `id`, `name`, `enabled`, `sources` (required: 1-20 ids by the app's `PLUGIN_ID_PATTERN`, at most 100
+- [x] schema: `id`, `name`, `enabled`, `sources` (required: 1-20 ids by the app's `PLUGIN_ID_PATTERN`, at most 100
       characters, or exactly `["*"]`), `when` (0-20), `jev`, `hours`, `playbook` (required), `check` (≤ 500), `model`,
       `effort`, `onChange`, `limits`; `when` may be empty only with `jev` or as a sources-only rule
-- [ ] a v1 entry (`match`, `triage`) is reported as "v1 rule: rewrite it" and never runs; other entries keep working
-- [ ] `format` documents the v2 format (generated from the same constants, tested against them)
-- [ ] tests: every field valid and invalid; missing sources; `["*"]` with another id refused; v1 entry flagged
-- [ ] run `npm test` - must pass before Task 9
+- [x] a v1 entry (`match`, `triage`) is reported as "v1 rule: rewrite it" and never runs; other entries keep working
+- [x] `format` documents the v2 format (generated from the same constants, tested against them)
+- [x] tests: every field valid and invalid; missing sources; `["*"]` with another id refused; v1 entry flagged
+- [x] run `npm test` - must pass before Task 9
+
+- ➕ `dist/lib/conditions.js` is a UMD file like `schema.js` (no require; the global `AutopilotConditions` in the panel, loaded before `schema.js` by `panels/main.html`); `schema.js` validates `when` with its `conditionOf`. `conditions.test.js` is Inbox's cases (8 tests, adapted to `bare()` items) plus `conditionText`/`actualText`.
+- ➕ Schema decisions: `when` absent or `[]` is always allowed (a sources-only rule; the "confirm" is the form's, Task 13); a v1 entry is any object with `match` or `triage` and gets the single error "v1 rule: rewrite it" (`S.isV1`, `S.V1_MESSAGE`), toggling it is refused; v1 `note`/`on`/`condition` are now ordinary unknown keys (warned, `on: false` does not switch a v2 rule off); `sources` duplicates are dropped, `"*"` must stand alone, ids are lower case by `PLUGIN_ID` (the app's pattern, 100 chars). The panel's rows still say `on` in the published state (host maps `enabled`). A playbook's front matter `model:` is now ignored with a warning (the rule names it), so `parsePlaybook` no longer returns `model`; `loadFolder` no longer adds a MODEL_NOTE (the "needs cc-cockpit 0.11" note is Task 11/13). `canonicalRule` keeps unknown keys inside `jev`, `hours` and `limits` as before.
+- ⚠️ Temporary until Task 9: `dist/lib/match.js` `matchRule(rule, pluginId, item, { kindOf, now })` checks `sources` then `when` (no Jev, no first-rule-wins, no also-matched), reading the v2 item through `legacy(it).v2`; `host.js` Jev still asks about `where`/`from`/`title` of the v1 view and `tryRule` order is unchanged (hours, then Jev). `prompt.js` takes `rule.condition` (the host passes `rule.check || ''`; empty omits the check sentences, Task 10 renames it properly).
+- ⚠️ Temporary until Task 13: the panel's rule form (`viewlogic.js` `formFromRaw`/`formToRule`/`formErrors`, `main.js`) is still the v1 form; saving from it is refused by the loader ("v1 rule: rewrite it"), so new and edited rules go through the file or Claude until then. Toggle and delete work (host writes `enabled`). Three tests of that form are `skip`ped with the reason (`panel.test.js` x2, `hours.test.js` x1); `ccc autopilot format` and `examples/rules.json` (every rule `enabled: false`) are v2.
+- Tests: 113 pass, 0 fail, 3 skipped (was 104 pass; 12 new tests in `conditions`/`rules`, the rest rewritten for v2).
 
 ### Task 9: rule evaluation: first rule wins, Jev waits [model: opus]
 
@@ -258,13 +268,20 @@ External review: sol / high
 - Modify: `dist/lib/match.js` (or a new `dist/lib/evaluate.js`), `dist/host.js`
 - Modify tests: `test/match.test.js`, `test/hours.test.js`
 
-- [ ] order per rule: enabled, sources, hours, field conditions, Jev; the first rule that holds is the item's rule;
+- [x] order per rule: enabled, sources, hours, field conditions, Jev; the first rule that holds is the item's rule;
       "also matched" from field conditions and cached Jev answers only
-- [ ] Jev: the decision waits for the first pending answer (≤ 45 s), lower rules do not fire meanwhile; unavailable →
+- [x] Jev: the decision waits for the first pending answer (≤ 45 s), lower rules do not fire meanwhile; unavailable →
       retry after 10 minutes, logged; cache in `ctx.appStorage` `jv:` keys per question and rev, pruned
-- [ ] tests: first wins and also-matched logged; a pending Jev answer holds a lower rule; unavailable retries, never
+- [x] tests: first wins and also-matched logged; a pending Jev answer holds a lower rule; unavailable retries, never
       falls through; also-matched makes no request; hours before Jev (no request outside hours)
-- [ ] run `npm test` - must pass before Task 10
+- [x] run `npm test` - must pass before Task 10
+
+- ➕ `dist/lib/match.js` `evaluate(rules, pluginId, item, { kindOf, now, jevAnswer, jevCached })` → `fire` / `wait` / `retry` / `none` with `also` and a `trace` (off, hours, Jev under `min`); `matchRule` is now the field part (sources, `when`) over the v2 item, no `.v2`. A limit or refused open of the item's rule does not hand the item to a lower rule.
+- ➕ New `dist/lib/jev.js`, Inbox's cut down: `grid` over `title + preview` (no place or sender any more), batched per question, 2 s pace, 45 s call limit, `jv:` keys in `ctx.appStorage` (an in-memory store when absent), 14-day prune, other windows' answers loaded every 10 min. Unavailable (no provider, failure, no score, full queue) blocks the key 10 min and hands the ref back then; a failed call also hands it back at once so the retry is logged. `cached()` never asks; `ask()` is the dry run's await.
+- ➕ The host keeps `waiting` (key → ref, in memory, cleared on switch-off) and decides again only those refs, with the store's latest copy; an item gone meanwhile is dropped. Fire log entries carry `also: [ruleIds]` (CLI log line and panel row show "also matched"); a `none` decision logs its hours and Jev-under-min traces, not off rules.
+- ➕ Dry run: decided as live; rows for the trace, the decision, also-matched, and rules below that match on fields (off, out of hours, "waits for the Jev answer of X", "X comes first"); `test <rule>` shows that rule's rows decided over all rules. `--jev` asks through `jev.js` (cached for live), up to 10, a 20 s wait. Tests drive lib/jev.js's lane timer with `drive(clock, p)` (fakes.js); `fakeJev` is a `grid` provider now.
+- ⚠️ Temporary until Task 10: `legacy(it)` stays only for `buildPrompt`. Until Task 11: sessions open the v1 way (no model/effort, no item→tab record, no cap) and an `onChange` rule opens a new tab per rev; marked ⚠️ in `tryRule`.
+- Tests: 126 pass, 0 fail, 3 skipped (was 113; new `test/jev.test.js`, evaluate cases in `match.test.js`, host cases for wait / retry / also-matched / first-wins).
 
 ### Task 10: prompt frame and delivery text [model: sonnet]
 
@@ -272,12 +289,15 @@ External review: sol / high
 - Modify: `dist/lib/prompt.js`
 - Modify tests: `test/prompt.test.js`
 
-- [ ] the frame uses `check`, adds the `onChange` lines and the stop line with the run id (`ccc autopilot stop <run>`)
-- [ ] `deliveryText(item, rev, runId)` per design-v2 (fresh marker each time, marker look-alikes stripped, untrusted and
+- [x] the frame uses `check`, adds the `onChange` lines and the stop line with the run id (`ccc autopilot stop <run>`)
+- [x] `deliveryText(item, rev, runId)` per design-v2 (fresh marker each time, marker look-alikes stripped, untrusted and
       read-only lines repeated); Tasks 11 and 12 use these two functions
-- [ ] tests: markers fresh per prompt and per delivery; look-alikes stripped; no `check` → no check sentence; the v1
+- [x] tests: markers fresh per prompt and per delivery; look-alikes stripped; no `check` → no check sentence; the v1
       injection fixtures still pass against both texts
-- [ ] run `npm test` - must pass before Task 11
+- [x] run `npm test` - must pass before Task 11
+
+- ➕ `buildPrompt({ rule, pluginId, item, playbook, marker, runId })` takes the v2 item directly (`place.name`, `from.name`/`address`, `preview` when present; no level or Jira key any more); `legacy()` is gone from `host.js`. The `onChange` lines (newer version, stop) are in the frame only when `rule.onChange`, and then `runId` is required. `deliveryText(item, rev, runId, { randomBytes, pluginId })` leaves the source out unless the caller passes `pluginId`. Run ids are checked by `RUN_ID` (`[A-Za-z0-9_-]{1,64}`) since they go into a command line; `newRunId()` makes `r` + 12 hex. Until Task 11 `tryRule` makes a run id per open with `newRunId` (text only, nothing records it).
+- Tests: 133 pass, 0 fail, 3 skipped (was 126 pass; 7 new in `prompt.test.js`).
 
 ### Task 11: runs: one tab per item, cap and queue [model: opus]
 
@@ -286,19 +306,26 @@ External review: sol / high
 - Modify: `dist/host.js`, `dist/lib/state.js`, `plugin.json` (project settings `maxRunning`, `myNames`),
   `test/fakes.js`, `test/manifest.test.js`
 
-- [ ] item→tab records in `ctx.storage` (`tabId`, `sessionId`, rule, rev, openedAt, deliveries, stopped, runId)
+- [x] item→tab records in `ctx.storage` (`tabId`, `sessionId`, rule, rev, openedAt, deliveries, stopped, runId)
       checked against `ctx.sessions.list()` on every `onChange` and before each decision; an in-memory **opening** entry
       from fire to `open()` resolving
-- [ ] restart: re-adopt a record by `sessionId` on a restored tab as taken over; drop records with no tab
-- [ ] slots (`maxRunning`, default 3, 1..10): held by opening entries and by tabs in `starting` or `working`;
+- [x] restart: re-adopt a record by `sessionId` on a restored tab as taken over; drop records with no tab
+- [x] slots (`maxRunning`, default 3, 1..10): held by opening entries and by tabs in `starting` or `working`;
       `waiting`, `needs-permission` and `ended` hold none (a burst must not open past the cap before tabs turn working).
       Queue in memory, one entry per key (newest rev), at most 50, re-checked from the top with the latest copy when a
       slot frees; limits as v1
-- [ ] `ctx.sessions.open({ cwd, prompt, model, effort })` with the Task 10 frame; a tab that ends right after opening is
+- [x] `ctx.sessions.open({ cwd, prompt, model, effort })` with the Task 10 frame; a tab that ends right after opening is
       logged with its rule; support detection per Solution Overview (the "needs cc-cockpit 0.11" note)
-- [ ] tests: closed tab frees the item; a second rev while opening opens nothing; restored tab re-adopted; a burst of 5
+- [x] tests: closed tab frees the item; a second rev while opening opens nothing; restored tab re-adopted; a burst of 5
       opens 3; the fourth queues; a finished or ended tab frees a slot; queue dedupe and re-check (gone, read, new rev)
-- [ ] run `npm test` - must pass before Task 12
+- [x] run `npm test` - must pass before Task 12
+
+- ➕ `dist/lib/runs.js` owns its own `ctx.storage` key `runs` (records checked on load, at most 200), so `state.js` is unchanged. Grace periods, since the list is a moment late: a just-opened tab not yet listed is kept (and holds a slot) for 30 s; a record loaded at start whose tab is not listed is kept for 60 s (restored tabs may come after the host starts) and holds no slot; a tab seen once and then gone is dropped at once. Re-adoption matches `sessionId` (restore resumes it) to a tab no other record holds and sets `takenOver: true` (stored). `idle` holds no slot (only `starting`/`working`).
+- ➕ The runs are checked with `ctx.sessions.list()` once per batch of decisions (judge, Jev answers), on every `onChange` (its list, no extra call) and in the 60 s pass (so a never-listed record is dropped even with no event); `onChange` also drains the queue when a slot is free. The queue keeps an entry's place when a newer rev comes (the latest copy is read from the store at dequeue), logs "queued" once per entry, logs the oldest dropped at 50 and an item gone meanwhile; anything but a fire on re-decision takes it out; switch-off clears it.
+- ➕ Order in `tryRule`: limits, playbook, cap (queue), then the opening entry and `open({ cwd, prompt, model?, effort? })` (keys only when the rule names them). Run log events (`step: 'run'`, a `note`: tab closed, restored tab re-adopted, ended within a minute of opening) render as notes in `cli.js` `entryLine` and the panel's `logModel`. The fire log entry carries `runId`. `status()` adds `running`, `queued`, `maxRunning`, `slots` and `takeover` (`yes`/`no`/`unknown`, lib/runs.js `support()`) for Task 13; the rule warning "model and effort need cc-cockpit 0.11" shows only when support is `no`. The dry run says "its tab … is open: no second session" for an item with a run.
+- ⚠️ Task 12 hook: `host.js` `onRunUpdate(run, pluginId, it)` is called for any decision about an item with a run (record or opening entry); it only logs `step: 'update'` "updated (rev …), tab … open: nothing sent" for a new rev. Records keep `deliveries`, `stopped`, `takenOver` for it; `RUNS.myNamesOf(settings)` is ready.
+- ⚠️ "Once per item" stays as v1 for a rule without `onChange` (the fired record blocks a new rev even after its tab closed); with `onChange` a closed tab's item opens again on its next rev. The design's "the item is free" is read as "free of its tab", not as dropping the fired record.
+- Tests: 147 pass, 0 fail, 3 skipped (was 133; new `test/runs.test.js` with 13, one manifest test; `host.test.js` once-per-item, limits (`maxRunning: 10`) and the day-later test adjusted for tabs that stay open).
 
 ### Task 12: updates, takeover and stop [model: opus]
 
@@ -306,18 +333,24 @@ External review: sol / high
 - Modify: `dist/lib/runs.js`, `dist/host.js`, `dist/lib/cli.js` (`stop <run>`)
 - Modify tests: `test/runs.test.js`, `test/cli.test.js`
 
-- [ ] while the item's tab exists, a new rev per design-v2's table: `onChange` false → log; true → one pending
+- [x] while the item's tab exists, a new rev per design-v2's table: `onChange` false → log; true → one pending
       update (newest replaces older), delivered with `ctx.sessions.send(tabId, deliveryText(...))` only when the tab is
       waiting and `typed === false`
-- [ ] no deliveries while support is unknown or absent (`typed` not a boolean), when `typed` is true (drop pending, log
+- [x] no deliveries while support is unknown or absent (`typed` not a boolean), when `typed` is true (drop pending, log
       "taken over"), after 5 deliveries, after `stop`; a send rejected by main is logged and the pending update dropped
-- [ ] own reply: the item's `from.name` or `from.address` matches `myNames` (case-insensitive) → logged "your reply",
+- [x] own reply: the item's `from.name` or `from.address` matches `myNames` (case-insensitive) → logged "your reply",
       not delivered; empty `myNames` → no check
-- [ ] `ccc autopilot stop <run>` accepted only when `CliCall.tabId` is that run's tab; refused otherwise (absent
+- [x] `ccc autopilot stop <run>` accepted only when `CliCall.tabId` is that run's tab; refused otherwise (absent
       `tabId` included, an older app)
-- [ ] tests: merge to one pending; delivered only when waiting; typed drops it; unknown support sends nothing; cap of
+- [x] tests: merge to one pending; delivered only when waiting; typed drops it; unknown support sends nothing; cap of
       5; stop from the run's tab works, from another tab or with no tab is refused; own reply skipped
-- [ ] run `npm test` - must pass before Task 13
+- [x] run `npm test` - must pass before Task 13
+
+- ➕ `lib/runs.js`: pending updates in memory (`setPending` returns the rev it replaced, `pendings`, `dropPending`, `clearPending`; switch-off clears them), `blocked(rec)` (taken over, stopped, `DELIVERY_MAX` 5), `delivered()` (deliveries + 1, record rev = the delivered rev, stored), `byRunId`/`stop`, `isOwn(item, names)`; `reconcile` marks a tab with `typed === true` taken over (stored) and drops its pending (`out.takenOver`); `list()` adds `pending` (rev or null), and `status().running` adds `stopped`, `deliveries`, `pending` for Task 13.
+- ➕ `host.js` `onRunUpdate` reads the record's rule by id now: gone, off or no `onChange` → logged "nothing sent" (a rule switched off delivers nothing more); support `no` → logged, nothing pending; `unknown` keeps it pending (the tab is not listed yet). `deliver()` runs in the judging queue after each pending update, on every sessions onChange and in the 60 s pass; it sends only with support `yes`, the tab listed, `typed === false` and `waiting`; the update leaves the pending set before the send, a rejected send is logged and dropped (never retried). Log entries are `step: 'update'` (a `note` for pending / delivered, a `skip` otherwise) and `step: 'run'` notes for taken over and stop.
+- ➕ `ccc autopilot stop <run>` (`RUN_ID` checked in `cli.js`, added to HELP, USAGE and the manifest's `usage`): no `tabId` → exit 1 "accepted only from the run's own Claude tab"; an unknown run and another tab's run get the same answer (exit 1, logged), so a tab learns nothing about other runs; accepted → `stopped` stored, pending dropped, logged once. `fakes.js` gains `sessions.send` as 0.11 main (rejects a typed tab, `ctx.sendError`, `ctx.sent`) and `runCli(argv, tabId)`.
+- ⚠️ A delivery counts once main accepts the send; main may still drop it from its queue if the person types first (no event to the plugin), which only lowers what reaches the tab. A pending update is kept while its item leaves the feed (it is the item's last state). Decision 10's "none after the session reports an injection" is the session's own `ccc autopilot stop` (the frame asks for it); Autopilot reads no session output.
+- Tests: 158 pass, 0 fail, 3 skipped (was 147; 11 new in `runs.test.js`, `cli.test.js` parse cases for `stop`).
 
 ### Task 13: panel: v2 rule form, Running list [model: sonnet]
 
@@ -325,15 +358,19 @@ External review: sol / high
 - Modify: `panels/main.html`, `panels/main.js`, `panels/viewlogic.js`, `dist/lib/manage.js`
 - Modify tests: `test/panel.test.js`, `test/manage.test.js`
 
-- [ ] rule form: sources picker first (providers `useAll` sees + "Any source"; unknown ids kept as "no such source
+- [x] rule form: sources picker first (providers `useAll` sees + "Any source"; unknown ids kept as "no such source
       here"), conditions editor copied from Inbox's settings page, hours, playbook picker, model and effort with
       "Default" first, check, onChange, limits; confirm a sources-only rule
-- [ ] "outsiders can trigger this" flag from `sources` (`*` or a mail source); v1 rules shown as "rewrite it"; the
+- [x] "outsiders can trigger this" flag from `sources` (`*` or a mail source); v1 rules shown as "rewrite it"; the
       "needs cc-cockpit 0.11" / "unknown until a Claude tab exists" note
-- [ ] Running list (rule, since, pending update / taken over / stopped) and the queue
-- [ ] keep v1's editor guarantees (hash check, never lose an entry, atomic write, render gate)
-- [ ] tests: viewlogic for the new fields, flags, notes and lists; manage round-trips a v2 rule with unknown keys kept
-- [ ] run `npm test` - must pass before Task 14
+- [x] Running list (rule, since, pending update / taken over / stopped) and the queue
+- [x] keep v1's editor guarantees (hash check, never lose an entry, atomic write, render gate)
+- [x] tests: viewlogic for the new fields, flags, notes and lists; manage round-trips a v2 rule with unknown keys kept
+- [x] run `npm test` - must pass before Task 14
+
+- ➕ Panel: `viewlogic.js` has the v2 form model (`sourceAll`-style `sourceAny` + `sources`, `when` rows, `jevOn`, `confirmAll`, `model`/`effort` "Default" = key left out), the condition editor functions (`cond*`, copied from Inbox's `logic.js`, driven by `AutopilotConditions.FIELDS`), `sourceChoices`, `outsidersCan` (`*`, a feed of kind `mail`, or an unrunning id containing "mail"), `supportNote`, `runningModel`; a new Running tab (`state.running`/`queued`/`slots`/`maxRunning`). A v1 row shows "rewrite it" and has no Edit (a save would keep `match`/`triage` as unknown keys). The "unknown until a Claude tab exists" note is the panel's (row warning when `takeover` is `unknown`); the host still adds the `no` one. A sources-only rule needs the form's "Fire on every new item" box. `manage.js` needed no change. The new DOM code was only run against a stub DOM (no browser), not in the app.
+- Tests: 167 pass, 0 fail, 0 skipped.
+
 
 ### Task 14: CLI and the autopilot-rules skill [model: sonnet]
 
@@ -342,16 +379,29 @@ External review: sol / high
 - Create: `skills/autopilot-rules/SKILL.md`
 - Modify tests: `test/cli.test.js`, `test/manifest.test.js`
 
-- [ ] `ccc autopilot rules|test|format` speak v2; JSON input as one argument or `-` with `stdinDash`
-- [ ] skill modelled on Inbox's `inbox-rules`: write, test and explain rules and playbooks, the v1 → v2 mapping
-- [ ] tests: each command; `-` reads stdin, no `-` never waits; manifest declares stdinDash and the skill
-- [ ] run `npm test` - must pass before Task 15
+- [x] `ccc autopilot rules|test|format` speak v2; JSON input as one argument or `-` with `stdinDash`
+- [x] skill modelled on Inbox's `inbox-rules`: write, test and explain rules and playbooks, the v1 → v2 mapping
+- [x] tests: each command; `-` reads stdin, no `-` never waits; manifest declares stdinDash and the skill
+- [x] run `npm test` - must pass before Task 15
+
+- ➕ New commands (all through `serial` + `editRules`, the panel's save path, re-reading the folder inside the turn): `rules [list|export|add|set|rm|move|enable|disable]`, `playbooks [list|show|set|rm]`, `test <json|->` (`--at`). `lib/manage.js` gained `locateEntry`, `applyAdd`, `setTarget`/`applySet`, `applyMove`; `applySave` no longer carries a v1 entry's `match`/`triage` into the rewritten rule. A number is the 1-based position in `rules.json` (digits only is always a position), else an id. Exit 0 done, 1 refused (nothing stored), 2 usage or unparsable JSON.
+- ➕ Decisions: `rules add` stores the rule **off** unless the JSON says `enabled` (the skill tells Claude to enable only on the person's word); a rule with no `id` gets `r1`, `r2`, ...; `rules add|set` and `test <json>` refuse a rule whose playbook file does not exist (the panel makes a stub; a tab writes the playbook first); `rules set` keeps the id and on/off when the JSON has none; keys the check ignored are printed "(not stored)". `test <json>` decides the rule as on, in the place of the stored rule with the same id, else at `--at` (default last), id `candidate` when none; nothing is written. The answer notes when Autopilot is off.
+- ➕ The skill `skills/autopilot-rules/SKILL.md` is declared in `plugin.json` (`skills`, `stdin`, `stdinDash`); drift tests in `test/manifest.test.js` check its front matter, the condition table, caps, commands and examples against the code, and the app's own `readSkillFiles` accepts it (run once from the core repo). Tests: 183 pass, 0 fail, 0 skipped. Not done: `rules import` (export, add and set cover it) and the dry run of a playbook.
 
 ### Task 15: Verify acceptance criteria [model: sonnet]
-- [ ] every design-v2 decision (1-10) and the review fixes are implemented; list any gap as ⚠️ here
-- [ ] core: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:e2e` (known failures only)
-- [ ] plugin: `npm test` with the fail count checked by value
-- [ ] dry run against fake feeds: a Chat item fires once, its update merges, typing stops deliveries
+- [x] every design-v2 decision (1-10) and the review fixes are implemented; list any gap as ⚠️ here
+- [x] core: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:e2e` (known failures only)
+- [x] plugin: `npm test` with the fail count checked by value
+- [x] dry run against fake feeds: a Chat item fires once, its update merges, typing stops deliveries
+
+- ➕ Decisions 1-10 and the review fixes each have code and a test: 1 no Inbox import (`dist/` copies only; `test/conditions.test.js`, `test/sources.test.js`); 2 `dist/lib/conditions.js`; 3-5 `dist/lib/schema.js` (`test/rules.test.js`); 6 `dist/lib/runs.js` records and opening entries (`test/runs.test.js` "one tab per item", "a second rev while the tab is opening"); 7 `dist/host.js` `onRunUpdate`/`deliver` (`runs.test.js` "updates merge to one pending"); 8 core `send-gate.ts`/`session-registry.ts` plus `host.js` `reconcile` (`runs.test.js` "typed: ...", e2e `session-takeover.spec.ts`); 9 `runs.js` `running()` (`runs.test.js` "the cap"); 10 `DELIVERY_MAX`, `stop` (`runs.test.js` "at most 5 deliveries", "ccc autopilot stop"). Review fixes: baseline plus later `sync` as news and pruning (`sources.test.js`), Jev waits and retries (`match.test.js`, `host.test.js`), hours before Jev, queue re-check, `CliCall.tabId` stop check, `myNames`, enforcement in main (`send-gate.test.ts`).
+- ➕ Fixed here (plugin commit 4f90a03): design-v2 "Playbooks" says the frame adds the rule's name; `dist/lib/prompt.js:97` used only the id. It now uses `rule.name` when set, else the id (`test/prompt.test.js`, new test). Plugin tests 184 pass, 0 fail.
+- ⚠️ Not implemented, but only a "Proposed" open point of the design (not a decision): the panel does not warn when another open project uses the same rules folder (`docs/design-v2.md` "Open points"; nothing in `dist/host.js` or `panels/`). Left for real use.
+- ⚠️ Design decision 9 says only a *working* tab holds a slot; the code (and Task 11's note) also counts `starting` (`dist/lib/runs.js:60` `HOLDS_SLOT`), to stop a burst opening past the cap. design-v2 "Shipped details" says so; the decision text itself was not edited.
+- Core: `npm test` 149 files, 3827 passed, 5 skipped, 0 failed; `npm run typecheck` exit 0; `npm run lint` exit 0.
+- Core e2e: `npm run test:e2e` 186 passed, 2 skipped, 12 failed (by value, not by grep). The same specs were run on `bbf4778~1` (before Task 1, in a throwaway worktree): 11 of the 12 fail there too, all in the 545 px window (terminal 63 columns so the fake claude's output wraps, `zones`, `window-bounds`, `reviewer-annotate` two columns, `tab-command-overlays` `cols > 100`, `bundled-plugins`/`settings-marketplace` hidden controls, `plugin-dev-loop`/`cli` wrapped terminal text). The 12th, `zone-auto-hide.spec.ts:85`, passed in isolation twice on HEAD (flaky at that width; `:137` of the same file fails at baseline and passed on one HEAD rerun). So the failures are the known width family; none comes from Tasks 1-6. `session-takeover.spec.ts` (both tests) passes. The plan's list of known failures above (Testing Strategy) is out of date: the full set at this window size is `bundled-plugins:129`, `cli:97`, `plugin-dev-loop:11`, `reviewer-annotate:282`, `settings-marketplace:151`, `tab-command-overlays:51`, `window-bounds:40/:62`, `zone-auto-hide:137` (and `:85` sometimes), `zones:189/:351`.
+- Plugin: `npm test` 184 tests, 184 pass, 0 fail, 0 skipped.
+- Dry run (script `/tmp/claude-1000/-home-bronos-Projects-cc-cockpit/8ccb78a1-1b28-4cb6-8bbc-47c698917e6b/scratchpad/dryrun.js`, outside the repos, drives `createAutopilot` with `test/fakes.js`: a fake inbox-feed v2 collector, fake sessions with open/send/list incl. `typed`, fake storage): 10 of 10 checks pass. The Chat item present at start (baseline) opens nothing; a new matching item opens exactly one tab and repeated syncs of it open nothing more; two updates while working merge to one pending (rev r3) and one delivery goes into the tab when it waits; with `typed: true` the next pending update (r4) is dropped, the record is taken over and later revs (r5, r6) deliver nothing.
 
 ### Task 16: [Final] Update documentation [model: sonnet]
 - [ ] Autopilot `README.md`: v2 rules, the v1 → v2 mapping, `myNames`, the app 0.11 note for model/effort/takeover
