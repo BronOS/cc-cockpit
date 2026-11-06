@@ -243,7 +243,11 @@ behind it are in [design.md](design.md).
   (`kind: 'mail'`, app 0.13.0) is shown in a reading layout: a narrow column of larger text, calm links, the subject
   first, the sender with an avatar and the time, no tint on unread mail; its remote pictures are quiet placeholders that
   the caller can fill later without the document moving (`update`), and buttons in the document (`data-action`, e.g.
-  Show images) come back to the caller as a service event.
+  Show images) come back to the caller as a service event. A mail can also open in its **Original** view (`originals`,
+  app 0.13.0): the message as its sender made it (its layout, colours and styles, e.g. a Jira notification's issue card
+  with the old value struck through in red and the new one on green) on a light "paper" page under the app-themed
+  header, in a frame that runs no script and loads nothing from the web; an **Original | Reader** switch sits above
+  the document, and the caller hears each switch (Gmail remembers it per sender).
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour
   scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it
@@ -373,6 +377,10 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 
 - Distribution: the Mac build is ad-hoc signed and not notarised, Intel Macs are not supported, there is no auto-updater
   (the app only shows a notice), and the update check cannot see a private repo, which answers 404.
+- The reviewer's Original view (a mail as its sender made it) cannot run script, so: a link inside the message does
+  not open on a click (the Links list above the document opens it); a note cannot be made on the message's text
+  (switch to Reader); each message's frame is as tall as the visible area and scrolls on its own (nothing can measure
+  its content without script); and showing the pictures reloads the frame at its top.
 - The reviewer and editor handle files inside the project only. A file a session edits outside its project keeps
   opening in the built-in viewer, because plugins only receive project-relative paths.
 - The web view (browser plugin) cannot stop a hostile page from navigating its top level to an

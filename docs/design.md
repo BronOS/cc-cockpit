@@ -1060,7 +1060,31 @@ Discuss with Claude (the reviewer answers `onDiscuss` with the review text; a no
 its tab) and the editor's Edit button (micro on top, the review stays under it); its
 `reviewer` service also takes a plain text from another plugin
 (`annotate`: a ticket, a mail), as text or as allow-list-sanitized HTML with image assets, for notes in the same overlay (`prepare` shows that
-overlay at once with a loader while the caller still fetches, and the annotate of the same key fills it); its design is in `plugins/reviewer/docs/design.md`. The editor
+overlay at once with a loader while the caller still fetches, and the annotate of the same key fills it); its design is in `plugins/reviewer/docs/design.md`.
+
+*The Original view's frame (reviewer feature `original`, app 0.13.0), a trust boundary inside a plugin page.* A mail's
+own HTML and CSS (annotate's `originals`) is shown as its sender made it, so the allow-list sanitizer cannot be the wall
+there: it would strip the styling the view is for. The wall is the frame. The reviewer page (itself `sandbox="allow-scripts"`
+under `pluginCsp`) draws each original in `<iframe sandbox="">`: no `allow-*` token, so no script (inline, handlers,
+`javascript:` URLs and a meta refresh are refused by the browser), an opaque origin (nothing inside can reach the page,
+its port to the host or any storage), no forms, popups or navigation of other frames. The document is a `srcdoc`,
+which Chromium gives the parent's policy container, so the page's header CSP (`default-src 'none'`, images only
+from the plugin's own files and `data:`, `frame-src 'none'`, no connect) holds inside it, and the reviewer writes a
+meta CSP as the head's first child, before any of the mail: `default-src 'none'; style-src 'unsafe-inline'; img-src
+data:; font-src data:; form-action 'none'; base-uri 'none'`; both are enforced (the effective font-src is none: the
+header policy allows only the plugin's files). A custom protocol serving the document with a header CSP was the
+alternative and is weaker here: the header would be its only policy, main would hold and serve the mail, and
+`frame-src` would have to open for its URL; `frame-src 'none'` does not stop a srcdoc frame (no fetch). Links: a click
+cannot be told to the page without script, and a plain link would navigate the frame (refused by the page's
+`frame-src`, leaving an error page), so every link gets `target="_blank"`, which the sandbox refuses as a popup;
+the page's own Links list opens them through the reviewer's `open-link` check (the caller's own links only, http(s)
+only, `ctx.openExternal`). Main adds nothing: its `will-frame-navigate` rule and window-open denial stand as a further
+layer. The caller's sanitizer (the Gmail plugin's original mode: no script, url() but data: images, `@import`,
+`expression`, `behavior`, `-moz-binding`, fixed or sticky positioning) is the second wall, not the one relied on.
+`test/e2e/reviewer-original.spec.ts` hands the frame a breakout attempt with no sanitizer in front and records every
+request and console line of the app.
+
+The editor
 (`cockpit.editor`) provides `editor` v1: micro in a terminal overlay, with app settings `autosaveSeconds`, `colorscheme`
 and `microPath` and `ccc edit`; it needs micro installed and says how to install it when it is missing. Files a session
 edits outside its project stay in the built-in viewer: plugins only receive project-relative paths. The sessions plugin
