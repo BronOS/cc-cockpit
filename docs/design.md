@@ -731,7 +731,7 @@ that project.
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
 | UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.panels.slots(id, placements \| null)` (Slots, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus, onButton, setButtons, onDiscuss}` (`focus` brings it to the front, no-op after close; two-way html overlay, toolbar buttons and Discuss, §4), `ctx.overlay.buttons(type, provider)` (buttons on every overlay of a type, §4 Overlay toolbar) |
 | slots | `ctx.slots.onOpen(type, fn)` → disposer (provider side; the type must be in `contributes.slots`), a `SlotInstance` `{id, type, host, params, post, onMessage, onClose}`, `ctx.slots.available(type)` → `Promise<boolean>` (Slots, below) |
-| files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration) |
+| files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration), `ctx.files.reveal(path)`, `ctx.files.openWithSystem(path)`, `ctx.files.trash(path)` (the system's file manager, default app and Trash; below) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | services | `ctx.services.available(name)` (host-local, same `serviceStatus` rule as a call, never cached, false for an unknown name) |
@@ -830,6 +830,31 @@ something. A plugin opens a project file the same way with `ctx.files.open(path,
 tab of that project (else drops it, so the listener's `tabId` is absent), then uses the same pick, delivery
 and fallback as a click; the built-in viewer runs over the project folder (`openProjectFileDiff`), and the
 call resolves `{ via: 'plugin' | 'builtin' }`. No manifest declaration; 20 calls per 10 s per plugin and window.
+
+**Handing a project file to the system** (`ctx.files.reveal(path)`, `ctx.files.openWithSystem(path)`,
+`ctx.files.trash(path)`, each `Promise<void>`; host API `files.reveal`, `files.openWithSystem`, `files.trash`;
+`src/main/files/`). The file tree's right-click menu needs what a file manager offers, and the host cannot do it: its
+env has no display or desktop session (`hostEnv`, as for `openExternal`), so `open`, `xdg-open` or `gio trash` from
+`ctx.exec` fail on Linux, and the env stays narrow. Main does it with Electron's `shell` (`showItemInFolder`,
+`openPath`, `trashItem`), reached only through the adapter `files/electron-shell.ts` (lambdas, so the e2e recorders
+that replace the three `shell` members are seen). The caller is the asking host's scope, never a value in the
+request. The path is checked twice by its real path (`resolveProjectEntry`): the whole path must resolve inside the
+project folder and so must its parent folder, because what the system is handed is `<real parent>/<name>`, the
+entry itself: a symlink is revealed and trashed as the link, never its target, and a link out of the project whose
+child links back in cannot make main act outside. `''` names the project folder for `reveal` only.
+`openWithSystem` refuses what a double click would run instead of open (`src/shared/runnable-files.ts`, one list for
+every platform since a repo carries files of all of them, matched case-insensitively on the name the plugin gave
+and on the real target's: macOS `.command` / `.tool` / `.terminal` / `.workflow` / `.action` / `.fileloc`, shell
+scripts, Linux `.desktop` / `.AppImage`, the Windows program, script, installer and shortcut types including WSH's
+`.js`, and `.jar`), plus folders, any file with an exec bit (not on Windows, where Node derives the bit), and any
+path through a `.app` bundle. `trash` first asks the person in the project's window (`files/trash-dialog.ts`,
+Cancel the default and the cancel button, the path relative to the project, control and bidi characters
+stripped; in a test run `QueuedTrashConfirm` with the `answerTrash` / `trashDialogs` hooks), one dialog at a time
+per window, closed when the host goes; after a yes the path is resolved again and must still be the same entry
+(device and inode) before `trashItem`, since the dialog may stay up long enough for a swap. A no resolves main's
+answer `{ trashed: false }`, which the host turns into a rejection named `AbortError`. Limits per plugin and window:
+reveal 3 and openWithSystem 3 per 10 s (another app's window in front of the person, as with `openExternal`),
+trash 10 a minute. There is no permanent delete. No manifest declaration.
 
 **Opening a web page outside the app** (`ctx.openExternal(url)`, host API `openExternal`). Main is where a link
 leaves the app: the plugin host's env is an allow-list (`hostEnv`, no `DISPLAY`, `WAYLAND_DISPLAY`, D-Bus or desktop

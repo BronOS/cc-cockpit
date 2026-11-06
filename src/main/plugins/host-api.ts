@@ -67,6 +67,13 @@
 //                                                                (shared/web-url.ts checkWebUrl: no other
 //                                                                scheme, no user:pass@, 2048 chars); the
 //                                                                normalized href is what is opened
+//   files.reveal    { pluginId, path }         -> null           a project file or folder ('' the project
+//   files.openWithSystem { pluginId, path }    -> null            folder, reveal only) handed to the system:
+//   files.trash     { pluginId, path }         -> { trashed }     main/files/system-files.ts checks the path
+//                                                                against THIS project by its real path,
+//                                                                refuses runnable files to openWithSystem,
+//                                                                and trash asks the person in this window
+//                                                                first (false: they said no)
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
@@ -243,6 +250,21 @@ export const MAX_FILE_OPENS_PER_WINDOW = 20
  */
 export const EXTERNAL_OPEN_WINDOW_MS = 10_000
 export const MAX_EXTERNAL_OPENS_PER_WINDOW = 3
+/**
+ * ctx.files.reveal and ctx.files.openWithSystem per plugin, each its own budget: each one brings
+ * another app's window (the file manager, a document's app) in front of the person, the same
+ * intrusion as openExternal and the same allowance: a double click and a retry, not a loop.
+ */
+export const SYSTEM_OPEN_WINDOW_MS = 10_000
+export const MAX_REVEALS_PER_WINDOW = 3
+export const MAX_SYSTEM_OPENS_PER_WINDOW = 3
+/**
+ * ctx.files.trash per plugin: each one puts a dialog in front of the person (and only one at a time
+ * per window, HostApi.trashing). Ten a minute is a person clearing out files one by one; a loop that
+ * nags them until a reflexive click is not.
+ */
+export const TRASH_WINDOW_MS = 60_000
+export const MAX_TRASHES_PER_WINDOW = 10
 /** The `setting:` keys of project-scoped secret settings fields (any project). */
 const PROJECT_SETTING_PREFIX = `${SETTING_KEY_PREFIX}project:`
 /** At most this often the host hears that its project's sessions changed. */
@@ -372,6 +394,16 @@ export interface HostApiDeps {
    * through a lambda so the e2e recorder that replaces it is seen). Without it openExternal is refused.
    */
   openExternal?(url: string): Promise<void>
+  /**
+   * ctx.files.reveal / openWithSystem / trash (main/files/system-files.ts SystemFiles): `caller` is
+   * this host's scope, `path` the plugin's, checked there. `trash` resolves false when the person
+   * said no; `signal` closes its dialog when the host goes. Without it the three are refused.
+   */
+  systemFiles?: {
+    reveal(caller: { windowId: number; projectId: string }, path: unknown): Promise<void>
+    openWithSystem(caller: { windowId: number; projectId: string }, path: unknown): Promise<void>
+    trash(caller: { windowId: number; projectId: string }, path: unknown, pluginId: string, signal?: AbortSignal): Promise<boolean>
+  }
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -559,6 +591,14 @@ export class HostApi {
   private readonly panelSlotCalls = new RateWindow(MAX_PANEL_SLOTS_PER_WINDOW, PANEL_SLOTS_WINDOW_MS)
   private readonly fileOpens = new RateWindow(MAX_FILE_OPENS_PER_WINDOW, FILE_OPEN_WINDOW_MS)
   private readonly externalOpens = new RateWindow(MAX_EXTERNAL_OPENS_PER_WINDOW, EXTERNAL_OPEN_WINDOW_MS)
+  private readonly reveals = new RateWindow(MAX_REVEALS_PER_WINDOW, SYSTEM_OPEN_WINDOW_MS)
+  private readonly systemOpens = new RateWindow(MAX_SYSTEM_OPENS_PER_WINDOW, SYSTEM_OPEN_WINDOW_MS)
+  private readonly trashes = new RateWindow(MAX_TRASHES_PER_WINDOW, TRASH_WINDOW_MS)
+  /**
+   * A ctx.files.trash dialog of this host is up: a second request is refused, not queued, so no
+   * plugin can stack dialogs the person would click away by reflex (the `ccc plugin link` rule).
+   */
+  private trashing = false
   private readonly focuses = new RateWindow(MAX_FOCUSES_PER_WINDOW, FOCUS_WINDOW_MS)
   private readonly closes = new RateWindow(MAX_CLOSES_PER_WINDOW, CLOSE_WINDOW_MS)
   private readonly sessionFiles = new RateWindow(MAX_SESSION_FILES_PER_WINDOW, SESSION_FILE_WINDOW_MS)
@@ -671,7 +711,10 @@ export class HostApi {
       'webview.reload': (params) => this.webviewStep(params, 'reload'),
       'webview.current': (params) => this.webviewCurrent(params),
       'files.open': (params) => this.filesOpen(params),
-      openExternal: (params) => this.openExternal(params)
+      openExternal: (params) => this.openExternal(params),
+      'files.reveal': (params) => this.filesReveal(params),
+      'files.openWithSystem': (params) => this.filesOpenWithSystem(params),
+      'files.trash': (params) => this.filesTrash(params)
     }
   }
 
@@ -1234,6 +1277,79 @@ export class HostApi {
       throw withMethod('openExternal', err)
     }
     return null
+  }
+
+  /**
+   * The checked shape of a files.reveal / openWithSystem / trash request: the plugin (one of this
+   * host's) and its path as given (system-files.ts checks the path itself), and main's handler.
+   * The project is never read from the request: the host's own scope is the caller.
+   */
+  private systemFilesRequest(params: unknown, method: string): { pluginId: string; path: unknown; api: NonNullable<HostApiDeps['systemFiles']> } {
+    this.alive()
+    const { pluginId, path } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, method)
+    if (typeof path !== 'string') throw new Error(`${method}: path must be a string`)
+    const api = this.deps.systemFiles
+    if (!api) throw new Error(`${method}: handing files to the system is not available`)
+    return { pluginId: plugin.id, path, api }
+  }
+
+  private get caller(): { windowId: number; projectId: string } {
+    return { windowId: this.scope.windowId, projectId: this.scope.projectId }
+  }
+
+  /**
+   * ctx.files.reveal: a project file or folder shown in the file manager. As for files.open, the
+   * budget is spent before the path is resolved: a refused path costs fs lookups in main too.
+   */
+  private async filesReveal(params: unknown): Promise<null> {
+    const { pluginId, path, api } = this.systemFilesRequest(params, 'files.reveal')
+    if (!this.reveals.take(pluginId)) {
+      throw new Error(`files.reveal: more than ${MAX_REVEALS_PER_WINDOW} in ${SYSTEM_OPEN_WINDOW_MS / 1000} s; try again in a moment`)
+    }
+    try {
+      await api.reveal(this.caller, path)
+    } catch (err) {
+      throw withMethod('files.reveal', err)
+    }
+    return null
+  }
+
+  /** ctx.files.openWithSystem: a project file with its default app; runnable files are refused there. */
+  private async filesOpenWithSystem(params: unknown): Promise<null> {
+    const { pluginId, path, api } = this.systemFilesRequest(params, 'files.openWithSystem')
+    if (!this.systemOpens.take(pluginId)) {
+      throw new Error(
+        `files.openWithSystem: more than ${MAX_SYSTEM_OPENS_PER_WINDOW} in ${SYSTEM_OPEN_WINDOW_MS / 1000} s; try again in a moment`
+      )
+    }
+    try {
+      await api.openWithSystem(this.caller, path)
+    } catch (err) {
+      throw withMethod('files.openWithSystem', err)
+    }
+    return null
+  }
+
+  /**
+   * ctx.files.trash: the person confirms in this window, then the entry goes to the Trash. One
+   * dialog at a time per host; the dialog closes when the host goes (`gone`). `{ trashed: false }`
+   * is the person's no, which the host turns into its own rejection.
+   */
+  private async filesTrash(params: unknown): Promise<{ trashed: boolean }> {
+    const { pluginId, path, api } = this.systemFilesRequest(params, 'files.trash')
+    if (this.trashing) throw new Error('files.trash: a Move to Trash confirmation is already open in this window')
+    if (!this.trashes.take(pluginId)) {
+      throw new Error(`files.trash: more than ${MAX_TRASHES_PER_WINDOW} in ${TRASH_WINDOW_MS / 1000} s; try again in a moment`)
+    }
+    this.trashing = true
+    try {
+      return { trashed: await api.trash(this.caller, path, pluginId, this.gone.signal) }
+    } catch (err) {
+      throw withMethod('files.trash', err)
+    } finally {
+      this.trashing = false
+    }
   }
 
   private async overlay(params: unknown): Promise<PluginOverlayResult> {

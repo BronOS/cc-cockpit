@@ -7,6 +7,7 @@ import { run } from '../../src/cli/client'
 import { GUIDE_TOPICS, guideText } from '../../src/cli/guide'
 import { MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_DESCRIPTION, MAX_SKILL_DIRS, MAX_SKILL_ENTRIES, MAX_SKILL_FILES } from '../../src/main/plugins/skill-files'
 import { MAX_SKILLS } from '../../src/shared/manifest'
+import { RUNNABLE_EXTENSIONS } from '../../src/shared/runnable-files'
 import { MAX_APP_VALUE_LENGTH, MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/shared/plugin-storage'
 import { MAX_FILES } from '../../src/main/sessions/status-reducer'
 import { FLAG_COLORS, MAX_FLAG_NOTE_CHARS } from '../../src/shared/tab-flag'
@@ -152,6 +153,13 @@ describe('guide drift guards', () => {
       expect(names.length, iface).toBeGreaterThan(0)
       for (const name of names) expect(api, `${iface}.${name}`).toMatch(new RegExp(`\\b${name}\\b`))
     }
+  })
+
+  it('lists every extension ctx.files.openWithSystem refuses (shared/runnable-files.ts), and no other', () => {
+    const api = topic('api').replace(/\s+/g, ' ')
+    const para = /`ctx\.files\.openWithSystem\(path\)`(.*?)- `ctx\.files\.trash/.exec(api)?.[1] ?? ''
+    const listed = [...para.matchAll(/`(\.[A-Za-z0-9]+)`/g)].map((m) => (m[1] as string).toLowerCase()).filter((e) => e !== '.app')
+    expect([...listed].sort()).toEqual([...RUNNABLE_EXTENSIONS].sort())
   })
 
   it('names every SessionInfo and SessionSummary field in the api topic, and the flag rules from shared/tab-flag.ts', () => {

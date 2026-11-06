@@ -160,6 +160,24 @@ export async function routeOpenFile(
 }
 
 /**
+ * The lexical half of a plugin's project path (ctx.files.open, reveal, openWithSystem, trash): the
+ * path normalized (`./` and empty segments dropped, `/` separators), '' when it names the project
+ * folder itself (`.`, `./`), or a throw whose message the plugin sees. Refused: a non-string or
+ * empty path, one over MAX_OPEN_PATH_LENGTH, NUL, an absolute path (POSIX or a Windows drive) and
+ * any `..` segment (even one that would stay inside: one rule, no lexical resolving to get wrong).
+ * The real-path half (symlinks) is each caller's: this only says what was named.
+ */
+export function checkRelativePath(path: unknown): string {
+  if (typeof path !== 'string' || path === '') throw new Error('path must be a non-empty string')
+  if (path.length > MAX_OPEN_PATH_LENGTH) throw new Error(`path is longer than ${MAX_OPEN_PATH_LENGTH} characters`)
+  if (path.includes('\0')) throw new Error('path contains a NUL byte')
+  if (isAbsolute(path) || /^[A-Za-z]:/.test(path)) throw new Error('path must be relative to the project folder')
+  const segments = path.split('/').filter((s) => s !== '' && s !== '.')
+  if (segments.includes('..')) throw new Error('path must not contain ".." segments')
+  return segments.join('/')
+}
+
+/**
  * ctx.files.open's `path`, checked against the project folder: the path to hand on (normalized:
  * `./` and empty segments dropped, `/` separators), or a throw whose message the plugin sees.
  * Refused: a non-string or empty path, NUL, an absolute path (POSIX or a Windows drive), any `..`
@@ -172,14 +190,8 @@ export async function routeOpenFile(
  * known to land inside.
  */
 export async function resolveProjectFile(projectDir: string, path: unknown): Promise<string> {
-  if (typeof path !== 'string' || path === '') throw new Error('path must be a non-empty string')
-  if (path.length > MAX_OPEN_PATH_LENGTH) throw new Error(`path is longer than ${MAX_OPEN_PATH_LENGTH} characters`)
-  if (path.includes('\0')) throw new Error('path contains a NUL byte')
-  if (isAbsolute(path) || /^[A-Za-z]:/.test(path)) throw new Error('path must be relative to the project folder')
-  const segments = path.split('/').filter((s) => s !== '' && s !== '.')
-  if (segments.includes('..')) throw new Error('path must not contain ".." segments')
-  if (segments.length === 0) throw new Error('path names the project folder, not a file')
-  const rel = segments.join('/')
+  const rel = checkRelativePath(path)
+  if (rel === '') throw new Error('path names the project folder, not a file')
   let root: string
   try {
     // The registry keeps the real path already; resolved again so a containment check against a

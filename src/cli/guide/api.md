@@ -284,6 +284,30 @@ with full Node access.
   file. `tabId` is passed to the listener when it is a Claude tab of this project, else silently
   dropped. Needs no manifest declaration; at most 20 calls per 10 s per plugin and window. Use it
   instead of calling another plugin's service directly, so the person's pick holds.
+- `ctx.files.reveal(path)`: show a project file or folder selected in the system's file manager
+  (Finder on macOS, Explorer on Windows, the desktop's file manager on Linux); `''` is the project
+  folder, shown in its parent. Label the menu item per system: "Reveal in Finder", "Show in Explorer",
+  "Open in file manager" (`process.platform` in the host).
+- `ctx.files.openWithSystem(path)`: open a project file with the system's default app for its type,
+  as a double click would. It refuses what that would run instead of open: a folder (use `reveal`),
+  a file with an exec bit (macOS, Linux), an app bundle (a path segment ending in `.app`) or anything
+  inside one, and these extensions in any case: `.command`, `.tool`, `.terminal`, `.workflow`,
+  `.action`, `.fileloc`, `.sh`, `.bash`, `.zsh`, `.fish`, `.desktop`, `.AppImage`, `.exe`, `.com`,
+  `.bat`, `.cmd`, `.ps1`, `.lnk`, `.url`, `.pif`, `.msi`, `.scr`, `.vbs`, `.vbe`, `.js`, `.jse`,
+  `.wsf`, `.hta`, `.cpl`, `.jar`. A symlink is checked by its own name and its target's.
+- `ctx.files.trash(path)`: move a project file or folder to the system Trash (the Recycle Bin on
+  Windows); recoverable, and there is no permanent delete. The app asks the person first, in this
+  window, naming the path relative to the project; a plugin cannot skip the question. It resolves
+  once moved and rejects with an Error whose `name` is `AbortError` when they say no (nothing moved:
+  show nothing). A symlink goes to the Trash as the link, never its target. One question at a time
+  per window: a second call while one is open rejects.
+- For all three: `path` is relative to the project folder (`/` separators). Main rejects an absolute
+  path, a `..` segment, a missing path, and one whose real path (symlinks resolved), or whose folder's
+  real path, is outside the project; `openWithSystem` and `trash` also reject the project folder
+  itself. The project is always the plugin's own. Limits per plugin and window: `reveal` 3 and
+  `openWithSystem` 3 per 10 s, `trash` 10 a minute. The host has no desktop session in its env, so
+  `ctx.exec(['open', ...])` or `xdg-open` fail on Linux: use these. Call them on the person's click.
+  An older app has none of them: check `typeof ctx.files.reveal === 'function'`.
 
 ## Commands and misc
 
@@ -421,6 +445,6 @@ with full Node access.
   html overlay page cannot open links itself: post a message to the host and let it call this,
   with a URL the host chose (never one taken from the page as is).
 
-Calls that reach main (`exec`, `overlay`, `notify`, `webview`, `openExternal`, ...) are limited there and
+Calls that reach main (`exec`, `overlay`, `notify`, `webview`, `openExternal`, `files`, ...) are limited there and
 a rejected promise carries the reason; `ctx.services` calls never reach main, see above.
 Types: `PluginContext` in the SDK types; `ccc guide types` prints the file.

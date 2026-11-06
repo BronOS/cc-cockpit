@@ -1,10 +1,12 @@
 // Electron main process entry.
 //
 // RULE: Electron-only or Electron-ABI modules (`node-pty`, `safeStorage`, `utilityProcess`,
-// `BrowserWindow`, `protocol`, `Notification`) are imported ONLY from thin adapter files (e.g.
+// `BrowserWindow`, `protocol`, `Notification`, `shell`) are imported ONLY from thin adapter files (e.g.
 // `pty/node-pty-backend.ts`, `plugins/host-process.ts`, `windows/create-window.ts`,
-// `notifications/electron-notification.ts`; `safeStorage` is used only through
-// `secrets/secret-store.ts`), never from logic modules that unit tests load.
+// `notifications/electron-notification.ts`, `files/electron-shell.ts` for the file calls of `shell`
+// behind ctx.files.reveal / openWithSystem / trash; `safeStorage` is used only through
+// `secrets/secret-store.ts`), never from logic modules that unit tests load. This file still calls
+// `shell.openExternal` itself, always through a lambda the e2e recorder can replace.
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
 // Playwright e2e run exercises the real adapters.
@@ -81,6 +83,9 @@ import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, 
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
+import { electronSystemShell } from './files/electron-shell'
+import { SystemFiles } from './files/system-files'
+import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
@@ -391,6 +396,22 @@ function start(): void {
   )
   // Set on before-quit: from then on closing windows is not the user ending their tabs.
   let quitting = false
+  // ctx.files.reveal / openWithSystem / trash (files/system-files.ts): `shell` through its adapter,
+  // and the Move to Trash confirm as a sheet on the project's window; in a test run the dialog is
+  // QueuedTrashConfirm, driven by the `answerTrash` and `trashDialogs` hooks, and the e2e replaces
+  // the three `shell` calls with recorders. Lambdas: `windows` is defined just below.
+  const testTrashConfirm = testRun ? new QueuedTrashConfirm() : undefined
+  const systemFiles = new SystemFiles({
+    projectPath: (projectId) => registry.get(projectId)?.path,
+    windowOf: (projectId) => windows.windowIdOf(projectId),
+    shell: electronSystemShell,
+    confirmTrash:
+      testTrashConfirm?.confirm ??
+      electronConfirmTrash({
+        windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
+        showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
+      })
+  })
   const windows = new WindowManager({
     factory: new ElectronWindowFactory(),
     registry,
@@ -922,7 +943,10 @@ function start(): void {
       openFile: (caller, path, tabId) => routeProjectFile(openFileRoute, caller, path, tabId),
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget. A
       // lambda, as for ctx.oauth: the e2e's recorder replaces shell.openExternal after launch.
-      openExternal: (url) => shell.openExternal(url)
+      openExternal: (url) => shell.openExternal(url),
+      // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
+      // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
+      systemFiles
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin
@@ -2014,6 +2038,11 @@ function start(): void {
             testLinkConfirm?.answer(...answers)
           },
           linkDialogs: () => testLinkConfirm?.dialogs() ?? [],
+          // ctx.files.trash's confirm, the same way: queued answers (none denies) and what it said.
+          answerTrash: (...answers: boolean[]) => {
+            testTrashConfirm?.answer(...answers)
+          },
+          trashDialogs: () => testTrashConfirm?.dialogs() ?? [],
           hostStatus: (path: string) => {
             const project = projectAt(path)
             return project ? hosts.status(project.id) : undefined

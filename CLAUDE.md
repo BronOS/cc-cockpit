@@ -43,7 +43,10 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   `node-pty` only in `main/pty/node-pty-backend.ts` (fake: `test/fakes/fake-pty-backend.ts`),
   `utilityProcess` only in `main/plugins/host-process.ts`; `WebContentsView` for plugin web views only in
   `main/webview/electron-webview.ts` (fake in `test/unit/webview-manager.test.ts`); `Notification` only in
-  `main/notifications/electron-notification.ts` (logic and test backend in `notifier.ts`); `safeStorage` is imported only by
+  `main/notifications/electron-notification.ts` (logic and test backend in `notifier.ts`); `shell`'s file calls
+  (`showItemInFolder`, `openPath`, `trashItem`, behind `ctx.files.reveal` / `openWithSystem` / `trash`) only in
+  `main/files/electron-shell.ts` (logic in `main/files/system-files.ts`, a recorder `SystemShell` in tests; the e2e replaces the
+  three `shell` members, as it does `shell.openExternal`); `safeStorage` is imported only by
   `main/index.ts` and reached through `main/secrets/secret-store.ts`. Do not import them elsewhere
   (rule stated in `main/index.ts`).
 - `CC_COCKPIT_DATA_DIR` overrides the data dir (default: Electron `userData`); tests always set it.

@@ -629,6 +629,41 @@ describe('ctx.files.onOpen (host)', () => {
     await expect(ctx.files.open('a')).rejects.toThrow('deactivated')
   })
 
+  it('ctx.files.reveal / openWithSystem / trash ask main with their own plugin id; trash waits and tells a no apart', async () => {
+    const calls: Array<{ method: string; params: unknown; options?: unknown }> = []
+    let answer: unknown = null
+    const contexts = new HostContexts({
+      log: () => {},
+      call: async (method, params, options) => {
+        calls.push({ method, params, ...(options ? { options } : {}) })
+        return answer
+      }
+    })
+    const ctx = contexts.create(hostSpec({ id: 'a.tree', dir: '/d', main: 'm.js' }))
+    await expect(ctx.files.reveal('')).resolves.toBeUndefined()
+    await expect(ctx.files.openWithSystem('a.md')).resolves.toBeUndefined()
+    answer = { trashed: true }
+    await expect(ctx.files.trash('src')).resolves.toBeUndefined()
+    expect(calls).toEqual([
+      { method: 'files.reveal', params: { pluginId: 'a.tree', path: '' } },
+      { method: 'files.openWithSystem', params: { pluginId: 'a.tree', path: 'a.md' } },
+      // The person answers when they do: no RPC timeout on the dialog.
+      { method: 'files.trash', params: { pluginId: 'a.tree', path: 'src' }, options: { timeoutMs: Infinity } }
+    ])
+    answer = { trashed: false }
+    const no = await ctx.files.trash('src').catch((e: Error) => e)
+    expect(no).toBeInstanceOf(Error)
+    expect((no as Error).name).toBe('AbortError')
+    expect((no as Error).message).toContain('cancelled')
+    answer = {}
+    await expect(ctx.files.trash('src')).rejects.toThrow('unexpected answer')
+    // The project folder is reveal's only: the others refuse '' before asking main.
+    await expect(ctx.files.openWithSystem('')).rejects.toThrow('not the folder itself')
+    await expect(ctx.files.trash('')).rejects.toThrow('not the folder itself')
+    await expect(ctx.files.reveal(5 as never)).rejects.toThrow('needs a path')
+    expect(calls).toHaveLength(5)
+  })
+
   it('the spec parser keeps openFile only as a boolean', () => {
     const base = { id: 'a.b', dir: '/d', main: 'm.js', projectDir: '/p', dataDir: '/x', appDataDir: '/y', storageFile: '/x/s', commands: [], settings: { project: {}, app: {} } }
     expect(parsePluginSpecs({ plugins: [{ ...base, openFile: true }] })[0]?.openFile).toBe(true)

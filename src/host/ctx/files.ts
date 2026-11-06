@@ -15,6 +15,12 @@
 // method name the other way; src/main/plugins/host-api.ts), which routes the file exactly like a click
 // and answers `{ via }`. Main checks the path and the tab; here only the shapes, so the mistake
 // surfaces as a rejection at the call site. Any plugin may call it, declared or not.
+//
+// `reveal`, `openWithSystem` and `trash` hand a project file to the operating system the same way
+// (requests to main: host-api.ts, main/files/system-files.ts). The host has no display or desktop
+// session in its env (host-manager.ts hostEnv), so `open` / `xdg-open` / `gio trash` from ctx.exec
+// fail on Linux, and the env stays narrow: main is where files leave for the system, with its path
+// checks, its refusal of runnable files and the person's confirmation for the Trash.
 import type { Disposer, OpenFileRequest, PluginContext } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 
@@ -30,7 +36,7 @@ export interface FilesApiDeps {
   /** Throws when the plugin is deactivated. */
   alive(): void
   /** A request to main. */
-  call(method: string, params: unknown): Promise<unknown>
+  call(method: string, params: unknown, options?: { timeoutMs?: number }): Promise<unknown>
   /** Runs `body` unless the plugin is deactivated; any throw becomes a rejection. */
   guardAsync<T>(body: () => Promise<T>): Promise<T>
   /** This plugin's listeners (owned by the runtime, so dispose drops them with it). */
@@ -69,8 +75,50 @@ export function createFilesApi(deps: FilesApiDeps): PluginContext['files'] {
         const via = answer?.via
         if (via !== 'plugin' && via !== 'builtin') throw new Error('files.open: unexpected answer from the app')
         return { via }
+      }),
+    reveal: (path: string): Promise<void> =>
+      deps.guardAsync(async () => {
+        checkSystemPath('files.reveal', path, true)
+        await deps.call('files.reveal', { pluginId: deps.pluginId, path })
+      }),
+    openWithSystem: (path: string): Promise<void> =>
+      deps.guardAsync(async () => {
+        checkSystemPath('files.openWithSystem', path, false)
+        await deps.call('files.openWithSystem', { pluginId: deps.pluginId, path })
+      }),
+    trash: (path: string): Promise<void> =>
+      deps.guardAsync(async () => {
+        checkSystemPath('files.trash', path, false)
+        // No timeout: the person answers the dialog when they do (sessions.close waits the same way);
+        // main closes it when this host goes, which ends the call.
+        const answer = (await deps.call('files.trash', { pluginId: deps.pluginId, path }, { timeoutMs: Infinity })) as {
+          trashed?: unknown
+        } | null
+        if (answer?.trashed === true) return
+        if (answer?.trashed === false) throw cancelledError()
+        throw new Error('files.trash: unexpected answer from the app')
       })
   })
+}
+
+/**
+ * The person's no to a ctx.files.trash dialog: a rejection (the promise is void, and a caller must
+ * not refresh as if the file went) that is told apart from a failure by `name`, the DOM's convention
+ * for a cancelled operation, so a menu can stay quiet about it.
+ */
+function cancelledError(): Error {
+  const err = new Error('files.trash: cancelled; nothing was moved')
+  err.name = 'AbortError'
+  return err
+}
+
+/**
+ * The shape of a reveal / openWithSystem / trash path, at the call site: main checks it all again
+ * (relative, no `..`, inside the project by its real path). '' is the project folder, for reveal only.
+ */
+function checkSystemPath(method: string, path: unknown, allowRoot: boolean): void {
+  if (typeof path !== 'string') throw new TypeError(`${method} needs a path relative to the project folder`)
+  if (path === '' && !allowRoot) throw new TypeError(`${method} needs a path relative to the project folder, not the folder itself`)
 }
 
 /**
