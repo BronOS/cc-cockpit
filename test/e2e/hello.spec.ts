@@ -113,7 +113,7 @@ test('hello: panel, git status, badge ticks, command, overlays and theme', async
   await expect(hello.locator('body')).toHaveCSS('background-color', 'rgb(27, 26, 46)')
 })
 
-test('hello: send text to a Claude tab; queued while it works, delivered on /stop', async ({ cockpit }) => {
+test('hello: send text to a Claude tab; queued while it works, dropped when the person types', async ({ cockpit }) => {
   test.setTimeout(60_000)
   const { page } = cockpit
   await cockpit.hook('linkPlugin', HELLO)
@@ -124,36 +124,33 @@ test('hello: send text to a Claude tab; queued while it works, delivered on /sto
   await cockpit.newTab('claude')
   // The status reaches the strip...
   await expect(page.getByRole('tab').first()).toBeVisible()
-  await cockpit.typeLine('/prompt first task')
+  // Busy without a keystroke (a typed key would take the tab over, SessionInfo.typed): a core text
+  // through the test hook goes in as a paste and the fake submits it.
+  await expect.poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status, { timeout: 15_000 }).toBe('waiting')
+  const tabId = (await cockpit.hook<Array<{ tabId: string }>>('sessions', cockpit.projectDir))[0]!.tabId
+  await cockpit.hook('send', tabId, 'first task')
   await expect(page.locator('.tab .status-dot[data-status="working"]')).toBeVisible({ timeout: 15_000 })
   // ...and the panel's session list.
   const option = hello.locator('#sessions option')
   await expect(option).toHaveCount(1)
   await expect(option).toHaveText('working: first task')
 
-  // Working: the text is queued, nothing is typed.
+  // Working: the text is queued, nothing more is typed.
   await hello.locator('#text').fill('do the thing')
   await hello.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(hello.locator('#send-result')).toHaveText('queued')
-  expect(cockpit.pastes()).toEqual([])
+  expect(cockpit.pastes()).toEqual(['\x1b[200~first task\x1b[201~'])
 
-  // Stop: main types the queue head as one bracketed paste, which the fake submits.
-  await cockpit.typeLine('/stop')
-  await expect.poll(() => cockpit.pastes(), { timeout: 15_000 }).toEqual(['\x1b[200~do the thing\x1b[201~'])
-  await expect(option).toHaveText('working: do the thing')
-
-  // Waiting with nothing queued: typed at once.
+  // The person types: the plugin's queued text is dropped and never delivered at the Stop.
   await cockpit.typeLine('/stop')
   await expect(option).toHaveText(/^waiting:/)
+  await cockpit.page.waitForTimeout(500)
+  expect(cockpit.pastes()).toEqual(['\x1b[200~first task\x1b[201~'])
+
+  // ...and a send to the taken-over tab is refused with the reason.
   await hello.locator('#text').fill('second')
   await hello.getByRole('button', { name: 'Send', exact: true }).click()
-  await expect(hello.locator('#send-result')).toHaveText('delivered')
-  await expect.poll(() => cockpit.pastes()).toEqual(['\x1b[200~do the thing\x1b[201~', '\x1b[200~second\x1b[201~'])
-
-  // The gate's own refusal reaches the panel: text starting with "/" is never sent.
-  await hello.locator('#text').fill('/exit')
-  await hello.getByRole('button', { name: 'Send', exact: true }).click()
-  await expect(hello.locator('#send-result')).toContainText('refused')
+  await expect(hello.locator('#send-result')).toHaveText('refused: the person is typing in this tab')
 })
 
 test('hello: a secret setting shows only as set / not set, and ctx.secrets keeps a counter', async ({ cockpit }) => {

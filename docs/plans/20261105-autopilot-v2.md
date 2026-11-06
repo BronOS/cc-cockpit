@@ -212,11 +212,13 @@ External review: sol / high
 - Create: `test/e2e/session-takeover.spec.ts`
 - Modify: `test/fixtures/bin/claude` if it must print its argv
 
-- [ ] a test plugin (or the test hook) opens a tab with `model` and `effort`; the fake claude sees both flags
-- [ ] switching to the tab and clicking in it leave `typed` false; a wheel scroll follows Task 2's decision; typing a
+- [x] a test plugin (or the test hook) opens a tab with `model` and `effort`; the fake claude sees both flags
+- [x] switching to the tab and clicking in it leave `typed` false; a wheel scroll follows Task 2's decision; typing a
       letter sets it
-- [ ] a plugin send queued while busy is dropped when the person types, and Discuss still delivers
-- [ ] run `npm run test:e2e` - only the known pre-existing failures may remain; `npm test` again - must pass before Task 7
+- [x] a plugin send queued while busy is dropped when the person types, and Discuss still delivers
+- [x] run `npm run test:e2e` - only the known pre-existing failures may remain; `npm test` again - must pass before Task 7
+
+- ➕ The fake claude never enters the alternate screen, so a wheel scroll only scrolls xterm's own scrollback and sends nothing: the spec asserts `typed` stays false after wheel, focus and clicks. The alt-screen arrow-key case (counts as typing) is covered by the unit test only. A fixture plugin `test/fixtures/plugins/session-takeover` opens the tab (`model: 'opus'`, `effort: 'high'`) and sends; Discuss comes from the `overlay-toolbar` fixture. The tab is made busy without a keystroke by a core text through the `send` hook (delivered as a paste in waiting).
 
 ### Task 7: Autopilot reads inbox-feed v2 [model: sonnet]
 

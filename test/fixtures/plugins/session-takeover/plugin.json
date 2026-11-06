@@ -1,0 +1,13 @@
+{
+  "id": "test.takeover",
+  "name": "Session takeover",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "open", "title": "Takeover: open a tab with model and effort" },
+      { "id": "send", "title": "Takeover: send a text to that tab" }
+    ]
+  }
+}
