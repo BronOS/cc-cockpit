@@ -4,7 +4,7 @@
 // `search`, `refresh`. Paths are relative to the project folder, '' being the folder itself.
 //
 // The right-click menu (also the context-menu key and Shift+F10) is drawn here with the SDK's
-// `.cc-menu`; each item is one message to the host (`reveal`, `open-system`, `trash`, `ask`,
+// `.cc-menu`; each item is one message to the host (`reveal`, `open-system`, `trash`, `ask`, `terminal`,
 // `create`, `rename`) except the two copies, which write the clipboard from the page inside the
 // click, the only place a sandboxed frame may (document.execCommand('copy') needs the click's user
 // activation; navigator.clipboard is refused to the frame's opaque origin).
@@ -19,8 +19,11 @@ let marks = { files: {}, dirs: new Set(), untracked: [] }
 let results = null // { query, paths, total } while the filter has text
 let selected = null // rel of the selected row
 let rows = [] // the visible rows, in order: { rel, kind, el }
-/** From the host's `reset`: the project folder's absolute path and separator, the OS, and whether ctx.files.reveal exists. */
-let env = { root: '', sep: '/', platform: '', system: false }
+/**
+ * From the host's `reset`: the project folder's absolute path and separator, the OS, and whether
+ * ctx.files.reveal (`system`) and ctx.sessions.openShell (`shell`) exist.
+ */
+let env = { root: '', sep: '/', platform: '', system: false, shell: false }
 
 const joinRel = (dir, name) => (dir === '' ? name : `${dir}/${name}`)
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
@@ -364,6 +367,7 @@ function menuItems(target) {
     items.push(['Ask Claude about this file', post('ask')])
   } else {
     if (env.system) items.push([revealLabel(), post('reveal')])
+    if (kind === 'dir' && env.shell) items.push(['Open terminal here', post('terminal')])
     items.push(['New file…', () => askName({ action: 'create', kind: 'file', rel })])
     items.push(['New folder…', () => askName({ action: 'create', kind: 'dir', rel })])
   }

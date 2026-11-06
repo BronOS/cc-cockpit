@@ -194,6 +194,10 @@ behind it are in [design.md](design.md).
   With several such plugins, or to keep the built-in viewer, Settings > This Project > "Plugin used to open files"
   picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
   fails, or it does not answer within 2 s, and for a file outside the project.
+- Plugins open tabs: a Claude tab with `ctx.sessions.open` (a prompt as an argument, a model and effort) and a plain
+  shell tab with `ctx.sessions.openShell` (the person's "+" > shell: their login shell, with no command or environment
+  from the plugin). Both take a cwd inside the project folder (checked by real path), open unselected unless the
+  plugin passes `focus: true` for a click, and share one budget of 5 a minute per plugin.
 - Thin themed scrollbars in the shell and in every plugin page (overridable by the plugin; macOS keeps its overlay scrollbars).
 - Themes, commands, a command palette and editable keybindings, a Settings screen (`Cmd+,`) with one page per
   kind of setting, each setting on exactly one: General (tabs, side panels, notifications and sound, session gist,
@@ -250,9 +254,10 @@ behind it are in [design.md](design.md).
   tree and the index. The filter box searches git's tracked and untracked files (not ignored ones), or a bounded walk
   outside git. A right-click menu (also the context-menu key and Shift+F10; files 0.2.0): Open, Open with default app,
   Reveal in Finder / Show in Explorer / Open in file manager, Ask Claude about this file (a new Claude tab whose prompt names
-  the path), Copy path, Copy relative path, Rename…, New file…, New folder… and Move to Trash. Move to Trash asks in the
+  the path), Open terminal here (a folder's: a selected shell tab in that folder), Copy path, Copy relative path,
+  Rename…, New file…, New folder… and Move to Trash. Move to Trash asks in the
   app's own dialog and is recoverable; Open with default app refuses folders, executables, app bundles and script or
-  program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...). No "Open terminal here": plugins cannot open a shell tab.
+  program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...).
 - Bundled plugins (browser, reviewer, editor, files, sessions) can be switched off for the whole app (Settings > Plugins, "Off in all
   projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
   the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for

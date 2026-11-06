@@ -1,12 +1,14 @@
 // The Files panel's right-click menu (cockpit.files 0.2.0) over the real app: the menu opens on a
 // right click and from the keyboard, Rename and New folder write through the plugin host, Move to
 // Trash asks the person first (the test run's QueuedTrashConfirm, answered by the `answerTrash`
-// hook) and reaches `shell.trashItem`, and Reveal / Open with default app reach their `shell` calls.
+// hook) and reaches `shell.trashItem`, Reveal / Open with default app reach their `shell` calls, and
+// Open terminal here opens a selected shell tab in the folder (ctx.sessions.openShell).
 // The three `shell` members are replaced in main by recorders (as the openExternal specs do), so
 // nothing reaches the real file manager, an app or the Trash.
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
+import type { TabInfo } from '../../src/shared/ipc'
 import { expect, launchCockpit, test as base, type Cockpit } from './fixtures'
 
 const test = base.extend<{ cockpit: Cockpit }>({
@@ -94,7 +96,16 @@ test('right-click menu: items per kind, rename, new folder, Move to Trash with t
   // Shift+F10 opens the selected row's menu from the keyboard; a folder's items.
   await row('src').click()
   await cockpit.page.keyboard.press('Shift+F10')
-  await expect(menu.getByRole('menuitem')).toHaveText([reveal, 'New file…', 'New folder…', 'Copy path', 'Copy relative path', 'Rename…', 'Move to Trash'])
+  await expect(menu.getByRole('menuitem')).toHaveText([
+    reveal,
+    'Open terminal here',
+    'New file…',
+    'New folder…',
+    'Copy path',
+    'Copy relative path',
+    'Rename…',
+    'Move to Trash'
+  ])
 
   // New folder… inside src: the name bar, then the folder exists, src opens and the new one is selected.
   await menu.getByRole('menuitem', { name: 'New folder…' }).click()
@@ -177,4 +188,35 @@ test('Ask Claude about this file opens a Claude tab with a prompt naming the pat
   await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(1)
   const argv = cockpit.claudeRuns()[0]!
   expect(argv.at(-1)).toContain('Have a look at notes.md in this project')
+})
+
+test('Open terminal here opens a selected shell tab in that folder', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  mkdirSync(join(projectDir, 'src', 'deep'), { recursive: true })
+  // A tab the person is in first: an empty window would select any new tab, focus or not.
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+  const tree = await filesPanel(cockpit)
+  const row = (name: string) => tree.locator('.row', { has: tree.locator('.name', { hasText: new RegExp(`^${name}$`) }) })
+  await row('src').click({ button: 'right' })
+  await tree.getByRole('menuitem', { name: 'Open terminal here' }).click()
+
+  // A second tab, a shell in src, and the selected one (focus: true).
+  await expect
+    .poll(async () => (await cockpit.hook<TabInfo[]>('tabs', projectDir)).map((t) => [t.kind, t.cwd]))
+    .toEqual([
+      ['shell', projectDir],
+      ['shell', join(projectDir, 'src')]
+    ])
+  await expect(page.getByRole('tab')).toHaveCount(2)
+  await expect(page.getByRole('tab').nth(1)).toHaveAttribute('aria-selected', 'true')
+  // The person's shell (the fake one SHELL names) in the visible terminal, nothing typed into it.
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+  expect(await cockpit.terminalText()).not.toContain('pwd')
+  // 6*7 is computed by the shell: the typed line contains no "42".
+  await cockpit.typeLine('echo $((6*7)) && pwd -P')
+  await cockpit.waitForTerminalText('42')
+  await cockpit.waitForTerminalText(join(projectDir, 'src'))
+  // A shell tab never runs claude.
+  expect(cockpit.claudeRuns()).toEqual([])
 })

@@ -109,7 +109,10 @@ async function host(root, { trash } = {}) {
           fs.rmSync(path.join(root, p), { recursive: true })
         })
     },
-    sessions: { open: async (o) => void calls.push(['sessions.open', o]) }
+    sessions: {
+      open: async (o) => void calls.push(['sessions.open', o]),
+      openShell: async (o) => void calls.push(['sessions.openShell', o])
+    }
   }
   hostMod.activate(ctx)
   const send = async (m) => {
@@ -175,6 +178,23 @@ test('host: Ask Claude opens a focused Claude tab with a prompt naming the path,
   }
 })
 
+test('host: Open terminal here opens a focused shell tab in that folder, checked inside the project', async () => {
+  const { root } = project()
+  const h = await host(root)
+  try {
+    await h.send({ type: 'terminal', path: './src' })
+    await h.send({ type: 'terminal', path: '' })
+    // Only a cwd and focus: never a command, argv or env.
+    assert.deepEqual(h.calls, [['sessions.openShell', { cwd: 'src', focus: true }], ['sessions.openShell', { cwd: undefined, focus: true }]])
+    // A path the page should never send is refused before ctx sees it, and shown as an error.
+    await h.send({ type: 'terminal', path: '../x' })
+    assert.equal(h.calls.length, 2)
+    assert.match(h.posts.at(-1).message, /outside the project/)
+  } finally {
+    h.done()
+  }
+})
+
 test('host: create and rename write inside the project, refresh the folder and select the result', async () => {
   const { root, outside } = project()
   const h = await host(root)
@@ -216,13 +236,13 @@ test('host: create and rename write inside the project, refresh the folder and s
   }
 })
 
-test('host: the reset tells the page the root, separator, platform and that the system calls exist', async () => {
+test('host: the reset tells the page the root, separator, platform and that the system and shell calls exist', async () => {
   const { root } = project()
   const h = await host(root)
   try {
     await h.send({ type: 'hello' })
     const reset = h.posts.find((m) => m.type === 'reset')
-    assert.deepEqual(reset.env, { root, sep: path.sep, platform: process.platform, system: true })
+    assert.deepEqual(reset.env, { root, sep: path.sep, platform: process.platform, system: true, shell: true })
   } finally {
     h.done()
   }

@@ -12,7 +12,7 @@ project, changed or not, to read it, attach notes and discuss it with Claude.
   (not ignored ones), or up to 20,000 files outside git.
 - Right-click menu (also the context-menu key and Shift+F10): on a file Open, Open with default app,
   Reveal in Finder (Show in Explorer, Open in file manager), Ask Claude about this file, Copy path,
-  Copy relative path, Rename…, Move to Trash; on a folder Reveal, New file…, New folder…, the copies,
+  Copy relative path, Rename…, Move to Trash; on a folder Reveal, Open terminal here, New file…, New folder…, the copies,
   Rename…, Move to Trash; on the empty area New file…, New folder…, Reveal, Copy path. Move to Trash
   asks first (the app's dialog); Open with default app refuses scripts and programs.
 - Keys: arrows, Right/Left expand and collapse, Enter open, `e` edit, F2 rename, `/` filter, Esc clear.

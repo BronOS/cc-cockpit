@@ -51,10 +51,9 @@ Shift+F10 (under the selected row); arrows, Home/End, Enter, Escape (focus back 
 - **File:** Open (the `@open-file` pick, as a click), Open with default app, Reveal in Finder (the
   label per OS: "Show in Explorer", "Open in file manager"), Ask Claude about this file, Copy path,
   Copy relative path, Rename…, Move to Trash.
-- **Folder:** Reveal, New file…, New folder…, Copy path, Copy relative path, Rename…, Move to Trash.
+- **Folder:** Reveal, Open terminal here, New file…, New folder…, Copy path, Copy relative path,
+  Rename…, Move to Trash.
 - **Empty area (the project folder):** New file…, New folder…, Reveal, Copy path.
-- **Left out: Open terminal here.** The public API cannot open a shell tab (only Claude tabs,
-  `ctx.sessions.open`), and a bundled plugin gets no privileged path (FRICTION.md).
 
 Who does what:
 
@@ -69,6 +68,10 @@ Who does what:
   re-read at once and the new entry selected; a renamed open folder stays open.
 - Ask Claude opens a focused Claude tab whose prompt names the relative path only (never the file's
   content).
+- Open terminal here opens a focused shell tab in the folder (`ctx.sessions.openShell`, added for
+  this; it had been left out while the public API opened only Claude tabs): the person's own shell,
+  with no command from the plugin; main checks the folder inside the project by its real path. An
+  older app without the call gets no such item.
 - Copy path / Copy relative path are the page's: `document.execCommand('copy')` inside the click,
   which the sandboxed frame may do (navigator.clipboard is refused to its opaque origin). The host
   sends the project folder's absolute path and separator in its `reset` message, so the copy needs

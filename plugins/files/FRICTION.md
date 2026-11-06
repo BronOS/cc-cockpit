@@ -12,9 +12,11 @@
   the desktop session the host's env does not have (`xdg-open`, `gio trash` fail on Linux). Now
   `ctx.files.reveal`, `openWithSystem` and `trash` (main checks the path, refuses runnable files,
   asks the person before the Trash).
-- **No shell tab** (open): the public API opens Claude tabs (`ctx.sessions.open`) but not a shell
-  tab, so the folder menu has no "Open terminal here". A terminal overlay (`ctx.overlay.open` kind
-  `terminal`) is not a tab, and a privileged path for the bundled plugin is ruled out.
+- **No shell tab** (fixed in 0.2.0): the public API opened Claude tabs (`ctx.sessions.open`) but not a
+  shell tab, so the folder menu had no "Open terminal here". A terminal overlay (`ctx.overlay.open` kind
+  `terminal`) is not a tab, and a privileged path for the bundled plugin is ruled out. Now
+  `ctx.sessions.openShell({ cwd, focus })`: the person's shell, no command from the plugin, the cwd
+  checked by main, sharing the open budget.
 - **Forms do not submit in a panel** (noted): the frame is `sandbox="allow-scripts"` without
   `allow-forms`, so a `<form>`'s submit event never fires; the name bar handles Enter itself.
 - **No "panel shown" event** (open): the page asks for a fresh tree when it loads, and folders are

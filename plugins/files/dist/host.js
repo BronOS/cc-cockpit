@@ -12,7 +12,9 @@
 // folder and Rename run here (lib/ops.js, confined to the project by real path); Reveal, Open with
 // default app and Move to Trash go to main (ctx.files.reveal / openWithSystem / trash), which checks
 // the path again, refuses runnable files and asks the person before the Trash; Ask Claude opens a
-// Claude tab with a prompt naming the file (never its content). Copy path is the page's own.
+// Claude tab with a prompt naming the file (never its content); Open terminal here opens a shell tab
+// in the folder (ctx.sessions.openShell: main checks the folder by real path, and the shell gets no
+// command from here). Copy path is the page's own.
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -111,8 +113,15 @@ exports.activate = (ctx) => {
       settings: { hideHidden: options().hideHidden, hideIgnored: options().hideIgnored },
       // What the menu needs up front: Copy path writes the clipboard inside the click (the page's
       // user activation), so it cannot wait for an answer; the reveal label is per system; an older
-      // app without ctx.files.reveal (and its siblings) gets a menu without those items.
-      env: { root, sep: path.sep, platform: process.platform, system: typeof ctx.files.reveal === 'function' }
+      // app without ctx.files.reveal (and its siblings) gets a menu without those items, and one
+      // without ctx.sessions.openShell no Open terminal here.
+      env: {
+        root,
+        sep: path.sep,
+        platform: process.platform,
+        system: typeof ctx.files.reveal === 'function',
+        shell: typeof ctx.sessions.openShell === 'function',
+      }
     })
     // Parents before children, so the page always has the row it opens.
     const order = [...expanded].sort((a, b) => a.split('/').length - b.split('/').length)
@@ -283,6 +292,10 @@ exports.activate = (ctx) => {
           const rel = tree.normalizeRelative(m.path)
           if (rel === '') return
           await ctx.sessions.open({ prompt: askPrompt(rel), focus: true })
+        } else if (m.type === 'terminal') {
+          // A folder of the tree ('' the project folder); focused, because the person clicked.
+          const rel = tree.normalizeRelative(m.path)
+          await ctx.sessions.openShell({ cwd: rel === '' ? undefined : rel, focus: true })
         } else if (m.type === 'create') {
           await create(m)
         } else if (m.type === 'rename') {
