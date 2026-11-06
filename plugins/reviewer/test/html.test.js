@@ -320,9 +320,13 @@ test('review.css: the mail layout is opt-in, scoped under .doc-body.mail', () =>
 
 // ---- the Original view (src/page/original.mjs, feature 'original') ----
 
-test('the original frame: sandbox with no allow token, and the CSP exactly as designed', async () => {
+test('the original frame: sandbox with allow-popups as its only token, and the CSP exactly as designed', async () => {
   const { FRAME_SANDBOX, ORIGINAL_CSP } = await load('original.mjs')
-  assert.equal(FRAME_SANDBOX, '')
+  // Exactly allow-popups (a link click's one signal, which main denies as a window and opens in the
+  // browser after its checks): never allow-scripts, allow-same-origin, allow-top-navigation or
+  // allow-popups-to-escape-sandbox.
+  assert.equal(FRAME_SANDBOX, 'allow-popups')
+  assert.deepEqual(FRAME_SANDBOX.split(/\s+/), ['allow-popups'])
   assert.equal(ORIGINAL_CSP, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'")
   // The page sets the attribute before srcdoc, and nothing else of the sandbox anywhere.
   const page = fs.readFileSync(path.join(__dirname, '../src/page/review.js'), 'utf8')
@@ -377,7 +381,8 @@ test('originalDocument: a breakout attempt keeps nothing that runs, loads or nav
   }
   // The CSS stays (the frame's CSP is what keeps its url()s from loading; the caller's sanitizer drops them first).
   assert.match(html, /<style>@import url\(https:\/\/evil\.example\/i\.css\); body\{background:url\(https:\/\/evil\.example\/bg\.png\)\}<\/style>/)
-  // The link keeps its look and its URL as a tooltip, and asks for a new window, which the sandbox refuses.
+  // The link keeps its look and its URL as a tooltip, and asks for a new window (main denies it and
+  // opens the checked URL in the browser).
   assert.match(html, /<a href="https:\/\/jira\.example\/browse\/PROJ-1" target="_blank" rel="noopener noreferrer" title="https:\/\/jira\.example\/browse\/PROJ-1">View issue<\/a>/)
   assert.match(html, /<img alt="pic">/)
   assert.match(html, /Search/) // a form's text stays, its controls go

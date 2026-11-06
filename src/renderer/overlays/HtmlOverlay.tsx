@@ -58,8 +58,9 @@ function sendResult(overlayId: string, value: unknown, onRefused: () => void): v
  *   `ccPanel.ready()` reaches this window as `cc-plugin.ready` (not on the port, which is the
  *   opener's line) and tells main the page has drawn (`overlays.loaded`): the loader of a
  *   `ready: 'manual'` overlay goes then; a `load` one's goes at `overlays.ready`.
- * Either runs in a sandboxed iframe (`allow-scripts` only, never `allow-same-origin`), so in an
- * opaque origin with no access to this window, its storage or the preload bridge.
+ * Either runs in a sandboxed iframe (`allow-scripts`, never `allow-same-origin`; a plugin's page also
+ * `allow-popups`, which main denies as windows, see PluginFrame), so in an opaque origin with no
+ * access to this window, its storage or the preload bridge.
  *
  * The frame does not take the keyboard by itself (OverlayStack focuses the overlay around it):
  * a page gets keys once the user clicks into it, and Esc then goes through main, because the
@@ -102,6 +103,9 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
       src={props.src}
       title={props.title}
       className="overlay-html"
+      // For a no-script frame inside the page (the reviewer's Original view of a mail): its link
+      // clicks are popup requests main checks and opens in the system browser (PluginFrame).
+      allowPopups
       onPageMessage={(data) => {
         if (typeOf(data) === READY_MESSAGE) pageDrawn(overlayId)
       }}

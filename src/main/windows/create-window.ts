@@ -1,8 +1,9 @@
 import { join } from 'node:path'
-import { BrowserWindow, nativeTheme, type BrowserWindowConstructorOptions } from 'electron'
+import { BrowserWindow, nativeTheme, shell, type BrowserWindowConstructorOptions } from 'electron'
 import type { RendererLocation } from '../ipc/router'
 import { BUILTIN_THEMES } from '../themes/theme-service'
 import { sameOrigin } from './frame-origin'
+import { windowOpenHandler } from './mail-frame-links'
 
 /** The built-in theme's --cc-bg for the OS appearance (the window's colour before the page paints). */
 function builtinBackground(kind: 'light' | 'dark'): string {
@@ -16,7 +17,10 @@ function builtinBackground(kind: 'light' | 'dark'): string {
  *   embeds sandboxed plugin iframes; it talks to main only through the preload bridge.
  * - navigation away from the app page is denied and window.open is denied: a link inside a
  *   terminal or a plugin panel must never turn the shell window into a browser. Opening a link in
- *   the system browser is an explicit request to main (later tasks), not a navigation.
+ *   the system browser is an explicit request to main (`app.openExternal`, ctx.openExternal), not a
+ *   navigation. One exception, still never a window: a link clicked in the reviewer's Original view
+ *   of a mail (a frame with no script, so a popup request is its only signal) has its URL checked
+ *   and handed to the system browser (mail-frame-links.ts).
  */
 export function createWindow(options: BrowserWindowConstructorOptions = {}): BrowserWindow {
   const win = new BrowserWindow({
@@ -64,7 +68,12 @@ export function createWindow(options: BrowserWindowConstructorOptions = {}): Bro
     if (event.initiator && event.initiator.parent === null) return
     if (!sameOrigin(event.frame?.url, event.url)) event.preventDefault()
   })
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // Every request is denied as a window. The reviewer's mail frame (the focused frame at the time;
+  // Electron's details name no frame) gets its link opened in the system browser after the
+  // ctx.openExternal checks; Chromium asks only after a real click or Enter (user activation).
+  // A lambda for shell.openExternal: looked up at each call, so the e2e recorder replacing it is seen.
+  const onWindowOpen = windowOpenHandler({ openExternal: (url) => shell.openExternal(url) })
+  win.webContents.setWindowOpenHandler((details) => onWindowOpen(details, win.webContents.focusedFrame))
   win.once('ready-to-show', () => win.show())
   return win
 }

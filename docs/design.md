@@ -1064,10 +1064,12 @@ overlay at once with a loader while the caller still fetches, and the annotate o
 
 *The Original view's frame (reviewer feature `original`, app 0.13.0), a trust boundary inside a plugin page.* A mail's
 own HTML and CSS (annotate's `originals`) is shown as its sender made it, so the allow-list sanitizer cannot be the wall
-there: it would strip the styling the view is for. The wall is the frame. The reviewer page (itself `sandbox="allow-scripts"`
-under `pluginCsp`) draws each original in `<iframe sandbox="">`: no `allow-*` token, so no script (inline, handlers,
-`javascript:` URLs and a meta refresh are refused by the browser), an opaque origin (nothing inside can reach the page,
-its port to the host or any storage), no forms, popups or navigation of other frames. The document is a `srcdoc`,
+there: it would strip the styling the view is for. The wall is the frame. The reviewer page (itself
+`sandbox="allow-scripts allow-popups"` as an overlay, under `pluginCsp`) draws each original in
+`<iframe sandbox="allow-popups">`: no other `allow-*` token, so no script (inline, handlers, `javascript:` URLs and a
+meta refresh are refused by the browser), an opaque origin (nothing inside can reach the page, its port to the host or
+any storage), no forms and no navigation of other frames; popups stay sandboxed (no `allow-popups-to-escape-sandbox`)
+and main never makes one. The document is a `srcdoc`,
 which Chromium gives the parent's policy container, so the page's header CSP (`default-src 'none'`, images only
 from the plugin's own files and `data:`, `frame-src 'none'`, no connect) holds inside it, and the reviewer writes a
 meta CSP as the head's first child, before any of the mail: `default-src 'none'; style-src 'unsafe-inline'; img-src
@@ -1076,10 +1078,22 @@ header policy allows only the plugin's files). A custom protocol serving the doc
 alternative and is weaker here: the header would be its only policy, main would hold and serve the mail, and
 `frame-src` would have to open for its URL; `frame-src 'none'` does not stop a srcdoc frame (no fetch). Links: a click
 cannot be told to the page without script, and a plain link would navigate the frame (refused by the page's
-`frame-src`, leaving an error page), so every link gets `target="_blank"`, which the sandbox refuses as a popup;
-the page's own Links list opens them through the reviewer's `open-link` check (the caller's own links only, http(s)
-only, `ctx.openExternal`). Main adds nothing: its `will-frame-navigate` rule and window-open denial stand as a further
-layer. The caller's sanitizer (the Gmail plugin's original mode: no script, url() but data: images, `@import`,
+`frame-src`, leaving an error page), so every link gets `target="_blank"`: the click asks Chromium for a popup, the one
+signal that leaves the frame, and it reaches the shell window's window-open handler (`main/windows/mail-frame-links.ts`,
+installed by `create-window.ts`). Main denies every window, always; when the asking frame is the reviewer's mail frame
+(an `about:srcdoc` child of `cc-plugin://cockpit.reviewer/overlay/review.html`, itself a child of the shell page,
+read from `webContents.focusedFrame`: Electron's details name no frame, and a `cc-plugin:` page sends no referrer) it
+also hands the URL to the system browser after ctx.openExternal's checks (`checkWebUrl` with the plugin rules: http and
+https only, so `javascript:`, which arrives as `about:blank`, `file:`, `data:`, `mailto:` and app schemes are refused;
+no user:pass@; 2048 chars; 3 links in 10 s per window). Chromium asks only with user activation (a real click or
+Enter), and the frame has no script to ask otherwise. For that popup to be possible at all, sandbox flags adding up
+down the tree, a plugin overlay's frame (`PluginFrame`'s `allowPopups`, overlays only, not panels or slots) and
+`pluginCsp`'s `sandbox` carry `allow-popups`; any other page's popup is denied as a window as before, and no other
+frame's request opens anything. Residual: the focused frame is not the requester itself, so a page with its own
+activation that asked for a popup while the focus sat in a mail frame would have its http(s) URL opened under the same
+checks (it could open one through its own ctx.openExternal anyway). The page's own Links list opens the same links
+through the reviewer's `open-link` check (the caller's own links only, http(s) only, `ctx.openExternal`). Main's
+`will-frame-navigate` rule stands as a further layer. The caller's sanitizer (the Gmail plugin's original mode: no script, url() but data: images, `@import`,
 `expression`, `behavior`, `-moz-binding`, fixed or sticky positioning) is the second wall, not the one relied on.
 `test/e2e/reviewer-original.spec.ts` hands the frame a breakout attempt with no sanitizer in front and records every
 request and console line of the app.

@@ -287,19 +287,24 @@ features()  // -> [..., 'original']
 The allow-list rendering keeps no style, so a designed mail (a Jira notification's card, struck-out old values in red,
 new ones on green, layout tables) lost its look. Gmail shows the sender's styling; this does too, safely.
 
-- **The wall is the frame, not a sanitizer.** `<iframe sandbox="">` (no `allow-*`), a `srcdoc` document that inherits
+- **The wall is the frame, not a sanitizer.** `<iframe sandbox="allow-popups">` (no other `allow-*`), a `srcdoc` document that inherits
   this page's header CSP (pluginCsp) and starts with its own meta CSP (`default-src 'none'; style-src 'unsafe-inline';
   img-src data:; font-src data:; form-action 'none'; base-uri 'none'`). Checked in Electron 45 before building: an
   http image, a CSS url(), `@import`, `<link rel=stylesheet>` and `<base href>` each print two violations (one per
-  policy); script, handlers and a meta refresh print "Blocked ... sandboxed"; a form submission and a popup are
-  refused; `frame-src 'none'` does not stop the srcdoc frame itself. The comment at the top of `src/page/original.mjs`
+  policy); script, handlers and a meta refresh print "Blocked ... sandboxed"; a form submission is refused; `frame-src 'none'` does not stop the srcdoc frame itself. The comment at the top of `src/page/original.mjs`
   says why srcdoc beats a custom protocol with a header CSP here. The caller's sanitizer (Gmail's original mode) and
   this page's rebuild of the markup (presentational elements and attributes, links with `target="_blank"`, pictures
   from assets) are further walls; the e2e test hands the frame a breakout attempt with neither in front.
 - **Links.** Without script in the frame and without same origin, the page cannot learn which link was clicked; a
-  plain link would navigate the frame onto an error page (the page's `frame-src`). Every link asks for a new window,
-  which the sandbox refuses, so nothing happens in the frame; the page's Links list (built from the same walk) opens
-  one through `open-link`, whose allow-set includes the originals' links.
+  plain link would navigate the frame onto an error page (the page's `frame-src`). Every link asks for a new window
+  (`allow-popups`), which reaches the app's window-open handler (core `main/windows/mail-frame-links.ts`): it denies
+  the window, always, and when the asking frame is this page's srcdoc frame it opens the URL in the system browser
+  after the checks of `ctx.openExternal` (http(s) only, so mailto is not opened, as from the Links list; 3 in 10 s).
+  Chromium asks only after a real click or Enter. The overlay's own frame and `pluginCsp` carry `allow-popups` for
+  this (sandbox flags add up down the tree). The page's Links list (built from the same walk) opens the same links
+  through `open-link`, whose allow-set includes the originals' links. The status hint ("notes go on the Reader view")
+  shows when the view does, not at the first click into the frame: in annotate the status row is hidden while
+  empty, and showing it at mousedown moved the frame under the pointer, so the first link click opened nothing.
 - **Height.** No script and no same origin: no measuring. CSS `frame-sizing: content-height` parses in Chromium 156 but
   did not size a srcdoc frame in Electron 45 (with or without the ResponsiveIframes flag). Each frame is the visible
   area's height (a ResizeObserver on the scroller) and scrolls inside.

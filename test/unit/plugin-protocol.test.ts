@@ -94,7 +94,7 @@ describe('servePluginRequest', () => {
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('<p>agenda</p>')
     expect(res.headers.get('content-security-policy')).toBe(pluginCsp('acme.board'))
-    expect(res.headers.get('content-security-policy')).toContain('sandbox allow-scripts')
+    expect(res.headers.get('content-security-policy')).toContain('sandbox allow-scripts allow-popups')
     expect(res.headers.get('content-security-policy')).toContain("frame-src 'none'")
   })
 
@@ -259,7 +259,9 @@ describe('pluginCsp', () => {
     expect(csp).toContain("frame-src 'none'")
     expect(csp).toContain("form-action 'none'")
     // The iframe's sandbox, repeated by the response: opaque origin however the page is loaded.
-    expect(csp).toMatch(/(^|; )sandbox allow-scripts($|;)/)
+    // allow-popups, never allow-same-origin or allow-popups-to-escape-sandbox: a popup is the
+    // reviewer's mail frame's one way to say which link was clicked, and main denies every window.
+    expect(csp).toMatch(/(^|; )sandbox allow-scripts allow-popups($|;)/)
     expect(csp).not.toMatch(/https?:|\*/)
   })
 })

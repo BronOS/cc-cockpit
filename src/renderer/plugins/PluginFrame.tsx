@@ -19,6 +19,14 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  * SDK's `cc-plugin.slot`: the page is a slot of that type), and `onPageMessage` for what the page
  * posts to its parent (`ccPanel.slot.setHeight`, `setWidth`). Only messages whose source is this
  * frame's own window reach it, so another frame cannot speak for this one.
+ *
+ * `allowPopups` (plugin overlays only, HtmlOverlay) adds `allow-popups`, and nothing else: sandbox
+ * flags only add up down the frame tree, so without it on this frame the reviewer's mail frame inside
+ * it (`sandbox="allow-popups"`, no script) could not even ask for the popup that main turns into a
+ * checked open in the system browser (main/windows/mail-frame-links.ts). Every popup is still denied
+ * as a window by main (create-window.ts), so for any other page a popup does as little as before; no
+ * `allow-popups-to-escape-sandbox`, and panels and slots (always on screen, where a page could catch
+ * a click meant for the mail) stay without it.
  */
 export function PluginFrame(props: {
   src: string
@@ -27,6 +35,7 @@ export function PluginFrame(props: {
   connect: (deliver: (port: MessagePort) => void) => () => void
   intro?: object
   onPageMessage?: (data: unknown) => void
+  allowPopups?: boolean
 }): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null)
   const cleanup = useRef<(() => void) | undefined>(undefined)
@@ -83,7 +92,7 @@ export function PluginFrame(props: {
       ref={frame}
       className={props.className}
       title={props.title}
-      sandbox="allow-scripts"
+      sandbox={props.allowPopups === true ? 'allow-scripts allow-popups' : 'allow-scripts'}
       src={props.src}
       onLoad={onLoad}
     />

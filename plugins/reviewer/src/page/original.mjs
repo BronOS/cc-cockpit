@@ -6,13 +6,15 @@
 // The frame is the wall, and it must hold even when the caller's sanitizer (the Gmail plugin's
 // original mode, the second wall) and this walk (a third) miss something:
 //
-// - `<iframe sandbox="">` (FRAME_SANDBOX): every sandbox flag on, no `allow-*` token. No script
-//   (no allow-scripts: inline script, event handlers and javascript: URLs are blocked by the browser,
-//   and a meta refresh too: "Refused to execute the redirect ... the document is sandboxed"), an
-//   opaque origin (no allow-same-origin: nothing in it can reach this page, its storage or its port
-//   to the host), no form submission (allow-forms), no popups (allow-popups), no top navigation.
-//   The reviewer page is itself sandboxed (`allow-scripts` only, core's PluginFrame / HtmlOverlay)
-//   and sandbox flags only add up down the tree.
+// - `<iframe sandbox="allow-popups">` (FRAME_SANDBOX): every other sandbox flag on. No script (no
+//   allow-scripts: inline script, event handlers and javascript: URLs are blocked by the browser, and
+//   a meta refresh too: "Refused to execute the redirect ... the document is sandboxed"), an opaque
+//   origin (no allow-same-origin: nothing in it can reach this page, its storage or its port to the
+//   host), no form submission (allow-forms), no top navigation (allow-top-navigation), and popups
+//   that stay sandboxed (no allow-popups-to-escape-sandbox; moot, as main denies every window). The
+//   popup is the one signal of a link click, see Links below. The reviewer page is itself sandboxed
+//   (`allow-scripts allow-popups` as an overlay, core's PluginFrame / HtmlOverlay, and the same in
+//   its CSP header) and sandbox flags only add up down the tree, so the frame can have no more.
 // - A CSP from two places, both enforced. The frame is a `srcdoc` document, and Chromium gives a
 //   srcdoc document its parent's policy container: the reviewer page's header CSP (core's pluginCsp:
 //   `default-src 'none'`, img-src only this plugin's files and data:, no frames, no connect) applies
@@ -33,19 +35,28 @@
 // Links. A frame without script cannot tell this page which link was clicked, and this page may not
 // look inside it (no allow-same-origin). A plain link would navigate the frame: the reviewer page's
 // `frame-src 'none'` blocks that (ERR_BLOCKED_BY_CSP) but leaves an error page in the frame instead of
-// the mail. So every link gets `target="_blank"`: a sandboxed frame without allow-popups is refused a
-// new window ("Blocked opening ... in a sandboxed frame whose 'allow-popups' permission is not set")
-// and the frame stays as it was (verified). The link keeps its look, with its URL as the tooltip, and
-// opens from the page's own Links list (a button of the page, not of the frame), through the same
-// `open-link` path as the Reader view's links: the host opens only a link of the caller's own strings.
+// the mail. So every link gets `target="_blank"`: a click asks Chromium for a new window, which the
+// frame may ask for (allow-popups) and which goes to main's window-open handler (core's
+// main/windows/mail-frame-links.ts). Main always denies the window (the frame stays as it was, no
+// BrowserWindow is made) and hands the URL to the system browser after the checks of ctx.openExternal
+// (http and https only: a mailto link is not opened, as from the Links list; 3 in 10 s), only when the
+// asking frame is a srcdoc frame of this page (the window's focused frame: Electron names no frame).
+// Chromium asks only after a real click or Enter (user activation), and the frame has no script to
+// ask otherwise. A `javascript:` link reaches main as about:blank and is refused there. The link keeps
+// its look, with its URL as the tooltip. The page's own Links list (a button of the page, not of the
+// frame) opens the same links through the same `open-link` path as the Reader view's links (the host
+// opens only a link of the caller's own strings), and lists them in one place.
 //
 // Pure functions over the DOM node interface, like sanitize.mjs, so test/html.test.js runs them under
 // node with fake nodes; the real parser is the app's test/e2e/reviewer-original.spec.ts.
 
 import { safeHref, assetRef, isImageDataUrl } from './sanitize.mjs'
 
-/** The frame's sandbox attribute: present and empty, every restriction on. */
-export const FRAME_SANDBOX = ''
+/**
+ * The frame's sandbox attribute: every restriction on but popups, the frame's one way to say a link was
+ * clicked (main denies the window and opens the checked URL in the system browser; see Links above).
+ */
+export const FRAME_SANDBOX = 'allow-popups'
 
 /** The meta CSP at the top of every frame document (see the header for the header policy it adds to). */
 export const ORIGINAL_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
@@ -203,7 +214,8 @@ export function originalDocument(root, { asset = () => null } = {}) {
     if (tag === 'a') {
       const href = safeHref(a.get('href'))
       if (href) {
-        // target=_blank: a click asks for a popup, which the sandbox refuses; the frame never navigates.
+        // target=_blank: a click asks for a popup, which main denies as a window and opens in the
+        // system browser after its checks; the frame never navigates.
         out.push(['href', href], ['target', '_blank'], ['rel', 'noopener noreferrer'])
         if (!a.has('title')) out.push(['title', href])
         if (!links.has(href) && links.size < MAX_LINKS) {

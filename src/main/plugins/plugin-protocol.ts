@@ -8,10 +8,15 @@
 //   /<path>           a regular file inside the plugin's folder, nothing else
 //   anything else     404 (an unknown plugin, a path that leaves the folder, a directory)
 // Every response, 404s included, carries the plugin's CSP: its own files only, no network, no
-// inline script, no frames, no form posts, and `sandbox allow-scripts`. The last one repeats the
-// iframe's sandbox attribute in the response itself: the handler serves any frame of the default
-// session, so a page loaded some other way (a future view, a navigation that slipped past a guard)
-// still runs in an opaque origin, never as `cc-plugin://<id>` with that origin's storage.
+// inline script, no frames, no form posts, and `sandbox allow-scripts allow-popups`. The last one
+// repeats the iframe's sandbox attribute in the response itself: the handler serves any frame of the
+// default session, so a page loaded some other way (a future view, a navigation that slipped past a
+// guard) still runs in an opaque origin, never as `cc-plugin://<id>` with that origin's storage.
+// `allow-popups` is there because a header's flags add to the frame's and to every frame inside it:
+// without it the reviewer's no-script mail frame could not ask for the popup main turns into a
+// checked link open (main/windows/mail-frame-links.ts). Which frames may ask is still the iframe's
+// attribute (only a plugin overlay's has allow-popups, PluginFrame), and every popup of a shell window
+// is denied as a window (create-window.ts).
 //
 // Containment: the URL parser (a `standard` scheme) folds literal `.`/`..` segments, but an
 // encoded `%2e%2e` or `%2f` survives it and would turn into `..` or `/` when decoded. So the raw
@@ -61,7 +66,7 @@ export function pluginCsp(pluginId: string): string {
     "frame-src 'none'",
     "form-action 'none'",
     "base-uri 'none'",
-    'sandbox allow-scripts'
+    'sandbox allow-scripts allow-popups'
   ].join('; ')
 }
 

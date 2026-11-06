@@ -3,10 +3,11 @@
 // original HTML is a breakout attempt, with no sanitizer of a caller in front: script in the head
 // and the body, an <img onerror>, an <svg onload>, CSS url() and @import to http, a meta refresh, a
 // form with an action, a javascript: link, a base href, a stylesheet link, an iframe, a style block
-// with an http background image. The page must show it in a frame with `sandbox=""` and the CSP meta
-// first, keep the sender's styling (a layout table, inline background colours, a struck-out value),
-// fill a picture from an asset, never navigate the frame on a link click, open the link from its own
-// Links list through the host's check, and switch to the Reader view and back (the `view` event
+// with an http background image. The page must show it in a frame with `sandbox="allow-popups"` and the
+// CSP meta first, keep the sender's styling (a layout table, inline background colours, a struck-out
+// value), fill a picture from an asset, never navigate the frame on a link click but open the link in
+// the system browser through main's window-open handler (no new window), open it from its own Links
+// list through the host's check too, and switch to the Reader view and back (the `view` event
 // reaching the caller). Main records every request the app makes (the default session's webRequest)
 // and every console message: no request to http(s) at all, no line a script of the mail would print,
 // and the browser's own refusals (blocked script, CSP violations of the frame's meta policy) present.
@@ -92,9 +93,11 @@ test('original view: the mail in a sandboxed frame keeps its styling, loads and 
   const review = page.frameLocator(`iframe[title="${TITLE}"]`)
   const iframe = review.locator('iframe.original-frame')
   await expect(iframe).toHaveCount(1)
-  // The frame exactly as designed: sandbox present and empty, no referrer, and its document starts
-  // with the CSP meta, before anything of the mail.
-  expect(await iframe.getAttribute('sandbox')).toBe('')
+  // The frame exactly as designed: sandbox with allow-popups as its only token (inside the overlay's
+  // own allow-scripts allow-popups), no referrer, and its document starts with the CSP meta, before
+  // anything of the mail.
+  expect(await iframe.getAttribute('sandbox')).toBe('allow-popups')
+  expect(await page.locator(`iframe[title="${TITLE}"]`).getAttribute('sandbox')).toBe('allow-scripts allow-popups')
   expect(await iframe.getAttribute('referrerpolicy')).toBe('no-referrer')
   expect(await iframe.getAttribute('allow')).toBeNull()
   const srcdoc = (await iframe.getAttribute('srcdoc')) ?? ''
@@ -115,34 +118,35 @@ test('original view: the mail in a sandboxed frame keeps its styling, loads and 
   await expect(review.locator('.mail-body[data-reader="m1"]')).toBeHidden()
   await expect(review.locator('.view-opt[data-view="original"]')).toHaveAttribute('aria-pressed', 'true')
 
-  // A click on a link inside the frame: the sandbox refuses the new window, the frame stays.
-  // (main's window-open handler denies everything anyway; recorded here to see that nothing reaches it)
-  await cockpit.app.evaluate(({ BrowserWindow }) => {
-    const g = globalThis as { __windowOpen?: string[] }
-    g.__windowOpen = []
-    for (const w of BrowserWindow.getAllWindows())
-      w.webContents.setWindowOpenHandler((d) => {
-        g.__windowOpen!.push(d.url)
-        return { action: 'deny' }
-      })
-  })
+  // A click on a link inside the frame opens it in the system browser: the frame asks for a popup
+  // (sandbox allow-popups), main's window-open handler (mail-frame-links.ts) denies the window and
+  // hands the checked URL to shell.openExternal (the recorder here). No new window, the frame stays.
+  // The status line said its hint when the view showed, not on this click: shown at mousedown it
+  // moved the frame under the pointer and the first click opened nothing (the frame's box is the same
+  // after the click).
+  await expect(review.locator('#status')).toContainText('notes go on the Reader view')
+  const box = await iframe.boundingBox()
+  const windowCount = (): Promise<number> => cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
+  const windowsBefore = await windowCount()
   await mail.locator('#view').click()
-  // The click did land on the link (it has the focus), and nothing came of it.
+  await expect.poll(opened).toEqual(['https://jira.example.com/browse/PROJ-7'])
+  expect(await iframe.boundingBox()).toEqual(box)
+  // The click did land on the link (it has the focus).
   expect(await mail.locator('body').evaluate((b) => b.ownerDocument.activeElement?.id)).toBe('view')
+  // The javascript: link lost its href in the walk: a click on it asks for nothing and opens nothing.
   await mail.locator('#js').click()
   await page.waitForTimeout(500)
-  expect(await cockpit.app.evaluate(() => (globalThis as { __windowOpen?: string[] }).__windowOpen)).toEqual([])
+  expect(await opened()).toEqual(['https://jira.example.com/browse/PROJ-7'])
+  expect(await windowCount()).toBe(windowsBefore)
   await expect(mail.locator('#designed')).toBeVisible()
   expect((await frameUrls()).filter((u) => /^https?:/.test(u))).toEqual([])
-  expect(await opened()).toEqual([])
-  // The status line says once where links open now.
-  await expect(review.locator('#status')).toContainText('links open from Links above')
+  expect((await frameUrls()).filter((u) => u === 'about:srcdoc')).toHaveLength(1)
 
-  // The page's Links list opens it, through the host's check of the caller's own links.
+  // The page's Links list opens it too, through the host's check of the caller's own links.
   await review.locator('.view-links-btn').click()
   await expect(review.locator('.view-links li')).toHaveCount(1)
   await review.locator('.view-links li button', { hasText: 'View issue' }).click()
-  await expect.poll(opened).toEqual(['https://jira.example.com/browse/PROJ-7'])
+  await expect.poll(opened).toEqual(['https://jira.example.com/browse/PROJ-7', 'https://jira.example.com/browse/PROJ-7'])
 
   // Reader and back: the page switches at once, and the caller hears of each choice.
   await review.locator('.view-opt[data-view="reader"]').click()

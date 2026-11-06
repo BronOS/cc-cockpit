@@ -104,7 +104,8 @@ test('a plugin command from the palette opens its html overlay; the page-sent re
 
   const overlayFrame = page.locator('iframe[title="Pick"]')
   await expect(overlayFrame).toHaveAttribute('src', 'cc-plugin://test.panels/pick.html')
-  await expect(overlayFrame).toHaveAttribute('sandbox', 'allow-scripts')
+  // allow-popups on an overlay only (PluginFrame): main denies every window it asks for.
+  await expect(overlayFrame).toHaveAttribute('sandbox', 'allow-scripts allow-popups')
   await page.frameLocator('iframe[title="Pick"]').getByRole('button', { name: 'Pick b' }).click()
 
   await expect

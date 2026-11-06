@@ -377,8 +377,9 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 
 - Distribution: the Mac build is ad-hoc signed and not notarised, Intel Macs are not supported, there is no auto-updater
   (the app only shows a notice), and the update check cannot see a private repo, which answers 404.
-- The reviewer's Original view (a mail as its sender made it) cannot run script, so: a link inside the message does
-  not open on a click (the Links list above the document opens it); a note cannot be made on the message's text
+- The reviewer's Original view (a mail as its sender made it) cannot run script, so: a link inside the message opens
+  in the system browser on a click (http and https only; a mailto link opens from neither the message nor the Links
+  list above it); a note cannot be made on the message's text
   (switch to Reader); each message's frame is as tall as the visible area and scrolls on its own (nothing can measure
   its content without script); and showing the pictures reloads the frame at its top.
 - The reviewer and editor handle files inside the project only. A file a session edits outside its project keeps

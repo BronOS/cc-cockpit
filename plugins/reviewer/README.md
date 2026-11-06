@@ -137,8 +137,8 @@ await reviewer.annotate({
 reviewer.on('view', ({ key, view, caller }) => { if (caller === ctx.pluginId) remember(key, view) })
 ```
 
-- **The frame.** Each original is a `<iframe sandbox="">` (every restriction, no `allow-*`: no script, an opaque origin,
-  no forms, popups or navigation) whose `srcdoc` starts with the CSP `default-src 'none'; style-src 'unsafe-inline';
+- **The frame.** Each original is a `<iframe sandbox="allow-popups">` (every other restriction: no script, an opaque
+  origin, no forms or navigation; a popup is only a link click's signal to the app, which never opens a window) whose `srcdoc` starts with the CSP `default-src 'none'; style-src 'unsafe-inline';
   img-src data:; font-src data:; form-action 'none'; base-uri 'none'`, and inherits the page's own header CSP on top.
   Nothing in it runs or loads from the network even when your sanitizer misses something; the page also rebuilds the
   markup from a list of presentational elements and attributes (`src/page/original.mjs`). Clean it anyway: that is
@@ -150,10 +150,12 @@ reviewer.on('view', ({ key, view, caller }) => { if (caller === ctx.pluginId) re
 - **Pictures.** `<img data-asset="<id>">` or `src="asset:<id>"` of your assets, built into the frame as data: URLs; a
   picture not sent yet is a dashed box of its declared size (`data-minor`: hidden), and the frame is built again when
   its asset comes (with `update`, it reloads at its top). A `data:` png, jpeg, gif or webp `src` stays; any other goes.
-- **Links** keep their look and their URL as a tooltip, but a click does nothing inside the frame (it asks for a new
-  window, which the sandbox refuses: a frame without script cannot tell the page which link it was). The page's
-  **Links (n)** button above the document lists them and opens one as any link of yours is opened (in your strings,
-  http(s), `ctx.openExternal`). The status line says so once, at the first click into the frame.
+- **Links** keep their look and their URL as a tooltip, and a click opens one in the system browser: it asks for a new
+  window (a frame without script has no other way to say which link it was), the app (app 0.13.0 and later) denies the
+  window and opens the URL after the checks of `ctx.openExternal` (http(s) only, no user:pass@, 3 in 10 s; a mailto
+  link is not opened). The page's **Links (n)** button above the document lists them and opens one as any link of
+  yours is opened (in your strings, http(s), `ctx.openExternal`). The status line says once, when the view shows, that
+  notes need the Reader view.
 - **Height.** Nothing can read the height of a frame without script and same origin, so each frame is as tall as the
   visible document area and scrolls on its own; the wheel goes on to the document at its end.
 - **Look.** A white "paper" page (the frame's own default is white with dark text, `color-scheme: light`) under your

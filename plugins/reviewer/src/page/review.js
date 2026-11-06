@@ -1070,7 +1070,7 @@ const originals = {
   list: new Map(), // id -> { parts, source, frame, links, assets }
   view: 'reader', // 'original' | 'reader': the class on the main document
   bar: null, // the Original | Reader switch and the Links list, above the document
-  hinted: false, // the status line said once how links and notes work in the Original view
+  hinted: false, // the status line said once that notes need the Reader view (hintOriginal)
   pending: new Set(), // ids whose frame waits to be built again with new pictures
   timer: 0,
 }
@@ -1118,8 +1118,8 @@ function attachOriginal(id) {
   const built = buildOriginal(o)
   if (!built) return // the Reader rendering stays (rv-has-original is never set for it)
   const frame = document.createElement('iframe')
-  // Present and empty: every sandbox restriction, no allow-* token (original.mjs). Set before srcdoc,
-  // so the document never loads in a less restricted frame.
+  // Every sandbox restriction but popups (original.mjs). Set before srcdoc, so the document never
+  // loads in a less restricted frame.
   frame.setAttribute('sandbox', FRAME_SANDBOX)
   frame.setAttribute('referrerpolicy', 'no-referrer')
   frame.setAttribute('title', 'Original message')
@@ -1177,7 +1177,7 @@ function showViewBar() {
   }
   const linksBtn = el('button', 'view-links-btn', 'Links')
   linksBtn.type = 'button'
-  linksBtn.title = "The links of the original message: they open from here, not inside it"
+  linksBtn.title = 'The links of the original message, in one list (a click on one in the message opens it too)'
   linksBtn.setAttribute('aria-expanded', 'false')
   const list = el('ul', 'view-links')
   list.hidden = true
@@ -1197,6 +1197,7 @@ function showViewBar() {
   }
   setView(originals.view, false)
   renderOriginalLinks()
+  hintOriginal()
 }
 
 function renderOriginalLinks() {
@@ -1241,15 +1242,16 @@ function setView(v, tell) {
   updateAddButton()
 }
 
-// A click into a frame moves the focus into it, and this page's window loses it: the one sign of a
-// click there it gets. Said once: a link in the original does not open from inside it, and a note
-// needs the Reader view (a selection in the frame is out of this page's reach).
-window.addEventListener('blur', () => {
-  const f = document.activeElement
-  if (originals.hinted || !f || !f.classList || !f.classList.contains('original-frame')) return
+// Said once, when the Original view first shows (showViewBar): a note needs the Reader view (a selection
+// in the frame is out of this page's reach). Not on the first click into a frame, as it once was (the
+// window's blur): in annotate the status row is hidden while empty, so showing it at mousedown moved the
+// frame down under the pointer, the mouseup landed elsewhere, and the first click on a link in the mail
+// opened nothing. A link there opens through main (original.mjs, Links); the page never learns of it.
+function hintOriginal() {
+  if (originals.hinted || originals.view !== 'original') return
   originals.hinted = true
-  setStatus('Original view: links open from Links above, notes go on the Reader view')
-})
+  setStatus('Original view: notes go on the Reader view')
+}
 
 // ---- actions and update (features 'actions' and 'update') ----
 //
