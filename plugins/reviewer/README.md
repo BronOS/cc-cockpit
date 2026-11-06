@@ -25,12 +25,20 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     when the app refuses the overlay. An overlay's type and Discuss tab are set when
     it starts, so pass them here: the filling annotate's own `type` and `tabId` are not used then. `cancel({ key })` closes one no annotate filled (a no-op
     after the fill, so call it in a `finally`). An older reviewer has no `prepare` (rejects with "has no method").
+  - `fail({ key, message, retry? })` (app 0.13.2, feature `'fail'`): your loader of `key` (prepared, never filled) turns
+    into an error page instead of closing: `message` as plain text (one line, at most 300 characters, never HTML),
+    Close, and with `retry: true` a **Try again** whose click is the service event `action` `{ key, id: 'retry', caller }`.
+    The key is released then: an annotate of it opens as for a key not open, and only your next `prepare` of it takes
+    the page back (the loader again, the same overlay), so answer Try again with the normal open (prepare, fetch,
+    annotate or fail). Resolves `{ failed: false }` where `cancel` would close nothing (filled, never prepared) and for
+    another plugin's loader: cancel then, as an older reviewer needs. Without it a failed fetch closed the loader and a
+    network outage made the overlay flash open and shut with no reason.
   - `kind: 'mail'` (HTML form, optional, app 0.13.0): the mail reading layout; see "Mail" below. Buttons in the document
     (`data-action`) and `update({ key, assets?, hide?, status? })` go with it.
   - `originals: [{ id, html }]` and `view` (HTML form, optional, app 0.13.0): the Original view; see "Original view"
     below. The page's Original | Reader switch is the service event `view` `{ key, view, caller }`.
   - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type', 'mail', 'actions',
-    'update', 'original']`); an older reviewer has no such
+    'update', 'original', 'fail']`); an older reviewer has no such
     method (the call rejects with `has no method "features"`: read it as none).
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call

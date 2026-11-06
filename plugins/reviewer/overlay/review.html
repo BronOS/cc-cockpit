@@ -12,6 +12,17 @@
     <!-- Shown until the host's init comes: at once on every open, and for as long as a caller of the
          reviewer service still fetches what it shows (prepare, then annotate). -->
     <div id="loading" role="status"><span class="cc-spinner" aria-hidden="true"></span>Loading…</div>
+    <!-- In place of the loader when the caller's fetch failed (the service's fail): its message as
+         text, Close, and Try again when the caller can answer one (back to the loader). -->
+    <div id="failed" role="alert">
+      <div class="failed-box">
+        <p id="failed-message"></p>
+        <div class="failed-buttons">
+          <button id="failed-retry" type="button" class="cc-primary" hidden>Try again</button>
+          <button id="failed-close" type="button">Close</button>
+        </div>
+      </div>
+    </div>
     <header>
       <div class="title">
         <strong id="path"></strong>

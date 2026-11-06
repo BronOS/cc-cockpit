@@ -768,7 +768,7 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original']
+  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail']
   assert.deepEqual(await f.provided.reviewer.features(), all)
   assert.deepEqual(host.FEATURES, all)
   // A copy: a caller changing the answer changes nothing here.
@@ -1045,6 +1045,123 @@ function withServices(f, caller) {
   f.ctx.services.emit = (name, event, data) => emits.push({ name, event, data: structuredClone(data) })
   return emits
 }
+
+// A source cancelled its loader when the fetch failed: a network outage made the overlay flash open
+// and shut with no reason on screen. fail() turns the loader into an error page instead.
+test('fail: the caller\'s loader shows the error (text, one line, capped) with Close; the key is released', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  const caller = { id: 'bronos.chat' }
+  withServices(f, caller)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  const long = `Can't reach Google Chat: <b>fetch</b>\nfailed ${'x'.repeat(400)}`
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'chat:1', message: long }), { failed: true })
+  const h = f.handles[0]
+  const m = h.posts[0]
+  assert.equal(m.type, 'failed')
+  assert.equal(m.retry, false)
+  assert.ok(m.message.startsWith("Can't reach Google Chat: <b>fetch</b> failed"), 'one line, the markup as text (the page sets textContent)')
+  assert.ok(m.message.length <= review.MAX_FAIL_MESSAGE)
+  // Released: no longer prepared (cancel closes nothing, fail again answers false) and an annotate
+  // without prepare opens its own overlay, as for a key not open.
+  assert.deepEqual(await f.provided.reviewer.cancel({ key: 'chat:1' }), { closed: false })
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'chat:1', message: 'again' }), { failed: false })
+  assert.equal(h.closed, 0, 'the error page stays until the person closes it')
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'Ann', text: 'hi', key: 'chat:1' }), { opened: true })
+  assert.equal(f.handles.length, 2)
+  assert.equal(f.handles[1].posts[0].type, 'init')
+  // Its Close button: the page asks, the host closes.
+  h.say({ type: 'close' })
+  assert.equal(h.closed, 1)
+  host.deactivate()
+})
+
+test('fail: refused (as cancel answers) for a filled key, a key never prepared, another plugin\'s loader; bad input rejects', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  const caller = { id: 'bronos.chat' }
+  withServices(f, caller)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  await f.provided.reviewer.annotate({ title: 'Ann', text: 'hi', key: 'chat:1' })
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'chat:1', message: 'x' }), { failed: false })
+  assert.equal(f.handles[0].posts.filter((m) => m.type === 'failed').length, 0, 'a review is never replaced by an error')
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'chat:never', message: 'x' }), { failed: false })
+  await f.provided.reviewer.prepare({ key: 'gmail:1', title: 'Lunch' })
+  const other = f.handles[1]
+  caller.id = 'someone.else'
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'gmail:1', message: 'x' }), { failed: false })
+  assert.deepEqual(other.posts, [])
+  // No caller known (an app without ctx.services.caller): refused too.
+  caller.id = null
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'gmail:1', message: 'x' }), { failed: false })
+  await assert.rejects(f.provided.reviewer.fail('k'), /^Error: reviewer: fail takes \{ key, message, retry\? \}/)
+  await assert.rejects(f.provided.reviewer.fail({ key: 'k', message: '  ' }), /^Error: reviewer: message must not be empty/)
+  await assert.rejects(f.provided.reviewer.fail({ key: 'k', message: 'x', retry: 'yes' }), /^Error: reviewer: retry must be true or false/)
+  host.deactivate()
+})
+
+test('fail with retry: Try again is the event action { key, id: retry, caller }; the next prepare reuses the page, then its annotate fills it', async () => {
+  const f = setup({ editorAvailable: false })
+  const starts = []
+  f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
+  const caller = { id: 'bronos.chat' }
+  const emits = withServices(f, caller)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'chat:1', message: "Can't reach Google Chat", retry: true }), { failed: true })
+  const h = f.handles[0]
+  assert.deepEqual(h.posts, [{ type: 'failed', message: "Can't reach Google Chat", retry: true }])
+  h.say({ type: 'retry' })
+  assert.deepEqual(emits, [{ name: 'reviewer', event: 'action', data: { key: 'chat:1', id: 'retry', caller: 'bronos.chat' } }])
+  // The caller opens again: the same overlay goes back to the loader (no second one), and fails or fills.
+  h.focused = 0
+  h.focus = () => h.focused++
+  assert.deepEqual(await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' }), { opened: true })
+  assert.equal(starts.length, 1)
+  assert.deepEqual(h.posts.at(-1), { type: 'loading' })
+  assert.equal(h.focused, 1)
+  // A loader again: a retry message now is no longer the error page's, and nothing is emitted.
+  h.say({ type: 'retry' })
+  assert.equal(emits.length, 1)
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'chat:1', message: 'Still down', retry: true }), { failed: true })
+  assert.deepEqual(h.posts.at(-1), { type: 'failed', message: 'Still down', retry: true })
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'Ann', text: 'hello', key: 'chat:1' }), { opened: true })
+  assert.equal(starts.length, 1, 'filled in place')
+  assert.equal(h.posts.at(-1).type, 'init')
+  // Filled: the error page's messages mean nothing now (no close, no event).
+  h.say({ type: 'close' })
+  h.say({ type: 'retry' })
+  assert.equal(h.closed, 0)
+  assert.equal(emits.length, 1)
+  host.deactivate()
+})
+
+test('fail: another plugin\'s prepare of the key does not take the error page; a closed error page is forgotten', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  const caller = { id: 'bronos.chat' }
+  withServices(f, caller)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  await f.provided.reviewer.fail({ key: 'chat:1', message: 'down', retry: true })
+  caller.id = 'someone.else'
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  assert.equal(f.handles.length, 2, 'its own overlay')
+  assert.deepEqual(await f.provided.reviewer.cancel({ key: 'chat:1' }), { closed: true })
+  // The person closes the error page: the caller's next prepare opens a new loader.
+  caller.id = 'bronos.chat'
+  f.handles[0].end({ kind: 'dismissed' })
+  await wait(10)
+  await f.provided.reviewer.prepare({ key: 'chat:1', title: 'Ann' })
+  assert.equal(f.handles.length, 3)
+  // ...and closing an error page marks nothing dismissed: the annotate fills the new loader.
+  assert.deepEqual(await f.provided.reviewer.annotate({ title: 'Ann', text: 'x', key: 'chat:1' }), { opened: true })
+  assert.equal(f.handles[2].posts[0].type, 'init')
+  host.deactivate()
+})
 
 test("annotate kind 'mail': the init carries it for the page's mail layout; html only, one value only", async () => {
   const f = setup({ editorAvailable: false })

@@ -10,6 +10,18 @@ body {
 body.loading > :not(#loading) { display: none !important; }
 #loading { display: none; }
 body.loading > #loading { display: flex; flex: 1; align-items: center; justify-content: center; gap: 10px; color: var(--cc-fg-muted); }
+/* The loader turned into an error (the service's fail): only the message and its buttons. The tone is
+   the error banner's (.banner.error) and the Jira error panel's edge. */
+body.failed > :not(#failed) { display: none !important; }
+#failed { display: none; }
+body.failed > #failed { display: flex; flex: 1; align-items: center; justify-content: center; padding: 24px; }
+.failed-box {
+  max-width: 560px; padding: 12px 16px; border-left: 4px solid var(--cc-status-ended); border-radius: 4px;
+  background: var(--cc-bg-error); color: var(--cc-fg);
+}
+#failed-message { margin: 0 0 12px; overflow-wrap: anywhere; }
+.failed-buttons { display: flex; gap: 8px; }
+.failed-buttons button[hidden] { display: none; }
 header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--cc-bg-bar); }
 header { border-bottom: 1px solid var(--cc-border); justify-content: space-between; }
 header[hidden] { display: none; } /* annotate: the overlay's title bar names the text */

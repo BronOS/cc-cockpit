@@ -277,6 +277,13 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   older reviewer rejects `prepare` with "has no method": just annotate when ready. The pattern:
   `const p = await reviewer.prepare({ key, title }).then(() => true, () => false)`, fetch, annotate, and
   `finally { if (p) await reviewer.cancel({ key }).catch(() => {}) }`.
+- `fail({ key, message, retry? })` (feature `'fail'`, app 0.13.2): when the fetch after a `prepare` fails, show it
+  instead of closing the loader: your loader of `key` becomes an error page with `message` (plain text, one line, 300
+  characters), Close, and with `retry: true` a **Try again** button, told as the event `action` `{ key, id: 'retry',
+  caller }` (check `caller`). The key is released: answer Try again with your normal open (`prepare`, which takes the
+  error page back to the loader, then fetch and `annotate` or `fail`). It resolves `{ failed: false }` for a key with no
+  loader of yours (filled, never prepared, another plugin's): `cancel` then. The pattern: in the `catch` of the fetch,
+  `if (!(await reviewer.fail({ key, message, retry: true }).catch(() => ({}))).failed) await reviewer.cancel({ key })`.
 - `kind: 'mail'` (optional, HTML form; feature `'mail'`, app 0.13.0): the main document in the mail reading layout, a
   760 px column of 15 px text, calm links, no other document restyled. It styles the `mail-*` classes (any element, kept
   by the allow-list, styled only in this layout): `mail-msg` per message; `mail-head` with `mail-avatar` (initials),
@@ -315,7 +322,7 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   over the page's limits shows its Reader rendering instead. Each frame is as tall as the visible area and scrolls
   on its own (nothing can measure a frame without script).
 - `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type',
-  'mail', 'actions', 'update', 'original']`. An older
+  'mail', 'actions', 'update', 'original', 'fail']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall

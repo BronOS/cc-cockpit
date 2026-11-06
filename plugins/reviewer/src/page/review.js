@@ -1360,7 +1360,7 @@ function answerDraftRequest() {
 let initMsg = null // the init message, for buildSplit's header buttons
 function init(m) {
   initMsg = m
-  document.body.classList.remove('loading')
+  document.body.classList.remove('loading', 'failed')
   state.sides = m.sides
   state.draft = m.draft || { global: '', notes: [] }
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
@@ -1424,9 +1424,42 @@ $('open-url').addEventListener('click', (e) => {
 })
 
 
+// ---- the loader's error page (the service's fail) ----
+//
+// Before the init only: the caller's fetch failed, so the loader shows its message (as text: it often
+// carries a server's words) with Close and, when the caller can answer one, Try again. A click on Try
+// again goes back to the host (the event `action` { id: 'retry' }) and waits for the caller's next
+// prepare, which turns the page back into the loader (`loading`), then fills it as usual.
+
+function showFailed(m) {
+  if (initMsg) return // filled: a review is never replaced by an error
+  document.body.classList.remove('loading')
+  document.body.classList.add('failed')
+  $('failed-message').textContent = typeof m.message === 'string' ? m.message : 'Could not load this.'
+  const retry = $('failed-retry')
+  retry.hidden = m.retry !== true
+  retry.disabled = false
+  ;(retry.hidden ? $('failed-close') : retry).focus()
+}
+
+function showLoading() {
+  if (initMsg) return
+  document.body.classList.remove('failed')
+  document.body.classList.add('loading')
+}
+
+$('failed-retry').addEventListener('click', (e) => {
+  if (e.currentTarget.disabled) return
+  e.currentTarget.disabled = true
+  ccPanel.post({ type: 'retry' })
+})
+$('failed-close').addEventListener('click', () => ccPanel.post({ type: 'close' }))
+
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object') return
   if (m.type === 'init') init(m)
+  else if (m.type === 'failed') showFailed(m)
+  else if (m.type === 'loading') showLoading()
   else if (m.type === 'error') setStatus(m.message)
   else if (m.type === 'draft-error') {
     saveState.hostError = typeof m.message === 'string' ? m.message : 'Draft not saved.'

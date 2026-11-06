@@ -610,6 +610,8 @@ const ACTION_ID = /^[a-z][a-z0-9-]{0,39}$/
 const PART_NAME = ACTION_ID // `data-part` names: the same shape
 const MAX_HIDE = 20
 const MAX_STATUS = 200
+// fail(): the error page's message, one line (a server's error can be long; the page shows it whole).
+const MAX_FAIL_MESSAGE = 300
 
 /** The ids of the `data-action` attributes in the given HTML strings (entities decoded, shape checked). */
 function actionSet(...htmls) {
@@ -651,6 +653,21 @@ function updateInput(o) {
   const assets = given(o.assets) ? o.assets : []
   if (!assets.length && !hide.length && status === null) throw new ReviewError('update needs assets, hide or status')
   return { key, assets, hide, status }
+}
+
+/**
+ * fail()'s input: the key, `message` plain text made one line and cut to MAX_FAIL_MESSAGE characters
+ * (the page sets it as text, never as HTML: it often carries a server's words), and `retry` (a Try
+ * again button; boolean, default false).
+ */
+function failInput(o) {
+  if (!isObj(o)) throw new ReviewError('fail takes { key, message, retry? }')
+  const key = checkKey(o.key)
+  if (typeof o.message !== 'string') throw new ReviewError('message must be a string')
+  const message = shorten(oneLine(o.message), MAX_FAIL_MESSAGE)
+  if (!message) throw new ReviewError('message must not be empty')
+  if (o.retry !== undefined && o.retry !== null && typeof o.retry !== 'boolean') throw new ReviewError('retry must be true or false')
+  return { key, message, retry: o.retry === true }
 }
 
 /** The asset budget a document already spent: what checkAssets carries across calls. */
@@ -854,6 +871,8 @@ module.exports = {
   linkVerdict,
   actionSet,
   updateInput,
+  failInput,
+  MAX_FAIL_MESSAGE,
   assetBudget,
   checkAssets,
   checkOriginals,

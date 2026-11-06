@@ -17,6 +17,7 @@
 //   (FEATURES), so a caller can tell;
 //   prepare({ key, title, type?, tabId? }) opens that overlay at once with a loader, for a caller that still fetches
 //   what it shows (the annotate with the same key fills it), and cancel({ key }) closes one never filled;
+//   fail({ key, message, retry? }) turns one never filled into an error page (Close, Try again);
 //   for a mail (app 0.13.0): annotate's `kind: 'mail'` (the reading layout), `data-action` buttons in
 //   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
 //   assets?, hide?, status? }), which adds images to an open document without rendering it again;
@@ -50,7 +51,9 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // once the person asked for them).
 // 'original' (annotate's `originals` and `view`: the main document's parts as their sender made them,
 // each in a sandboxed frame, with an Original | Reader switch on the page told as the event `view`).
-const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original']
+// 'fail' (fail({ key, message, retry? }): a prepared loader whose fetch failed shows the error, with a
+// Try again told as the event `action`, instead of closing; app 0.13.2).
+const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail']
 // prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
 // caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
 const PREPARE_MS = 60000
@@ -152,11 +155,18 @@ exports.activate = (ctx) => {
   // prepare(): loading overlays waiting for their annotate (`text:<key>`), and the keys whose
   // loading overlay the person closed (the time they did). Real-work feedback 8: a source fetched a
   // mail or an issue for seconds before annotate, with nothing on screen meanwhile.
-  const prepared = new Map() // openKey -> { handle, settled, timer }
+  const prepared = new Map() // openKey -> { handle, settled, timer, view }
   const dismissed = new Map() // openKey -> ms
+  // fail(): loading overlays turned into an error page (`text:<key>` -> its view). The key is released
+  // there: the error page is no review of that key, so an annotate of it opens as for a key not open,
+  // and only the same caller's next prepare takes the page back (to the loader, then its annotate).
+  // A source used to cancel its loader when the fetch failed: a network outage made the overlay flash
+  // open and shut with no reason on screen (the error went only to the source's own panel).
+  const failedViews = new Map()
   disposers.push(() => {
     for (const e of prepared.values()) clearTimeout(e.timer)
     prepared.clear()
+    failedViews.clear()
   })
 
   /**
@@ -165,19 +175,69 @@ exports.activate = (ctx) => {
    * resolve at once, so prepare answered `{ opened: true }` for a refused overlay and a source
    * counted its open as shown (round-4 review). start() gives no "shown" signal, so this waits
    * OPEN_SETTLE_MS for `result` to reject, as showReview does. A key already open (or loading) is
-   * brought to the front.
+   * brought to the front; the same caller's error page of the key (fail) goes back to the loader,
+   * so a Try again opens no second overlay. `caller` is the plugin of the call (null: none known).
    */
-  async function prepareAnnotation(options) {
+  async function prepareAnnotation(options, caller) {
     const { key, title, type, tabId } = review.prepareInput(options)
     const openKey = `text:${key}`
     dismissed.delete(openKey)
     if (open.has(openKey)) return focusExisting(open.get(openKey))
     const had = prepared.get(openKey)
     if (had) return had.handle.focus()
+    const failed = failedViews.get(openKey)
+    if (failed && caller && failed.caller === caller) {
+      // Its title, type and Discuss tab stay the first prepare's (set when an overlay starts): the
+      // same key is the same item.
+      failedViews.delete(openKey)
+      failed.state = 'loading'
+      failed.handle.post({ type: 'loading' })
+      failed.handle.focus()
+      holdPrepared(openKey, key, failed)
+      return
+    }
     const handle = ctx.overlay.start({ kind: 'html', file: OVERLAY_FILE, title: overlayTitle('Notes: ', title), size: 'large', ...overlayExtras(type, tabId) })
-    const entry = { handle, settled: false, timer: null }
+    // The overlay's life across loader, error page (fail) and loader again; `state` says which.
+    const view = { handle, key, caller, state: 'loading' }
+    // The error page's buttons. Heard only while it is one: once an annotate filled the overlay its
+    // messages are the review's (showReview's own listener).
+    handle.onMessage((m) => {
+      if (view.state !== 'failed' || !m || typeof m !== 'object') return
+      if (m.type === 'close') handle.close()
+      else if (m.type === 'retry' && view.retry) {
+        // The same event as a document's buttons (`action`), with an id no caller's string can
+        // collide with in meaning: only the plugin that failed the key acts on it.
+        try {
+          ctx.services.emit('reviewer', 'action', { key, id: 'retry', caller: view.caller })
+        } catch (e) {
+          ctx.log.warn(`action retry: ${e.message}`)
+        }
+      }
+    })
+    handle.result.then(
+      () => {
+        if (failedViews.get(openKey) === view) failedViews.delete(openKey)
+      },
+      () => {
+        if (failedViews.get(openKey) === view) failedViews.delete(openKey)
+      },
+    )
+    holdPrepared(openKey, key, view)
+    // Wired first, so an annotate taking the entry during the wait finds it. A person closing the
+    // loader within the wait is a shown overlay (its annotate then answers { opened: false }).
+    const ended = await earlyEnd(handle.result)
+    if (ended && ended.error) throw new Error(`the loading overlay did not open: ${ended.error.message}`)
+  }
+
+  /**
+   * `view` as `openKey`'s loader, waiting for its annotate: closed after PREPARE_MS, and a loader the
+   * person closes marks the key dismissed. Returns the entry (settled once taken, cancelled, failed
+   * or timed out: its result is not ours to read then).
+   */
+  function holdPrepared(openKey, key, view) {
+    const { handle } = view
+    const entry = { handle, settled: false, timer: null, view }
     prepared.set(openKey, entry)
-    // settled: taken by its annotate, cancelled, or timed out; its result is not ours to read then.
     const drop = () => {
       entry.settled = true
       clearTimeout(entry.timer)
@@ -201,10 +261,30 @@ exports.activate = (ctx) => {
         ctx.log.warn(`the loading overlay did not open (${key}): ${e.message}`)
       },
     )
-    // Wired first, so an annotate taking the entry during the wait finds it. A person closing the
-    // loader within the wait is a shown overlay (its annotate then answers { opened: false }).
-    const ended = await earlyEnd(handle.result)
-    if (ended && ended.error) throw new Error(`the loading overlay did not open: ${ended.error.message}`)
+    return entry
+  }
+
+  /**
+   * The caller's loader of `key` (prepared, never filled) turned into an error page: the message and
+   * Close, with `retry` a Try again whose click is the event `action` { key, id: 'retry', caller }.
+   * The key is released (failedViews). False, as cancel answers, for a key with no such loader:
+   * filled, never prepared, or prepared by another plugin (a caller learns nothing of the others').
+   */
+  function failPrepared(options, caller) {
+    const { key, message, retry } = review.failInput(options)
+    const openKey = `text:${key}`
+    const e = prepared.get(openKey)
+    if (!e || !caller || e.view.caller !== caller) return false
+    e.settled = true
+    clearTimeout(e.timer)
+    prepared.delete(openKey)
+    dismissed.delete(openKey)
+    const view = e.view
+    view.state = 'failed'
+    view.retry = retry
+    failedViews.set(openKey, view)
+    view.handle.post({ type: 'failed', message, retry })
+    return true
   }
 
   /** Closes a loading overlay no annotate filled; false when there is none (filled, or never prepared). */
@@ -777,8 +857,10 @@ exports.activate = (ctx) => {
     // once with a loader; the annotate with the same key fills it. An older reviewer rejects with
     // "has no method", which a caller reads as "annotate when ready", as before.
     async prepare(options) {
+      // Read before the first await, as annotate does: fail() and a later prepare check it.
+      const caller = callerOf()
       try {
-        await prepareAnnotation(options)
+        await prepareAnnotation(options, caller)
         return { opened: true }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
@@ -789,6 +871,18 @@ exports.activate = (ctx) => {
     async cancel(options) {
       try {
         return { closed: cancelPrepared(options) }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
+    },
+    // Additive in v1 (feature 'fail'): the caller's loader of a key whose fetch failed turns into an
+    // error page (the message, Close, and with `retry` a Try again told as the event `action`
+    // { key, id: 'retry', caller }) instead of closing. `{ failed: false }` where cancel would close
+    // nothing (filled, never prepared) and for another plugin's loader; the caller then cancels.
+    async fail(options) {
+      const caller = callerOf()
+      try {
+        return { failed: failPrepared(options, caller) }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
       }
