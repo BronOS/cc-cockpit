@@ -44,6 +44,15 @@ export function PlusGlyph(props: GlyphProps): React.JSX.Element {
   )
 }
 
+/** A chevron pointing down: the tab strip's all-tabs list. */
+export function ChevronDownGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <path d="M4 6.25l4 4 4-4" strokeWidth="1.5" />
+    </Glyph>
+  )
+}
+
 export function CloseGlyph(props: GlyphProps): React.JSX.Element {
   return (
     <Glyph {...props}>

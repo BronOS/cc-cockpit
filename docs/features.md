@@ -16,6 +16,9 @@ behind it are in [design.md](design.md).
   theme) or Custom… (the system colour panel). The project's window gets a 3px line along its top
   edge and a faint tint of its top bar, and a dot by its name there, on its entries in other
   windows' top bars and in the project picker; a change shows in every window at once.
+- Many tabs: the tab strip never grows past the centre column. Tabs shrink to a minimum width, then
+  the strip scrolls (the mouse wheel scrolls it sideways, the active tab is brought into view, the
+  edges fade where tabs are hidden), and an "All tabs" list button appears while tabs are hidden.
 - Terminal tabs (`claude` or a shell), `claude --resume` on restore. A tab whose process ends
   normally closes: a Claude or command tab on exit code 0 (`/exit`, a command that finishes), a
   terminal on any exit code (a shell reports its last command's status, so Ctrl+D can exit 1).

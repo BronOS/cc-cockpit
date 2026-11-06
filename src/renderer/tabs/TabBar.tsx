@@ -7,9 +7,10 @@ import { usePrefs } from '../prefs/prefs-store'
 import { QueuedChip } from '../status/QueuedChip'
 import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
-import { CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
+import { ChevronDownGlyph, CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
 import { tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
+import { type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
 
 /** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
 interface TabDrag {
@@ -143,18 +144,21 @@ export function TabBar(props: {
   // Settings › Appearance › Tabs; pushed by main, so every window's strip follows a pick.
   const { tabCloseSide } = usePrefs()
   const [createOpen, setCreateOpen] = useState(false)
+  // The all-tabs list (shown only while tabs are hidden, see `overflow`).
+  const [allOpen, setAllOpen] = useState(false)
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   // The Rename entry swaps the context menu for a one-line editor at the same place.
   const [renaming, setRenaming] = useState<{ tabId: string; x: number; y: number; value: string } | null>(null)
 
   // Any click elsewhere or Escape closes whichever menu is open.
-  const anyOpen = createOpen || menu !== null || renaming !== null
+  const anyOpen = createOpen || allOpen || menu !== null || renaming !== null
   // A webview panel's native view would paint over the menu (shell-layers.ts).
   useShellLayer(anyOpen)
   useEffect(() => {
     if (!anyOpen) return
     const dismiss = (): void => {
       setCreateOpen(false)
+      setAllOpen(false)
       setMenu(null)
       setRenaming(null)
     }
@@ -175,6 +179,50 @@ export function TabBar(props: {
   // a drag yet (below DRAG_THRESHOLD it stays a click); `drag` is set once it has, and drives the
   // rendering (the tab follows the pointer, a marker shows where it would land).
   const listRef = useRef<HTMLDivElement>(null)
+  // Tabs hidden past either edge of the strip: drives the edge fades and the all-tabs button.
+  const [overflow, setOverflow] = useState<OverflowState>({ start: false, end: false })
+  const measure = (): void => {
+    const el = listRef.current
+    if (!el) return
+    const next = overflowState(el.scrollLeft, el.clientWidth, el.scrollWidth)
+    setOverflow((o) => (o.start === next.start && o.end === next.end ? o : next))
+  }
+  // Re-measure on scroll (the listener below), when the strip is resized (a zone opens or closes,
+  // the window changes) and when tabs come or go.
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // The wheel: a mouse wheel is vertical and the strip only scrolls sideways, so it would do
+  // nothing there. Native and non-passive (React's onWheel is passive and cannot preventDefault).
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent): void => {
+      if (!wheelScrollsSideways(e.deltaX, e.deltaY, el.scrollWidth > el.clientWidth)) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+  // The active tab is brought into view whenever it changes or a tab is added (the new tab is
+  // active; Ctrl+Tab and a click in the Sessions panel change it from outside the strip).
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || activeId === null) return
+    const tabEl = [...el.querySelectorAll<HTMLElement>('[data-tab-id]')].find((t) => t.dataset.tabId === activeId)
+    if (!tabEl) return
+    // Offsets inside the scrolled content: both rects are in the viewport, scrollLeft links them.
+    const l = tabEl.getBoundingClientRect()
+    const b = el.getBoundingClientRect()
+    const left = l.left - b.left + el.scrollLeft
+    el.scrollLeft = scrollToReveal(el.scrollLeft, el.clientWidth, left, left + l.width, 16)
+    measure()
+  }, [activeId, tabs.length])
   const press = useRef<{ tabId: string; pointerId: number; startX: number } | null>(null)
   const [drag, setDrag] = useState<TabDrag | null>(null)
   const dragRef = useRef<TabDrag | null>(null)
@@ -252,7 +300,14 @@ export function TabBar(props: {
 
   return (
     <div className="tab-bar" data-close-side={tabCloseSide}>
-      <div ref={listRef} role="tablist" className={`tab-list${drag ? ' dragging' : ''}`}>
+      <div
+        ref={listRef}
+        role="tablist"
+        className={`tab-list${drag ? ' dragging' : ''}`}
+        data-fade-start={overflow.start || undefined}
+        data-fade-end={overflow.end || undefined}
+        onScroll={measure}
+      >
         {tabs.map((tab) => {
           const status = props.sessions.get(tab.id)
           // In the DOM where it shows (not CSS `order`), so Tab moves through a tab's buttons in
@@ -324,6 +379,65 @@ export function TabBar(props: {
           )
         })}
       </div>
+      {(overflow.start || overflow.end || allOpen) && (
+        <div className="tab-all">
+          <button
+            type="button"
+            aria-label="All tabs"
+            aria-haspopup="menu"
+            aria-expanded={allOpen}
+            onClick={(e) => {
+              e.stopPropagation()
+              setMenu(null)
+              setCreateOpen(false)
+              setAllOpen(!allOpen)
+            }}
+          >
+            <ChevronDownGlyph size={15} />
+          </button>
+          {allOpen && (
+            <div
+              className="menu"
+              role="menu"
+              aria-label="All tabs"
+              // Arrow keys walk the entries (a menu's own convention); Escape is the window's.
+              onKeyDown={(e) => {
+                const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+                const at = items.indexOf(document.activeElement as HTMLElement)
+                const go = (i: number): void => {
+                  e.preventDefault()
+                  items[(i + items.length) % items.length]?.focus()
+                }
+                if (e.key === 'ArrowDown') go(at + 1)
+                else if (e.key === 'ArrowUp') go(at < 0 ? -1 : at - 1)
+                else if (e.key === 'Home') go(0)
+                else if (e.key === 'End') go(-1)
+              }}
+            >
+              {tabs.map((tab) => {
+                const status = props.sessions.get(tab.id)
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="menuitem"
+                    className={`menu-entry${tab.id === activeId ? ' active' : ''}`}
+                    aria-current={tab.id === activeId ? 'true' : undefined}
+                    ref={(el) => {
+                      // Focus the current tab when the list opens, so Enter / arrows start there.
+                      if (el && tab.id === activeId && document.activeElement === document.body) el.focus()
+                    }}
+                    onClick={() => props.onSelect(tab.id)}
+                  >
+                    {status && <StatusDot status={status.status} {...(status.tool ? { tool: status.tool } : {})} />}
+                    <span className="menu-label">{tabLabel(tab, status?.title, status?.name)}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
       <div className="tab-new">
         <button
           type="button"

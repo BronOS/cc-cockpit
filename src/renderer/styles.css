@@ -136,6 +136,9 @@ iframe:focus-visible {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* A flex item's min-width is its content width unless set: with many tabs the pane (and the centre
+     column in it) must never be sized by the tab strip, only by its share of the window. */
+  min-width: 0;
 }
 
 /* Stroke glyphs (window-icons.tsx): never a hit target of their own, so a click on the drawing
@@ -347,6 +350,9 @@ iframe:focus-visible {
   height: 36px;
   padding: 0 10px;
   box-sizing: border-box;
+  /* Never wider than the centre column (a column flex item otherwise keeps its content's width as
+     its minimum); the strip inside shrinks and scrolls instead. */
+  min-width: 0;
   background: var(--cc-bg);
   border-bottom: 1px solid var(--cc-border);
 }
@@ -362,12 +368,26 @@ iframe:focus-visible {
   overflow-x: auto;
   scrollbar-width: none;
 }
+/* Tabs hidden past an edge: the strip fades out there (a mask, so it works on any theme and
+   tint). The scrollbar is hidden, so this and the all-tabs button are the only sign of more tabs. */
+.tab-list[data-fade-start] {
+  mask-image: linear-gradient(to right, transparent, #000 22px);
+}
+.tab-list[data-fade-end] {
+  mask-image: linear-gradient(to left, transparent, #000 22px);
+}
+.tab-list[data-fade-start][data-fade-end] {
+  mask-image: linear-gradient(to right, transparent, #000 22px, #000 calc(100% - 22px), transparent);
+}
 .tab-list:empty {
   display: none;
 }
 .tab {
   position: relative;
-  flex: none;
+  /* Shrinks with the strip down to MIN width (label ellipsis, dot and close stay whole), then the
+     strip scrolls. Basis auto: a short label stays short. */
+  flex: 0 1 auto;
+  min-width: 112px;
   display: flex;
   align-items: center;
   height: 26px;
@@ -439,6 +459,9 @@ iframe:focus-visible {
 .tab[data-drop='after']::before {
   right: -2px;
 }
+.tab-label > :not(.tab-text) {
+  flex: none;
+}
 .tab-text {
   min-width: 0;
   overflow: hidden;
@@ -480,9 +503,45 @@ iframe:focus-visible {
   background: color-mix(in srgb, var(--cc-fg) 9%, transparent);
   color: var(--cc-fg);
 }
-.tab-new {
+.tab-new,
+.tab-all {
   position: relative;
   flex: none;
+}
+.tab-all > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  color: var(--cc-fg-subtle);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.tab-all > button:hover,
+.tab-all > button[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+/* Hangs leftwards from the button: it sits at the right end of the centre column, and a menu
+   opening rightwards would run under the side zone. Capped so a long list scrolls. */
+.tab-all > .menu {
+  top: calc(100% + 6px);
+  right: 0;
+  width: 280px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.tab-all .menu-entry.active {
+  background: var(--cc-accent-soft);
+}
+.tab-all .menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tab-new > button[aria-expanded='true'] {
   background: var(--cc-accent-soft);
