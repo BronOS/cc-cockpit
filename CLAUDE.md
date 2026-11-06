@@ -79,6 +79,15 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   or the host needs (`MAX_OVERLAY_MESSAGE_LENGTH`) lives in its own file (`src/shared/overlay-message.ts`), not in `panel-core.ts`.
 - `serviceProviders` in the project record also holds the reserved key `@open-file` (plugin id or `@builtin`; a service name
   never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
+- `SessionInfo.typed` (`session-registry.ts`) is set from the person's input only (the renderer's terminal `onData` through
+  `TabManager.input`); terminal reports (focus, cursor and size replies) do not count. It is sticky for the tab's life. Main
+  enforces it: a plugin `sessions.send` to a typed tab is rejected and that tab's queued plugin texts are dropped, so a plugin
+  never has to be trusted to check. `QueuedText.origin` in the send gate (`send-gate.ts`) tells a plugin's text from the
+  person's (Discuss), and only plugin-origin texts are dropped.
+- `CliCall.tabId` is set by main only when the `ccc` caller is a Claude tab (never from anything the caller sends); a plugin
+  command may use it to know which tab ran it (`ccc autopilot stop`) and must answer an unknown and a foreign id the same way.
+- `sessions.open({ model, effort })` is validated in `src/shared/session-options.ts` (one list for host, main and the guide) and
+  turned into argv by `claudeArgv`; it is never applied to a resume, which keeps the session's own settings.
 - Plugin `ccc` commands and their stdin are always bounded (30 s plugin limit, 40 s client deadline and stdin read, exit 124
   `CLI_TIMEOUT_CODE`): a new wait in `src/cli/client.ts` needs a deadline, never an unbounded await.
 - Bundled plugins (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`, `plugins/sessions`, `BUNDLED_PLUGINS` in `main/plugins/bundled.ts`) use only

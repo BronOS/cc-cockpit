@@ -404,9 +404,9 @@ External review: sol / high
 - Dry run (script `/tmp/claude-1000/-home-bronos-Projects-cc-cockpit/8ccb78a1-1b28-4cb6-8bbc-47c698917e6b/scratchpad/dryrun.js`, outside the repos, drives `createAutopilot` with `test/fakes.js`: a fake inbox-feed v2 collector, fake sessions with open/send/list incl. `typed`, fake storage): 10 of 10 checks pass. The Chat item present at start (baseline) opens nothing; a new matching item opens exactly one tab and repeated syncs of it open nothing more; two updates while working merge to one pending (rev r3) and one delivery goes into the tab when it waits; with `typed: true` the next pending update (r4) is dropped, the record is taken over and later revs (r5, r6) deliver nothing.
 
 ### Task 16: [Final] Update documentation [model: sonnet]
-- [ ] Autopilot `README.md`: v2 rules, the v1 → v2 mapping, `myNames`, the app 0.11 note for model/effort/takeover
-- [ ] core `CLAUDE.md` if a new pattern appeared (`typed`, `origin` in the send gate, `CliCall.tabId`)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] Autopilot `README.md`: v2 rules, the v1 → v2 mapping, `myNames`, the app 0.11 note for model/effort/takeover
+- [x] core `CLAUDE.md` if a new pattern appeared (`typed`, `origin` in the send gate, `CliCall.tabId`)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
