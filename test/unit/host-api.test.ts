@@ -37,8 +37,10 @@ import {
   RateWindow,
   SESSIONS_EVENT_INTERVAL_MS,
   type HostApiDeps,
-  type HostScope
+  type HostScope,
+  sessionInfoOf
 } from '../../src/main/plugins/host-api'
+import { newEntry } from '../../src/main/sessions/status-reducer'
 import { MAX_TEXT_CHARS, PASTE_END, PASTE_START } from '../../src/main/sessions/send-gate'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabManager } from '../../src/main/tabs/tab-manager'
@@ -107,7 +109,8 @@ beforeEach(() => {
       started: (tab) => registry.tabStarted(tab),
       exited: (tabId, code) => registry.tabExited(tabId, code),
       closed: (tabId) => registry.tabClosed(tabId),
-      renamed: (tabId, name) => void registry.setName(tabId, name)
+      renamed: (tabId, name) => void registry.setName(tabId, name),
+      flagged: (tabId, flag) => void registry.setFlag(tabId, flag)
     },
     emit: () => {},
     log: () => {}
@@ -1205,6 +1208,51 @@ describe('the sessions event', () => {
   })
 })
 
+describe('tab flags (read-only for plugins)', () => {
+  it('sessionInfoOf copies the flag field by field: colour and note, nothing shared with the entry', () => {
+    const entry = { ...newEntry({ tabId: 't1', projectId: A, kind: 'claude', cwd: '/p' }), flag: { color: 'red' as const, note: 'n' } }
+    const info = sessionInfoOf(entry)
+    expect(info.flag).toEqual({ color: 'red', note: 'n' })
+    expect(info.flag).not.toBe(entry.flag)
+    expect(sessionInfoOf({ ...entry, flag: { color: 'blue' } }).flag).toEqual({ color: 'blue' })
+    expect('flag' in sessionInfoOf(newEntry({ tabId: 't2', projectId: A, kind: 'claude', cwd: '/p' }))).toBe(false)
+  })
+
+  it('carries the person\'s flag in sessions.list, its change reaches the sessions event, and a clear removes it', async () => {
+    vi.useFakeTimers()
+    const events: { event: string; params: unknown }[] = []
+    const call = hostA(events)
+    const tab = tabs.create(A, { kind: 'claude' })
+    const flagOf = async () => ((await call('sessions.list', {})) as { flag?: unknown }[]).map((s) => s.flag)
+    expect(await flagOf()).toEqual([undefined])
+    events.length = 0
+    tabs.setFlag(A, tab.id, { color: 'red', note: 'come back' })
+    await vi.advanceTimersByTimeAsync(SESSIONS_EVENT_INTERVAL_MS)
+    expect(events).toHaveLength(1)
+    expect((events[0]!.params as { sessions: { flag?: unknown }[] }).sessions.map((s) => s.flag)).toEqual([{ color: 'red', note: 'come back' }])
+    tabs.setFlag(A, tab.id, null)
+    expect(await flagOf()).toEqual([undefined])
+  })
+
+  it('has no way for a plugin to set or clear a flag: no host method, and a sent flag field changes nothing', async () => {
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    expect(Object.keys(api.handlers).filter((m) => /flag/i.test(m))).toEqual([])
+    const call = hostA()
+    const tab = tabs.create(A, { kind: 'claude' })
+    // The nearest a plugin gets: rename with a flag riding along, and mutating its own copy.
+    await call('sessions.rename', { pluginId: 'a.one', tabId: tab.id, name: 'x', flag: { color: 'red' } }).catch(() => undefined)
+    const [listed] = (await call('sessions.list', {})) as { flag?: { color: string } }[]
+    expect(listed!.flag).toBeUndefined()
+    expect(tabs.list(A)[0]!.flag).toBeUndefined()
+    tabs.setFlag(A, tab.id, { color: 'blue' })
+    const [mine] = (await call('sessions.list', {})) as { flag: { color: string } }[]
+    mine!.flag.color = 'red'
+    expect(tabs.list(A)[0]!.flag).toEqual({ color: 'blue' })
+    expect(registry.get(tab.id)!.flag).toEqual({ color: 'blue' })
+  })
+})
+
 describe('accounts left core', () => {
   it('no account request exists any more: a plugin brings its own sign-in (design §6)', () => {
     const api = new HostApi(deps, scopeA(), () => {})
@@ -1575,6 +1623,8 @@ describe('sessions scope all, focus, close, openFile', () => {
     const theirs = tabs.create(B, { kind: 'claude' })
     registry.applyHook(theirs.id, 'UserPromptSubmit', { prompt: 'their private prompt' })
     registry.setGist(theirs.id, 'their gist')
+    // The flag's colour travels to other windows, its note (the person's words) never.
+    tabs.setFlag(B, theirs.id, { color: 'green', note: 'their private note' })
     const plain = hostA()
     await expect(plain('sessions.list', { pluginId: 'a.one', scope: 'all' })).rejects.toThrow(
       `needs "access": { "sessions": "all-windows" } in a.one's plugin.json`
@@ -1586,9 +1636,9 @@ describe('sessions scope all, focus, close, openFile', () => {
     const all = (await host('sessions.list', { pluginId: 'a.one', scope: 'all' })) as Record<string, unknown>[]
     expect(all).toEqual([
       { tabId: mine.id, own: true, project: { name: 'p' }, status: 'starting' },
-      { tabId: theirs.id, own: false, project: { name: 'p' }, status: 'working' }
+      { tabId: theirs.id, own: false, project: { name: 'p' }, status: 'working', flag: { color: 'green' } }
     ])
-    expect(JSON.stringify(all)).not.toMatch(/private|gist|cwd|files|notes/)
+    expect(JSON.stringify(all)).not.toMatch(/private|gist|cwd|files|notes|note/)
     // Scope window (or none) is the call as it always was, for any plugin.
     await expect(host('sessions.list', { pluginId: 'a.two', scope: 'window' })).resolves.toHaveLength(1)
     await expect(host('sessions.list', {})).resolves.toHaveLength(1)

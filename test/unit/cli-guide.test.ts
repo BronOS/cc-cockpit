@@ -9,6 +9,7 @@ import { MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_DESCRIPTION, MAX_SKILL_DIRS
 import { MAX_SKILLS } from '../../src/shared/manifest'
 import { MAX_APP_VALUE_LENGTH, MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/shared/plugin-storage'
 import { MAX_FILES } from '../../src/main/sessions/status-reducer'
+import { FLAG_COLORS, MAX_FLAG_NOTE_CHARS } from '../../src/shared/tab-flag'
 import { MAX_NOTIFICATIONS_PER_WINDOW, NOTIFY_WINDOW_MS } from '../../src/main/plugins/host-manager'
 import {
   MAX_NOTIFY_ACTION_LABEL,
@@ -151,6 +152,24 @@ describe('guide drift guards', () => {
       expect(names.length, iface).toBeGreaterThan(0)
       for (const name of names) expect(api, `${iface}.${name}`).toMatch(new RegExp(`\\b${name}\\b`))
     }
+  })
+
+  it('names every SessionInfo and SessionSummary field in the api topic, and the flag rules from shared/tab-flag.ts', () => {
+    const src = readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8')
+    const api = topic('api').replace(/\s+/g, ' ')
+    for (const iface of ['SessionInfo', 'SessionSummary']) {
+      const body = new RegExp(`export interface ${iface} \\{([\\s\\S]*?)\\n\\}`).exec(src)?.[1] ?? ''
+      const names = [...body.matchAll(/^ {2}readonly (\w+)/gm)].map((m) => m[1] as string)
+      expect(names.length, iface).toBeGreaterThan(5)
+      for (const name of names) expect(api, `${iface}.${name}`).toMatch(new RegExp(`\\b${name}\\b`))
+    }
+    // The flag: its colours (in the api and panels topics, with their tokens), its note limit, read-only.
+    expect(api).toContain(FLAG_COLORS.map((c) => `\`${c}\``).join(', '))
+    expect(api).toContain(`1 to ${MAX_FLAG_NOTE_CHARS} characters`)
+    expect(api).toContain('no plugin API writes it')
+    const panels = topic('panels').replace(/\s+/g, ' ')
+    expect(panels).toContain('--cc-flag-red')
+    for (const c of FLAG_COLORS.slice(1)) expect(panels).toContain(`\`-${c}\``)
   })
 
   // Bundled reviewer/editor plan Task 6 (reviewer FRICTION.md): the services members and the

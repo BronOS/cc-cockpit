@@ -2,7 +2,7 @@
 // start. No Electron import: the registry and the tab manager come in through small interfaces
 // so vitest drives all of it with temp dirs and fakes.
 //
-// What is saved: per project, the tabs in order (kind, cwd, Claude session id) in
+// What is saved: per project, the tabs in order (kind, cwd, Claude session id, name, flag) in
 // `projects/<id>.json`; which windows were open is `openProjects` in app.json (the window manager
 // already keeps it). What comes back: Claude tabs with `claude --resume <id>` (no id yet = a
 // fresh `claude`), shell tabs fresh, command tabs NOT started (their own saved command waits for
@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { errorText } from '../shared/error-text'
 import type { TabInfo } from '../shared/ipc'
 import { checkSessionName } from '../shared/session-name'
+import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
 import { checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
 import type { ProjectView, TabKind, TabRecord } from '../shared/types'
 import type { ProjectRegistry } from './projects/registry'
@@ -32,6 +33,8 @@ export interface RestoredTab {
   name?: string
   /** Command tabs only (and always): the tab's own saved copy of its entry. */
   command?: TabCommand
+  /** Any kind: the person's flag, sticky across a restart like the tab itself. */
+  flag?: TabFlag
 }
 
 /** The persisted shape of live tabs. Ids are saved for the record but a restored tab gets a new one. */
@@ -44,6 +47,7 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     if (t.label !== undefined) record.label = t.label
     if (t.command !== undefined) record.command = t.command
     if (t.name !== undefined) record.name = t.name
+    if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
     return record
   })
 }
@@ -70,7 +74,7 @@ export function buildRestorePlan(project: Pick<ProjectView, 'path' | 'tabs'>): R
   if (!Array.isArray(records)) return plan
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command, name } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, name, flag } = raw as Record<string, unknown>
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') continue
     const tab: RestoredTab = { kind }
     if (kind === 'command') {
@@ -88,6 +92,9 @@ export function buildRestorePlan(project: Pick<ProjectView, 'path' | 'tabs'>): R
       const n = checkSessionName(name)
       if (n.ok && n.value !== null) tab.name = n.value
     }
+    // Any kind keeps its flag; a damaged one is dropped, not the tab (tabFlagOf).
+    const f = tabFlagOf(flag)
+    if (f !== undefined) tab.flag = f
     plan.push(tab)
   }
   return plan
@@ -227,6 +234,7 @@ export class TabRestorer {
     const record: TabRecord = { id: randomUUID(), kind: tab.kind, cwd }
     if (tab.resumeId !== undefined) record.sessionId = tab.resumeId
     if (tab.name !== undefined) record.name = tab.name
+    if (tab.flag !== undefined) record.flag = { ...tab.flag }
     if (tab.command !== undefined) {
       record.label = tab.command.label
       record.command = tab.command.command

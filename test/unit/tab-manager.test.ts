@@ -411,6 +411,90 @@ describe('rename', () => {
   })
 })
 
+describe('flag', () => {
+  it('flags any tab kind, tells the lifecycle and the saver, shows it in info, clears with null', () => {
+    const flagged: Array<[string, unknown]> = []
+    let saved = 0
+    const tabs = manager(undefined, { flagged: (id, flag) => flagged.push([id, flag]) }, () => saved++)
+    const claude = tabs.create(A, { kind: 'claude' })
+    const shell = tabs.create(A, { kind: 'shell' })
+    const before = saved
+    expect(tabs.setFlag(A, shell.id, { color: 'blue', note: '  check\nthe   logs ' })).toEqual({ color: 'blue', note: 'check the logs' })
+    expect(tabs.list(A)[1]!.flag).toEqual({ color: 'blue', note: 'check the logs' })
+    expect(flagged).toEqual([[shell.id, { color: 'blue', note: 'check the logs' }]])
+    expect(saved).toBe(before + 1)
+    // The same flag again is no change: nothing told, nothing saved.
+    tabs.setFlag(A, shell.id, { color: 'blue' })
+    expect(flagged).toHaveLength(1)
+    expect(saved).toBe(before + 1)
+    // A note alone keeps the colour; null or '' removes the note; null clears the flag.
+    expect(tabs.setFlag(A, shell.id, { note: null })).toEqual({ color: 'blue' })
+    expect(tabs.setFlag(A, claude.id, { color: 'green' })).toEqual({ color: 'green' })
+    expect(tabs.setFlag(A, claude.id, null)).toBeNull()
+    expect(tabs.list(A)[0]!.flag).toBeUndefined()
+    expect(flagged.at(-1)).toEqual([claude.id, null])
+    // A command tab takes one too.
+    const cmd = tabs.createCommand(A, { label: 'Dev', command: 'npm run dev' })
+    expect(tabs.setFlag(A, cmd.id, { color: 'red' })).toEqual({ color: 'red' })
+  })
+
+  it("only for the caller's own project: another project's tab id is unknown, and nothing changes", () => {
+    const flagged: unknown[] = []
+    const tabs = manager(undefined, { flagged: (id) => flagged.push(id) })
+    const tab = tabs.create(A, { kind: 'claude' })
+    expect(() => tabs.setFlag(B, tab.id, { color: 'red' })).toThrow(/unknown tab/)
+    expect(() => tabs.toggleFlag(B, tab.id)).toThrow(/unknown tab/)
+    expect(() => tabs.setFlag(A, 'no-such-tab', { color: 'red' })).toThrow(/unknown tab/)
+    expect(tabs.list(A)[0]!.flag).toBeUndefined()
+    expect(flagged).toEqual([])
+  })
+
+  it('refuses a bad patch before storing anything', () => {
+    const tabs = manager()
+    const tab = tabs.create(A, { kind: 'shell' })
+    for (const bad of ['red', 5, [], { color: 'teal' }, { color: 'RED' }, { note: 5 }, { note: 'x'.repeat(81) }]) {
+      expect(() => tabs.setFlag(A, tab.id, bad), JSON.stringify(bad)).toThrow(/flag/)
+    }
+    expect(tabs.list(A)[0]!.flag).toBeUndefined()
+  })
+
+  it('toggles with the last colour the person picked (red before any pick), app-wide', () => {
+    const tabs = manager()
+    const a = tabs.create(A, { kind: 'claude' })
+    const b = tabs.create(B, { kind: 'shell' })
+    expect(tabs.toggleFlag(A, a.id)).toEqual({ color: 'red' })
+    expect(tabs.toggleFlag(A, a.id)).toBeNull()
+    tabs.setFlag(A, a.id, { color: 'purple', note: 'n' })
+    // Toggling off drops the note too; on again it is the last colour, in another project as well.
+    expect(tabs.toggleFlag(A, a.id)).toBeNull()
+    expect(tabs.toggleFlag(B, b.id)).toEqual({ color: 'purple' })
+    // "Edit note…" on an unflagged tab: the last colour plus the note.
+    expect(tabs.setFlag(A, a.id, { note: 'later' })).toEqual({ color: 'purple', note: 'later' })
+  })
+
+  it('a restored tab of any kind keeps its flag, a damaged one is dropped, and the started event carries it', () => {
+    const started: unknown[] = []
+    const tabs = manager(undefined, { started: (t) => started.push(t.flag) })
+    expect(tabs.restoreTab(A, { kind: 'claude', flag: { color: 'red', note: 'come back' } }).flag).toEqual({ color: 'red', note: 'come back' })
+    expect(started).toEqual([{ color: 'red', note: 'come back' }])
+    expect(tabs.restoreTab(A, { kind: 'shell', flag: { color: 'green' } }).flag).toEqual({ color: 'green' })
+    const cmd = tabs.restoreTab(A, { kind: 'command', command: { label: 'Dev', command: 'npm run dev' }, flag: { color: 'blue' } })
+    expect(cmd.flag).toEqual({ color: 'blue' })
+    expect(tabs.restoreTab(A, { kind: 'shell', flag: { color: 'teal' } as never }).flag).toBeUndefined()
+  })
+
+  it('survives a restart, and the started event of the restart carries it', () => {
+    const started: unknown[] = []
+    const tabs = manager(undefined, { started: (t) => started.push(t.flag) })
+    const tab = tabs.create(A, { kind: 'claude' })
+    tabs.setFlag(A, tab.id, { color: 'orange' })
+    backend.last.exit(1)
+    tabs.restart(A, tab.id)
+    expect(tabs.list(A)[0]!.flag).toEqual({ color: 'orange' })
+    expect(started).toEqual([undefined, { color: 'orange' }])
+  })
+})
+
 describe('restart', () => {
   it('relaunches an exited Claude tab with the same id, cwd and a new token', () => {
     const tabs = manager()

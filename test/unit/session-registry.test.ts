@@ -231,6 +231,30 @@ describe('onChange', () => {
   })
 })
 
+describe('setFlag', () => {
+  it('mirrors the flag into the entry, reports a change, clears with null; the summary carries the colour only', () => {
+    start('c1')
+    const seen: unknown[] = []
+    reg.onChange((c) => seen.push(c.entry?.flag))
+    expect(reg.setFlag('c1', { color: 'red', note: 'come back' })).toBe(true)
+    expect(reg.get('c1')!.flag).toEqual({ color: 'red', note: 'come back' })
+    expect(reg.summariesFor(P2)[0]!.flag).toEqual({ color: 'red' })
+    // The same flag is no change.
+    reg.setFlag('c1', { color: 'red', note: 'come back' })
+    expect(seen).toEqual([{ color: 'red', note: 'come back' }])
+    reg.setFlag('c1', null)
+    expect(reg.get('c1')!.flag).toBeUndefined()
+    expect(reg.summariesFor(P1)[0]!.flag).toBeUndefined()
+    // A shell tab has no entry: its flag lives on the tab alone.
+    expect(reg.setFlag('nope', { color: 'red' })).toBe(false)
+  })
+
+  it('is born with the tab (a restored or restarted tab)', () => {
+    reg.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj', flag: { color: 'blue' } })
+    expect(reg.get('c1')!.flag).toEqual({ color: 'blue' })
+  })
+})
+
 describe('summariesFor (ctx.sessions scope all, design-next §4.1)', () => {
   it('gives every tab of every project: status, tool, title, project name and colour as CSS, own for the caller', () => {
     const colored = new SessionRegistry({

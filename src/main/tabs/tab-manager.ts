@@ -11,6 +11,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, IpcEventMap, TabInfo } from '../../shared/ipc'
 import { checkSessionName } from '../../shared/session-name'
+import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
 import { checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
 import type { TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
@@ -96,7 +97,7 @@ export interface TabManagerOptions {
  */
 export interface TabLifecycle {
   /** After a successful spawn: a new tab or a restart (the tab keeps its id on restart). */
-  started?(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string }): void
+  started?(tab: TabEvent): void
   /**
    * The process exited. The tab is still open (it can be restarted), unless a clean exit closes
    * it, in which case `closed` follows at once (TabManagerOptions.closeOnCleanExit).
@@ -106,6 +107,8 @@ export interface TabLifecycle {
   closed?(tabId: string): void
   /** The person (or a plugin) named the tab, or cleared the name (`null`). */
   renamed?(tabId: string, name: string | null): void
+  /** The person flagged the tab, changed its flag or cleared it (`null`). Only ever the person (setFlag). */
+  flagged?(tabId: string, flag: TabFlag | null): void
   /**
    * A Claude tab's PTY printed `chunk` (each batch PtyService flushes, so a few per frame at most).
    * For the terminal title (session-registry.ts tabOutput); shell and command tabs are not reported.
@@ -131,6 +134,16 @@ export interface TabCommand {
   command: string
 }
 
+/** What the lifecycle's `started` hears about a tab (the session registry builds its entry from it). */
+export interface TabEvent {
+  tabId: string
+  projectId: string
+  kind: TabKind
+  cwd: string
+  name?: string
+  flag?: TabFlag
+}
+
 /** A tab to bring back at start (restore.ts builds these from the saved records). */
 export interface RestoreTabOptions {
   kind: TabKind
@@ -142,6 +155,8 @@ export interface RestoreTabOptions {
   command?: TabCommand
   /** A Claude tab's saved name (restore.ts validated it; re-checked here). */
   name?: string
+  /** The tab's saved flag, any kind (restore.ts read it leniently; re-read here). */
+  flag?: TabFlag
 }
 
 interface Tab {
@@ -160,6 +175,8 @@ interface Tab {
   command?: TabCommand
   /** Kind 'claude' only: the name the person gave the tab (rename); saved and restored with it. */
   name?: string
+  /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
+  flag?: TabFlag
   /**
    * This tab's socket token, regenerated on every (re)start and gone with the tab. A Claude tab's
    * is a session token (hooks, `session note`, everything); a shell or command tab's is a window
@@ -204,6 +221,12 @@ export class TabManager {
   private readonly order = new Map<string, Tab[]>()
   private readonly options: TabManagerOptions
   private readonly log: (message: string) => void
+  /**
+   * The colour the person last picked for a flag, app-wide (one person, one habit, every window):
+   * what the flag command and "Edit note…" on an unflagged tab use. In memory only: forgetting it
+   * at quit costs one pick, while saving it would be one more app setting nobody edits.
+   */
+  private lastFlagColor: FlagColor = DEFAULT_FLAG_COLOR
 
   constructor(options: TabManagerOptions) {
     this.options = options
@@ -266,7 +289,10 @@ export class TabManager {
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command, name }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag }: RestoreTabOptions): TabInfo {
+    // Re-read like the name: a bad saved flag only loses the flag. Any kind keeps one.
+    const savedFlag = flag === undefined ? undefined : tabFlagOf(flag)
+    const flagOpt = savedFlag === undefined ? {} : { flag: savedFlag }
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') throw new Error('unknown tab kind')
     if (resumeId !== undefined && kind !== 'claude') throw new Error('only a Claude tab resumes')
     if (kind === 'command') {
@@ -274,21 +300,25 @@ export class TabManager {
       // Restored NOT started: a command may be anything (a deploy, a migration, a cleanup), and
       // the app launching must never run one by itself. The tab comes back stopped with its
       // banner; the user's Restart runs it.
-      return this.add(projectId, kind, cwd, { command: tabCommand(command), start: false })
+      return this.add(projectId, kind, cwd, { command: tabCommand(command), start: false, ...flagOpt })
     }
     if (command !== undefined) throw new Error('only a command tab has a command')
     if (name !== undefined && kind !== 'claude') throw new Error('only a Claude tab has a name')
     const checked = name === undefined ? undefined : checkSessionName(name)
     // A bad saved name only loses the name: the tab and its session still come back.
     const kept = checked?.ok ? (checked.value ?? undefined) : undefined
-    return this.add(projectId, kind, cwd, { ...(resumeId === undefined ? {} : { resumeId }), ...(kept === undefined ? {} : { name: kept }) })
+    return this.add(projectId, kind, cwd, {
+      ...(resumeId === undefined ? {} : { resumeId }),
+      ...(kept === undefined ? {} : { name: kept }),
+      ...flagOpt
+    })
   }
 
   private add(
     projectId: string,
     kind: TabKind,
     cwd: string | undefined,
-    opts: { prompt?: string; model?: string; effort?: string; resumeId?: string; command?: TabCommand; start?: boolean; name?: string }
+    opts: { prompt?: string; model?: string; effort?: string; resumeId?: string; command?: TabCommand; start?: boolean; name?: string; flag?: TabFlag }
   ): TabInfo {
     const root = this.projectRoot(projectId)
     const tab: Tab = {
@@ -306,6 +336,7 @@ export class TabManager {
     if (opts.command) tab.command = opts.command
     // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
     if (opts.name !== undefined) tab.name = opts.name
+    if (opts.flag !== undefined) tab.flag = { ...opts.flag }
     const started = opts.start !== false
     if (started) {
       this.start(tab, opts.prompt, opts.resumeId, opts.model, opts.effort)
@@ -363,6 +394,45 @@ export class TabManager {
     else tab.name = checked.value
     this.notify((l) => l.renamed?.(tab.id, checked.value))
     this.changed(projectId)
+  }
+
+  /**
+   * The person's flag on a tab of `projectId` (any kind): set, change its colour or note, or clear
+   * it with `null` (shared/tab-flag.ts FlagPatch). The ONLY writer, reached from the shell page's
+   * `tabs.flag` IPC alone (the router takes it from the project window's top frame, so no plugin
+   * panel, overlay or web view can send it, and host-api has no way in): a flag means "the person
+   * marked this", which a plugin setting it would make worthless. The tab is looked up in
+   * `projectId` only, so another window's tab id reads as unknown. Saved with the tab (changed),
+   * told to the session registry for SessionInfo.flag. Returns the flag as stored (null: none).
+   */
+  setFlag(projectId: string, tabId: string, patch: unknown): TabFlag | null {
+    const tab = this.require(projectId, tabId)
+    const checked = checkFlagPatch(patch)
+    if (!checked.ok) throw new Error(checked.reason)
+    if (checked.value?.color !== undefined) this.lastFlagColor = checked.value.color
+    const next = checked.value === null ? undefined : applyFlagPatch(tab.flag, checked.value, this.lastFlagColor)
+    this.storeFlag(tab, next)
+    return next === undefined ? null : { ...next }
+  }
+
+  /**
+   * The flag command (`tabs.toggleFlag`): a flagged tab loses its flag (note included: toggling
+   * off is the quick "done with it"), an unflagged one gets the last-used colour. Same scoping and
+   * same single path as setFlag.
+   */
+  toggleFlag(projectId: string, tabId: string): TabFlag | null {
+    const tab = this.require(projectId, tabId)
+    const next = tab.flag === undefined ? { color: this.lastFlagColor } : undefined
+    this.storeFlag(tab, next)
+    return next === undefined ? null : { ...next }
+  }
+
+  private storeFlag(tab: Tab, next: TabFlag | undefined): void {
+    if (sameFlag(tab.flag, next)) return
+    if (next === undefined) delete tab.flag
+    else tab.flag = next
+    this.notify((l) => l.flagged?.(tab.id, next === undefined ? null : { ...next }))
+    this.changed(tab.projectId)
   }
 
   /** Move to `toIndex` in the project's order, clamped to the ends. */
@@ -650,8 +720,15 @@ export class TabManager {
   }
 }
 
-function tabEvent(tab: Tab): { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string } {
-  return { tabId: tab.id, projectId: tab.projectId, kind: tab.kind, cwd: tab.cwd, ...(tab.name === undefined ? {} : { name: tab.name }) }
+function tabEvent(tab: Tab): TabEvent {
+  return {
+    tabId: tab.id,
+    projectId: tab.projectId,
+    kind: tab.kind,
+    cwd: tab.cwd,
+    ...(tab.name === undefined ? {} : { name: tab.name }),
+    ...(tab.flag === undefined ? {} : { flag: { ...tab.flag } })
+  }
 }
 
 /** Reports `sessionId` only once it is resumable: that is what restore saves and resumes. */
@@ -661,6 +738,7 @@ function info(tab: Tab): TabInfo {
   if (tab.exit) out.exit = { ...tab.exit }
   if (tab.gen === 0) out.notStarted = true
   if (tab.name !== undefined) out.name = tab.name
+  if (tab.flag !== undefined) out.flag = { ...tab.flag }
   if (tab.command) {
     out.label = tab.command.label
     out.command = tab.command.command

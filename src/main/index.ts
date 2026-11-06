@@ -1028,6 +1028,7 @@ function start(): void {
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
       closed: (tabId) => sessions.tabClosed(tabId),
       renamed: (tabId, name) => void sessions.setName(tabId, name),
+      flagged: (tabId, flag) => void sessions.setFlag(tabId, flag),
       output: (tabId, chunk) => sessions.tabOutput(tabId, chunk)
     },
     // Every create / close / reorder / restart / new session id: save the project's tabs.
@@ -1771,6 +1772,9 @@ function start(): void {
     close: (projectId, tabId) => tabs.close(projectId, tabId),
     reorder: (projectId, tabId, toIndex) => tabs.reorder(projectId, tabId, toIndex),
     rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
+    // The person's flag. Wired here and nowhere else: host-api (plugins) has no flag dependency.
+    flag: (projectId, tabId, patch) => tabs.setFlag(projectId, tabId, patch),
+    toggleFlag: (projectId, tabId) => tabs.toggleFlag(projectId, tabId),
     // Renderer keystrokes only (the send gate writes through `tabs.input` directly): a key that
     // answers a permission dialog also clears the tab's needs-permission (status-reducer.ts), and
     // the person's first real input sets SessionInfo.typed. The ONLY caller of userInput: the flag

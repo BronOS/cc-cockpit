@@ -483,6 +483,8 @@ describe('registerTabHandlers', () => {
       close: rec('close') as TabHandlerDeps['close'],
       reorder: rec('reorder') as TabHandlerDeps['reorder'],
       rename: rec('rename') as TabHandlerDeps['rename'],
+      flag: rec('flag', { color: 'red' }) as TabHandlerDeps['flag'],
+      toggleFlag: rec('toggleFlag', null) as TabHandlerDeps['toggleFlag'],
       restart: rec('restart', info) as TabHandlerDeps['restart'],
       input: rec('input') as TabHandlerDeps['input'],
       resize: rec('resize') as TabHandlerDeps['resize'],
@@ -518,6 +520,27 @@ describe('registerTabHandlers', () => {
       ['ack', PROJECT_A, 't1', 5],
       ['select', PROJECT_B, 't1']
     ])
+  })
+
+  it("flags only the sender's project's tab: the payload's project is ignored, the patch goes to main's check as sent", async () => {
+    const { ipc, calls } = tabsSetup()
+    await expect(ipc.invoke('tabs.flag', 12, [{ tabId: 't1', flag: { color: 'red', note: 'n' }, projectId: PROJECT_A }])).resolves.toEqual({ color: 'red' })
+    await ipc.invoke('tabs.flag', 11, [{ tabId: 't1', flag: null }])
+    await expect(ipc.invoke('tabs.toggleFlag', 11, [{ tabId: 't1', projectId: PROJECT_B }])).resolves.toBeNull()
+    expect(calls).toEqual([
+      ['flag', PROJECT_B, 't1', { color: 'red', note: 'n' }],
+      ['flag', PROJECT_A, 't1', null],
+      ['toggleFlag', PROJECT_A, 't1']
+    ])
+  })
+
+  it('takes a flag from the shell page\'s top frame only: a plugin panel (a subframe) never reaches the manager', async () => {
+    const { ipc, calls } = tabsSetup()
+    await expect(ipc.invoke('tabs.flag', 11, [{ tabId: 't1', flag: { color: 'red' } }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(ipc.invoke('tabs.toggleFlag', 11, [{ tabId: 't1' }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(ipc.invoke('tabs.flag', 11, [{ tabId: 't1', flag: { color: 'red' } }], { parent: null, url: 'cc-plugin://example.plugin/panel.html' })).rejects.toThrow()
+    await expect(ipc.invoke('tabs.flag', 13, [{ tabId: 't1', flag: { color: 'red' } }])).rejects.toThrow()
+    expect(calls).toEqual([])
   })
 
   it('creates a command tab by level and entry id only: command text in the payload is never read', async () => {
@@ -579,6 +602,9 @@ describe('registerTabHandlers', () => {
       ['tabs.reorder', [{ tabId: 't1', toIndex: 'first' }]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 1.5 }]],
       ['tabs.rename', [{ tabId: 't1', name: 5 }]],
+      ['tabs.flag', [{ tabId: 't1' }]],
+      ['tabs.flag', [{ flag: null }]],
+      ['tabs.toggleFlag', [{ tabId: 5 }]],
       ['tabs.restart', [{}]],
       ['tabs.input', [{ tabId: 't1', data: 5 }]],
       ['tabs.resize', [{ tabId: 't1', cols: '80', rows: 24 }]],

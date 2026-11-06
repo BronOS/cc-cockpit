@@ -38,6 +38,7 @@ import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from 
 import { isSettingsPageScope } from '../../shared/settings-page'
 import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
+import type { TabFlag } from '../../shared/tab-flag'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
@@ -760,6 +761,9 @@ export interface TabHandlerDeps {
   close(projectId: string, tabId: string): void
   reorder(projectId: string, tabId: string, toIndex: number): void
   rename(projectId: string, tabId: string, name: string | null): void
+  /** The person's flag (TabManager.setFlag checks the patch); answers the flag as stored. */
+  flag(projectId: string, tabId: string, patch: unknown): TabFlag | null
+  toggleFlag(projectId: string, tabId: string): TabFlag | null
   restart(projectId: string, tabId: string, windowId: number): TabInfo | Promise<TabInfo>
   input(projectId: string, tabId: string, data: string): void
   resize(projectId: string, tabId: string, cols: number, rows: number): void
@@ -819,6 +823,17 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (name !== null && typeof name !== 'string') throw new Error('tabs.rename: name must be a string or null')
     tabs.rename(ctx.projectId, tabIdOf('tabs.rename', payload), name)
   })
+
+  // The person's flag: only from the shell page's top frame of the tab's own project window
+  // (handleProject), the one way a flag is ever written. The patch is checked field by field in
+  // main (shared/tab-flag.ts checkFlagPatch, through TabManager.setFlag).
+  router.handleProject('tabs.flag', (ctx, payload) => {
+    const p = fields('tabs.flag', payload)
+    if (!('flag' in p)) throw new Error('tabs.flag: flag must be an object or null')
+    return tabs.flag(ctx.projectId, tabIdOf('tabs.flag', payload), p.flag)
+  })
+
+  router.handleProject('tabs.toggleFlag', (ctx, payload) => tabs.toggleFlag(ctx.projectId, tabIdOf('tabs.toggleFlag', payload)))
 
   router.handleProject('tabs.restart', (ctx, payload) =>
     tabs.restart(ctx.projectId, tabIdOf('tabs.restart', payload), ctx.windowId)

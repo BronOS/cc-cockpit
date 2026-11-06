@@ -36,7 +36,13 @@
     "--cc-project-teal": "#45c0bb",
     "--cc-project-blue": "#5b9df5",
     "--cc-project-purple": "#b484f2",
-    "--cc-project-grey": "#9b948e"
+    "--cc-project-grey": "#9b948e",
+    "--cc-flag-red": "#f0625b",
+    "--cc-flag-orange": "#f0974a",
+    "--cc-flag-yellow": "#e6c24a",
+    "--cc-flag-green": "#5ec26e",
+    "--cc-flag-blue": "#5b9df5",
+    "--cc-flag-purple": "#b484f2"
   },
   "xterm": {
     "foreground": "#dddddd",

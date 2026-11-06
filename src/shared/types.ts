@@ -58,6 +58,11 @@ export interface TabRecord {
   command?: string
   /** A Claude tab's name given by the person (shared/session-name.ts); shown over Claude's topic. */
   name?: string
+  /**
+   * The person's flag on the tab, any kind (shared/tab-flag.ts). Plain data here (the file is
+   * user-writable): read back through tabFlagOf, which drops a damaged value.
+   */
+  flag?: { color: string; note?: string }
 }
 
 /**

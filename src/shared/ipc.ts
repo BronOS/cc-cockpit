@@ -16,6 +16,7 @@ import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, T
 import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
+import type { FlagPatch, TabFlag } from './tab-flag'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
@@ -144,6 +145,11 @@ export interface TabInfo {
    * The renderer shows it from `SessionDetail.name`, which changes with the registry's broadcast.
    */
   name?: string
+  /**
+   * The person's flag on the tab, any kind (shared/tab-flag.ts): set only through `tabs.flag` /
+   * `tabs.toggleFlag` from this window, kept for restore. The renderer applies their replies.
+   */
+  flag?: TabFlag
 }
 
 /** One user entry of the new-tab menu as the menu shows it: no command text, main runs it by id. */
@@ -1169,6 +1175,15 @@ export interface IpcInvokeMap {
   /** Give a Claude tab a name (1-60 characters, shared/session-name.ts), or `null` for Claude's own title. */
   'tabs.rename': { req: { tabId: string; name: string | null }; res: void }
   /**
+   * Flag one of the sender's tabs (any kind), change its colour or note, or clear it with `null`
+   * (shared/tab-flag.ts FlagPatch: a missing colour keeps the tab's or takes the last-used one).
+   * Answers the flag as stored (note cleaned), null once cleared. The person's only: no plugin path
+   * reaches it (the router takes it from the shell page's top frame only).
+   */
+  'tabs.flag': { req: { tabId: string; flag: FlagPatch | null }; res: TabFlag | null }
+  /** The flag command: clear the tab's flag, or flag it with the last-used colour. Answers as `tabs.flag`. */
+  'tabs.toggleFlag': { req: { tabId: string }; res: TabFlag | null }
+  /**
    * Relaunch an exited tab (same kind and cwd; `--resume` when a session id is known; a command
    * tab runs its own copy of the command again), or start a restored command tab (`notStarted`).
    */
@@ -1392,6 +1407,8 @@ export const INVOKE_CHANNELS = [
   'tabs.close',
   'tabs.reorder',
   'tabs.rename',
+  'tabs.flag',
+  'tabs.toggleFlag',
   'tabs.restart',
   'tabs.input',
   'tabs.resize',

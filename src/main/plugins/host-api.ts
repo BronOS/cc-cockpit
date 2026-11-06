@@ -482,6 +482,8 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   if (e.name !== undefined) out.name = e.name
   if (e.gist !== undefined) out.gist = e.gist
   if (e.steps !== undefined) out.steps = { ...e.steps }
+  // Read-only for plugins: copied out, and nothing in host-api writes a flag (TabManager.setFlag).
+  if (e.flag !== undefined) out.flag = e.flag.note === undefined ? { color: e.flag.color } : { color: e.flag.color, note: e.flag.note }
   if (active) out.active = true
   return out
 }

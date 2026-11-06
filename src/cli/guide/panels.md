@@ -76,6 +76,8 @@ A theme may also bring names of its own, which panels get too.
   `--cc-status-waiting` (green, ok), `--cc-status-ended` (red, an error).
 - Project colours: `--cc-project-red`, `-orange`, `-yellow`, `-green`, `-teal`, `-blue`,
   `-purple`, `-grey` (each prefixed `--cc-project-`).
+- Tab flag colours (`SessionInfo.flag.color`): `--cc-flag-red`, `-orange`, `-yellow`, `-green`,
+  `-blue`, `-purple` (each prefixed `--cc-flag-`).
 
 There is no separate error or success token: use `--cc-status-ended` / `--cc-status-waiting` for
 red and green text or dots, and `--cc-bg-error` behind an error message.

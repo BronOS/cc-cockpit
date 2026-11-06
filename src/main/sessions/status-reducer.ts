@@ -42,6 +42,7 @@ import { cleanHarnessMarkup } from './harness-markup'
 import { unwrapPastes } from './paste-wrappers'
 import type { TabStatus } from '../../shared/ipc'
 import type { TabKind } from '../../shared/types'
+import type { TabFlag } from '../../shared/tab-flag'
 
 export type { TabStatus }
 
@@ -108,6 +109,12 @@ export interface SessionEntry {
    * never touches it.
    */
   typed: boolean
+  /**
+   * The person's flag on the tab (shared/tab-flag.ts), mirrored from the tab manager, which owns it
+   * and is its only writer (TabManager.setFlag, from the shell's IPC): SessionInfo.flag. The
+   * reducer never touches it.
+   */
+  flag?: TabFlag
 }
 
 /** Caps for text a hook (or a plugin) hands us: a token only proves WHICH tab sent it. */
@@ -152,6 +159,8 @@ export function newEntry(init: {
   name?: string
   /** A restart carries the old entry's flag (SessionRegistry.tabStarted); a new tab starts at false. */
   typed?: boolean
+  /** The tab's flag as the tab manager holds it (a restored or restarted tab is born with it). */
+  flag?: TabFlag
 }): SessionEntry {
   const entry: SessionEntry = {
     tabId: init.tabId,
@@ -167,6 +176,7 @@ export function newEntry(init: {
   }
   if (init.sessionId !== undefined) entry.sessionId = init.sessionId
   if (init.name !== undefined) entry.name = init.name
+  if (init.flag !== undefined) entry.flag = { ...init.flag }
   return entry
 }
 

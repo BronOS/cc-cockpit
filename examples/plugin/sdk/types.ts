@@ -381,6 +381,15 @@ export interface SessionInfo {
    * `onChange`. Always present on an app that detects it: an older app has no such field.
    */
   readonly typed: boolean
+  /**
+   * The person's flag on the tab: they marked it to come back to. `color` is one of `red`,
+   * `orange`, `yellow`, `green`, `blue`, `purple` (theme tokens `--cc-flag-<color>` in panel pages);
+   * `note` an optional reminder, 1 to 80 characters of plain text. Absent when the tab has none.
+   * Read-only: only the person sets or clears it (the tab's right-click menu, the Toggle Tab Flag
+   * command), no plugin API writes it. Sticky until cleared, kept across an app restart; a change
+   * reaches `onChange`. An older app never sends it.
+   */
+  readonly flag?: { readonly color: string; readonly note?: string }
 }
 
 /**
@@ -402,6 +411,8 @@ export interface SessionSummary {
   readonly title?: string
   /** The name the person gave the tab; shown instead of `title`. */
   readonly name?: string
+  /** The person's flag colour (SessionInfo.flag without its note, which stays in the tab's own window). */
+  readonly flag?: { readonly color: string }
 }
 
 /** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */

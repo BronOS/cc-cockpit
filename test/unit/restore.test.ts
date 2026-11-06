@@ -149,6 +149,99 @@ describe('session names', () => {
   })
 })
 
+describe('tab flags', () => {
+  it('are saved for every kind, restored for every kind, and a damaged one is dropped, not the tab', () => {
+    expect(
+      tabRecordsOf([
+        { id: 'a', gen: 1, kind: 'claude', cwd: '/p', flag: { color: 'red', note: 'come back' } },
+        { id: 'b', gen: 1, kind: 'shell', cwd: '/p', flag: { color: 'blue' } },
+        { id: 'c', gen: 1, kind: 'shell', cwd: '/p' }
+      ])
+    ).toEqual([
+      { id: 'a', kind: 'claude', cwd: '/p', flag: { color: 'red', note: 'come back' } },
+      { id: 'b', kind: 'shell', cwd: '/p', flag: { color: 'blue' } },
+      { id: 'c', kind: 'shell', cwd: '/p' }
+    ])
+    const plan = buildRestorePlan({
+      path: projectDir,
+      tabs: [
+        rec({ kind: 'claude', flag: { color: 'red', note: '  come\nback ' } }, 1),
+        rec({ kind: 'shell', flag: { color: 'green' } }, 2),
+        rec({ kind: 'command', label: 'Dev', command: 'npm run dev', flag: { color: 'purple' } }, 3),
+        rec({ kind: 'shell', flag: { color: 'teal' } }, 4),
+        rec({ kind: 'shell', flag: 'red' as never }, 5),
+        rec({ kind: 'shell', flag: { color: 'yellow', note: 'x'.repeat(81) } }, 6),
+        rec({ kind: 'shell', flag: { color: 'yellow', note: 7 as never } }, 7)
+      ]
+    })
+    expect(plan.map((t) => t.flag)).toEqual([
+      { color: 'red', note: 'come back' },
+      { color: 'green' },
+      { color: 'purple' },
+      undefined,
+      undefined,
+      // A damaged note costs only the note.
+      { color: 'yellow' },
+      { color: 'yellow' }
+    ])
+  })
+
+  it('a tab that failed to restore keeps its flag in the record', async () => {
+    const saved: TabRecord[][] = []
+    const restorer = new TabRestorer({ listTabs: () => [], saveTabs: (_id, r) => saved.push(r), projectPath: () => '/p', log: () => {} })
+    restorer.queue('p1', [{ kind: 'shell', flag: { color: 'orange', note: 'n' } }])
+    await restorer.restore('p1', Promise.resolve(), () => {
+      throw new Error('out of ptys')
+    })
+    expect(saved.at(-1)).toEqual([{ id: expect.any(String), kind: 'shell', cwd: '/p', flag: { color: 'orange', note: 'n' } }])
+  })
+
+  it('survive an app restart on disk: flagged in one run, flagged in the next, any tab kind', async () => {
+    const registry = new ProjectRegistry({ dataDir, log: () => {} })
+    const project = registry.openPath(projectDir)
+    const backend = new FakePtyBackend()
+    let tabs: TabManager
+    const restorer = new TabRestorer({
+      listTabs: (id) => tabs.list(id),
+      saveTabs: (id, records) =>
+        registry.update(id, (r) => {
+          r.tabs = records
+        }),
+      projectPath: (id) => registry.get(id)?.path
+    })
+    const makeManager = (): TabManager =>
+      new TabManager({
+        backend,
+        projectPath: (id) => registry.get(id)?.path,
+        loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+        hooksPath: '/data/hooks.json',
+        binDir: '/data/bin',
+        sock: () => undefined,
+        onTabsChanged: (id) => restorer.tabsChanged(id),
+        emit: () => {},
+        log: () => {}
+      })
+    tabs = makeManager()
+    const claude = tabs.create(project.id, { kind: 'claude' })
+    const shell = tabs.create(project.id, { kind: 'shell' })
+    tabs.setFlag(project.id, claude.id, { color: 'red', note: 'review the plan' })
+    tabs.setFlag(project.id, shell.id, { color: 'green' })
+    registry.flushAll()
+
+    const registry2 = new ProjectRegistry({ dataDir, log: () => {} })
+    const saved = registry2.get(project.id)!
+    tabs = makeManager()
+    restorer.queue(project.id, buildRestorePlan(saved))
+    await restorer.restore(project.id, Promise.resolve(), (t) => {
+      tabs.restoreTab(project.id, t)
+    })
+    expect(tabs.list(project.id).map((t) => [t.kind, t.flag])).toEqual([
+      ['claude', { color: 'red', note: 'review the plan' }],
+      ['shell', { color: 'green' }]
+    ])
+  })
+})
+
 describe('tabRecordsOf', () => {
   it('keeps kind, cwd and the session id when known', () => {
     const tabs: TabInfo[] = [

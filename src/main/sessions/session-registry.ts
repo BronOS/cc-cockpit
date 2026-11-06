@@ -16,6 +16,7 @@ import type { HookEvent } from '../../shared/hooks'
 import type { SessionDetail, SessionsSnapshot } from '../../shared/ipc'
 import { projectColorCss, type ProjectColor } from '../../shared/project-color'
 import type { SessionSummary } from '../../sdk/types'
+import type { TabFlag } from '../../shared/tab-flag'
 import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
@@ -119,7 +120,7 @@ export class SessionRegistry {
    * it again. The old process's queue was already dropped at its exit; its delivery timer must
    * not outlive it and clear a `delivering` flag of the new process.
    */
-  tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string }): void {
+  tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string; flag?: TabFlag }): void {
     if (tab.kind !== 'claude') return
     const prev = this.entries.get(tab.tabId)
     this.clearDeliveryTimer(tab.tabId)
@@ -157,6 +158,23 @@ export class SessionRegistry {
     const next = { ...prev }
     if (name === null) delete next.name
     else next.name = name
+    this.set(prev, next)
+    return true
+  }
+
+  /**
+   * Mirror the person's flag (or with null, its removal) from the tab manager, its owner and only
+   * writer (TabManager.setFlag, which checked it): plugins read it as SessionInfo.flag and, colour
+   * only, in the summaries. Nothing a plugin or a hook sends reaches this. False when the tab has
+   * no entry (a shell or command tab: the flag lives on the tab, the registry has no entry for it).
+   */
+  setFlag(tabId: string, flag: TabFlag | null): boolean {
+    const prev = this.entries.get(tabId)
+    if (!prev) return false
+    if (prev.flag?.color === flag?.color && prev.flag?.note === flag?.note) return true
+    const next = { ...prev }
+    if (flag === null) delete next.flag
+    else next.flag = { ...flag }
     this.set(prev, next)
     return true
   }
@@ -390,6 +408,9 @@ export class SessionRegistry {
       if (e.tool !== undefined) out.tool = e.tool
       if (e.title !== undefined) out.title = e.title
       if (e.name !== undefined) out.name = e.name
+      // The colour only: the note is the person's own words about the tab, which (like prompts and
+      // notes) stay with the tab's own window.
+      if (e.flag !== undefined) out.flag = { color: e.flag.color }
       return out
     })
   }

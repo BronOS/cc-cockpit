@@ -202,6 +202,8 @@ with full Node access.
 
 - `ctx.sessions.list()`: the window's Claude tabs with their status. `needs-permission` also
   covers a question or plan-approval dialog (`tool` is `AskUserQuestion` or `ExitPlanMode`).
+  `sessionId` is Claude Code's own session id once its SessionStart reported one; `notes` and `steps`
+  (`{ done, total }`) are what the tab's Claude posted with `ccc session note` and `ccc session steps`.
   `files` lists what the tab's Claude wrote (Write, Edit, MultiEdit, NotebookEdit): absolute paths
   as Claude gave them, files outside the project included, each once, in the order first written,
   kept for the tab's life and capped at 500 (later files are not added). Only the ones inside
@@ -221,12 +223,17 @@ with full Node access.
   `typeof typed === 'boolean'` on some session (unknown until a Claude tab exists). Once `typed`, `ctx.sessions.send` to the
   tab rejects with "the person is typing in this tab", and texts already queued by plugins for it are dropped at that moment,
   with no event to the plugin; a paste already being delivered is not undone. Discuss with Claude is unaffected.
+  `flag` is the person's flag on the tab, `{ color, note? }`, absent when it has none: they marked the tab to come back
+  to. `color` is one of `red`, `orange`, `yellow`, `green`, `blue`, `purple` (draw it with the panel token
+  `--cc-flag-<color>`, never a colour of your own); `note` an optional reminder, 1 to 80 characters of plain text.
+  Read-only: only the person sets or clears it (the tab's right-click menu, the Toggle Tab Flag command); no plugin API
+  writes it. Sticky until cleared and kept across an app restart; a change reaches `onChange`. An older app never sends it.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
   included (at most 4 a second).
 - `ctx.sessions.list({ scope: 'all' })` and `onChange(listener, { scope: 'all' })`: every window's
-  Claude tabs as summaries `{ tabId, own, project: { name, color? }, status, tool?, title? }` (`own`: a
-  tab of this window; `color` a CSS value, `var(--cc-project-blue)` or `#rrggbb`), never prompts, notes,
-  files, cwd or terminal content. Only with `"access": { "sessions": "all-windows" }` in plugin.json
+  Claude tabs as summaries `{ tabId, own, project: { name, color? }, status, tool?, title?, name?, flag? }` (`own`: a
+  tab of this window; `color` a CSS value, `var(--cc-project-blue)` or `#rrggbb`; `flag` is `{ color }` only, the
+  note stays in the tab's own window), never prompts, notes, files, cwd or terminal content. Only with `"access": { "sessions": "all-windows" }` in plugin.json
   (`plugins` topic); without it both throw. An older app ignores the option and answers this window's
   list: check `typeof ctx.sessions.focus === 'function'` first.
 - `ctx.sessions.focus(tabId)`: select a Claude tab of any window and raise that window; `false` for an
