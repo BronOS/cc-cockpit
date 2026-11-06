@@ -7,6 +7,8 @@
   "contributes": {
     "commands": [
       { "id": "open", "title": "Takeover: open a tab with model and effort" },
+      { "id": "openBackground", "title": "Takeover: open a tab without focus" },
+      { "id": "openFocused", "title": "Takeover: open a tab with focus" },
       { "id": "send", "title": "Takeover: send a text to that tab" }
     ]
   }

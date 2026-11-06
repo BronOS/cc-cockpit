@@ -19,6 +19,17 @@ exports.activate = (ctx) => {
     }
     save()
   })
+  // Plain opens for the focus spec: no model, with and without focus.
+  for (const [name, focus] of [['openBackground', false], ['openFocused', true]]) {
+    ctx.commands.register(name, async () => {
+      try {
+        seen.opened = await ctx.sessions.open(focus ? { focus: true } : {})
+      } catch (err) {
+        seen.openError = String(err && err.message)
+      }
+      save()
+    })
+  }
   ctx.commands.register('send', async () => {
     try {
       seen.sent = await ctx.sessions.send(tabId, 'plugin text')

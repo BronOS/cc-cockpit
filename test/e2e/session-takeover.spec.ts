@@ -115,3 +115,45 @@ test('a plugin send queued while busy is dropped when the person types; Discuss 
   expect(cockpit.pastes()[1]).toContain('About: Thing')
   expect(cockpit.pastes().join('')).not.toContain('plugin text')
 })
+
+test('a plugin session opened without focus leaves the selected tab, its keyboard focus and its pty alone', async ({ cockpit }) => {
+  await enable(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE')
+  await terminal(cockpit).click()
+  const tabs = cockpit.page.getByRole('tab')
+  await expect(tabs).toHaveCount(1)
+  const inTerminal = (): Promise<boolean> =>
+    cockpit.page.evaluate(() => !!document.activeElement?.closest('.terminal-view:not([hidden])'))
+  expect(await inTerminal()).toBe(true)
+
+  await run(cockpit, TAKEOVER, 'openBackground')
+  await expect(tabs).toHaveCount(2)
+  await expect.poll(() => cockpit.claudeRuns().length, { timeout: 15_000 }).toBe(2)
+  await cockpit.page.waitForTimeout(500) // a late focus grab would land here
+
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true')
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'false')
+  expect(await inTerminal()).toBe(true)
+
+  // Keys go to tab 1's pty: its fake echoes the line.
+  await cockpit.page.keyboard.type('only-for-one')
+  await cockpit.page.keyboard.press('Enter')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE echo: only-for-one')
+
+  // Tab 2 never saw it.
+  await tabs.nth(1).click()
+  await cockpit.waitForTerminalText('FAKE-CLAUDE')
+  expect(await cockpit.terminalText()).not.toContain('only-for-one')
+})
+
+test('a plugin session opened with focus: true is selected', async ({ cockpit }) => {
+  await enable(cockpit)
+  await cockpit.newTab('claude')
+  await cockpit.waitForTerminalText('FAKE-CLAUDE')
+  await run(cockpit, TAKEOVER, 'openFocused')
+  const tabs = cockpit.page.getByRole('tab')
+  await expect(tabs).toHaveCount(2)
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'false')
+})
