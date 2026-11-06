@@ -31,6 +31,14 @@ export const MAX_SLOT_PLACEMENTS = 4
 /** Placement heights (and a provider's `minHeight`/`maxHeight`) are whole pixels in this range. */
 export const SLOT_HEIGHT_MIN = 24
 export const SLOT_HEIGHT_MAX = 600
+/**
+ * A top-bar slot page's `ccPanel.slot.setWidth` is whole pixels in this range. 0 is allowed on
+ * purpose: a strip with nothing to show takes no room, so the whole bar drags the window (macOS).
+ * The max only keeps a number sane; the bar's own cap, which always leaves a drag gap, is the
+ * shell's (styles.css `.slot-frame-top-bar`).
+ */
+export const SLOT_WIDTH_MIN = 0
+export const SLOT_WIDTH_MAX = 4096
 /** A placement's `params`, as JSON, is at most this many bytes. */
 export const MAX_SLOT_PARAMS_BYTES = 4 * 1024
 /** At most this many slot frames are drawn per window; extra placements are not drawn. */

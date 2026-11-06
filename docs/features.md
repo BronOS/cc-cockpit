@@ -8,7 +8,8 @@ behind it are in [design.md](design.md).
 - One window per project (a folder), a project picker, restore of the last open projects; each
   window reopens at its last size, place and maximised / full-screen state. One bar across the
   top holds the project's name and path, the other windows' Claude strip (the bundled Sessions plugin's), a "+" and
-  the gear (on macOS it is the title bar, traffic lights included). The "+" (or File > Open Project…) brings the
+  the gear (on macOS it is the title bar, traffic lights included: the strip takes only its entries' width, so the
+  rest of the bar drags the window and a double-click zooms or minimises it as System Settings says). The "+" (or File > Open Project…) brings the
   picker back to open another project.
 - A colour per project, to tell windows apart: Settings > This Project > Colour picks None, one of
   eight palette colours (red, orange, yellow, green, teal, blue, purple, grey; each tuned per

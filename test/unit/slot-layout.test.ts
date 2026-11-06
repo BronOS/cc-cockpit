@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { SLOT_HEIGHT_MESSAGE, SLOT_MESSAGE } from '../../src/sdk/panel-core'
+import { SLOT_HEIGHT_MESSAGE, SLOT_MESSAGE, SLOT_WIDTH_MESSAGE } from '../../src/sdk/panel-core'
 import type { SlotFrameInfo } from '../../src/shared/ipc'
 import {
   SlotHeightRelay,
+  SlotWidthGate,
+  WIDTH_BURST_CHANGES,
+  WIDTH_BURST_MS,
   slotColumn,
   slotFrameHeight,
   slotHeightRequest,
-  slotIntro
+  slotIntro,
+  slotWidthRequest
 } from '../../src/renderer/zones/slot-layout'
 
 // The frames themselves (iframes, ports, the top bar) need a DOM and Electron and are covered end
@@ -79,6 +83,117 @@ describe('slotHeightRequest', () => {
     ]) {
       expect(slotHeightRequest(data, frame())).toBeUndefined()
     }
+  })
+})
+
+describe('slotWidthRequest', () => {
+  it('reads a setWidth message, rounded and within 0 and 4096', () => {
+    expect(slotWidthRequest({ type: SLOT_WIDTH_MESSAGE, width: 180.4 })).toBe(180)
+    expect(slotWidthRequest({ type: SLOT_WIDTH_MESSAGE, width: 0 })).toBe(0)
+    expect(slotWidthRequest({ type: SLOT_WIDTH_MESSAGE, width: -50 })).toBe(0)
+    expect(slotWidthRequest({ type: SLOT_WIDTH_MESSAGE, width: 1e9 })).toBe(4096)
+  })
+
+  it('ignores anything else a page posts, a height included', () => {
+    for (const data of [
+      null,
+      'cc-plugin.slot-width',
+      { type: SLOT_HEIGHT_MESSAGE, height: 90 },
+      { type: SLOT_HEIGHT_MESSAGE, width: 90 },
+      { type: SLOT_WIDTH_MESSAGE },
+      { type: SLOT_WIDTH_MESSAGE, width: '90' },
+      { type: SLOT_WIDTH_MESSAGE, width: Number.NaN },
+      { type: SLOT_WIDTH_MESSAGE, width: Number.NEGATIVE_INFINITY }
+    ]) {
+      expect(slotWidthRequest(data)).toBeUndefined()
+    }
+  })
+})
+
+describe('SlotWidthGate', () => {
+  /** A scheduler the test runs by hand: `frame()` runs what waits for the next frame, `timers` the delayed ones. */
+  function harness() {
+    let t = 0
+    const applied: number[] = []
+    let frames: Array<() => void> = []
+    const timers: Array<{ run: () => void; at: number; cancelled: boolean }> = []
+    const gate = new SlotWidthGate(
+      (w) => applied.push(w),
+      (run, delayMs) => {
+        if (delayMs === undefined) {
+          frames.push(run)
+          return () => {
+            frames = frames.filter((f) => f !== run)
+          }
+        }
+        const timer = { run, at: t + delayMs, cancelled: false }
+        timers.push(timer)
+        return () => {
+          timer.cancelled = true
+        }
+      },
+      () => t
+    )
+    const frame = (): void => {
+      const due = frames
+      frames = []
+      for (const run of due) run()
+    }
+    const advance = (ms: number): void => {
+      t += ms
+      for (const timer of timers.splice(0)) {
+        if (timer.cancelled) continue
+        if (timer.at <= t) timer.run()
+        else timers.push(timer)
+      }
+    }
+    return { gate, applied, frame, advance, pendingFrames: () => frames.length }
+  }
+
+  it('applies once per frame, the latest request winning, and never the same width twice', () => {
+    const h = harness()
+    h.gate.request(100)
+    h.gate.request(140)
+    h.gate.request(120)
+    expect(h.applied).toEqual([])
+    expect(h.pendingFrames()).toBe(1)
+    h.frame()
+    expect(h.applied).toEqual([120])
+    h.gate.request(120)
+    h.frame()
+    expect(h.applied).toEqual([120])
+    h.gate.request(0)
+    h.frame()
+    expect(h.applied).toEqual([120, 0])
+  })
+
+  it('holds a page in a loop after a burst of changes, then takes its latest width', () => {
+    const h = harness()
+    for (let i = 0; i < WIDTH_BURST_CHANGES; i++) {
+      h.gate.request(i % 2 === 0 ? 100 : 101)
+      h.frame()
+      h.advance(10)
+    }
+    expect(h.applied).toHaveLength(WIDTH_BURST_CHANGES)
+    // One more change inside the window: held, and requests meanwhile only replace what waits.
+    h.gate.request(300)
+    h.frame()
+    h.gate.request(310)
+    h.frame()
+    expect(h.applied).toHaveLength(WIDTH_BURST_CHANGES)
+    h.advance(WIDTH_BURST_MS)
+    expect(h.applied).toHaveLength(WIDTH_BURST_CHANGES + 1)
+    expect(h.applied.at(-1)).toBe(310)
+  })
+
+  it('applies nothing once closed', () => {
+    const h = harness()
+    h.gate.request(100)
+    h.gate.close()
+    h.frame()
+    h.gate.request(200)
+    h.frame()
+    expect(h.applied).toEqual([])
   })
 })
 

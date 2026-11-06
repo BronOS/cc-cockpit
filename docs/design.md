@@ -389,7 +389,7 @@ left / right / bottom, or hide) opens from the "…" button in a panel's header 
 its icon. Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
 keeps its strip, captioned "Bottom zone collapsed" with its key.
 
-**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and the width left once its page has a port (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3).
+**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and, once its page has a port, the width the page reports (`ccPanel.slot.setWidth`; before a report the most the bar allows), capped so a drag gap always remains (design-next §2 "App slots") (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3).
 
 **Auto-hide.** The terminal is the priority. When the window narrows so the centre would be under
 the minimum terminal width (Settings › General › Side panels; `app.json` › `zoneAutoHide`,
@@ -415,7 +415,9 @@ window's title bar: project windows use `titleBarStyle: 'hiddenInset'` with the 
 centred on the 40px bar (`main/windows/window-chrome.ts`), the bar reserves their room (collapsed
 in full screen, where macOS hides the lights: main sends `window.state` on `enter-full-screen` /
 `leave-full-screen`, and `window.info` carries the state for a window restored in full screen)
-and is a drag region, every control in it `no-drag`; full-window layers (overlays, settings) start under
+and is a drag region, every control in it `no-drag` (the `sessions-strip` frame too, sized to its content so the
+rest still drags; a double-click there runs the system's title-bar action, which Chromium implements for drag regions
+in `NativeWidgetMacNSWindow sendEvent:`); full-window layers (overlays, settings) start under
 it. Other platforms keep the native title bar above the same bar. The BrowserWindow title stays
 the project's name (Window menu, Mission Control); the picker keeps its native frame (as a modal
 child of a project window it is a sheet on macOS) and is never transparent (Window background
@@ -761,7 +763,8 @@ height, params? }] | null)` (at most 4; the type must be in that panel's manifes
 most 4 KiB that only the provider sees). The page is the provider's, isolated like a panel and talking only to the
 provider's backend over a `MessagePort` main hands out per frame (`panel-ports.ts`); plugin code never runs in
 another plugin's page, and the shell draws the frame (§4). The provider's backend hears a frame with
-`ctx.slots.onOpen(type, (slot) => …)`; the page uses the panel SDK plus `ccPanel.slot` (`{ type, setHeight(px) }`).
+`ctx.slots.onOpen(type, (slot) => …)`; the page uses the panel SDK plus `ccPanel.slot` (`{ type, setHeight(px),
+setWidth(px) }`; the width only in the top bar, renderer-side and capped to leave a drag gap, design-next §2 "App slots").
 Known types: `agenda` (today's events, a compact strip) and `sessions-strip` (an app slot type: the Claude sessions
 of other windows, one line, drawn in the top bar). Main enforces: the call names a panel of the calling plugin,
 never a host-supplied id; the type is in that panel's `slots` and is not an app slot type; heights are rounded and

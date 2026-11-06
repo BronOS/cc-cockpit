@@ -1,9 +1,10 @@
 // The DOM-free half of slot frames (design-next §2), for SlotFrame and the panel column: which
-// frames go above and below a panel's own frame, how tall each is drawn, and how a page's
-// `ccPanel.slot.setHeight` reaches main. Split out so unit tests run it in plain Node.
-import { SLOT_HEIGHT_MESSAGE, SLOT_MESSAGE } from '../../sdk/panel-core'
+// frames go above and below a panel's own frame, how tall each is drawn, how a page's
+// `ccPanel.slot.setHeight` reaches main and how a top-bar page's `ccPanel.slot.setWidth` sizes its
+// frame. Split out so unit tests run it in plain Node.
+import { SLOT_HEIGHT_MESSAGE, SLOT_MESSAGE, SLOT_WIDTH_MESSAGE } from '../../sdk/panel-core'
 import type { SlotFrameInfo } from '../../shared/ipc'
-import { clampSlotHeight } from '../../shared/slots'
+import { clampSlotHeight, SLOT_WIDTH_MAX, SLOT_WIDTH_MIN } from '../../shared/slots'
 
 /** A panel's column: its slot frames above and below its own frame, each in placement order. */
 export interface SlotColumn {
@@ -57,6 +58,21 @@ export function slotHeightRequest(data: unknown, frame: SlotFrameInfo): number |
   return clampSlotHeight(height, min, max)
 }
 
+/**
+ * A top-bar page's message to its parent read as a width request: `{ type: SLOT_WIDTH_MESSAGE,
+ * width }` with a finite number, rounded and kept within [SLOT_WIDTH_MIN, SLOT_WIDTH_MAX];
+ * undefined for anything else. Untrusted like a height request. This is only the number's sanity:
+ * the cap that keeps part of the bar a drag region depends on the bar's width at every moment (a
+ * window resize moves it with no message from the page), so it is the stylesheet's `max-width`
+ * (`.slot-frame-top-bar`), which the browser applies on every layout.
+ */
+export function slotWidthRequest(data: unknown): number | undefined {
+  if (typeof data !== 'object' || data === null) return undefined
+  const { type, width } = data as { type?: unknown; width?: unknown }
+  if (type !== SLOT_WIDTH_MESSAGE || typeof width !== 'number' || !Number.isFinite(width)) return undefined
+  return Math.min(SLOT_WIDTH_MAX, Math.max(SLOT_WIDTH_MIN, Math.round(width)))
+}
+
 /** What the shell tells a slot page on every load, before its port: it is a slot of `type` (the SDK's `ccPanel.slot`). */
 export function slotIntro(type: string): { type: string; slot: { type: string } } {
   return { type: SLOT_MESSAGE, slot: { type } }
@@ -103,5 +119,73 @@ export class SlotHeightRelay {
   close(): void {
     this.closed = true
     this.pending = undefined
+  }
+}
+
+/** Changes a top-bar frame takes within one WIDTH_BURST_MS before the gate holds further ones. */
+export const WIDTH_BURST_CHANGES = 20
+export const WIDTH_BURST_MS = 1000
+
+/**
+ * The loop guard of a top-bar frame's width (`ccPanel.slot.setWidth`). The width is the shell's own
+ * layout and goes to no one (no IPC, unlike a height), but every applied change is a React render
+ * and a relayout of the bar, and a page can feed back on itself: a ResizeObserver whose content
+ * width depends on the frame's (a wrapping row, a scrollbar that comes and goes) flips between two
+ * widths forever. So:
+ * - requests are coalesced to one per animation frame, the latest winning (`schedule`, rAF in the
+ *   shell), and a width equal to the one applied is not applied again;
+ * - at most WIDTH_BURST_CHANGES changes within WIDTH_BURST_MS: past that the frame keeps its width
+ *   until the window has passed, then takes the latest request. A page that settles never hits it
+ *   (the sessions strip changes once per entry change); one in a loop costs a relayout a few times
+ *   a second instead of on every frame.
+ * `schedule` returns its cancel; `now` is a clock in ms (injected for tests).
+ */
+export class SlotWidthGate {
+  private applied: number | undefined
+  private pending: number | undefined
+  private cancel: (() => void) | undefined
+  private changes: number[] = []
+  private closed = false
+
+  constructor(
+    private readonly apply: (width: number) => void,
+    private readonly schedule: (run: () => void, delayMs?: number) => () => void,
+    private readonly now: () => number
+  ) {}
+
+  request(width: number): void {
+    if (this.closed) return
+    this.pending = width
+    if (!this.cancel) this.cancel = this.schedule(() => this.flush())
+  }
+
+  private flush(): void {
+    this.cancel = undefined
+    if (this.closed || this.pending === undefined) return
+    const width = this.pending
+    if (width === this.applied) {
+      this.pending = undefined
+      return
+    }
+    const t = this.now()
+    this.changes = this.changes.filter((at) => t - at < WIDTH_BURST_MS)
+    if (this.changes.length >= WIDTH_BURST_CHANGES) {
+      // Held: retry once the oldest change in the window has aged out, with whatever is latest then.
+      const wait = WIDTH_BURST_MS - (t - this.changes[0]!)
+      this.cancel = this.schedule(() => this.flush(), wait)
+      return
+    }
+    this.pending = undefined
+    this.applied = width
+    this.changes.push(t)
+    this.apply(width)
+  }
+
+  /** The frame unmounted: nothing more is applied. */
+  close(): void {
+    this.closed = true
+    this.pending = undefined
+    this.cancel?.()
+    this.cancel = undefined
   }
 }

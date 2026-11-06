@@ -99,7 +99,8 @@ ctx.slots.available(type: string): boolean    // for a HOST plugin: would a plac
 ```
 
 Page side: the panel SDK unchanged (`ccPanel.post`, `onMessage`, `theme`), plus `ccPanel.slot`: `{ type,
-setHeight(px) }`. A slot page sizes itself within `[minHeight, placement height]`; the default is the placement height.
+setHeight(px), setWidth(px) }`. A slot page sizes itself within `[minHeight, placement height]`; the default is the placement height.
+`setWidth` (0-4096 px) is taken only by a frame in the top bar (App slots below); other positions ignore it.
 
 **Host** (a panel that places slots):
 
@@ -135,8 +136,14 @@ the host plugin's ctx ends, it reloads, or the host stops.
 removes them; a hidden or collapsed host panel unmounts its slots; the frames live and die with the panel's.
 
 **App slots.** The top bar holds the `sessions-strip` slot between the project name and the "+" (§4). Its height is
-the bar's (fixed), its width the space left; the frame is `no-drag` on macOS. The pick works the same
-(`@slot:sessions-strip`).
+the bar's (fixed). Its width is what the page reports with `ccPanel.slot.setWidth` (the bundled strip: its entries'
+width from a ResizeObserver, 0 when empty), and before a report the most the bar allows. The bar caps it at
+`min(75 %, nav width - 96 px)` (styles.css): the frame is an iframe and `no-drag`, and on macOS what it covers neither
+drags the window nor zooms it on a double-click (Chromium runs `AppleActionOnDoubleClick` only over a drag region), so
+the cap always leaves a drag gap before the "+". The width is renderer state only (`SlotWidthGate`, one change per
+animation frame and at most 20 a second, so a page feeding back on itself cannot thrash the bar): it is the shell's
+layout of its own bar, no one else reads it and it grants the page nothing, so main has nothing to check. Until the
+page has its port the frame takes no room. The pick works the same (`@slot:sessions-strip`).
 
 **Tests**: `selectProvider` over slot candidates and the `@slot:` keys (CLAUDE.md: code walking the picks as services
 skips `@` keys); `HostApi` placement checks (undeclared type, app type, other plugin's panel, caps); the renderer's

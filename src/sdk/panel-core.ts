@@ -13,6 +13,8 @@
 //                                                 the port); from then on `ccPanel.slot` exists
 // and the other way, to the parent only:
 //   { type: 'cc-plugin.slot-height', height }      `ccPanel.slot.setHeight(px)`: the shell sizes the frame
+//   { type: 'cc-plugin.slot-width', width }        `ccPanel.slot.setWidth(px)`: the top bar's frame takes
+//                                                 that width (other positions ignore it)
 //   { type: 'cc-plugin.ready' }                    `ccPanel.ready()`: an html overlay's page has drawn, its
 //                                                 loader goes (spec `ready: 'manual'`); ignored elsewhere
 //
@@ -28,12 +30,15 @@ export const PORT_MESSAGE = 'cc-plugin.port'
 export const THEME_MESSAGE = 'cc-plugin.theme'
 export const SLOT_MESSAGE = 'cc-plugin.slot'
 export const SLOT_HEIGHT_MESSAGE = 'cc-plugin.slot-height'
+export const SLOT_WIDTH_MESSAGE = 'cc-plugin.slot-width'
 export const READY_MESSAGE = 'cc-plugin.ready'
 
 // A copy of the bounds in src/shared/slots.ts, on purpose (see errorText below): the shell and
 // main clamp to the provider's min/max again, this only keeps a page's number sane.
 const SLOT_HEIGHT_MIN = 24
 const SLOT_HEIGHT_MAX = 600
+const SLOT_WIDTH_MIN = 0
+const SLOT_WIDTH_MAX = 4096
 const SLOT_TYPE = /^[a-z][a-z0-9-]{0,63}$/
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -94,6 +99,13 @@ export interface SlotPageApi {
    * slot's `[minHeight, placement height]` by the shell. The default is the placement's height.
    */
   setHeight(px: number): void
+  /**
+   * Ask the shell for a frame width in px: rounded and kept within 0 to 4096 here. Only a frame in
+   * the app's top bar takes it, capped so part of the bar is always left to drag the window (macOS);
+   * the other positions ignore it. A top-bar page that never asks takes the most the bar allows,
+   * so report the width of what it draws (0 for nothing), e.g. from a ResizeObserver.
+   */
+  setWidth(px: number): void
 }
 
 export interface PanelApi {
@@ -159,8 +171,8 @@ export class PanelClient {
     private readonly warn: (message: string) => void = () => {},
     private readonly styles?: BaseStyles,
     componentsCss?: string,
-    /** Where a slot page's height request and `ready()` go: the parent window (the shell), in the browser. */
-    private readonly toParent?: (message: { type: string; height?: number }) => void
+    /** Where a slot page's size requests and `ready()` go: the parent window (the shell), in the browser. */
+    private readonly toParent?: (message: { type: string; height?: number; width?: number }) => void
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -215,6 +227,13 @@ export class PanelClient {
         if (typeof px !== 'number' || !Number.isFinite(px)) throw new TypeError('slot.setHeight needs a finite number of px')
         const height = Math.min(SLOT_HEIGHT_MAX, Math.max(SLOT_HEIGHT_MIN, Math.round(px)))
         this.toParent?.({ type: SLOT_HEIGHT_MESSAGE, height })
+      },
+      // Sent from any slot position: the page cannot know where it is drawn (a type may be placed
+      // in a column and in the bar), and the shell is the one that knows to ignore it.
+      setWidth: (px: number): void => {
+        if (typeof px !== 'number' || !Number.isFinite(px)) throw new TypeError('slot.setWidth needs a finite number of px')
+        const width = Math.min(SLOT_WIDTH_MAX, Math.max(SLOT_WIDTH_MIN, Math.round(px)))
+        this.toParent?.({ type: SLOT_WIDTH_MESSAGE, width })
       }
     })
   }

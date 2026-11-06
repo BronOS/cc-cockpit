@@ -119,7 +119,8 @@ with full Node access.
   provider changed). `available(type)` resolves whether a placement of `type` would draw now.
   Known slot types: `agenda` (today's events, a compact strip a panel places above or below itself) and
   `sessions-strip` (an app slot: the Claude sessions of other windows in one line, drawn in the top bar,
-  which a panel may not place; core draws no strip of its own, the bundled `cockpit.sessions` provides it). A type is a name
+  which a panel may not place; core draws no strip of its own, the bundled `cockpit.sessions` provides it;
+  its page reports its width with `ccPanel.slot.setWidth`, `ccc guide panels`). A type is a name
   `^[a-z][a-z0-9-]{0,63}$`; any plugin defines one by using it. The user picks the provider per type under
   Settings > This Project > Services ("None" turns it off).
 - `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):

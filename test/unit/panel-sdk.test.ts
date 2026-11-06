@@ -12,6 +12,7 @@ import {
   PORT_MESSAGE,
   READY_MESSAGE,
   SLOT_HEIGHT_MESSAGE,
+  SLOT_WIDTH_MESSAGE,
   SLOT_MESSAGE,
   sdkSheetsFirst,
   THEME_MESSAGE,
@@ -523,10 +524,29 @@ describe('panel SDK: ccPanel.slot', () => {
     expect(up).toHaveLength(3)
   })
 
+  it('setWidth rounds and keeps the width within 0 and 4096, and refuses a non-number', () => {
+    const { c, up } = slotClient()
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'sessions-strip' } }, [])
+    const slot = c.api.slot!
+    slot.setWidth(180.5)
+    slot.setWidth(-3)
+    slot.setWidth(1e7)
+    expect(up).toEqual([
+      { type: SLOT_WIDTH_MESSAGE, width: 181 },
+      { type: SLOT_WIDTH_MESSAGE, width: 0 },
+      { type: SLOT_WIDTH_MESSAGE, width: 4096 }
+    ])
+    expect(() => slot.setWidth(NaN)).toThrow('finite number')
+    expect(() => slot.setWidth(-Infinity)).toThrow('finite number')
+    expect(() => slot.setWidth('80' as unknown as number)).toThrow('finite number')
+    expect(up).toHaveLength(3)
+  })
+
   it('does not fail without a parent to tell', () => {
     const c = new PanelClient(fakeRoot())
     c.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
     expect(() => c.api.slot?.setHeight(80)).not.toThrow()
+    expect(() => c.api.slot?.setWidth(80)).not.toThrow()
   })
 
   it('ready() tells the parent, every call, and does not fail without one', () => {

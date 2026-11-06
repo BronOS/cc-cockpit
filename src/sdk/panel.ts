@@ -8,7 +8,8 @@
 //   ccPanel.theme.current                { kind, vars }: the app theme, already applied to :root
 //   ccPanel.theme.onChange(fn)           a new theme (applied before fn runs)
 //   ccPanel.slot                         only when the page is drawn as a slot (contributes.slots):
-//                                        { type, setHeight(px) }; undefined in a panel or an overlay
+//                                        { type, setHeight(px), setWidth(px) }; undefined in a panel
+//                                        or an overlay (setWidth: the top bar's frame only)
 //   ccPanel.ready()                      an html overlay's page has drawn: the app's loader goes
 //                                        (needed with `ready: 'manual'`; harmless elsewhere)
 //
@@ -39,7 +40,7 @@ const client = new PanelClient(
     }
   },
   componentsCss,
-  // Only the shell frames this page, and only the shell hears this: a height or `ready`.
+  // Only the shell frames this page, and only the shell hears this: a height, a width or `ready`.
   (message) => {
     if (window.parent !== window) window.parent.postMessage(message, '*')
   }

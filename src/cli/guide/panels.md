@@ -41,8 +41,13 @@ load, the strip shows the title's first letter.
   `ccPanel.theme.onChange(listener)` fires on every change. The shell sends the theme in a
   message after the page loads, so the first paint can come before it.
 - `ccPanel.slot`: only when the page is drawn as a slot (`contributes.slots`): `{ type,
-  setHeight(px) }`. `setHeight` asks the app for a frame height (rounded, 24-600 px, then within
-  the slot's `[minHeight, placement height]`); without it the frame has the placement's height.
+  setHeight(px), setWidth(px) }`. `setHeight` asks the app for a frame height (rounded, 24-600 px,
+  then within the slot's `[minHeight, placement height]`); without it the frame has the placement's
+  height. `setWidth` is for a slot in the app's top bar (`sessions-strip`) and ignored elsewhere:
+  the frame takes that width (rounded, 0-4096 px, then capped by the app so part of the bar is
+  always left to drag the window on macOS); without it the frame takes the whole cap, so report
+  the width of what you draw (0 when it is empty) from a `ResizeObserver` on an element sized to
+  its content (`width: max-content`), never on the page's body, which only echoes the frame.
   `undefined` in a panel or an overlay. It appears once the app has said what the page is, so
   read it after load, not at script start.
 - `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
@@ -160,7 +165,7 @@ Provider (you draw it): `"contributes": { "slots": [{ "type": "agenda", "entry":
 in the host with `ctx.slots.onOpen('agenda', (slot) => …)`: `slot.params`, `slot.host`,
 `slot.post(message)`, `slot.onMessage(fn)`, `slot.onClose(fn)`. The page is a normal panel page
 (SDK, theme, `ccPanel.post` / `onMessage`) talking only to your host; `ccPanel.slot.setHeight(px)`
-sizes it within `[minHeight, placement height]`. A slot page is untrusted by your host as any
+sizes it within `[minHeight, placement height]`, and in the top bar `ccPanel.slot.setWidth(px)` sets its width. A slot page is untrusted by your host as any
 panel page is, and `params` are untrusted by the provider.
 
 ```js

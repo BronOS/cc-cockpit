@@ -17,8 +17,8 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  *
  * A slot frame (SlotFrame) also passes `intro`, posted on every load just before the port (the
  * SDK's `cc-plugin.slot`: the page is a slot of that type), and `onPageMessage` for what the page
- * posts to its parent (`ccPanel.slot.setHeight`). Only messages whose source is this frame's own
- * window reach it, so another frame cannot speak for this one.
+ * posts to its parent (`ccPanel.slot.setHeight`, `setWidth`). Only messages whose source is this
+ * frame's own window reach it, so another frame cannot speak for this one.
  */
 export function PluginFrame(props: {
   src: string

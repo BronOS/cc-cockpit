@@ -1354,13 +1354,24 @@ iframe:focus-visible {
   height: 100%;
   border: 0;
 }
-/* The top bar's slot: the bar's height, the width left between the project name and the "+". */
+/* The top bar's slot: the bar's height, between the project name and the "+". Its width is what the
+   page reports (`ccPanel.slot.setWidth`, SlotFrame sets `width`, `data-page-width`), else the cap.
+   The cap is the point: the frame is an iframe marked no-drag, so on macOS every pixel of it is a
+   pixel of title bar that neither drags the window nor zooms it on a double-click. It never takes
+   more than 75 % of the nav, and always leaves 96 px of it (the "+", about 28 px, and a drag gap):
+   on a narrow window the second wins, on a wide one the first. A max-width rather than a number
+   in SlotFrame, so a window resize re-caps on the same layout with no page message. flex-shrink
+   lets the "+" keep its room when the cap is tight. */
 .strip-nav.has-slot {
   align-self: stretch;
 }
 .slot-frame-top-bar {
   flex: 1 1 auto;
   align-self: stretch;
+  max-width: min(75%, calc(100% - 96px));
+}
+.slot-frame-top-bar[data-page-width] {
+  flex: 0 1 auto;
 }
 /* Until main handed the page its port (SlotFrame `collapseUntilConnected`) the frame takes no room:
    a frame main refuses a port (its provider stopped meanwhile) leaves no blank, no-drag gap in the

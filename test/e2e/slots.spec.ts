@@ -186,6 +186,28 @@ test('the top bar slot sessions-strip: a provider\'s frame between the name and 
     expect(await text(pageFrame(page, ONE, 'strip.html'), 'slot')).toBe('sessions-strip')
     expect(logOf(cockpit, 'one').opens).toContainEqual({ type: 'sessions-strip', host: { kind: 'app', place: 'top-bar' }, params: null })
 
+    // Its width (`ccPanel.slot.setWidth`): the frame takes what the page reports, and never so much
+    // that no drag gap is left before the "+" (on macOS the frame is no-drag, so what it covers
+    // neither drags the window nor zooms it). Linux ignores app-region, so this pins the layout only.
+    const nav = page.locator('.top-strip .strip-nav')
+    const strip = pageFrame(page, ONE, 'strip.html')!
+    const widthOf = async (): Promise<number> => (await frame.boundingBox())!.width
+    const navWidth = async (): Promise<number> => (await nav.boundingBox())!.width
+    const capOf = async (): Promise<number> => Math.min(0.75 * (await navWidth()), (await navWidth()) - 96)
+    // Before any report: the cap, not the whole nav.
+    expect(await widthOf()).toBeLessThanOrEqual((await capOf()) + 1)
+    await strip.evaluate('ccPanel.slot.setWidth(150)')
+    await expect(frame).toHaveAttribute('data-page-width', '150')
+    await expect.poll(widthOf).toBeCloseTo(150, 0)
+    await strip.evaluate('ccPanel.slot.setWidth(4000)')
+    await expect(frame).toHaveAttribute('data-page-width', '4000')
+    await expect.poll(async () => (await widthOf()) <= (await capOf()) + 1).toBe(true)
+    // The gap between the frame and the "+" is real bar, at least 96 px minus the "+" of the nav.
+    const gap = (await plus.boundingBox())!.x - ((await frame.boundingBox())!.x + (await widthOf()))
+    expect(gap).toBeGreaterThan(40)
+    await strip.evaluate('ccPanel.slot.setWidth(0)')
+    await expect.poll(widthOf).toBe(0)
+
     // None: the frame is gone and the bar is the "+" again.
     await invoke(page, 'settings.pluginServiceProvider', { service: '@slot:sessions-strip', pluginId: '@none' })
     await expect(frame).toHaveCount(0)

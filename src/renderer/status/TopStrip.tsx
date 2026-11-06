@@ -13,7 +13,8 @@ import { topStripClass } from './strip-order'
  * The other windows' Claude tabs are not drawn here any more (design-next §4): a plugin draws them
  * in the `sessions-strip` slot (the bundled `cockpit.sessions` by default; main sends the frame in
  * `LayoutView.appSlots`), between the project name and the "+", with the bar's height and the width
- * left. With no provider (the plugin off, the pick "None") there is no frame and the bar is the
+ * its page reports (`ccPanel.slot.setWidth`), capped so a drag gap is always left before the "+"
+ * (SlotFrame, styles.css `.slot-frame-top-bar`). With no provider (the plugin off, the pick "None") there is no frame and the bar is the
  * name, the "+" and the gear. A frame takes room only once main handed its page a port
  * (SlotFrame `collapseUntilConnected`): a frame whose connect main refuses (its provider not running)
  * leaves the same bar as no provider, rather than a blank gap that (on macOS) would not even drag
