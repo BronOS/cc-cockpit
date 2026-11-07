@@ -15,6 +15,22 @@ const path = require('node:path')
 const MAX_SIDE_BYTES = 400 * 1024
 const BINARY_SNIFF_BYTES = 8000
 
+// Files the page shows as a picture or a document instead of text. Their bytes do not go in the init
+// message: the host streams them in chunks once the page asks (host.js, previewChunks), so the caps
+// are about memory and a sane overlay, not the message limit. Past a cap the built-in viewer opens.
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_PDF_BYTES = 25 * 1024 * 1024
+const IMAGE_MIME = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  // An svg is shown through <img> (a data: URL), where it runs no script and loads nothing.
+  svg: 'image/svg+xml',
+}
+const MARKDOWN_EXT = new Set(['md', 'markdown'])
+
 class ReviewError extends Error {
   /** fallback: true when the built-in viewer should show the file instead (binary, too big). */
   constructor(message, { fallback = false } = {}) {
@@ -61,6 +77,55 @@ function insideRoot(root, abs) {
     return insideRoot(root, parent)
   }
   return real === root || real.startsWith(root + path.sep)
+}
+
+/**
+ * How the page shows a file, from its extension (case-insensitive, the last one only):
+ * 'markdown' (`.md`, `.markdown`; `.mdx` is JSX and stays text), 'image', 'pdf', else 'text'.
+ */
+function viewKindOf(rel) {
+  const base = String(rel).split('/').pop()
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return 'text' // no extension, or a dot file such as `.md`
+  const ext = base.slice(dot + 1).toLowerCase()
+  if (MARKDOWN_EXT.has(ext)) return 'markdown'
+  if (Object.hasOwn(IMAGE_MIME, ext)) return 'image'
+  if (ext === 'pdf') return 'pdf'
+  return 'text'
+}
+
+/**
+ * The working-tree bytes of an image or a PDF: { path, kind, mime, bytes }. The same path checks as
+ * readSides (relative, inside the project after symlinks, a regular file). There is no HEAD side:
+ * a picture or a PDF has no diff, so a click on one Claude changed shows the file as it is now. A
+ * deleted one (nothing to show) and one over its cap go to the built-in viewer (fallback).
+ */
+function readPreview(root, rel) {
+  rel = normalizeRelative(rel)
+  const kind = viewKindOf(rel)
+  if (kind !== 'image' && kind !== 'pdf') throw new ReviewError(`${rel} has no preview`)
+  const abs = path.join(root, rel)
+  if (!insideRoot(root, abs)) throw new ReviewError(`path leaves the project folder through a symlink: ${rel}`)
+  const cap = kind === 'pdf' ? MAX_PDF_BYTES : MAX_IMAGE_BYTES
+  let st
+  try {
+    st = fs.statSync(abs)
+  } catch (e) {
+    if (e.code === 'ENOENT') throw new ReviewError(`${rel} is not in the working tree`, { fallback: true })
+    throw new ReviewError(`cannot read ${rel}: ${e.message}`)
+  }
+  if (!st.isFile()) throw new ReviewError(`${rel} is not a regular file`, { fallback: true })
+  if (st.size > cap) throw new ReviewError(`${rel} is larger than ${cap / 1024 / 1024} MiB`, { fallback: true })
+  let bytes
+  try {
+    bytes = fs.readFileSync(abs)
+  } catch (e) {
+    throw new ReviewError(`cannot read ${rel}: ${e.message}`)
+  }
+  // Grown past the cap between the stat and the read (Claude writing it): the cap still holds.
+  if (bytes.length > cap) throw new ReviewError(`${rel} is larger than ${cap / 1024 / 1024} MiB`, { fallback: true })
+  const ext = rel.slice(rel.lastIndexOf('.') + 1).toLowerCase()
+  return { path: rel, kind, mime: kind === 'pdf' ? 'application/pdf' : IMAGE_MIME[ext], bytes }
 }
 
 const isBinary = (buf) => buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)
@@ -147,4 +212,4 @@ async function readSides(exec, root, rel) {
   }
 }
 
-module.exports = { ReviewError, MAX_SIDE_BYTES, normalizeRelative, relativeFromCwd, readSides }
+module.exports = { ReviewError, MAX_SIDE_BYTES, MAX_IMAGE_BYTES, MAX_PDF_BYTES, normalizeRelative, relativeFromCwd, readSides, viewKindOf, readPreview }

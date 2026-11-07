@@ -1327,3 +1327,48 @@ test('annotate originals: the page\'s Original | Reader switch is the event `vie
   assert.equal(emits.length, 2)
   host.deactivate()
 })
+
+test('an image or a PDF opens as a preview: the init has no bytes; they come once, after the page asks', async () => {
+  const f = setup({ editorAvailable: false })
+  const starts = []
+  f.ctx.overlay.start = (spec) => (starts.push(spec), pageHandle(f))
+  host.activate(f.ctx)
+  const pdf = Buffer.alloc(review.PREVIEW_CHUNK_BYTES + 10, 1)
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'spec.pdf'), pdf)
+  await f.provided.reviewer.open('spec.pdf')
+  const h = f.handles[0]
+  assert.equal(h.posts.length, 1)
+  const init = h.posts[0]
+  assert.equal(init.sides.mode, 'preview')
+  assert.deepEqual([init.sides.kind, init.sides.mime, init.sides.size], ['pdf', 'application/pdf', pdf.length])
+  assert.ok(JSON.stringify(init).length < 10000)
+  assert.equal(starts[0].title, 'PDF: spec.pdf')
+  assert.deepEqual(starts[0].type, { name: 'file', data: { path: 'spec.pdf' } })
+  h.say({ type: 'content' })
+  const rest = h.posts.slice(1)
+  assert.deepEqual(rest.map((m) => m.type), ['bytes-begin', 'bytes', 'bytes', 'bytes-end'])
+  assert.deepEqual(Buffer.concat(rest.filter((m) => m.type === 'bytes').map((m) => Buffer.from(m.b64, 'base64'))), pdf)
+  for (const m of rest) assert.ok(JSON.stringify(m).length <= PAGE_MESSAGE_MAX)
+  h.say({ type: 'content' })
+  assert.equal(h.posts.length, 1 + rest.length) // once
+  // No git commands for a preview: there is no diff.
+  assert.ok(!f.execs.some((a) => a[0] === 'git'))
+  host.deactivate()
+})
+
+test('a markdown file is a review with format markdown; an over-cap image is refused for the built-in viewer', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'README.md'), '# Hi\n')
+  await f.provided.reviewer.open('README.md')
+  assert.equal(f.handles[0].posts[0].sides.format, 'markdown')
+  assert.equal(f.handles[0].posts[0].sides.mode, 'diff')
+  await f.provided.reviewer.open('a.js')
+  assert.equal(f.handles[1].posts[0].sides.format, undefined)
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'big.png'), '')
+  fs.truncateSync(path.join(f.ctx.projectDir, 'big.png'), 10 * 1024 * 1024 + 1)
+  await assert.rejects(f.provided.reviewer.open('big.png'), /larger than 10 MiB/)
+  assert.equal(f.handles.length, 2)
+  host.deactivate()
+})

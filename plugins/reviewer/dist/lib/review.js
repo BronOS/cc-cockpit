@@ -242,7 +242,7 @@ function buildReview(draft, sides, max = MAX_MESSAGE) {
   const unchanged = sides.mode === 'diff' && !sides.oldMissing && !sides.newMissing && sides.old === sides.new
   // Sides only mean something when there is a diff: an unchanged file is one text.
   const sided = sides.mode === 'diff' && !unchanged
-  const base = sides.mode === 'plain' ? 'the file as it is now, no git diff' : unchanged ? `unchanged since the last commit${commit}` : `changes since the last commit${commit}`
+  const base = sides.mode === 'plain' || sides.mode === 'preview' ? 'the file as it is now, no git diff' : unchanged ? `unchanged since the last commit${commit}` : `changes since the last commit${commit}`
   const head = `Review of ${sides.path} (${base})`
   // No comment and no note: Discuss still sends (it used to refuse, real-work feedback 9). Claude
   // can read the file itself, so the message asks it to and to talk the change through.
@@ -251,6 +251,27 @@ function buildReview(draft, sides, max = MAX_MESSAGE) {
     return { text: `${head}\n\n${ask}`, cut: false }
   }
   return buildMessage(head, draft, sided, null, max)
+}
+
+// A preview's bytes (an image, a PDF) go to the page in chunks: one page message takes 1,040,384
+// chars of JSON, so a chunk is 576 KiB of bytes (768 KiB of base64, a multiple of 3 bytes so every
+// chunk but the last has no padding and the page can join them as base64 or as bytes).
+const PREVIEW_CHUNK_BYTES = 576 * 1024
+
+/**
+ * The messages that carry a preview's bytes to the page, posted once it asks ({ type: 'content' }):
+ * `bytes-begin` (kind, mime, size, chunks), one `bytes` per chunk (seq from 0, b64), `bytes-end`.
+ * The page checks the count and the size against what begin announced and its own cap.
+ */
+function previewChunks(kind, mime, bytes, chunkBytes = PREVIEW_CHUNK_BYTES) {
+  if (chunkBytes % 3 !== 0) throw new Error('previewChunks: the chunk size must be a multiple of 3')
+  const chunks = Math.max(1, Math.ceil(bytes.length / chunkBytes))
+  const out = [{ type: 'bytes-begin', kind, mime, size: bytes.length, chunks }]
+  for (let seq = 0; seq < chunks; seq++) {
+    out.push({ type: 'bytes', seq, b64: bytes.subarray(seq * chunkBytes, (seq + 1) * chunkBytes).toString('base64') })
+  }
+  out.push({ type: 'bytes-end' })
+  return out
 }
 
 const DISCUSS_DIFF = 'Discuss these changes with me: read the file and its diff against the last commit, then tell me what you see.'
@@ -853,6 +874,8 @@ function linkVerdict(links, href) {
 }
 
 module.exports = {
+  PREVIEW_CHUNK_BYTES,
+  previewChunks,
   draftKey,
   cleanDraft,
   draftProblem,

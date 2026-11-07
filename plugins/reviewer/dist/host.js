@@ -366,7 +366,11 @@ exports.activate = (ctx) => {
    */
   async function openReview(rel, { tabId } = {}) {
     const r = await root()
+    const kind = files.viewKindOf(typeof rel === 'string' ? rel : '')
+    if (kind === 'image' || kind === 'pdf') return openPreview(r, rel, { tabId })
     const sides = await files.readSides(exec, r, rel)
+    // A markdown file: the page opens it rendered (no diff) or on the diff with a Rendered switch.
+    if (kind === 'markdown') sides.format = 'markdown'
     return showReview(
       {
         openKey: `file:${sides.path}`,
@@ -379,6 +383,32 @@ exports.activate = (ctx) => {
         type: { name: 'file', data: { path: sides.path } },
         build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT),
         tooLarge: `${sides.path} is too large to review (with escaping and its saved draft)`,
+      },
+      { tabId },
+    )
+  }
+
+  /**
+   * An image or a PDF of the project, shown by the page (an <img>, pdf.js) with no diff. Its bytes
+   * do not fit the init message, so the init says `mode: 'preview'` and the bytes come as `after`
+   * (review.previewChunks): posted only once the page asks with { type: 'content' }, because until
+   * it has loaded main queues at most 100 messages or 8 MiB for it, and a 25 MiB PDF is 33 MiB of
+   * base64. Same open key as a review of the path, so a second click focuses the overlay.
+   */
+  async function openPreview(r, rel, { tabId } = {}) {
+    const p = files.readPreview(r, rel)
+    const sides = { path: p.path, root: r, git: false, head: null, old: '', new: '', oldMissing: true, newMissing: false, mode: 'preview', kind: p.kind, mime: p.mime, size: p.bytes.length, note: null }
+    return showReview(
+      {
+        openKey: `file:${p.path}`,
+        draftKey: review.draftKey(p.path),
+        what: p.path,
+        overlayTitle: overlayTitle(p.kind === 'pdf' ? 'PDF: ' : 'Image: ', p.path),
+        sides,
+        after: review.previewChunks(p.kind, p.mime, p.bytes),
+        type: { name: 'file', data: { path: p.path } },
+        build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT),
+        tooLarge: `${p.path} is too large to show (with its saved draft)`,
       },
       { tabId },
     )

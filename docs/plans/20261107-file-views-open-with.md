@@ -146,15 +146,15 @@ where the label is the command's first word or "System app").
 - Modify: `plugins/reviewer/dist/host.js`
 - Modify: `plugins/reviewer/test/*` (files and host tests)
 
-- [ ] add `viewKindOf(rel)` in `files.js`: `markdown` (`.md`, `.markdown`; `.mdx` stays `text`), `image`, `pdf`, else
+- [x] add `viewKindOf(rel)` in `files.js`: `markdown` (`.md`, `.markdown`; `.mdx` stays `text`), `image`, `pdf`, else
       `text`
-- [ ] image/pdf: read bytes with their own caps (10 / 25 MiB) before the binary check; over cap keeps the fallback
-- [ ] host: tell the page the view kind in the init message; stream bytes in chunks (begin / chunks / end) only after
+- [x] image/pdf: read bytes with their own caps (10 / 25 MiB) before the binary check; over cap keeps the fallback
+- [x] host: tell the page the view kind in the init message; stream bytes in chunks (begin / chunks / end) only after
       the page's `{ type: 'content' }` request, dropped when the overlay closed or a newer open replaced it
-- [ ] write tests: nothing is posted before the page asks
-- [ ] write tests: kind by extension (case, double extension, no extension), caps, chunk sizes stay under the message cap
-- [ ] write tests: a closed overlay stops the stream; binary non-image still falls back
-- [ ] run `npm run test:plugins` - must pass before next task
+- [x] write tests: nothing is posted before the page asks
+- [x] write tests: kind by extension (case, double extension, no extension), caps, chunk sizes stay under the message cap
+- [x] write tests: a closed overlay stops the stream; binary non-image still falls back
+- [x] run `npm run test:plugins` - must pass before next task
 
 ### Task 2: Reviewer page renders markdown with a Rendered / Source switch [model: opus]
 

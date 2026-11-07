@@ -2,6 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { cleanDraft, isEmpty, formatReview, buildReview, MAX_MESSAGE, MAX_NOTE_TEXT, MAX_GLOBAL } = require('../dist/lib/review')
+const review = require('../dist/lib/review')
 
 const sides = { path: 'src/a.ts', mode: 'diff', head: '0123456789abcdef0123456789abcdef01234567', old: 'a', new: 'b' }
 
@@ -466,4 +467,25 @@ test('updateInput: key, assets, hide names and a one-line status; at least one o
   assert.throws(() => updateInput({ key: 'k', hide: Array(21).fill('a') }), /at most 20/)
   assert.throws(() => updateInput({ key: 'bad key', status: 'x' }), /key may only use/)
   assert.equal(updateInput({ key: 'k', status: 'x'.repeat(500) }).status.length, 200)
+})
+
+test('previewChunks: begin, chunks under the page message limit that join back to the bytes, end', () => {
+  const bytes = Buffer.alloc(2 * review.PREVIEW_CHUNK_BYTES + 5, 7)
+  const msgs = review.previewChunks('pdf', 'application/pdf', bytes)
+  assert.deepEqual(msgs[0], { type: 'bytes-begin', kind: 'pdf', mime: 'application/pdf', size: bytes.length, chunks: 3 })
+  assert.deepEqual(msgs.at(-1), { type: 'bytes-end' })
+  const mid = msgs.slice(1, -1)
+  assert.deepEqual(mid.map((m) => m.seq), [0, 1, 2])
+  for (const m of msgs) assert.ok(JSON.stringify(m).length <= 1040384)
+  assert.deepEqual(Buffer.concat(mid.map((m) => Buffer.from(m.b64, 'base64'))), bytes)
+  // Only the last chunk may carry base64 padding, so the page may join the strings too.
+  assert.deepEqual(Buffer.from(mid.map((m) => m.b64).join(''), 'base64'), bytes)
+  // An empty file is still one (empty) chunk.
+  assert.deepEqual(review.previewChunks('image', 'image/png', Buffer.alloc(0)).map((m) => m.type), ['bytes-begin', 'bytes', 'bytes-end'])
+  assert.throws(() => review.previewChunks('image', 'image/png', bytes, 1000), /multiple of 3/)
+})
+
+test('buildReview of a preview: the file as it is now', () => {
+  const sides = { path: 'doc.pdf', mode: 'preview', head: null, old: '', new: '', oldMissing: true, newMissing: false }
+  assert.match(review.buildReview({ comment: '', notes: [] }, sides).text, /^Review of doc\.pdf \(the file as it is now, no git diff\)/)
 })
