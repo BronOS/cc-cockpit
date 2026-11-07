@@ -165,12 +165,14 @@ where the label is the command's first word or "System app").
 - Modify: `plugins/reviewer/overlay/review.bundle.js` (rebuilt)
 - Modify: `plugins/reviewer/test/html.test.js` (or a new `markdown.test.js`)
 
-- [ ] `markdown.mjs`: markdown-it (`html: false`) to HTML, then the existing `sanitize.mjs` data path (no innerHTML)
-- [ ] switch in the toolbar: no diff → Rendered first; diff → Source (the diff) first, Rendered = new version
-- [ ] notes in Rendered reuse HTML-mode notes (quote + file path); switching views keeps notes already taken
-- [ ] write tests: headings, lists, tables, code, links, raw `<script>`/`<img onerror>` in markdown shown as text
-- [ ] write tests: switch default per case (diff / no diff), relative image link becomes alt text
-- [ ] `npm run build:reviewer`; run tests - must pass before next task
+- [x] `markdown.mjs`: markdown-it (`html: false`) to HTML, then the existing `sanitize.mjs` data path (no innerHTML)
+- [x] switch in the toolbar: no diff → Rendered first; diff → Source (the diff) first, Rendered = new version
+- [x] notes in Rendered reuse HTML-mode notes (quote + file path); switching views keeps notes already taken
+- [x] write tests: headings, lists, tables, code, links, raw `<script>`/`<img onerror>` in markdown shown as text
+- [x] write tests: switch default per case (diff / no diff), relative image link becomes alt text
+- [x] `npm run build:reviewer`; run tests - must pass before next task
+- [x] ➕ e2e `test/e2e/reviewer-views.spec.ts`: rendered/source defaults, switch, sanitized raw HTML, a text note kept across views
+- [x] ➕ links in the Rendered view open only http(s) URLs written in the file (`review.textLinks`); relative links are refused (not opened as project files this round)
 
 ### Task 3: Reviewer page shows images [model: sonnet]
 

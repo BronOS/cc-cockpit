@@ -68,6 +68,7 @@ import { makeAnchor, locate } from './anchor.mjs'
 import { isPlainClick, selectionKey } from './links.mjs'
 import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
 import { originalDocument, FRAME_SANDBOX, FRAME_COLOR_SCHEME } from './original.mjs'
+import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
 
 /* global ccPanel */
 
@@ -196,6 +197,11 @@ const state = {
   oldPick: null, // { from, to, quote, el }
   canOpenLinks: false, // the host opens links of the caller's content (it has ctx.openExternal)
   split: SPLIT_DEFAULT, // with a companion: the share of the width the main document takes
+  // A markdown file (`sides.format: 'markdown'`): 'rendered' shows it like annotate's HTML mode
+  // (notes anchor on the selected text), 'source' the usual editors and diff (line notes). One
+  // draft holds both kinds of note; each is shown in its own view (scrollTo switches). null: not
+  // a markdown file.
+  md: null,
 }
 
 const $ = (id) => document.getElementById(id)
@@ -252,7 +258,11 @@ function refreshHighlights() {
 // An annotated text: markdown-ish colouring at most (what a source plugin is likely to hand over),
 // and wrapped lines, since a ticket or a mail is prose, not code.
 const isText = () => !!state.sides && state.sides.mode === 'text'
-const isHtml = () => !!state.sides && state.sides.mode === 'html'
+// isHtml: the document view (rendered HTML, text-anchored notes) is showing: annotate's HTML mode,
+// or a markdown file in its Rendered view. isAnnotHtml: annotate's HTML mode only (the caller's
+// parts, assets, companion, originals, the bare header).
+const isAnnotHtml = () => !!state.sides && state.sides.mode === 'html'
+const isHtml = () => isAnnotHtml() || state.md === 'rendered'
 
 function extensionsFor(side, path) {
   return [
@@ -279,16 +289,21 @@ function extensionsFor(side, path) {
 function buildEditors() {
   const host = $('editors')
   host.replaceChildren()
-  if (isHtml()) {
-    $('layout').hidden = true
-    if (hasCompanion()) buildSplit(host, initMsg)
-    else host.append(htmlView.scroller)
-    return
-  }
+  // The editors of a markdown file's Source view go when it switches to Rendered (and are built
+  // afresh on the way back); annotate never has any.
   if (state.merge) state.merge.destroy()
   for (const v of Object.values(state.views)) if (v && v !== state.merge?.a && v !== state.merge?.b) v.destroy()
   state.merge = null
   state.views = { old: null, new: null }
+  if (isHtml()) {
+    $('layout').hidden = true
+    if (hasCompanion()) buildSplit(host, initMsg)
+    else host.append(htmlView.scroller)
+    // Rendered once: the text does not change while the overlay is open, and a second render
+    // would only move the notes' located ranges.
+    if (state.md === 'rendered' && !htmlView.rendered) renderHtml(htmlView, markdownHtml(markdownText(state.sides)))
+    return
+  }
 
   const s = state.sides
   // An unchanged file has nothing to diff: a merge view would fold all of it into one bar. Show
@@ -512,6 +527,9 @@ function addNote(sideHint) {
 }
 
 function scrollTo(note) {
+  // A markdown file: a note is shown in the view it was taken in.
+  if (state.md === 'source' && note.anchor) setMdView('rendered')
+  else if (state.md === 'rendered' && !note.anchor) setMdView('source')
   if (isHtml()) return scrollToHtml(note)
   const v = state.views[note.side]
   if (!v) return
@@ -545,12 +563,14 @@ function fitText(t) {
 function renderNotes(focusId) {
   const list = $('notes')
   list.replaceChildren()
-  const notes = isHtml() ? htmlNotesInOrder() : [...state.draft.notes].sort((a, b) => a.from - b.from || (a.side === 'old' ? -1 : 1))
+  // Source view: line notes by line, then a markdown file's text notes (taken in Rendered).
+  const lineOrder = (a, b) => (a.anchor ? 1 : 0) - (b.anchor ? 1 : 0) || (a.anchor ? 0 : a.from - b.from || (a.side === 'old' ? -1 : 1))
+  const notes = isHtml() ? htmlNotesInOrder() : [...state.draft.notes].sort(lineOrder)
   list.hidden = !notes.length
   for (const n of notes) {
     const row = el('li', 'note')
     const body = el('div', 'note-body')
-    const where = isHtml()
+    const where = n.anchor || (isHtml() && !state.md)
       ? htmlNoteLabel(n)
       : el('button', 'link', `${n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`}${state.sides.mode === 'diff' ? (n.side === 'old' ? ' · old' : ' · new') : ''}`)
     where.type = 'button'
@@ -564,12 +584,12 @@ function renderNotes(focusId) {
     }
     body.append(where)
     // In HTML mode the label is the quote itself; a line note shows it after the line range.
-    if (!isHtml() && n.quote) body.append(el('span', 'quote', shortQuote(n.quote)))
+    if (!n.anchor && !(isHtml() && !state.md) && n.quote) body.append(el('span', 'quote', shortQuote(n.quote)))
     const text = el('textarea', 'note-text')
     text.placeholder = 'Your note'
     text.rows = 1
     text.value = n.text
-    text.setAttribute('aria-label', `Note on ${isHtml() ? shortQuote(n.quote) : where.textContent}`)
+    text.setAttribute('aria-label', `Note on ${n.anchor || (isHtml() && !state.md) ? shortQuote(n.quote) : where.textContent}`)
     text.addEventListener('input', () => {
       n.text = text.value
       fitText(text)
@@ -1373,19 +1393,19 @@ function init(m) {
   // annotate: the overlay's title bar already names the text, and the document usually does too, so
   // no header row (a third copy of the title). The file review keeps it: path, base, layout toggle.
   const header = document.querySelector('header')
-  header.dataset.bare = String(isText() || isHtml())
+  header.dataset.bare = String(isText() || isAnnotHtml())
   header.hidden = header.dataset.bare === 'true' && !$('status').textContent
   // annotate's url as an icon button, not the long URL as text: the page cannot navigate (a sandboxed
   // frame), so the click asks the host, which opens the URL it was given. The URL is only shown in
   // the tooltip. Off when the host cannot open links (no ctx.openExternal); placeOpenUrl puts it in
   // the document.
   const openUrl = $('open-url')
-  openUrl.dataset.show = (isText() || isHtml()) && s.url && m.canOpenUrl ? '1' : ''
+  openUrl.dataset.show = (isText() || isAnnotHtml()) && s.url && m.canOpenUrl ? '1' : ''
   openUrl.title = openUrl.dataset.show ? `Open in browser: ${s.url}` : 'Open in browser'
-  const c = isHtml() && s.companion ? s.companion : null
+  const c = isAnnotHtml() && s.companion ? s.companion : null
   // The hint on making a note lives here: the notes list takes no room while it is empty.
   const how = 'for a note on a part, select it, then press a or "Add note"'
-  $('global').placeholder = isText() || isHtml() ? `Comment on the whole text (optional); ${how}` : `Comment on the whole file (optional); ${how}`
+  $('global').placeholder = isText() || isAnnotHtml() ? `Comment on the whole text (optional); ${how}` : `Comment on the whole file (optional); ${how}`
   // With a companion the main `aside` is the details block at the top of the main column.
   $('details').hidden = !s.aside || !!c
   $('note').textContent = s.note || ''
@@ -1393,14 +1413,17 @@ function init(m) {
   $('global').value = state.draft.global
   limitInput($('global'), $('global-limit'), GLOBAL_MAX)
   // annotate's `kind: 'mail'`: the main document in the mail reading layout (review.css `.doc-body.mail`).
-  htmlView.body.classList.toggle('mail', isHtml() && s.kind === 'mail')
-  if (isHtml()) startHtml(s)
+  htmlView.body.classList.toggle('mail', isAnnotHtml() && s.kind === 'mail')
+  if (isAnnotHtml()) startHtml(s)
+  state.md = s.format === 'markdown' && s.mode !== 'html' && s.mode !== 'text' ? initialMarkdownView(s) : null
+  htmlView.body.classList.toggle('markdown', state.md !== null)
+  showMdToggle()
   buildEditors()
   renderNotes()
   if (isHtml()) htmlView.scroller.focus()
   else (state.views.new || state.views.old).focus()
   // The host sends the details column, the HTML parts and the images now.
-  if (isHtml() || s.aside) ccPanel.post({ type: 'content' })
+  if (isAnnotHtml() || s.aside) ccPanel.post({ type: 'content' })
 }
 
 $('global').addEventListener('input', (e) => {
@@ -1415,6 +1438,30 @@ $('layout').addEventListener('click', () => {
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   ccPanel.post({ type: 'layout', layout: state.layout }) // remembered for the next review
   buildEditors()
+})
+// A markdown file's Rendered / Source switch. The button names the view it switches to, like the
+// layout button does.
+function showMdToggle() {
+  const b = $('mdview')
+  b.hidden = state.md === null
+  b.textContent = state.md === 'rendered' ? 'Source' : 'Rendered'
+  b.title = state.md === 'rendered' ? 'Show the markdown source (and its diff, when it has one)' : 'Show the markdown rendered'
+}
+function setMdView(view) {
+  if (state.md === null || state.md === view) return
+  collapseSelection()
+  clearPick()
+  state.md = view
+  showMdToggle()
+  buildEditors()
+  refreshHighlights()
+  renderNotes()
+  updateAddButton()
+}
+$('mdview').addEventListener('click', () => {
+  setMdView(state.md === 'rendered' ? 'source' : 'rendered')
+  if (isHtml()) htmlView.scroller.focus()
+  else (state.views.new || state.views.old)?.focus()
 })
 $('open-url').addEventListener('click', (e) => {
   // Inside the document: not a link click of the document's (an h1 inside an <a>) as well.

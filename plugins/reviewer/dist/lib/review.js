@@ -854,6 +854,40 @@ function linkSet(...htmls) {
   return set
 }
 
+// How much of a markdown file textLinks scans: a file review's text is at most MAX_SIDE_BYTES (400
+// KiB) a side, so this reads all of it; the cap only bounds a caller passing more.
+const MAX_LINK_SCAN = 1024 * 1024
+const MAX_TEXT_LINKS = 2000
+
+/**
+ * The http(s) URLs written in a markdown text, normalized: the links its Rendered view may open. A
+ * link markdown-it renders (`[x](https://…)`, `<https://…>`, a reference definition, a bare URL it
+ * linkifies) has its URL in the text, so the page's href, normalized the same way, is in this set;
+ * anything else it posts (a relative link, a crafted href) is refused by linkVerdict. Ends trimmed of
+ * what markdown wraps a URL in or puts after it (`)`, `>`, `]`, `.`, `,`, quotes), so both the
+ * trimmed and the untrimmed forms count.
+ */
+function textLinks(...texts) {
+  const set = new Set()
+  for (const text of texts) {
+    if (typeof text !== 'string') continue
+    const re = /https?:\/\/[^\s<>"'`]+/gi
+    const src = text.slice(0, MAX_LINK_SCAN)
+    let m
+    while ((m = re.exec(src)) && set.size < MAX_TEXT_LINKS) {
+      let raw = m[0]
+      for (;;) {
+        const href = normalizeHref(raw)
+        if (href) set.add(href)
+        const trimmed = raw.replace(/[)\]>.,;:!?*_~]$/, '')
+        if (trimmed === raw || trimmed.length < 8) break
+        raw = trimmed
+      }
+    }
+  }
+  return set
+}
+
 /**
  * What to do with an `open-link` from the page: { open: url } for an http(s) link of the caller's,
  * else { refuse: why } for the status line. `links` is linkSet() of what the caller sent.
@@ -874,6 +908,7 @@ function linkVerdict(links, href) {
 }
 
 module.exports = {
+  textLinks,
   PREVIEW_CHUNK_BYTES,
   previewChunks,
   draftKey,
