@@ -24,6 +24,15 @@ let rows = [] // the visible rows, in order: { rel, kind, el }
  * ctx.files.reveal (`system`) and ctx.sessions.openShell (`shell`) exist.
  */
 let env = { root: '', sep: '/', platform: '', system: false, shell: false }
+// The "Open with" rules as the host summarised them ({ index, extensions, label, error? }): the menu
+// lists the ones matching a file. The host re-matches whatever index the page sends.
+let openWithRules = []
+
+/** The rules whose extensions end the file's name (any case; `.pdf` alone is a dot file, not a pdf). */
+function rulesFor(rel) {
+  const name = rel.split('/').pop().toLowerCase()
+  return openWithRules.filter((r) => r.extensions.some((e) => name.length > e.length + 1 && name.endsWith(`.${e}`)))
+}
 
 const joinRel = (dir, name) => (dir === '' ? name : `${dir}/${name}`)
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
@@ -280,6 +289,7 @@ ccPanel.onMessage((m) => {
   if (m.type === 'reset') {
     expanded = new Set(['', ...(m.expanded || [])])
     if (m.env && typeof m.env === 'object') env = { ...env, ...m.env }
+    openWithRules = Array.isArray(m.openWith) ? m.openWith.filter((r) => r && Array.isArray(r.extensions)) : []
   } else if (m.type === 'dir') {
     dirs.set(m.path, { entries: m.entries || [], more: m.more || 0, error: m.error })
   } else if (m.type === 'gone') {
@@ -361,7 +371,12 @@ function menuItems(target) {
   const post = (type, extra = {}) => () => ccPanel.post({ type, path: rel, ...extra })
   const items = []
   if (kind === 'file') {
-    items.push(['Open', () => activate(rel, 'file', target.entry)])
+    // With matching rules: one item per rule (the first is what a click does), then the project's
+    // opener, so a rule never locks the Reviewer out. A rule that cannot run says why.
+    const rules = rulesFor(rel)
+    if (!rules.length) items.push(['Open', () => activate(rel, 'file', target.entry)])
+    for (const r of rules) items.push([`Open with ${r.label}${r.error ? ' (not runnable)' : ''}`, post('open', { rule: r.index })])
+    if (rules.length) items.push(['Open in file viewer', post('open', { rule: -1 })])
     if (env.system) items.push(['Open with default app', post('open-system')])
     if (env.system) items.push([revealLabel(), post('reveal')])
     items.push(['Ask Claude about this file', post('ask')])

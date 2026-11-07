@@ -76,7 +76,7 @@ test('renameEntry: in place, refusing an existing name, the project folder and a
 // ---- the host's menu messages, against a fake ctx ----
 
 /** Activate the host with a fake ctx; `send` is the page's message, `posts` what the host posted. */
-async function host(root, { trash } = {}) {
+async function host(root, { trash, openWith, openCommand = true, overlayResult } = {}) {
   delete require.cache[require.resolve('../dist/host')]
   const hostMod = require('../dist/host')
   const calls = []
@@ -85,7 +85,7 @@ async function host(root, { trash } = {}) {
   const store = new Map()
   const ctx = {
     projectDir: root,
-    settings: { app: {} },
+    settings: { app: openWith ? { openWith } : {} },
     exec: async () => ({ code: 1, stdout: '', stderr: 'no git here' }),
     services: { use: () => ({ open: async () => {} }) },
     storage: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) },
@@ -111,7 +111,14 @@ async function host(root, { trash } = {}) {
     },
     sessions: {
       open: async (o) => void calls.push(['sessions.open', o]),
-      openShell: async (o) => void calls.push(['sessions.openShell', o])
+      openShell: async (o) => void calls.push(['sessions.openShell', o]),
+      ...(openCommand ? { openCommand: async (o) => void calls.push(['sessions.openCommand', o]) } : {})
+    },
+    overlay: {
+      start: (spec) => {
+        calls.push(['overlay.start', spec])
+        return { result: overlayResult ? overlayResult() : new Promise(() => {}) }
+      }
     }
   }
   hostMod.activate(ctx)
@@ -243,6 +250,82 @@ test('host: the reset tells the page the root, separator, platform and that the 
     await h.send({ type: 'hello' })
     const reset = h.posts.find((m) => m.type === 'reset')
     assert.deepEqual(reset.env, { root, sep: path.sep, platform: process.platform, system: true, shell: true })
+    assert.deepEqual(reset.openWith, [])
+  } finally {
+    h.done()
+  }
+})
+
+const RULES = [
+  { extensions: 'pdf', action: 'system' },
+  { extensions: 'json', action: 'terminal', command: 'jq -C . {file}' },
+  { extensions: 'log', action: 'terminal', command: 'less {file}', where: 'tab', waitForKey: false },
+  { extensions: 'md', action: 'default' },
+  { extensions: 'csv', action: 'terminal', command: 'sh -c "column {file}"' },
+  { extensions: 'json', action: 'system' },
+]
+
+test('host: Open with: a click takes the first matching rule; no rule opens the file viewer', async () => {
+  const { root } = project()
+  const h = await host(root, { openWith: RULES })
+  try {
+    await h.send({ type: 'open', path: 'docs/a.pdf' })
+    await h.send({ type: 'open', path: 'data/x y.json' })
+    await h.send({ type: 'open', path: 'app.log' })
+    await h.send({ type: 'open', path: 'README.md' })
+    await h.send({ type: 'open', path: 'src/a.js' })
+    const ow = require('../dist/lib/open-with')
+    assert.deepEqual(h.calls, [
+      ['openWithSystem', 'docs/a.pdf'],
+      ['overlay.start', { kind: 'terminal', argv: ['sh', '-c', ow.WAIT_SCRIPT, 'sh', 'jq', '-C', '.', 'data/x y.json'], title: 'jq: data/x y.json', size: 'large' }],
+      ['sessions.openCommand', { argv: ['less', 'app.log'], title: 'less: app.log', focus: true }],
+      ['open', 'README.md'],
+      ['open', 'src/a.js'],
+    ])
+    assert.equal(h.posts.filter((m) => m.type === 'error').length, 0)
+  } finally {
+    h.done()
+  }
+})
+
+test('host: Open with from the menu: a rule by index, -1 for the viewer, a stale index refused; a broken rule says why', async () => {
+  const { root } = project()
+  const h = await host(root, { openWith: RULES })
+  try {
+    await h.send({ type: 'open', path: 'x.json', rule: 5 })
+    await h.send({ type: 'open', path: 'x.json', rule: -1 })
+    await h.send({ type: 'open', path: 'x.json', rule: 0 }) // the pdf rule: not this file's
+    await h.send({ type: 'open', path: 't.csv' })
+    assert.deepEqual(h.calls, [['openWithSystem', 'x.json'], ['open', 'x.json']])
+    const errors = h.posts.filter((m) => m.type === 'error').map((m) => m.message)
+    assert.match(errors[0], /does not match this file any more/)
+    assert.match(errors[1], /^Open with rule 5 \(csv\): \{file\} must be a word of its own/)
+    await h.send({ type: 'hello' })
+    const reset = h.posts.find((m) => m.type === 'reset')
+    assert.deepEqual(reset.openWith.map((r) => [r.index, r.label, r.error !== undefined]), [
+      [0, 'System app', false], [1, 'jq (terminal)', false], [2, 'less (new tab)', false], [3, 'Default opener', false], [4, 'Terminal command', true], [5, 'System app', false],
+    ])
+    assert.ok(!JSON.stringify(reset.openWith).includes('jq -C'), 'the commands stay in the host')
+  } finally {
+    h.done()
+  }
+})
+
+test('host: Open with a tab on an app without openCommand uses an overlay; a refused overlay or a missing program is shown', async () => {
+  const { root } = project()
+  let n = 0
+  const h = await host(root, {
+    openWith: RULES,
+    openCommand: false,
+    overlayResult: () => (n++ === 0 ? Promise.reject(new Error('overlay: 3 are open already')) : Promise.resolve({ kind: 'exit', code: 127 })),
+  })
+  try {
+    await h.send({ type: 'open', path: 'app.log' })
+    await h.send({ type: 'open', path: 'b.json' })
+    await new Promise((r) => setTimeout(r, 10))
+    assert.deepEqual(h.calls.map((c) => [c[0], c[1].argv]), [['overlay.start', ['less', 'app.log']], ['overlay.start', h.calls[1][1].argv]])
+    const errors = h.posts.filter((m) => m.type === 'error').map((m) => m.message)
+    assert.deepEqual(errors, ['Open with rule 3 (log): overlay: 3 are open already', 'Open with rule 2 (json): jq was not found (exit 127).'])
   } finally {
     h.done()
   }

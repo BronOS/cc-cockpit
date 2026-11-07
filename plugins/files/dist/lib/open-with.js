@@ -85,22 +85,24 @@ function checkRule(raw) {
   const action = ACTIONS.has(raw.action) ? raw.action : 'default'
   if (action === 'system') return { extensions, action, label: 'System app' }
   if (action === 'default') return { extensions, action, label: 'Default opener' }
+  // A terminal rule that cannot run still has a menu label (the item says it is not runnable).
+  const bad = (error) => ({ extensions, action, label: 'Terminal command', error })
   const text = typeof raw.command === 'string' ? raw.command.trim() : ''
-  if (!text) return { extensions, action, error: 'the command is empty' }
-  if (text.length > MAX_COMMAND) return { extensions, action, error: `the command is longer than ${MAX_COMMAND} characters` }
+  if (!text) return bad('the command is empty')
+  if (text.length > MAX_COMMAND) return bad(`the command is longer than ${MAX_COMMAND} characters`)
   let words
   try {
     words = splitCommand(text)
   } catch (e) {
-    return { extensions, action, error: e.message }
+    return bad(e.message)
   }
-  if (!words.length) return { extensions, action, error: 'the command is empty' }
-  if (words.length > MAX_WORDS) return { extensions, action, error: `the command has more than ${MAX_WORDS} words` }
-  if (words.some((w) => w.includes('\0'))) return { extensions, action, error: 'the command contains a NUL' }
+  if (!words.length) return bad('the command is empty')
+  if (words.length > MAX_WORDS) return bad(`the command has more than ${MAX_WORDS} words`)
+  if (words.some((w) => w.includes('\0'))) return bad('the command contains a NUL')
   if (words.some((w) => w !== '{file}' && w.includes('{file}'))) {
-    return { extensions, action, error: '{file} must be a word of its own (for a pipe: sh -c \'cmd "$1" | less\' sh {file})' }
+    return bad('{file} must be a word of its own (for a pipe: sh -c \'cmd "$1" | less\' sh {file})')
   }
-  if (words[0] === '{file}') return { extensions, action, error: 'the command cannot start with {file}' }
+  if (words[0] === '{file}') return bad('the command cannot start with {file}')
   const where = WHERES.has(raw.where) ? raw.where : 'overlay'
   const waitForKey = raw.waitForKey !== false
   return { extensions, action, words, where, waitForKey, label: `${words[0]} (${where === 'tab' ? 'new tab' : 'terminal'})` }

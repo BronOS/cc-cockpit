@@ -15,11 +15,18 @@
 // Claude tab with a prompt naming the file (never its content); Open terminal here opens a shell tab
 // in the folder (ctx.sessions.openShell: main checks the folder by real path, and the shell gets no
 // command from here). Copy path is the page's own.
+//
+// "Open with" rules (0.3.0, app setting `openWith`, lib/open-with.js): a click on a file takes the
+// first rule whose extensions match it: the system's default app, a terminal command (an overlay, or
+// a command tab through ctx.sessions.openCommand), or the project's file opener. No rule: the opener,
+// as before. The menu lists every matching rule and the opener, so a rule never locks the Reviewer
+// out. The page only names a rule by its index; the host re-reads the setting and re-matches the path.
 
 const fs = require('node:fs')
 const path = require('node:path')
 const tree = require('./lib/tree')
 const ops = require('./lib/ops')
+const openWith = require('./lib/open-with')
 
 const PANEL = 'tree'
 const EXPANDED_KEY = 'expanded' // ctx.storage (per project): the folders the person left open
@@ -121,7 +128,10 @@ exports.activate = (ctx) => {
         platform: process.platform,
         system: typeof ctx.files.reveal === 'function',
         shell: typeof ctx.sessions.openShell === 'function',
-      }
+      },
+      // The rules as the menu needs them (labels, extensions to match, why one cannot run); the
+      // commands stay here.
+      openWith: openWith.rulesOf(app().openWith).map((r, index) => ({ index, extensions: r.extensions || [], label: r.label || 'Rule', ...(r.error ? { error: r.error } : {}) })),
     })
     // Parents before children, so the page always has the row it opens.
     const order = [...expanded].sort((a, b) => a.split('/').length - b.split('/').length)
@@ -273,7 +283,7 @@ exports.activate = (ctx) => {
           saveExpanded()
         } else if (m.type === 'open') {
           const rel = tree.normalizeRelative(m.path)
-          await ctx.files.open(rel)
+          await openFile(rel, m.rule)
         } else if (m.type === 'edit') {
           const rel = tree.normalizeRelative(m.path)
           try {
@@ -312,6 +322,44 @@ exports.activate = (ctx) => {
       }
     }),
   )
+
+  // ---- Open with ----
+
+  /**
+   * Opens a file: `rule` undefined (a click) takes the first matching rule, an index (the menu) that
+   * rule if it still matches the path, -1 (the menu's "Open in file viewer") the project's opener.
+   * A rule that cannot run throws, so the person sees why instead of something else opening.
+   */
+  async function openFile(rel, rule) {
+    const matches = openWith.matchRules(rel, openWith.rulesOf(app().openWith))
+    let r
+    if (rule === undefined) r = matches[0]
+    else if (rule !== -1) {
+      r = matches.find((x) => x.index === rule)
+      if (!r) throw new Error('That rule does not match this file any more (the settings changed): reopen the menu.')
+    }
+    if (!r || r.action === 'default') return ctx.files.open(rel)
+    const name = `Open with rule ${r.index + 1} (${r.extensions.join(', ')})`
+    if (r.error) throw new Error(`${name}: ${r.error}. Change it in Settings > Plugins > Files.`)
+    if (r.action === 'system') return ctx.files.openWithSystem(rel)
+    const argv = openWith.buildArgv(r, rel)
+    const base = rel.split('/').pop()
+    if (r.where === 'tab' && typeof ctx.sessions.openCommand === 'function') {
+      // A tab title is 1-60 chars on one line: the program and the file name, cut at the end.
+      const title = `${r.words[0].split('/').pop()}: ${base}`.replace(/\s+/g, ' ')
+      return ctx.sessions.openCommand({ argv, title: title.length > 60 ? `${title.slice(0, 59)}…` : title, focus: true })
+    }
+    // An overlay (also for a tab rule on an app without openCommand). Not awaited to its end: it
+    // settles when the person closes it. A refusal (too many overlays) rejects at once: shown.
+    const full = `${r.words[0].split('/').pop()}: ${rel}`
+    const handle = ctx.overlay.start({ kind: 'terminal', argv, title: full.length > 200 ? `${full.slice(0, 199)}…` : full, size: 'large' })
+    handle.result.then(
+      (res) => {
+        if (res && res.kind === 'exit' && res.code === 127) post({ type: 'error', message: `${name}: ${r.words[0]} was not found (exit 127).` })
+      },
+      (e) => post({ type: 'error', message: `${name}: ${e.message}` }),
+    )
+  }
 
   disposers.push(ctx.onSettingsChange(() => sendAll().catch((e) => ctx.log.warn(`settings: ${e.message}`))))
 
