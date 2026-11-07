@@ -308,7 +308,11 @@ function buildEditors() {
     else host.append(htmlView.scroller)
     // Rendered once: the text does not change while the overlay is open, and a second render
     // would only move the notes' located ranges.
-    if (state.md === 'rendered' && !htmlView.rendered) renderHtml(htmlView, markdownHtml(markdownText(state.sides)))
+    // An HTML file is its own markup (the sanitizer keeps what is safe, as for annotate's HTML).
+    if (state.md === 'rendered' && !htmlView.rendered) {
+      const text = markdownText(state.sides)
+      renderHtml(htmlView, state.sides.format === 'html' ? text : markdownHtml(text))
+    }
     return
   }
 
@@ -960,7 +964,8 @@ function addHtmlNote() {
   // The quote keeps the selection's first chars (it is also what finds the note again); a longer
   // selection keeps its end too, so the message can show where it stops.
   if (anchor.length > quote.length) note.tail = sel.view.full.slice(Math.max(sel.start + quote.length, sel.end - TAIL_MAX), sel.end)
-  if (state.md === 'rendered' && sel.view === htmlView) {
+  // Source lines only for markdown: markdown.mjs marks its blocks; an HTML file's own attributes could claim any.
+  if (state.md === 'rendered' && state.sides.format === 'markdown' && sel.view === htmlView) {
     const r = htmlSelectionRange()
     const lines = r && mdLinesOf(r.range)
     if (lines) note.lines = lines
@@ -1555,7 +1560,8 @@ function init(m) {
     $('base').textContent = formatSize(Number(s.size) || 0)
     $('global').placeholder = s.kind === 'pdf' ? `Comment on the PDF (optional); ${how}` : 'Comment on the image (optional)'
   }
-  state.md = s.format === 'markdown' && s.mode !== 'html' && s.mode !== 'text' ? initialMarkdownView(s) : null
+  // A markdown or HTML file (state.md: its Rendered / Source view).
+  state.md = (s.format === 'markdown' || s.format === 'html') && s.mode !== 'html' && s.mode !== 'text' ? initialMarkdownView(s) : null
   htmlView.body.classList.toggle('markdown', state.md !== null)
   showMdToggle()
   buildEditors()
@@ -1585,7 +1591,8 @@ function showMdToggle() {
   const b = $('mdview')
   b.hidden = state.md === null
   b.textContent = state.md === 'rendered' ? 'Source' : 'Rendered'
-  b.title = state.md === 'rendered' ? 'Show the markdown source (and its diff, when it has one)' : 'Show the markdown rendered'
+  const what = state.sides && state.sides.format === 'html' ? 'HTML' : 'markdown'
+  b.title = state.md === 'rendered' ? `Show the ${what} source (and its diff, when it has one)` : `Show the ${what} rendered (no scripts, nothing loaded from outside)`
 }
 function setMdView(view) {
   if (state.md === null || state.md === view) return

@@ -122,6 +122,9 @@ test('a backslash stays part of the file name off Windows', { skip: path.sep ===
 test('viewKindOf: by the last extension, any case; .mdx and dot files stay text', () => {
   assert.equal(files.viewKindOf('README.md'), 'markdown')
   assert.equal(files.viewKindOf('docs/Guide.MARKDOWN'), 'markdown')
+  assert.equal(files.viewKindOf('site/Index.HTML'), 'html')
+  assert.equal(files.viewKindOf('a.htm'), 'html')
+  assert.equal(files.viewKindOf('a.xhtml'), 'text')
   assert.equal(files.viewKindOf('page.mdx'), 'text')
   assert.equal(files.viewKindOf('.md'), 'text')
   assert.equal(files.viewKindOf('Makefile'), 'text')

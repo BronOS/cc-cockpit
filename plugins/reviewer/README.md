@@ -68,6 +68,9 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
   (it shows as text), then the same allow-list sanitizer as HTML mode; images show their alt text; a link opens only
   when its http(s) URL is written in the file. A note on the rendered text anchors on the quote, beside the line
   notes of Source; clicking a note shows it in its own view.
+- HTML (`.html`, `.htm`) has the same switch. Rendered is the file's markup through the same sanitizer as a mail:
+  structure and text with notes on selections, but no scripts, no stylesheets and nothing loaded from outside (so
+  not the page's own look; the browser panel shows that). Its notes have no line numbers.
 - Images (png, jpg, gif, webp, svg, up to 10 MiB): a preview, fitted until clicked, with the size in the header. An
   svg is shown through `<img>`, so it runs nothing.
 - PDF (up to 25 MiB): pdf.js (`overlay/pdf.bundle.js`, loaded only for a PDF) draws the pages as they come into view,

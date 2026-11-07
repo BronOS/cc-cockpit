@@ -226,3 +226,29 @@ test('pdf: pages drawn by pdf.js in the sandboxed page, selectable text, a page 
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['PDF: bad.pdf'])
   await expect(page.frameLocator('iframe[title="PDF: bad.pdf"]').locator('.preview-error')).toContainText('not a valid PDF', { timeout: 15_000 })
 })
+
+test('html: rendered through the sanitizer (no script, no handler, nothing remote), Source shows the markup, notes work', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const file = join(projectDir, 'page.html')
+  writeFileSync(
+    file,
+    '<!doctype html><html><head><link rel="stylesheet" href="https://evil.example/x.css"><script>window.top.pwned=1</script></head>' +
+      '<body><h1 onclick="window.pwned=2">Mock-up</h1><p>Some <b>bold</b> text and a <a href="https://example.com/x">link</a>.</p>' +
+      '<img src="https://evil.example/t.png" alt="tracker"><iframe src="https://evil.example"></iframe></body></html>\n'
+  )
+  const panel = await editedFiles(cockpit, [file])
+  await panel.getByRole('button', { name: file }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Review: page.html'])
+  const v = page.frameLocator('iframe[title="Review: page.html"]')
+  await expect(v.locator('#mdview')).toHaveText('Source')
+  await expect(v.locator('.doc-body.markdown h1')).toHaveText('Mock-up')
+  await expect(v.locator('.doc-body.markdown p').first()).toContainText('Some bold text and a link.')
+  await expect(v.locator('.doc-body.markdown a')).toHaveText('link')
+  await expect(v.locator('.doc-body.markdown script, .doc-body.markdown iframe, .doc-body.markdown link, .doc-body.markdown img[src]')).toHaveCount(0)
+  await expect(v.locator('.doc-body.markdown h1')).not.toHaveAttribute('onclick')
+  await v.locator('.doc-body.markdown h1').click()
+  expect(await v.locator('body').evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
+  expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
+  await v.locator('#mdview').click()
+  await expect(v.locator('.cm-content')).toContainText('<h1 onclick=')
+})

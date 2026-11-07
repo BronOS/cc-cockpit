@@ -369,8 +369,9 @@ exports.activate = (ctx) => {
     const kind = files.viewKindOf(typeof rel === 'string' ? rel : '')
     if (kind === 'image' || kind === 'pdf') return openPreview(r, rel, { tabId })
     const sides = await files.readSides(exec, r, rel)
-    // A markdown file: the page opens it rendered (no diff) or on the diff with a Rendered switch.
-    if (kind === 'markdown') sides.format = 'markdown'
+    // A markdown or HTML file: the page opens it rendered (no diff) or on the diff with a Rendered
+    // switch. An HTML file's Rendered view is the page's sanitizer over its markup, as for a mail.
+    if (kind === 'markdown' || kind === 'html') sides.format = kind
     return showReview(
       {
         openKey: `file:${sides.path}`,
@@ -382,7 +383,7 @@ exports.activate = (ctx) => {
         // on the review, and Discuss names the file.
         type: { name: 'file', data: { path: sides.path } },
         // A markdown file's Rendered view has links: only the http(s) URLs written in it open.
-        ...(kind === 'markdown' ? { links: review.textLinks(sides.new, sides.old) } : {}),
+        ...(kind === 'markdown' || kind === 'html' ? { links: review.textLinks(sides.new, sides.old) } : {}),
         build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT, { named: false }),
         tooLarge: `${sides.path} is too large to review (with escaping and its saved draft)`,
       },

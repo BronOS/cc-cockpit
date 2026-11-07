@@ -30,6 +30,7 @@ const IMAGE_MIME = {
   svg: 'image/svg+xml',
 }
 const MARKDOWN_EXT = new Set(['md', 'markdown'])
+const HTML_EXT = new Set(['html', 'htm'])
 
 class ReviewError extends Error {
   /** fallback: true when the built-in viewer should show the file instead (binary, too big). */
@@ -81,7 +82,8 @@ function insideRoot(root, abs) {
 
 /**
  * How the page shows a file, from its extension (case-insensitive, the last one only):
- * 'markdown' (`.md`, `.markdown`; `.mdx` is JSX and stays text), 'image', 'pdf', else 'text'.
+ * 'markdown' (`.md`, `.markdown`; `.mdx` is JSX and stays text), 'html' (`.html`, `.htm`), 'image', 'pdf',
+ * else 'text'.
  */
 function viewKindOf(rel) {
   const base = String(rel).split('/').pop()
@@ -89,6 +91,7 @@ function viewKindOf(rel) {
   if (dot <= 0) return 'text' // no extension, or a dot file such as `.md`
   const ext = base.slice(dot + 1).toLowerCase()
   if (MARKDOWN_EXT.has(ext)) return 'markdown'
+  if (HTML_EXT.has(ext)) return 'html'
   if (Object.hasOwn(IMAGE_MIME, ext)) return 'image'
   if (ext === 'pdf') return 'pdf'
   return 'text'
