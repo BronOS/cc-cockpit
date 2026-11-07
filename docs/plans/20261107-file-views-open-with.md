@@ -181,11 +181,12 @@ where the label is the command's first word or "System app").
 - Create: `plugins/reviewer/src/page/bytes.mjs` (chunk reassembly, pure)
 - Create/Modify: `plugins/reviewer/test/bytes.test.js`
 
-- [ ] `bytes.mjs`: reassemble chunks by id and seq, reject out-of-order or oversize, produce a `data:` URL with the
+- [x] `bytes.mjs`: reassemble chunks by id and seq, reject out-of-order or oversize, produce a `data:` URL with the
       MIME type from the extension
-- [ ] image view: fit to the overlay, click toggles 100 %; dimensions and size in the header; no notes on images
-- [ ] write tests for reassembly (in order, missing chunk, stale id, total over the page-side cap of 10 / 25 MiB)
-- [ ] `npm run build:reviewer`; run tests - must pass before next task
+- [x] image view: fit to the overlay, click toggles 100 %; dimensions and size in the header; no notes on images
+- [x] write tests for reassembly (in order, missing chunk, stale id, total over the page-side cap of 10 / 25 MiB)
+- [x] `npm run build:reviewer`; run tests - must pass before next task
+- [x] ➕ e2e: a png (size, fit toggle) and an svg with a script that does not run
 
 ### Task 4: Reviewer page shows PDF with pdf.js [model: opus]
 

@@ -117,3 +117,37 @@ test('markdown: rendered without a diff, the diff first with one, the switch bot
   await expect(review.locator('.doc-body.markdown h1')).toBeVisible()
   await expect(review.locator('#mdview')).toHaveText('Source')
 })
+
+// A 2 × 1 PNG (red, transparent).
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAD0lEQVR4nGP4z8AARAwMAAz8Af9c/RSVAAAAAElFTkSuQmCC'
+
+test('images: a png and an svg show as pictures, fitted, with their size; the svg runs nothing', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const png = join(projectDir, 'dot.png')
+  writeFileSync(png, Buffer.from(PNG, 'base64'))
+  const svg = join(projectDir, 'logo.svg')
+  writeFileSync(svg, '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><script>window.top.pwned = 1</script><rect width="40" height="20" fill="teal"/></svg>')
+  const panel = await editedFiles(cockpit, [png, svg])
+
+  await panel.getByRole('button', { name: png }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Image: dot.png'])
+  const a = page.frameLocator('iframe[title="Image: dot.png"]')
+  const img = a.locator('.preview img.preview-img')
+  await expect(img).toBeVisible()
+  expect(await img.evaluate((i: HTMLImageElement) => [i.naturalWidth, i.naturalHeight])).toEqual([2, 1])
+  await expect(a.locator('#base')).toHaveText(/^2 × 1 · \d+ B$/)
+  await expect(img).toHaveClass(/fit/)
+  await img.click()
+  await expect(img).not.toHaveClass(/fit/)
+  await expect(a.locator('#mdview')).toBeHidden()
+  await expect(a.locator('#layout')).toBeHidden()
+  await escape(cockpit)
+  await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
+
+  await panel.getByRole('button', { name: svg }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Image: logo.svg'])
+  const b = page.frameLocator('iframe[title="Image: logo.svg"]')
+  await expect(b.locator('#base')).toHaveText(/^40 × 20 · /)
+  expect(await b.locator('body').evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
+  expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
+})

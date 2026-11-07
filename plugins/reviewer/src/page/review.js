@@ -69,6 +69,7 @@ import { isPlainClick, selectionKey } from './links.mjs'
 import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
 import { originalDocument, FRAME_SANDBOX, FRAME_COLOR_SCHEME } from './original.mjs'
 import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
+import { startBytes, formatSize } from './bytes.mjs'
 
 /* global ccPanel */
 
@@ -295,6 +296,11 @@ function buildEditors() {
   for (const v of Object.values(state.views)) if (v && v !== state.merge?.a && v !== state.merge?.b) v.destroy()
   state.merge = null
   state.views = { old: null, new: null }
+  if (isPreview()) {
+    $('layout').hidden = true
+    host.append(preview.el)
+    return
+  }
   if (isHtml()) {
     $('layout').hidden = true
     if (hasCompanion()) buildSplit(host, initMsg)
@@ -619,6 +625,71 @@ function renderNotes(focusId) {
       }, 0)
     }
   }
+}
+
+// ---- previews: an image, a PDF (sides.mode 'preview') ----
+//
+// No text and no diff: the init names the kind, the type and the size, and the bytes come after the
+// page asks ({ type: 'content' }) as bytes-begin / bytes / bytes-end (bytes.mjs checks them). The
+// global comment still works (Discuss sends it with the path); there are no notes on an image.
+
+const isPreview = () => !!state.sides && state.sides.mode === 'preview'
+const preview = { el: el('div', 'preview'), transfer: null }
+
+function startPreview(s) {
+  preview.el.dataset.kind = s.kind
+  preview.el.replaceChildren(el('p', 'muted', s.kind === 'pdf' ? 'Loading the PDF…' : 'Loading the image…'))
+}
+
+function previewFailed(why) {
+  preview.transfer = null
+  preview.el.replaceChildren(el('p', 'preview-error', `Cannot show ${state.sides.path}: ${why}.`))
+}
+
+function previewBegin(m) {
+  if (!isPreview()) return
+  const t = startBytes(m)
+  if (t.error) return previewFailed(t.error)
+  if (t.kind !== state.sides.kind) return previewFailed('the data is not what the file is')
+  preview.transfer = t
+}
+
+function previewChunk(m) {
+  const t = preview.transfer
+  if (!t) return
+  const err = t.add(m)
+  if (err) previewFailed(err)
+}
+
+function previewEnd() {
+  const t = preview.transfer
+  preview.transfer = null
+  if (!t) return
+  const r = t.end()
+  if (r.error) return previewFailed(r.error)
+  if (r.kind === 'image') showImage(r)
+  else showPdf(r)
+}
+
+/** The image, fitted to the overlay; a click shows it at its own size (and back). */
+function showImage(r) {
+  const img = document.createElement('img')
+  img.className = 'preview-img fit'
+  img.alt = state.sides.path
+  img.title = 'Click: actual size / fit'
+  img.addEventListener('load', () => {
+    $('base').textContent = `${img.naturalWidth} × ${img.naturalHeight} · ${formatSize(r.size)}`
+  })
+  img.addEventListener('error', () => previewFailed('the image could not be decoded'))
+  img.addEventListener('click', () => img.classList.toggle('fit'))
+  // A data: URL (the page CSP allows data: images and nothing else); an svg in an <img> runs no
+  // script and loads nothing.
+  img.src = `data:${r.mime};base64,${r.b64}`
+  preview.el.replaceChildren(img)
+}
+
+function showPdf() {
+  previewFailed('PDF files are not shown yet')
 }
 
 // ---- HTML mode (annotate with html) ----
@@ -1415,15 +1486,20 @@ function init(m) {
   // annotate's `kind: 'mail'`: the main document in the mail reading layout (review.css `.doc-body.mail`).
   htmlView.body.classList.toggle('mail', isAnnotHtml() && s.kind === 'mail')
   if (isAnnotHtml()) startHtml(s)
+  if (isPreview()) {
+    startPreview(s)
+    $('base').textContent = formatSize(Number(s.size) || 0)
+    $('global').placeholder = s.kind === 'pdf' ? `Comment on the PDF (optional); ${how}` : 'Comment on the image (optional)'
+  }
   state.md = s.format === 'markdown' && s.mode !== 'html' && s.mode !== 'text' ? initialMarkdownView(s) : null
   htmlView.body.classList.toggle('markdown', state.md !== null)
   showMdToggle()
   buildEditors()
   renderNotes()
   if (isHtml()) htmlView.scroller.focus()
-  else (state.views.new || state.views.old).focus()
+  else (state.views.new || state.views.old)?.focus()
   // The host sends the details column, the HTML parts and the images now.
-  if (isAnnotHtml() || s.aside) ccPanel.post({ type: 'content' })
+  if (isAnnotHtml() || s.aside || isPreview()) ccPanel.post({ type: 'content' })
 }
 
 $('global').addEventListener('input', (e) => {
@@ -1522,6 +1598,9 @@ ccPanel.onMessage((m) => {
   else if (m.type === 'assets-done') htmlAssetsDone()
   else if (m.type === 'update') onUpdate(m)
   else if (m.type === 'original') originalPart(m)
+  else if (m.type === 'bytes-begin') previewBegin(m)
+  else if (m.type === 'bytes') previewChunk(m)
+  else if (m.type === 'bytes-end') previewEnd()
 })
 
 // The theme arrives in a message after load (`ccc guide panels`): swap the syntax colours then.

@@ -344,3 +344,18 @@ button.link.outdated { color: var(--cc-fg-muted); text-align: left; }
 .view-links[hidden] { display: none; }
 .view-links li { padding: 3px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .view-links li button.link { text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
+/* A preview (an image, a PDF: sides.mode 'preview'). The image sits on a checkerboard so a
+   transparent one is visible in both themes; fitted until clicked, then its own size (scrolls). */
+.preview { height: 100%; overflow: auto; padding: 16px; box-sizing: border-box; }
+.preview[data-kind='image'] { display: flex; align-items: flex-start; justify-content: center; }
+.preview-img {
+  cursor: zoom-out;
+  background-color: var(--cc-surface-1);
+  background-image: linear-gradient(45deg, var(--cc-surface-2) 25%, transparent 25%, transparent 75%, var(--cc-surface-2) 75%),
+    linear-gradient(45deg, var(--cc-surface-2) 25%, transparent 25%, transparent 75%, var(--cc-surface-2) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+.preview-img.fit { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+.preview-error { color: var(--cc-danger, #c0392b); }
