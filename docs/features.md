@@ -248,6 +248,8 @@ behind it are in [design.md](design.md).
   with the old value struck through in red and the new one on green) on a light "paper" page under the app-themed
   header, in a frame that runs no script and loads nothing from the web; an **Original | Reader** switch sits above
   the document, and the caller hears each switch (Gmail remembers it per sender).
+  The reviewer renders markdown (Rendered / Source switch; the diff first when there is one) and previews images
+  (10 MiB) and PDFs (pdf.js, 25 MiB, notes on selected text by page).
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
   [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour
   scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it
@@ -256,7 +258,8 @@ behind it are in [design.md](design.md).
 - A built-in file tree (`cockpit.files`, on by default, ships with the app): a Files panel (left zone) with the
   whole project folder, so any file can be opened and discussed with Claude, changed or not. A click opens it through
   "Plugin used to open files" (the reviewer by default: the diff for a changed file, the file itself otherwise, with
-  notes, Discuss and New session); Edit opens it in the editor. Hidden files and git-ignored files are shown (ignored
+  notes, Discuss and New session); Edit opens it in the editor. "Open with" rules (app setting) send chosen extensions to the system app, a
+  terminal command in an overlay or a new tab (`{file}` as one argument), or the viewer; the menu lists them all. Hidden files and git-ignored files are shown (ignored
   ones dimmed) unless the app settings "Hide hidden files" / "Hide ignored files" are on; `.git` is never shown.
   Folders load when expanded and are watched (`fs.watch`) while open; git marks (M, A, ?, R, U, D) follow the work
   tree and the index. The filter box searches git's tracked and untracked files (not ignored ones), or a bounded walk

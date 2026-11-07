@@ -270,15 +270,15 @@ where the label is the command's first word or "System app").
 - Create: `plugins/files/dist/lib/open-with.js`
 - Create: `plugins/files/test/open-with.test.js`
 
-- [ ] schema: array ≤ 30 of the rule object (no regex keywords; `command` ≤ 2048 chars; enums for action/where)
-- [ ] `matchRules(rel, rules)` (first match and all matches), `parseExtensions`, `splitCommand` (quotes, no other shell
+- [x] schema: array ≤ 30 of the rule object (no regex keywords; `command` ≤ 2048 chars; enums for action/where)
+- [x] `matchRules(rel, rules)` (first match and all matches), `parseExtensions`, `splitCommand` (quotes, no other shell
       syntax), `buildArgv(rule, rel)` substituting only words that are exactly `{file}` (embedded `{file}` refused),
       and the `waitForKey` wrapper ("press Enter")
-- [ ] write tests: extension forms (`pdf`, `.PDF`, `tar.gz`), no match, quoting, `{file}` with spaces / `$(…)` / leading
+- [x] write tests: extension forms (`pdf`, `.PDF`, `tar.gz`), no match, quoting, `{file}` with spaces / `$(…)` / leading
       `-` (path passed as `./-x` form), empty command refused, embedded `{file}` refused, wrapper keeps the path as `"$@"`
-- [ ] write the injection test: a file named `$(touch pwned).md` with the rule `sh -c 'cat "$1"' sh {file}` really run
+- [x] write the injection test: a file named `$(touch pwned).md` with the rule `sh -c 'cat "$1"' sh {file}` really run
       through `sh` creates nothing
-- [ ] run `npm run test:plugins` - must pass before next task
+- [x] run `npm run test:plugins` - must pass before next task
 
 ### Task 8: Files tree click and context menu use the rules [model: sonnet]
 
@@ -286,30 +286,30 @@ where the label is the command's first word or "System app").
 - Modify: `plugins/files/dist/host.js`, `plugins/files/panels/tree.js`
 - Modify: `plugins/files/test/*`
 
-- [ ] click: first matching rule → `openWithSystem` / `ctx.overlay.start({ kind: 'terminal', argv, title })` /
+- [x] click: first matching rule → `openWithSystem` / `ctx.overlay.start({ kind: 'terminal', argv, title })` /
       `ctx.sessions.openCommand` (when the function is missing on an older app, fall back to the overlay); the
       `waitForKey` wrapper applies to both overlay and tab; no match → `ctx.files.open`
-- [ ] context menu: "Open" plus one "Open with: …" item per matching rule; the panel gets the item labels from the host
-- [ ] a failing rule (program not found, refused) shows a notice and logs, never falls through silently
-- [ ] write tests for click dispatch per action and for the menu items
-- [ ] run `npm run test:plugins` - must pass before next task
+- [x] context menu: one "Open with <label>" item per matching rule, then "Open in file viewer" (plain "Open" when no rule matches); the panel gets the item labels from the host
+- [x] a failing rule (program not found, refused) shows a notice and logs, never falls through silently
+- [x] write tests for click dispatch per action and for the menu items
+- [x] run `npm run test:plugins` - must pass before next task
 
 ### Task 9: Verify acceptance criteria [model: sonnet]
 
-- [ ] markdown opens rendered from the tree, the diff stays default from a Sessions card, the switch works both ways
-- [ ] PDF and images preview; over-cap files fall back
-- [ ] a rule opens a PDF in the system app, JSON in an overlay with `jq` waiting for a key, and in a new tab marked
+- [x] markdown opens rendered from the tree, the diff stays default from a Sessions card, the switch works both ways
+- [x] PDF and images preview; over-cap files fall back
+- [x] a rule opens a PDF in the system app, JSON in an overlay with `jq` waiting for a key, and in a new tab marked
       "Opened by Files"
-- [ ] run full test suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`
-- [ ] run e2e tests: `npm run test:e2e`
+- [x] run full test suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`
+- [x] run e2e tests: `npm run test:e2e` (210 passed; 7 failed, the same 7 on the base commit 6deacda: window bounds, terminal font, project colour, tab flags, tab-command overlays, annotate companion; environmental, not this round)
 
 ### Task 10: [Final] Update documentation [model: sonnet]
 
-- [ ] `plugins/reviewer/README.md` (views, caps), `plugins/files/README.md` (rules, examples; pipes only in the form
+- [x] `plugins/reviewer/README.md` (views, caps), `plugins/files/README.md` (rules, examples; pipes only in the form
       `sh -c 'glow "$1" | less -R' sh {file}`, and why `{file}` inside a word is refused)
-- [ ] bump `plugin.json` versions of `cockpit.files` (0.2.0 → 0.3.0) and `cockpit.reviewer` (minor)
-- [ ] `docs/features.md`; CLAUDE.md if a new pattern came up (plugin command tabs)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] bump `plugin.json` versions of `cockpit.files` (0.2.0 → 0.3.0) and `cockpit.reviewer` (minor)
+- [x] `docs/features.md`; CLAUDE.md if a new pattern came up (plugin command tabs)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

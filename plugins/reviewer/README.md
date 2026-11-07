@@ -59,6 +59,24 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
   })
   ```
 
+## File views
+
+`open(path)` (and a click on a file) shows the file the way it reads best:
+
+- Markdown (`.md`, `.markdown`; `.mdx` stays text) has a Rendered / Source switch. A file with a real diff opens on
+  the diff (Source); one without (new, unchanged, no git) opens rendered. Rendered is markdown-it with raw HTML off
+  (it shows as text), then the same allow-list sanitizer as HTML mode; images show their alt text; a link opens only
+  when its http(s) URL is written in the file. A note on the rendered text anchors on the quote, beside the line
+  notes of Source; clicking a note shows it in its own view.
+- Images (png, jpg, gif, webp, svg, up to 10 MiB): a preview, fitted until clicked, with the size in the header. An
+  svg is shown through `<img>`, so it runs nothing.
+- PDF (up to 25 MiB): pdf.js (`overlay/pdf.bundle.js`, loaded only for a PDF) draws the pages as they come into view,
+  with a text layer; a note on selected text carries the page and the quote. The worker runs on the page's thread
+  (the sandboxed frame cannot start one) and WASM is off, so a JPEG 2000 picture inside a PDF stays blank, and no
+  font data is fetched (system fonts stand in).
+- Images and PDFs have no diff: the file as it is now. Over the caps they go to the built-in viewer. Their bytes are
+  posted in 576 KiB chunks after the page asks, never in the init message.
+
 ## Companion
 
 `annotate({ title, html, aside?, assets?, url?, key?, tabId?, label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })`

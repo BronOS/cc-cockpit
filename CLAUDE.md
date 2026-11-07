@@ -93,6 +93,11 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   write it, nor read a flag from a hook or plugin payload: a mark a plugin could set would mean nothing.
 - `CliCall.tabId` is set by main only when the `ccc` caller is a Claude tab (never from anything the caller sends); a plugin
   command may use it to know which tab ran it (`ccc autopilot stop`) and must answer an unknown and a foreign id the same way.
+- Plugin command tabs (`ctx.sessions.openCommand`, design.md §3 "Custom commands"): kind `command` with `argv` and
+  `openedBy` instead of a user `command` line; spawned as argv with no shell, never both fields (a saved record with
+  both is dropped). `openedBy` is set by main from the host's own plugin, shown in the tab tooltip, and restore drops
+  the tab when that plugin is gone or revoked. A plugin substituting untrusted text (a file name) must keep it one
+  argv element and never inside a word a shell will parse (cockpit.files `lib/open-with.js`).
 - `sessions.open({ model, effort })` is validated in `src/shared/session-options.ts` (one list for host, main and the guide) and
   turned into argv by `claudeArgv`; it is never applied to a resume, which keeps the session's own settings.
 - Plugin `ccc` commands and their stdin are always bounded (30 s plugin limit, 40 s client deadline and stdin read, exit 124
