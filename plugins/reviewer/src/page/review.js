@@ -64,7 +64,7 @@ import { toml } from '@codemirror/legacy-modes/mode/toml'
 import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile'
 import { lua } from '@codemirror/legacy-modes/mode/lua'
 import { sanitizeTree, render, isImageDataUrl } from './sanitize.mjs'
-import { makeAnchor, locate } from './anchor.mjs'
+import { makeAnchor, locate, tailOf } from './anchor.mjs'
 import { isPlainClick, selectionKey } from './links.mjs'
 import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
 import { originalDocument, FRAME_SANDBOX, FRAME_COLOR_SCHEME } from './original.mjs'
@@ -723,7 +723,10 @@ function addPdfNote() {
   const quote = long ? sel.quote.slice(0, QUOTE_MAX) : sel.quote
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, page: sel.page, quote, text: '' }
   // A long selection keeps its end too, so the message shows where it stops (as for markdown).
-  if (long) note.tail = sel.quote.slice(Math.max(QUOTE_MAX, sel.quote.length - TAIL_MAX))
+  if (long) {
+    const tail = tailOf(sel.quote, QUOTE_MAX)
+    if (tail) note.tail = tail
+  }
   collapseSelection()
   state.draft.notes.push(note)
   renderNotes(note.id)
@@ -954,8 +957,6 @@ function mdLinesOf(range) {
   return { from, to }
 }
 
-const TAIL_MAX = 200 // the end of a long selection, kept for the message («start … end»)
-
 function addHtmlNote() {
   const sel = htmlSelection()
   if (!sel) return
@@ -963,7 +964,10 @@ function addHtmlNote() {
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, quote, anchor, text: '' }
   // The quote keeps the selection's first chars (it is also what finds the note again); a longer
   // selection keeps its end too, so the message can show where it stops.
-  if (anchor.length > quote.length) note.tail = sel.view.full.slice(Math.max(sel.start + quote.length, sel.end - TAIL_MAX), sel.end)
+  if (anchor.length > quote.length) {
+    const tail = tailOf(sel.view.full.slice(sel.start, sel.end), quote.length)
+    if (tail) note.tail = tail
+  }
   // Source lines only for markdown: markdown.mjs marks its blocks; an HTML file's own attributes could claim any.
   if (state.md === 'rendered' && state.sides.format === 'markdown' && sel.view === htmlView) {
     const r = htmlSelectionRange()

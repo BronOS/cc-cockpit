@@ -14,6 +14,8 @@
 // Pages are laid out at once (their size, from each page's viewport) and drawn when they come near
 // the visible area, so a 300-page PDF opens as fast as a 3-page one.
 
+import { posIn } from './pdf-select.mjs'
+
 const SCRIPT = 'pdf.bundle.js'
 const MAX_SCALE = 3
 const MIN_SCALE = 0.5
@@ -122,6 +124,7 @@ export async function showPdfIn(container, b64, { onRendered } = {}) {
     { root: container, rootMargin: '600px 0px' },
   )
   for (const f of frames) io.observe(f.frame)
+  attachSelection(container)
   return { pages: doc.numPages }
 }
 
@@ -144,6 +147,64 @@ export function pdfSelection(container) {
   const quote = sel.toString().replace(/\s+/g, ' ').trim()
   if (!quote) return null
   return { page: Number(a.dataset.page), quote, range }
+}
+
+// ---- selection ----
+//
+// pdf.js's text layer is transparent spans placed absolutely over the canvas. A drag that starts (or
+// passes) over blank page, a margin or the space between lines, lands on the layer div itself, and
+// Chromium then anchors the selection at an arbitrary child offset: a drag from just above a heading
+// started mid-paragraph and the note lost its first lines (pdf.js's full viewer patches this with an
+// `endOfContent` element; the bare TextLayer used here has none). So a single-click drag is taken over:
+// each pointer position maps to a text position in reading order (posAt), and the selection is set
+// from the press to the pointer. Double and triple clicks (word, line) stay native.
+
+/** The text spans of a page's layer, in reading (DOM) order, with their rects. */
+function spansOf(layer) {
+  return [...layer.querySelectorAll('span')].filter((s) => s.firstChild && s.firstChild.nodeType === 3 && s.textContent).map((s) => ({ s, r: s.getBoundingClientRect() }))
+}
+
+/** Takes over single-click drags in the PDF view (see above). Returns a disposer. */
+export function attachSelection(container) {
+  const caretAt = (x, y) => {
+    const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null
+    return r && r.startContainer.nodeType === 3 ? { node: r.startContainer, offset: r.startOffset } : null
+  }
+  let drag = null // { layer, spans, anchor }
+  const at = (e) => {
+    const page = drag.layer.closest('.pdf-page').getBoundingClientRect()
+    // Off the page the drag clamps to its first or last text (a selection is about one page).
+    if (e.clientY < page.top) return posIn(drag.spans, page.left, page.top - 1, null)
+    if (e.clientY > page.bottom) return posIn(drag.spans, page.right, page.bottom + 1, null)
+    return posIn(drag.spans, e.clientX, e.clientY, caretAt)
+  }
+  const down = (e) => {
+    if (e.button !== 0 || e.detail > 1 || e.shiftKey) return
+    const page = e.target instanceof Element ? e.target.closest('.pdf-page') : null
+    const layer = page && page.querySelector('.textLayer')
+    if (!layer) return
+    const spans = spansOf(layer)
+    if (!spans.length) return
+    e.preventDefault()
+    container.focus({ preventScroll: true })
+    drag = { layer, spans, anchor: null }
+    drag.anchor = at(e)
+    window.getSelection().removeAllRanges()
+  }
+  const move = (e) => {
+    if (!drag || !drag.anchor) return
+    const focus = at(e)
+    if (focus) window.getSelection().setBaseAndExtent(drag.anchor.node, drag.anchor.offset, focus.node, focus.offset)
+  }
+  const up = () => (drag = null)
+  container.addEventListener('mousedown', down)
+  window.addEventListener('mousemove', move)
+  window.addEventListener('mouseup', up)
+  return () => {
+    container.removeEventListener('mousedown', down)
+    window.removeEventListener('mousemove', move)
+    window.removeEventListener('mouseup', up)
+  }
 }
 
 /** Scrolls the page into view (its top), when it exists. */

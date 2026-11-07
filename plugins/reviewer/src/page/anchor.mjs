@@ -75,3 +75,20 @@ export function locate(full, note) {
   })
   return { start: best.start, end: best.end }
 }
+
+export const TAIL_MAX = 200 // the end of a long selection, kept for the message («start … end»)
+
+/**
+ * The end of a long selection `text` (whose first `kept` chars are the stored quote), at most TAIL_MAX
+ * chars, starting at a word: a cut inside a word moves to the next one, so the message never shows
+ * «… agna felis» for "magna felis". Every note kind (markdown, HTML, PDF) takes its tail here.
+ */
+export function tailOf(text, kept) {
+  let i = Math.max(kept, text.length - TAIL_MAX)
+  if (i > 0 && i < text.length && /\S/.test(text[i - 1]) && /\S/.test(text[i])) {
+    const ws = text.slice(i).search(/\s/)
+    if (ws < 0) return ''
+    i += ws
+  }
+  return text.slice(i).trim()
+}

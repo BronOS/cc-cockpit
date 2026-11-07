@@ -155,14 +155,16 @@ test('images: a png and an svg show as pictures, fitted, with their size; the sv
 })
 
 /** A small valid PDF: one page per text, Helvetica (not embedded: pdf.js falls back to a system font). */
-function makePdf(pages: string[]): Buffer {
+function makePdf(pages: Array<string | string[]>): Buffer {
   const objs: string[] = []
   const kids = pages.map((_, i) => `${3 + i * 2} 0 R`).join(' ')
   objs.push('<< /Type /Catalog /Pages 2 0 R >>')
   objs.push(`<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`)
   const font = 3 + pages.length * 2
   pages.forEach((text, i) => {
-    const stream = `BT /F1 24 Tf 72 700 Td (${text}) Tj ET`
+    // One line per string, 30 pt apart (a string array is a page of several lines).
+    const lines = Array.isArray(text) ? text : [text]
+    const stream = `BT /F1 24 Tf 72 700 Td ${lines.map((l, j) => `${j ? '0 -30 Td ' : ''}(${l}) Tj`).join(' ')} ET`
     objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${4 + i * 2} 0 R >>`)
     objs.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`)
   })
@@ -251,4 +253,33 @@ test('html: rendered through the sanitizer (no script, no handler, nothing remot
   expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
   await v.locator('#mdview').click()
   await expect(v.locator('.cm-content')).toContainText('<h1 onclick=')
+})
+
+test('pdf: a drag from the blank margin above a heading selects from the heading (no jump into the paragraph)', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const lines = ['Section heading here', 'First line of the paragraph,', 'second line goes on,', 'third line continues,', 'The end of the paragraph.']
+  const pdf = join(projectDir, 'long.pdf')
+  writeFileSync(pdf, makePdf([lines]))
+  const panel = await editedFiles(cockpit, [pdf])
+  await panel.getByRole('button', { name: pdf }).click()
+  const v = page.frameLocator('iframe[title="PDF: long.pdf"]')
+  await expect(v.locator('#base')).toHaveText(/^1 page · /, { timeout: 15_000 })
+  const layer = v.locator('.pdf-page[data-page="1"] .textLayer')
+  await expect(layer).toContainText('The end of the paragraph.')
+  const head = (await layer.locator('span', { hasText: 'Section heading' }).boundingBox())!
+  const end = (await layer.locator('span', { hasText: 'The end of the paragraph' }).boundingBox())!
+  const selected = async () => v.locator('body').evaluate(() => window.getSelection()!.toString().replace(/\s+/g, ' ').trim())
+  for (const [from, to] of [
+    [[head.x + 20, head.y - 25], [end.x + end.width - 1, end.y + end.height / 2]], // above the heading to the last letter
+    [[head.x - 30, head.y + head.height / 2], [end.x + end.width + 40, end.y + end.height / 2]], // left margin to past the end
+  ] as const) {
+    await page.mouse.move(from[0], from[1])
+    await page.mouse.down()
+    await page.mouse.move(to[0], to[1], { steps: 15 })
+    await page.mouse.up()
+    expect(await selected()).toMatch(/^Section heading here First line .* The end of the paragraph\.?$/)
+  }
+  // A double click still selects a word (native).
+  await layer.locator('span', { hasText: 'second line' }).dblclick({ position: { x: 5, y: 5 } })
+  expect(await selected()).toBe('second')
 })
