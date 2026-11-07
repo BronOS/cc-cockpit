@@ -220,3 +220,52 @@ test('Open terminal here opens a selected shell tab in that folder', async ({ co
   // A shell tab never runs claude.
   expect(cockpit.claudeRuns()).toEqual([])
 })
+
+test('Open with rules: a click runs the first matching rule (overlay, tab, system app); the menu lists them and the viewer', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  writeFileSync(join(projectDir, 'data x.json'), '{"a":1}\n')
+  writeFileSync(join(projectDir, 'app.log'), 'line\n')
+  writeFileSync(join(projectDir, 'spec.pdf'), '%PDF-1.4\n')
+  const shellCalls = await stubShell(cockpit)
+  await page.evaluate(
+    `window.cockpit.invoke('settings.pluginSettingsSave', ${JSON.stringify({
+      id: 'cockpit.files',
+      values: {
+        openWith: [
+          { extensions: 'json', action: 'terminal', command: `sh -c 'echo "got:$1"' sh {file}`, where: 'overlay', waitForKey: true },
+          { extensions: 'log', action: 'terminal', command: `sh -c 'echo "tab:$1"; sleep 30' sh {file}`, where: 'tab', waitForKey: false },
+          { extensions: 'pdf', action: 'system' }
+        ]
+      }
+    })})`
+  )
+  const tree = await filesPanel(cockpit)
+  const row = (name: string) => tree.locator('.row', { has: tree.locator('.name', { hasText: new RegExp(`^${name}$`) }) })
+
+  // json: a terminal overlay with the path as one argument, waiting for Enter.
+  await row('data x.json').click()
+  await expect.poll(async () => (await cockpit.hook<{ title?: string }[]>('overlays', projectDir)).map((o) => o.title), { timeout: 15_000 }).toEqual([
+    'sh: data x.json'
+  ])
+  await expect(page.locator('.overlay .xterm-rows')).toContainText('got:data x.json')
+  await expect(page.locator('.overlay .xterm-rows')).toContainText('press Enter to close')
+  await page.keyboard.press('Enter')
+  await expect.poll(async () => (await cockpit.hook<unknown[]>('overlays', projectDir)).length, { timeout: 10_000 }).toBe(0)
+
+  // log: a command tab opened by Files.
+  await row('app.log').click()
+  await expect
+    .poll(async () => (await cockpit.hook<TabInfo[]>('tabs', projectDir)).filter((t) => t.kind === 'command').map((t) => [t.label, t.openedBy]), { timeout: 15_000 })
+    .toEqual([['sh: app.log', 'cockpit.files']])
+  await cockpit.waitForTerminalText('tab:app.log')
+
+  // pdf: the system app (recorded).
+  await row('spec.pdf').click()
+  await expect.poll(async () => (await shellCalls()).map((c) => c[0])).toEqual(['openPath'])
+
+  // The menu: the rule, then the viewer.
+  await row('data x.json').click({ button: 'right' })
+  const menu = tree.getByRole('menu')
+  await expect(menu.getByRole('menuitem').first()).toHaveText('Open with sh (terminal)')
+  await expect(menu.getByRole('menuitem').nth(1)).toHaveText('Open in file viewer')
+})
