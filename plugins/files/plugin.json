@@ -29,6 +29,42 @@
             "title": "Hide ignored files",
             "description": "Leave out what git ignores (.gitignore: node_modules, dist, logs). When shown, they are dimmed.",
             "default": false
+          },
+          "openWith": {
+            "type": "array",
+            "title": "Open with",
+            "description": "Rules for a click in the tree: the first rule whose extensions match the file opens it; a file no rule matches opens in the project's file opener (the Reviewer). The right-click menu lists every matching rule. In a command, {file} is the file's path as one argument, a word of its own; for a pipe: sh -c 'glow \"$1\" | less -R' sh {file}. Commands run in the project folder, with no shell unless you name one.",
+            "maxItems": 30,
+            "default": [],
+            "items": {
+              "type": "object",
+              "title": "Rule",
+              "required": ["extensions", "action"],
+              "properties": {
+                "extensions": { "type": "string", "title": "Extensions", "description": "One or more, separated by spaces or commas: pdf, json jsonl, tar.gz", "minLength": 1, "maxLength": 200 },
+                "action": {
+                  "type": "string",
+                  "title": "Open in",
+                  "oneOf": [
+                    { "const": "terminal", "title": "A terminal command" },
+                    { "const": "system", "title": "The system's default app" },
+                    { "const": "default", "title": "The project's file opener (Reviewer)" }
+                  ],
+                  "default": "terminal"
+                },
+                "command": { "type": "string", "title": "Command", "description": "For a terminal command, e.g. jq -C . {file}, or less {file}", "maxLength": 2048, "default": "" },
+                "where": {
+                  "type": "string",
+                  "title": "Terminal",
+                  "oneOf": [
+                    { "const": "overlay", "title": "Overlay above the window" },
+                    { "const": "tab", "title": "New tab" }
+                  ],
+                  "default": "overlay"
+                },
+                "waitForKey": { "type": "boolean", "title": "Keep the output until Enter", "description": "After the command ends, wait for Enter before the overlay or tab closes. Turn off for programs that wait on their own (less, an editor).", "default": true }
+              }
+            }
           }
         }
       }
