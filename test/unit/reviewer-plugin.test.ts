@@ -24,11 +24,10 @@ afterEach(() => {
 })
 
 describe('plugins/reviewer build', () => {
-  it('overlay/review.bundle.js is what a fresh build of src/page produces, with no absolute path', () => {
-    const out = join(tmp, 'review.bundle.js')
-    execFileSync(process.execPath, [join(REPO, 'scripts/build-reviewer.mjs'), out], { cwd: '/', stdio: 'pipe', timeout: 55_000 })
-    const fresh = readFileSync(out)
-    expect(fresh.equals(readFileSync(join(REVIEWER, 'overlay/review.bundle.js'))), 'stale plugins/reviewer/overlay/review.bundle.js: run `npm run build:reviewer`').toBe(true)
+  it.each(['review.bundle.js', 'pdf.bundle.js'])('overlay/%s is what a fresh build of src/page produces, with no absolute path', (name) => {
+    execFileSync(process.execPath, [join(REPO, 'scripts/build-reviewer.mjs'), tmp], { cwd: '/', stdio: 'pipe', timeout: 55_000 })
+    const fresh = readFileSync(join(tmp, name))
+    expect(fresh.equals(readFileSync(join(REVIEWER, 'overlay', name))), `stale plugins/reviewer/overlay/${name}: run \`npm run build:reviewer\``).toBe(true)
     expect(fresh.toString('utf8')).not.toContain(REPO)
   }, 60_000)
 })

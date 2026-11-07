@@ -70,6 +70,7 @@ import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT }
 import { originalDocument, FRAME_SANDBOX, FRAME_COLOR_SCHEME } from './original.mjs'
 import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
 import { startBytes, formatSize } from './bytes.mjs'
+import { showPdfIn, pdfSelection, scrollToPage } from './pdf.js'
 
 /* global ccPanel */
 
@@ -435,6 +436,7 @@ function selectionOf(side) {
 
 function currentSelectionSide() {
   if (isHtml()) return htmlSelection() ? 'new' : null
+  if (isPreview()) return isPdf() && pdfSelection(preview.el) ? 'new' : null
   if (state.lastSide && selectionOf(state.lastSide)) return state.lastSide
   return ['new', 'old'].find((s) => selectionOf(s)) || null
 }
@@ -450,6 +452,10 @@ function selectionEndRect() {
   if (isHtml()) {
     const r = htmlSelection() && htmlSelectionRange()
     return r ? lastRect(r.range) : null
+  }
+  if (isPdf()) {
+    const p = pdfSelection(preview.el)
+    return p ? lastRect(p.range) : null
   }
   const side = currentSelectionSide()
   if (!side) return null
@@ -506,7 +512,7 @@ function placeAddButton() {
 
 /** Collapses the selection a note was just made from, so the floating button goes with it. */
 function collapseSelection(side) {
-  if (isHtml()) {
+  if (isHtml() || isPreview()) {
     const sel = window.getSelection()
     if (sel) sel.removeAllRanges()
     return
@@ -519,6 +525,7 @@ let noteSeq = 0
 function addNote(sideHint) {
   if (atNoteLimit()) return updateAddButton() // the hint says why
   if (isHtml()) return addHtmlNote()
+  if (isPreview()) return isPdf() ? addPdfNote() : undefined
   const side = sideHint && selectionOf(sideHint) ? sideHint : currentSelectionSide()
   if (!side) return
   const sel = selectionOf(side)
@@ -533,6 +540,7 @@ function addNote(sideHint) {
 }
 
 function scrollTo(note) {
+  if (note.page) return scrollToPage(preview.el, note.page)
   // A markdown file: a note is shown in the view it was taken in.
   if (state.md === 'source' && note.anchor) setMdView('rendered')
   else if (state.md === 'rendered' && !note.anchor) setMdView('source')
@@ -570,7 +578,8 @@ function renderNotes(focusId) {
   const list = $('notes')
   list.replaceChildren()
   // Source view: line notes by line, then a markdown file's text notes (taken in Rendered).
-  const lineOrder = (a, b) => (a.anchor ? 1 : 0) - (b.anchor ? 1 : 0) || (a.anchor ? 0 : a.from - b.from || (a.side === 'old' ? -1 : 1))
+  // A PDF's notes are page notes: by page.
+  const lineOrder = (a, b) => (a.anchor ? 1 : 0) - (b.anchor ? 1 : 0) || (a.anchor ? 0 : (a.page || a.from) - (b.page || b.from) || (a.side === 'old' ? -1 : 1))
   const notes = isHtml() ? htmlNotesInOrder() : [...state.draft.notes].sort(lineOrder)
   list.hidden = !notes.length
   for (const n of notes) {
@@ -578,7 +587,9 @@ function renderNotes(focusId) {
     const body = el('div', 'note-body')
     const where = n.anchor || (isHtml() && !state.md)
       ? htmlNoteLabel(n)
-      : el('button', 'link', `${n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`}${state.sides.mode === 'diff' ? (n.side === 'old' ? ' · old' : ' · new') : ''}`)
+      : n.page
+        ? el('button', 'link', `Page ${n.page}`)
+        : el('button', 'link', `${n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`}${state.sides.mode === 'diff' ? (n.side === 'old' ? ' · old' : ' · new') : ''}`)
     where.type = 'button'
     where.title = where.title || (isText() || isHtml() ? 'Show in the text' : 'Show in the diff')
     where.addEventListener('click', () => scrollTo(n))
@@ -688,8 +699,29 @@ function showImage(r) {
   preview.el.replaceChildren(img)
 }
 
-function showPdf() {
-  previewFailed('PDF files are not shown yet')
+const isPdf = () => isPreview() && state.sides.kind === 'pdf'
+
+/** The PDF (pdf.js, loaded now); a note is taken on a selection in a page's text. */
+function showPdf(r) {
+  preview.el.replaceChildren(el('p', 'muted', 'Opening the PDF…'))
+  showPdfIn(preview.el, r.b64)
+    .then(({ pages }) => {
+      $('base').textContent = `${pages} ${pages === 1 ? 'page' : 'pages'} · ${formatSize(r.size)}`
+      renderNotes()
+    })
+    .catch((e) => previewFailed(e.message))
+}
+
+function addPdfNote() {
+  const sel = pdfSelection(preview.el)
+  if (!sel) return
+  const quote = sel.quote.length > QUOTE_MAX ? `${sel.quote.slice(0, QUOTE_MAX - 2)} …` : sel.quote
+  const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, page: sel.page, quote, text: '' }
+  collapseSelection()
+  state.draft.notes.push(note)
+  renderNotes(note.id)
+  updateAddButton()
+  postDraft()
 }
 
 // ---- HTML mode (annotate with html) ----
@@ -1422,7 +1454,7 @@ document.addEventListener('focusin', () => updateAddButton())
 document.addEventListener('focusout', () => updateAddButton())
 // `a` adds a note on the selection, as in a file review (where CodeMirror's keymap handles it).
 document.addEventListener('keydown', (e) => {
-  if (!isHtml() || e.key !== 'a' || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return
+  if (!(isHtml() || isPdf()) || e.key !== 'a' || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return
   const t = e.target
   if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return
   e.preventDefault()

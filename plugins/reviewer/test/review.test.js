@@ -489,3 +489,17 @@ test('buildReview of a preview: the file as it is now', () => {
   const sides = { path: 'doc.pdf', mode: 'preview', head: null, old: '', new: '', oldMissing: true, newMissing: false }
   assert.match(review.buildReview({ comment: '', notes: [] }, sides).text, /^Review of doc\.pdf \(the file as it is now, no git diff\)/)
 })
+
+test('page notes (a PDF): kept by cleanDraft, ordered by page, worded as pages', () => {
+  const d = review.cleanDraft({ global: '', notes: [
+    { id: 'b', page: 3, quote: 'third', text: 'later' },
+    { id: 'a', page: 1, quote: 'first words', text: 'fix this' },
+    { id: 'x', page: 0, quote: 'q', text: 'dropped' },
+    { id: 'y', page: 'nope', quote: 'q', text: 'dropped' },
+  ] })
+  assert.deepEqual(d.notes.map((n) => [n.id, n.page]), [['b', 3], ['a', 1]])
+  const sides = { path: 'doc.pdf', mode: 'preview', head: null, old: '', new: '', oldMissing: true, newMissing: false }
+  const text = review.buildReview(d, sides).text
+  assert.match(text, /1\. Page 1:\n   > first words\n   fix this/)
+  assert.match(text, /2\. Page 3:\n   > third\n   later/)
+})

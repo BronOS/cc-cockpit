@@ -8,6 +8,7 @@ const MAX_NOTES = 200
 const MAX_GLOBAL = 20000
 const MAX_NOTE_TEXT = 4000 // the page's note and comment inputs carry the same caps as maxlength
 const MAX_QUOTE = 500 // per note, as stored; the message may shorten it further
+const MAX_PDF_PAGE = 100000 // a page note's page number: past any real PDF, so a bad draft is dropped
 const MAX_MESSAGE = 20000 // the most one review text may take; quotes are shortened first
 // What the reviewer hands the app's Discuss with Claude (its onDiscuss answer). The app sends at most
 // 20,000 characters in all: `About: <title>`, the type line (at most 500), this text, then the
@@ -134,6 +135,18 @@ function cleanDraft(d) {
         out.notes.push(note)
         continue
       }
+      // A note on a PDF's page (the preview has no lines): the page number and the quote.
+      if (n.page !== undefined) {
+        const page = Math.floor(Number(n.page))
+        if (!(page >= 1 && page <= MAX_PDF_PAGE)) continue
+        out.notes.push({
+          id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.notes.length + 1),
+          page,
+          quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '',
+          text: typeof n.text === 'string' ? n.text.slice(0, MAX_NOTE_TEXT) : '',
+        })
+        continue
+      }
       const from = Math.floor(Number(n.from))
       const to = Math.floor(Number(n.to))
       if (!(from >= 1 && to >= from)) continue
@@ -182,6 +195,7 @@ function noteOrder(a, b) {
   const bh = !!b.anchor
   if (ah !== bh) return ah ? 1 : -1
   if (ah) return (a.doc === 'companion') - (b.doc === 'companion') || a.anchor.at - b.anchor.at
+  if (a.page || b.page) return (a.page || 0) - (b.page || 0)
   return a.from - b.from || (a.side === b.side ? 0 : a.side === 'old' ? -1 : 1)
 }
 
@@ -210,6 +224,11 @@ function buildMessage(head, draft, sided, companionTitle = null, max = MAX_MESSA
         // A note on the companion says which document it is in; the main one's need not.
         const where = n.doc === 'companion' ? `In ${companionTitle || 'the document beside it'}, ${q[0].toLowerCase()}${q.slice(1)}` : q
         parts.push(`${i + 1}. ${where}: ${body}`)
+        return
+      }
+      if (n.page) {
+        const q = n.quote.trim() && quoteMax > 0 ? `\n${quoteBlock(n.quote, quoteMax)}` : ''
+        parts.push(`${i + 1}. Page ${n.page}:${q}\n   ${body}`)
         return
       }
       const lines = n.from === n.to ? `Line ${n.from}` : `Lines ${n.from}-${n.to}`

@@ -151,3 +151,72 @@ test('images: a png and an svg show as pictures, fitted, with their size; the sv
   expect(await b.locator('body').evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
   expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBeUndefined()
 })
+
+/** A small valid PDF: one page per text, Helvetica (not embedded: pdf.js falls back to a system font). */
+function makePdf(pages: string[]): Buffer {
+  const objs: string[] = []
+  const kids = pages.map((_, i) => `${3 + i * 2} 0 R`).join(' ')
+  objs.push('<< /Type /Catalog /Pages 2 0 R >>')
+  objs.push(`<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`)
+  const font = 3 + pages.length * 2
+  pages.forEach((text, i) => {
+    const stream = `BT /F1 24 Tf 72 700 Td (${text}) Tj ET`
+    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${4 + i * 2} 0 R >>`)
+    objs.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`)
+  })
+  objs.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  let out = '%PDF-1.4\n'
+  const offsets: number[] = []
+  objs.forEach((o, i) => {
+    offsets.push(out.length)
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`
+  })
+  const xref = out.length
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(out, 'latin1')
+}
+
+test('pdf: pages drawn by pdf.js in the sandboxed page, selectable text, a page note; a broken PDF says why', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const pdf = join(projectDir, 'spec.pdf')
+  writeFileSync(pdf, makePdf(['Hello page one', 'Second page text']))
+  const bad = join(projectDir, 'bad.pdf')
+  writeFileSync(bad, 'not a pdf at all')
+  const panel = await editedFiles(cockpit, [pdf, bad])
+
+  await panel.getByRole('button', { name: pdf }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['PDF: spec.pdf'])
+  const v = page.frameLocator('iframe[title="PDF: spec.pdf"]')
+  await expect(v.locator('#base')).toHaveText(/^2 pages · /, { timeout: 15_000 })
+  await expect(v.locator('.pdf-page')).toHaveCount(2)
+  await expect(v.locator('.pdf-page[data-page="1"] canvas')).toBeVisible()
+  await expect(v.locator('.pdf-page[data-page="1"] .textLayer')).toContainText('Hello page one')
+  // The canvas has ink on it (not a blank sheet).
+  const inked = await v.locator('.pdf-page[data-page="1"] canvas').evaluate((c: HTMLCanvasElement) => {
+    const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data
+    for (let i = 0; i < d.length; i += 4) if (d[i]! < 128 && d[i + 3]! > 0) return true
+    return false
+  })
+  expect(inked).toBe(true)
+
+  // Select the text of page 1 and press a: a page note with the quote.
+  await v.locator('.pdf-page[data-page="1"] .textLayer').evaluate((layer) => {
+    const span = [...layer.querySelectorAll('span')].find((s) => s.textContent?.includes('Hello'))!
+    const range = document.createRange()
+    range.selectNodeContents(span)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+  })
+  await v.locator('.preview').press('a')
+  await expect(v.locator('#notes .note')).toHaveCount(1)
+  await expect(v.locator('#notes .note button.link')).toHaveText('Page 1')
+  await expect(v.locator('#notes .note .quote')).toHaveText('Hello page one')
+  await escape(cockpit)
+  await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
+
+  await panel.getByRole('button', { name: bad }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['PDF: bad.pdf'])
+  await expect(page.frameLocator('iframe[title="PDF: bad.pdf"]').locator('.preview-error')).toContainText('not a valid PDF', { timeout: 15_000 })
+})

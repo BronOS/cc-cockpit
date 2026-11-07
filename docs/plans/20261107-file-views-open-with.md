@@ -93,6 +93,13 @@ CSP change, JPX images are not shown); `cMapUrl` / `standardFontDataUrl` fetched
 in `overlay/` or pass the data in); the pdfjs ESM build's `import.meta.url` against the classic IIFE that
 `build-reviewer.mjs` emits. Decide from the spike and note it here.
 
+**Spike outcome (Task 4, 2026-11-07):** pdf.js 6.4.299 runs in the sandboxed page with no CSP change. Its worker
+code is bundled with it into `overlay/pdf.bundle.js` and published as `globalThis.pdfjsWorker`, so pdf.js uses its
+main-thread "fake worker" (no Worker, no fetch, no dynamic import). `useWasm: false` (no `'wasm-unsafe-eval'`): JPEG
+2000 pictures inside a PDF stay blank. No cMaps or standard font data are fetched (system fonts stand in; CJK PDFs
+without embedded CMaps may show boxes). The IIFE's empty `import.meta` is only read on pdf.js's Node path and by the
+WASM decoders, both unused. The bundle loads only when a PDF is shown.
+
 **Core, openCommand.** A new tab variant: kind `command` with `argv` instead of the user's command string, plus
 `openedBy: pluginId`. It spawns the argv directly (no shell; the same env and PATH as every tab), cwd realpath'd inside
 the project folder, title clamped like a tab command's label (1-60 chars, one line). `argv` is 1-64 strings, each at
@@ -197,15 +204,16 @@ where the label is the command's first word or "System app").
 - Modify: `test/unit/reviewer-plugin.test.ts` (~27-31: byte-compare the new bundle(s) like `review.bundle.js`)
 - Create: `plugins/reviewer/src/page/pdf.js`
 - Modify: `plugins/reviewer/src/page/review.js`, `review.html`, `review.css`
-- Create: `plugins/reviewer/test/pdf.test.js` (pure parts: page/quote note format)
+- Create: `plugins/reviewer/src/page/pdf-entry.mjs` (the pdf.bundle.js entry)
+- Modify: `plugins/reviewer/test/review.test.js` (page notes), `test/e2e/reviewer-views.spec.ts` (instead of a pdf.test.js)
 
-- [ ] spike: load pdf.js in the sandboxed overlay frame under `pluginCsp`; record the worker outcome under Solution
+- [x] spike: load pdf.js in the sandboxed overlay frame under `pluginCsp`; record the worker outcome under Solution
       Overview (⚠️ note) and pick the mode
-- [ ] lazy-load `pdf.bundle.js` only for a PDF; `isEvalSupported: false`; render pages to canvas on scroll with the
+- [x] lazy-load `pdf.bundle.js` only for a PDF; `isEvalSupported: false`; render pages to canvas on scroll with the
       text layer
-- [ ] notes on a text selection carry the page number and quote; send to Claude like other notes
-- [ ] write tests for the note format and page-range helpers; a broken PDF shows the reviewer's error page (`fail`)
-- [ ] `npm run build:reviewer`; run tests - must pass before next task
+- [x] notes on a text selection carry the page number and quote; send to Claude like other notes
+- [x] write tests for the note format (cleanDraft, order, wording); a broken PDF shows why in the preview ("not a valid PDF"), e2e
+- [x] `npm run build:reviewer`; run tests - must pass before next task
 
 ### Task 5: Core plugin command tabs (tab manager and restore) [model: opus]
 
