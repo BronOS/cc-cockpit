@@ -283,3 +283,45 @@ test('pdf: a drag from the blank margin above a heading selects from the heading
   await layer.locator('span', { hasText: 'second line' }).dblclick({ position: { x: 5, y: 5 } })
   expect(await selected()).toBe('second')
 })
+
+test('html: a note on rendered text names its source lines (the second of two equal phrases gives its own line)', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const file = join(projectDir, 'repeat.html')
+  writeFileSync(
+    file,
+    '<!doctype html>\n<html><body>\n<h2>Repeated text</h2>\n<p>First: repeat me here.</p>\n<p data-src-line="1:99">Again: repeat me here.</p>\n\n' +
+      '<p>A paragraph\nover three\nlines.</p>\n\n</body></html>\n'
+  )
+  const panel = await editedFiles(cockpit, [file])
+  await panel.getByRole('button', { name: file }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Review: repeat.html'])
+  const v = page.frameLocator('iframe[title="Review: repeat.html"]')
+  const body = v.locator('.doc-body.markdown')
+  await expect(body.locator('p')).toHaveCount(3)
+  const note = async (index: number, from: string, to?: string) => {
+    await body.locator('p').nth(index).evaluate(
+      (p, [a, b]) => {
+        // Out of the last note's text box, where the key would be typed.
+        ;(document.activeElement as HTMLElement | null)?.blur()
+        const text = p.firstChild!
+        const s = text.textContent!.indexOf(a!)
+        const range = document.createRange()
+        range.setStart(text, s)
+        range.setEnd(text, b ? text.textContent!.indexOf(b) + b.length : s + a!.length)
+        window.getSelection()!.removeAllRanges()
+        window.getSelection()!.addRange(range)
+      },
+      [from, to]
+    )
+    await body.press('a')
+  }
+  // The second paragraph: line 5 (the file's own data-src-line="1:99" names nothing).
+  await note(1, 'repeat me here.')
+  await expect(v.locator('#notes .note button.link').first()).toHaveText(/^Line 5 · «repeat me here\.»$/)
+  // The first: line 4. A paragraph over three lines: all of them, not the blank line after it.
+  await note(0, 'repeat me here.')
+  await note(2, 'A paragraph', 'lines.')
+  const labels = v.locator('#notes .note button.link')
+  await expect(labels).toHaveCount(3)
+  expect((await labels.allTextContents()).sort()).toEqual(['Line 4 · «repeat me here.»', 'Line 5 · «repeat me here.»', 'Lines 7-9 · «A paragraph over three lines.»'])
+})

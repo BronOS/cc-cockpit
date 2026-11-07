@@ -149,6 +149,9 @@ function cleanAttrs(tag, a) {
   // A markdown file's source lines of a block (markdown.mjs). Digits only, so nothing but a number
   // pair rides on it; on annotate's HTML it is harmless (the page reads it only for a markdown file).
   if (a.has('data-md-lines') && /^\d{1,7}-\d{1,7}$/.test(a.get('data-md-lines'))) out.push(['data-md-lines', a.get('data-md-lines')])
+  // An HTML file's source position of a block (html-lines.mjs: `key:offset`). Digits and one colon
+  // only; the page counts it only with its own key, so a value the file wrote itself names no line.
+  if (a.has('data-src-line') && /^\d{1,12}:\d{1,8}$/.test(a.get('data-src-line'))) out.push(['data-src-line', a.get('data-src-line')])
   if (tag === 'td' || tag === 'th') {
     for (const name of ['colspan', 'rowspan']) {
       const v = a.get(name)

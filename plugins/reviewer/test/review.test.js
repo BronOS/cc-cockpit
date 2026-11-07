@@ -550,3 +550,21 @@ test('a stored word-aligned tail is shown whole after the …; the head is the s
   const md = review.buildReview(review.cleanDraft({ notes: [{ quote: head.slice(0, 500), anchor: { at: 0, length: 900 }, lines: { from: 1, to: 9 }, tail, text: 'n' }] }), { ...sides, path: 'a.md', mode: 'plain' }).text
   assert.match(md, /1\. Lines 1-9 \(«Page 3: a long section .* … magna felis sollicitudin mauris\. The end of the long paragraph is here\.»\)/)
 })
+
+test('a new (untracked) or deleted file is one text: its head names no diff', () => {
+  const note = { notes: [{ id: 'n1', quote: 'repeat me here.', anchor: { at: 5, length: 15, prefix: '', suffix: '' }, lines: { from: 7, to: 7 }, text: 'n' }] }
+  for (const path of ['test.html', 'notes.md', 'a.ts']) {
+    const added = { path, mode: 'diff', head: 'd8b329d06f8e11', old: '', new: 'x', oldMissing: true, newMissing: false }
+    const { text } = review.buildReview(note, added, review.MAX_CONTEXT, { named: false })
+    assert.match(text, /^Review: a new file, not in the last commit d8b329d06f8e: the file as it is now, no diff\n\n1\. Line 7 \(«repeat me here\.»\):\n   n$/)
+    assert.doesNotMatch(text, /changes since/)
+    // Discuss with no notes asks about the file, not a diff.
+    const empty = review.buildReview({}, added, review.MAX_CONTEXT, { named: false }).text
+    assert.doesNotMatch(empty, /changes since/)
+    assert.equal(empty.split('\n\n')[1], review.buildReview({}, { ...added, mode: 'plain' }, review.MAX_CONTEXT, { named: false }).text.split('\n\n')[1])
+  }
+  const deleted = { path: 'gone.md', mode: 'diff', head: 'd8b329d06f8e11', old: 'x', new: '', oldMissing: false, newMissing: true }
+  assert.match(review.buildReview(note, deleted, review.MAX_CONTEXT, { named: false }).text, /^Review: deleted since the last commit d8b329d06f8e: its last committed text\n/)
+  // A changed tracked file keeps its diff head.
+  assert.match(review.buildReview(note, { ...sides, oldMissing: false, newMissing: false }).text, /^Review of src\/a\.ts \(changes since the last commit 0123456789ab\)/)
+})

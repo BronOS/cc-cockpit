@@ -294,16 +294,29 @@ function formatReview(draft, sides) {
 function buildReview(draft, sides, max = MAX_MESSAGE, { named = true } = {}) {
   const commit = sides.head ? ` ${sides.head.slice(0, 12)}` : ''
   const unchanged = sides.mode === 'diff' && !sides.oldMissing && !sides.newMissing && sides.old === sides.new
-  // Sides only mean something when there is a diff: an unchanged file is one text.
-  const sided = sides.mode === 'diff' && !unchanged
-  const base = sides.mode === 'plain' || sides.mode === 'preview' ? 'the file as it is now, no git diff' : unchanged ? `unchanged since the last commit${commit}` : `changes since the last commit${commit}`
+  // A new file (untracked, or added but not committed) and a deleted one are one text, not a diff:
+  // "changes since the last commit" would send Claude looking for a diff that does not exist.
+  const added = sides.mode === 'diff' && sides.oldMissing && !sides.newMissing
+  const deleted = sides.mode === 'diff' && sides.newMissing && !sides.oldMissing
+  // Sides only mean something when there is a diff: an unchanged, new or deleted file is one text.
+  const sided = sides.mode === 'diff' && !unchanged && !added && !deleted
+  const base =
+    sides.mode === 'plain' || sides.mode === 'preview'
+      ? 'the file as it is now, no git diff'
+      : added
+        ? `a new file, not in the last commit${commit}: the file as it is now, no diff`
+        : deleted
+          ? `deleted since the last commit${commit}: its last committed text`
+          : unchanged
+            ? `unchanged since the last commit${commit}`
+            : `changes since the last commit${commit}`
   // Discuss (`named: false`): the app's own head already says `About: <title>` and `File: <path>`,
   // so the review says only what it is about, not the path a third time.
   const head = named ? `Review of ${sides.path} (${base})` : `Review: ${base}`
   // No comment and no note: Discuss still sends (it used to refuse, real-work feedback 9). Claude
   // can read the file itself, so the message asks it to and to talk the change through.
   if (isEmpty(cleanDraft(draft))) {
-    const ask = sided || sides.mode === 'diff' ? DISCUSS_DIFF : DISCUSS_FILE
+    const ask = sided || (sides.mode === 'diff' && !added) ? DISCUSS_DIFF : DISCUSS_FILE
     return { text: `${head}\n\n${ask}`, cut: false }
   }
   return buildMessage(head, draft, sided, null, max)

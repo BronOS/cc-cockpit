@@ -69,10 +69,14 @@ import { isPlainClick, selectionKey } from './links.mjs'
 import { clampSplit, splitAt, splitKey, selectionDoc, openLabel, SPLIT_DEFAULT } from './split.mjs'
 import { originalDocument, FRAME_SANDBOX, FRAME_COLOR_SCHEME } from './original.mjs'
 import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
+import { markHtmlLines, markOffset, blockLines } from './html-lines.mjs'
 import { startBytes, formatSize } from './bytes.mjs'
 import { showPdfIn, pdfSelection, scrollToPage } from './pdf.js'
 
 /* global ccPanel */
+
+// A rendered HTML file's marks carry this key (html-lines.mjs): a mark without it is the file's own.
+const htmlLineKey = String(1e8 + Math.floor(Math.random() * 9e8))
 
 const QUOTE_MAX = 500
 // The host's cleanDraft caps (dist/lib/review.js MAX_NOTE_TEXT, MAX_GLOBAL; a test compares them).
@@ -311,7 +315,7 @@ function buildEditors() {
     // An HTML file is its own markup (the sanitizer keeps what is safe, as for annotate's HTML).
     if (state.md === 'rendered' && !htmlView.rendered) {
       const text = markdownText(state.sides)
-      renderHtml(htmlView, state.sides.format === 'html' ? text : markdownHtml(text))
+      renderHtml(htmlView, state.sides.format === 'html' ? markHtmlLines(text, htmlLineKey) : markdownHtml(text))
     }
     return
   }
@@ -957,6 +961,24 @@ function mdLinesOf(range) {
   return { from, to }
 }
 
+// A selection on a rendered HTML file: the source lines from the block it starts in to the end of
+// the block it ends in (html-lines.mjs blockLines). Null when neither end is in a marked block.
+function htmlLinesOf(range) {
+  const at = (e) => markOffset(e.dataset.srcLine, htmlLineKey)
+  const marked = [...htmlView.body.querySelectorAll('[data-src-line]')].filter((e) => at(e) !== null)
+  const blockAt = (node) => {
+    let e = node && (node.nodeType === 1 ? node : node.parentElement)
+    for (; e && htmlView.body.contains(e); e = e.parentElement) if (marked.includes(e)) return e
+    return null
+  }
+  const a = blockAt(range.startContainer)
+  const b = blockAt(range.endContainer)
+  if (!a && !b) return null
+  const last = b || a
+  const after = marked.slice(marked.indexOf(last) + 1).find((e) => !last.contains(e))
+  return blockLines(markdownText(state.sides), at(a || b), at(last), after ? at(after) : null)
+}
+
 function addHtmlNote() {
   const sel = htmlSelection()
   if (!sel) return
@@ -968,10 +990,11 @@ function addHtmlNote() {
     const tail = tailOf(sel.view.full.slice(sel.start, sel.end), quote.length)
     if (tail) note.tail = tail
   }
-  // Source lines only for markdown: markdown.mjs marks its blocks; an HTML file's own attributes could claim any.
-  if (state.md === 'rendered' && state.sides.format === 'markdown' && sel.view === htmlView) {
+  // Source lines for a rendered markdown or HTML file, from the marks the page put on its blocks
+  // (markdown.mjs, html-lines.mjs); annotate's HTML has none.
+  if (state.md === 'rendered' && sel.view === htmlView) {
     const r = htmlSelectionRange()
-    const lines = r && mdLinesOf(r.range)
+    const lines = r && (state.sides.format === 'markdown' ? mdLinesOf(r.range) : state.sides.format === 'html' ? htmlLinesOf(r.range) : null)
     if (lines) note.lines = lines
   }
   if (sel.view === companionView) note.doc = 'companion'
