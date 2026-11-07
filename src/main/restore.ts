@@ -6,7 +6,10 @@
 // `projects/<id>.json`; which windows were open is `openProjects` in app.json (the window manager
 // already keeps it). What comes back: Claude tabs with `claude --resume <id>` (no id yet = a
 // fresh `claude`), shell tabs fresh, command tabs NOT started (their own saved command waits for
-// the user's Restart; TabManager.restoreTab). A running tool call does not survive (design: Restore).
+// the user's Restart; TabManager.restoreTab). A command tab a plugin opened (ctx.sessions.openCommand)
+// comes back the same way, but only while that plugin is still installed and not revoked: the check
+// is injected (`PluginAvailable`), so this file stays free of the installer and the marketplace.
+// A running tool call does not survive (design: Restore).
 //
 // Tabs are started when the window's renderer first asks for them (`tabs.list`), not when the
 // window is created: output a PTY prints before the page subscribed to `tabs.data` is dropped,
@@ -16,11 +19,11 @@ import { errorText } from '../shared/error-text'
 import type { TabInfo } from '../shared/ipc'
 import { checkSessionName } from '../shared/session-name'
 import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
-import { checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
+import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
 import type { ProjectView, TabKind, TabRecord } from '../shared/types'
 import type { ProjectRegistry } from './projects/registry'
 import { SESSION_ID } from './tabs/claude-argv'
-import { resolveCwd, type TabCommand } from './tabs/tab-manager'
+import { isPluginCommand, isPluginId, resolveCwd, type AnyTabCommand } from './tabs/tab-manager'
 
 /** One tab to start, as TabManager.restoreTab takes it. */
 export interface RestoredTab {
@@ -31,11 +34,19 @@ export interface RestoredTab {
   resumeId?: string
   /** Claude tabs only: the name the person gave the tab. */
   name?: string
-  /** Command tabs only (and always): the tab's own saved copy of its entry. */
-  command?: TabCommand
+  /** Command tabs only (and always): the tab's own saved copy of its entry, or a plugin's argv. */
+  command?: AnyTabCommand
   /** Any kind: the person's flag, sticky across a restart like the tab itself. */
   flag?: TabFlag
 }
+
+/**
+ * Whether the plugin that opened a command tab may have it back: installed (in the plugin index)
+ * and not revoked by a marketplace with authority over it (index.ts asks the installer). A plugin
+ * that was uninstalled, or whose commit was revoked, loses its saved tabs: a revoked plugin's argv
+ * is exactly what must not sit one Restart click away under its name.
+ */
+export type PluginAvailable = (pluginId: string) => boolean
 
 /** The persisted shape of live tabs. Ids are saved for the record but a restored tab gets a new one. */
 export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
@@ -46,6 +57,9 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     // the entry was edited or deleted since.
     if (t.label !== undefined) record.label = t.label
     if (t.command !== undefined) record.command = t.command
+    if (t.argv !== undefined) record.argv = [...t.argv]
+    if (t.openedBy !== undefined) record.openedBy = t.openedBy
+    if (t.openedByName !== undefined) record.openedByName = t.openedByName
     if (t.name !== undefined) record.name = t.name
     if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
     return record
@@ -64,24 +78,40 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
  *  - a shell tab never resumes anything, whatever its record says;
  *  - a command tab without a valid label and command (checkTabCommandLabel / checkTabCommandLine)
  *    is skipped: there is nothing safe to show or run. A valid one comes back not started;
+ *  - a plugin's command tab (a record with `argv` or `openedBy`) needs a valid label, argv
+ *    (checkCommandArgv) and plugin id, and no `command`: a record with both is damaged, and must
+ *    never fall back to running a line through the shell. It is skipped too when `pluginAvailable`
+ *    says its plugin is gone or revoked. A damaged name only loses the name. Not started, as above;
  *  - a cwd that is gone, is not a directory or is outside the project (the project was relinked
  *    to another folder, a symlink now points out) falls back to the project folder. The tab is
  *    still worth bringing back, and the user can see where it is.
  */
-export function buildRestorePlan(project: Pick<ProjectView, 'path' | 'tabs'>): RestoredTab[] {
+export function buildRestorePlan(
+  project: Pick<ProjectView, 'path' | 'tabs'>,
+  pluginAvailable?: PluginAvailable
+): RestoredTab[] {
   const plan: RestoredTab[] = []
   const records: unknown = project.tabs
   if (!Array.isArray(records)) return plan
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command, name, flag } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag } = raw as Record<string, unknown>
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') continue
     const tab: RestoredTab = { kind }
     if (kind === 'command') {
       const l = checkTabCommandLabel(label)
-      const c = checkTabCommandLine(command)
-      if (!l.ok || !c.ok) continue
-      tab.command = { label: l.value, command: c.value }
+      if (!l.ok) continue
+      if (argv !== undefined || openedBy !== undefined) {
+        const a = checkCommandArgv(argv)
+        if (!a.ok || command !== undefined || !isPluginId(openedBy)) continue
+        if (pluginAvailable !== undefined && !available(pluginAvailable, openedBy)) continue
+        const n = openedByName === undefined ? undefined : checkTabCommandLabel(openedByName)
+        tab.command = { label: l.value, argv: a.value, openedBy, ...(n?.ok ? { openedByName: n.value } : {}) }
+      } else {
+        const c = checkTabCommandLine(command)
+        if (!c.ok) continue
+        tab.command = { label: l.value, command: c.value }
+      }
     }
     if (typeof cwd === 'string' && cwdUsable(project.path, cwd)) tab.cwd = cwd
     if (kind === 'claude' && typeof sessionId === 'string' && SESSION_ID.test(sessionId)) {
@@ -98,6 +128,15 @@ export function buildRestorePlan(project: Pick<ProjectView, 'path' | 'tabs'>): R
     plan.push(tab)
   }
   return plan
+}
+
+/** The injected check, a throw read as "not available": a tab is dropped rather than kept on a guess. */
+function available(check: PluginAvailable, pluginId: string): boolean {
+  try {
+    return check(pluginId)
+  } catch {
+    return false
+  }
 }
 
 function cwdUsable(projectPath: string, cwd: string): boolean {
@@ -117,11 +156,11 @@ export interface LaunchPlan {
   missing: ProjectView[]
 }
 
-export function planLaunch(projects: readonly ProjectView[]): LaunchPlan {
+export function planLaunch(projects: readonly ProjectView[], pluginAvailable?: PluginAvailable): LaunchPlan {
   const plan: LaunchPlan = { open: [], missing: [] }
   for (const project of projects) {
     if (project.missing) plan.missing.push(project)
-    else plan.open.push({ project, tabs: buildRestorePlan(project) })
+    else plan.open.push({ project, tabs: buildRestorePlan(project, pluginAvailable) })
   }
   return plan
 }
@@ -133,6 +172,13 @@ export interface TabRestorerOptions {
   saveTabs(projectId: string, records: TabRecord[]): void
   /** The project's folder (ProjectRegistry.get): the cwd saved for a tab that failed to restore. */
   projectPath(projectId: string): string | undefined
+  /**
+   * Whether a plugin command tab's plugin may have it back (PluginAvailable). Asked when a plan is
+   * built here (requeue) and again right before the queued tabs start: the plan of a launch was
+   * made before the window attached, and the plugin may have been uninstalled or revoked since.
+   * Absent = every plugin is (tests that do not care).
+   */
+  pluginAvailable?: PluginAvailable
   log?: (message: string) => void
 }
 
@@ -193,6 +239,12 @@ export class TabRestorer {
         if ((this.generation.get(projectId) ?? 0) !== startedAt) return
         const failed: TabRecord[] = []
         for (const tab of tabs) {
+          // Dropped, not failed: a failed tab rides along in the record to be tried again, and a
+          // gone plugin's tab must leave the record for good.
+          if (tab.command !== undefined && isPluginCommand(tab.command) && !this.pluginOk(tab.command.openedBy)) {
+            this.log(`not restoring a command tab of project ${projectId}: plugin ${tab.command.openedBy} is gone or revoked`)
+            continue
+          }
           try {
             spawn(tab)
           } catch (err) {
@@ -237,9 +289,20 @@ export class TabRestorer {
     if (tab.flag !== undefined) record.flag = { ...tab.flag }
     if (tab.command !== undefined) {
       record.label = tab.command.label
-      record.command = tab.command.command
+      if (isPluginCommand(tab.command)) {
+        record.argv = [...tab.command.argv]
+        record.openedBy = tab.command.openedBy
+        if (tab.command.openedByName !== undefined) record.openedByName = tab.command.openedByName
+      } else {
+        record.command = tab.command.command
+      }
     }
     return record
+  }
+
+  private pluginOk(pluginId: string): boolean {
+    const check = this.options.pluginAvailable
+    return check === undefined || available(check, pluginId)
   }
 
   /**
@@ -267,7 +330,7 @@ export class TabRestorer {
     const path = this.options.projectPath(projectId)
     // Through buildRestorePlan like a launch: the same checks (a cwd that is gone falls back to
     // the folder, a command tab comes back not started, a shell tab never resumes).
-    this.queue(projectId, path === undefined ? [] : buildRestorePlan({ path, tabs: records }))
+    this.queue(projectId, path === undefined ? [] : buildRestorePlan({ path, tabs: records }, this.options.pluginAvailable))
   }
 
   /** The user closed the project's window: its tabs are gone for good, so is their record. */

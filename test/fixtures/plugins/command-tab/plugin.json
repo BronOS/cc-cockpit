@@ -1,0 +1,10 @@
+{
+  "id": "test.commandtab",
+  "name": "Command tab",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [{ "id": "open", "title": "Command tab: open" }]
+  }
+}

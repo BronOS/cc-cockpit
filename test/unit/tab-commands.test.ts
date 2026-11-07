@@ -10,14 +10,18 @@ import {
   TabCommandsService
 } from '../../src/main/tabs/tab-commands'
 import {
+  argvText,
+  checkCommandArgv,
   checkTabCommandLabel,
   checkTabCommandLine,
+  defaultCommandTitle,
   checkTabCommandOpen,
   TAB_COMMAND_LABEL_MAX,
   TAB_COMMAND_MAX,
   TAB_COMMANDS_MAX
 } from '../../src/shared/tab-commands'
 import type { TabCommandEntry } from '../../src/shared/types'
+import { commandTooltip } from '../../src/renderer/tabs/tab-label'
 
 const P = 'aaaaaaaaaaaaaaaa'
 const entry = (id: string, label = `L${id}`, command = `echo ${id}`): TabCommandEntry => ({ id, label, command })
@@ -316,5 +320,46 @@ describe('TabCommandsService', () => {
   it('refuses the project level of a project whose record is gone', () => {
     const { service } = rig()
     expect(() => service.menu('ffffffffffffffff')).toThrow('record is gone')
+  })
+})
+
+describe('plugin command tabs: argv rule, default title, tooltip', () => {
+  it('checkCommandArgv takes 1-64 strings of 1-4096 chars without NUL, untrimmed, as a copy', () => {
+    const argv = [' sh', '-c', 'echo "$1"', 'sh', 'a b']
+    const checked = checkCommandArgv(argv)
+    expect(checked).toEqual({ ok: true, value: argv })
+    expect(checked.ok && checked.value !== argv).toBe(true)
+    expect(checkCommandArgv(Array(64).fill('x')).ok).toBe(true)
+    expect(checkCommandArgv(['x'.repeat(4096)]).ok).toBe(true)
+    for (const bad of [undefined, 'ls', [], Array(65).fill('x'), [1], ['', 'x'], ['x'.repeat(4097)], ['a\0b'], [null]]) {
+      expect(checkCommandArgv(bad).ok, JSON.stringify(bad)?.slice(0, 40)).toBe(false)
+    }
+  })
+
+  it('defaultCommandTitle is the last path part of argv[0], made a label', () => {
+    expect(defaultCommandTitle('/usr/local/bin/glow')).toBe('glow')
+    expect(defaultCommandTitle('less')).toBe('less')
+    expect(defaultCommandTitle('bin/tool/')).toBe('tool')
+    expect(defaultCommandTitle('/')).toBe('Command')
+    expect(defaultCommandTitle('a\nb')).toBe('ab')
+    expect(defaultCommandTitle('x'.repeat(100))).toHaveLength(TAB_COMMAND_LABEL_MAX)
+    expect(checkTabCommandLabel(defaultCommandTitle('\u0007 ')).ok).toBe(true)
+  })
+
+  it('argvText quotes what needs it and cannot make a second line', () => {
+    expect(argvText(['sh', '-c', 'echo "$1"', 'sh', 'x y'])).toBe(`sh -c 'echo "$1"' sh 'x y'`)
+    expect(argvText(['less', "it's", ''])).toBe(`less 'it'\\''s' ''`)
+    expect(argvText(['a\nb'])).toBe(`'a\\x0ab'`)
+  })
+
+  it("commandTooltip names the plugin that opened the tab; a user's command tab has no marker", () => {
+    const base = { id: 't', gen: 1, kind: 'command' as const, cwd: '/p', label: 'Glow' }
+    expect(commandTooltip({ ...base, argv: ['glow', 'a b.md'], openedBy: 'cockpit.files', openedByName: 'Files' })).toBe(
+      "glow 'a b.md'\n/p\nOpened by Files (cockpit.files)"
+    )
+    expect(commandTooltip({ ...base, argv: ['glow'], openedBy: 'cockpit.files' })).toBe('glow\n/p\nOpened by cockpit.files')
+    expect(commandTooltip({ ...base, command: 'npm run dev' })).toBe('npm run dev\n/p')
+    expect(commandTooltip({ ...base })).toBeUndefined()
+    expect(commandTooltip({ id: 's', gen: 1, kind: 'shell', cwd: '/p' })).toBeUndefined()
   })
 })

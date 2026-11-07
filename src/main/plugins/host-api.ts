@@ -21,6 +21,9 @@
 //   sessions.openShell { pluginId, cwd?, focus? } -> { tabId }  a plain shell tab in this project, the
 //                                                                person's "+" > shell: no command, argv or
 //                                                                env from the plugin; the open budget
+//   sessions.openCommand { pluginId, argv, cwd?, title?, focus? } -> { tabId }  a command tab in this
+//                                                                project running `argv` with no shell,
+//                                                                marked with the plugin; the open budget
 //   badge           { pluginId, panelId, value}-> null           a panel the plugin itself declares
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
 //   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
@@ -184,6 +187,7 @@ import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
 import { checkSessionName } from '../../shared/session-name'
 import { checkSessionOptions } from '../../shared/session-options'
+import { checkCommandArgv, checkTabCommandLabel, defaultCommandTitle, TAB_COMMAND_LABEL_MAX } from '../../shared/tab-commands'
 import { resolveCwd } from '../tabs/tab-manager'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
 import { pluginFileUrl } from './plugin-protocol'
@@ -338,6 +342,18 @@ export interface HostApiDeps {
    * is refused.
    */
   openShellTab?(projectId: string, options: { cwd?: string }, windowId: number, focus?: boolean): Promise<{ id: string }>
+  /**
+   * Start a command tab running `argv` with no shell (TabManager.createPluginCommand) and tell its
+   * window, as `openShellTab` does. `openedBy` is the plugin HostApi resolved from the host's own
+   * list, never an id the request named unchecked; the tab shows it. Without it
+   * ctx.sessions.openCommand is refused.
+   */
+  openCommandTab?(
+    projectId: string,
+    options: { argv: string[]; cwd?: string; title: string; openedBy: string },
+    windowId: number,
+    focus?: boolean
+  ): Promise<{ id: string }>
   /** LayoutService.setBadge: false for a panel the project does not have. */
   setBadge(projectId: string, panelKey: string, badge: PanelBadge | null): boolean
   /**
@@ -680,6 +696,7 @@ export class HostApi {
       'sessions.send': (params) => this.send(params),
       'sessions.open': (params) => this.open(params),
       'sessions.openShell': (params) => this.openShell(params),
+      'sessions.openCommand': (params) => this.openCommand(params),
       'sessions.focus': (params) => this.focus(params),
       'sessions.close': (params) => this.close(params),
       'sessions.openFile': (params) => this.sessionFile(params),
@@ -1149,6 +1166,51 @@ export class HostApi {
     const tab = await this.deps.openShellTab(
       this.scope.projectId,
       cwd !== undefined && cwd !== '' ? { cwd } : {},
+      // The host's own window, never one the plugin names; only that window is told to select it.
+      this.scope.windowId,
+      focus === true
+    )
+    return { tabId: tab.id }
+  }
+
+  /**
+   * ctx.sessions.openCommand: a command tab running the plugin's `argv` as is, with no shell (design.md
+   * §3 "Custom commands": a plugin already runs anything through ctx.exec and terminal overlays, and a
+   * command the person wrote in a plugin's settings is their choice; the safeguard is that the tab
+   * says which plugin opened it). Only argv, cwd, title and focus are read; an `env` or `command`
+   * riding along is never looked at. Every check runs before the budget is spent, so a refusal costs
+   * nothing; the budget is sessions.open's RateWindow, shared with openShell. The project and window
+   * are the host's, and `openedBy` is the plugin this host runs, never anything the request says.
+   */
+  private async openCommand(params: unknown): Promise<{ tabId: string }> {
+    this.alive()
+    const { pluginId, argv, cwd, title, focus } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'sessions.openCommand')
+    const checked = checkCommandArgv(argv)
+    if (!checked.ok) throw new Error(`sessions.openCommand: ${checked.reason}`)
+    if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.openCommand: cwd must be a string')
+    if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.openCommand: focus must be a boolean')
+    let label: string
+    if (title === undefined) {
+      label = defaultCommandTitle(checked.value[0]!)
+    } else {
+      const t = checkTabCommandLabel(title)
+      if (!t.ok) throw new Error(`sessions.openCommand: title must be 1-${TAB_COMMAND_LABEL_MAX} characters on one line`)
+      label = t.value
+    }
+    if (!this.deps.openCommandTab) throw new Error('sessions.openCommand: command tabs are not available')
+    // Before the budget is spent, as for open; the tab manager checks it again when it spawns.
+    try {
+      resolveCwd(this.scope.projectDir, cwd || undefined)
+    } catch (err) {
+      throw new Error(`sessions.openCommand: ${errorText(err)}`, { cause: err })
+    }
+    if (!this.opens.take(plugin.id)) {
+      throw new Error(`sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+    }
+    const tab = await this.deps.openCommandTab(
+      this.scope.projectId,
+      { argv: checked.value, ...(cwd !== undefined && cwd !== '' ? { cwd } : {}), title: label, openedBy: plugin.id },
       // The host's own window, never one the plugin names; only that window is told to select it.
       this.scope.windowId,
       focus === true

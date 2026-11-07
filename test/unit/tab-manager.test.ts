@@ -1460,3 +1460,89 @@ describe('command tabs', () => {
     expect(backend.last.argv.at(-1)).toBe('npm run dev')
   })
 })
+
+describe('plugin command tabs', () => {
+  // A word a shell would act on in every way it could: it must reach the process as one argument.
+  const NASTY = '$(touch pwned) `id`; x y | z\n"q"'
+  const GLOW = { argv: ['sh', '-c', 'echo "hello-$1"', 'sh', NASTY], title: 'Glow', openedBy: 'cockpit.files', openedByName: 'Files' }
+
+  function rig() {
+    const calls: string[] = []
+    const changed: string[] = []
+    const tabs = manager(
+      '/data/app.sock',
+      {
+        started: (t) => calls.push(`started ${t.kind} ${t.tabId}`),
+        closed: (id) => calls.push(`closed ${id}`)
+      },
+      (projectId) => changed.push(projectId)
+    )
+    return { tabs, calls, changed }
+  }
+
+  it('spawns the argv verbatim with no shell, the same env and window token as every tab, marked with the plugin', () => {
+    const { tabs, calls, changed } = rig()
+    const tab = tabs.createPluginCommand(A, GLOW)
+    expect(tab).toMatchObject({ kind: 'command', cwd: projA, gen: 1, label: 'Glow', argv: GLOW.argv, openedBy: 'cockpit.files', openedByName: 'Files' })
+    // No `command`: there is no command line, and a joined argv there would read as one.
+    expect(tab.command).toBeUndefined()
+    // Not `$SHELL -l -i -c …`: the argv itself, element for element.
+    expect(backend.last.argv).toEqual(['sh', '-c', 'echo "hello-$1"', 'sh', NASTY])
+    expect(backend.last.options.cwd).toBe(projA)
+    const env = backend.last.options.env
+    expect(env.PATH?.startsWith('/data/bin')).toBe(true)
+    expect(env.CC_COCKPIT_SOCK).toBe('/data/app.sock')
+    expect(tabs.resolveToken(env.APP_TAB_TOKEN!)).toEqual({ kind: 'window', projectId: A })
+    expect(calls).toEqual([`started command ${tab.id}`])
+    expect(changed).toEqual([A])
+  })
+
+  it('keeps its own copy of the argv: a caller changing its array later changes nothing', () => {
+    const { tabs } = rig()
+    const argv = ['less', 'README.md']
+    const tab = tabs.createPluginCommand(A, { argv, title: 'less', openedBy: 'example.plugin' })
+    argv[1] = '/etc/passwd'
+    backend.last.exit(1)
+    expect(tabs.restart(A, tab.id)).toMatchObject({ argv: ['less', 'README.md'] })
+    expect(backend.last.argv).toEqual(['less', 'README.md'])
+    // No name: the tab shows the bare id.
+    expect(tab.openedByName).toBeUndefined()
+  })
+
+  it('starts in a folder inside the project and refuses one outside (path, absolute, symlink)', () => {
+    const { tabs } = rig()
+    expect(tabs.createPluginCommand(A, { ...GLOW, cwd: 'sub' }).cwd).toBe(join(projA, 'sub'))
+    symlinkSync(outside, join(projA, 'link-out'))
+    for (const cwd of ['../outside', outside, projB, 'link-out']) {
+      expect(() => tabs.createPluginCommand(A, { ...GLOW, cwd })).toThrow('outside the project')
+    }
+    expect(() => tabs.createPluginCommand('cccccccccccccccc', GLOW)).toThrow('unknown project')
+    expect(backend.spawned).toHaveLength(1)
+  })
+
+  it('refuses a bad argv, title or plugin id and creates nothing; a bad name only loses the name', () => {
+    const { tabs } = rig()
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, argv: [] })).toThrow('argv must be an array')
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, argv: ['a\0b'] })).toThrow('NUL')
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, argv: ['x'.repeat(4097)] })).toThrow('1-4096')
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, argv: Array(65).fill('x') })).toThrow('1-64')
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, title: 'two\nlines' })).toThrow('one line')
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, openedBy: '' })).toThrow('id of its plugin')
+    expect(() => tabs.createPluginCommand(A, { ...GLOW, openedBy: 'Not An Id' })).toThrow('id of its plugin')
+    expect(backend.spawned).toHaveLength(0)
+    expect(tabs.list(A)).toEqual([])
+    expect(tabs.createPluginCommand(A, { ...GLOW, openedByName: 'bad\u001b[31m' }).openedByName).toBeUndefined()
+  })
+
+  it('a restored plugin command tab comes back NOT started; Restart runs its argv with no shell', () => {
+    const { tabs, calls } = rig()
+    const tab = tabs.restoreTab(A, { kind: 'command', cwd: join(projA, 'sub'), command: { label: 'Glow', argv: GLOW.argv, openedBy: 'cockpit.files', openedByName: 'Files' } })
+    expect(backend.spawned).toHaveLength(0)
+    expect(calls).toEqual([])
+    expect(tab).toMatchObject({ gen: 0, notStarted: true, label: 'Glow', argv: GLOW.argv, openedBy: 'cockpit.files', openedByName: 'Files' })
+    tabs.restart(A, tab.id)
+    expect(backend.last.argv).toEqual(GLOW.argv)
+    expect(backend.last.options.cwd).toBe(join(projA, 'sub'))
+    expect(() => tabs.restoreTab(A, { kind: 'command', command: { label: 'x', argv: ['a\0'], openedBy: 'a.b' } })).toThrow('NUL')
+  })
+})

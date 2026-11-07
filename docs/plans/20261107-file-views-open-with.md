@@ -225,14 +225,22 @@ where the label is the command's first word or "System app").
 - Modify: renderer tab strip tooltip (`src/renderer/...` tab component)
 - Modify: `test/unit/tab-manager.test.ts`, `test/unit/restore.test.ts`
 
-- [ ] `createPluginCommand(projectId, { argv, cwd, title, openedBy })`: spawns argv directly, same env as every tab
-- [ ] save `argv` + `openedBy`; restore not started with Restart, only while the plugin is installed and not revoked
+- [x] `createPluginCommand(projectId, { argv, cwd, title, openedBy })`: spawns argv directly, same env as every tab
+- [x] save `argv` + `openedBy`; restore not started with Restart, only while the plugin is installed and not revoked
       (else dropped); validate on read (bad record dropped)
-- [ ] tooltip shows "Opened by <plugin name> (<id>)", the bare id when the name is unknown; a user command tab shows
+- [x] tooltip shows "Opened by <plugin name> (<id>)", the bare id when the name is unknown; a user command tab shows
       no marker
-- [ ] write tests: spawn argv verbatim (no shell), cwd check, restore not started, plugin gone/revoked dropped, bad
+- [x] write tests: spawn argv verbatim (no shell), cwd check, restore not started, plugin gone/revoked dropped, bad
       saved records dropped
-- [ ] run `npm test` - must pass before next task
+- [x] run `npm test` - must pass before next task
+- ➕ field names: `TabInfo`/`TabRecord` gain `argv`, `openedBy`, `openedByName` (no `command` on a plugin's tab; a
+  saved record with both is dropped, never run through a shell). `TabManager.createPluginCommand`, `PluginTabCommand`;
+  shared `checkCommandArgv` / `argvText` / `defaultCommandTitle` in `src/shared/tab-commands.ts`; the tooltip is
+  `commandTooltip` in `src/renderer/tabs/tab-label.ts`. "Installed and not revoked" is `pluginAvailable` in
+  `main/index.ts` (`plugins.get(id)` exists and its state carries no `revoked`; the installer's view recomputes the
+  revocation from the cached indexes on every call), injected into `buildRestorePlan` / `planLaunch` and
+  `TabRestorer` (checked again right before the queued tabs start; such a tab is dropped, not kept as failed).
+  A plugin that is only off in the project, or whose manifest fails, keeps its tab.
 
 ### Task 6: `ctx.sessions.openCommand` API, guide and design [model: opus]
 
@@ -243,13 +251,17 @@ where the label is the command's first word or "System app").
   openCommand, argv only, marked)
 - Modify: `test/unit/host-api*.test.ts`, guide drift tests if they list ctx members
 
-- [ ] validate params (argv 1-64 strings ≤ 4096, no NUL; title 1-60 one line; cwd string; focus boolean); ignore
+- [x] validate params (argv 1-64 strings ≤ 4096, no NUL; title 1-60 one line; cwd string; focus boolean); ignore
       unknown keys, as openShell does
-- [ ] share `open`'s 5-a-minute limit; project from the host, never from params
-- [ ] guide text and the design.md paragraph in the same change
-- [ ] write tests: success, each validation error, rate limit shared with open/openShell, cwd outside the project refused
-- [ ] e2e spec: a test plugin opens a command tab; it shows the marker; after a restart it is restored not started
-- [ ] run `npm test`, typecheck, lint, `npm run test:e2e` - must pass before next task
+- [x] share `open`'s 5-a-minute limit; project from the host, never from params
+- [x] guide text and the design.md paragraph in the same change
+- [x] write tests: success, each validation error, rate limit shared with open/openShell, cwd outside the project refused
+- [x] e2e spec: a test plugin opens a command tab; it shows the marker; after a restart it is restored not started
+- [x] run `npm test`, typecheck, lint, `npm run test:e2e` - must pass before next task
+- ➕ e2e: `test/e2e/plugin-command-tab.spec.ts` with the fixture `test/fixtures/plugins/command-tab` (quit and relaunch
+  over the same data dir). The "plugin gone or revoked → dropped" path is covered by unit tests only (restore.test.ts).
+- ⚠️ only the new spec plus `restore`, `tab-commands` and `plugin-sessions` specs were run, not the whole e2e suite;
+  `examples/plugin/sdk/types.ts` is copied but not pushed to the example repo (Post-Completion).
 
 ### Task 7: Files "Open with" rules: schema and pure matching [model: sonnet]
 

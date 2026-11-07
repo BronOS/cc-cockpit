@@ -699,3 +699,159 @@ describe('missing project folders', () => {
     expect(registry.get(id)?.tabs).toHaveLength(1)
   })
 })
+
+describe('plugin command tabs (ctx.sessions.openCommand)', () => {
+  const ARGV = ['sh', '-c', 'glow "$1" | less -R', 'sh', 'docs/a b.md']
+  const plugin = (partial: Partial<TabRecord> = {}, n = 1): TabRecord =>
+    rec({ kind: 'command', label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files', ...partial }, n)
+
+  it('saves the argv and the plugin, never a command line', () => {
+    const tabs: TabInfo[] = [
+      { id: 'p', gen: 0, kind: 'command', cwd: '/p', label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files', notStarted: true, exit: { code: 0, signal: null } },
+      { id: 'q', gen: 1, kind: 'command', cwd: '/p', label: 'less', argv: ['less', 'x'], openedBy: 'example.plugin' }
+    ]
+    expect(tabRecordsOf(tabs)).toEqual([
+      { id: 'p', kind: 'command', cwd: '/p', label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files' },
+      { id: 'q', kind: 'command', cwd: '/p', label: 'less', argv: ['less', 'x'], openedBy: 'example.plugin' }
+    ])
+  })
+
+  it('brings one back with its argv and plugin while the plugin is available', () => {
+    const asked: string[] = []
+    const plan = buildRestorePlan({ path: projectDir, tabs: [plugin({ cwd: join(projectDir, 'sub') })] }, (id) => {
+      asked.push(id)
+      return true
+    })
+    expect(plan).toEqual([
+      { kind: 'command', cwd: join(projectDir, 'sub'), command: { label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files' } }
+    ])
+    expect(asked).toEqual(['cockpit.files'])
+  })
+
+  it('drops the tab of a plugin that is uninstalled or revoked (or whose check throws), not the others', () => {
+    const tabs = [plugin({}, 1), plugin({ openedBy: 'gone.plugin' }, 2), plugin({ openedBy: 'throws.plugin' }, 3), rec({ kind: 'shell' }, 4)]
+    const plan = buildRestorePlan({ path: projectDir, tabs }, (id) => {
+      if (id === 'throws.plugin') throw new Error('index unreadable')
+      return id === 'cockpit.files'
+    })
+    expect(plan.map((t) => (t.command && 'argv' in t.command ? t.command.openedBy : t.kind))).toEqual(['cockpit.files', 'shell'])
+  })
+
+  it('drops a damaged record: bad argv, missing or bad plugin id, both argv and command; a bad name only loses the name', () => {
+    const bad: Array<Partial<TabRecord>> = [
+      { argv: [] },
+      { argv: 'sh -c x' as unknown as string[] },
+      { argv: ['a\0b'] },
+      { argv: [5 as unknown as string] },
+      { argv: Array(65).fill('x') as string[] },
+      { openedBy: undefined },
+      { openedBy: 'Bad Id' },
+      { openedBy: 7 as unknown as string },
+      { argv: undefined },
+      { label: '' },
+      // Both: must never fall back to running the command line through the shell.
+      { command: 'rm -rf ~' }
+    ]
+    const tabs = [...bad.map((b, i) => plugin(b, i)), plugin({ openedByName: 'two\nlines' }, 99)]
+    expect(buildRestorePlan({ path: projectDir, tabs }, () => true)).toEqual([
+      { kind: 'command', cwd: projectDir, command: { label: 'Glow', argv: ARGV, openedBy: 'cockpit.files' } }
+    ])
+  })
+
+  it('the restorer drops a gone plugin\'s tab at start (not kept as failed) and checks again on requeue', async () => {
+    const saved: Array<{ projectId: string; records: TabRecord[] }> = []
+    const live = new Map<string, TabInfo[]>()
+    const installed = new Set(['cockpit.files'])
+    const logs: string[] = []
+    const restorer = new TabRestorer({
+      listTabs: (id) => live.get(id) ?? [],
+      saveTabs: (projectId, records) => saved.push({ projectId, records }),
+      projectPath: (id) => (id === 'p1' ? '/p' : undefined),
+      pluginAvailable: (id) => installed.has(id),
+      log: (m) => logs.push(m)
+    })
+    // Planned while installed, uninstalled before the window attached.
+    restorer.queue('p1', [{ kind: 'command', command: { label: 'Glow', argv: ARGV, openedBy: 'cockpit.files' } }, { kind: 'shell' }])
+    installed.delete('cockpit.files')
+    const started: RestoredTab[] = []
+    await restorer.restore('p1', Promise.resolve(), (t) => started.push(t))
+    expect(started).toEqual([{ kind: 'shell' }])
+    // Not carried in the record as a failed tab: gone for good.
+    expect(saved.at(-1)!.records).toEqual([])
+    expect(logs.join('\n')).toContain('plugin cockpit.files is gone or revoked')
+
+    // requeue builds its plan through buildRestorePlan with the same check.
+    live.set('p1', [{ id: 'x', gen: 1, kind: 'command', cwd: '/p', label: 'Glow', argv: ARGV, openedBy: 'cockpit.files' }])
+    restorer.requeue('p1')
+    const again: RestoredTab[] = []
+    await restorer.restore('p1', Promise.resolve(), (t) => again.push(t))
+    expect(again).toEqual([])
+  })
+
+  it('a failed plugin tab is kept in the record with its argv and plugin', async () => {
+    const saved: Array<{ projectId: string; records: TabRecord[] }> = []
+    const restorer = new TabRestorer({
+      listTabs: () => [],
+      saveTabs: (projectId, records) => saved.push({ projectId, records }),
+      projectPath: () => '/p',
+      pluginAvailable: () => true
+    })
+    restorer.queue('p1', [{ kind: 'command', command: { label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files' } }])
+    await restorer.restore('p1', Promise.resolve(), () => {
+      throw new Error('spawn failed')
+    })
+    expect(saved.at(-1)!.records).toEqual([
+      { id: expect.any(String), kind: 'command', cwd: '/p', label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files' }
+    ])
+  })
+
+  it('round trip on disk: saved by one run, restored NOT started by the next, Restart runs the argv with no shell', async () => {
+    const registry = new ProjectRegistry({ dataDir, log: () => {} })
+    const project = registry.openPath(projectDir)
+    const backend = new FakePtyBackend()
+    let tabs: TabManager
+    const restorer = new TabRestorer({
+      listTabs: (id) => tabs.list(id),
+      saveTabs: (id, records) =>
+        registry.update(id, (r) => {
+          r.tabs = records
+        }),
+      projectPath: (id) => registry.get(id)?.path
+    })
+    const makeManager = (): TabManager =>
+      new TabManager({
+        backend,
+        projectPath: (id) => registry.get(id)?.path,
+        loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+        hooksPath: '/data/hooks.json',
+        binDir: '/data/bin',
+        sock: () => undefined,
+        onTabsChanged: (id) => restorer.tabsChanged(id),
+        emit: () => {},
+        log: () => {}
+      })
+    tabs = makeManager()
+    tabs.createPluginCommand(project.id, { argv: ARGV, cwd: 'sub', title: 'Glow', openedBy: 'cockpit.files', openedByName: 'Files' })
+    registry.flushAll()
+
+    const registry2 = new ProjectRegistry({ dataDir, log: () => {} })
+    const saved = registry2.get(project.id)!
+    expect(saved.tabs).toEqual([
+      { id: expect.any(String), kind: 'command', cwd: join(projectDir, 'sub'), label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files' }
+    ])
+    tabs = makeManager()
+    const before = backend.spawned.length
+    restorer.queue(project.id, buildRestorePlan(saved, () => true))
+    await restorer.restore(project.id, Promise.resolve(), (t) => {
+      tabs.restoreTab(project.id, t)
+    })
+    expect(backend.spawned.length).toBe(before)
+    const [waiting] = tabs.list(project.id)
+    expect(waiting).toMatchObject({ kind: 'command', notStarted: true, label: 'Glow', argv: ARGV, openedBy: 'cockpit.files', openedByName: 'Files' })
+    tabs.restart(project.id, waiting!.id)
+    expect(backend.spawned.slice(before).map((p) => p.argv)).toEqual([ARGV])
+
+    // The same record with the plugin uninstalled: nothing to bring back.
+    expect(buildRestorePlan(saved, () => false)).toEqual([])
+  })
+})

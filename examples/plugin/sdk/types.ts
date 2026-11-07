@@ -769,6 +769,20 @@ export interface PluginContext {
      * same 5 a minute as `open`. An older app has no `openShell`: check `typeof ctx.sessions.openShell`.
      */
     openShell(options?: { cwd?: string; focus?: boolean }): Promise<{ tabId: string }>
+    /**
+     * A command tab in this window running `argv` directly, with no shell: `argv[0]` is looked up on the
+     * person's PATH and every element is one argument as is (1-64 strings of 1-4096 characters, no NUL).
+     * Substituting a file name or other untrusted text is the plugin's job, and it must stay one whole
+     * element; for a pipe, pass it as a positional argument: `['sh', '-c', 'glow "$1" | less -R', 'sh', file]`.
+     * `cwd` resolves inside the project folder (the folder itself when absent); `title` is the tab's title,
+     * 1-60 characters on one line (default: the last path part of `argv[0]`). The tab shows "Opened by
+     * <plugin name> (<id>)". It is saved and comes back after a restart not started (the person's Restart
+     * runs it), and is dropped once the plugin is uninstalled or revoked. A clean exit closes the tab under
+     * the default `tabExit` setting, so to keep output on screen wrap the command so it waits for a key.
+     * Unselected unless `focus: true`. Counts against the same 5 a minute as `open` and `openShell`.
+     * An older app has no `openCommand`: check `typeof ctx.sessions.openCommand === 'function'`.
+     */
+    openCommand(options: { argv: string[]; cwd?: string; title?: string; focus?: boolean }): Promise<{ tabId: string }>
   }
 
   // commands

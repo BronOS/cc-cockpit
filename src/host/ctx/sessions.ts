@@ -14,6 +14,7 @@ import type { Disposer, PluginContext, SendResult, SessionInfo, SessionSummary }
 import { errorText } from '../../shared/error-text'
 import { checkSessionName } from '../../shared/session-name'
 import { checkSessionOptions } from '../../shared/session-options'
+import { checkCommandArgv } from '../../shared/tab-commands'
 
 type Listener = (sessions: SessionInfo[]) => void
 type AllListener = (sessions: SessionSummary[]) => void
@@ -203,6 +204,27 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         return (await call('sessions.openShell', {
           pluginId,
           ...(cwd !== undefined ? { cwd } : {}),
+          ...(focus ? { focus: true } : {})
+        })) as { tabId: string }
+      }),
+    // A command tab running `argv` with no shell, marked with this plugin. Only argv, cwd, title and
+    // focus are sent (never an env); the argv rule is checked here for the fast error, and main checks
+    // everything again (the title too) and spends the shared open budget.
+    openCommand: (options: { argv: string[]; cwd?: string; title?: string; focus?: boolean }) =>
+      guardAsync(async () => {
+        const { argv, cwd, title, focus } = (options ?? {}) as { argv?: unknown; cwd?: unknown; title?: unknown; focus?: unknown }
+        const checked = checkCommandArgv(argv)
+        if (!checked.ok) throw new TypeError(`sessions.openCommand: ${checked.reason}`)
+        if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.openCommand: cwd must be a string')
+        if (title !== undefined && typeof title !== 'string') throw new TypeError('sessions.openCommand: title must be a string')
+        if (focus !== undefined && typeof focus !== 'boolean') {
+          throw new TypeError('sessions.openCommand: focus must be a boolean')
+        }
+        return (await call('sessions.openCommand', {
+          pluginId,
+          argv: checked.value,
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(title !== undefined ? { title } : {}),
           ...(focus ? { focus: true } : {})
         })) as { tabId: string }
       })

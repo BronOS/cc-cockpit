@@ -355,6 +355,18 @@ function start(): void {
       claudePluginsBuilds.changed()
     }
   })
+  /**
+   * restore.ts PluginAvailable: a plugin's saved command tab comes back only while the plugin is
+   * installed (in the index; bundled ones included) and not revoked. `get` computes the revocation
+   * from the cached marketplace indexes on every call (installer.ts view), so it is right already
+   * before load() has finished and after a background refresh revoked something. A plugin that is
+   * merely off in this project, or whose manifest fails, keeps its tab: it is still the person's
+   * plugin, and Restart only runs the argv the tab already shows.
+   */
+  const pluginAvailable = (pluginId: string): boolean => {
+    const plugin = plugins.get(pluginId)
+    return plugin !== undefined && (plugin.state.ok || plugin.state.revoked === undefined)
+  }
   // Plugin hosts wait for this: before it, every plugin looks uninstalled.
   let pluginsLoadFailed = false
   const pluginsLoaded: Promise<void> = plugins.load().catch((err: unknown) => {
@@ -437,7 +449,7 @@ function start(): void {
       firstTab.arm(
         projectId,
         windowId,
-        restorer.hasPending(projectId) || (saved !== undefined && buildRestorePlan(saved).length > 0)
+        restorer.hasPending(projectId) || (saved !== undefined && buildRestorePlan(saved, pluginAvailable).length > 0)
       )
     },
     onProjectClosed: (projectId, windowId, reopening) => {
@@ -641,6 +653,32 @@ function start(): void {
     await spawnReady
     requireWindow(projectId, windowId)
     const tab = tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    sendToProject(projectId, 'tabs.added', tab)
+    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    return tab
+  }
+  /**
+   * Start a command tab a plugin asked for (ctx.sessions.openCommand), the way openShellTab does: HostApi
+   * checked the argv, title and cwd, took the project from the host and spent the open budget; the tab
+   * manager checks them again and runs the argv with no shell. The plugin's manifest name is looked up
+   * here, by the id HostApi resolved from the host's own plugin list, for the tab's "Opened by" line.
+   */
+  const openCommandTab = async (
+    projectId: string,
+    options: { argv: string[]; cwd?: string; title: string; openedBy: string },
+    windowId: number,
+    focus: boolean
+  ): Promise<TabInfo> => {
+    await spawnReady
+    requireWindow(projectId, windowId)
+    const name = plugins.get(options.openedBy)?.manifest?.name
+    const tab = tabs.createPluginCommand(projectId, {
+      argv: options.argv,
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      title: options.title,
+      openedBy: options.openedBy,
+      ...(typeof name === 'string' ? { openedByName: name } : {})
+    })
     sendToProject(projectId, 'tabs.added', tab)
     if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
     return tab
@@ -942,6 +980,8 @@ function start(): void {
       openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
       // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
       openShellTab: (projectId, options, windowId, focus) => openShellTab(projectId, options, windowId, focus === true),
+      // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
+      openCommandTab: (projectId, options, windowId, focus) => openCommandTab(projectId, options, windowId, focus === true),
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
@@ -1096,7 +1136,8 @@ function start(): void {
       registry.update(projectId, (r) => {
         r.tabs = records
       }),
-    projectPath: (projectId) => registry.get(projectId)?.path
+    projectPath: (projectId) => registry.get(projectId)?.path,
+    pluginAvailable: (pluginId) => pluginAvailable(pluginId)
   })
   // A project window that opens with nothing to restore gets one Claude tab when its renderer
   // first attaches (first-tab.ts; the attach handler below). The setting is read then.
@@ -2202,7 +2243,8 @@ function start(): void {
         registry.openIds().flatMap((id) => {
           const project = registry.get(id)
           return project ? [project] : []
-        })
+        }),
+        pluginAvailable
       )
       // A missing project can only be relinked or forgotten from the picker's recent list. One
       // that fell out of that list (it holds 20) could never be removed and would open the

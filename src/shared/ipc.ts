@@ -136,10 +136,21 @@ export interface TabInfo {
    * would be a nasty surprise), so it waits, stopped, with "not started: Restart · Close".
    */
   notStarted?: true
-  /** A command tab's title (its menu entry's label, copied when the tab was opened). */
+  /** A command tab's title (its menu entry's label, or a plugin's title, copied when the tab was opened). */
   label?: string
-  /** A command tab's command line (copied when opened; Restart runs this copy). */
+  /** A command tab's command line (copied when opened; Restart runs this copy). Absent on a plugin's command tab. */
   command?: string
+  /**
+   * A command tab a plugin opened (ctx.sessions.openCommand): the argv it runs as is, with no shell
+   * (Restart runs this copy). Set together with `openedBy`, never with `command`.
+   */
+  argv?: string[]
+  /**
+   * The plugin that opened this command tab, and its manifest name (absent: show the bare id). Display
+   * only, for the tab's "Opened by" line; never an authority for anything.
+   */
+  openedBy?: string
+  openedByName?: string
   /**
    * A Claude tab's name given by the person (Rename, ctx.sessions.rename); main keeps it for restore.
    * The renderer shows it from `SessionDetail.name`, which changes with the registry's broadcast.

@@ -9,7 +9,7 @@ import { QueuedChip } from '../status/QueuedChip'
 import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { ChevronDownGlyph, CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
-import { tabLabel } from './tab-label'
+import { commandTooltip, tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
 import { hiddenFlags, type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
 import { allTabsOrder, nextAttention, sameIds, statusesOf } from './tab-flags'
@@ -410,12 +410,8 @@ export function TabBar(props: {
           )
           const dragged = drag?.tabId === tab.id
           const markEdge = marker?.tabId === tab.id ? marker.edge : undefined
-          const where =
-            tab.kind === 'command' && tab.command !== undefined
-              ? `${tab.command}\n${tab.cwd}`
-              : status?.title
-                ? `${status.title}\n${tab.cwd}`
-                : tab.cwd
+          // A command tab: what it runs, where, and which plugin opened it (tab-label.ts commandTooltip).
+          const where = commandTooltip(tab) ?? (status?.title ? `${status.title}\n${tab.cwd}` : tab.cwd)
           const flag = tab.flag
           return (
           <div

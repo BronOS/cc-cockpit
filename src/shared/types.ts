@@ -56,6 +56,14 @@ export interface TabRecord {
    */
   label?: string
   command?: string
+  /**
+   * A plugin's command tab (ctx.sessions.openCommand) instead of `command`: the argv it runs with no
+   * shell and the plugin that opened it (with its name then, display only). Restore brings it back
+   * not started, and only while that plugin is installed and not revoked (restore.ts).
+   */
+  argv?: string[]
+  openedBy?: string
+  openedByName?: string
   /** A Claude tab's name given by the person (shared/session-name.ts); shown over Claude's topic. */
   name?: string
   /**

@@ -107,6 +107,24 @@ describe('ctx.sessions', () => {
     expect(calls).toHaveLength(3)
   })
 
+  it('openCommand sends only argv, cwd, title and focus, checking the argv rule first', async () => {
+    const { ctx, calls } = setup((c) => (c.method === 'sessions.openCommand' ? { tabId: 't8' } : []))
+    expect(typeof ctx.sessions.openCommand).toBe('function')
+    await expect(ctx.sessions.openCommand({ argv: ['glow', 'a b.md'], cwd: 'docs', title: 'Glow', focus: true })).resolves.toEqual({ tabId: 't8' })
+    await ctx.sessions.openCommand({ argv: ['ls'], focus: false, env: { X: '1' }, command: 'rm -rf ~' } as unknown as { argv: string[] })
+    expect(calls).toEqual([
+      { method: 'sessions.openCommand', params: { pluginId: 'a.one', argv: ['glow', 'a b.md'], cwd: 'docs', title: 'Glow', focus: true } },
+      { method: 'sessions.openCommand', params: { pluginId: 'a.one', argv: ['ls'] } }
+    ])
+    await expect(ctx.sessions.openCommand({ argv: [] })).rejects.toThrow('sessions.openCommand: argv must be an array')
+    await expect(ctx.sessions.openCommand({ argv: ['a\0'] })).rejects.toThrow('NUL')
+    await expect(ctx.sessions.openCommand(undefined as unknown as { argv: string[] })).rejects.toThrow('argv must be an array')
+    await expect(ctx.sessions.openCommand({ argv: ['ls'], cwd: 5 as unknown as string })).rejects.toThrow('cwd must be a string')
+    await expect(ctx.sessions.openCommand({ argv: ['ls'], title: 5 as unknown as string })).rejects.toThrow('title must be a string')
+    await expect(ctx.sessions.openCommand({ argv: ['ls'], focus: 'yes' as unknown as boolean })).rejects.toThrow('focus must be a boolean')
+    expect(calls).toHaveLength(2)
+  })
+
   it("delivers main's sessions event to every plugin's listeners, each its own copy", () => {
     const { contexts, ctx, other, logs } = setup()
     const seen: unknown[] = []

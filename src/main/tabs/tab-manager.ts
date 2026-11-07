@@ -12,7 +12,8 @@ import { errorText } from '../../shared/error-text'
 import type { EventChannel, IpcEventMap, TabInfo } from '../../shared/ipc'
 import { checkSessionName } from '../../shared/session-name'
 import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
-import { checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
+import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
+import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
 import type { TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
@@ -134,6 +135,40 @@ export interface TabCommand {
   command: string
 }
 
+/**
+ * A command tab a plugin opened (ctx.sessions.openCommand): `argv` is spawned as is, with no shell
+ * in between, so a word the plugin put in (a file name from the repo) stays one argument whatever
+ * it contains. `openedBy` / `openedByName` are what the tab shows ("Opened by Files
+ * (cockpit.files)"): the one safeguard of a plugin command tab is that the person can see whose it
+ * is (design.md §3 "Custom commands"). Display only, never an authority: nothing is allowed or
+ * refused by them, except that restore drops the tab once that plugin is gone (restore.ts).
+ */
+export interface PluginTabCommand {
+  label: string
+  argv: string[]
+  openedBy: string
+  /** The plugin's manifest name when it was opened; absent = show the bare id. */
+  openedByName?: string
+}
+
+/** Either kind of command a command tab runs. */
+export type AnyTabCommand = TabCommand | PluginTabCommand
+
+export function isPluginCommand(command: AnyTabCommand): command is PluginTabCommand {
+  return 'argv' in command
+}
+
+/** What createPluginCommand takes (host-api checked it all already; checked again here). */
+export interface PluginCommandOptions {
+  argv: string[]
+  /** Folder or subfolder of the project, like CreateTabOptions.cwd; absent = the project folder. */
+  cwd?: string
+  /** The tab's title. */
+  title: string
+  openedBy: string
+  openedByName?: string
+}
+
 /** What the lifecycle's `started` hears about a tab (the session registry builds its entry from it). */
 export interface TabEvent {
   tabId: string
@@ -151,8 +186,11 @@ export interface RestoreTabOptions {
   cwd?: string
   /** A Claude tab resumes this session (`--resume <id>`); absent = a fresh `claude`. */
   resumeId?: string
-  /** A command tab's saved copy of its entry; required for, and only for, kind 'command'. */
-  command?: TabCommand
+  /**
+   * A command tab's saved copy of its entry, or of the argv a plugin opened it with; required for,
+   * and only for, kind 'command'.
+   */
+  command?: AnyTabCommand
   /** A Claude tab's saved name (restore.ts validated it; re-checked here). */
   name?: string
   /** The tab's saved flag, any kind (restore.ts read it leniently; re-read here). */
@@ -171,8 +209,8 @@ interface Tab {
   gen: number
   /** `now()` at the spawn of the current process; a shell tab's minimum life counts from it. */
   spawnedAt: number
-  /** Kind 'command' only: the entry copied when the tab was opened; every (re)start runs this. */
-  command?: TabCommand
+  /** Kind 'command' only: the entry (or plugin argv) copied when the tab was opened; every (re)start runs this. */
+  command?: AnyTabCommand
   /** Kind 'claude' only: the name the person gave the tab (rename); saved and restored with it. */
   name?: string
   /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
@@ -284,6 +322,25 @@ export class TabManager {
   }
 
   /**
+   * Start a command tab a plugin asked for (ctx.sessions.openCommand, through host-api, which took
+   * the project from the host and spent the open budget): `argv` runs as is, with no shell, with the
+   * same env, PATH and window token as every tab; `cwd` is realpath'd inside the project like any
+   * tab's. The tab carries the plugin's id (and name) so the strip can say who opened it. Saved and
+   * restored not started like a user's command tab, and dropped at restore once its plugin is gone.
+   */
+  createPluginCommand(projectId: string, { argv, cwd, title, openedBy, openedByName }: PluginCommandOptions): TabInfo {
+    const command = tabCommand({
+      label: title,
+      argv,
+      openedBy,
+      ...(openedByName === undefined ? {} : { openedByName })
+    })
+    const out = this.add(projectId, 'command', cwd, { command })
+    this.changed(projectId)
+    return out
+  }
+
+  /**
    * Bring a saved tab back at start. Not reachable from a renderer or plugin (no IPC channel
    * maps here): `resumeId` is text from a hook payload that was saved to disk, and restore.ts
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
@@ -299,7 +356,7 @@ export class TabManager {
       if (!command) throw new Error('a command tab needs its command')
       // Restored NOT started: a command may be anything (a deploy, a migration, a cleanup), and
       // the app launching must never run one by itself. The tab comes back stopped with its
-      // banner; the user's Restart runs it.
+      // banner; the user's Restart runs it. The same for a plugin's argv (re-checked by tabCommand).
       return this.add(projectId, kind, cwd, { command: tabCommand(command), start: false, ...flagOpt })
     }
     if (command !== undefined) throw new Error('only a command tab has a command')
@@ -318,7 +375,7 @@ export class TabManager {
     projectId: string,
     kind: TabKind,
     cwd: string | undefined,
-    opts: { prompt?: string; model?: string; effort?: string; resumeId?: string; command?: TabCommand; start?: boolean; name?: string; flag?: TabFlag }
+    opts: { prompt?: string; model?: string; effort?: string; resumeId?: string; command?: AnyTabCommand; start?: boolean; name?: string; flag?: TabFlag }
   ): TabInfo {
     const root = this.projectRoot(projectId)
     const tab: Tab = {
@@ -579,7 +636,7 @@ export class TabManager {
             effort
           })
         : tab.kind === 'command'
-          ? commandArgv(this.shell(), requireCommand(tab).command)
+          ? commandArgvOf(this.shell(), requireCommand(tab))
           : shellArgv(this.shell())
     const env = buildPtyEnv(this.options.loginEnv(), {
       binDir: this.options.binDir,
@@ -741,26 +798,64 @@ function info(tab: Tab): TabInfo {
   if (tab.flag !== undefined) out.flag = { ...tab.flag }
   if (tab.command) {
     out.label = tab.command.label
-    out.command = tab.command.command
+    if (isPluginCommand(tab.command)) {
+      // No `command` for a plugin's tab: there is no command line, and a joined argv in that field
+      // would read (and be saved) as one the shell runs. The renderer shows the argv itself.
+      out.argv = [...tab.command.argv]
+      out.openedBy = tab.command.openedBy
+      if (tab.command.openedByName !== undefined) out.openedByName = tab.command.openedByName
+    } else {
+      out.command = tab.command.command
+    }
   }
   return out
 }
 
 /**
  * The tab's own copy of an entry, re-checked: the caller read it from a settings file or a saved
- * tab record, both user-writable, and a NUL would cut the argv element short.
+ * tab record, both user-writable, and a NUL would cut the argv element short. A plugin's argv is
+ * re-checked by the same rule host-api applied (checkCommandArgv) and its id by the manifest's;
+ * a name that fails the label rule is dropped, not the tab (the tab then shows the bare id).
  */
-function tabCommand(entry: TabCommand): TabCommand {
+function tabCommand(entry: TabCommand): TabCommand
+function tabCommand(entry: PluginTabCommand): PluginTabCommand
+function tabCommand(entry: AnyTabCommand): AnyTabCommand
+function tabCommand(entry: AnyTabCommand): AnyTabCommand {
   const label = checkTabCommandLabel(entry.label)
   if (!label.ok) throw new Error(label.reason)
+  if (isPluginCommand(entry)) {
+    const argv = checkCommandArgv(entry.argv)
+    if (!argv.ok) throw new Error(argv.reason)
+    if (!isPluginId(entry.openedBy)) throw new Error('a plugin command tab needs the id of its plugin')
+    const name = entry.openedByName === undefined ? undefined : checkTabCommandLabel(entry.openedByName)
+    return {
+      label: label.value,
+      argv: argv.value,
+      openedBy: entry.openedBy,
+      ...(name?.ok ? { openedByName: name.value } : {})
+    }
+  }
   const command = checkTabCommandLine(entry.command)
   if (!command.ok) throw new Error(command.reason)
   return { label: label.value, command: command.value }
 }
 
-function requireCommand(tab: Tab): TabCommand {
+/** A plugin id as the manifest allows it (shared/manifest.ts): what openedBy must look like. */
+export function isPluginId(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= PLUGIN_ID_MAX_LENGTH && PLUGIN_ID_PATTERN.test(value)
+}
+
+function requireCommand(tab: Tab): AnyTabCommand {
   if (!tab.command) throw new Error('a command tab without a command')
   return tab.command
+}
+
+/**
+ * What a command tab spawns: a plugin's argv verbatim (a copy; no shell, so nothing in it is ever
+ * shell text), else the person's command line through their login shell (commandArgv).
+ */
+function commandArgvOf(shell: string, command: AnyTabCommand): string[] {
+  return isPluginCommand(command) ? [...command.argv] : commandArgv(shell, command.command)
 }
 
 /**

@@ -98,3 +98,59 @@ export function checkTabCommandLine(value: unknown): { ok: true; value: string }
 export function checkTabCommandOpen(value: unknown): 'tab' | 'overlay' {
   return value === 'overlay' ? 'overlay' : 'tab'
 }
+
+/** A plugin command tab's argv (ctx.sessions.openCommand): far more than any real command needs. */
+export const COMMAND_ARGV_MAX = 64
+
+/**
+ * A plugin command tab's argv as stored (a copy), or the reason it is refused: 1-64 strings, each
+ * 1-4096 characters (TAB_COMMAND_MAX) with no NUL. Nothing is trimmed: the argv is spawned as is,
+ * with no shell, so a leading space is part of an argument and must not be silently dropped. NUL is
+ * refused for the reason checkTabCommandLine gives: the C string would end there, running another
+ * argument than the one the tab shows. An empty element is refused too: no real program wants one,
+ * and an empty argv[0] would only fail the spawn later with a less useful error.
+ */
+export function checkCommandArgv(value: unknown): { ok: true; value: string[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value) || value.length === 0 || value.length > COMMAND_ARGV_MAX) {
+    return { ok: false, reason: `argv must be an array of 1-${COMMAND_ARGV_MAX} strings` }
+  }
+  const out: string[] = []
+  for (const arg of value as unknown[]) {
+    if (typeof arg !== 'string') return { ok: false, reason: 'argv must hold strings only' }
+    if (arg.length === 0 || arg.length > TAB_COMMAND_MAX) {
+      return { ok: false, reason: `each argv element must be 1-${TAB_COMMAND_MAX} characters` }
+    }
+    if (arg.includes('\0')) return { ok: false, reason: 'argv may not contain a NUL character' }
+    out.push(arg)
+  }
+  return { ok: true, value: out }
+}
+
+/**
+ * An argv as one line for a tooltip: plain words as they are, a word with a space, a quote, a
+ * backslash or a control character (or an empty one) in single quotes, `'` written as `'\''`, and
+ * control characters as `\xNN`, so `['sh', '-c', 'echo $1', 'sh', 'x y']` reads
+ * `sh -c 'echo $1' sh 'x y'` and a newline in an argument cannot fake a second tooltip line.
+ * Display only: nothing parses it back.
+ */
+export function argvText(argv: readonly string[]): string {
+  return argv
+    .map((arg) => {
+      // eslint-disable-next-line no-control-regex
+      const shown = arg.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+      return arg !== '' && /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? shown : `'${shown.replace(/'/g, `'\\''`)}'`
+    })
+    .join(' ')
+}
+
+/**
+ * The title of a plugin command tab opened without one: the last path part of argv[0]
+ * (`/usr/local/bin/glow` reads `glow`), made a valid label: control characters dropped, trimmed,
+ * cut to TAB_COMMAND_LABEL_MAX; `Command` when nothing is left (argv[0] `/`).
+ */
+export function defaultCommandTitle(argv0: string): string {
+  const base = argv0.replace(/\/+$/, '').split('/').pop() ?? ''
+  // eslint-disable-next-line no-control-regex
+  const clean = base.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, TAB_COMMAND_LABEL_MAX).trim()
+  return clean === '' ? 'Command' : clean
+}

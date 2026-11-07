@@ -153,6 +153,11 @@ beforeEach(() => {
       announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
       return tab
     },
+    openCommandTab: async (projectId, options, windowId, focus) => {
+      const tab = tabs.createPluginCommand(projectId, { ...options, openedByName: `name of ${options.openedBy}` })
+      announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
+      return tab
+    },
     setBadge: (projectId, key, badge) => layouts.setBadge(projectId, key, badge),
     setPanelHeader: (projectId, key, header) => layouts.setHeader(projectId, key, header),
     openOverlay: async (windowId, spec, opener, peerGone, channel, pluginId) =>
@@ -518,6 +523,128 @@ describe('sessions.openShell', () => {
   })
 })
 
+describe('sessions.openCommand', () => {
+  const ARGV = ['sh', '-c', 'echo "hello-$1"', 'sh', '$(id) x y']
+
+  it('runs the argv with no shell in this project, marked with the asking plugin; extra keys are never read', async () => {
+    const open = hostA()
+    const { tabId } = (await open('sessions.openCommand', {
+      pluginId: 'a.one',
+      argv: ARGV,
+      title: 'Hello',
+      // Riding along, never read: no project, window, env or command line from the request.
+      projectId: B,
+      windowId: WIN_B,
+      openedBy: 'a.two',
+      command: 'rm -rf ~',
+      env: { EVIL: '1', PATH: '/tmp/evil' }
+    })) as { tabId: string }
+    const pty = ptyOf(tabId)
+    expect(pty.argv).toEqual(ARGV)
+    expect(pty.options.cwd).toBe(projA)
+    expect(pty.options.env.EVIL).toBeUndefined()
+    expect(pty.options.env.PATH).not.toContain('/tmp/evil')
+    expect(pty.writes).toEqual([])
+    expect(tabs.list(A).find((t) => t.id === tabId)).toMatchObject({
+      kind: 'command',
+      label: 'Hello',
+      argv: ARGV,
+      openedBy: 'a.one',
+      openedByName: 'name of a.one'
+    })
+    expect(announced).toEqual([{ projectId: A, tab: expect.objectContaining({ id: tabId, kind: 'command' }), windowId: WIN_A }])
+    expect(tabs.list(B)).toEqual([])
+    // Not a Claude tab: no session for plugins to see.
+    expect(registry.listByProject(A)).toEqual([])
+  })
+
+  it('titles the tab after argv[0] when no title is given, and selects it only with focus: true', async () => {
+    const open = hostA()
+    const plain = (await open('sessions.openCommand', { pluginId: 'a.one', argv: ['/usr/local/bin/glow', 'README.md'] })) as { tabId: string }
+    const shown = (await open('sessions.openCommand', { pluginId: 'a.one', argv: ['less'], focus: true })) as { tabId: string }
+    expect(tabs.list(A).map((t) => t.label)).toEqual(['glow', 'less'])
+    expect(announced.map((a) => [a.tab.id, a.windowId, a.focus])).toEqual([
+      [plain.tabId, WIN_A, undefined],
+      [shown.tabId, WIN_A, true]
+    ])
+  })
+
+  it('starts in a folder inside the project, and refuses one outside by path, absolute path or symlink', async () => {
+    const open = hostA()
+    const { tabId } = (await open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'], cwd: 'sub' })) as { tabId: string }
+    expect(ptyOf(tabId).options.cwd).toBe(join(projA, 'sub'))
+    for (const cwd of ['../outside', outside, projB, 'link-out']) {
+      await expect(open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'], cwd })).rejects.toThrow('sessions.openCommand: cwd is outside the project')
+    }
+    await expect(open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'], cwd: 'missing' })).rejects.toThrow('cwd does not exist')
+    expect(tabsBackend.spawned).toHaveLength(1)
+  })
+
+  it('refuses each bad param before spending the budget or spawning anything', async () => {
+    const open = hostA()
+    const refusals: Array<[Record<string, unknown>, string]> = [
+      [{ pluginId: 'nope', argv: ['ls'] }, 'unknown plugin'],
+      [{ pluginId: 'a.one' }, 'argv must be an array of 1-64 strings'],
+      [{ pluginId: 'a.one', argv: 'ls -la' }, 'argv must be an array'],
+      [{ pluginId: 'a.one', argv: [] }, 'argv must be an array'],
+      [{ pluginId: 'a.one', argv: Array(65).fill('x') }, 'argv must be an array of 1-64 strings'],
+      [{ pluginId: 'a.one', argv: ['ls', 5] }, 'argv must hold strings only'],
+      [{ pluginId: 'a.one', argv: ['ls', ''] }, 'each argv element must be 1-4096 characters'],
+      [{ pluginId: 'a.one', argv: ['x'.repeat(4097)] }, 'each argv element must be 1-4096 characters'],
+      [{ pluginId: 'a.one', argv: ['ls', 'a\0b'] }, 'argv may not contain a NUL character'],
+      [{ pluginId: 'a.one', argv: ['ls'], cwd: 5 }, 'cwd must be a string'],
+      [{ pluginId: 'a.one', argv: ['ls'], focus: 'yes' }, 'focus must be a boolean'],
+      [{ pluginId: 'a.one', argv: ['ls'], title: '' }, 'title must be 1-60 characters on one line'],
+      [{ pluginId: 'a.one', argv: ['ls'], title: 'x'.repeat(61) }, 'title must be 1-60'],
+      [{ pluginId: 'a.one', argv: ['ls'], title: 'two\nlines' }, 'title must be 1-60 characters on one line'],
+      [{ pluginId: 'a.one', argv: ['ls'], title: 7 }, 'title must be']
+    ]
+    for (const [params, message] of refusals) {
+      await expect(open('sessions.openCommand', params), JSON.stringify(params).slice(0, 80)).rejects.toThrow(message)
+    }
+    expect(tabsBackend.spawned).toEqual([])
+    // None of them spent the budget: the full five still fit.
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW; i++) await open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
+  })
+
+  it("shares the 5 a minute of sessions.open and sessions.openShell, per plugin", async () => {
+    vi.useFakeTimers()
+    const open = hostA()
+    await open('sessions.open', { pluginId: 'a.one' })
+    await open('sessions.openShell', { pluginId: 'a.one' })
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW - 2; i++) await open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })
+    await expect(open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })).rejects.toThrow(
+      `sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`
+    )
+    await expect(open('sessions.openShell', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
+    await open('sessions.openCommand', { pluginId: 'a.two', argv: ['ls'] })
+    vi.advanceTimersByTime(OPEN_WINDOW_MS + 1)
+    await open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW + 2)
+  })
+
+  it("a host of project B opens in B: the project is the host's, never a param", async () => {
+    const openB = hostFor({ projectId: B, windowId: WIN_B, projectDir: projB, plugins: [{ id: 'b.one', dir: pluginOne, panels: ['board'] }] })
+    const { tabId } = (await openB('sessions.openCommand', { pluginId: 'b.one', argv: ['ls'], projectId: A })) as { tabId: string }
+    expect(tabs.list(B).map((t) => t.id)).toEqual([tabId])
+    expect(tabs.list(A)).toEqual([])
+    expect(announced).toEqual([{ projectId: B, tab: expect.objectContaining({ id: tabId, openedBy: 'b.one' }), windowId: WIN_B }])
+    // A plugin of the other host is unknown here.
+    await expect(openB('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })).rejects.toThrow('unknown plugin')
+  })
+
+  it('is refused when main has no command tabs to give', async () => {
+    delete deps.openCommandTab
+    await expect(hostA()('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })).rejects.toThrow(
+      'sessions.openCommand: command tabs are not available'
+    )
+    expect(tabsBackend.spawned).toEqual([])
+  })
+})
+
 describe('badge', () => {
   const badgeOf = (projectId: string, key: string): unknown => layouts.view(projectId)!.panels.find((p) => p.panelKey === key)?.badge
 
@@ -567,6 +694,7 @@ describe('badge', () => {
       ['sessions.send', { pluginId: 'a.one', tabId, text: 'hello' }],
       ['sessions.open', { pluginId: 'a.one' }],
       ['sessions.openShell', { pluginId: 'a.one' }],
+      ['sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] }],
       ['badge', { pluginId: 'a.one', panelId: 'board', value: 1 }],
       ['overlay.open', { pluginId: 'a.one', spec: { kind: 'url', url: 'https://example.com' } }]
     ] as const) {

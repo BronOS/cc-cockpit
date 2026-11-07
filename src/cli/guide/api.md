@@ -264,6 +264,18 @@ with full Node access.
   into it. `cwd` resolves inside the project folder by its real path (a link out of it is refused; absent means
   the folder itself). Unselected unless `focus: true` (for a click such as "Open terminal here"). It shares the
   5 a minute of `open`. An older app has no `openShell`: check `typeof ctx.sessions.openShell === 'function'`.
+- `ctx.sessions.openCommand({ argv, cwd, title, focus })`: a command tab in this window that runs `argv`
+  directly, with no shell: `argv[0]` is found on the person's PATH, every element is one argument as is
+  (1-64 strings, each 1-4096 characters, no NUL). Putting a file name or other untrusted text into the
+  argv is the plugin's job, and it must stay one whole element, never part of a word a shell will read:
+  for a pipe pass it as a positional argument, `['sh', '-c', 'glow "$1" | less -R', 'sh', file]`. `cwd`
+  resolves inside the project folder like `openShell`'s; `title` is 1-60 characters on one line (default:
+  the last path part of `argv[0]`). The tab's tooltip says "Opened by <your plugin's name> (<id>)". It is
+  saved and comes back after a restart not started (the person's Restart runs it), and is dropped once
+  your plugin is uninstalled or revoked. A clean exit closes the tab under the default `tabExit` setting,
+  so output the person should read must wait: `['sh', '-c', '"$@"; read -r _', 'sh', ...argv]`.
+  Unselected unless `focus: true`. It shares the 5 a minute of `open` and `openShell`. An older app has
+  no `openCommand`: check `typeof ctx.sessions.openCommand === 'function'`.
 
 ## Files
 
