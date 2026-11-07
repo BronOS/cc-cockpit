@@ -108,6 +108,8 @@ test('markdown: rendered without a diff, the diff first with one, the switch bot
   await review.locator('.doc-body.markdown').press('a')
   await expect(review.locator('#notes .note')).toHaveCount(1)
   await expect(review.locator('#notes .note').first()).toContainText('New text')
+  // It names its source line, like a Source note (markdown.mjs data-md-lines).
+  await expect(review.locator('#notes .note button.link').first()).toHaveText(/^Line 3 · «New text»$/)
 
   // Back to Source: the editors again, the text note still listed; its label switches back.
   await review.locator('#mdview').click()

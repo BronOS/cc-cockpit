@@ -947,7 +947,7 @@ test('a file review with an empty draft asks Claude to read the file and its dif
   host.activate(f.ctx)
   await f.provided.reviewer.open('a.js')
   const { text } = await f.handles[0].discussFn()
-  assert.match(text, /^Review of a\.js \(changes since the last commit [0-9a-f]{12}\)\n\nDiscuss these changes with me: read the file and its diff/)
+  assert.match(text, /^Review: changes since the last commit [0-9a-f]{12}\n\nDiscuss these changes with me: read the file and its diff/)
   host.deactivate()
 })
 

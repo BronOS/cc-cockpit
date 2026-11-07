@@ -503,3 +503,30 @@ test('page notes (a PDF): kept by cleanDraft, ordered by page, worded as pages',
   assert.match(text, /1\. Page 1:\n   > first words\n   fix this/)
   assert.match(text, /2\. Page 3:\n   > third\n   later/)
 })
+
+test('a rendered-markdown note: its source lines first, the quote as «start … end» of a long selection that still fits', () => {
+  const section = 'What it does One window per project. ' + 'A project is a folder with tabs, layout and plugins. '.repeat(20) + 'Editor with micro (optional, see below).'
+  const quote = section.slice(0, 500) // what the page stores (anchor.mjs QUOTE_MAX)
+  const tail = section.slice(-200)
+  const d = review.cleanDraft({
+    global: 'this is test of rendered MD',
+    notes: [{ id: 'n1', quote, anchor: { at: 100, length: section.length, prefix: '', suffix: '' }, lines: { from: 22, to: 45 }, tail, text: 'I selected the whole section' }],
+  })
+  assert.deepEqual(d.notes[0].lines, { from: 22, to: 45 })
+  const sides = { path: 'README.md', mode: 'diff', head: 'eb89a0d2413e00', old: 'x', new: 'x', oldMissing: false, newMissing: false }
+  const { text, cut } = review.buildReview(d, sides, review.MAX_CONTEXT, { named: false })
+  assert.equal(cut, false)
+  assert.match(text, /^Review: unchanged since the last commit eb89a0d2413e\n\nthis is test of rendered MD\n\n1\. Lines 22-45 \(«What it does One window per project\. .* … .*see below\)\.»\):\n   I selected the whole section$/)
+  // Cut at words on both sides.
+  const q = text.match(/«(.*)»/)[1]
+  assert.ok(q.split(' … ')[1].startsWith(q.split(' … ')[1].split(' ')[0]))
+  // The named head (ccc review, the message without the app's About/File lines) is unchanged.
+  assert.match(review.buildReview(d, sides).text, /^Review of README\.md \(unchanged since the last commit eb89a0d2413e\)/)
+  // Bad lines are dropped, the note kept.
+  assert.equal(review.cleanDraft({ notes: [{ quote: 'q', anchor: { at: 0, length: 1 }, lines: { from: 0, to: 3 }, text: 't' }] }).notes[0].lines, undefined)
+})
+
+test('an HTML note with a kept tail and no lines: On «start … end»', () => {
+  const d = review.cleanDraft({ notes: [{ quote: 'a '.repeat(250), anchor: { at: 0, length: 900, prefix: '', suffix: '' }, tail: 'the very end here', text: 'n' }] })
+  assert.match(review.buildReview(d, { path: 'x', mode: 'plain', old: '', new: '', oldMissing: true, newMissing: false }).text, /1\. On «a a .* … the very end here»: n/)
+})

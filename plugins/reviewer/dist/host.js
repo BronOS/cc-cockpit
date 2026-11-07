@@ -383,7 +383,7 @@ exports.activate = (ctx) => {
         type: { name: 'file', data: { path: sides.path } },
         // A markdown file's Rendered view has links: only the http(s) URLs written in it open.
         ...(kind === 'markdown' ? { links: review.textLinks(sides.new, sides.old) } : {}),
-        build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT),
+        build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT, { named: false }),
         tooLarge: `${sides.path} is too large to review (with escaping and its saved draft)`,
       },
       { tabId },
@@ -409,7 +409,7 @@ exports.activate = (ctx) => {
         sides,
         after: review.previewChunks(p.kind, p.mime, p.bytes),
         type: { name: 'file', data: { path: p.path } },
-        build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT),
+        build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT, { named: false }),
         tooLarge: `${p.path} is too large to show (with its saved draft)`,
       },
       { tabId },

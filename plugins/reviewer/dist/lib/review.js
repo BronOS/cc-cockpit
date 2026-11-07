@@ -8,6 +8,7 @@ const MAX_NOTES = 200
 const MAX_GLOBAL = 20000
 const MAX_NOTE_TEXT = 4000 // the page's note and comment inputs carry the same caps as maxlength
 const MAX_QUOTE = 500 // per note, as stored; the message may shorten it further
+const MAX_TAIL = 200 // the end of a long text selection, as stored
 const MAX_PDF_PAGE = 100000 // a page note's page number: past any real PDF, so a bad draft is dropped
 const MAX_MESSAGE = 20000 // the most one review text may take; quotes are shortened first
 // What the reviewer hands the app's Discuss with Claude (its onDiscuss answer). The app sends at most
@@ -132,6 +133,14 @@ function cleanDraft(d) {
         // A note on annotate's companion (the document beside the main one); absent for the main one,
         // so a draft from before the companion reads the same.
         if (n.doc === 'companion') note.doc = 'companion'
+        // A markdown file's Rendered view: the source lines the selection spans, and the end of a
+        // selection longer than the stored quote (so the message shows «start … end»).
+        if (isObj(n.lines)) {
+          const from = Math.floor(Number(n.lines.from))
+          const to = Math.floor(Number(n.lines.to))
+          if (from >= 1 && to >= from && to <= 10000000) note.lines = { from, to }
+        }
+        if (typeof n.tail === 'string' && n.tail) note.tail = n.tail.slice(-MAX_TAIL)
         out.notes.push(note)
         continue
       }
@@ -179,9 +188,20 @@ function quoteBlock(quote, max) {
  * rendered text keeps the HTML source's line breaks), shortened to `max` at a word end, with " …"
  * when it was shortened here or already cut when stored (`full`: the selection's length).
  */
-function inlineQuote(quote, full, max) {
+function inlineQuote(quote, full, max, tail = '') {
   let q = quote.replace(/\s+/g, ' ').trim()
   const stored = q
+  // A selection longer than its stored quote, with its end kept: «start … end», both cut at words, so
+  // the reader sees where it begins and where it stops. The start gets most of the room.
+  const t = tail.replace(/\s+/g, ' ').trim()
+  if (t && full > quote.length) {
+    const room = Math.max(max, 40)
+    const headMax = Math.max(20, Math.floor(room * 0.6))
+    const tailMax = Math.max(20, room - headMax)
+    const head = q.length > headMax ? q.slice(0, headMax).replace(/\s+\S*$/, '') : q
+    const end = t.length > tailMax ? t.slice(t.length - tailMax).replace(/^\S*\s+/, '') : t
+    return `${head} … ${end}`
+  }
   if (q.length > max) q = q.slice(0, max).replace(/\s+\S*$/, '')
   return q.length < stored.length || full > quote.length ? `${q} …` : q
 }
@@ -220,7 +240,14 @@ function buildMessage(head, draft, sided, companionTitle = null, max = MAX_MESSA
       if (n.anchor) {
         // No line numbers in rendered HTML: the quote is what locates the note. It is never dropped
         // whole (at least 40 chars stay), or a note would point at nothing.
-        const q = n.quote.trim() ? `On «${inlineQuote(n.quote, n.anchor.length, Math.max(quoteMax, 40))}»` : 'On the text'
+        const quoted = n.quote.trim() ? `«${inlineQuote(n.quote, n.anchor.length, Math.max(quoteMax, 40), n.tail || '')}»` : ''
+        // A rendered markdown note names its source lines first, like a line note; the quote is context.
+        if (n.lines) {
+          const lines = n.lines.from === n.lines.to ? `Line ${n.lines.from}` : `Lines ${n.lines.from}-${n.lines.to}`
+          parts.push(`${i + 1}. ${lines}${quoted ? ` (${quoted})` : ''}:\n   ${body}`)
+          return
+        }
+        const q = quoted ? `On ${quoted}` : 'On the text'
         // A note on the companion says which document it is in; the main one's need not.
         const where = n.doc === 'companion' ? `In ${companionTitle || 'the document beside it'}, ${q[0].toLowerCase()}${q.slice(1)}` : q
         parts.push(`${i + 1}. ${where}: ${body}`)
@@ -256,13 +283,15 @@ function formatReview(draft, sides) {
 }
 
 /** formatReview, plus `cut` (see buildMessage); `max` the text's cap (MAX_CONTEXT for Discuss). */
-function buildReview(draft, sides, max = MAX_MESSAGE) {
+function buildReview(draft, sides, max = MAX_MESSAGE, { named = true } = {}) {
   const commit = sides.head ? ` ${sides.head.slice(0, 12)}` : ''
   const unchanged = sides.mode === 'diff' && !sides.oldMissing && !sides.newMissing && sides.old === sides.new
   // Sides only mean something when there is a diff: an unchanged file is one text.
   const sided = sides.mode === 'diff' && !unchanged
   const base = sides.mode === 'plain' || sides.mode === 'preview' ? 'the file as it is now, no git diff' : unchanged ? `unchanged since the last commit${commit}` : `changes since the last commit${commit}`
-  const head = `Review of ${sides.path} (${base})`
+  // Discuss (`named: false`): the app's own head already says `About: <title>` and `File: <path>`,
+  // so the review says only what it is about, not the path a third time.
+  const head = named ? `Review of ${sides.path} (${base})` : `Review: ${base}`
   // No comment and no note: Discuss still sends (it used to refuse, real-work feedback 9). Claude
   // can read the file itself, so the message asks it to and to talk the change through.
   if (isEmpty(cleanDraft(draft))) {

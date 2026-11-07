@@ -929,11 +929,39 @@ function rangeOf(view, start, end) {
   return r
 }
 
+// A selection on a rendered markdown file: the source lines of the blocks it starts and ends in
+// (markdown.mjs data-md-lines), or null when neither end is inside a marked block.
+function mdLinesOf(range) {
+  const linesAt = (node) => {
+    const e = node && (node.nodeType === 1 ? node : node.parentElement)
+    const b = e && e.closest('[data-md-lines]')
+    if (!b || !htmlView.body.contains(b)) return null
+    const [from, to] = b.dataset.mdLines.split('-').map(Number)
+    return { from, to }
+  }
+  const a = linesAt(range.startContainer)
+  const b = linesAt(range.endContainer)
+  if (!a && !b) return null
+  const from = Math.min((a || b).from, (b || a).from)
+  const to = Math.max((a || b).to, (b || a).to)
+  return { from, to }
+}
+
+const TAIL_MAX = 200 // the end of a long selection, kept for the message («start … end»)
+
 function addHtmlNote() {
   const sel = htmlSelection()
   if (!sel) return
   const { quote, anchor } = makeAnchor(sel.view.full, sel.start, sel.end)
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, quote, anchor, text: '' }
+  // The quote keeps the selection's first chars (it is also what finds the note again); a longer
+  // selection keeps its end too, so the message can show where it stops.
+  if (anchor.length > quote.length) note.tail = sel.view.full.slice(Math.max(sel.start + quote.length, sel.end - TAIL_MAX), sel.end)
+  if (state.md === 'rendered' && sel.view === htmlView) {
+    const r = htmlSelectionRange()
+    const lines = r && mdLinesOf(r.range)
+    if (lines) note.lines = lines
+  }
   if (sel.view === companionView) note.doc = 'companion'
   located.set(note.id, { view: sel.view, start: sel.start, end: sel.end })
   collapseSelection()
@@ -957,7 +985,8 @@ function htmlNotesInOrder() {
 }
 
 function htmlNoteLabel(n) {
-  const shown = `«${shortQuote(n.quote)}»`
+  const where = n.lines ? `${n.lines.from === n.lines.to ? `Line ${n.lines.from}` : `Lines ${n.lines.from}-${n.lines.to}`} · ` : ''
+  const shown = `${where}«${shortQuote(n.quote)}»`
   // Before its document is rendered nothing is located yet: no "not found" for that moment.
   const view = viewOf(n)
   const found = located.has(n.id) || (view !== null && !view.rendered)

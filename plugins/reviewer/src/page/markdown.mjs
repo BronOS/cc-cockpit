@@ -14,6 +14,21 @@ import MarkdownIt from 'markdown-it'
 
 const md = new MarkdownIt({ html: false, linkify: true, typographer: false })
 
+// Each block markdown-it renders carries its source lines as `data-md-lines="first-last"` (1-based,
+// inclusive; markdown-it's `map` is 0-based with an exclusive end). The sanitizer keeps exactly that
+// attribute (sanitize.mjs), and a note on the rendered text then names the lines its selection
+// spans (review.js mdLinesOf), as a note in the Source view does.
+// A list's map runs to the blank line after it: blank lines at the end are not part of the block.
+md.core.ruler.push('md_lines', (state) => {
+  const lines = state.src.split('\n')
+  for (const t of state.tokens) {
+    if (!t.map || t.nesting === -1) continue
+    let end = t.map[1]
+    while (end > t.map[0] + 1 && !(lines[end - 1] || '').trim()) end--
+    t.attrSet('data-md-lines', `${t.map[0] + 1}-${Math.max(t.map[0] + 1, end)}`)
+  }
+})
+
 /** The HTML of a markdown text (to be sanitized by the caller, never inserted as is). */
 export function markdownHtml(text) {
   return md.render(typeof text === 'string' ? text : '')

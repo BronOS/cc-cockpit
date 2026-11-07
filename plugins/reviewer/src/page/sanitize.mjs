@@ -146,6 +146,9 @@ function cleanAttrs(tag, a) {
   if (tag === 'div') {
     for (const name of ['data-original', 'data-reader']) if (a.has(name) && NAME.test(a.get(name))) out.push([name, a.get(name)])
   }
+  // A markdown file's source lines of a block (markdown.mjs). Digits only, so nothing but a number
+  // pair rides on it; on annotate's HTML it is harmless (the page reads it only for a markdown file).
+  if (a.has('data-md-lines') && /^\d{1,7}-\d{1,7}$/.test(a.get('data-md-lines'))) out.push(['data-md-lines', a.get('data-md-lines')])
   if (tag === 'td' || tag === 'th') {
     for (const name of ['colspan', 'rowspan']) {
       const v = a.get(name)
