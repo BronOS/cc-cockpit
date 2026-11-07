@@ -530,3 +530,13 @@ test('an HTML note with a kept tail and no lines: On «start … end»', () => {
   const d = review.cleanDraft({ notes: [{ quote: 'a '.repeat(250), anchor: { at: 0, length: 900, prefix: '', suffix: '' }, tail: 'the very end here', text: 'n' }] })
   assert.match(review.buildReview(d, { path: 'x', mode: 'plain', old: '', new: '', oldMissing: true, newMissing: false }).text, /1\. On «a a .* … the very end here»: n/)
 })
+
+test('page notes pass the draft check (the bug: "a note has no valid line range"); a long one shows «start … end»', () => {
+  const long = 'This page has one long paragraph, so a long selection tests quote shortening. ' + 'Lorem ipsum dolor sit amet. '.repeat(30)
+  const draft = { global: 'test 4 - PDF', notes: [{ id: 'n1', page: 3, quote: long.slice(0, 500), tail: 'Etiam tempor. The end of the long paragraph is here.', text: 'selected whole paragraph' }] }
+  assert.equal(review.draftProblem(draft), null)
+  assert.equal(review.draftProblem({ notes: [{ page: 0, quote: 'q', text: 'x' }] }), 'a note has no valid page')
+  const sides = { path: 'test.pdf', mode: 'preview', head: null, old: '', new: '', oldMissing: true, newMissing: false }
+  const text = review.buildReview(review.cleanDraft(draft), sides, review.MAX_CONTEXT, { named: false }).text
+  assert.match(text, /^Review: the file as it is now, no git diff\n\ntest 4 - PDF\n\n1\. Page 3:\n   > This page has one long paragraph.* … .*The end of the long paragraph is here\.\n   selected whole paragraph$/)
+})

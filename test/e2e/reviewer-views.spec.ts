@@ -215,6 +215,10 @@ test('pdf: pages drawn by pdf.js in the sandboxed page, selectable text, a page 
   await expect(v.locator('#notes .note')).toHaveCount(1)
   await expect(v.locator('#notes .note button.link')).toHaveText('Page 1')
   await expect(v.locator('#notes .note .quote')).toHaveText('Hello page one')
+  // Its text saves (a page note has no line range; the draft check once refused it).
+  await v.locator('#notes .note textarea').fill('a page note')
+  await v.locator('#global').fill('about the PDF')
+  await expect(v.locator('#draft-error')).toBeHidden()
   await escape(cockpit)
   await expect.poll(async () => (await stack(cockpit)).length).toBe(0)
 

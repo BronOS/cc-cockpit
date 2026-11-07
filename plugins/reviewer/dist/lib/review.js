@@ -80,6 +80,12 @@ function draftProblem(d) {
       if (text.length > MAX_NOTE_TEXT) return `a note is over ${MAX_NOTE_TEXT} characters`
       if (typeof n.quote === 'string' && n.quote.length > MAX_QUOTE) return `a quote is over ${MAX_QUOTE} characters`
       if (isObj(n.anchor)) continue // an HTML note: cleanDraft keeps it whatever its anchor says
+      // A PDF's page note has a page, not lines (cleanDraft drops a bad page, as it does bad lines).
+      if (n.page !== undefined) {
+        const page = Math.floor(Number(n.page))
+        if (text.trim() && !(page >= 1 && page <= MAX_PDF_PAGE)) return 'a note has no valid page'
+        continue
+      }
       const from = Math.floor(Number(n.from))
       const to = Math.floor(Number(n.to))
       if (text.trim() && !(from >= 1 && to >= from)) return 'a note has no valid line range'
@@ -149,6 +155,7 @@ function cleanDraft(d) {
         const page = Math.floor(Number(n.page))
         if (!(page >= 1 && page <= MAX_PDF_PAGE)) continue
         out.notes.push({
+          ...(typeof n.tail === 'string' && n.tail ? { tail: n.tail.slice(-MAX_TAIL) } : {}),
           id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.notes.length + 1),
           page,
           quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '',
@@ -254,7 +261,8 @@ function buildMessage(head, draft, sided, companionTitle = null, max = MAX_MESSA
         return
       }
       if (n.page) {
-        const q = n.quote.trim() && quoteMax > 0 ? `\n${quoteBlock(n.quote, quoteMax)}` : ''
+        // A long selection kept its end (tail): the quote reads «start … end» on one line.
+        const q = !n.quote.trim() || quoteMax <= 0 ? '' : n.tail ? `\n   > ${inlineQuote(n.quote, n.quote.length + 1, Math.max(quoteMax, 40), n.tail)}` : `\n${quoteBlock(n.quote, quoteMax)}`
         parts.push(`${i + 1}. Page ${n.page}:${q}\n   ${body}`)
         return
       }

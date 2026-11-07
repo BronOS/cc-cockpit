@@ -715,8 +715,11 @@ function showPdf(r) {
 function addPdfNote() {
   const sel = pdfSelection(preview.el)
   if (!sel) return
-  const quote = sel.quote.length > QUOTE_MAX ? `${sel.quote.slice(0, QUOTE_MAX - 2)} …` : sel.quote
+  const long = sel.quote.length > QUOTE_MAX
+  const quote = long ? sel.quote.slice(0, QUOTE_MAX) : sel.quote
   const note = { id: `n${Date.now().toString(36)}${noteSeq++}`, page: sel.page, quote, text: '' }
+  // A long selection keeps its end too, so the message shows where it stops (as for markdown).
+  if (long) note.tail = sel.quote.slice(Math.max(QUOTE_MAX, sel.quote.length - TAIL_MAX))
   collapseSelection()
   state.draft.notes.push(note)
   renderNotes(note.id)
