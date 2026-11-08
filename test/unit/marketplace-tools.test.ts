@@ -1194,11 +1194,16 @@ describe('the workflows', () => {
     expect(JSON.parse(readFileSync(join(TEMPLATE, 'preview-policy.json'), 'utf8'))).toEqual({ requiredFrom: null })
   })
 
-  it('every action is first-party', () => {
+  // Pinned to a commit, as the app's workflows are: publish-index holds PUBLISH_TOKEN, and a tag
+  // (`@v4`) can be moved to other code. setup-node v5+ caches by itself once package.json names a
+  // packageManager, so it is told not to.
+  it('every action is first-party and pinned to a commit; setup-node never caches', () => {
     for (const name of ['check.yml', 'auto-merge.yml', 'publish-index.yml']) {
       for (const match of code(workflow(name)).matchAll(/uses:\s*(\S+)/g)) {
-        expect(match[1]).toMatch(/^(actions\/[a-z-]+@v\d+|\.\/\.github\/workflows\/)/)
+        expect(match[1]).toMatch(/^(actions\/[a-z-]+@[0-9a-f]{40}$|\.\/\.github\/workflows\/)/)
       }
+      const nodes = code(workflow(name)).match(/uses:\s*actions\/setup-node@/g) ?? []
+      expect(code(workflow(name)).match(/package-manager-cache: false/g) ?? []).toHaveLength(nodes.length)
     }
   })
 })

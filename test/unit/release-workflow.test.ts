@@ -123,6 +123,8 @@ describe.each(readdirSync(workflowsDir))('%s', (file) => {
       if (step.uses?.startsWith('actions/setup-node@')) {
         expect(step.with?.['node-version']).toMatch(/^\d+\.\d+\.\d+$/)
         expect(step.with).not.toHaveProperty('cache')
+        // setup-node v5+ caches by itself once package.json names a packageManager: off, explicitly.
+        expect(step.with?.['package-manager-cache']).toBe(false)
       }
       expect(step.uses ?? '').not.toContain('actions/cache')
     }
