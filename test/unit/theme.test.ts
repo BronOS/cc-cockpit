@@ -234,6 +234,69 @@ describe('ThemeService', () => {
     }
   })
 
+  describe('update (ctx.themes.set)', () => {
+    const live = { name: 'Live', kind: 'dark', vars: { '--cc-bg': '#111111' }, xterm: { red: '#ff0000' } }
+
+    it('replaces a registered theme in place, inheriting the base vars, keeping its name and list place', () => {
+      const { svc, changes } = service()
+      svc.register(valid)
+      svc.register({ ...valid, id: 'other' })
+      expect(svc.update('solar', { kind: 'light', vars: { '--cc-bg': '#fafafa' } })).toBe(true)
+      const t = svc.list().find((x) => x.id === 'solar')!
+      const light = BUILTIN_THEMES.find((x) => x.id === 'light')!
+      expect(t).toMatchObject({ id: 'solar', name: 'Solar', kind: 'light', xterm: {} })
+      expect(t.vars['--cc-bg']).toBe('#fafafa')
+      // Inherited from the built-in of its new kind; the old theme's own variables are gone.
+      expect(t.vars['--cc-accent']).toBe(light.vars['--cc-accent'])
+      expect(t.vars['--custom-thing']).toBeUndefined()
+      expect(svc.list().map((x) => x.id)).toEqual(['light', 'dark', 'solar', 'other'])
+      // Not the shown theme: nothing to broadcast.
+      expect(changes).toEqual([])
+    })
+
+    it('broadcasts when the updated theme is the active one, and an identical update is a no-op', () => {
+      const { svc, changes } = service({ theme: 'solar' })
+      svc.register(valid)
+      expect(changes.map((t) => t.id)).toEqual(['solar'])
+      expect(svc.update('solar', live)).toBe(true)
+      expect(changes).toHaveLength(2)
+      expect(changes[1]).toMatchObject({ id: 'solar', name: 'Live', xterm: { red: '#ff0000' } })
+      expect(changes[1]!.vars['--cc-bg']).toBe('#111111')
+      expect(svc.current()).toBe(changes[1])
+      // N windows' hosts send the same update; key order does not matter either.
+      expect(svc.update('solar', { ...live })).toBe(false)
+      expect(svc.update('solar', { xterm: { red: '#ff0000' }, vars: { '--cc-bg': '#111111' }, kind: 'dark', name: 'Live' })).toBe(false)
+      expect(changes).toHaveLength(2)
+      expect(svc.update('solar', { ...live, vars: { '--cc-bg': '#222222' } })).toBe(true)
+      expect(changes).toHaveLength(3)
+    })
+
+    it('ignores the id in the payload and refuses unknown ids, built-ins and invalid themes', () => {
+      const { svc } = service()
+      svc.register(valid)
+      svc.register({ ...valid, id: 'other', name: 'Other' })
+      svc.update('solar', { ...live, id: 'other' })
+      expect(svc.list().find((x) => x.id === 'other')!.name).toBe('Other')
+      expect(svc.list().find((x) => x.id === 'solar')!.name).toBe('Live')
+      expect(() => svc.update('nope', live)).toThrow(/theme is not registered/)
+      expect(() => svc.update('dark', live)).toThrow(/theme is not registered/)
+      expect(() => svc.update('solar', { ...live, vars: { '--cc-bg': 'red; x' } })).toThrow(/invalid theme: vars: --cc-bg is not a colour/)
+      expect(() => svc.update('solar', null)).toThrow(/invalid theme/)
+      expect(() => svc.update('solar', { kind: 'sepia' })).toThrow(/invalid theme/)
+      // A refused update leaves the theme as it was.
+      expect(svc.list().find((x) => x.id === 'solar')!.name).toBe('Live')
+    })
+
+    it('an unregistered theme cannot be updated, and register after unregister takes the file again', () => {
+      const { svc } = service()
+      svc.register(valid)
+      svc.update('solar', live)
+      svc.unregister('solar')
+      expect(() => svc.update('solar', live)).toThrow(/theme is not registered/)
+      expect(svc.register(valid).name).toBe('Solar')
+    })
+  })
+
   it('refuses invalid themes and duplicate or built-in ids', () => {
     const { svc } = service()
     expect(() => svc.register({ ...valid, kind: 'x' })).toThrow(/invalid theme/)

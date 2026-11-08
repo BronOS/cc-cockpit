@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, log, notify and openExternal; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, themes, log, notify and openExternal; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -42,6 +42,7 @@ import { createSlotsApi, SlotHub, type SlotOpenTag } from './slots'
 import { SettingsHolder } from './settings'
 import { createSettingsPageApi, SettingsPageHub, type SettingsPageOpenTag } from './settings-page'
 import { createStorage, type StorageHandle } from './storage'
+import { createThemesApi } from './themes'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
 import { OverlayButtonRegistry } from '../overlay-buttons'
 import { createWebviewApi, WebviewHub } from './webview'
@@ -53,7 +54,7 @@ export interface ContextDeps {
   log(pluginId: string, level: LogLevel, text: string): void
   /**
    * A request to main (`commands.register`, `notify`, `sessions.*`, `badge`, `overlay.open`,
-   * `secrets.*`, `oauth.*`, `appStorage.*`).
+   * `secrets.*`, `oauth.*`, `appStorage.*`, `themes.set`).
    * Default: rejects (no connection to main). `timeoutMs: Infinity` waits until main answers or the
    * connection closes (an overlay is open as long as the user wants).
    */
@@ -485,6 +486,8 @@ export class HostContexts {
         // (ServiceRegistry.provider says why). A read, so no alive() check.
         provider: (name: string) => servicesOf().provider(spec.id, name)
       }),
+      // An RPC: main checks the id against the manifest and replaces the theme app-wide (ctx/themes.ts).
+      themes: createThemesApi({ pluginId: spec.id, call, guardAsync }),
       log: Object.freeze(logger),
       notify,
       openExternal

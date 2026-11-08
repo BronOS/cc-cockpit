@@ -197,6 +197,19 @@ with full Node access.
   when it has drawn it. The person sees the toolbar and the loader instead of nothing, and Discuss and
   the type buttons are there from the start. Close the overlay (`close()`) when the fetch fails and
   tell the person with `ctx.notify`.
+- `ctx.themes.set(themeId, { name?, kind, vars?, xterm? })` (an older app has none: feature-test
+  `typeof ctx.themes === 'object'`): replace one of your own themes while the app runs, app-wide, in
+  every window (a theme that follows the desktop's palette). `themeId` is the un-namespaced id from
+  your `contributes.themes`; the app refuses any other id, so no plugin can change another plugin's
+  theme or a built-in, and any `id` in the object is ignored. It is a full replacement in the theme
+  file format (`plugins` topic): `name` omitted keeps the current one, `vars` and `xterm` omitted are
+  empty, and every variable not set comes from the built-in of `kind`. Rejects (`themes.set: ...`)
+  for an undeclared id, a theme whose file did not load, a colour or variable name the theme file
+  would refuse (`invalid theme: ...`), over 32 KiB as JSON, and past 10 calls per 10 s per plugin and
+  window. In memory only: whenever the plugin loads (app start, reload, update) its theme file is the
+  starting value again, so set it in `activate` and on every change of your source. Setting what it
+  already is changes nothing (every window's host may send the same update); a change repaints the
+  windows only when it is the theme they show.
 
 ## Sessions
 

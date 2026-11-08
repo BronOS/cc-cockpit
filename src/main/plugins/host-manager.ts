@@ -212,6 +212,8 @@ export interface HostPlugin {
   settingsPage?: SettingsPageContribution
   /** The manifest's `access` (validated): `sessions: 'all-windows'` opens ctx.sessions scope `all`. */
   access?: PluginManifest['access']
+  /** The ids of the manifest's `contributes.themes`: the only themes ctx.themes.set may replace. */
+  themes?: string[]
 }
 
 /**
@@ -1101,6 +1103,7 @@ export class HostManager {
               panels: s.panels,
               webviewPanels: s.webviewPanels ?? [],
               panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id)),
+              themes: [...(runnable.find((p) => p.id === s.id)?.themes ?? [])],
               ...(s.sessionsAll === true ? { sessionsAll: true } : {})
             }))
           },
@@ -1320,6 +1323,7 @@ export class HostManager {
       panels: spec.panels,
       webviewPanels: spec.webviewPanels ?? [],
       panelSlots: panelSlotsOf(next),
+      themes: [...(next.themes ?? [])],
       ...(spec.sessionsAll === true ? { sessionsAll: true } : {})
     })
     let state: unknown

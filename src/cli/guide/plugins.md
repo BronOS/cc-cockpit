@@ -46,7 +46,8 @@ so a person chooses to install or link it.
   `services` and `access` reject them.
 - Fields per contribution: panel `id`, `title`, `kind`, `icon`, `entry`, `defaultZone`; command
   `id`, `title`, `key`; theme `id`, `file`; skill `id`, `dir`; cli `name`, `summary`, `usage`,
-  `stdin`, `stdinDash`; openFile `title`. There is no `description` field on a command or a cli entry: a command is one palette
+  `stdin`, `stdinDash`; openFile `title`. A theme's file is its starting value; host code can
+  replace it while the app runs with `ctx.themes.set` (`api` topic). There is no `description` field on a command or a cli entry: a command is one palette
   line (`title`), a cli entry is a `summary` (200 chars) and a `usage` (500 chars).
 - `services` (optional, top level; used from the host code in `main`): `provides` and `uses` map a service name
   (`^[a-z][a-z0-9-]{0,63}$`) to its major version (integer 1..9999), at most 32 each. A plugin may

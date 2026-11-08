@@ -33,7 +33,7 @@ import {
   isReservedPluginId,
   type PluginManifest
 } from '../../shared/manifest'
-import type { Theme } from '../../shared/theme'
+import { contributedThemeId, type Theme } from '../../shared/theme'
 import type { Env } from '../env/login-env'
 import { liveChildren } from '../child-registry'
 import { killChild } from '../kill-child'
@@ -893,7 +893,7 @@ export class PluginInstaller {
     if (entry && this.revocationOf(entry) !== null) return []
     const ids: string[] = []
     for (const t of themes) {
-      const themeId = `${pluginId}/${t.id}`
+      const themeId = contributedThemeId(pluginId, t.id)
       try {
         const input = isPlainObject(t.raw) ? { ...t.raw, id: themeId } : t.raw
         ids.push(this.options.themes.register(input).id)

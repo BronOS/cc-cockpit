@@ -59,6 +59,12 @@
 //   appStorage.increment { pluginId, key, by? } -> number            applied whole, one at a time,
 //                                                                     so increment is atomic across
 //                                                                     windows; ctx.appStorage)
+//   themes.set      { pluginId, themeId, theme } -> null         replace one of the plugin's own declared
+//                                                                themes (`contributes.themes` id, never
+//                                                                another plugin's or a built-in) in memory,
+//                                                                app-wide; id forced to <pluginId>/<themeId>,
+//                                                                checked by validateTheme, 32 KiB as JSON
+//                                                                (ThemeService.update; ctx.themes.set)
 //   oauth.authorize { pluginId, spec }         -> OAuthTokens    browser + loopback + PKCE (plugin-oauth.ts)
 //   oauth.refresh   { pluginId, spec, refreshToken } -> OAuthTokens
 //   webview.navigate { pluginId, panelId, target } -> null      a webview panel the plugin declares, in this
@@ -179,6 +185,8 @@ import {
   type CleanTypeButton
 } from '../../shared/overlay-buttons'
 import { checkWebUrl, MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
+import { isPlainObject } from '../../shared/guards'
+import { contributedThemeId } from '../../shared/theme'
 import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
 import type { SendOrigin, SessionEntry } from '../sessions/status-reducer'
@@ -272,6 +280,19 @@ export const MAX_SYSTEM_OPENS_PER_WINDOW = 3
  */
 export const TRASH_WINDOW_MS = 60_000
 export const MAX_TRASHES_PER_WINDOW = 10
+/**
+ * ctx.themes.set per plugin: a changed active theme is re-rendered by every window, its panels and
+ * terminals included. A theme follower (the desktop's palette) sets it once per change of the
+ * source; a watcher firing in a loop must not repaint the whole app many times a second.
+ */
+export const THEME_SET_WINDOW_MS = 10_000
+export const MAX_THEME_SETS_PER_WINDOW = 10
+/**
+ * The largest ctx.themes.set theme, as JSON. validateTheme caps entries and lengths already (200
+ * vars of 100 characters); this bounds the copy and the compare before that, and a real theme is
+ * a few KiB.
+ */
+export const MAX_THEME_SET_BYTES = 32 * 1024
 /** The `setting:` keys of project-scoped secret settings fields (any project). */
 const PROJECT_SETTING_PREFIX = `${SETTING_KEY_PREFIX}project:`
 /** At most this often the host hears that its project's sessions changed. */
@@ -408,6 +429,12 @@ export interface HostApiDeps {
   oauth: PluginOAuthApi
   /** ctx.appStorage (AppStorage, one for the whole app). Without it the appStorage requests are refused. */
   appStorage?: AppStorageApi
+  /**
+   * ThemeService.update (ctx.themes.set): `id` is the namespaced id HostApi built from the plugin's
+   * own declared contribution, `theme` the plugin's payload (validated there). True when it changed.
+   * Without it themes.set is refused.
+   */
+  updateTheme?(id: string, theme: unknown): boolean
   /** ctx.webview (WebviewManager). Without it the webview requests are refused. */
   webview?: Pick<WebviewManager, 'navigate' | 'back' | 'forward' | 'reload' | 'current' | 'destroyPlugin'>
   /**
@@ -448,6 +475,8 @@ export interface HostApiPlugin {
   panelSlots?: Readonly<Record<string, readonly string[]>>
   /** The manifest declares `access.sessions: 'all-windows'`: ctx.sessions scope `all`. Absent is false. */
   sessionsAll?: boolean
+  /** The ids of its manifest `contributes.themes`: the only ones ctx.themes.set may replace. Absent is none. */
+  themes?: readonly string[]
 }
 
 /** Who is asking: fixed when main spawned the host process. */
@@ -620,6 +649,7 @@ export class HostApi {
   private readonly reveals = new RateWindow(MAX_REVEALS_PER_WINDOW, SYSTEM_OPEN_WINDOW_MS)
   private readonly systemOpens = new RateWindow(MAX_SYSTEM_OPENS_PER_WINDOW, SYSTEM_OPEN_WINDOW_MS)
   private readonly trashes = new RateWindow(MAX_TRASHES_PER_WINDOW, TRASH_WINDOW_MS)
+  private readonly themeSets = new RateWindow(MAX_THEME_SETS_PER_WINDOW, THEME_SET_WINDOW_MS)
   /**
    * A ctx.files.trash dialog of this host is up: a second request is refused, not queued, so no
    * plugin can stack dialogs the person would click away by reflex (the `ccc plugin link` rule).
@@ -731,6 +761,7 @@ export class HostApi {
       'appStorage.keys': (params) => this.appStorageCall(params, 'appStorage.keys', (store, id) => store.keys(id)),
       'appStorage.increment': (params) =>
         this.appStorageCall(params, 'appStorage.increment', (store, id, p) => store.increment(id, p.key, p.by)),
+      'themes.set': (params) => this.themesSet(params),
       'oauth.authorize': (params) => this.oauthAuthorize(params),
       'oauth.refresh': (params) => this.oauthRefresh(params),
       'webview.navigate': (params) => this.webviewNavigate(params),
@@ -1855,6 +1886,46 @@ export class HostApi {
     const id = this.plugin(pluginId, method).id
     if (!this.deps.appStorage) throw new Error(`${method}: app storage is not available`)
     return body(this.deps.appStorage, id, rest)
+  }
+
+  // Themes. App-wide like app storage, but a repaint of every window: a host that is stopping has
+  // no business re-theming the app, so it checks `revoked` like sessions and overlays. Synchronous,
+  // like appStorage: the hosts of several windows sending the same update are applied one at a
+  // time, and ThemeService.update makes every one after the first a no-op.
+
+  private themesSet(params: unknown): null {
+    this.alive()
+    const { pluginId, themeId, theme } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'themes.set')
+    if (!this.deps.updateTheme) throw new Error('themes.set: themes are not available')
+    // Only the plugin's own declarations: the namespaced id below can then name nothing else (no
+    // other plugin's theme, no built-in, no theme of a manifest this copy no longer declares).
+    if (typeof themeId !== 'string' || !(plugin.themes ?? []).includes(themeId)) {
+      throw new Error("themes.set: themeId is not one of this plugin's contributes.themes ids")
+    }
+    if (!isPlainObject(theme)) throw new Error('themes.set: theme must be an object')
+    let json: string | undefined
+    try {
+      json = JSON.stringify(theme)
+    } catch {
+      // A cycle or a BigInt: structured clone carries both, JSON (and so no theme) does not.
+      throw new Error('themes.set: theme must be JSON')
+    }
+    if (json === undefined || Buffer.byteLength(json, 'utf8') > MAX_THEME_SET_BYTES) {
+      throw new Error(`themes.set: theme is over ${MAX_THEME_SET_BYTES} bytes as JSON`)
+    }
+    if (!this.themeSets.take(plugin.id)) {
+      throw new Error(`themes.set: more than ${MAX_THEME_SETS_PER_WINDOW} in ${THEME_SET_WINDOW_MS / 1000} s; try again in a moment`)
+    }
+    try {
+      // Any `id` in the payload is overridden by update(): the plugin names only its own theme.
+      this.deps.updateTheme(contributedThemeId(plugin.id, themeId), theme)
+    } catch (err) {
+      // Refused (invalid colour, not registered): it changed nothing, so the budget comes back.
+      this.themeSets.refund(plugin.id)
+      throw withMethod('themes.set', err)
+    }
+    return null
   }
 
   // OAuth. authorize is a window thing (a browser tab the user is looking at for this window), so

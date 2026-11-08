@@ -10,6 +10,7 @@
 // Pure Node: the OS appearance and the broadcast come in as functions.
 import darkJson from '../../themes/dark.json'
 import lightJson from '../../themes/light.json'
+import { isPlainObject } from '../../shared/guards'
 import { validateTheme, type Theme } from '../../shared/theme'
 
 export interface ThemeSettings {
@@ -34,6 +35,35 @@ function builtin(json: unknown): Theme {
 
 export const BUILTIN_THEMES: readonly Theme[] = [builtin(lightJson), builtin(darkJson)]
 const BUILTIN_IDS = new Set(BUILTIN_THEMES.map((t) => t.id))
+
+/**
+ * Validate a plugin theme and lay it over the built-in of its kind. Shell variables the theme does
+ * not set are taken from that built-in: applyTheme removes every variable the new theme lacks, so a
+ * theme written before a token existed (the accent and surface tokens came after hello-dusk) would
+ * otherwise leave the shell and its panels with no accent, no focus ring and transparent surfaces.
+ */
+function withBase(input: unknown): Theme {
+  const result = validateTheme(input)
+  if (!result.ok) throw new Error(`invalid theme: ${result.errors.join('; ')}`)
+  const base = BUILTIN_THEMES.find((t) => t.kind === result.theme.kind)
+  return { ...result.theme, vars: { ...base?.vars, ...result.theme.vars } }
+}
+
+/** Same entries, in any key order (two hosts may build the same palette in different orders). */
+function sameRecord(a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>): boolean {
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && a[k] === b[k])
+}
+
+function sameTheme(a: Theme, b: Theme): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.kind === b.kind &&
+    sameRecord(a.vars, b.vars) &&
+    sameRecord(a.xterm as Record<string, string>, b.xterm as Record<string, string>)
+  )
+}
 
 export class ThemeService {
   private readonly contributed = new Map<string, Theme>()
@@ -63,22 +93,44 @@ export class ThemeService {
 
   /**
    * Add a plugin theme. Throws on invalid input or an id that is already taken. Shell variables the
-   * theme does not set are taken from the built-in of its kind: applyTheme removes every variable
-   * the new theme lacks, so a theme written before a token existed (the accent and surface tokens
-   * came after hello-dusk) would otherwise leave the shell and its panels with no accent, no focus
-   * ring and transparent surfaces.
+   * theme does not set come from the built-in of its kind (withBase).
    */
   register(input: unknown): Theme {
-    const result = validateTheme(input)
-    if (!result.ok) throw new Error(`invalid theme: ${result.errors.join('; ')}`)
-    const base = BUILTIN_THEMES.find((t) => t.kind === result.theme.kind)
-    const theme: Theme = { ...result.theme, vars: { ...base?.vars, ...result.theme.vars } }
+    const theme = withBase(input)
     if (BUILTIN_IDS.has(theme.id) || this.contributed.has(theme.id)) {
       throw new Error(`theme id already in use: ${theme.id}`)
     }
     this.contributed.set(theme.id, theme)
     this.refresh()
     return theme
+  }
+
+  /**
+   * Replace a registered plugin theme in place (ctx.themes.set; HostApi forces `id` to the calling
+   * plugin's own declared contribution, so `input.id` is ignored). A full replacement, inheriting
+   * from the built-in of its (possibly new) kind like `register`: an omitted `name` keeps the
+   * registered one, omitted `vars` or `xterm` are empty. Only a registered contributed id: a theme
+   * whose file did not load, a plugin that is unloaded or a built-in is refused. Every project
+   * window runs its own plugin host, so N hosts send the same update: one that changes nothing is a
+   * no-op (false, no broadcast); otherwise true, and a broadcast only when it is the theme shown.
+   * In memory only: a reload or update of the plugin registers its file again.
+   */
+  update(id: string, input: unknown): boolean {
+    const prev = this.contributed.get(id)
+    if (!prev) throw new Error(`theme is not registered (its file did not load, or the plugin is not loaded): ${id}`)
+    if (!isPlainObject(input)) throw new Error('invalid theme: theme must be an object')
+    const theme = withBase({
+      ...input,
+      id,
+      name: input.name ?? prev.name,
+      vars: input.vars ?? {},
+      xterm: input.xterm ?? {}
+    })
+    if (sameTheme(prev, theme)) return false
+    // Map.set on a present key keeps its place: the Appearance list order does not move.
+    this.contributed.set(id, theme)
+    this.refresh()
+    return true
   }
 
   /** Remove a plugin theme; when it was active the app falls back to the OS-matching built-in. */

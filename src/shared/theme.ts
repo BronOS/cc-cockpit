@@ -90,6 +90,15 @@ export function isColor(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_VALUE_LENGTH && (HEX.test(value) || FUNC.test(value))
 }
 
+/**
+ * The runtime id of a plugin's theme contribution: contribution ids are namespaced by the plugin
+ * id, so no plugin can name another's theme or a built-in. The installer registers under it and
+ * ctx.themes.set (HostApi) replaces under it.
+ */
+export function contributedThemeId(pluginId: string, themeId: string): string {
+  return `${pluginId}/${themeId}`
+}
+
 export type ThemeValidation = { ok: true; theme: Theme } | { ok: false; errors: string[] }
 
 /** Check untrusted JSON (a theme file from disk or a plugin) and return a clean copy. */

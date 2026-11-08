@@ -825,6 +825,8 @@ function start(): void {
         ...(plugin.manifest.contributes?.slots !== undefined ? { slots: plugin.manifest.contributes.slots } : {}),
         ...(plugin.manifest.contributes?.settings?.page !== undefined ? { settingsPage: plugin.manifest.contributes.settings.page } : {}),
         ...(plugin.manifest.access !== undefined ? { access: plugin.manifest.access } : {}),
+        // ctx.themes.set may replace only these (HostApi namespaces them by the plugin id).
+        themes: (plugin.manifest.contributes?.themes ?? []).map((t) => t.id),
         // The icon is a plugin file (validate.ts checked it is inside the folder); the strip loads
         // it from cc-plugin:// like the panel page.
         panels: (plugin.manifest.contributes?.panels ?? []).map((p) => ({
@@ -998,6 +1000,8 @@ function start(): void {
       secrets: pluginSecrets,
       oauth: pluginOAuth,
       appStorage,
+      // ctx.themes.set: HostApi checked the plugin, the declared id, the size and the budget.
+      updateTheme: (id, theme) => themes.update(id, theme),
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
       openFile: (caller, path, tabId) => routeProjectFile(openFileRoute, caller, path, tabId),

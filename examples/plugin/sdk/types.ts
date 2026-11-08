@@ -531,6 +531,48 @@ export interface SettingsPageInstance {
   onClose(listener: () => void): Disposer
 }
 
+/** A theme's terminal palette (`ctx.themes.set`, the `xterm` object of a theme file). Colour strings. */
+export interface XtermTheme {
+  foreground?: string
+  background?: string
+  cursor?: string
+  cursorAccent?: string
+  selectionBackground?: string
+  selectionForeground?: string
+  selectionInactiveBackground?: string
+  black?: string
+  red?: string
+  green?: string
+  yellow?: string
+  blue?: string
+  magenta?: string
+  cyan?: string
+  white?: string
+  brightBlack?: string
+  brightRed?: string
+  brightGreen?: string
+  brightYellow?: string
+  brightBlue?: string
+  brightMagenta?: string
+  brightCyan?: string
+  brightWhite?: string
+}
+
+/**
+ * A theme's contents for `ctx.themes.set`, the theme file format without `id`. Colours are `#rgb`,
+ * `#rgba`, `#rrggbb`, `#rrggbbaa` or plain `rgb()`/`rgba()`/`hsl()`/`hsla()`; `vars` names are
+ * `--name` CSS variables, at most 200 of them. Variables not set come from the built-in of `kind`.
+ */
+export interface PluginThemeInput {
+  /** Omitted: the name the theme has now (from its file, or the last set). At most 100 characters. */
+  name?: string
+  kind: 'dark' | 'light'
+  /** Omitted: none of its own (all from the built-in of `kind`). */
+  vars?: Record<string, string>
+  /** Omitted: none (the terminal's defaults). */
+  xterm?: XtermTheme
+}
+
 export interface PluginContext {
   /** The API major this context implements. */
   readonly api: typeof PLUGIN_API_VERSION
@@ -857,6 +899,22 @@ export interface PluginContext {
   readonly services: ServicesApi
 
   // misc
+  /**
+   * This plugin's own themes (manifest `contributes.themes`), changed while the app runs: a theme
+   * that follows another app's palette. Older apps have no `ctx.themes`: check
+   * `typeof ctx.themes === 'object'` first.
+   */
+  readonly themes: {
+    /**
+     * Replace the theme `themeId` (the un-namespaced manifest id) with `theme`, app-wide, in every
+     * window: a full replacement, not a patch. Rejects for an id the manifest does not declare, a
+     * theme whose file did not load, an invalid colour or name, over 32 KiB as JSON, and past 10
+     * calls per 10 s per plugin and window. In memory only: the theme file is the starting value
+     * again whenever the plugin loads (an app start, a reload or update), so set it in `activate`.
+     * Setting what it already is changes nothing.
+     */
+    set(themeId: string, theme: PluginThemeInput): Promise<void>
+  }
   /** Lines go to `<data>/logs/<pluginId>.log` (rotated at 5 MiB). */
   readonly log: PluginLogger
   /**

@@ -568,6 +568,12 @@ and answer `onDiscuss` with the review text.
 plugins add more. The active theme is app-wide. A plugin theme inherits every variable it does
 not set from the built-in of its kind (accent, surfaces and focus tokens came later than some
 themes). Colour tokens only; radii, fonts and the type scale are fixed in the shell's stylesheet.
+A plugin's host code can replace one of its own declared themes live (`ctx.themes.set`, a theme
+that follows the desktop's palette): main namespaces the id by the plugin, so only that plugin's
+`contributes.themes` can be named, validates it like a file (32 KiB as JSON, 10 per 10 s per plugin
+and window) and swaps it in place (`ThemeService.update`), broadcasting only when the shown theme
+really changed, since every window's host sends the same update. In memory only: the theme file is
+the starting value again whenever the plugin loads.
 
 **Window background** (Settings › Appearance › Window; `app.json` › `windowBackground`,
 `{ transparent, opacity, blur, area }`, defaults off / 80 / off / `'window'`; checks in
