@@ -313,7 +313,11 @@ test('html: a note on rendered text names its source lines (the second of two eq
       },
       [from, to]
     )
+    const before = await v.locator('#notes .note').count()
     await body.press('a')
+    // The new note takes the focus (its text box) once drawn: wait for it, so the next key is not typed there.
+    await expect(v.locator('#notes .note')).toHaveCount(before + 1)
+    await expect(v.locator('#notes .note textarea:focus')).toHaveCount(1)
   }
   // The second paragraph: line 5 (the file's own data-src-line="1:99" names nothing).
   await note(1, 'repeat me here.')

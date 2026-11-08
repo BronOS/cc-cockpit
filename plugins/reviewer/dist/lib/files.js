@@ -215,4 +215,19 @@ async function readSides(exec, root, rel) {
   }
 }
 
-module.exports = { ReviewError, MAX_SIDE_BYTES, MAX_IMAGE_BYTES, MAX_PDF_BYTES, normalizeRelative, relativeFromCwd, readSides, viewKindOf, readPreview }
+/**
+ * Where a previewed file (an image, a PDF: no text sides) stands in git: { head, added }, `added`
+ * being true when the repository has a last commit and the path is not in it (untracked, or added
+ * and not committed). Not a repository, no commit yet, or a failing git: { head: null, added: false }.
+ */
+async function previewGit(exec, rel) {
+  rel = normalizeRelative(rel)
+  const inRepo = await exec(['git', 'rev-parse', '--is-inside-work-tree'])
+  if (inRepo.code !== 0 || inRepo.stdout.trim() !== 'true') return { head: null, added: false }
+  const h = await exec(['git', 'rev-parse', '--verify', '--quiet', 'HEAD'])
+  if (h.code !== 0) return { head: null, added: false }
+  const there = await exec(['git', 'cat-file', '-e', `HEAD:./${rel}`])
+  return { head: h.stdout.trim(), added: there.code !== 0 }
+}
+
+module.exports = { ReviewError, MAX_SIDE_BYTES, MAX_IMAGE_BYTES, MAX_PDF_BYTES, normalizeRelative, relativeFromCwd, readSides, viewKindOf, readPreview, previewGit }

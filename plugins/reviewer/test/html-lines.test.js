@@ -83,3 +83,91 @@ test('the sanitizer keeps data-src-line as key:line digits only', async () => {
   assert.equal(kept('1:2" onclick="x'), false)
   assert.equal(kept('a:1'), false)
 })
+
+// ---- the lines of a selection, on a small fake DOM ----
+//
+// A tree from well-formed HTML (what markdownHtml and markHtmlLines give for simple input), with what
+// mdRangeLines / htmlRangeLines use: nodeType, parentElement, dataset, closest and querySelectorAll
+// for one attribute, contains.
+function fakeDom(html) {
+  const make = (tag, parent) => ({ nodeType: 1, tag, parentElement: parent, attrs: {}, children: [] })
+  const root = make('body', null)
+  let cur = root
+  for (const m of html.matchAll(/<(\/?)([a-zA-Z0-9]+)((?:\s+[a-z-]+="[^"]*")*)\s*\/?>|([^<]+)/g)) {
+    if (m[4] !== undefined) {
+      cur.children.push({ nodeType: 3, textContent: m[4], parentElement: cur })
+    } else if (m[1]) {
+      cur = cur.parentElement || root
+    } else {
+      const e = make(m[2].toLowerCase(), cur)
+      // The first of two equal attributes wins, as in the HTML parser.
+      for (const a of m[3].matchAll(/([a-z-]+)="([^"]*)"/g)) if (!(a[1] in e.attrs)) e.attrs[a[1]] = a[2]
+      cur.children.push(e)
+      if (!['hr', 'br', 'img'].includes(e.tag)) cur = e
+    }
+  }
+  const camel = (n) => n.replace(/^data-/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+  const all = (e) => e.children.filter((c) => c.nodeType === 1).flatMap((c) => [c, ...all(c)])
+  const walk = (e) => {
+    if (e.nodeType !== 1) return
+    e.dataset = Object.fromEntries(Object.entries(e.attrs).map(([k, v]) => [camel(k), v]))
+    const attrOf = (sel) => sel.slice(1, -1)
+    e.closest = (sel) => {
+      for (let x = e; x; x = x.parentElement) if (attrOf(sel) in x.attrs) return x
+      return null
+    }
+    e.querySelectorAll = (sel) => all(e).filter((x) => attrOf(sel) in x.attrs)
+    e.contains = (x) => {
+      for (let y = x; y; y = y.parentElement) if (y === e) return true
+      return false
+    }
+    e.children.forEach(walk)
+  }
+  walk(root)
+  return root
+}
+/** A range over the text node of the n-th element holding `text`. */
+const rangeIn = (body, text, n, endText) => {
+  const texts = []
+  const visit = (e) => e.children.forEach((c) => (c.nodeType === 3 ? texts.push(c) : visit(c)))
+  visit(body)
+  const hits = texts.filter((t) => t.textContent.includes(text))
+  const start = hits[n]
+  const end = endText ? texts.find((t) => t.textContent.includes(endText)) : start
+  return { startContainer: start, endContainer: end }
+}
+
+const TEST_HTML = [
+  '<h2>Repeated text</h2>',
+  '<p>The same phrase appears twice: repeat me here.</p>',
+  '<p>And again further down: repeat me here.</p>',
+  '',
+  '<h2>A long section</h2>',
+  '<p>One paragraph',
+  'over two lines.</p>',
+  '',
+].join('\n')
+
+test('htmlRangeLines: a phrase in two paragraphs gets the line of the selected one', async () => {
+  const { markHtmlLines, htmlRangeLines } = await load()
+  const body = fakeDom(markHtmlLines(TEST_HTML, 7))
+  // "repeat me here." alone, in the second paragraph: its line (3), not the first match's (2).
+  assert.deepEqual(htmlRangeLines(rangeIn(body, 'repeat me here.', 1), body, TEST_HTML, 7), { from: 3, to: 3 })
+  assert.deepEqual(htmlRangeLines(rangeIn(body, 'repeat me here.', 0), body, TEST_HTML, 7), { from: 2, to: 2 })
+  // Across blocks: from the first's line to the end of the last.
+  assert.deepEqual(htmlRangeLines(rangeIn(body, 'repeat me here.', 1, 'over two'), body, TEST_HTML, 7), { from: 3, to: 7 })
+  // Under another key (marks the file wrote itself) nothing is named.
+  assert.equal(htmlRangeLines(rangeIn(body, 'repeat me here.', 1), body, TEST_HTML, 8), null)
+})
+
+test('mdRangeLines: a phrase in two paragraphs gets the line of the selected one', async () => {
+  const { mdRangeLines } = await load()
+  const { markdownHtml } = await import(path.join(__dirname, '../src/page/markdown.mjs'))
+  const src = '## Repeated text\n\nThe same phrase appears twice: repeat me here.\n\nAnd again further down: repeat me here.\n\nOne paragraph\nover two lines.\n'
+  const body = fakeDom(markdownHtml(src))
+  assert.deepEqual(mdRangeLines(rangeIn(body, 'repeat me here.', 1), body), { from: 5, to: 5 })
+  assert.deepEqual(mdRangeLines(rangeIn(body, 'repeat me here.', 0), body), { from: 3, to: 3 })
+  assert.deepEqual(mdRangeLines(rangeIn(body, 'repeat me here.', 1, 'over two'), body), { from: 5, to: 8 })
+  // Outside every marked block: no lines.
+  assert.equal(mdRangeLines({ startContainer: null, endContainer: null }, body), null)
+})

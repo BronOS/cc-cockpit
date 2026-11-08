@@ -400,7 +400,9 @@ exports.activate = (ctx) => {
    */
   async function openPreview(r, rel, { tabId } = {}) {
     const p = files.readPreview(r, rel)
-    const sides = { path: p.path, root: r, git: false, head: null, old: '', new: '', oldMissing: true, newMissing: false, mode: 'preview', kind: p.kind, mime: p.mime, size: p.bytes.length, note: null }
+    // Only for the head line: an untracked PDF reads like an untracked text file ("a new file").
+    const g = await files.previewGit(exec, p.path).catch(() => ({ head: null, added: false }))
+    const sides = { path: p.path, root: r, git: false, head: g.head, added: g.added, old: '', new: '', oldMissing: true, newMissing: false, mode: 'preview', kind: p.kind, mime: p.mime, size: p.bytes.length, note: null }
     return showReview(
       {
         openKey: `file:${p.path}`,

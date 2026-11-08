@@ -556,7 +556,7 @@ test('a new (untracked) or deleted file is one text: its head names no diff', ()
   for (const path of ['test.html', 'notes.md', 'a.ts']) {
     const added = { path, mode: 'diff', head: 'd8b329d06f8e11', old: '', new: 'x', oldMissing: true, newMissing: false }
     const { text } = review.buildReview(note, added, review.MAX_CONTEXT, { named: false })
-    assert.match(text, /^Review: a new file, not in the last commit d8b329d06f8e: the file as it is now, no diff\n\n1\. Line 7 \(«repeat me here\.»\):\n   n$/)
+    assert.match(text, /^Review: a new file \(not in d8b329d\), no diff\n\n1\. Line 7 \(«repeat me here\.»\):\n   n$/)
     assert.doesNotMatch(text, /changes since/)
     // Discuss with no notes asks about the file, not a diff.
     const empty = review.buildReview({}, added, review.MAX_CONTEXT, { named: false }).text
@@ -567,4 +567,14 @@ test('a new (untracked) or deleted file is one text: its head names no diff', ()
   assert.match(review.buildReview(note, deleted, review.MAX_CONTEXT, { named: false }).text, /^Review: deleted since the last commit d8b329d06f8e: its last committed text\n/)
   // A changed tracked file keeps its diff head.
   assert.match(review.buildReview(note, { ...sides, oldMissing: false, newMissing: false }).text, /^Review of src\/a\.ts \(changes since the last commit 0123456789ab\)/)
+})
+
+test('a new PDF or image gets the same head as a new text file; a committed one and no git do not', () => {
+  const note = { notes: [{ id: 'p1', page: 2, quote: 'q', text: 'n' }] }
+  for (const kind of ['pdf', 'image']) {
+    const s = { path: 'test.pdf', mode: 'preview', kind, head: 'a6ae37283979aa', added: true, old: '', new: '', oldMissing: true, newMissing: false }
+    assert.match(review.buildReview(kind === 'pdf' ? note : {}, s, review.MAX_CONTEXT, { named: false }).text, /^Review: a new file \(not in a6ae372\), no diff\n/)
+    assert.match(review.buildReview({}, { ...s, added: false }, review.MAX_CONTEXT, { named: false }).text, /^Review: the file as it is now, no git diff\n/)
+    assert.match(review.buildReview({}, { ...s, head: null }, review.MAX_CONTEXT, { named: false }).text, /^Review: the file as it is now, no git diff\n/)
+  }
 })

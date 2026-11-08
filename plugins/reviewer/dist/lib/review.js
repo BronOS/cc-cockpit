@@ -296,20 +296,22 @@ function buildReview(draft, sides, max = MAX_MESSAGE, { named = true } = {}) {
   const unchanged = sides.mode === 'diff' && !sides.oldMissing && !sides.newMissing && sides.old === sides.new
   // A new file (untracked, or added but not committed) and a deleted one are one text, not a diff:
   // "changes since the last commit" would send Claude looking for a diff that does not exist.
-  const added = sides.mode === 'diff' && sides.oldMissing && !sides.newMissing
+  // A preview (PDF, image) has no text sides: the host says whether the path is in the last commit.
+  const added = (sides.mode === 'diff' && sides.oldMissing && !sides.newMissing) || (sides.mode === 'preview' && sides.added === true && !!sides.head)
   const deleted = sides.mode === 'diff' && sides.newMissing && !sides.oldMissing
   // Sides only mean something when there is a diff: an unchanged, new or deleted file is one text.
   const sided = sides.mode === 'diff' && !unchanged && !added && !deleted
-  const base =
-    sides.mode === 'plain' || sides.mode === 'preview'
+  // One clause for every kind of new file (text, markdown, HTML, PDF, image): "a new file (not in
+  // a6ae372), no diff". The commit as git's short form, the way a person names it.
+  const base = added
+    ? `a new file (not in ${sides.head.slice(0, 7)}), no diff`
+    : sides.mode === 'plain' || sides.mode === 'preview'
       ? 'the file as it is now, no git diff'
-      : added
-        ? `a new file, not in the last commit${commit}: the file as it is now, no diff`
-        : deleted
-          ? `deleted since the last commit${commit}: its last committed text`
-          : unchanged
-            ? `unchanged since the last commit${commit}`
-            : `changes since the last commit${commit}`
+      : deleted
+        ? `deleted since the last commit${commit}: its last committed text`
+        : unchanged
+          ? `unchanged since the last commit${commit}`
+          : `changes since the last commit${commit}`
   // Discuss (`named: false`): the app's own head already says `About: <title>` and `File: <path>`,
   // so the review says only what it is about, not the path a third time.
   const head = named ? `Review of ${sides.path} (${base})` : `Review: ${base}`

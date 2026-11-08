@@ -1351,8 +1351,8 @@ test('an image or a PDF opens as a preview: the init has no bytes; they come onc
   for (const m of rest) assert.ok(JSON.stringify(m).length <= PAGE_MESSAGE_MAX)
   h.say({ type: 'content' })
   assert.equal(h.posts.length, 1 + rest.length) // once
-  // No git commands for a preview: there is no diff.
-  assert.ok(!f.execs.some((a) => a[0] === 'git'))
+  // No diff for a preview: git only says whether the path is in the last commit (the head line).
+  for (const a of f.execs.filter((a) => a[0] === 'git')) assert.match(a.slice(1).join(' '), /^(rev-parse --is-inside-work-tree|rev-parse --verify --quiet HEAD|cat-file -e HEAD:\.\/.*)$/)
   host.deactivate()
 })
 
