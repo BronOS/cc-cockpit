@@ -191,7 +191,7 @@ describe('readInput (bounded stdin)', () => {
 
 describe.skipIf(!POSIX)('runUserCommand (the person\'s status line)', () => {
   it('passes stdin through and returns stdout byte for byte, stderr dropped', async () => {
-    const out = await runUserCommand(`cat; printf '\\033[1m\\xff end'; echo oops >&2`, Buffer.from('{"x":1}\n'), { env: process.env })
+    const out = await runUserCommand(`cat; printf '\\033[1m\\377 end'; echo oops >&2`, Buffer.from('{"x":1}\n'), { env: process.env })
     expect(out).toEqual(Buffer.concat([Buffer.from('{"x":1}\n'), Buffer.from([0x1b, 0x5b, 0x31, 0x6d, 0xff]), Buffer.from(' end')]))
   })
 
