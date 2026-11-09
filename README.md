@@ -28,6 +28,8 @@ tested).
   terminal.
 - **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with
   Claude, changed or not.
+- **Usage at a glance.** A top-bar meter and a Usage panel: what your Claude Code work would cost at API prices, by
+  project, model and session, and your plan's rate-limit windows.
 - **A built-in reviewer and editor.** Click a file Claude changed to review its diff, attach notes and send them back to
   Claude; Edit opens the file in micro (optional, see below). Both are bundled plugins you can turn off or replace.
 

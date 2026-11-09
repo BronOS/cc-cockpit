@@ -273,7 +273,13 @@ behind it are in [design.md](design.md).
   Rename…, New file…, New folder… and Move to Trash. Move to Trash asks in the
   app's own dialog and is recoverable; Open with default app refuses folders, executables, app bundles and script or
   program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...).
-- Bundled plugins (browser, reviewer, editor, files, sessions) can be switched off for the whole app (Settings > Plugins, "Off in all
+- Usage (`cockpit.usage`, on by default, ships with the app): a meter at the end of the top bar (today's API-equivalent
+  spend and the plan's rate-limit use) and a Usage panel with Today / 7 days / 30 days totals, tokens by kind, the plan's
+  5-hour and weekly windows (as Claude Code reports them through the status line; a window past its reset is hidden),
+  and spend by project, model and session. It reads Claude Code's transcripts in `~/.claude/projects` (subagents
+  included) incrementally; one window scans for all. Amounts are what Anthropic's API would bill at list prices, not
+  what a subscription costs.
+- Bundled plugins (browser, reviewer, editor, files, sessions, usage) can be switched off for the whole app (Settings > Plugins, "Off in all
   projects") or per project, and replaced through the existing picks: another plugin providing `editor` / `reviewer` in
   the provider pick, another file handler in "Plugin used to open files". Ids starting with `cockpit.` are reserved for
   plugins that ship with the app; the template plugins are `example.hello` and `example.plugin` (renamed from
