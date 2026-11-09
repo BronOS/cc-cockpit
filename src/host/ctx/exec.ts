@@ -24,6 +24,11 @@
 //    project: the plugin is trusted code that can run any program with any argument anyway, so a
 //    cwd restriction would be theatre. (This is NOT the rule for sessions.open, Task 27, where
 //    main itself opens the tab.) A relative cwd is relative to the project folder.
+//  - The child never gets `DBUS_SESSION_BUS_ADDRESS=disabled:`. Chromium sets that in its own
+//    utility processes at run time (so it is not in /proc/<pid>/environ), and the plugin host is
+//    one: every child inherited it, so on Linux `gh auth token` could not reach gnome-keyring and
+//    answered "no oauth token found" while `gh` worked in a terminal (the GitHub plugin, 2026-11-08).
+//    hostEnv never passes a bus address; without one a tool uses its default, `$XDG_RUNTIME_DIR/bus`.
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { resolve } from 'node:path'
@@ -39,6 +44,14 @@ export const DEFAULT_EXEC_TIMEOUT_MS = 60_000
 export const MAX_EXEC_TIMEOUT_MS = 10 * 60_000
 const MAX_ARGV_ITEMS = 1000
 const MAX_STDIN_LENGTH = 10 * 1024 * 1024
+
+/** The env a child gets: `env` without Chromium's `disabled:` bus address (see the header). */
+export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (env.DBUS_SESSION_BUS_ADDRESS !== 'disabled:') return env
+  const rest = { ...env }
+  delete rest.DBUS_SESSION_BUS_ADDRESS
+  return rest
+}
 
 export interface ExecContext {
   /** Default cwd (absolute, from main). */
@@ -103,7 +116,7 @@ export async function runExec(argv: readonly string[], options: ExecOptions | un
     try {
       child = spawnFn(args[0] as string, args.slice(1), {
         cwd,
-        env: ctx.env,
+        env: childEnv(ctx.env),
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',

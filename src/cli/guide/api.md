@@ -79,7 +79,8 @@ with full Node access.
   returns a disposer.
 - `ctx.exec(argv, { stdin, cwd, timeoutMs })`: run a program, argv only, never a shell; argv[0]
   is looked up on the login-shell PATH. Resolves `{ code, stdout, stderr }` (a non-zero code
-  resolves; output over 10 MiB rejects).
+  resolves; output over 10 MiB rejects). The child reaches the person's session bus, so a CLI that
+  keeps its sign-in in the system keyring (`gh`, `glab`) works as in a terminal.
 
 ## UI
 

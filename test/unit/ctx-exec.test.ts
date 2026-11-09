@@ -69,6 +69,14 @@ describe('ctx.exec', () => {
     expect(JSON.parse(r.stdout)).not.toContain('HOME')
   })
 
+  it("drops Chromium's disabled: bus address, keeps a real one", async () => {
+    const keys = [node, '-e', 'process.stdout.write(String(process.env.DBUS_SESSION_BUS_ADDRESS))']
+    const off = await runExec(keys, {}, { ...ctx, env: { PATH: process.env.PATH, DBUS_SESSION_BUS_ADDRESS: 'disabled:' } })
+    expect(off.stdout).toBe('undefined')
+    const real = await runExec(keys, {}, { ...ctx, env: { PATH: process.env.PATH, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' } })
+    expect(real.stdout).toBe('unix:path=/run/user/1000/bus')
+  })
+
   it('defaults cwd to the project folder; a relative cwd is relative to it; others must exist', async () => {
     const show = [node, '-e', 'process.stdout.write(process.cwd())']
     expect((await runExec(show, {}, ctx)).stdout).toBe(root)
