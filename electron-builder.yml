@@ -104,6 +104,7 @@ extraResources:
     to: plugins/usage
     filter:
       - plugin.json
+      - preview.png
       - README.md
       - dist/**
       - panels/**

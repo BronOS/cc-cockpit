@@ -1,6 +1,6 @@
 // Task 35: the packaging config keeps the layout main relies on (the plan's smoke is manual, this
 // guards the pieces that break silently). Reads electron-builder.yml, package.json and scripts only.
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -46,6 +46,13 @@ describe('electron-builder.yml', () => {
     const usage = yml.slice(yml.indexOf('- from: plugins/usage'), yml.indexOf('# The bundled terminal fonts'))
     for (const dir of ['dist', 'panels', 'slots', 'icons']) expect(usage).toMatch(new RegExp(`^ {6}- ${dir}/\\*\\*$`, 'm'))
     expect(usage).not.toMatch(/src|test|docs|FRICTION/)
+    // Every bundled plugin ships its logo card for the Plugins page (usage was bundled later and first had none).
+    for (const name of ['browser', 'reviewer', 'editor', 'files', 'sessions', 'usage']) {
+      const end = yml.indexOf('\n  - from:', yml.indexOf(`- from: plugins/${name}`) + 1)
+      const block = yml.slice(yml.indexOf(`- from: plugins/${name}`), end === -1 ? undefined : end)
+      expect(block, name).toMatch(/^ {6}- preview\.png$/m)
+      expect(existsSync(join(root, 'plugins', name, 'preview.png')), name).toBe(true)
+    }
   })
 
   it('points mac and Linux at the rendered app icon, and the files exist', () => {
