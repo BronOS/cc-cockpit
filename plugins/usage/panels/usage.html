@@ -12,6 +12,8 @@
       html, body { height: 100%; }
       body { margin: 0; overflow: auto; background: var(--cc-bg); color: var(--cc-fg); }
       main { padding: var(--cc-space-3); display: flex; flex-direction: column; gap: var(--cc-space-3); }
+      /* #content holds the sections; main's gap stops at it, so it spaces them itself (the tabs sat flush on the next title). */
+      #content { display: flex; flex-direction: column; gap: var(--cc-space-3); }
       .cc-tabs { align-self: flex-start; }
       /* The range's total: the amount large, its label and the token split under it. */
       .total { display: flex; flex-direction: column; gap: var(--cc-space-2); }
