@@ -14,7 +14,11 @@
 //
 // Only `hook` swallows a crash. A user command (`ccc overlay`, `open`, `sessions`) that crashes
 // exits 1 with the message, so a script never reads a crash as success.
-const hook = process.argv[2] === 'hook'
+// `statusline` (cli/statusline.ts) is Claude Code's status line command, run after every message:
+// it must never fail either, and is quiet on a crash like a hook. Only the exact call hooks.json
+// makes (`statusline` and nothing after it); anything else goes through the parser like any word.
+const statusline = process.argv[2] === 'statusline' && process.argv.length === 3
+const hook = process.argv[2] === 'hook' || statusline
 const exitQuietly = (): never => process.exit(0)
 
 /**
@@ -60,13 +64,33 @@ process.on('unhandledRejection', crashed)
 // writes nothing there.
 if (!hook) process.stderr.on('error', () => {})
 
-import('./client')
-  .then((client) => {
-    // The backstop is for a hook only: `ccc overlay` waits for the user for as long as it takes.
-    if (hook) setTimeout(exitQuietly, client.HOOK_BUDGET_MS + 100)
-    return client.run(process.argv.slice(2), process.env, process.stdin)
-  })
-  // The exit code of a user command (usage error 2, refused 1, else 0). Anything that goes wrong
-  // outside `run` itself (a missing chunk) is a quiet 0 for a hook and exit 1 for anything else.
-  // Every command exits through exitFlushed: both streams written out first.
-  .then(exitFlushed, crashed)
+if (statusline) {
+  // Its own small chunk, not client.ts: the status line starts often and the guide text bundled
+  // into client.ts is only weight here. Same rules as a hook: the backstop, then exit 0 always.
+  import('./statusline')
+    .then((m) => {
+      setTimeout(exitQuietly, m.STATUSLINE_BUDGET_MS + 1000)
+      return m.runStatusLine({
+        env: process.env,
+        stdin: process.stdin,
+        write: (data) => void process.stdout.write(data),
+        cwd: process.cwd()
+      })
+    })
+    .then(() => exitFlushed(0), exitQuietly)
+} else {
+  runClient()
+}
+
+function runClient(): void {
+  import('./client')
+    .then((client) => {
+      // The backstop is for a hook only: `ccc overlay` waits for the user for as long as it takes.
+      if (hook) setTimeout(exitQuietly, client.HOOK_BUDGET_MS + 100)
+      return client.run(process.argv.slice(2), process.env, process.stdin)
+    })
+    // The exit code of a user command (usage error 2, refused 1, else 0). Anything that goes wrong
+    // outside `run` itself (a missing chunk) is a quiet 0 for a hook and exit 1 for anything else.
+    // Every command exits through exitFlushed: both streams written out first.
+    .then(exitFlushed, crashed)
+}

@@ -196,6 +196,42 @@ describe('ctx.sessions scope all and the tab actions', () => {
     expect(all).toHaveLength(1)
   })
 
+  it('asks main for the plan usage with the plugin id, no declaration needed', async () => {
+    const usage = { fiveHour: { usedPercent: 10, resetsAt: 1 }, updatedAt: 2 }
+    const { ctx, calls } = setup((c) => (c.method === 'sessions.rateLimits' ? usage : null))
+    await expect(ctx.sessions.rateLimits()).resolves.toEqual(usage)
+    expect(calls).toEqual([{ method: 'sessions.rateLimits', params: { pluginId: 'a.one' } }])
+  })
+
+  it('hands sessions.rateLimits to every plugin\'s onRateLimits listeners, a copy each, until disposed', () => {
+    const { contexts, ctx, other, logs } = setup()
+    const one: unknown[] = []
+    const two: unknown[] = []
+    const off = ctx.sessions.onRateLimits((r) => {
+      one.push(r)
+      ;(r as { updatedAt: number }).updatedAt = -1
+    })
+    other.sessions.onRateLimits((r) => two.push(r))
+    ctx.sessions.onRateLimits(() => {
+      throw new Error('boom')
+    })
+    const rateLimits = { sevenDay: { usedPercent: 70, resetsAt: 5 }, updatedAt: 9 }
+    contexts.handleEvent('sessions.rateLimits', { rateLimits })
+    expect(two).toEqual([rateLimits])
+    expect(rateLimits.updatedAt).toBe(9)
+    expect(logs.some((l) => l.pluginId === 'a.one' && l.text.includes('onRateLimits listener threw'))).toBe(true)
+    // A malformed event is dropped; a disposer and a disposed plugin stop the calls.
+    contexts.handleEvent('sessions.rateLimits', { rateLimits: null })
+    contexts.handleEvent('sessions.rateLimits', { rateLimits: { updatedAt: 'x' } })
+    expect(two).toHaveLength(1)
+    off()
+    contexts.dispose('a.two')
+    contexts.handleEvent('sessions.rateLimits', { rateLimits })
+    expect(one).toHaveLength(1)
+    expect(two).toHaveLength(1)
+    expect(() => ctx.sessions.onRateLimits('x' as unknown as () => void)).toThrow('needs a function')
+  })
+
   it('sends focus, close (no RPC timeout) and openFile with the plugin id, checking the arguments', async () => {
     const { ctx, calls } = setup((c) => (c.method === 'sessions.focus' ? true : c.method === 'sessions.close' ? { closed: false } : null))
     await expect(ctx.sessions.focus('t1')).resolves.toBe(true)

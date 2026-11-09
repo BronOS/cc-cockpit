@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { wrapperScript, writeCccWrapper } from '../../src/main/hooks/ccc-wrapper'
-import { HOOK_TIMEOUT_SECONDS, buildHooksSettings, hookCommand, writeHooksFile } from '../../src/main/hooks/hooks-file'
+import { HOOK_TIMEOUT_SECONDS, buildHooksSettings, hookCommand, statusLineCommand, writeHooksFile } from '../../src/main/hooks/hooks-file'
 import { shellQuote } from '../../src/main/hooks/shell-quote'
 import { HOOK_EVENTS } from '../../src/shared/hooks'
 
@@ -83,6 +83,39 @@ describe('buildHooksSettings', () => {
     chmodSync(script, 0o755)
     expect(hookCommand(script, 'PreToolUse')).toContain("it'\\''s a dir/ccc' hook")
     expect(sh(hookCommand(script, 'PreToolUse'))).toBe('hook|PreToolUse')
+  })
+})
+
+describe('the statusLine (app setting "Rate limits from the status line")', () => {
+  it('is left out by default and with the setting off: the file holds the hooks only', () => {
+    expect(buildHooksSettings('/data/bin/ccc')).not.toHaveProperty('statusLine')
+    expect(buildHooksSettings('/data/bin/ccc', { statusLine: false })).not.toHaveProperty('statusLine')
+  })
+
+  it("is `'<ccc>' statusline` with the setting on, and nothing else: the person's padding and refreshInterval still merge in", () => {
+    const settings = buildHooksSettings('/data/bin/ccc', { statusLine: true })
+    expect(settings.statusLine).toEqual({ type: 'command', command: "'/data/bin/ccc' statusline" })
+    // Claude deep-merges the layers: a padding or refreshInterval here would override the person's.
+    expect(Object.keys(settings.statusLine ?? {}).sort()).toEqual(['command', 'type'])
+    // The hooks are the same either way.
+    expect(settings.hooks).toEqual(buildHooksSettings('/data/bin/ccc').hooks)
+  })
+
+  it.skipIf(!POSIX)('quotes the wrapper path so sh runs it with the one argument', () => {
+    const dir = join(root, "it's a dir")
+    mkdirSync(dir)
+    const script = join(dir, 'ccc')
+    writeFileSync(script, '#!/bin/sh\nprintf "%s|%s" "$#" "$1"\n', { mode: 0o755 })
+    chmodSync(script, 0o755)
+    expect(sh(statusLineCommand(script))).toBe('1|statusline')
+  })
+
+  it('is written to and removed from the file as the setting flips', () => {
+    const file = join(root, 'hooks.json')
+    writeHooksFile(file, '/data/bin/ccc', { statusLine: true })
+    expect(JSON.parse(readFileSync(file, 'utf8')).statusLine).toEqual({ type: 'command', command: "'/data/bin/ccc' statusline" })
+    writeHooksFile(file, '/data/bin/ccc', { statusLine: false })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).not.toHaveProperty('statusLine')
   })
 })
 

@@ -1123,12 +1123,13 @@ describe('registerProjectSettingsHandlers', () => {
       setProjectColor: rec('setProjectColor', 'blue'),
       setDiscussPrompt: rec('setDiscussPrompt', undefined),
       setProjectDiscussPrompt: rec('setProjectDiscussPrompt', undefined),
-      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, discussPrompt: '', notificationSounds: true, notificationSound: 'builtin:chime', zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
+      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, statusLineUsage: true, discussPrompt: '', notificationSounds: true, notificationSound: 'builtin:chime', zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
       setTheme: rec('setTheme', undefined),
       setKey: rec('setKey', undefined),
       setTabExit: rec('setTabExit', undefined),
       setClaudeTabOnOpen: rec('setClaudeTabOnOpen', undefined),
       setSessionGist: rec('setSessionGist', undefined),
+      setStatusLineUsage: rec('setStatusLineUsage', undefined),
       setNotificationSounds: rec('setNotificationSounds', undefined),
       notificationSoundOptions: async (...args) =>
         rec('notificationSoundOptions', [{ label: 'Built-in', sounds: [{ id: 'builtin:chime', name: 'Chime' }] }])(...args),
@@ -1151,7 +1152,7 @@ describe('registerProjectSettingsHandlers', () => {
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = projectSettingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(25)
+    expect(channels).toHaveLength(26)
     for (const channel of channels) {
       await expect(ipc.invoke(channel, 13, [{}])).rejects.toThrow(/not a project window/)
     }
@@ -1206,6 +1207,16 @@ describe('registerProjectSettingsHandlers', () => {
     expect(calls).toEqual([
       ['setSessionGist', true],
       ['setSessionGist', 'yes']
+    ])
+  })
+
+  it('passes the status line usage choice on as unknown for the service to check', async () => {
+    const { ipc, calls } = projectSettingsSetup()
+    await ipc.invoke('settings.statusLineUsageSet', 11, [{ value: false }])
+    await ipc.invoke('settings.statusLineUsageSet', 12, [{ value: 'no' }])
+    expect(calls).toEqual([
+      ['setStatusLineUsage', false],
+      ['setStatusLineUsage', 'no']
     ])
   })
 

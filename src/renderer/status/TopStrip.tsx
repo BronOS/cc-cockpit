@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import type { ProjectSummary, SlotFrameInfo } from '../../shared/ipc'
 import { projectColorCss } from '../../shared/project-color'
+import { SESSIONS_STRIP_SLOT, USAGE_METER_SLOT } from '../../shared/slots'
 import { FolderGlyph, GearGlyph, PlusGlyph } from '../window-icons'
 import { SlotFrame } from '../zones/SlotFrame'
 import { ProjectDot } from './ProjectDot'
@@ -8,7 +9,7 @@ import { topStripClass } from './strip-order'
 
 /**
  * The bar across the top of every project window (variant A, "unified bar"): the project's name
- * and folder, the app slot `sessions-strip`, a "+" and the gear.
+ * and folder, the app slot `sessions-strip`, a "+", the app slot `usage-meter` and the gear.
  *
  * The other windows' Claude tabs are not drawn here any more (design-next §4): a plugin draws them
  * in the `sessions-strip` slot (the bundled `cockpit.sessions` by default; main sends the frame in
@@ -24,6 +25,11 @@ import { topStripClass } from './strip-order'
  * (window-chrome.ts), so the bar leaves room for the traffic lights and is a drag region, with
  * every control in it marked no-drag (styles.css). Elsewhere the native title bar stays and this
  * is the same bar without that room.
+ *
+ * The `usage-meter` slot (the plan's usage, the bundled `cockpit.usage` by default) sits at the
+ * bar's end before the gear, with the bar's height and the width its page reports, capped in CSS
+ * (`.titlebar-end .slot-frame-top-bar`) so it never crowds the strip; the same frame rules as the
+ * strip (collapsed until connected, nothing without a provider or with the pick "None").
  *
  * The "+" asks main to show the project picker (recent projects + Open Folder), so another project
  * is one click away from any window; it is always there, so the bar is always shown. The gear
@@ -41,7 +47,7 @@ export function TopStrip(props: {
   titleBar?: boolean
   /** Full screen: macOS hides the traffic lights, so their room collapses. */
   fullScreen?: boolean
-  /** The app's slot frames (`LayoutView.appSlots`); the top bar draws the `top-bar` one. */
+  /** The app's slot frames (`LayoutView.appSlots`); the top bar draws the `top-bar` ones by type. */
   slots?: readonly SlotFrameInfo[]
   /** The "+": show (or focus) the project picker. */
   onOpenProject: () => void
@@ -50,7 +56,8 @@ export function TopStrip(props: {
   /** A modal screen covers the window (settings): the bar's controls may not take the focus. */
   inert?: boolean
 }): React.JSX.Element {
-  const slot = props.slots?.find((f) => f.position === 'top-bar')
+  const slot = props.slots?.find((f) => f.position === 'top-bar' && f.type === SESSIONS_STRIP_SLOT)
+  const meter = props.slots?.find((f) => f.position === 'top-bar' && f.type === USAGE_METER_SLOT)
   const { project } = props
   const color = project?.color
   return (
@@ -86,7 +93,8 @@ export function TopStrip(props: {
           </button>
         </div>
       </nav>
-      <div className="titlebar-end">
+      <div className={meter ? 'titlebar-end has-slot' : 'titlebar-end'}>
+        {meter && <SlotFrame key={meter.id} frame={meter} collapseUntilConnected />}
         <button
           type="button"
           className="strip-settings icon-button"

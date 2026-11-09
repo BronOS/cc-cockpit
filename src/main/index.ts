@@ -40,6 +40,8 @@ import { CccCommandInstaller } from './hooks/ccc-install'
 import { CccOffer } from './hooks/ccc-offer'
 import { resolveWrapperTargets, writeCccWrapper } from './hooks/ccc-wrapper'
 import { writeHooksFile } from './hooks/hooks-file'
+import { RateLimitsStore } from './sessions/rate-limits-store'
+import { statusLineHandler } from './sessions/statusline-handler'
 import {
   appPageMatcher,
   IpcRouter,
@@ -103,6 +105,7 @@ import {
   claudeTabOnOpenOf,
   notificationSoundsOf,
   sessionGistOf,
+  statusLineUsageOf,
   tabExitOf
 } from './settings/appearance-service'
 import { hostSettingsOf as pluginHostSettings } from './settings/plugin-settings'
@@ -242,9 +245,18 @@ function start(): void {
         dataDir
       })
     )
-    writeHooksFile(paths.hooksJson, paths.cccWrapper)
+    writeHooksFile(paths.hooksJson, paths.cccWrapper, { statusLine: statusLineUsageOf(registry.app.data.statusLineUsage) })
   } catch (err) {
     console.error('cannot write hooks.json / bin/ccc; Claude tabs will not report their status', err)
+  }
+  // The setting "Rate limits from the status line" changed (Settings › General): the same file
+  // again, with or without its `statusLine`, for the tabs that start from now on.
+  const rewriteHooksFile = (): void => {
+    try {
+      writeHooksFile(paths.hooksJson, paths.cccWrapper, { statusLine: statusLineUsageOf(registry.app.data.statusLineUsage) })
+    } catch (err) {
+      console.error('cannot rewrite hooks.json', err)
+    }
   }
   // `<data>/claude-plugins/` (the cc-cockpit skill every Claude tab loads with --plugin-dir, plus
   // one child per skill-bearing plugin), rebuilt at every start like hooks.json. build() never
@@ -899,6 +911,9 @@ function start(): void {
   // ctx.appStorage (app-storage.ts): one store for the whole app, so the hosts of every window
   // share it and main applies their calls one at a time. Flushed on quit (will-quit).
   const appStorage = new AppStorage({ dataDir, log: (m) => console.warn(m) })
+  // The account's plan usage from the Claude tabs' status lines (`statusline` socket command below),
+  // for ctx.sessions.rateLimits; every host hears a change, at most one per 2 s.
+  const rateLimits = new RateLimitsStore({ log: (m) => console.warn(m) })
   // One plugin host (utilityProcess) per project window.
   const hosts = new HostManager({
     factory: new ElectronHostProcessFactory(),
@@ -964,6 +979,9 @@ function start(): void {
       // The send gate, as for every programmatic text (send-gate.ts); HostApi passes `plugin`.
       send: (tabId, text, origin) => sessions.send(tabId, text, origin),
       onSessionsChange: (listener) => sessions.onChange(listener),
+      // ctx.sessions.rateLimits / onRateLimits: account-wide, the same for every host.
+      rateLimits: () => rateLimits.get(),
+      onRateLimitsChange: (listener) => rateLimits.onChange(listener),
       // ctx.sessions scope 'all' (HostApi checks the manifest's `access` declaration first).
       summaries: (projectId) => sessions.summariesFor(projectId),
       // ctx.sessions.focus: any window's Claude tab (the cockpit.sessions strip's click).
@@ -1240,6 +1258,18 @@ function start(): void {
         if (event === 'UserPromptSubmit') tabs.sessionPrompted(tabId)
         return true
       }
+    })
+  )
+
+  // `ccc statusline` (Claude Code's status line in a Claude tab, cli/statusline.ts): the plan usage
+  // goes to the store, the session's cost and context fill to its entry. A Claude tab only (the
+  // server refuses a window token; the handler checks again), dropped while the setting is off.
+  socket.handle(
+    'statusline',
+    statusLineHandler({
+      registry: sessions,
+      rateLimits,
+      enabled: () => statusLineUsageOf(registry.app.data.statusLineUsage)
     })
   )
 
@@ -1607,6 +1637,15 @@ function start(): void {
       }
     },
     sessionGistChanged: () => sessionGist.settingChanged(),
+    statusLineUsage: {
+      get: () => registry.app.data.statusLineUsage,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.statusLineUsage = next
+        })
+      }
+    },
+    statusLineUsageChanged: rewriteHooksFile,
     notificationSounds: {
       get: () => registry.app.data.notificationSounds,
       set: (next) => {
@@ -1782,6 +1821,7 @@ function start(): void {
     setTabExit: (value) => appearance.setTabExit(value),
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
     setSessionGist: (value) => appearance.setSessionGist(value),
+    setStatusLineUsage: (value) => appearance.setStatusLineUsage(value),
     setDiscussPrompt: (value) => appearance.setDiscussPrompt(value),
     setProjectDiscussPrompt: (projectId, value) => projectSettings.setDiscussPrompt(projectId, value),
     setNotificationSounds: (value) => appearance.setNotificationSounds(value),
@@ -2184,6 +2224,7 @@ function start(): void {
     hosts.disposeAll()
     void socket.stop()
     sessionGist.dispose()
+    rateLimits.dispose()
     sessions.dispose()
     tabs.disposeAll()
     registry.flushAll()

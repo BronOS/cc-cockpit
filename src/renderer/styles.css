@@ -1608,6 +1608,17 @@ iframe:focus-visible {
 .top-strip.title-bar .slot-frame-top-bar {
   -webkit-app-region: no-drag;
 }
+/* The `usage-meter` app slot, at the bar's end before the gear (TopStrip). The page's width once it
+   reports one, else the cap; the cap keeps a meter that never calls setWidth from eating the bar
+   (the strip's own cap is relative to its nav and leaves the drag gap there). */
+.titlebar-end.has-slot {
+  align-self: stretch;
+}
+.titlebar-end .slot-frame-top-bar {
+  flex: 0 1 auto;
+  width: min(220px, 25vw);
+  max-width: min(320px, 30vw);
+}
 .plugin-panel-error {
   flex: none;
   margin: 0;

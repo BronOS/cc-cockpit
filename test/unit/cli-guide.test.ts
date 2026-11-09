@@ -130,8 +130,9 @@ describe('guide drift guards', () => {
     const commands = new Set([...USAGE.matchAll(/^ {2}ccc (\S+)/gm)].map((m) => m[1] as string))
     expect(commands.size).toBeGreaterThanOrEqual(7)
     for (const c of commands) expect(topic('cli'), `ccc ${c}`).toContain(`ccc ${c}`)
-    // `hook` is internal and has no USAGE line but the guide says so; keep it documented.
+    // `hook` and `statusline` are internal and have no USAGE line but the guide says so; keep them documented.
     expect(topic('cli')).toContain('ccc hook')
+    expect(topic('cli')).toContain('ccc statusline')
   })
 
   it('names every ctx member of src/sdk/types.ts in the api topic', () => {

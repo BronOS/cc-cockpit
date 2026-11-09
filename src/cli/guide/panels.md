@@ -45,7 +45,7 @@ load, the strip shows the title's first letter.
 - `ccPanel.slot`: only when the page is drawn as a slot (`contributes.slots`): `{ type,
   setHeight(px), setWidth(px) }`. `setHeight` asks the app for a frame height (rounded, 24-600 px,
   then within the slot's `[minHeight, placement height]`); without it the frame has the placement's
-  height. `setWidth` is for a slot in the app's top bar (`sessions-strip`) and ignored elsewhere:
+  height. `setWidth` is for a slot in the app's top bar (`sessions-strip`, `usage-meter`) and ignored elsewhere:
   the frame takes that width (rounded, 0-4096 px, then capped by the app so part of the bar is
   always left to drag the window on macOS); without it the frame takes the whole cap, so report
   the width of what you draw (0 when it is empty) from a `ResizeObserver` on an element sized to

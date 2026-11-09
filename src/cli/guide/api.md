@@ -106,7 +106,7 @@ with full Node access.
 - `ctx.panels.slots(panelId, placements | null)`: place slots (pages another plugin draws) above or
   below one of your own panels: `[{ type, position: 'top' | 'bottom', height, params? }]`, at most
   4; `type` must be in that panel's manifest `slots` (and not an app slot such as
-  `sessions-strip`), `height` 24-600 px, `params` plain JSON of at most 4 KiB that only the
+  `sessions-strip` or `usage-meter`), `height` 24-600 px, `params` plain JSON of at most 4 KiB that only the
   provider sees. Each call replaces the set, `null` removes it; a bad placement throws a TypeError
   or Error, a refusal from the app is logged. Cleared when the plugin stops or reloads. Who draws a
   type is the project's pick (`@slot:<type>`); with several providers and no pick, none is drawn.
@@ -120,7 +120,10 @@ with full Node access.
   Known slot types: `agenda` (today's events, a compact strip a panel places above or below itself) and
   `sessions-strip` (an app slot: the Claude sessions of other windows in one line, drawn in the top bar,
   which a panel may not place; core draws no strip of its own, the bundled `cockpit.sessions` provides it;
-  its page reports its width with `ccPanel.slot.setWidth`, `ccc guide panels`). A type is a name
+  its page reports its width with `ccPanel.slot.setWidth`, `ccc guide panels`) and `usage-meter` (an app
+  slot too: the plan's usage from `ctx.sessions.rateLimits`, drawn at the top bar's end before the gear,
+  the bar's height, the width its page reports, at most about 320 px; the bundled `cockpit.usage`
+  provides it). A type is a name
   `^[a-z][a-z0-9-]{0,63}$`; any plugin defines one by using it. The user picks the provider per type under
   Settings > This Project > Services ("None" turns it off).
 - `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):
@@ -241,8 +244,20 @@ with full Node access.
   `--cc-flag-<color>`, never a colour of your own); `note` an optional reminder, 1 to 80 characters of plain text.
   Read-only: only the person sets or clears it (the tab's right-click menu, the Toggle Tab Flag command); no plugin API
   writes it. Sticky until cleared and kept across an app restart; a change reaches `onChange`. An older app never sends it.
+  `costUsd` (what the session has cost so far, USD) and `contextPercent` (how full its context window is, 0-100)
+  come from the tab's Claude Code status line while the app setting "Rate limits from the status line" is on
+  (Settings > General > Claude sessions, the default); absent before Claude's first status line and once
+  the tab's process ended. A change reaches `onChange`. An older app never sends them.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
   included (at most 4 a second).
+- `ctx.sessions.rateLimits()`: the person's Claude plan usage, account-wide (the same in every window
+  and for every plugin, no declaration needed): `{ fiveHour?, sevenDay?, updatedAt }`, each window
+  `{ usedPercent, resetsAt }` (`usedPercent` 0-100, `resetsAt` and `updatedAt` epoch milliseconds), the
+  latest any Claude tab's status line reported; a window is absent when Claude Code did not report it (an
+  API-key login has none). Resolves `null` before the first report, or with the setting off since the
+  app started. Windows are not cleared when they reset: compare `resetsAt` with the clock.
+  `ctx.sessions.onRateLimits(listener)` hears it again when a window's numbers change (at most once per
+  2 s; returns a disposer). An older app has neither: check `typeof ctx.sessions.rateLimits === 'function'`.
 - `ctx.sessions.list({ scope: 'all' })` and `onChange(listener, { scope: 'all' })`: every window's
   Claude tabs as summaries `{ tabId, own, project: { name, color? }, status, tool?, title?, name?, flag? }` (`own`: a
   tab of this window; `color` a CSS value, `var(--cc-project-blue)` or `#rrggbb`; `flag` is `{ color }` only, the

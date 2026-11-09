@@ -8,6 +8,8 @@
 //                                                                `scope: 'all'`: SessionSummary[] of every
 //                                                                window, only for a plugin whose manifest
 //                                                                declares `access.sessions: 'all-windows'`
+//   sessions.rateLimits { pluginId }           -> RateLimits | null  the account's plan usage (app-wide,
+//                                                                any plugin: not tied to a window)
 //   sessions.focus  { pluginId, tabId }        -> boolean        select a Claude tab of ANY window, raising it
 //   sessions.close  { pluginId, tabId }        -> { closed }     a Claude tab of THIS project, through the
 //                                                                person's close path (the dialog may ask)
@@ -91,6 +93,8 @@
 //   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
 //                                                                only to a host running a plugin with the
 //                                                                `access` declaration)
+//   sessions.rateLimits { rateLimits: RateLimits }               the plan usage changed (at most one per
+//                                                                2 s, RateLimitsStore; to every host)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
 //   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
 //   panel.action    { pluginId, panelId, actionId }              a click on a header action this host set
@@ -163,7 +167,7 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler } from '../../host/rpc'
-import type { OAuthTokens, OverlayResult as PluginOverlayResult, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
+import type { OAuthTokens, OverlayResult as PluginOverlayResult, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
@@ -343,6 +347,16 @@ export interface HostApiDeps {
   renameTab?(projectId: string, tabId: string, name: string | null): void
   /** Subscribe to registry changes (SessionRegistry.onChange); returns the unsubscribe. */
   onSessionsChange(listener: (change: SessionChange) => void): () => void
+  /**
+   * The account's plan usage (RateLimitsStore.get), for ctx.sessions.rateLimits. Without it the
+   * answer is null.
+   */
+  rateLimits?(): RateLimits | null
+  /**
+   * Subscribe to plan usage changes (RateLimitsStore.onChange, throttled there); returns the
+   * unsubscribe. Without it no `sessions.rateLimits` event goes out.
+   */
+  onRateLimitsChange?(listener: (rateLimits: RateLimits) => void): () => void
   /**
    * Start a Claude tab in the project and tell its window (TabManager.create after the login env).
    * The tab manager realpaths `cwd` inside the project folder and passes `prompt` as one argv
@@ -571,6 +585,8 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   if (e.steps !== undefined) out.steps = { ...e.steps }
   // Read-only for plugins: copied out, and nothing in host-api writes a flag (TabManager.setFlag).
   if (e.flag !== undefined) out.flag = e.flag.note === undefined ? { color: e.flag.color } : { color: e.flag.color, note: e.flag.note }
+  if (e.costUsd !== undefined) out.costUsd = e.costUsd
+  if (e.contextPercent !== undefined) out.contextPercent = e.contextPercent
   if (active) out.active = true
   return out
 }
@@ -694,6 +710,8 @@ export class HostApi {
   /** Aborted at dispose: the oauth refreshes in flight end (overlays: `overlayCopies`). */
   private readonly gone = new AbortController()
   private readonly unsubscribe: () => void
+  /** The plan usage subscription (absent without the dep). */
+  private readonly unsubscribeRateLimits: (() => void) | undefined
   private readonly interval: number
   private readonly log: (message: string) => void
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -717,12 +735,14 @@ export class HostApi {
     this.interval = deps.sessionsIntervalMs ?? SESSIONS_EVENT_INTERVAL_MS
     this.log = deps.log ?? ((m) => console.warn(m))
     this.unsubscribe = deps.onSessionsChange((change) => this.sessionsChanged(change))
+    this.unsubscribeRateLimits = deps.onRateLimitsChange?.((rateLimits) => this.rateLimitsChanged(rateLimits))
   }
 
   /** The RPC methods, to merge into the host's endpoint handlers. */
   get handlers(): Record<string, RpcHandler> {
     return {
       'sessions.list': (params) => this.list(params),
+      'sessions.rateLimits': (params) => this.rateLimits(params),
       'sessions.send': (params) => this.send(params),
       'sessions.open': (params) => this.open(params),
       'sessions.openShell': (params) => this.openShell(params),
@@ -888,6 +908,7 @@ export class HostApi {
     if (this.revoked) return
     this.revoked = true
     this.unsubscribe()
+    this.unsubscribeRateLimits?.()
     // Each pending sign-in closes its loopback and rejects (its finally drops the entry).
     for (const controller of this.signIns.values()) controller.abort()
     if (this.timer !== undefined) clearTimeout(this.timer)
@@ -972,6 +993,28 @@ export class HostApi {
       throw new Error(`sessions.list: scope "all" needs "access": { "sessions": "all-windows" } in ${plugin.id}'s plugin.json`)
     }
     return this.summaries()
+  }
+
+  /**
+   * ctx.sessions.rateLimits: the account's plan usage, the same for every plugin and window. No
+   * manifest declaration: it names no tab, project or prompt, only how much of the person's plan is
+   * used, which any plugin can learn by running `claude` itself anyway. Only the plugin id is
+   * checked (one of this host's), as for every request.
+   */
+  private rateLimits(params: unknown): RateLimits | null {
+    this.alive()
+    this.plugin((params as { pluginId?: unknown } | null)?.pluginId, 'sessions.rateLimits')
+    return this.deps.rateLimits?.() ?? null
+  }
+
+  /** The plan usage changed (already throttled by the store): every host hears it. */
+  private rateLimitsChanged(rateLimits: RateLimits): void {
+    if (this.revoked) return
+    try {
+      this.emit('sessions.rateLimits', { rateLimits })
+    } catch (err) {
+      this.log(`plugin host ${this.scope.projectId}: rate limits event failed: ${errorText(err)}`)
+    }
   }
 
   /** Every window's Claude tabs, summaries only (SessionRegistry.summariesFor builds them field by field). */

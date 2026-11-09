@@ -38,28 +38,19 @@ import {
 import { formatPluginConfig, formatPluginConfigSet, type PluginConfigSetResult, type PluginConfigView } from '../shared/plugin-config'
 import { formatUsageEntry, parseArgs, USAGE, usageFor, type Command } from './args'
 import { guideText, topicList } from './guide'
+import { hookSocketPath } from './hook-socket'
 import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
+import { runStatusLine } from './statusline'
 
 type Env = Record<string, string | undefined>
+
+export { hookSocketPath }
 
 /** Total time `ccc hook` may take: reading stdin, connecting and writing. Then it exits 0. */
 export const HOOK_BUDGET_MS = 500
 /** Most of the hook payload read from stdin. A Claude hook payload is far smaller than this. */
 export const STDIN_CAP_BYTES = 1024 * 1024
-
-/**
- * The socket a hook reports to: `$CC_COCKPIT_SOCK`, and only inside a tab (`$APP_TAB_TOKEN` set).
- * Main exports CC_COCKPIT_SOCK to a tab only while its server listens on that path, because a
- * path main could not bind (a foreign listener, another user's pre-created `ccc-<uid>/` on a
- * shared /tmp) may belong to someone else, and the hook would hand them the token and every
- * prompt. So there is deliberately no fallback to `socketPath()` here: a tab without the variable
- * belongs to an app that is not listening, and a call without a token has no tab to report for.
- */
-export function hookSocketPath(env: Env): string | undefined {
-  if (!env.APP_TAB_TOKEN) return undefined
-  return env.CC_COCKPIT_SOCK || undefined
-}
 
 export interface SystemInputs {
   platform: string
@@ -290,7 +281,7 @@ function warnOnVersionMismatch(trip: RoundTrip, out: Output): void {
  */
 export type UserCommand = Exclude<
   Command,
-  { kind: 'hook' | 'help' | 'guide' | 'usage' | 'none' | 'plugin' | 'plugin-new' | 'plugin-logs' }
+  { kind: 'hook' | 'statusline' | 'help' | 'guide' | 'usage' | 'none' | 'plugin' | 'plugin-new' | 'plugin-logs' }
 >
 
 /**
@@ -769,6 +760,11 @@ export async function run(
           }
         }
         await runHook(command.event, env, stdin)
+        return 0
+      case 'statusline':
+        // index.ts runs the exact call itself without this file (startup cost); this path is the
+        // same function, for a caller that goes through `run`. Exit 0 whatever happens, like a hook.
+        await runStatusLine({ env, stdin, write: (data) => out.stdout(data.toString('utf8')), cwd })
         return 0
       case 'none':
         return 0

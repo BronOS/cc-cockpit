@@ -197,6 +197,25 @@ export class SessionRegistry {
   }
 
   /**
+   * Store the session's cost and context fill from its status line (`ccc statusline`; the socket
+   * handler checked the numbers, shared/rate-limits.ts). A field the report lacks is left as it
+   * was: a status line that stops carrying one does not blank it. Ignored for an entry that ended
+   * with its process (exitCode set): a late report from a dying `claude` must not bring back what
+   * the exit cleared. A change is reported only when a number moved, since the status line runs
+   * after every message. False when the tab has no entry.
+   */
+  setUsage(tabId: string, usage: { costUsd?: number; contextPercent?: number }): boolean {
+    const prev = this.entries.get(tabId)
+    if (!prev) return false
+    if (prev.exitCode !== undefined) return true
+    const next = { ...prev }
+    if (usage.costUsd !== undefined) next.costUsd = usage.costUsd
+    if (usage.contextPercent !== undefined) next.contextPercent = usage.contextPercent
+    if (next.costUsd !== prev.costUsd || next.contextPercent !== prev.contextPercent) this.set(prev, next)
+    return true
+  }
+
+  /**
    * Apply a hook event the socket delivered for `tabId`. Synchronous on purpose: the caller (the
    * `hook` socket handler) must call this before any `await`, so two hooks from one connection
    * cannot be reordered (see status-reducer.ts). False when the tab has no entry.

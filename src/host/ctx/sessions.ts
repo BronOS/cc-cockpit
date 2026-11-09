@@ -10,7 +10,11 @@
 // manifest declares `"access": { "sessions": "all-windows" }`. The check here is the fast error;
 // main checks the declaration again for list, and sends `sessions.all` only to a host that runs such
 // a plugin. focus reaches any window's tab, close and openFile only this window's (main decides).
-import type { Disposer, PluginContext, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
+//
+// rateLimits / onRateLimits: the account's plan usage from the Claude tabs' status lines, the same
+// for every plugin (main answers `sessions.rateLimits` and pushes the event of that name to every
+// host, at most one per 2 s); no declaration needed.
+import type { Disposer, PluginContext, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { checkSessionName } from '../../shared/session-name'
 import { checkSessionOptions } from '../../shared/session-options'
@@ -18,6 +22,7 @@ import { checkCommandArgv } from '../../shared/tab-commands'
 
 type Listener = (sessions: SessionInfo[]) => void
 type AllListener = (sessions: SessionSummary[]) => void
+type RateLimitsListener = (rateLimits: RateLimits) => void
 
 export interface SessionsApiDeps {
   pluginId: string
@@ -36,6 +41,8 @@ export class SessionsHub {
   private readonly listeners = new Map<string, Set<Listener>>()
   /** Scope `all` listeners (the `sessions.all` event). */
   private readonly allListeners = new Map<string, Set<AllListener>>()
+  /** ctx.sessions.onRateLimits listeners (the `sessions.rateLimits` event). */
+  private readonly rateLimitListeners = new Map<string, Set<RateLimitsListener>>()
 
   constructor(private readonly log: (pluginId: string, message: string) => void) {}
 
@@ -47,10 +54,41 @@ export class SessionsHub {
     return addTo(this.allListeners, pluginId, listener)
   }
 
+  addRateLimits(pluginId: string, listener: RateLimitsListener): Disposer {
+    const set = this.rateLimitListeners.get(pluginId) ?? new Set<RateLimitsListener>()
+    // A wrapper per registration, as in addTo.
+    const entry: RateLimitsListener = (r) => listener(r)
+    set.add(entry)
+    this.rateLimitListeners.set(pluginId, set)
+    return () => {
+      set.delete(entry)
+      if (set.size === 0 && this.rateLimitListeners.get(pluginId) === set) this.rateLimitListeners.delete(pluginId)
+    }
+  }
+
   /** The plugin is gone: its listeners hear nothing more. */
   removePlugin(pluginId: string): void {
     this.listeners.delete(pluginId)
     this.allListeners.delete(pluginId)
+    this.rateLimitListeners.delete(pluginId)
+  }
+
+  /**
+   * Main's `sessions.rateLimits` event: `{ rateLimits: RateLimits }`, each listener its own copy. A
+   * payload that is not an object with a numeric `updatedAt` is dropped (main never sends one).
+   */
+  handleRateLimitsEvent(params: unknown): void {
+    const rateLimits = (params as { rateLimits?: unknown } | null)?.rateLimits
+    if (typeof rateLimits !== 'object' || rateLimits === null || typeof (rateLimits as { updatedAt?: unknown }).updatedAt !== 'number') return
+    for (const [pluginId, set] of [...this.rateLimitListeners]) {
+      for (const listener of [...set]) {
+        try {
+          listener(structuredClone(rateLimits) as RateLimits)
+        } catch (err) {
+          this.log(pluginId, `a sessions.onRateLimits listener threw: ${errorText(err)}`)
+        }
+      }
+    }
   }
 
   /** Main's `sessions.all` event: `{ sessions: SessionSummary[] }`, to the scope `all` listeners. */
@@ -131,6 +169,12 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
       if (typeof listener !== 'function') throw new TypeError('sessions.onChange needs a function')
       if (scopeOf('sessions.onChange', options, sessionsAll) === 'all') return deps.hub.addAll(pluginId, listener as AllListener)
       return deps.hub.add(pluginId, listener as Listener)
+    },
+    rateLimits: () => guardAsync(async () => (await call('sessions.rateLimits', { pluginId })) as RateLimits | null),
+    onRateLimits: (listener: RateLimitsListener): Disposer => {
+      deps.alive()
+      if (typeof listener !== 'function') throw new TypeError('sessions.onRateLimits needs a function')
+      return deps.hub.addRateLimits(pluginId, listener)
     },
     focus: (tabId: string) =>
       guardAsync(async () => {

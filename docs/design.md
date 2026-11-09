@@ -375,6 +375,34 @@ plugins", design-next §4), built on the public API only:
   in place of the last prompt. Off cancels runs and clears every gist
   (`main/sessions/session-gist.ts`, `gist-run.ts`).
 
+- **Status line** (Settings › General › Claude sessions › "Rate limits from the status line";
+  `app.json` › `statusLineUsage`, on unless exactly `false`): Claude Code hands the plan's rate limits
+  (`rate_limits.five_hour` / `seven_day`: `used_percentage`, `resets_at`), the session's
+  `cost.total_cost_usd` and `context_window.used_percentage` only to the status line command, as JSON on
+  stdin; hooks and transcripts do not carry them. With the setting on, hooks.json also holds
+  `"statusLine": { "type": "command", "command": "'<data>/bin/ccc' statusline" }` (only `type` and
+  `command`: Claude deep-merges the settings layers, so the person's own `padding`, `refreshInterval` and
+  `hideVimModeIndicator` still apply; `--settings` sits above their user, project and local settings, a
+  managed one above ours). `ccc statusline` (`cli/statusline.ts`, its own small chunk, never `client.ts`)
+  reads stdin (256 KiB, 1 s), forwards only those fields to main like a hook (the tab's token, the
+  exported socket, fire-and-forget within 500 ms), and at the same time runs the person's own status line:
+  the `statusLine` objects of `<config>/settings.json` (`$CLAUDE_CONFIG_DIR` or `~/.claude`),
+  `<project>/.claude/settings.json` and `<project>/.claude/settings.local.json` merged in that order
+  (`<project>` the JSON's `workspace.project_dir`, then `current_dir`, `cwd`, its own cwd), used when
+  `type` is `command`. That command runs through `/bin/sh` with the same stdin, Claude's environment and
+  folder, in its own process group, killed after 5 s; its stdout is printed unchanged when it exits 0,
+  its stderr dropped (`CC_COCKPIT_STATUSLINE=1` in its environment makes a nested `ccc statusline` run
+  none). Every failure is silent and the exit is always 0. Main (`statusline` socket command, a Claude
+  tab's session token only; `main/sessions/statusline-handler.ts`) checks every field again
+  (`shared/rate-limits.ts`: finite numbers, percentages clamped 0-100, `resets_at` as epoch seconds, epoch
+  ms or ISO 8601 to epoch ms, a window without both fields dropped, cost 0 to 1,000,000 USD) and keeps the
+  account-wide windows in memory (`RateLimitsStore`: a window a report lacks keeps its value, `updatedAt`
+  is main's clock) for `ctx.sessions.rateLimits` / `onRateLimits` (every host, at most one event per 2 s,
+  a refresh with the same numbers is none), and the tab's `costUsd` / `contextPercent` on its entry
+  (`SessionInfo`), cleared when its process exits. Off, hooks.json is rewritten without the `statusLine`
+  (tabs started after it; running ones keep theirs until a restart) and main drops reports. The top bar's
+  `usage-meter` app slot draws the usage (§4).
+
 - **Tab flags** (`shared/tab-flag.ts`): the person marks the tab they must come back to while Claude
   works in many others. A flag is `{ color, note? }` on any tab kind: `color` one of six theme tokens
   (`--cc-flag-red`, `-orange`, `-yellow`, `-green`, `-blue`, `-purple`, in both built-in themes), `note`
@@ -412,7 +440,7 @@ queued from the live ones as the window closes (`TabRestorer.requeue`), overlays
 ## 4. Window layout, zones, overlay
 
 ```
-┌─● ● ●─ project ~/path │ slot sessions-strip (other windows)   [+] ───────────────── ⚙ ─┐
+┌─● ● ●─ project ~/path │ slot sessions-strip (other windows)   [+] ──── slot usage-meter ⚙ ─┐
 ├──┬────────────┬─────────────────────────────────────────────┬────────────┬──┤
 │ic│ panel A  … │ tabs: ( claude ● | claude ○ | >_ zsh ) [+]  │ panel X  … │ic│
 │on│────────────│                                             │            │on│
@@ -436,7 +464,7 @@ zones. Main stays the authority: it normalizes and reconciles every layout the r
 only existing panels in some order are stored (a forged list cannot add, duplicate or drop one). Hidden panels are listed under a "···" at the end of each strip. A collapsed bottom zone
 keeps its strip, captioned "Bottom zone collapsed" with its key.
 
-**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and, once its page has a port, the width the page reports (`ccPanel.slot.setWidth`; before a report the most the bar allows), capped so a drag gap always remains (design-next §2 "App slots") (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3).
+**Panel column and slots.** A plugin panel's frame sits in a column with the slot frames its plugin placed (`ctx.panels.slots`, §5 Slots): the `top` ones above, the `bottom` ones below, each at its placement height (24 to 600 px, within the provider's `minHeight` / `maxHeight`; a page may ask for less with `ccPanel.slot.setHeight`), and together at most 40 % of the panel's height each side so a slot never pushes the panel off. A slot frame is the provider's page in a sandboxed iframe the shell draws (`SlotFrame`, the panel loader and CSP); the host panel gets no handle on it. A hidden panel or a collapsed zone unmounts the panel and so its frames (the provider hears `onClose`); a webview panel sits in the same column. The top bar draws the app slot `sessions-strip` between the project name and the "+", taking the bar's height and, once its page has a port, the width the page reports (`ccPanel.slot.setWidth`; before a report the most the bar allows), capped so a drag gap always remains (design-next §2 "App slots") (before that, or with no provider, or "None", the bar is the name, the "+" and the gear); core draws no strip of its own (`cockpit.sessions` provides it, §3). The app slot `usage-meter` (the plan's usage, §3 "Status line"; the bundled `cockpit.usage` provides it) is drawn the same way at the bar's end before the gear: the bar's height, the page's reported width, capped at min(320 px, 30 vw) (`.titlebar-end .slot-frame-top-bar`), no room until connected, nothing without a provider or with "None" (`@slot:usage-meter`).
 
 **Auto-hide.** The terminal is the priority. When the window narrows so the centre would be under
 the minimum terminal width (Settings › General › Side panels; `app.json` › `zoneAutoHide`,
@@ -457,7 +485,7 @@ main publishes the view with `reveal` even when the layout did not change). It t
 window next shrinks.
 
 **Window chrome.** One bar across the top (variant A of the window redesign): the project's
-folder glyph, name and path, then the `sessions-strip` slot (above), the "+", then the gear. On macOS the bar is the
+folder glyph, name and path, then the `sessions-strip` slot (above), the "+", the `usage-meter` slot, then the gear. On macOS the bar is the
 window's title bar: project windows use `titleBarStyle: 'hiddenInset'` with the traffic lights
 centred on the 40px bar (`main/windows/window-chrome.ts`), the bar reserves their room (collapsed
 in full screen, where macOS hides the lights: main sends `window.state` on `enter-full-screen` /
@@ -732,7 +760,7 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
 - `slots[]` (provider) and `panels[].slots` (host): see Slots below. A provider needs `main`, `type`
   (`^[a-z][a-z0-9-]{0,63}$`) and an `entry` ending in `.html`; `title` 1 to 100 characters; `minHeight` and `maxHeight`
   integers 24 to 600 (defaults 24 and 600, min not above max); at most 10 per plugin, a type once per plugin. A panel
-  lists at most 4 distinct types and may not list an app slot type (`sessions-strip`).
+  lists at most 4 distinct types and may not list an app slot type (`sessions-strip`, `usage-meter`).
 - `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars }`). The plugin may
   take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
 - A panel's `icon` (an SVG or PNG in the plugin folder) is drawn as a mask in the strip's text colour,
@@ -825,8 +853,9 @@ provider's backend over a `MessagePort` main hands out per frame (`panel-ports.t
 another plugin's page, and the shell draws the frame (§4). The provider's backend hears a frame with
 `ctx.slots.onOpen(type, (slot) => …)`; the page uses the panel SDK plus `ccPanel.slot` (`{ type, setHeight(px),
 setWidth(px) }`; the width only in the top bar, renderer-side and capped to leave a drag gap, design-next §2 "App slots").
-Known types: `agenda` (today's events, a compact strip) and `sessions-strip` (an app slot type: the Claude sessions
-of other windows, one line, drawn in the top bar). Main enforces: the call names a panel of the calling plugin,
+Known types: `agenda` (today's events, a compact strip), `sessions-strip` (an app slot type: the Claude sessions
+of other windows, one line, drawn in the top bar) and `usage-meter` (an app slot type: the plan's usage from
+`ctx.sessions.rateLimits`, drawn at the top bar's end before the gear). Main enforces: the call names a panel of the calling plugin,
 never a host-supplied id; the type is in that panel's `slots` and is not an app slot type; heights are rounded and
 clamped to 24-600, then to the provider's range; the provider is enabled in the project, declares the type and is the
 project's pick; at most 8 frames per project (app frames first; an extra placement is not drawn and is logged once in
@@ -1432,8 +1461,8 @@ the same variables for both kinds; tabs also get `APP_TAB_ID`) selects that wind
 `--project <path>` does. A window token (shell tab, command tab, terminal overlay; §2) is taken by exactly
 the commands a `--project` caller may use (`open`, `notify`, `overlay`, `sessions`, plugin
 commands, `plugin link|unlink|list`) plus the plugin list behind `ccc help`
-(`WINDOW_TOKEN_COMMANDS`, `src/shared/protocol.ts`); `hook` and `session note`/`steps` need a
-Claude tab's session token. A `ccc hook` with a window token still exits 0 and records nothing.
+(`WINDOW_TOKEN_COMMANDS`, `src/shared/protocol.ts`); `hook`, `statusline` and `session note`/`steps` need a
+Claude tab's session token. A `ccc hook` or `ccc statusline` with a window token still exits 0 and records nothing.
 
 ## 7. Stack, errors, testing
 

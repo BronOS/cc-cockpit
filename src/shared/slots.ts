@@ -12,11 +12,18 @@ import type { JsonValue } from '../sdk/types'
 export const SLOT_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/
 
 /**
- * Slot types the app places itself (the top bar's `sessions-strip`, design-next §4). A plugin may
- * provide one (that is how the sessions plugin fills it), but a panel may not place one: the app's
- * chrome is not a plugin's to lay out.
+ * Slot types the app places itself, both in the top bar: `sessions-strip` (the other windows'
+ * Claude tabs, between the project name and the "+", design-next §4) and `usage-meter` (the plan's
+ * usage, ctx.sessions.rateLimits, before the gear). A plugin may provide one (that is how the
+ * sessions plugin fills the strip), but a panel may not place one: the app's chrome is not a
+ * plugin's to lay out. Order is draw order in main's frame list (app frames first).
  */
-export const APP_SLOT_TYPES: readonly string[] = ['sessions-strip']
+export const APP_SLOT_TYPES: readonly string[] = ['sessions-strip', 'usage-meter']
+
+/** The top bar's app slot type drawn between the project name and the "+". */
+export const SESSIONS_STRIP_SLOT = 'sessions-strip'
+/** The top bar's app slot type drawn before the gear, at the bar's end. */
+export const USAGE_METER_SLOT = 'usage-meter'
 
 export function isAppSlotType(type: string): boolean {
   return APP_SLOT_TYPES.includes(type)

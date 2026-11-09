@@ -172,6 +172,13 @@ describe('slot picks (selectSlotProvider / slotStatus)', () => {
     expect(slotStatus([plain], {})).toEqual([])
   })
 
+  it('the usage-meter app slot picks like any type: one candidate draws, @none turns it off', () => {
+    const plugins = [plain, slotsOf('cockpit.usage', 'usage-meter')]
+    expect(selectSlotProvider('usage-meter', plugins, {})).toBe('cockpit.usage')
+    expect(selectSlotProvider('usage-meter', plugins, { '@slot:usage-meter': SLOT_NONE })).toBeNull()
+    expect(slotStatus(plugins, { '@slot:usage-meter': SLOT_NONE })).toEqual([{ type: 'usage-meter', candidates: ['cockpit.usage'], selected: SLOT_NONE }])
+  })
+
   it('one candidate draws without a pick; @none turns it off', () => {
     const plugins = [plain, slotsOf('a.cal', 'agenda')]
     expect(selectSlotProvider('agenda', plugins, {})).toBe('a.cal')

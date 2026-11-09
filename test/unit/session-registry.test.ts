@@ -648,3 +648,41 @@ describe('setGist', () => {
     expect(reg.setGist('nope', 'x')).toBe(false)
   })
 })
+
+describe('setUsage (the status line: SessionInfo.costUsd / contextPercent)', () => {
+  it('stores the numbers, keeps a field a report lacks, and reports only a real change', () => {
+    start('c1')
+    const changes: SessionChange[] = []
+    reg.onChange((c) => changes.push(c))
+    expect(reg.setUsage('c1', { costUsd: 1.5, contextPercent: 20 })).toBe(true)
+    expect(reg.get('c1')).toMatchObject({ costUsd: 1.5, contextPercent: 20 })
+    reg.setUsage('c1', { costUsd: 1.5, contextPercent: 20 })
+    expect(changes).toHaveLength(1)
+    reg.setUsage('c1', { contextPercent: 25 })
+    expect(reg.get('c1')).toMatchObject({ costUsd: 1.5, contextPercent: 25 })
+    expect(changes).toHaveLength(2)
+    expect(reg.setUsage('nope', { costUsd: 1 })).toBe(false)
+  })
+
+  it('clears them when the process exits, ignores a late report after it, and a restart starts without them', () => {
+    start('c1')
+    reg.setUsage('c1', { costUsd: 3, contextPercent: 50 })
+    reg.tabExited('c1', 0)
+    expect(reg.get('c1')?.costUsd).toBeUndefined()
+    expect(reg.get('c1')?.contextPercent).toBeUndefined()
+    // A status line still running in the dying `claude` must not bring them back.
+    reg.setUsage('c1', { costUsd: 4 })
+    expect(reg.get('c1')?.costUsd).toBeUndefined()
+    start('c1')
+    expect(reg.get('c1')?.costUsd).toBeUndefined()
+    reg.setUsage('c1', { costUsd: 0.1 })
+    expect(reg.get('c1')?.costUsd).toBe(0.1)
+  })
+
+  it('never reaches the windows’ snapshot (plugins only)', () => {
+    start('c1')
+    reg.setUsage('c1', { costUsd: 3, contextPercent: 50 })
+    vi.runAllTimers()
+    expect(sent.at(-1)?.own[0]).not.toHaveProperty('costUsd')
+  })
+})

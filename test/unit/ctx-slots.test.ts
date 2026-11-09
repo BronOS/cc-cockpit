@@ -259,6 +259,7 @@ describe('ctx.panels.slots', () => {
     expect(() => placer.panels.slots('nope', [])).toThrow('not declared')
     expect(() => placer.panels.slots('main', [{ ...placement, type: 'chart' }])).toThrow('does not list slot "chart"')
     expect(() => placer.panels.slots('main', [{ ...placement, type: 'sessions-strip' }])).toThrow('placed by the app')
+    expect(() => placer.panels.slots('main', [{ ...placement, type: 'usage-meter' }])).toThrow('placed by the app')
     expect(() => placer.panels.slots('main', [{ ...placement, position: 'left' as never }])).toThrow('position')
     expect(() => placer.panels.slots('main', [{ ...placement, height: 'tall' as never }])).toThrow('height')
     expect(() => placer.panels.slots('main', Array(5).fill(placement))).toThrow('at most 4')

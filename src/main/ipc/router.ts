@@ -585,6 +585,7 @@ export interface ProjectSettingsHandlerDeps {
   setTabExit(value: unknown): void
   setClaudeTabOnOpen(value: unknown): void
   setSessionGist(value: unknown): void
+  setStatusLineUsage(value: unknown): void
   setDiscussPrompt(value: unknown): void
   /** This window's own project (ProjectSettingsService.setDiscussPrompt checks the value). */
   setProjectDiscussPrompt(projectId: string, value: unknown): void
@@ -642,6 +643,9 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   })
   router.handleProject('settings.sessionGistSet', (_ctx, payload) => {
     deps.setSessionGist(fields('settings.sessionGistSet', payload).value)
+  })
+  router.handleProject('settings.statusLineUsageSet', (_ctx, payload) => {
+    deps.setStatusLineUsage(fields('settings.statusLineUsageSet', payload).value)
   })
   router.handleProject('settings.discussPromptSet', (_ctx, payload) => {
     deps.setDiscussPrompt(fields('settings.discussPromptSet', payload).value)

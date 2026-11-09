@@ -9,6 +9,7 @@ import {
   confirmTabCloseOf,
   notificationSoundsOf,
   sessionGistOf,
+  statusLineUsageOf,
   tabCloseSideOf
 } from '../../src/main/settings/appearance-service'
 import { ThemeService } from '../../src/main/themes/theme-service'
@@ -29,6 +30,8 @@ function rig(initialOverrides: unknown = {}) {
     sessionGist: undefined as unknown,
     discussPrompt: undefined as unknown,
     sessionGistChanged: 0,
+    statusLineUsage: undefined as unknown,
+    statusLineUsageChanged: 0,
     notificationSounds: undefined as unknown,
     notificationSound: undefined as unknown,
     /** The system sound ids a fresh listing would hold now. */
@@ -89,6 +92,15 @@ function rig(initialOverrides: unknown = {}) {
     },
     sessionGistChanged: () => {
       state.sessionGistChanged++
+    },
+    statusLineUsage: {
+      get: () => state.statusLineUsage,
+      set: (next) => {
+        state.statusLineUsage = next
+      }
+    },
+    statusLineUsageChanged: () => {
+      state.statusLineUsageChanged++
     },
     notificationSounds: {
       get: () => state.notificationSounds,
@@ -418,6 +430,38 @@ describe('session gist', () => {
     expect(r.state.sessionGistChanged).toBe(2)
     expect(() => r.service.setSessionGist('true')).toThrow('give true or false')
     expect(r.state.sessionGistChanged).toBe(2)
+  })
+})
+
+describe('rate limits from the status line', () => {
+  it('is on by default, and only an explicit false turns it off', () => {
+    const r = rig()
+    expect(r.service.view(P).statusLineUsage).toBe(true)
+    // A damaged value reads as the default: on changes nothing the person sees.
+    for (const damaged of ['false', 0, {}, null]) {
+      r.state.statusLineUsage = damaged
+      expect(r.service.view(P).statusLineUsage).toBe(true)
+    }
+    r.state.statusLineUsage = false
+    expect(r.service.view(P).statusLineUsage).toBe(false)
+    expect(statusLineUsageOf(undefined)).toBe(true)
+  })
+
+  it('stores true and false, rewrites hooks.json only on a real flip, and refuses anything else', () => {
+    const r = rig()
+    r.service.setStatusLineUsage(true)
+    expect(r.state.statusLineUsage).toBe(true)
+    expect(r.state.statusLineUsageChanged).toBe(0)
+    r.service.setStatusLineUsage(false)
+    expect(r.state.statusLineUsage).toBe(false)
+    expect(r.state.statusLineUsageChanged).toBe(1)
+    r.service.setStatusLineUsage(false)
+    expect(r.state.statusLineUsageChanged).toBe(1)
+    r.service.setStatusLineUsage(true)
+    expect(r.state.statusLineUsageChanged).toBe(2)
+    expect(() => r.service.setStatusLineUsage('off')).toThrow('give true or false')
+    expect(r.state.statusLineUsage).toBe(true)
+    expect(r.state.statusLineUsageChanged).toBe(2)
   })
 })
 

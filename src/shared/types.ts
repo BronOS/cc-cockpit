@@ -172,6 +172,13 @@ export interface AppSettings {
    */
   sessionGist?: boolean
   /**
+   * Rate limits from the status line: Claude tabs get a `statusLine` in the app's `--settings` file
+   * that runs `ccc statusline`, which reports the plan usage, cost and context fill to main and then
+   * runs the person's own status line (main/hooks/hooks-file.ts, cli/statusline.ts). On unless
+   * exactly `false`: it changes nothing the person sees, and plugins (the usage meter) need it.
+   */
+  statusLineUsage?: boolean
+  /**
    * Plugins' `ctx.notify(text, { sound: true })` ring a short chime in the project window (main's
    * ChimeGate reads it at each ring). Absent or anything but `false` (the file is user-writable)
    * reads as on. Off: no chime, and such notifications stay silent on the OS side too.

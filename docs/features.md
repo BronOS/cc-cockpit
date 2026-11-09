@@ -113,6 +113,10 @@ behind it are in [design.md](design.md).
   prompt (which stays as the tooltip). It uses your Claude Code login (`claude -p --model haiku --safe-mode`, so none of
   your hooks or MCP servers run and no transcript is kept), one small request per gist: only when the prompts changed,
   at most one a minute per tab and two at once. Failures are logged only. Turning it off cancels runs and hides gists.
+- Rate limits from the status line (on by default; Settings > General > Claude sessions): Claude tabs run the app's
+  status line command, which passes the plan's 5-hour and weekly usage, the session's cost and its context fill to
+  plugins (`ctx.sessions.rateLimits`, `SessionInfo.costUsd` / `contextPercent`) and then runs your own status line from
+  your Claude settings, so it looks as before. Turning it off applies to tabs started afterwards.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Typing in a Claude tab takes it over from plugins: once you type or paste there, plugins can no longer send text into it and their queued texts are dropped (clicks, focus and terminal replies do not count; Discuss with Claude still works).
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
@@ -149,7 +153,7 @@ behind it are in [design.md](design.md).
   draws it (`contributes.slots`, `ctx.slots.onOpen`): the Inbox places an `agenda` slot, the Calendar fills it. The
   shell draws the frame and a port joins it to the provider only. With several providers of a type, Settings > This Project
   picks one (or "None"); with none picked nothing is drawn. The top bar's strip of other windows' sessions is the
-  app slot `sessions-strip`.
+  app slot `sessions-strip`; the plan usage meter before the gear is the app slot `usage-meter`.
 - Plugin system: install from git, from the Marketplace, or link a folder, per-project enable, a sandboxed panel
   per plugin, a host API (settings, storage, exec, schedule, badges, overlays, notify, opening a web page in the
   system browser with `ctx.openExternal`...). A panel's icon is drawn in
@@ -377,6 +381,12 @@ works only while the app is running: the AppImage unpacks to a per-launch `/tmp/
 so the wrapper's target is gone once the app quits (it then exits 0 silently, as above).
 
 ## Known limitations
+
+- The status line passthrough chains only your status line's `command`; `padding`, `refreshInterval` and
+  `hideVimModeIndicator` still apply because Claude Code merges them from your settings. A managed (enterprise)
+  status line replaces the app's, so no usage is reported then. The plan usage only updates when some Claude tab's
+  status line runs (after a message, or on your `refreshInterval`), and it is kept in memory only (empty after a
+  restart until the first one). With no status line of your own, Claude Code gets an empty one from the app.
 
 - Distribution: the Mac build is ad-hoc signed and not notarised, Intel Macs are not supported, there is no auto-updater
   (the app only shows a notice), and the update check cannot see a private repo, which answers 404.

@@ -25,6 +25,7 @@
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
+//   sessions.rateLimits { rateLimits }        the account's plan usage changed (ctx.sessions.onRateLimits)
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 //   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
@@ -33,7 +34,7 @@
 //   overlay.ended { key }                     a typed overlay went: its type buttons' runs go
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text, options? } -> { clicked }
-//   sessions.list {}, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
+//   sessions.list {}, sessions.rateLimits { pluginId } -> RateLimits | null, sessions.send { pluginId, tabId, text }, sessions.open { pluginId, cwd?, prompt? },
 //   sessions.openShell { pluginId, cwd?, focus? } -> { tabId } (a plain shell tab; main checks the cwd and budget),
 //   sessions.openCommand { pluginId, argv, cwd?, title?, focus? } -> { tabId } (argv with no shell, marked with the plugin),
 //   slots.available { pluginId, type } -> boolean (ctx.slots.available), panels.slots { pluginId, panelId, placements },

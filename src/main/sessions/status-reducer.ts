@@ -115,6 +115,14 @@ export interface SessionEntry {
    * reducer never touches it.
    */
   flag?: TabFlag
+  /**
+   * The session's cost (USD) and context fill (0-100) from its status line (`ccc statusline`,
+   * shared/rate-limits.ts checked them): SessionInfo.costUsd / contextPercent. Set by
+   * SessionRegistry.setUsage only; cleared when the process ends (exited below), so a dead tab never
+   * shows the numbers of its last run.
+   */
+  costUsd?: number
+  contextPercent?: number
 }
 
 /** Caps for text a hook (or a plugin) hands us: a token only proves WHICH tab sent it. */
@@ -283,7 +291,7 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
 
 function exited(entry: SessionEntry, code: number): SessionEntry {
   if (entry.status === 'ended' && entry.exitCode !== undefined) return entry
-  return { ...entry, status: 'ended', tool: undefined, exitCode: code }
+  return { ...entry, status: 'ended', tool: undefined, exitCode: code, costUsd: undefined, contextPercent: undefined }
 }
 
 /**

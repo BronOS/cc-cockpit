@@ -42,6 +42,7 @@ import {
   sessionInfoOf
 } from '../../src/main/plugins/host-api'
 import { newEntry } from '../../src/main/sessions/status-reducer'
+import { RATE_LIMITS_EVENT_INTERVAL_MS, RateLimitsStore } from '../../src/main/sessions/rate-limits-store'
 import { MAX_TEXT_CHARS, PASTE_END, PASTE_START } from '../../src/main/sessions/send-gate'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabManager } from '../../src/main/tabs/tab-manager'
@@ -1424,6 +1425,62 @@ describe('the sessions event', () => {
     expect(events).toHaveLength(1)
     expect((events[0]!.params as { sessions: { typed: boolean }[] }).sessions.map((s) => s.typed)).toEqual([true])
     expect(await typedOf()).toEqual([true])
+  })
+})
+
+describe('plan usage (ctx.sessions.rateLimits / onRateLimits) and the status line fields', () => {
+  const five = { usedPercent: 40, resetsAt: 1_762_600_000_000 }
+
+  it('answers null before the first report, then the latest, to any plugin of the host and no other id', async () => {
+    const store = new RateLimitsStore({ log: () => {} })
+    deps.rateLimits = () => store.get()
+    deps.onRateLimitsChange = (listener) => store.onChange(listener)
+    const call = hostA()
+    expect(await call('sessions.rateLimits', { pluginId: 'a.one' })).toBeNull()
+    store.report({ fiveHour: five })
+    expect(await call('sessions.rateLimits', { pluginId: 'a.two' })).toEqual({ fiveHour: five, updatedAt: expect.any(Number) })
+    await expect(call('sessions.rateLimits', { pluginId: 'b.one' })).rejects.toThrow('sessions.rateLimits: unknown plugin')
+    await expect(call('sessions.rateLimits', {})).rejects.toThrow('unknown plugin')
+    store.dispose()
+  })
+
+  it('is null without the dep (an app wired without the store)', async () => {
+    expect(await hostA()('sessions.rateLimits', { pluginId: 'a.one' })).toBeNull()
+  })
+
+  it('pushes a change to every host, throttled by the store, and nothing once revoked', async () => {
+    vi.useFakeTimers()
+    const store = new RateLimitsStore({ log: () => {} })
+    deps.rateLimits = () => store.get()
+    deps.onRateLimitsChange = (listener) => store.onChange(listener)
+    const eventsA: { event: string; params: unknown }[] = []
+    const eventsB: { event: string; params: unknown }[] = []
+    hostA(eventsA)
+    hostFor({ projectId: B, windowId: WIN_B, projectDir: projB, plugins: [{ id: 'b.one', dir: pluginOne, panels: ['board'] }] }, eventsB)
+    store.report({ fiveHour: five })
+    store.report({ fiveHour: { ...five, usedPercent: 41 } })
+    expect(eventsA).toEqual([{ event: 'sessions.rateLimits', params: { rateLimits: { fiveHour: five, updatedAt: expect.any(Number) } } }])
+    expect(eventsB).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(RATE_LIMITS_EVENT_INTERVAL_MS)
+    expect(eventsA.map((e) => (e.params as { rateLimits: { fiveHour: { usedPercent: number } } }).rateLimits.fiveHour.usedPercent)).toEqual([40, 41])
+    apis[0]!.revoke()
+    store.report({ fiveHour: { ...five, usedPercent: 50 } })
+    await vi.advanceTimersByTimeAsync(RATE_LIMITS_EVENT_INTERVAL_MS)
+    expect(eventsA).toHaveLength(2)
+    expect(eventsB).toHaveLength(3)
+    await expect(hostA()('sessions.rateLimits', { pluginId: 'a.one' })).resolves.toMatchObject({ fiveHour: { usedPercent: 50 } })
+    store.dispose()
+  })
+
+  it("carries a tab's costUsd and contextPercent in SessionInfo, gone once its process exits", async () => {
+    const call = hostA()
+    const tab = tabs.create(A, { kind: 'claude' })
+    registry.setUsage(tab.id, { costUsd: 0.75, contextPercent: 33 })
+    expect(await call('sessions.list', {})).toEqual([expect.objectContaining({ tabId: tab.id, costUsd: 0.75, contextPercent: 33 })])
+    registry.tabExited(tab.id, 0)
+    const [info] = (await call('sessions.list', {})) as Record<string, unknown>[]
+    expect(info).not.toHaveProperty('costUsd')
+    expect(info).not.toHaveProperty('contextPercent')
   })
 })
 

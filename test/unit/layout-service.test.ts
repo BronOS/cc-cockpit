@@ -495,6 +495,25 @@ describe('LayoutService slots (design-next §2)', () => {
     expect(framesOf(service.view(P))).toBeUndefined()
   })
 
+  it('draws both app slots in the top bar, sessions-strip then usage-meter, each with its own frame and no page height', () => {
+    const { service, providers } = slotSetup()
+    providers.set('sessions-strip', { pluginId: 'cockpit.sessions', entry: 'strip.html', minHeight: 24, maxHeight: 40, epoch: 1 })
+    providers.set('usage-meter', { pluginId: 'cockpit.usage', entry: 'slots/meter.html', minHeight: 24, maxHeight: 40, epoch: 1 })
+    const view = service.view(P)!
+    expect(view.appSlots).toEqual([
+      expect.objectContaining({ type: 'sessions-strip', position: 'top-bar', pluginId: 'cockpit.sessions' }),
+      expect.objectContaining({ type: 'usage-meter', position: 'top-bar', pluginId: 'cockpit.usage', height: 24 })
+    ])
+    const [strip, meter] = view.appSlots!
+    expect(strip!.id).not.toBe(meter!.id)
+    // The top bar takes no height requests, the meter's no more than the strip's.
+    expect(service.setSlotHeight(P, meter!.id, 30)).toBe(false)
+    // Same frame id on the next view (no remount); no provider (or the pick "None"): no frame.
+    expect(service.view(P)!.appSlots?.[1]?.id).toBe(meter!.id)
+    providers.delete('usage-meter')
+    expect(service.view(P)!.appSlots).toEqual([expect.objectContaining({ type: 'sessions-strip' })])
+  })
+
   it('refuses a core or unknown panel and drops the placements of a panel that goes', () => {
     const { service, providers } = slotSetup()
     providers.set('agenda', cal)

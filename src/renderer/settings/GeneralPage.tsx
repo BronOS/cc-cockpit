@@ -161,6 +161,21 @@ export function GeneralPage(): React.JSX.Element {
                   }}
                 />
               </Row>
+              <Row
+                label="Rate limits from the status line"
+                htmlFor={`${id}-status-line-usage`}
+                help="Claude Code tells only its status line how much of your plan's 5-hour and weekly limits is used, and what a session costs. With this on, Claude tabs run the app's status line command, which passes those numbers to plugins (a usage meter) and then runs your own status line from your Claude settings, so it looks as before. Applies to tabs started after the change."
+              >
+                <Switch
+                  id={`${id}-status-line-usage`}
+                  checked={data.statusLineUsage}
+                  disabled={busy !== null}
+                  onChange={(e) => {
+                    const value = e.target.checked
+                    void run('statusLineUsage', () => window.cockpit.invoke('settings.statusLineUsageSet', { value })).then(reload)
+                  }}
+                />
+              </Row>
             </div>
           </Group>
 

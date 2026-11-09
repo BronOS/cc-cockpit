@@ -1,7 +1,9 @@
 // `<data>/hooks.json`: the settings file the app hands to every `claude` it starts
 // (`claude --settings <this file>`, see tabs/claude-argv.ts). The user's own settings are never
 // touched; Claude merges this file's hooks with theirs. Regenerated at every start because the
-// wrapper path it names can change (a moved data dir, a dev vs packaged build).
+// wrapper path it names can change (a moved data dir, a dev vs packaged build), and when the
+// setting that adds the `statusLine` changes (a `claude` reads the file at its start, so tabs
+// already running keep what they started with).
 import { HOOK_EVENTS, HOOK_MATCHERS, type HookEvent } from '../../shared/hooks'
 import { shellQuote } from './shell-quote'
 import { writeFileAtomic } from './write-file-atomic'
@@ -41,8 +43,31 @@ interface HookGroup {
   hooks: HookCommand[]
 }
 
+/**
+ * Claude Code's `statusLine` setting. Only `type` and `command`: Claude deep-merges the settings
+ * layers (claude 2.1.319 merges each source over the last with lodash `mergeWith`, a customizer
+ * that only concatenates arrays), so the person's own `padding`, `refreshInterval` and
+ * `hideVimModeIndicator` from their user, project or local settings still apply to this command.
+ * Setting any of them here would override theirs. Our `command` wins over theirs because
+ * `--settings` (flagSettings) sits above those three layers; `ccc statusline` then runs theirs
+ * (cli/statusline.ts). A managed (policy) statusLine sits above ours, and then nothing of this runs.
+ */
+interface StatusLineCommand {
+  type: 'command'
+  command: string
+}
+
 export interface HooksSettings {
   hooks: Record<string, HookGroup[]>
+  statusLine?: StatusLineCommand
+}
+
+export interface HooksFileOptions {
+  /**
+   * The app setting "Rate limits from the status line" (`app.json` › `statusLineUsage`, default
+   * on): add the `statusLine` that runs `ccc statusline`. Off, the file has hooks only.
+   */
+  statusLine?: boolean
 }
 
 /** The command Claude runs for `event`: `'<wrapper>' hook <Event>`, the path single-quoted. */
@@ -50,7 +75,12 @@ export function hookCommand(cccPath: string, event: HookEvent): string {
   return `${shellQuote(cccPath)} hook ${event}`
 }
 
-export function buildHooksSettings(cccPath: string): HooksSettings {
+/** The status line command: `'<wrapper>' statusline`, the path single-quoted like a hook's. */
+export function statusLineCommand(cccPath: string): string {
+  return `${shellQuote(cccPath)} statusline`
+}
+
+export function buildHooksSettings(cccPath: string, options: HooksFileOptions = {}): HooksSettings {
   const hooks: Record<string, HookGroup[]> = {}
   for (const event of HOOK_EVENTS) {
     const command: HookCommand = {
@@ -63,13 +93,14 @@ export function buildHooksSettings(cccPath: string): HooksSettings {
     if (matcher !== undefined) group.matcher = matcher
     hooks[event] = [group]
   }
-  return { hooks }
+  if (options.statusLine !== true) return { hooks }
+  return { hooks, statusLine: { type: 'command', command: statusLineCommand(cccPath) } }
 }
 
 /**
  * Write hooks.json. No `schemaVersion`: this is Claude's settings format, not one of our state
  * files, and the file is rebuilt from scratch at every start so there is nothing to migrate.
  */
-export function writeHooksFile(hooksPath: string, cccPath: string): void {
-  writeFileAtomic(hooksPath, JSON.stringify(buildHooksSettings(cccPath), null, 2) + '\n', 0o600)
+export function writeHooksFile(hooksPath: string, cccPath: string, options: HooksFileOptions = {}): void {
+  writeFileAtomic(hooksPath, JSON.stringify(buildHooksSettings(cccPath, options), null, 2) + '\n', 0o600)
 }

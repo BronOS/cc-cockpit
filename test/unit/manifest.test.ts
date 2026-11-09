@@ -618,6 +618,13 @@ describe('slots (design-next §2)', () => {
     expect(await errorsOf(withPanelSlots(['agenda', 'sessions-strip']))).toEqual([
       'panel "main": slot type "sessions-strip" is placed by the app; a panel cannot place it'
     ])
+    expect(await errorsOf(withPanelSlots(['usage-meter']))).toEqual([
+      'panel "main": slot type "usage-meter" is placed by the app; a panel cannot place it'
+    ])
+  })
+
+  it('accepts a provider of the usage-meter app slot', async () => {
+    expect((await validateManifest(withSlots([{ type: 'usage-meter', entry: 'slots/agenda.html' }]), dir)).ok).toBe(true)
   })
 })
 

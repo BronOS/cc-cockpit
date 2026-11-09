@@ -35,9 +35,9 @@ describe('CORE_CLI_COMMANDS and RESERVED_CLI_NAMES', () => {
     }
   })
 
-  it('lists one usage block per core command but hook, in CORE_CLI_COMMANDS order', () => {
+  it('lists one usage block per core command but hook and statusline, in CORE_CLI_COMMANDS order', () => {
     const listed = CORE_CLI_COMMANDS.filter((c) => usageFor(c) !== undefined)
-    expect(listed).toEqual(CORE_CLI_COMMANDS.filter((c) => c !== 'hook'))
+    expect(listed).toEqual(CORE_CLI_COMMANDS.filter((c) => c !== 'hook' && c !== 'statusline'))
     const firstWords = [...new Set([...USAGE.matchAll(/^ {2}ccc ([a-z]\S*)/gm)].map((m) => m[1]))]
     expect(firstWords).toEqual(listed)
   })

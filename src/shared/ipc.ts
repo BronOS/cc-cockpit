@@ -657,6 +657,8 @@ export interface AppearanceView {
   claudeTabOnOpen: boolean
   /** Haiku writes a one-line gist of each Claude session (AppSettings.sessionGist, default off). */
   sessionGist: boolean
+  /** Claude tabs report usage through the status line (AppSettings.statusLineUsage, default on). */
+  statusLineUsage: boolean
   /** The global Discuss prompt (AppSettings.discussPrompt; '' = none). */
   discussPrompt: string
   /** A plugin's notification with `sound` rings a chime (AppSettings.notificationSounds, default on). */
@@ -1031,6 +1033,8 @@ export interface IpcInvokeMap {
   'settings.claudeTabOnOpenSet': { req: { value: boolean }; res: void }
   /** Turn the session gist on or off (AppSettings.sessionGist). Off cancels runs and removes every gist. */
   'settings.sessionGistSet': { req: { value: boolean }; res: void }
+  /** Turn the status line usage report on or off (AppSettings.statusLineUsage); hooks.json is rewritten for new tabs. */
+  'settings.statusLineUsageSet': { req: { value: boolean }; res: void }
   /** Set the global Discuss prompt; main refuses a non-string or one over MAX_DISCUSS_PROMPT. '' clears it. */
   'settings.discussPromptSet': { req: { value: string }; res: void }
   /** Set this project's own Discuss prompt ('' = off here), or null to use the global one again. */
@@ -1379,6 +1383,7 @@ export const INVOKE_CHANNELS = [
   'settings.tabExitSet',
   'settings.claudeTabOnOpenSet',
   'settings.sessionGistSet',
+  'settings.statusLineUsageSet',
   'settings.discussPromptSet',
   'settings.projectDiscussPromptSet',
   'settings.notificationSoundsSet',

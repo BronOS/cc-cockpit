@@ -390,6 +390,17 @@ export interface SessionInfo {
    * reaches `onChange`. An older app never sends it.
    */
   readonly flag?: { readonly color: string; readonly note?: string }
+  /**
+   * What the session has cost so far in USD (Claude Code's `cost.total_cost_usd`), from the tab's
+   * status line (the app setting "Rate limits from the status line"). Absent before Claude's first
+   * status line, when the setting is off, and once the tab's process ended. An older app never sends it.
+   */
+  readonly costUsd?: number
+  /**
+   * How full the session's context window is, 0-100 (Claude Code's `context_window.used_percentage`),
+   * from the status line like `costUsd` and absent in the same cases.
+   */
+  readonly contextPercent?: number
 }
 
 /**
@@ -413,6 +424,29 @@ export interface SessionSummary {
   readonly name?: string
   /** The person's flag colour (SessionInfo.flag without its note, which stays in the tab's own window). */
   readonly flag?: { readonly color: string }
+}
+
+/** One rate-limit window of the person's Claude account (`RateLimits`). */
+export interface RateLimitWindow {
+  /** How much of the window is used, 0-100. */
+  readonly usedPercent: number
+  /** When the window resets, epoch milliseconds. */
+  readonly resetsAt: number
+}
+
+/**
+ * The person's Claude plan usage (`ctx.sessions.rateLimits`): account-wide, the latest any Claude tab
+ * of any window reported through its status line. A window is absent when Claude Code did not report
+ * it (an API-key login has none). The windows are not cleared when they reset: compare `resetsAt`
+ * with the clock.
+ */
+export interface RateLimits {
+  /** The 5-hour window (Claude Code's `rate_limits.five_hour`). */
+  readonly fiveHour?: RateLimitWindow
+  /** The 7-day window (`rate_limits.seven_day`). */
+  readonly sevenDay?: RateLimitWindow
+  /** When main last heard a report, epoch milliseconds. */
+  readonly updatedAt: number
 }
 
 /** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */
@@ -788,6 +822,15 @@ export interface PluginContext {
      * restart of the app. At most 30 a minute. An older app has no `rename`: check `typeof ctx.sessions.rename`.
      */
     rename(tabId: string, name: string | null): Promise<void>
+    /**
+     * The person's plan usage (`RateLimits`), the latest any Claude tab reported; null before the first
+     * report, or when the app setting "Rate limits from the status line" is off and never was on since
+     * the app started. Account-wide, so any plugin may read it. An older app has no `rateLimits`: check
+     * `typeof ctx.sessions.rateLimits`.
+     */
+    rateLimits(): Promise<RateLimits | null>
+    /** The usage again whenever a window's numbers change (at most one call per 2 s). */
+    onRateLimits(listener: (rateLimits: RateLimits) => void): Disposer
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
      * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute.

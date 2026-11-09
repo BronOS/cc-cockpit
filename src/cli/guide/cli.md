@@ -70,6 +70,11 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   plugin itself). Exit 1 for an unknown plugin, a plugin not enabled in this project, a project
   with no open window, or a panel the plugin does not declare.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
+- `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
+  (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost
+  and context fill to the app (`ctx.sessions.rateLimits`, `SessionInfo.costUsd`) and then runs your
+  own status line from your Claude settings (user, project, local) and prints its output, so the
+  line looks as it does outside the app. It always exits 0 and prints nothing when you have none.
 
 ## Things to know
 

@@ -647,7 +647,8 @@ export class HostContexts {
 
   /**
    * One-way events from main: `settings` `{ pluginId, project, app }`, `sessions` `{ sessions }`
-   * (this project's tabs changed) and `sessions.all` `{ sessions }` (any window's, summaries).
+   * (this project's tabs changed), `sessions.all` `{ sessions }` (any window's, summaries) and
+   * `sessions.rateLimits` `{ rateLimits }` (the account's plan usage changed).
    */
   handleEvent(event: string, params: unknown): void {
     if (event === 'cli.cancel') {
@@ -663,6 +664,10 @@ export class HostContexts {
     }
     if (event === 'sessions.all') {
       this.sessions.handleAllEvent(params)
+      return
+    }
+    if (event === 'sessions.rateLimits') {
+      this.sessions.handleRateLimitsEvent(params)
       return
     }
     if (event === 'overlay.ended') {

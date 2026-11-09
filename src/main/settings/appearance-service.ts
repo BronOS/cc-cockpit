@@ -1,7 +1,8 @@
 // The appearance and general pages of the settings overlay (design §6): the app-wide theme, the
 // keybinding overrides, what a tab does when its process exits (`tabExit`) and whether a project
 // that opens empty gets a Claude tab (`claudeTabOnOpen`), whether Haiku writes a gist of each Claude
-// session (`sessionGist`, main/sessions/session-gist.ts), whether a plugin notification with `sound`
+// session (`sessionGist`, main/sessions/session-gist.ts), whether Claude tabs report their usage
+// through the status line (`statusLineUsage`, main/hooks/hooks-file.ts), whether a plugin notification with `sound`
 // chimes (`notificationSounds`, main/notifications/notifier.ts ChimeGate) and with which sound
 // (`notificationSound`, shared/notify-sound.ts; system files in main/notifications/system-sounds.ts), whether closing a running tab asks first
 // (`confirmTabClose`), which end of a tab its close button sits at (`tabCloseSide`), whether the side
@@ -82,6 +83,14 @@ export interface AppearanceDeps {
   discussPrompt: { get(): unknown; set(next: string): void }
   /** The session gist was turned on or off: start or cancel runs, remove the gists (SessionGist.settingChanged). */
   sessionGistChanged(): void
+  /** `app.json` › `statusLineUsage`, as stored (unvalidated). */
+  statusLineUsage: { get(): unknown; set(next: boolean): void }
+  /**
+   * The status line usage report was turned on or off: rewrite hooks.json with or without its
+   * `statusLine`. A `claude` reads that file at its start, so the change reaches new tabs (and
+   * restarted ones); running tabs keep what they started with, and main drops their reports while off.
+   */
+  statusLineUsageChanged(): void
   /** `app.json` › `notificationSounds`, as stored (unvalidated). Read at each chime, so it needs no event. */
   notificationSounds: { get(): unknown; set(next: boolean): void }
   /**
@@ -150,6 +159,14 @@ export function sessionGistOf(stored: unknown): boolean {
 }
 
 /**
+ * The stored `statusLineUsage`, default applied: only an explicit `false` turns it off. On costs
+ * nothing the person sees (their own status line still runs, unchanged) and spends no usage.
+ */
+export function statusLineUsageOf(stored: unknown): boolean {
+  return stored !== false
+}
+
+/**
  * The stored `notificationSounds`, default applied: only an explicit `false` turns it off. A plugin
  * asks for the sound per notification (a reminder), so on is what the plugin author expects.
  */
@@ -185,6 +202,7 @@ export class AppearanceService {
       tabExit: tabExitOf(this.deps.tabExit.get()),
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
+      statusLineUsage: statusLineUsageOf(this.deps.statusLineUsage.get()),
       discussPrompt: discussPromptOf(this.deps.discussPrompt.get()) ?? '',
       notificationSounds: notificationSoundsOf(this.deps.notificationSounds.get()),
       notificationSound: notificationSoundOf(this.deps.notificationSound.get()),
@@ -238,6 +256,14 @@ export class AppearanceService {
     const before = sessionGistOf(this.deps.sessionGist.get())
     this.deps.sessionGist.set(value)
     if (before !== value) this.deps.sessionGistChanged()
+  }
+
+  /** Turn the status line usage report on or off; hooks.json is rewritten when it changed. */
+  setStatusLineUsage(value: unknown): void {
+    if (typeof value !== 'boolean') throw new Error('give true or false')
+    const before = statusLineUsageOf(this.deps.statusLineUsage.get())
+    this.deps.statusLineUsage.set(value)
+    if (before !== value) this.deps.statusLineUsageChanged()
   }
 
   /** Save the global Discuss prompt, checked strictly (text within the cap); nothing is stored on a refusal. */
