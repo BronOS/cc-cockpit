@@ -49,19 +49,22 @@ export class RateLimitsStore {
    * A tab reported its windows. `updatedAt` is main's clock at arrival, never a time the CLI sent:
    * reports reach main in the order the status lines ran (the server serves them as they come), so
    * the newest is the last one. A window the report lacks keeps its last value (a tab of an older
-   * Claude Code that sends only the 5-hour window does not blank the 7-day one); a report with no
-   * window at all changes nothing.
+   * Claude Code that sends only the 5-hour window does not blank the 7-day one), unless its reset
+   * has passed: Claude Code stops sending a window then, and its old percent is no longer true. A
+   * report with no window at all changes nothing (readers skip an expired window themselves).
    */
   report(windows: { fiveHour?: RateLimitWindow; sevenDay?: RateLimitWindow }): void {
     if (!windows.fiveHour && !windows.sevenDay) return
     const prev = this.latest
-    const fiveHour = windows.fiveHour ?? prev?.fiveHour
-    const sevenDay = windows.sevenDay ?? prev?.sevenDay
+    const now = this.now()
+    const kept = (w: RateLimitWindow | undefined): RateLimitWindow | undefined => (w && w.resetsAt > now ? w : undefined)
+    const fiveHour = windows.fiveHour ?? kept(prev?.fiveHour)
+    const sevenDay = windows.sevenDay ?? kept(prev?.sevenDay)
     const next: RateLimits = {
       ...(fiveHour ? { fiveHour: { ...fiveHour } } : {}),
       ...(sevenDay ? { sevenDay: { ...sevenDay } } : {}),
       // Never back in time, even when the system clock is set back: `updatedAt` only says "seen at".
-      updatedAt: Math.max(this.now(), prev?.updatedAt ?? 0)
+      updatedAt: Math.max(now, prev?.updatedAt ?? 0)
     }
     this.latest = next
     if (!sameRateLimits(prev, next)) this.markDirty()

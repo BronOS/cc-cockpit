@@ -66,14 +66,21 @@ test('the meter: today\'s spend, the 5-hour window, the warning from the thresho
 test('rate limits: rows for the windows core reports, nothing for junk', () => {
   assert.equal(view.rateLimitsView(null, NOW, 80), null)
   assert.equal(view.rateLimitsView({ fiveHour: { usedPercent: 'x' } }, NOW, 80), null)
-  const r = view.rateLimitsView({ fiveHour: { usedPercent: 150, resetsAt: NOW - 1 }, sevenDay: { usedPercent: 81, resetsAt: NOW + 3 * 864e5 } }, NOW, 80)
+  const r = view.rateLimitsView({ fiveHour: { usedPercent: 150, resetsAt: NOW + 3600e3 }, sevenDay: { usedPercent: 81, resetsAt: NOW + 3 * 864e5 } }, NOW, 80)
   assert.deepEqual(
-    r.rows.map((x) => [x.key, x.percent, x.warn, x.resets]),
+    r.rows.map((x) => [x.key, x.percent, x.warn]),
     [
-      ['fiveHour', 100, true, 'resets now'],
-      ['sevenDay', 81, true, 'resets in 3 days']
+      ['fiveHour', 100, true],
+      ['sevenDay', 81, true]
     ]
   )
+  assert.equal(r.rows[1].resets, 'resets in 3 days')
+})
+
+test('rate limits: a window past its reset is stale and left out', () => {
+  const r = view.rateLimitsView({ fiveHour: { usedPercent: 40, resetsAt: NOW }, sevenDay: { usedPercent: 11, resetsAt: NOW + 864e5 * 4 } }, NOW, 80)
+  assert.deepEqual(r.rows.map((x) => x.key), ['sevenDay'])
+  assert.equal(view.rateLimitsView({ fiveHour: { usedPercent: 40, resetsAt: NOW - 1 } }, NOW, 80), null)
 })
 
 test('summarize skips malformed rows from the shared store', () => {

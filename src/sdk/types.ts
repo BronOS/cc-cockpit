@@ -437,8 +437,8 @@ export interface RateLimitWindow {
 /**
  * The person's Claude plan usage (`ctx.sessions.rateLimits`): account-wide, the latest any Claude tab
  * of any window reported through its status line. A window is absent when Claude Code did not report
- * it (an API-key login has none). The windows are not cleared when they reset: compare `resetsAt`
- * with the clock.
+ * it (an API-key login has none) or stopped reporting it. A window past its reset is dropped at the
+ * next report, not at the reset itself: compare `resetsAt` with the clock and skip an expired one.
  */
 export interface RateLimits {
   /** The 5-hour window (Claude Code's `rate_limits.five_hour`). */

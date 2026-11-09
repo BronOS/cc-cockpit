@@ -157,7 +157,7 @@
 
   /**
    * Core's rate limits (ctx.sessions.rateLimits) as rows, or null when there are none. A window with
-   * no number is left out; resetsAt is epoch ms.
+   * no number, or one whose reset has passed, is left out; resetsAt is epoch ms.
    */
   function rateLimitsView(rl, now, warnAt) {
     if (!rl || typeof rl !== 'object') return null
@@ -170,8 +170,13 @@
       if (!w || typeof w !== 'object') continue
       const percent = clampPercent(w.usedPercent)
       if (percent === undefined) continue
+      const hasReset = typeof w.resetsAt === 'number' && Number.isFinite(w.resetsAt)
+      // A window past its reset is a stale number: Claude Code stops sending a window once its
+      // resets_at passes and core keeps the last value it saw, so without this an idle evening would
+      // show this afternoon's 5-hour percent until the next status line.
+      if (hasReset && w.resetsAt <= now) continue
       const row = { key, label, short, percent: Math.round(percent), warn: percent >= warnAt }
-      if (typeof w.resetsAt === 'number' && Number.isFinite(w.resetsAt)) row.resets = resetText(w.resetsAt, now)
+      if (hasReset) row.resets = resetText(w.resetsAt, now)
       rows.push(row)
     }
     if (rows.length === 0) return null

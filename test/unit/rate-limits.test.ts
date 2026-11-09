@@ -159,6 +159,14 @@ describe('RateLimitsStore', () => {
     expect(s.get()).toEqual(before)
   })
 
+  it('drops a kept window once its reset has passed', () => {
+    const s = store()
+    s.report({ fiveHour: { usedPercent: 40, resetsAt: now + 1000 }, sevenDay: { usedPercent: 11, resetsAt: MS } })
+    now += 1000
+    s.report({ sevenDay: { usedPercent: 12, resetsAt: MS } })
+    expect(s.get()).toEqual({ sevenDay: { usedPercent: 12, resetsAt: MS }, updatedAt: now })
+  })
+
   it('never moves updatedAt back when the clock is set back', () => {
     const s = store()
     s.report({ fiveHour: five(10) })

@@ -255,7 +255,8 @@ with full Node access.
   `{ usedPercent, resetsAt }` (`usedPercent` 0-100, `resetsAt` and `updatedAt` epoch milliseconds), the
   latest any Claude tab's status line reported; a window is absent when Claude Code did not report it (an
   API-key login has none). Resolves `null` before the first report, or with the setting off since the
-  app started. Windows are not cleared when they reset: compare `resetsAt` with the clock.
+  app started. A window past its reset is dropped at the next report, not at the reset: compare
+  `resetsAt` with the clock and skip an expired one.
   `ctx.sessions.onRateLimits(listener)` hears it again when a window's numbers change (at most once per
   2 s; returns a disposer). An older app has neither: check `typeof ctx.sessions.rateLimits === 'function'`.
 - `ctx.sessions.list({ scope: 'all' })` and `onChange(listener, { scope: 'all' })`: every window's
