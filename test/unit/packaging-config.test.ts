@@ -25,7 +25,7 @@ describe('electron-builder.yml', () => {
     expect(yml).toMatch(/^extraResources:$/m)
     expect(yml).toMatch(/^ {2}- from: plugins\/browser$/m)
     expect(yml).toMatch(/^ {4}to: plugins\/browser$/m)
-    for (const name of ['reviewer', 'editor', 'files', 'sessions']) {
+    for (const name of ['reviewer', 'editor', 'files', 'sessions', 'usage']) {
       expect(yml).toMatch(new RegExp(`^ {2}- from: plugins/${name}$`, 'm'))
       expect(yml).toMatch(new RegExp(`^ {4}to: plugins/${name}$`, 'm'))
     }
@@ -39,9 +39,13 @@ describe('electron-builder.yml', () => {
     expect(files).toMatch(/^ {6}- icons\/\*\*$/m)
     expect(files).not.toMatch(/src|test|docs|FRICTION/)
     // The sessions plugin: its panel, its top-bar slot page and its icon; never its tests.
-    const sessions = yml.slice(yml.indexOf('- from: plugins/sessions'), yml.indexOf('# The bundled terminal fonts'))
+    const sessions = yml.slice(yml.indexOf('- from: plugins/sessions'), yml.indexOf('- from: plugins/usage'))
     for (const dir of ['dist', 'panels', 'slots', 'icons']) expect(sessions).toMatch(new RegExp(`^ {6}- ${dir}/\\*\\*$`, 'm'))
     expect(sessions).not.toMatch(/src|test|docs|FRICTION/)
+    // The usage plugin: the same parts (panel, top-bar slot page, icon); never its tests or fixtures.
+    const usage = yml.slice(yml.indexOf('- from: plugins/usage'), yml.indexOf('# The bundled terminal fonts'))
+    for (const dir of ['dist', 'panels', 'slots', 'icons']) expect(usage).toMatch(new RegExp(`^ {6}- ${dir}/\\*\\*$`, 'm'))
+    expect(usage).not.toMatch(/src|test|docs|FRICTION/)
   })
 
   it('points mac and Linux at the rendered app icon, and the files exist', () => {

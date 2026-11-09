@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Usage meter</title>
+    <script src="/__sdk/panel.js"></script>
+    <script src="/dist/lib/meter-width.js"></script>
+    <script src="meter.js" defer></script>
+    <style>
+      /* The app's top bar: transparent so the bar (and its project tint) shows through, the frame as
+         high as the bar and as wide as #row reports (meter.js). #row is laid out at its own width
+         (max-content); measuring the body would only echo the frame's width back. Empty until the
+         first aggregate arrives, so nothing takes room before there is something to show. */
+      html, body { height: 100%; margin: 0; background: transparent; overflow: hidden; }
+      #box { height: 100%; display: flex; align-items: center; }
+      #row { flex: none; width: max-content; display: flex; align-items: center; padding: 0 4px; }
+      #row:empty { padding: 0; }
+      .meter { flex: none; display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; font-size: var(--cc-text-s); color: var(--cc-fg-muted); background: none; border: 1px solid transparent; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .meter:hover { border-color: var(--cc-border-strong); color: var(--cc-fg); }
+      .cost { color: var(--cc-fg); font-weight: 500; }
+      .five { display: inline-flex; align-items: center; gap: 5px; }
+      .bar { display: block; width: 34px; height: 4px; border-radius: 2px; background: var(--cc-surface-3); overflow: hidden; }
+      .bar > span { display: block; height: 100%; background: var(--cc-fg-subtle); }
+      /* At the warn setting's share of the 5-hour window: the warning colour, on the text and the bar. */
+      .five[data-warn] { color: var(--cc-status-needs-permission); font-weight: 600; }
+      .five[data-warn] .bar > span { background: var(--cc-status-needs-permission); }
+    </style>
+  </head>
+  <body>
+    <div id="box"><div id="row"></div></div>
+  </body>
+</html>

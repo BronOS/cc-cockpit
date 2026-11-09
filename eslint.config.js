@@ -62,5 +62,11 @@ module.exports = tseslint.config(
     // plugin's own helpers (dist/lib/view.js, and the strip's dist/lib/strip-width.js), loaded first by each page.
     files: ['plugins/sessions/panels/**/*.js', 'plugins/sessions/slots/**/*.js'],
     languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly', ccSessionsView: 'readonly', ccStripWidth: 'readonly' }, sourceType: 'script' }
+  },
+  {
+    // The usage plugin's panel and meter slot pages: the same, with its own helpers (dist/lib/view.js,
+    // and the meter's dist/lib/meter-width.js).
+    files: ['plugins/usage/panels/**/*.js', 'plugins/usage/slots/**/*.js'],
+    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly', ccUsageView: 'readonly', ccMeterWidth: 'readonly' }, sourceType: 'script' }
   }
 )

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Usage</title>
+    <!-- CSP: scripts only from this plugin's own files. view.js is the shared pure part (sums,
+         formats, rate-limit rows), usage.js draws. -->
+    <script src="/__sdk/panel.js"></script>
+    <script src="/dist/lib/view.js"></script>
+    <script src="usage.js" defer></script>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; overflow: auto; background: var(--cc-bg); color: var(--cc-fg); }
+      main { padding: var(--cc-space-3); display: flex; flex-direction: column; gap: var(--cc-space-3); }
+      .cc-tabs { align-self: flex-start; }
+      /* The range's total: the amount large, its label and the token split under it. */
+      .total { display: flex; flex-direction: column; gap: var(--cc-space-2); }
+      .amount { display: flex; align-items: baseline; gap: var(--cc-space-2); flex-wrap: wrap; }
+      .amount strong { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .tokens { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: var(--cc-space-2) var(--cc-space-3); margin: 0; }
+      .tokens div { display: flex; flex-direction: column; min-width: 0; }
+      .tokens dt { font-size: var(--cc-text-s); color: var(--cc-fg-muted); }
+      .tokens dd { margin: 0; font-variant-numeric: tabular-nums; }
+      .note { font-size: var(--cc-text-s); }
+      /* Rows: name and meta on the left, the cost on the right. */
+      .cc-row .cost { flex: none; margin-left: auto; padding-left: var(--cc-space-2); font-variant-numeric: tabular-nums; }
+      .cc-row-main { min-width: 0; }
+      .cc-row-title, .cc-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      li.cc-row[data-open] { cursor: pointer; }
+      .open-tag { margin-left: var(--cc-space-2); }
+      /* A rate-limit window: label, used share as a bar, reset time. No component draws a meter. */
+      .limit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px var(--cc-space-2); align-items: center; padding: var(--cc-space-1) 0; }
+      .limit .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--cc-surface-3); overflow: hidden; }
+      .limit .bar > span { display: block; height: 100%; background: var(--cc-status-working); }
+      .limit[data-warn] .bar > span { background: var(--cc-status-needs-permission); }
+      .limit[data-warn] .pct { color: var(--cc-status-needs-permission); font-weight: 600; }
+      .pct { font-variant-numeric: tabular-nums; }
+      .foot { font-size: var(--cc-text-s); line-height: 1.5; }
+      #content[hidden], #empty[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="empty" class="cc-empty"><span class="cc-spinner"></span><p>Reading Claude Code's transcripts…</p></div>
+      <div id="content" hidden>
+        <div id="tabs" class="cc-tabs" role="tablist" aria-label="Period"></div>
+        <section class="cc-card total" aria-label="Total">
+          <div class="amount"><strong id="cost"></strong><span class="cc-muted">API-equivalent</span></div>
+          <dl id="tokens" class="tokens"></dl>
+          <div id="unpriced" class="cc-muted note" hidden></div>
+        </section>
+        <section aria-labelledby="limits-h">
+          <div class="cc-group"><div id="limits-h" class="cc-group-title">Rate limits</div><div id="limits"></div></div>
+        </section>
+        <section aria-labelledby="projects-h">
+          <div class="cc-group"><div id="projects-h" class="cc-group-title">By project</div><ul id="projects" class="cc-list cc-compact"></ul></div>
+        </section>
+        <section aria-labelledby="models-h">
+          <div class="cc-group"><div id="models-h" class="cc-group-title">By model</div><ul id="models" class="cc-list cc-compact"></ul></div>
+        </section>
+        <section aria-labelledby="sessions-h">
+          <div class="cc-group"><div id="sessions-h" class="cc-group-title">Top sessions</div><ul id="sessions" class="cc-list cc-compact"></ul></div>
+        </section>
+        <p id="foot" class="cc-muted foot"></p>
+      </div>
+    </main>
+  </body>
+</html>

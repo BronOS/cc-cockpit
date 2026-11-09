@@ -1,0 +1,59 @@
+{
+  "id": "cockpit.usage",
+  "name": "Usage",
+  "version": "0.1.0",
+  "api": 1,
+  "main": "dist/host.js",
+  "description": "Claude Code spend (API-equivalent) and tokens from the transcripts, and the rate-limit windows.",
+  "contributes": {
+    "panels": [
+      {
+        "id": "usage",
+        "title": "Usage",
+        "entry": "panels/usage.html",
+        "icon": "icons/usage.svg",
+        "defaultZone": "right"
+      }
+    ],
+    "slots": [
+      {
+        "type": "usage-meter",
+        "entry": "slots/meter.html",
+        "title": "Today's spend and the 5-hour window"
+      }
+    ],
+    "settings": {
+      "app": {
+        "type": "object",
+        "properties": {
+          "warnAt": {
+            "type": "integer",
+            "title": "Warn at (% of the 5-hour window)",
+            "description": "The top bar's meter turns to the warning colour from this share of the 5-hour rate-limit window.",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 80
+          },
+          "projects": {
+            "type": "string",
+            "title": "Projects counted",
+            "description": "All projects, or in each window only the work done in that window's project folder.",
+            "oneOf": [
+              { "const": "all", "title": "All projects" },
+              { "const": "project", "title": "This project only" }
+            ],
+            "default": "all"
+          },
+          "rescanSeconds": {
+            "type": "integer",
+            "title": "Read new transcript lines every (seconds)",
+            "description": "Also read when a Claude turn in this window ends, and on the panel's refresh.",
+            "minimum": 15,
+            "maximum": 3600,
+            "default": 60
+          }
+        }
+      }
+    }
+  }
+}

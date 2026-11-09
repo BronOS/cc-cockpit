@@ -25,7 +25,10 @@ export const BUNDLED_PLUGINS: readonly BundledPluginSpec[] = [
   { id: 'cockpit.files', dir: 'files', enabledByDefault: true },
   // The Claude status view (design-next §4.2): this window's sessions panel and the top bar's
   // sessions-strip slot, on the public API like the others.
-  { id: 'cockpit.sessions', dir: 'sessions', enabledByDefault: true }
+  { id: 'cockpit.sessions', dir: 'sessions', enabledByDefault: true },
+  // Spend and tokens from Claude Code's transcripts, and the rate-limit windows: the Usage panel and
+  // the top bar's usage-meter slot (plugins/usage/README.md).
+  { id: 'cockpit.usage', dir: 'usage', enabledByDefault: true }
 ]
 
 /**
