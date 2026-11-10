@@ -447,18 +447,18 @@ remote client, a phone layout, headless server mode (design §9, §10).
   (inline overlay content), `src/main/web/gateway.ts`, `src/main/web/devices.ts` (tokens die on revoke)
 - Create: `test/unit/web-plugin-pages.test.ts` (port spike tests)
 
-- [ ] serve `/p/<token>/<pluginId>/<path>`; one token per (device, plugin), only plugins enabled in the view's project;
+- [x] serve `/p/<token>/<pluginId>/<path>`; one token per (device, plugin), only plugins enabled in the view's project;
       reuse the resolver (containment, realpath, verified reads, cap)
-- [ ] the SDK at `/p/<token>/<pluginId>/__sdk/panel.js`, so both `/__sdk/panel.js` (rewritten) and the relative
+- [x] the SDK at `/p/<token>/<pluginId>/__sdk/panel.js`, so both `/__sdk/panel.js` (rewritten) and the relative
       `./__sdk/panel.js` resolve there; `cc-plugin://<id>/__sdk/panel.js` keeps working on the desktop
-- [ ] headers: the plugin CSP rewritten for the path, CSP `sandbox allow-scripts`, `frame-ancestors <external origin>`,
+- [x] headers: the plugin CSP rewritten for the path, CSP `sandbox allow-scripts`, `frame-ancestors <external origin>`,
       `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `Access-Control-Allow-Origin: null`; never redirect
-- [ ] rewrite root-absolute `src`/`href` in served HTML to the prefixed path; map the shell's plugin images
-- [ ] inline overlays (`cc-overlay://` content) served from memory under a path valid while the overlay is open, reloads
+- [x] rewrite root-absolute `src`/`href` in served HTML to the prefixed path; map the shell's plugin images
+- [x] inline overlays (`cc-overlay://` content) served from memory under a path valid while the overlay is open, reloads
       included
-- [ ] write tests: another plugin's path under a token, traversal, unknown and revoked tokens, headers, HTML rewriting,
+- [x] write tests: another plugin's path under a token, traversal, unknown and revoked tokens, headers, HTML rewriting,
       the SDK at both URLs (`cc-plugin://` and HTTP), a disabled plugin refused, an inline overlay path dies on close
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 21: Relative plugin URLs: guide, check, bundled plugins [model: sonnet]
 

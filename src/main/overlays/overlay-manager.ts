@@ -313,6 +313,19 @@ export const OVERLAY_SCHEME = 'cc-overlay'
 export const OVERLAY_PAGE_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
 
+/**
+ * The headers an inline overlay page is served with (`cc-overlay://` here, overlay-protocol.ts;
+ * over HTTP, web/plugin-pages.ts adds the sandbox and framing rules a browser needs).
+ */
+export function overlayPageHeaders(): Record<string, string> {
+  return {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': OVERLAY_PAGE_CSP,
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store'
+  }
+}
+
 interface Overlay {
   id: string
   windowId: number
@@ -593,6 +606,16 @@ export class OverlayManager {
     }
     if (parsed.protocol !== `${OVERLAY_SCHEME}:` || parsed.pathname !== '/') return undefined
     return this.byId.get(parsed.hostname)?.html
+  }
+
+  /**
+   * An open html overlay's page by its id, with the window it belongs to, for the web gateway
+   * (web/plugin-pages.ts `/o/…`), which checks the window against the asking device's views. A
+   * URL overlay or a plugin page (`src` set, no `html`) has none.
+   */
+  inlinePage(overlayId: string): { windowId: number; html: string } | undefined {
+    const overlay = this.byId.get(overlayId)
+    return overlay?.html === undefined ? undefined : { windowId: overlay.windowId, html: overlay.html }
   }
 
   /** The kind of the window's top overlay, if it has any. */

@@ -20,6 +20,49 @@ export const SIGN_IN_LINK_PATH = '/auth/link'
 /** The open project windows a signed-in browser may join (the web project picker, picker.tsx). */
 export const PROJECTS_PATH = '/api/projects'
 
+/**
+ * Plugin files over HTTP (design-web.md §5.5): `/p/<token>/<pluginId>/<path>`, one token per
+ * (device, plugin), served by main/web/plugin-pages.ts. The token is the only credential: a
+ * sandboxed page's requests are cross-site and carry no device cookie.
+ */
+export const PLUGIN_PAGES_PATH = '/p/'
+/** Inline overlay pages (`cc-overlay://<id>/` on the desktop): `/o/<token>/<overlayId>/`, while the overlay is open. */
+export const OVERLAY_PAGES_PATH = '/o/'
+
+/**
+ * Where this view's browser loads plugin files and inline overlays (`ready.paths`, and a `paths`
+ * frame when the installed plugins change): the prefix of each installed plugin
+ * (`/p/<token>/<pluginId>/`) and of the device's inline overlays (`/o/<token>/`). Held by the web
+ * shell only; a plugin page sees nothing but its own URL, so it learns only its own plugin's token.
+ */
+export interface WebPagePaths {
+  plugins: Record<string, string>
+  overlays: string
+}
+
+/** A `cc-overlay://` host is a UUID minted by main (overlay-manager.ts). */
+const OVERLAY_HOST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * The HTTP path a desktop page URL is served at for this view: `cc-plugin://<id>/<rest>` under the
+ * plugin's prefix (rest kept as main encoded it, query and fragment included), `cc-overlay://<id>/`
+ * under the overlay prefix. Undefined for anything else, a plugin without a prefix, or no paths
+ * (the image falls back, the frame stays empty). String operations, not `URL`: browsers disagree on
+ * how a non-special scheme's host parses.
+ */
+export function webPageUrl(src: string, paths: WebPagePaths | undefined): string | undefined {
+  if (!paths) return undefined
+  const plugin = /^cc-plugin:\/\/([^/?#]+)\/(.*)$/s.exec(src)
+  if (plugin) {
+    const [, id = '', rest = ''] = plugin
+    if (!Object.hasOwn(paths.plugins, id)) return undefined
+    return `${paths.plugins[id]}${rest}`
+  }
+  const overlay = /^cc-overlay:\/\/([^/?#]+)\/$/.exec(src)
+  if (overlay && OVERLAY_HOST.test(overlay[1] ?? '') && paths.overlays !== '') return `${paths.overlays}${overlay[1]}/`
+  return undefined
+}
+
 /** The SESSION_PATH answer: the auth mode, and this browser's device (null: not signed in). */
 export interface WebSessionReply {
   mode: WebAccessMode
@@ -85,7 +128,10 @@ export type HelloFrame = { t: 'hello'; v: number; project: string }
 export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
 export type ClientFrame = HelloFrame | InvokeFrame
 
-export type ReadyFrame = { t: 'ready'; v: number; view: ViewId; snapshot: WebSnapshot }
+/** `paths`: where this view loads plugin files and inline overlays (WebPagePaths). */
+export type ReadyFrame = { t: 'ready'; v: number; view: ViewId; snapshot: WebSnapshot; paths: WebPagePaths }
+/** The view's plugin paths changed (a plugin installed or removed); replaces the last `paths`. */
+export type PathsFrame = { t: 'paths'; paths: WebPagePaths }
 export type ResultFrame = { t: 'result'; id: number; ok: true; v: unknown } | { t: 'result'; id: number; ok: false; err: string }
 export type EventFrame = { t: 'event'; ch: string; p: unknown }
 
@@ -117,4 +163,4 @@ export type TermDataFrame =
   | { t: 'term.data'; tabId: string; seq: number; data: string }
   | { t: 'term.data'; tabId: string; seq: number; cols: number; rows: number }
 
-export type ServerFrame = ReadyFrame | ResultFrame | EventFrame | TermSnapshotFrame | TermDataFrame
+export type ServerFrame = ReadyFrame | PathsFrame | ResultFrame | EventFrame | TermSnapshotFrame | TermDataFrame

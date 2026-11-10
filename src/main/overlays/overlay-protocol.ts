@@ -15,13 +15,17 @@
 // resources: any other path is a 404), the CSP is OVERLAY_PAGE_CSP (the plan's, plus no fonts or
 // forms), and the mapping goes when the overlay closes. The page answers through the MessagePort.
 //
+// A remote view (web access, design-web.md §5.5) gets the same page over HTTP instead, from
+// web/plugin-pages.ts under `/o/<token>/<id>/` (OverlayManager.inlinePage, overlayPageHeaders plus
+// the sandbox a browser needs); this handler stays the desktop's.
+//
 // This file is also the Electron adapter of the plugin scheme (`cc-plugin://`, Task 28): both
 // schemes must be registered in the same call (below), and the plugin handler is as thin as this
 // one (what it serves is plugins/plugin-protocol.ts).
 import { protocol } from 'electron'
 import { PLUGIN_SCHEME } from '../plugins/plugin-protocol'
 import { PREVIEW_SCHEME } from '../webview/preview-protocol'
-import { OVERLAY_PAGE_CSP, OVERLAY_SCHEME } from './overlay-manager'
+import { OVERLAY_SCHEME, overlayPageHeaders } from './overlay-manager'
 
 /**
  * Must run before `ready`. Electron takes ONE `registerSchemesAsPrivileged` call per app (a later
@@ -59,13 +63,6 @@ export function handleOverlayScheme(pageHtml: (url: string) => string | undefine
   protocol.handle(OVERLAY_SCHEME, (request) => {
     const html = request.method === 'GET' ? pageHtml(request.url) : undefined
     if (html === undefined) return new Response('not found', { status: 404 })
-    return new Response(html, {
-      headers: {
-        'content-type': 'text/html; charset=utf-8',
-        'content-security-policy': OVERLAY_PAGE_CSP,
-        'x-content-type-options': 'nosniff',
-        'cache-control': 'no-store'
-      }
-    })
+    return new Response(html, { headers: overlayPageHeaders() })
   })
 }

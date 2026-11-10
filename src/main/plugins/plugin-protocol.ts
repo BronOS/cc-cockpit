@@ -26,6 +26,10 @@
 // descriptor (verified-read.ts), never by name again, so a file or folder swapped for a symlink
 // after those checks does not get a file outside the folder served.
 //
+// Remote views (web access) get the same files over HTTP: web/plugin-pages.ts feeds this resolver
+// (`servePluginRequest`) a `cc-plugin://` URL built from `/p/<token>/<pluginId>/<path>` and rewrites
+// `pluginCsp` for the path, so containment, realpath, verified reads and the size cap are this file's.
+//
 // Which plugins: Electron's protocol handler is not told which window (frame) asks, so it cannot
 // check the asking window's project. The caller's lookup serves only plugins that are installed,
 // valid and enabled in at least one open project window (index.ts); a url overlay cannot ask at

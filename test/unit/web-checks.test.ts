@@ -200,7 +200,7 @@ describe('secretMatches / webShellCsp', () => {
     expect(csp).toContain("default-src 'self'")
     expect(csp).toContain("connect-src 'self'")
     expect(csp).toContain("frame-ancestors 'none'")
-    expect(csp).toContain('frame-src http://127.0.0.1:7777/p/ https://box.ts.net/p/;')
+    expect(csp).toContain('frame-src http://127.0.0.1:7777/p/ http://127.0.0.1:7777/o/ https://box.ts.net/p/ https://box.ts.net/o/;')
     expect(webShellCsp([])).toContain("frame-src 'none'")
   })
 })

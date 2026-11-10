@@ -154,6 +154,7 @@ import { openProjectEntries, WebConnections, windowSnapshot } from './web/connec
 import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
 import { WebGateway } from './web/gateway'
+import { PluginPages } from './web/plugin-pages'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
@@ -380,6 +381,8 @@ function start(): void {
     onChange: () => {
       devWatch.sync()
       claudePluginsBuilds.changed()
+      // Remote views get a prefix per installed plugin (web/plugin-pages.ts); a new one needs its own.
+      webConnections.pathsChanged()
     }
   })
   /**
@@ -1277,10 +1280,28 @@ function start(): void {
     notify: (text) => showNotification(text, 'cc-cockpit web access')
   })
   const webAuth = new WebAuth({ devices: webDevices, secrets: secretStore, accessLog: webAccessLog })
+  // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
+  // plugin), served only while the device has a view bound to a project the plugin is enabled in
+  // (the same folder rule as `cc-plugin:`, servedPluginDir below, narrowed to that project) and an
+  // overlay only in a window the device has a view of. `webConnections` exists before any request.
+  const pluginPages: PluginPages = new PluginPages({
+    pluginIds: () => plugins.list().map((p) => p.id),
+    deviceViews: (deviceId) => webConnections.deviceViews(deviceId),
+    pluginDir: (projectId, pluginId) => {
+      if (windows.windowIdOf(projectId) === undefined || !enabledIds(projectId).includes(pluginId)) return undefined
+      const plugin = plugins.get(pluginId)
+      return plugin?.manifest && plugin.state.ok && plugin.dir !== '' ? plugin.dir : undefined
+    },
+    overlayPage: (overlayId) => overlays.inlinePage(overlayId),
+    // out/sdk/panel.js, as the cc-plugin: handler serves it.
+    sdkFile: join(__dirname, '../sdk/panel.js'),
+    log: (m) => console.warn(m)
+  })
   const webGateway = new WebGateway({
     log: (m) => console.warn(m),
     auth: webAuth,
     accessLog: webAccessLog,
+    pages: pluginPages,
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
     shellDir: join(__dirname, '../renderer'),
     // The web picker lists what a remote view can bind to: projects with a window open now.
@@ -2075,7 +2096,7 @@ function start(): void {
   // Remote views (design-web.md §2.1, §3): each socket the gateway accepted binds to one open
   // project window at `hello` and reaches the same router handlers. Installed here, once every
   // handler is registered; the gateway refuses upgrades until then.
-  const webConnections = new WebConnections({
+  const webConnections: WebConnections = new WebConnections({
     dispatch: (caller, channel, payload) => router.dispatch(caller, channel, payload),
     addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
@@ -2083,6 +2104,7 @@ function start(): void {
     snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    pagePaths: (deviceId) => pluginPages.paths(deviceId),
     // A browser left: the tabs it sized fall back to a remaining visible view (terminal-sizes.ts).
     // Its slot instances and the settings page it held end too (panel-ports.ts viewGone).
     // The project's active tab goes back to a remaining view's selection (view-selections.ts).

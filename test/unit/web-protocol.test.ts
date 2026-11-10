@@ -34,6 +34,7 @@ import {
   PROTOCOL_VERSION
 } from '../../src/main/web/protocol'
 import { webAccessOf } from '../../src/main/web/settings'
+import type { WebPagePaths } from '../../src/shared/web-protocol'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const DEVICE: WebDevice = { id: 'dev1', name: 'phone', createdAt: 0, lastSeenAt: 0, mode: 'link' }
@@ -151,6 +152,7 @@ function setup(
     mirror?: TerminalSource
     hasTab?: (projectId: string, tabId: string) => boolean
     viewGone?: (viewId: string) => void
+    pagePaths?: (deviceId: string) => WebPagePaths
   } = {}
 ) {
   const windows = new Map<string, number>([
@@ -183,12 +185,13 @@ function setup(
     mirror: over.mirror ?? { join: () => undefined },
     hasTab: over.hasTab ?? (() => false),
     ...(over.viewGone ? { viewGone: over.viewGone } : {}),
+    ...(over.pagePaths ? { pagePaths: over.pagePaths } : {}),
     log: (m) => logs.push(m),
     helloTimeoutMs: 50
   })
-  const connect = (project?: string): FakeWs => {
+  const connect = (project?: string, device: WebDevice = DEVICE): FakeWs => {
     const ws = new FakeWs()
-    conns.accept(ws, DEVICE)
+    conns.accept(ws, device)
     if (project !== undefined) ws.feed({ t: 'hello', v: PROTOCOL_VERSION, project })
     return ws
   }
@@ -204,7 +207,9 @@ describe('handshake', () => {
         t: 'ready',
         v: PROTOCOL_VERSION,
         view: 'web:1',
-        snapshot: { tabs: [{ id: 'p1-t1' }], layout: LAYOUT, overlays: [{ id: 'o1' }] }
+        snapshot: { tabs: [{ id: 'p1-t1' }], layout: LAYOUT, overlays: [{ id: 'o1' }] },
+        // No pagePaths source: no paths (plugin frames stay empty), never a failed handshake.
+        paths: { plugins: {}, overlays: '' }
       }
     ])
     expect(views.viewsOf(1)).toEqual(['desktop:1', 'web:1'])
@@ -292,6 +297,60 @@ describe('handshake', () => {
 // The incident behind SnapshotSources: the join read overlays with OverlayManager.list, the
 // desktop's re-attach call, which marked the desktop's html pages not ready (posts then waited in
 // the outbox for good), brought their loader back and reset its terminal overlays' flow.
+describe('plugin paths (Task 20)', () => {
+  const pathsOf = (n: number) => (deviceId: string): WebPagePaths => ({
+    plugins: Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}.plugin`, `/p/${deviceId}-${i}/p${i}.plugin/`])),
+    overlays: `/o/${deviceId}/`
+  })
+
+  it("ready carries the device's paths; pathsChanged sends a paths frame only when they changed, only to bound views", () => {
+    let n = 1
+    const { connect, conns } = setup({ pagePaths: (id) => pathsOf(n)(id) })
+    const ws = connect('p1')
+    const waiting = connect()
+    expect(ws.frames('ready')[0]!.paths).toEqual(pathsOf(1)('dev1'))
+    conns.pathsChanged()
+    expect(ws.frames('paths')).toEqual([])
+    n = 2
+    conns.pathsChanged()
+    expect(ws.frames('paths')).toEqual([{ t: 'paths', paths: pathsOf(2)('dev1') }])
+    // A socket still waiting for hello gets nothing before its ready.
+    expect(waiting.sent).toEqual([])
+    conns.pathsChanged()
+    expect(ws.frames('paths')).toHaveLength(1)
+  })
+
+  it('a failing paths source costs the view its paths, never the connection', () => {
+    const { connect, logs } = setup({
+      pagePaths: () => {
+        throw new Error('boom')
+      }
+    })
+    const ws = connect('p1')
+    expect(ws.frames('ready')[0]!.paths).toEqual({ plugins: {}, overlays: '' })
+    expect(ws.closedWith).toBeUndefined()
+    expect(logs.some((l) => l.includes('plugin paths failed: boom'))).toBe(true)
+  })
+
+  it("deviceViews lists the windows a device's bound views show, none once they are gone", () => {
+    const { connect, conns } = setup()
+    const other: WebDevice = { ...DEVICE, id: 'dev2', name: 'tablet' }
+    const a = connect('p1')
+    connect('p2')
+    connect(undefined)
+    connect('p2', other)
+    expect(conns.deviceViews('dev1')).toEqual([
+      { windowId: 1, projectId: 'p1' },
+      { windowId: 2, projectId: 'p2' }
+    ])
+    expect(conns.deviceViews('dev2')).toEqual([{ windowId: 2, projectId: 'p2' }])
+    expect(conns.deviceViews('dev3')).toEqual([])
+    a.drop()
+    a.close()
+    expect(conns.deviceViews('dev1')).toEqual([{ windowId: 2, projectId: 'p2' }])
+  })
+})
+
 describe('windowSnapshot leaves the desktop as it was', () => {
   it('html pages stay ready (a post is delivered, no loader) and a paused terminal stays paused', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ccc-web-snap-'))

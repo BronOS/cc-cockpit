@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ownPreviewUrl, previewInitial, type PreviewSource } from './plugin-preview'
+import { shellPageUrl } from '../web/page-paths'
 
 /**
  * A plugin card's preview image (design-next §6.1), or a neutral placeholder with the name's initial.
@@ -69,7 +70,8 @@ function LazyPreview(props: { name: string; source: PreviewSource }): React.JSX.
     }
   }, [kind, indexUrl, id, visible])
 
-  const src = kind === 'own' ? (visible ? ownPreviewUrl(id) : null) : blobUrl
+  // The plugin's own file: its HTTP path in the web shell (page-paths.ts); none there means the placeholder.
+  const src = kind === 'own' ? (visible ? (shellPageUrl(ownPreviewUrl(id)) ?? null) : null) : blobUrl
   const shown = src !== null && !failed
   // One box for both states: the observer watches it until the card is first on screen.
   return (

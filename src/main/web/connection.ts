@@ -15,12 +15,17 @@
 // never as `tabs.data` events: those are the desktop's, numbered nowhere, and the pty no longer
 // waits for any view's ack.
 //
+// Plugin pages (Task 20, design-web.md §5.5): `ready` also carries where this view's browser loads
+// plugin files and inline overlays (WebPagePaths: a token per (device, plugin), plugin-pages.ts),
+// and a `paths` frame replaces them when the installed plugins change (`pathsChanged`). The
+// gateway serves a path only while its device has a view bound here (`deviceViews`).
+//
 // No `ws` import: the gateway hands in its socket as `WsLike`, tests pass a fake.
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
 import { remoteViewId, type ViewId } from '../../shared/views'
-import type { WebProjectEntry } from '../../shared/web-protocol'
+import type { WebPagePaths, WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
 import type { ViewSink } from '../views/view-registry'
@@ -77,6 +82,11 @@ export interface WebConnectionDeps {
   mirror: TerminalSource
   /** Whether `tabId` is one of the project's tabs now (TabManager's own table). */
   hasTab(projectId: string, tabId: string): boolean
+  /**
+   * Where the device's browser loads plugin files and inline overlays (PluginPages.paths). Absent:
+   * none (every plugin frame and image stays empty).
+   */
+  pagePaths?(deviceId: string): WebPagePaths
   /** The view is gone (TabManager.viewGone): the tabs it sized fall back to a remaining view. */
   viewGone?(viewId: ViewId): void
   log(message: string): void
@@ -133,6 +143,24 @@ export class WebConnections {
     return conn
   }
 
+  /**
+   * The windows and projects a device's bound views show now (plugin-pages.ts serves a device's
+   * paths only for these). A view still waiting for `hello`, or gone, shows nothing.
+   */
+  deviceViews(deviceId: string): ProjectContext[] {
+    const out: ProjectContext[] = []
+    for (const conn of this.open.values()) {
+      const bound = conn.deviceId === deviceId ? conn.binding() : undefined
+      if (bound) out.push(bound)
+    }
+    return out
+  }
+
+  /** The installed plugins changed: every bound view whose paths differ now gets a `paths` frame. */
+  pathsChanged(): void {
+    for (const conn of this.open.values()) conn.refreshPaths()
+  }
+
   /** Connections whose socket is still open (bound or still waiting for hello). */
   size(): number {
     return this.open.size
@@ -173,6 +201,8 @@ export class WebConnection {
    */
   private readonly failedTabs = new Set<string>()
   private readonly helloTimer: ReturnType<typeof setTimeout>
+  /** The paths last sent (JSON), so `refreshPaths` sends only a change. */
+  private sentPaths: string | undefined
 
   constructor(
     private readonly ws: WsLike,
@@ -184,6 +214,11 @@ export class WebConnection {
     this.helloTimer = setTimeout(() => this.close(CLOSE.noHello, 'no hello'), deps.helloTimeoutMs ?? HELLO_TIMEOUT_MS)
     ws.on('message', (data, isBinary) => this.message(data, isBinary))
     ws.on('close', () => this.gone())
+  }
+
+  /** The signed-in device's id (plugin-pages.ts tokens are per device). */
+  get deviceId(): string {
+    return this.device.id
   }
 
   /** The signed-in device's name (TabInfo.typedBy). */
@@ -259,7 +294,29 @@ export class WebConnection {
       }
     })
     this.deps.log(`web access: view ${this.viewId} (device ${this.device.id}) joined window ${windowId}`)
-    this.send({ t: 'ready', v: PROTOCOL_VERSION, view: this.viewId, snapshot })
+    const paths = this.pagePaths()
+    this.sentPaths = JSON.stringify(paths)
+    this.send({ t: 'ready', v: PROTOCOL_VERSION, view: this.viewId, snapshot, paths })
+  }
+
+  private pagePaths(): WebPagePaths {
+    try {
+      return this.deps.pagePaths?.(this.device.id) ?? { plugins: {}, overlays: '' }
+    } catch (err) {
+      // No paths only costs this view its plugin frames; never the connection.
+      this.deps.log(`web access: view ${this.viewId}: plugin paths failed: ${errorText(err)}`)
+      return { plugins: {}, overlays: '' }
+    }
+  }
+
+  /** Sends the view its paths again when they changed (WebConnections.pathsChanged). */
+  refreshPaths(): void {
+    if (this.closed || !this.caller) return
+    const paths = this.pagePaths()
+    const text = JSON.stringify(paths)
+    if (text === this.sentPaths) return
+    this.sentPaths = text
+    this.send({ t: 'paths', paths })
   }
 
   private invoke(caller: WebCaller, id: number, channel: string, payload: unknown): void {

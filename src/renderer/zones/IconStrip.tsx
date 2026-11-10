@@ -4,6 +4,7 @@ import { chordKeys, chordOf } from '../commands/keybindings'
 import type { PanelInfo } from '../../shared/ipc'
 import { ZONE_IDS, type PanelPlacement, type ZoneId } from '../../shared/layout'
 import { useShellLayer } from './use-shell-layer'
+import { shellPageUrl } from '../web/page-paths'
 
 const ZONE_NAMES: Record<ZoneId, string> = { left: 'Left', right: 'Right', bottom: 'Bottom' }
 
@@ -32,15 +33,22 @@ export function MaskIcon({
   /** The size rule; `.panel-icon-img` (the strip's 18px) by default. A panel header action passes its own. */
   className?: string
 }): React.JSX.Element {
+  // A `cc-plugin://` URL from main; in the web shell its HTTP path (page-paths.ts), and no path
+  // there is a failed load (the letter instead).
+  const shown = shellPageUrl(src)
   useEffect(() => {
+    if (shown === undefined) {
+      onFail(src)
+      return
+    }
     const probe = new Image()
     probe.onerror = () => onFail(src)
-    probe.src = src
+    probe.src = shown
     return () => {
       probe.onerror = null
     }
-  }, [src, onFail])
-  const url = `url(${JSON.stringify(src)})`
+  }, [src, shown, onFail])
+  const url = shown === undefined ? 'none' : `url(${JSON.stringify(shown)})`
   return (
     <span
       className={className}

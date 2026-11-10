@@ -289,7 +289,12 @@ CLI dialogs, panel headers and badges, slot frames.
   on every load).
 - **The shell's own plugin images** (`img-src … cc-plugin:` in `renderer/index.html`) map to the same paths.
 - **Inline overlays** (`cc-overlay://`) are served from memory under a path valid while the overlay is open (reloads
-  included).
+  included): `/o/<token>/<overlayId>/`, one overlay token per device, and only for an overlay in a window the device
+  has a view of.
+- **Who learns the paths.** Main sends the web shell a prefix per installed plugin and the overlay prefix
+  (`ready.paths`, and a `paths` frame when the installed plugins change); the shell maps the desktop's `cc-plugin://`
+  and `cc-overlay://` URLs through them (`renderer/web/page-paths.ts`). A path is served only while its device has an
+  open view bound to a project the plugin is enabled in (`main/web/plugin-pages.ts`).
 
 ### 5.6 Window lifetime
 

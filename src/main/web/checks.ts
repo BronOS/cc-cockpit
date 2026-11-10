@@ -16,6 +16,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { NetworkInterfaceInfo } from 'node:os'
 import { isLoopbackBind } from './settings'
+import { OVERLAY_PAGES_PATH, PLUGIN_PAGES_PATH } from '../../shared/web-protocol'
 
 export interface HostListInput {
   bind: string
@@ -104,14 +105,15 @@ export function secretMatches(given: unknown, secret: string): boolean {
 
 /**
  * The web shell's CSP (design-web.md §4.1): its own scripts and socket only, never framed, and
- * frames only from the plugin paths (`/p/…`, served with a CSP and sandbox of their own, §5.5).
+ * frames only from the plugin paths (`/p/…`, and inline overlays' `/o/…`, each served with a CSP
+ * and sandbox of their own, §5.5, plugin-pages.ts).
  * A path-limited source needs a full origin, so `frameOrigins` lists every origin the page may be
  * loaded under (the request's own and the external one). `style-src 'unsafe-inline'`: xterm's DOM
  * renderer writes `<style>` elements of its own. `connect-src 'self'` covers the page's own
  * ws:/wss: (CSP3).
  */
 export function webShellCsp(frameOrigins: readonly string[]): string {
-  const frames = [...new Set(frameOrigins)].map((o) => `${o}/p/`).join(' ')
+  const frames = [...new Set(frameOrigins)].flatMap((o) => [`${o}${PLUGIN_PAGES_PATH}`, `${o}${OVERLAY_PAGES_PATH}`]).join(' ')
   return [
     "default-src 'self'",
     "script-src 'self'",

@@ -10,6 +10,7 @@ import {
   createWebBridge,
   decodeServerJson,
   encodeClientFrame,
+  pagePathsOf,
   READY_TIMEOUT_MS,
   STABLE_MS,
   reconnectDelay,
@@ -684,5 +685,69 @@ describe('shape', () => {
       void anyApi(r.api).invoke(ch, {}).catch(() => undefined)
     }
     expect(s.frames().slice(1).every((f) => 't' in f && f.t === 'invoke')).toBe(true)
+  })
+})
+
+describe('plugin paths (Task 20)', () => {
+  const PATHS = { plugins: { 'a.plugin': '/p/T/a.plugin/' }, overlays: '/o/O/' }
+
+  function pathsRig(): { r: Rig; got: unknown[] } {
+    const got: unknown[] = []
+    const sockets: FakeSocket[] = []
+    const timers = new FakeTimers()
+    const bridge = createWebBridge({
+      url: 'ws://127.0.0.1:7330/ws',
+      project: 'p1',
+      timers,
+      onPagePaths: (p) => void got.push(p),
+      createSocket: (url) => {
+        const s = new FakeSocket(url)
+        sockets.push(s)
+        return s
+      }
+    })
+    bridges.push(bridge)
+    return { r: { bridge, api: bridge.api, sockets, timers, statuses: [], last: () => sockets[sockets.length - 1]! }, got }
+  }
+
+  it('takes the paths from ready, before the status says ready, and again from a paths frame', () => {
+    const { r, got } = pathsRig()
+    let atReady: unknown[] | undefined
+    r.bridge.onStatus((st) => {
+      if (st.state === 'ready') atReady = [...got]
+    })
+    const s = r.last()
+    s.open()
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: SNAPSHOT, paths: PATHS })
+    expect(atReady).toEqual([PATHS])
+    const next = { plugins: { ...PATHS.plugins, 'b.plugin': '/p/U/b.plugin/' }, overlays: '/o/O/' }
+    s.serverSend({ t: 'paths', paths: next })
+    expect(got).toEqual([PATHS, next])
+  })
+
+  it('a ready without paths, or malformed ones, gives no paths; only gateway paths are kept', () => {
+    const { r, got } = pathsRig()
+    const s = r.last()
+    s.open()
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: SNAPSHOT })
+    expect(got).toEqual([{ plugins: {}, overlays: '' }])
+    expect(pagePathsOf({ plugins: { 'a.plugin': 'https://evil.example/', 'b.plugin': '/p/T/b.plugin/', c: 5 }, overlays: '//evil/' })).toEqual({
+      plugins: { 'b.plugin': '/p/T/b.plugin/' },
+      overlays: ''
+    })
+    expect(pagePathsOf({ plugins: [], overlays: '/o/O/' })).toEqual({ plugins: {}, overlays: '' })
+    expect(pagePathsOf(null)).toEqual({ plugins: {}, overlays: '' })
+    // An own `__proto__` key stays a key, never the prototype.
+    const odd = pagePathsOf(JSON.parse('{"plugins":{"__proto__":"/p/T/x/"},"overlays":"/o/O/"}'))
+    expect(Object.getPrototypeOf(odd.plugins)).toBe(Object.prototype)
+    expect(Object.hasOwn(odd.plugins, '__proto__')).toBe(true)
+  })
+
+  it('a paths frame before ready is ignored', () => {
+    const { r, got } = pathsRig()
+    const s = r.last()
+    s.open()
+    s.serverSend({ t: 'paths', paths: PATHS })
+    expect(got).toEqual([])
   })
 })

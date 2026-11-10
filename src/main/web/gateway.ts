@@ -19,6 +19,11 @@
 // nobody speaks the protocol on.
 // Sockets are tracked by device: a revoke closes that device's sockets at once, and leaving None
 // mode closes the anonymous ones. Connects and disconnects go to the access log.
+// Plugin files and inline overlays (`/p/…`, `/o/…`, plugin-pages.ts, plan Task 20) are answered
+// after the Host check and before the cookie check: a sandboxed plugin page's requests are
+// cross-site and carry no cookie, so its path token is the credential. They get their own headers
+// (never the shell's CSP or X-Frame-Options: the shell frames them). Their tokens die with the
+// device (revoke, expiry), with None mode for the anonymous device, and when the gateway stops.
 import { open, type FileHandle } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -33,6 +38,7 @@ import type { AccessLog } from './access-log'
 import { deviceCookie, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
 import type { WebDevice } from './devices'
+import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
 import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
 import { listenPlanOf, type ListenPlan } from './settings'
 import { realShellFile, shellFileOf } from './shell-files'
@@ -75,6 +81,8 @@ export interface GatewayDeps {
   shellDir?: string
   /** The projects that have a window open now (main's window table), for the web picker. */
   openProjects?: () => WebProjectEntry[]
+  /** Plugin files and inline overlays (plugin-pages.ts). Absent: `/p/` and `/o/` are 404. */
+  pages?: PluginPages
 }
 
 export type GatewayStatus =
@@ -152,6 +160,8 @@ export class WebGateway {
   constructor(private readonly deps: GatewayDeps) {
     deps.auth.devices.onRevoked((ids) => {
       const gone = new Set(ids)
+      // Its plugin paths die at once too (design-web.md §4.1): not only with its sockets' views.
+      for (const id of ids) deps.pages?.tokens.dropDevice(id)
       for (const [ws, device] of this.sockets) if (gone.has(device.id)) ws.terminate()
     })
   }
@@ -273,6 +283,8 @@ export class WebGateway {
     if (purge && before === 'none' && mode !== 'none') {
       for (const [ws, device] of this.sockets) if (device.mode === 'none') ws.terminate()
     }
+    // The anonymous device's plugin paths go with it, so a later None starts from fresh tokens.
+    if (before === 'none' && mode !== 'none') this.deps.pages?.tokens.dropDevice('none')
   }
 
   private use(plan: OkPlan): void {
@@ -321,6 +333,8 @@ export class WebGateway {
     this.wss = undefined
     this.plan = undefined
     this.hosts = new Set()
+    // Every plugin path dies with the listener; views coming back get fresh ones in `ready`.
+    this.deps.pages?.tokens.clear()
     if (wss) {
       const clients = [...wss.clients]
       if (notice === undefined || clients.length === 0) {
@@ -404,6 +418,13 @@ export class WebGateway {
         if (!res.headersSent && !res.destroyed) this.send(res, host, 500, 'text/plain; charset=utf-8', 'server error')
       })
     }
+    // Plugin files and inline overlays: their path token is the credential (plugin-pages.ts).
+    if (safe && PluginPages.handles(path)) {
+      return void this.page(path, method, res, host).catch((err: unknown) => {
+        this.deps.log(`web access: serving a plugin page failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.writePage(res, method, pageNotFound())
+      })
+    }
     if (method === 'GET' && path === SESSION_PATH) return this.session(req, res, host)
     if (method === 'POST' && path === SIGN_IN_LINK_PATH) {
       // Never an unhandled rejection in main: a failure answers 500 when the request is still there.
@@ -466,6 +487,21 @@ export class WebGateway {
         this.deps.log(`web access: serving ${path.slice(0, 100)} failed: ${errorText(err)}`)
       }
     }
+  }
+
+  /**
+   * A plugin file or inline overlay page (plugin-pages.ts): its own headers, never the shell's (the
+   * shell frames it, so no X-Frame-Options; its CSP is the plugin's). Never a redirect.
+   */
+  private async page(path: string, method: string, res: ServerResponse, host: string): Promise<void> {
+    const pages = this.deps.pages
+    const answer = pages ? await pages.serve(path, method, this.frameOrigins(host)) : pageNotFound()
+    if (!res.destroyed) this.writePage(res, method, answer)
+  }
+
+  private writePage(res: ServerResponse, method: string, answer: PageAnswer): void {
+    res.writeHead(answer.status, { ...answer.headers, 'Content-Length': String(answer.body.length) })
+    res.end(method === 'HEAD' ? undefined : answer.body)
   }
 
   /** The open project windows, plain data only; a failing source is an empty list, never a 500 with its text. */

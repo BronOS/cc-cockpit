@@ -30,9 +30,12 @@ import { EVENT_CHANNELS, INVOKE_CHANNELS, remoteAllowed, type CockpitApi } from 
 import {
   CLOSE,
   MAX_FRAME_BYTES,
+  OVERLAY_PAGES_PATH,
+  PLUGIN_PAGES_PATH,
   PROTOCOL_VERSION,
   type ClientFrame,
   type ReadyFrame,
+  type WebPagePaths,
   type WebSnapshot
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
@@ -92,6 +95,25 @@ export interface WebBridgeOptions {
   checkSession?(): Promise<boolean>
   /** How long a `ready` connection must stay up before the backoff starts over; default `STABLE_MS`. */
   stableMs?: number
+  /**
+   * Where this view loads plugin files and inline overlays: from every `ready`, and again from a
+   * `paths` frame (a plugin installed or removed). Malformed paths are passed as none.
+   */
+  onPagePaths?(paths: WebPagePaths): void
+}
+
+/** Main's paths, checked: string prefixes under the gateway's own paths only, else none. */
+export function pagePathsOf(value: unknown): WebPagePaths {
+  const none: WebPagePaths = { plugins: {}, overlays: '' }
+  if (typeof value !== 'object' || value === null) return none
+  const v = value as Record<string, unknown>
+  if (typeof v.plugins !== 'object' || v.plugins === null || Array.isArray(v.plugins)) return none
+  // fromEntries defines own properties: an id like `__proto__` cannot reach the prototype.
+  const plugins = Object.fromEntries(
+    Object.entries(v.plugins).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1].startsWith(PLUGIN_PAGES_PATH))
+  )
+  const overlays = typeof v.overlays === 'string' && v.overlays.startsWith(OVERLAY_PAGES_PATH) ? v.overlays : ''
+  return { plugins, overlays }
 }
 
 export interface WebBridge {
@@ -380,9 +402,15 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       clearReadyTimer()
       const ready = f as unknown as ReadyFrame
       snapshot = ready.snapshot
+      // Before the status change: the shell mounts on `ready` and draws plugin images at once.
+      options.onPagePaths?.(pagePathsOf(ready.paths))
       readyAt = timers.now()
       generation += 1
       setStatus({ state: 'ready', view: ready.view, generation })
+      return
+    }
+    if (f.t === 'paths') {
+      if (status.state === 'ready') options.onPagePaths?.(pagePathsOf(f.paths))
       return
     }
     if (f.t === 'result') {

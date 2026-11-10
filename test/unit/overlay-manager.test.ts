@@ -26,6 +26,7 @@ import {
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { OVERLAY_CLICK_TIMEOUT_MS, type CleanTypeButton } from '../../src/shared/overlay-buttons'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
+import { PluginPages } from '../../src/main/web/plugin-pages'
 
 const W1 = 1
 const W2 = 2
@@ -838,6 +839,30 @@ describe('html page', () => {
     expect(m.pageHtml('not a url')).toBeUndefined()
     m.close(W1, page!.id)
     expect(m.pageHtml(`cc-overlay://${page!.id}/`)).toBeUndefined()
+  })
+
+  it('inlinePage gives the open page and its window for the web gateway; an /o/ path dies with the overlay', async () => {
+    const m = manager()
+    void m.open(W1, html('<p>page</p>'), 'cli')
+    void m.open(W2, { kind: 'html', src: 'cc-plugin://a.one/pick.html' }, 'plugin a.one')
+    const [page] = m.infos(W1)
+    const [plugin] = m.infos(W2)
+    expect(m.inlinePage(page!.id)).toEqual({ windowId: W1, html: '<p>page</p>' })
+    // A plugin's page is a file, not an inline page; an unknown id is nothing.
+    expect(m.inlinePage(plugin!.id)).toBeUndefined()
+    expect(m.inlinePage('nope')).toBeUndefined()
+    const pages = new PluginPages({
+      pluginIds: () => [],
+      deviceViews: () => [{ windowId: W1, projectId: 'p1' }],
+      pluginDir: () => undefined,
+      overlayPage: (id) => m.inlinePage(id),
+      sdkFile: '/nonexistent'
+    })
+    const path = `${pages.paths('dev1').overlays}${page!.id}/`
+    expect((await pages.serve(path, 'GET', ['http://127.0.0.1:7330'])).status).toBe(200)
+    m.close(W1, page!.id)
+    expect(m.inlinePage(page!.id)).toBeUndefined()
+    expect((await pages.serve(path, 'GET', ['http://127.0.0.1:7330'])).status).toBe(404)
   })
 
   it("shows a plugin's page at its own cc-plugin:// URL (nothing in memory) and takes its result", async () => {
