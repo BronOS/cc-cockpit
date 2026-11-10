@@ -39,6 +39,7 @@ import {
 import type { HostCliCall } from '../plugins/host-manager'
 import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type LinkDialogInfo } from '../plugins/link-request'
 import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
+import { rootAbsoluteUrlWarnings } from '../../shared/root-absolute-urls'
 import type { SessionEntry } from '../sessions/status-reducer'
 import type { Caller, Handler } from './socket-server'
 
@@ -407,7 +408,9 @@ export function pluginLinkHandler(options: PluginDevOptions, gate: LinkRequestGa
     }
     if (!allowed || peerGone?.aborted) throw new Error('declined: the plugin was not linked')
     await options.linkAndEnable(projectId, { id: info.id, dir: info.dir })
-    return { id: info.id, name: displayText(info.name) }
+    // After the link, never before: the scan reads files of a folder nobody has allowed yet otherwise.
+    const warnings = (await rootAbsoluteUrlWarnings(info.dir)).map((w) => displayText(w, 400))
+    return { id: info.id, name: displayText(info.name), ...(warnings.length > 0 ? { warnings } : {}) }
   }
 }
 

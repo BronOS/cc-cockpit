@@ -65,7 +65,7 @@ For what a form cannot hold (a rules editor, a list with drag and drop), declare
   app form on Settings > Plugins (your plugin's Settings), `project` under the project form on
   Settings > This Project; one or both.
 - It is a sandboxed iframe like a panel: `cc-plugin://`, the panel CSP, the panel SDK
-  (`/__sdk/panel.js`: `ccPanel.post` / `ccPanel.onMessage`, the theme and the component sheet). Its
+  (`__sdk/panel.js`, loaded by a relative URL: `ccPanel.post` / `ccPanel.onMessage`, the theme and the component sheet). Its
   port goes to your backend in this window's host: `ctx.settingsPage.onOpen((page) => …)` with
   `page.scope`, `post`, `onMessage`, `onClose` (`api` topic). One page of a plugin is open at a time.
 - Draw it with the settings classes (`style` topic, "Settings page"): group titles above cards,

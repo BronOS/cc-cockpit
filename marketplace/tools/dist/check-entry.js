@@ -1,8 +1,31 @@
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+
 // src/check-entry.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_node_os = require("node:os");
-var import_node_path3 = require("node:path");
+var import_node_path4 = require("node:path");
 
 // ../../src/shared/git-source.ts
 var MAX_URL_LENGTH = 2e3;
@@ -278,6 +301,113 @@ function relativePathProblem(p) {
   return null;
 }
 
+// ../../src/shared/root-absolute-urls.ts
+var import_node_fs = require("node:fs");
+var import_node_path = __toESM(require("node:path"));
+var SLASH = String.raw`(?:\/|&#0*47;?|&#x0*2f;?|&sol;)`;
+var NOT_SECOND = String.raw`(?![\/\\]|&#0*47;?|&#x0*2f;?|&sol;|&bsol;|&#0*92;?)`;
+var ATTR_RE = new RegExp(
+  String.raw`\b(src|href|poster|action|formaction|data|manifest|ping|data-src)\s*=\s*(?:"\s*|'\s*|(?=[^\s"'>]))(${SLASH})${NOT_SECOND}([^"'\s>]*)`,
+  "gi"
+);
+var SRCSET_RE = /\b(?:srcset|imagesrcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+var SRCSET_ROOT_RE = new RegExp(String.raw`(?:^|,)\s*(${SLASH})${NOT_SECOND}(\S*)`, "gi");
+var CSS_URL_RE = /\burl\(\s*["']?(\/(?![/\\])[^"')\s]*)/gi;
+var CSS_IMPORT_RE = /@import\s+["'](\/(?![/\\])[^"']*)/gi;
+var ASSET_EXT = "js|mjs|css|html?|json|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|wasm|map";
+var JS_STRING_RE = new RegExp(
+  String.raw`(["'\x60])(\/__sdk\/[\w./-]*|\/(?![\/\\*])[\w.-]+(?:\/[\w.-]+)*\.(?:${ASSET_EXT})(?:[?#][^"'\x60]*)?)\1`,
+  "g"
+);
+var MAX_PER_FILE = 5;
+function first(value) {
+  return value.length > 60 ? `${value.slice(0, 57)}...` : value;
+}
+function rootAbsoluteUrls(kind, text) {
+  const found = [];
+  const add = (url, where) => {
+    const entry = `"${first(url)}" (${where})`;
+    if (found.length < MAX_PER_FILE && !found.includes(entry)) found.push(entry);
+  };
+  if (kind === "html") {
+    for (const m of text.matchAll(ATTR_RE)) add(`${m[2] ?? ""}${m[3] ?? ""}`, (m[1] ?? "").toLowerCase());
+    for (const m of text.matchAll(SRCSET_RE)) {
+      const list = m[1] ?? m[2] ?? m[3] ?? "";
+      for (const c of list.matchAll(SRCSET_ROOT_RE)) add(`${c[1] ?? ""}${c[2] ?? ""}`, "srcset");
+    }
+  }
+  if (kind === "html" || kind === "css") {
+    for (const m of text.matchAll(CSS_URL_RE)) add(m[1] ?? "", "css url()");
+    for (const m of text.matchAll(CSS_IMPORT_RE)) add(m[1] ?? "", "css @import");
+  }
+  const script = kind === "html" ? [...text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script/gi)].map((m) => m[1] ?? "").join("\n") : kind === "js" ? text : "";
+  for (const m of script.matchAll(JS_STRING_RE)) add(m[2] ?? "", "script string");
+  return found;
+}
+var MAX_FILES = 2e3;
+var MAX_FILE_BYTES = 2 * 1024 * 1024;
+var MAX_WARNINGS = 20;
+var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git"]);
+function kindOf(file) {
+  const ext = import_node_path.default.extname(file).toLowerCase();
+  if (ext === ".html" || ext === ".htm") return "html";
+  if (ext === ".css") return "css";
+  if (ext === ".js" || ext === ".mjs") return "js";
+  return void 0;
+}
+async function mainOf(dir) {
+  try {
+    const file = import_node_path.default.join(dir, "plugin.json");
+    if (!(await import_node_fs.promises.lstat(file)).isFile()) return [];
+    const main2 = JSON.parse(await import_node_fs.promises.readFile(file, "utf8")).main;
+    return typeof main2 === "string" ? [import_node_path.default.posix.normalize(main2)] : [];
+  } catch {
+    return [];
+  }
+}
+async function walk(root, dir, out) {
+  let entries;
+  try {
+    entries = await import_node_fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (out.length >= MAX_FILES) return;
+    if (e.isDirectory()) {
+      if (!SKIP_DIRS.has(e.name)) await walk(root, import_node_path.default.join(dir, e.name), out);
+    } else if (e.isFile()) out.push(import_node_path.default.relative(root, import_node_path.default.join(dir, e.name)).split(import_node_path.default.sep).join("/"));
+  }
+}
+async function rootAbsoluteUrlWarnings(dir) {
+  const skip = await mainOf(dir);
+  const files = [];
+  await walk(dir, dir, files);
+  const pageDirs = files.filter((f) => kindOf(f) === "html").map((f) => import_node_path.default.posix.dirname(f));
+  const warnings = [];
+  for (const file of files) {
+    const kind = kindOf(file);
+    if (kind === void 0 || skip.includes(file)) continue;
+    const folder = import_node_path.default.posix.dirname(file);
+    if (kind !== "html" && !pageDirs.some((d) => d === "." || folder === d || folder.startsWith(`${d}/`))) continue;
+    let text;
+    try {
+      const full = import_node_path.default.join(dir, file);
+      const st = await import_node_fs.promises.lstat(full);
+      if (!st.isFile() || st.size > MAX_FILE_BYTES) continue;
+      text = await import_node_fs.promises.readFile(full, "latin1");
+    } catch {
+      continue;
+    }
+    const urls = rootAbsoluteUrls(kind, text);
+    if (urls.length > 0) {
+      warnings.push(`${file}: root-absolute URL ${urls.join(", ")}; use a URL relative to the page (../dist/x.js), it breaks over web access`);
+    }
+    if (warnings.length >= MAX_WARNINGS) break;
+  }
+  return warnings;
+}
+
 // ../../src/shared/marketplace.ts
 var DEFAULT_MARKETPLACE_URL = "https://raw.githubusercontent.com/BronOS/cc-cockpit-marketplace/main/index.json";
 var STALE_AFTER_MS = 60 * 6e4;
@@ -401,15 +531,15 @@ function parseEntry(raw, indexUrl) {
 }
 
 // ../../src/main/path-within.ts
-var import_node_path = require("node:path");
+var import_node_path2 = require("node:path");
 function within(parent, child) {
-  const rel = (0, import_node_path.relative)(parent, child);
-  return rel === "" || !rel.startsWith(`..${import_node_path.sep}`) && rel !== ".." && !(0, import_node_path.isAbsolute)(rel);
+  const rel = (0, import_node_path2.relative)(parent, child);
+  return rel === "" || !rel.startsWith(`..${import_node_path2.sep}`) && rel !== ".." && !(0, import_node_path2.isAbsolute)(rel);
 }
 
 // src/common.ts
-var import_node_fs = require("node:fs");
-var import_node_path2 = require("node:path");
+var import_node_fs2 = require("node:fs");
+var import_node_path3 = require("node:path");
 var MAX_ENTRY_BYTES = 64 * 1024;
 var MAX_OWNERS = 50;
 var ENTRY_FIELDS = /* @__PURE__ */ new Set(["id", "name", "description", "author", "repo", "version", "tag", "commit", "api", "category", "owners"]);
@@ -442,18 +572,18 @@ function parseSourceEntry(text, indexUrl) {
   if (!parsed.ok) return parsed;
   return { ok: true, entry: parsed.entry, owners, raw };
 }
-function readRegularFile(path, maxBytes) {
-  const stats = (0, import_node_fs.lstatSync)(path);
-  if (!stats.isFile()) throw new ToolError(`${quoted(path)} is not a regular file`);
-  if (stats.size > maxBytes) throw new ToolError(`${quoted(path)} is too large`);
-  return (0, import_node_fs.readFileSync)(path, "utf8");
+function readRegularFile(path2, maxBytes) {
+  const stats = (0, import_node_fs2.lstatSync)(path2);
+  if (!stats.isFile()) throw new ToolError(`${quoted(path2)} is not a regular file`);
+  if (stats.size > maxBytes) throw new ToolError(`${quoted(path2)} is too large`);
+  return (0, import_node_fs2.readFileSync)(path2, "utf8");
 }
 function listEntryFiles(pluginsDir) {
-  if (!(0, import_node_fs.existsSync)(pluginsDir)) return [];
-  return (0, import_node_fs.readdirSync)(pluginsDir).filter((name) => name.endsWith(".json")).sort();
+  if (!(0, import_node_fs2.existsSync)(pluginsDir)) return [];
+  return (0, import_node_fs2.readdirSync)(pluginsDir).filter((name) => name.endsWith(".json")).sort();
 }
 function entryPath(root, name) {
-  return (0, import_node_path2.join)(root, "plugins", name);
+  return (0, import_node_path3.join)(root, "plugins", name);
 }
 function noPreviewMarker(id, commit) {
   return `previews/${id}/${commit}.none`;
@@ -464,11 +594,11 @@ function failedPreviewMarker(id, commit) {
 function sameEntryFile(base, head, name) {
   const basePath = entryPath(base, name);
   const headPath = entryPath(head, name);
-  const before = (0, import_node_fs.lstatSync)(basePath, { throwIfNoEntry: false });
-  const after = (0, import_node_fs.lstatSync)(headPath, { throwIfNoEntry: false });
-  if (!before || !after || (before.mode & import_node_fs.constants.S_IFMT) !== (after.mode & import_node_fs.constants.S_IFMT)) return false;
-  if (after.isSymbolicLink()) return (0, import_node_fs.readlinkSync)(basePath) === (0, import_node_fs.readlinkSync)(headPath);
-  if (after.isFile()) return before.size === after.size && (0, import_node_fs.readFileSync)(basePath).equals((0, import_node_fs.readFileSync)(headPath));
+  const before = (0, import_node_fs2.lstatSync)(basePath, { throwIfNoEntry: false });
+  const after = (0, import_node_fs2.lstatSync)(headPath, { throwIfNoEntry: false });
+  if (!before || !after || (before.mode & import_node_fs2.constants.S_IFMT) !== (after.mode & import_node_fs2.constants.S_IFMT)) return false;
+  if (after.isSymbolicLink()) return (0, import_node_fs2.readlinkSync)(basePath) === (0, import_node_fs2.readlinkSync)(headPath);
+  if (after.isFile()) return before.size === after.size && (0, import_node_fs2.readFileSync)(basePath).equals((0, import_node_fs2.readFileSync)(headPath));
   return true;
 }
 function parseFlags(argv, allowed) {
@@ -498,12 +628,12 @@ var PREVIEW_FETCH_BUDGET_MS = 10 * 6e4;
 var PREVIEW_RETRY_AFTER_MS = 24 * 60 * 6e4;
 var MAX_FAILED_MARKER_BYTES = 64;
 function readPreview(dir) {
-  const path = (0, import_node_path3.join)(dir, PREVIEW_FILE);
-  const stats = (0, import_node_fs2.lstatSync)(path, { throwIfNoEntry: false });
+  const path2 = (0, import_node_path4.join)(dir, PREVIEW_FILE);
+  const stats = (0, import_node_fs3.lstatSync)(path2, { throwIfNoEntry: false });
   if (stats === void 0) return { missing: true };
   if (!stats.isFile()) return { problem: `${PREVIEW_FILE} is not a regular file` };
   if (stats.size > MAX_PREVIEW_BYTES) return { problem: `${PREVIEW_FILE}: the preview is over ${MAX_PREVIEW_BYTES / 1024} KiB` };
-  const bytes = (0, import_node_fs2.readFileSync)(path);
+  const bytes = (0, import_node_fs3.readFileSync)(path2);
   const problem = previewPngProblem(bytes);
   return problem === null ? { bytes } : { problem: `${PREVIEW_FILE}: ${problem}` };
 }
@@ -537,7 +667,7 @@ function runGit(args, cwd, opts) {
 async function manifestProblems(dir, entry) {
   let manifest;
   try {
-    manifest = JSON.parse(readRegularFile((0, import_node_path3.join)(dir, "plugin.json"), MAX_MANIFEST_BYTES));
+    manifest = JSON.parse(readRegularFile((0, import_node_path4.join)(dir, "plugin.json"), MAX_MANIFEST_BYTES));
   } catch {
     return ["plugin.json is missing, too large, a symlink or not valid JSON"];
   }
@@ -559,17 +689,17 @@ async function manifestProblems(dir, entry) {
 }
 async function isFileInside(dir, rel) {
   try {
-    const root = await import_node_fs2.promises.realpath(dir);
-    const real = await import_node_fs2.promises.realpath((0, import_node_path3.resolve)(root, rel));
-    return within(root, real) && (await import_node_fs2.promises.stat(real)).isFile();
+    const root = await import_node_fs3.promises.realpath(dir);
+    const real = await import_node_fs3.promises.realpath((0, import_node_path4.resolve)(root, rel));
+    return within(root, real) && (await import_node_fs3.promises.stat(real)).isFile();
   } catch {
     return false;
   }
 }
 async function inspectEntry(entry, opts = {}) {
-  const parent = (0, import_node_fs2.mkdtempSync)((0, import_node_path3.join)((0, import_node_os.tmpdir)(), "check-entry-"));
+  const parent = (0, import_node_fs3.mkdtempSync)((0, import_node_path4.join)((0, import_node_os.tmpdir)(), "check-entry-"));
   try {
-    const dest = (0, import_node_path3.join)(parent, "repo");
+    const dest = (0, import_node_path4.join)(parent, "repo");
     const clone = await runGit(cloneArgs(entry.repo, entry.tag, dest), parent, opts);
     if (clone.code !== 0) {
       return {
@@ -586,6 +716,7 @@ async function inspectEntry(entry, opts = {}) {
     const atCommit = head.code === 0 && commit === entry.commit;
     if (!atCommit) problems.push(`the tag is at commit ${quoted(commit)}, the entry says ${quoted(entry.commit)}`);
     problems.push(...await manifestProblems(dest, entry));
+    warnings.push(...await rootAbsoluteUrlWarnings(dest));
     const preview = readPreview(dest);
     if ("problem" in preview) problems.push(preview.problem);
     else if ("missing" in preview) {
@@ -597,14 +728,14 @@ async function inspectEntry(entry, opts = {}) {
     }
     return { problems, warnings, preview: "bytes" in preview ? preview.bytes : null, atCommit };
   } finally {
-    (0, import_node_fs2.rmSync)(parent, { recursive: true, force: true });
+    (0, import_node_fs3.rmSync)(parent, { recursive: true, force: true });
   }
 }
 function changedEntryFiles(base, head) {
-  return listEntryFiles((0, import_node_path3.join)(head, "plugins")).filter((name) => !sameEntryFile(base, head, name));
+  return listEntryFiles((0, import_node_path4.join)(head, "plugins")).filter((name) => !sameEntryFile(base, head, name));
 }
 function retagProblem(basePath, entry, indexUrl) {
-  if (!(0, import_node_fs2.existsSync)(basePath)) return null;
+  if (!(0, import_node_fs3.existsSync)(basePath)) return null;
   let text;
   try {
     text = readRegularFile(basePath, MAX_ENTRY_BYTES);
@@ -615,9 +746,9 @@ function retagProblem(basePath, entry, indexUrl) {
   if (!before.ok || before.entry.commit === entry.commit || before.entry.version.toLowerCase() !== entry.version.toLowerCase()) return null;
   return "a new commit needs a new version: installed copies cannot update to the version they already have";
 }
-async function checkFile(path, indexUrl, opts, expectedName, basePath) {
+async function checkFile(path2, indexUrl, opts, expectedName, basePath) {
   const refused = (problem) => ({ problems: [problem], warnings: [] });
-  const parsed = parseSourceEntry(readRegularFile(path, MAX_ENTRY_BYTES), indexUrl);
+  const parsed = parseSourceEntry(readRegularFile(path2, MAX_ENTRY_BYTES), indexUrl);
   if (!parsed.ok) return refused(parsed.problem);
   if (expectedName !== void 0 && expectedName !== `${parsed.entry.id}.json`) return refused("the file name must be the id plus .json");
   const retag = basePath === void 0 ? null : retagProblem(basePath, parsed.entry, indexUrl);
@@ -625,11 +756,11 @@ async function checkFile(path, indexUrl, opts, expectedName, basePath) {
   const { problems, warnings } = await inspectEntry(parsed.entry, opts);
   return { problems, warnings };
 }
-function recentlyFailed(path, now) {
-  if (!(0, import_node_fs2.existsSync)(path)) return false;
+function recentlyFailed(path2, now) {
+  if (!(0, import_node_fs3.existsSync)(path2)) return false;
   let at;
   try {
-    at = Date.parse(readRegularFile(path, MAX_FAILED_MARKER_BYTES).trim());
+    at = Date.parse(readRegularFile(path2, MAX_FAILED_MARKER_BYTES).trim());
   } catch {
     return false;
   }
@@ -643,7 +774,7 @@ async function fetchPreviews(root, out, indexUrl, opts = {}) {
   const budgetMs = opts.budgetMs ?? PREVIEW_FETCH_BUDGET_MS;
   const started = now().getTime();
   let fetched = 0;
-  for (const name of listEntryFiles((0, import_node_path3.join)(root, "plugins"))) {
+  for (const name of listEntryFiles((0, import_node_path4.join)(root, "plugins"))) {
     let parsed;
     try {
       parsed = parseSourceEntry(readRegularFile(entryPath(root, name), MAX_ENTRY_BYTES), indexUrl);
@@ -652,8 +783,8 @@ async function fetchPreviews(root, out, indexUrl, opts = {}) {
     }
     if (!parsed.ok || name !== `${parsed.entry.id}.json`) continue;
     const { id, commit } = parsed.entry;
-    if ((0, import_node_fs2.existsSync)((0, import_node_path3.join)(root, previewPath(id, commit))) || (0, import_node_fs2.existsSync)((0, import_node_path3.join)(root, noPreviewMarker(id, commit)))) continue;
-    if (recentlyFailed((0, import_node_path3.join)(root, failedPreviewMarker(id, commit)), now())) continue;
+    if ((0, import_node_fs3.existsSync)((0, import_node_path4.join)(root, previewPath(id, commit))) || (0, import_node_fs3.existsSync)((0, import_node_path4.join)(root, noPreviewMarker(id, commit)))) continue;
+    if (recentlyFailed((0, import_node_path4.join)(root, failedPreviewMarker(id, commit)), now())) continue;
     if (fetched >= MAX_PREVIEW_FETCHES) {
       log.push(`more than ${MAX_PREVIEW_FETCHES} previews to fetch: the rest wait for the next run`);
       break;
@@ -665,16 +796,16 @@ async function fetchPreviews(root, out, indexUrl, opts = {}) {
     fetched++;
     const seen = await inspectEntry(parsed.entry, cloneOpts);
     if (!seen.atCommit) {
-      const marker = (0, import_node_path3.join)(out, failedPreviewMarker(id, commit));
-      (0, import_node_fs2.mkdirSync)((0, import_node_path3.join)(marker, ".."), { recursive: true });
-      (0, import_node_fs2.writeFileSync)(marker, `${now().toISOString()}
+      const marker = (0, import_node_path4.join)(out, failedPreviewMarker(id, commit));
+      (0, import_node_fs3.mkdirSync)((0, import_node_path4.join)(marker, ".."), { recursive: true });
+      (0, import_node_fs3.writeFileSync)(marker, `${now().toISOString()}
 `);
       log.push(`${quoted(name)}: not fetched, the tag is not at the pinned commit or could not be cloned; retried in a day`);
       continue;
     }
-    const target = (0, import_node_path3.join)(out, seen.preview !== null ? previewPath(id, commit) : noPreviewMarker(id, commit));
-    (0, import_node_fs2.mkdirSync)((0, import_node_path3.join)(target, ".."), { recursive: true });
-    (0, import_node_fs2.writeFileSync)(target, seen.preview ?? "");
+    const target = (0, import_node_path4.join)(out, seen.preview !== null ? previewPath(id, commit) : noPreviewMarker(id, commit));
+    (0, import_node_fs3.mkdirSync)((0, import_node_path4.join)(target, ".."), { recursive: true });
+    (0, import_node_fs3.writeFileSync)(target, seen.preview ?? "");
     log.push(`${quoted(name)}: ${seen.preview !== null ? "preview fetched" : "no usable preview at this commit"}`);
   }
   return log;

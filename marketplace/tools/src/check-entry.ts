@@ -21,6 +21,7 @@ import { join, resolve } from 'node:path'
 import { cloneArgs, gitEnv } from '../../../src/shared/git-source'
 import { isPlainObject } from '../../../src/shared/guards'
 import { relativePathProblem } from '../../../src/shared/manifest'
+import { rootAbsoluteUrlWarnings } from '../../../src/shared/root-absolute-urls'
 import {
   DEFAULT_MARKETPLACE_URL,
   MAX_PREVIEW_BYTES,
@@ -195,6 +196,8 @@ export async function inspectEntry(entry: MarketplaceEntry, opts: CheckOptions =
     const atCommit = head.code === 0 && commit === entry.commit
     if (!atCommit) problems.push(`the tag is at commit ${quoted(commit)}, the entry says ${quoted(entry.commit)}`)
     problems.push(...(await manifestProblems(dest, entry)))
+    // A warning only: the page works on the desktop, over web access a root-absolute URL breaks.
+    warnings.push(...(await rootAbsoluteUrlWarnings(dest)))
     const preview = readPreview(dest)
     // A bad image is refused at once, grace or not: only a missing one has the grace period.
     if ('problem' in preview) problems.push(preview.problem)

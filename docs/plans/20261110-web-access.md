@@ -469,15 +469,18 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: bundled plugin pages that use root-absolute URLs (then `npm run build:browser`, `build:reviewer`, `build:hello`)
 - Modify: drift tests; Create: a test for the check
 
-- [ ] the guide tells plugin pages to use relative URLs (`./__sdk/panel.js`) and why (web access)
-- [ ] a warning (not an error) from the plugin check and the marketplace tools when a page's HTML, JS or CSS uses a
+- [x] the guide tells plugin pages to use relative URLs (`./__sdk/panel.js`) and why (web access)
+- [x] a warning (not an error) from the plugin check and the marketplace tools when a page's HTML, JS or CSS uses a
       root-absolute URL
       (the HTTP rewrite in `plugin-pages.ts` covers only `src`/`href`: `srcset`, `poster`, `<form action>` and
       entity-encoded slashes stay root-absolute and fail closed, so the check flags them too)
-- [ ] the example plugin and the bundled plugins switched to relative URLs where simple; rebuilt dists committed
-- [ ] write tests: the check flags `/dist/x.js` in HTML and in a JS string, passes relative ones
-- [ ] run tests, `npm run test:plugins`, and the e2e specs for bundled plugins, panels and overlays - must pass before
+- [x] the example plugin and the bundled plugins switched to relative URLs where simple; rebuilt dists committed
+- [x] write tests: the check flags `/dist/x.js` in HTML and in a JS string, passes relative ones
+- [x] run tests, `npm run test:plugins`, and the e2e specs for bundled plugins, panels and overlays - must pass before
       next task
+
+      Note: pages one folder deep load the SDK as `../__sdk/panel.js` (the SDK is served only at the plugin root, so a
+      page's relative URL depends on its folder); the public example repo is NOT pushed, see Post-Completion.
 
 ### Task 22: Browser-side port relay and navigation guard [model: opus]
 
@@ -635,6 +638,6 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - performance: 8 busy Claude tabs with a remote view, main stays responsive
 
 **External system updates:**
-- `BronOS/cc-cockpit-plugin-example` gets the relative-URL change and the types (`examples/plugin`); Task 19 changed `examples/plugin/sdk/types.ts` (`panels.post` `{ view }`, listener `from`), not yet pushed there
+- `BronOS/cc-cockpit-plugin-example` gets the relative-URL change and the types (`examples/plugin`); Task 21 changed `examples/plugin/panels/main.html` (`../__sdk/panel.js`); Task 19 changed `examples/plugin/sdk/types.ts` (`panels.post` `{ view }`, listener `from`), not yet pushed there
 - marketplace plugins (bronos.*) switch to relative URLs over time; the check warns until then
 - release notes for the app version that ships it

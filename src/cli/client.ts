@@ -700,8 +700,9 @@ export async function pluginHelp(env: Env): Promise<string> {
 function formatResult(command: UserCommand, result: unknown): string {
   if (command.kind === 'overlay') return `${JSON.stringify(result)}\n`
   if (command.kind === 'plugin-link') {
-    const r = (result ?? {}) as { id?: unknown; name?: unknown }
-    return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
+    const r = (result ?? {}) as { id?: unknown; name?: unknown; warnings?: unknown }
+    const warnings = Array.isArray(r.warnings) ? r.warnings.map((w) => `warning: ${plainLine(w)}\n`).join('') : ''
+    return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n${warnings}`
   }
   if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
   if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`

@@ -28,8 +28,14 @@ load, the strip shows the title's first letter.
 - A panel or overlay page cannot submit a `<form>`: the frame is sandboxed without
   `allow-forms`, so its `submit` event never fires (Enter in a field included). Use buttons
   (`type="button"`) and act on their `click`.
-- Include the SDK first: `<script src="/__sdk/panel.js"></script>`. It defines `ccPanel` and gives the page the
-  app's component stylesheet (buttons, inputs, rows, cards, ...): see `ccc guide style`.
+- Include the SDK first: `<script src="../__sdk/panel.js"></script>` (from a page in a folder such as `panels/`; a page at
+  the plugin's root says `./__sdk/panel.js`). It defines `ccPanel` and gives the page the app's component stylesheet
+  (buttons, inputs, rows, cards, ...): see `ccc guide style`.
+- Use URLs relative to the page for everything it loads (`../dist/lib/view.js`, `main.js`, `url(../icons/x.png)`), never
+  root-absolute ones (`/dist/x.js`). The same page is also served over web access (the person's phone or another
+  browser) under a path prefix, where `/x` is the server's root, not your plugin's: the server rewrites only
+  `src` and `href` in HTML, and a URL in `srcset`, `poster`, `<form action>`, CSS or a script string breaks. `ccc plugin
+  link` and the marketplace check warn about root-absolute URLs.
 
 ## `ccPanel`
 

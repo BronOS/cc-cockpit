@@ -327,6 +327,7 @@ describe('check-entry', () => {
     rmSync(join(work, 'plugin.json'), { force: true })
     rmSync(join(work, 'dist'), { recursive: true, force: true })
     rmSync(join(work, 'preview.png'), { force: true })
+    rmSync(join(work, 'panels'), { recursive: true, force: true })
     if (manifest !== null) writeFileSync(join(work, 'plugin.json'), JSON.stringify(manifest))
     setup?.()
     git(work, 'add', '-A')
@@ -368,6 +369,17 @@ describe('check-entry', () => {
     tagged(work, 'preview-symlink', manifest, () => {
       built()
       symlinkSync('/etc/passwd', join(work, 'preview.png'))
+    })
+    tagged(work, 'root-absolute', manifest, () => {
+      built()
+      mkdirSync(join(work, 'panels'))
+      writeFileSync(join(work, 'panels/a.html'), '<script src="/dist/x.js"></script><script src="../__sdk/panel.js"></script>')
+    })
+    tagged(work, 'relative-urls', manifest, () => {
+      built()
+      mkdirSync(join(work, 'panels'))
+      writeFileSync(join(work, 'panels/a.html'), '<script src="../__sdk/panel.js"></script><script src="a.js"></script>')
+      writeFileSync(join(work, 'panels/a.js'), "fetch('./data.json')")
     })
     tagged(work, 'no-manifest', null)
     tagged(work, 'bad-manifest', null, () => writeFileSync(join(work, 'plugin.json'), '{'))
@@ -416,6 +428,15 @@ describe('check-entry', () => {
     ['a broken plugin.json', 'bad-manifest', /plugin\.json is missing/]
   ])('reports %s', async (_name, tag, pattern) => {
     expect((await check(entryAt(tag))).join('\n')).toMatch(pattern)
+  })
+
+  it('warns, never refuses, about a root-absolute URL in a page, and passes relative ones', async () => {
+    const opts = { env: GIT_ENV, previewRequiredFrom: null }
+    const bad = await inspectEntry(entryAt('root-absolute'), opts)
+    expect(bad.problems).toEqual([])
+    expect(bad.warnings.some((w) => /^panels\/a\.html: root-absolute URL "\/dist\/x\.js" \(src\)/.test(w))).toBe(true)
+    const good = await inspectEntry(entryAt('relative-urls'), opts)
+    expect(good.warnings.filter((w) => w.includes('root-absolute'))).toEqual([])
   })
 
   describe('preview.png', () => {

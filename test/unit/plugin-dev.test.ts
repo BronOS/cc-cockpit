@@ -1,7 +1,8 @@
 // The app side of `ccc plugin link|unlink|list` (plan B Task 6): the dialog rules (sanitized text,
 // one pending per window, a few a minute), the socket handlers, and the client against a fake app.
 // Sockets live under /tmp: macOS's /var/folders is long enough to push a path past sun_path.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -110,6 +111,22 @@ describe('plugin dev handlers', () => {
       expect(o.inspectLink).toHaveBeenCalledWith('/some/todo')
       expect(o.confirmLink).toHaveBeenCalledWith(7, { id: 'acme.todo', name: 'TodoAllow all?', path: '/real/todo', caller: 'tab' }, undefined)
       expect(o.linkAndEnable).toHaveBeenCalledWith('p1', { id: 'acme.todo', dir: '/real/todo' })
+    })
+
+    it('adds warnings for root-absolute URLs in the linked folder, and none when it is clean', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'link-warn-'))
+      try {
+        mkdirSync(join(dir, 'panels'))
+        writeFileSync(join(dir, 'panels/a.html'), '<script src="/dist/x.js"></script>')
+        const o = options({ inspectLink: vi.fn(async () => ({ ...INFO, dir })) })
+        const result = (await pluginLinkHandler(o, new LinkRequestGate())({ path: '/some/todo' }, tab, undefined)) as { warnings?: string[] }
+        expect(result.warnings).toHaveLength(1)
+        expect(result.warnings?.[0]).toMatch(/^panels\/a\.html: root-absolute URL "\/dist\/x\.js" \(src\)/)
+        writeFileSync(join(dir, 'panels/a.html'), '<script src="../dist/x.js"></script>')
+        expect(await pluginLinkHandler(o, new LinkRequestGate())({ path: '/some/todo' }, tab, undefined)).toEqual({ id: 'acme.todo', name: 'Todo' })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     })
 
     it('a window token (a shell or command tab, a terminal overlay) links in its window and reads as a tab', async () => {
@@ -301,6 +318,11 @@ describe('the client against a fake app', () => {
     expect(await run(['plugin', 'link', 'plugins/todo'], env(), Readable.from([]), o.io, '/work')).toBe(0)
     expect(received[0]).toMatchObject({ cmd: 'plugin.link', token: TOKEN, args: { path: '/work/plugins/todo' } })
     expect(o.o).toBe('linked acme.todo (Todo) and enabled it in this project\n')
+
+    answer = () => ({ ok: true, result: { id: 'acme.todo', name: 'Todo', warnings: ['panels/a.html: root-absolute URL "/x.js" (src)'] } })
+    const w = io()
+    expect(await run(['plugin', 'link', 'plugins/todo'], env(), Readable.from([]), w.io, '/work')).toBe(0)
+    expect(w.o).toBe('linked acme.todo (Todo) and enabled it in this project\nwarning: panels/a.html: root-absolute URL "/x.js" (src)\n')
 
     answer = () => ({ ok: false, error: 'declined: the plugin was not linked' })
     const d = io()

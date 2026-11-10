@@ -150,7 +150,7 @@ exports.deactivate = () => {}
   <head>
     <meta charset="utf-8" />
     <title>Greeter</title>
-    <script src="/__sdk/panel.js"></script>
+    <script src="../__sdk/panel.js"></script>
     <script src="main.js"></script>
   </head>
   <body>
@@ -185,7 +185,9 @@ what it started with.
 A panel is an html page the app shows in a zone (left, right, bottom). It runs in a sandboxed
 frame under a strict CSP: its own files only, no network, no inline script (put the script in a
 separate `.js` file). The page talks only to its own plugin through the panel SDK, a classic
-script served at `/__sdk/panel.js`. See the `panels` topic.
+script served at `__sdk/panel.js` (a page loads it by a relative URL, `../__sdk/panel.js` from `panels/x.html`).
+Pages use URLs relative to themselves, never root-absolute ones: web access serves them under a path prefix, and
+`ccc plugin link` warns about the others. See the `panels` topic.
 
 ## Settings, secrets, sign-in
 

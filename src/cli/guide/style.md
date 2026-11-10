@@ -1,6 +1,6 @@
 # Style: the component stylesheet
 
-Every page that loads `/__sdk/panel.js` (panels, html overlays, slots, html settings pages) gets the
+Every page that loads `__sdk/panel.js` (`../__sdk/panel.js` from `panels/x.html`) (panels, html overlays, slots, html settings pages) gets the
 app's component stylesheet, so a plugin page looks like the app and like other plugins. Use the
 components; draw your own control only where none fits (a timeline, a diff), and then still with the
 tokens below. Url overlays and web views show foreign sites and get nothing.

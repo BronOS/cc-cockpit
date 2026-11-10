@@ -85,7 +85,7 @@ app's code ends up in the bundle.
 
 ### Panel side (`panels/hello.js`)
 
-The page loads `/__sdk/panel.js`, which defines `window.ccPanel`: `post(json)`, `onMessage(fn)`,
+The page loads `../__sdk/panel.js` (a URL relative to the page, so it also works over web access), which defines `window.ccPanel`: `post(json)`, `onMessage(fn)`,
 and `theme` (the app theme is applied to `:root` as `--cc-*` CSS variables, so a page that uses
 `var(--cc-bg)` and `var(--cc-fg)` follows light/dark and plugin themes for free).
 Render with `textContent`, not `innerHTML`.
