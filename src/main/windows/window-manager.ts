@@ -310,6 +310,21 @@ export class WindowManager {
     else this.showPicker()
   }
 
+  /**
+   * A remote view of a window went away. A window kept running hidden for browsers whose last one
+   * just left has no reason to stay off screen: nothing else would show or close it, and on Linux
+   * (no dock, no tray) the app would live on with no UI. It is shown again (closing it would lose
+   * the person's tabs without asking).
+   */
+  remoteViewGone(windowId: number): void {
+    if (this.quitting) return
+    for (const h of this.hidden) {
+      if (h.id !== windowId) continue
+      if ((this.options.remoteDevices?.(windowId) ?? []).length === 0) this.show(h)
+      return
+    }
+  }
+
   /** Whether this project window is kept running hidden for a browser (false for an unknown window). */
   isHidden(windowId: number): boolean {
     for (const h of this.hidden) if (h.id === windowId) return true

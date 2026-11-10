@@ -2178,7 +2178,14 @@ function start(): void {
   // handler is registered; the gateway refuses upgrades until then.
   const webConnections: WebConnections = new WebConnections({
     dispatch: (caller, channel, payload) => router.dispatch(caller, channel, payload),
-    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
+    addView: (windowId, viewId, sink) => {
+      const remove = views.addRemote(windowId, viewId, sink)
+      // The last browser leaving a window kept running hidden shows it again (window-manager.ts).
+      return () => {
+        remove()
+        windows.remoteViewGone(windowId)
+      }
+    },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks }, ctx),

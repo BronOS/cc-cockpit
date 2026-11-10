@@ -971,6 +971,19 @@ describe('window lifetime with remote views (design-web.md §5.6)', () => {
     return { id: view.id, win }
   }
 
+  it('the last remote view leaving shows the hidden window again; one left keeps it hidden', async () => {
+    const l = lifetime()
+    const { win } = await keptRunning(l)
+    l.devices.set(win.id, ['Pixel', 'Laptop'])
+    l.wm.remoteViewGone(win.id)
+    expect(l.wm.isHidden(win.id)).toBe(true)
+    l.devices.set(win.id, [])
+    l.wm.remoteViewGone(win.id)
+    expect(win.hidden).toBe(false)
+    expect(l.wm.isHidden(win.id)).toBe(false)
+    expect(l.visibility.at(-1)).toEqual([win.id, true])
+  })
+
   it('opening the project again (the picker, ccc open) shows the hidden window, no second window', async () => {
     const l = lifetime()
     const { id, win } = await keptRunning(l)
