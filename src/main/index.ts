@@ -144,6 +144,8 @@ import { rendererLocation } from './windows/create-window'
 import { ElectronWindowFactory } from './windows/electron-window-factory'
 import { blurSupport } from './windows/window-chrome'
 import { ViewRegistry } from './views/view-registry'
+import { WebGateway } from './web/gateway'
+import { webAccessOf } from './web/settings'
 import { desktopViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
@@ -1211,6 +1213,9 @@ function start(): void {
   // overlay manager (a terminal overlay's window token, mapped to the project its window shows),
   // `--project <path>` through the registry (a lookup only, never a new record). Handlers arrive
   // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
+  // Web access (design-web.md): off by default. Constructing it costs nothing (no listener, `ws`
+  // not loaded); apply() below starts it only when `app.json` › `webAccess.enabled` is true.
+  const webGateway = new WebGateway({ log: (m) => console.warn(m) })
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
@@ -2217,6 +2222,7 @@ function start(): void {
     devWatch.dispose()
     hosts.disposeAll()
     void socket.stop()
+    void webGateway.stop()
     sessionGist.dispose()
     rateLimits.dispose()
     sessions.dispose()
@@ -2246,6 +2252,8 @@ function start(): void {
       // without a socket, and its tabs get no CC_COCKPIT_SOCK (see the TabManager `sock` above).
       await socket.start()
       updateChecker.start()
+      // Not awaited: a port in use only logs, and no window waits for the gateway.
+      void webGateway.apply(webAccessOf(registry.app.data.webAccess))
       // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
       // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
       // build/ sits two levels above out/main. A missing file only leaves the default icon.

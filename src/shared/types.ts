@@ -277,6 +277,34 @@ export interface AppSettings {
    * project values equal to their schema default were dropped, so they use the global value.
    */
   projectDefaultsMigrated?: true
+  /**
+   * Web access (design-web.md §4): the gateway that serves the cockpit to a browser. Off unless
+   * `enabled` is exactly `true`. The file is user-writable, so main reads it field by field
+   * (main/web/settings.ts `webAccessOf`): a damaged field reads as its default, and a bind that
+   * would listen on the network is refused (nothing listens), never quietly moved to loopback.
+   */
+  webAccess?: Partial<WebAccessSettings>
+}
+
+/** How a browser signs in (design-web.md §4.2); every mode ends in the same device cookie. */
+export type WebAccessMode = 'link' | 'password' | 'confirm' | 'none'
+
+/** `app.json` › `webAccess` once read (main/web/settings.ts `webAccessOf`, defaults applied). */
+export interface WebAccessSettings {
+  enabled: boolean
+  /** The address to listen on. Loopback only until TLS and the §4.3 confirms exist (plan Task 28). */
+  bind: string
+  port: number
+  /**
+   * The origin the browser sees when a proxy is in front (`https://box.tailnet.ts.net`), as an
+   * origin (scheme, host, port; no path). Absent: the gateway's own `http://<host>` origins only.
+   */
+  externalOrigin?: string
+  /** Extra Host names the person allows (`name` or `name:port`), normalised to `host:port`. */
+  hosts: string[]
+  mode: WebAccessMode
+  /** Certificate and key files for https on a network bind (plan Task 28); unused before that. */
+  tls?: { certPath: string; keyPath: string }
 }
 
 /**

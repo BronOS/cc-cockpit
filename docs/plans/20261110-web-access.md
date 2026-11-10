@@ -163,15 +163,15 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/index.ts`, `package.json` (pin `ws@8.22.0`, `@types/ws@8.18.2`)
 - Create: `test/unit/web-gateway.test.ts`, `test/unit/web-checks.test.ts`
 
-- [ ] `webAccess` app settings (off by default; port, external origin, host list) parsed without regexes; **any
+- [x] `webAccess` app settings (off by default; port, external origin, host list) parsed without regexes; **any
       non-loopback bind is refused until Task 28 lifts it together with TLS and the §4.3 confirms**
-- [ ] Node `http` server + `ws` upgrade, `ws` imported lazily so off costs nothing; Host allow-list on every request and
+- [x] Node `http` server + `ws` upgrade, `ws` imported lazily so off costs nothing; Host allow-list on every request and
       the upgrade; Origin equal to the external origin on the upgrade and every state-changing POST; the web shell CSP
       and `Cache-Control: no-store` (§4.1)
-- [ ] start and stop with the setting; nothing listens while off
-- [ ] write tests: off means no listener and no `ws` import; a non-loopback bind refused; wrong Host (DNS rebinding
+- [x] start and stop with the setting; nothing listens while off
+- [x] write tests: off means no listener and no `ws` import; a non-loopback bind refused; wrong Host (DNS rebinding
       case), wrong or missing Origin; external origin behind a proxy (`https` origin while the peer is 127.0.0.1)
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 5: Devices, the access link, None on loopback, the access log [model: opus]
 
