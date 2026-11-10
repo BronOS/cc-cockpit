@@ -99,8 +99,10 @@ export class HeadlessTerms {
           this.post({ t: 'parsed', tabId, seq: item.seq })
           return
         }
-        // A restart keeps the content, as the desktop's xterm does; the new process starts at its
-        // spawn size, which lands in the stream like any resize.
+        // A restart keeps the content, but the copy follows the pty's size: it is resized to the
+        // spawn size and back when the renderer reports its own. The desktop's xterm never shrinks
+        // here, and a shrink-then-grow reflow is not exactly reversible (cursor, scrollback, wrapped
+        // lines), so right after a restart the copy can differ slightly from the desktop's screen.
         this.resize(tabId, existing, item.seq, item.cols, item.rows)
         return
       case 'data':
@@ -111,8 +113,9 @@ export class HeadlessTerms {
         if (existing) this.resize(tabId, existing, item.seq, item.cols, item.rows)
         return
       case 'close':
-        // The tab is gone: free its terminal now. Writes still queued are dropped with it; nobody
-        // can join a closed tab, so nothing waits for them.
+        // The tab is gone: free its terminal now. xterm's dispose() does not clear its write
+        // queue, so chunks already queued are still parsed in the background (their callbacks are
+        // silenced by `disposed`); nobody can join a closed tab, so nothing waits for them.
         if (!existing) return
         this.tabs.delete(tabId)
         this.disposeTab(existing)
