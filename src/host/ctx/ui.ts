@@ -49,6 +49,7 @@ import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
 import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
 import { errorText } from '../../shared/error-text'
+import { viewIdOf, type ViewId } from '../../shared/views'
 import type { OverlayButtonRegistry } from '../overlay-buttons'
 
 /** Longest panel message, as JSON text (the RPC cap). */
@@ -132,14 +133,22 @@ export function fromMainPort(port: MainPortLike, onClose?: () => void): PanelPor
 }
 
 /**
- * The plugin and panel id of main's port message `{ "panelPort": { pluginId, panelId } }` (sent
- * with the port in its transfer list, host/index.ts), or undefined for anything else.
+ * The plugin and panel id of main's port message `{ "panelPort": { pluginId, panelId, view? } }`
+ * (sent with the port in its transfer list, host/index.ts), or undefined for anything else.
+ * `view` names a remote view's page (shared/views.ts, design-web.md §5.3); absent is the desktop
+ * window's own page, so a desktop port's message keeps its old shape.
  */
-export function panelPortTag(data: unknown): { pluginId: string; panelId: string } | undefined {
+export function panelPortTag(data: unknown): { pluginId: string; panelId: string; view?: ViewId } | undefined {
   if (typeof data !== 'string' || data.length > 1000) return undefined
   try {
-    const tag = (JSON.parse(data) as { panelPort?: { pluginId?: unknown; panelId?: unknown } } | null)?.panelPort
-    if (typeof tag?.pluginId === 'string' && typeof tag.panelId === 'string') return { pluginId: tag.pluginId, panelId: tag.panelId }
+    const tag = (JSON.parse(data) as { panelPort?: { pluginId?: unknown; panelId?: unknown; view?: unknown } } | null)?.panelPort
+    if (typeof tag?.pluginId === 'string' && typeof tag.panelId === 'string') {
+      const view = viewIdOf(tag.view)
+      // A view that is not one main mints is refused (the port is closed), never read as the
+      // desktop's: a tag main did not write must not take over the desktop page's slot.
+      if (tag.view !== undefined && view === undefined) return undefined
+      return { pluginId: tag.pluginId, panelId: tag.panelId, ...(view !== undefined ? { view } : {}) }
+    }
   } catch {
     // Not one of main's port messages.
   }
@@ -153,35 +162,60 @@ interface Attached {
   unsubscribe: () => void
 }
 
-/** The panel ports and message listeners of every plugin of one host, keyed `<pluginId>/<panelId>`. */
+/** The views map's key for the desktop window's own page (a port tag with no view). */
+const DESKTOP_PAGE = ''
+
+/**
+ * The panel ports and message listeners of every plugin of one host, keyed `<pluginId>/<panelId>`.
+ * A panel has one port PER VIEW (design-web.md §5.3): the desktop window's page and each remote
+ * browser view's page of it. A post goes to every view's page and a listener hears every page, so
+ * a plugin that pushes its state to "the panel" reaches every screen showing it; a reload in one
+ * view replaces only that view's port, and the other views keep talking.
+ */
 export class PanelPorts {
-  private readonly ports = new Map<string, Attached>()
+  /** `<pluginId>/<panelId>` -> view (DESKTOP_PAGE for the desktop window's page) -> its port. */
+  private readonly ports = new Map<string, Map<string, Attached>>()
   private readonly listeners = new Map<string, Set<MessageListener>>()
 
   constructor(private readonly log: (pluginId: string, message: string) => void) {}
 
   /**
-   * A panel (re)connected: `port` replaces the previous one, which is closed (a reloaded iframe
-   * gets a new port, and the old page must not keep talking). The caller checked that the plugin
-   * runs here and declares the panel.
+   * A panel's page in `view` (absent: the desktop window's) (re)connected: `port` replaces that
+   * view's previous one, which is closed (a reloaded iframe gets a new port, and the old page must
+   * not keep talking). Other views' ports stay. The caller checked that the plugin runs here and
+   * declares the panel.
    */
-  attach(pluginId: string, panelId: string, port: PanelPort): void {
+  attach(pluginId: string, panelId: string, port: PanelPort, view?: ViewId): void {
     const key = `${pluginId}/${panelId}`
-    this.detach(pluginId, panelId)
+    const v = view ?? DESKTOP_PAGE
+    this.detachView(key, v)
     const unsubscribe = port.onMessage((raw) => this.receive(pluginId, key, raw))
-    this.ports.set(key, { port, unsubscribe })
+    const views = this.ports.get(key) ?? new Map<string, Attached>()
+    views.set(v, { port, unsubscribe })
+    this.ports.set(key, views)
   }
 
   /**
-   * The panel went away: close its port. Listeners stay for the next one. With `port`, only when
-   * that is still the panel's port: the close of an old page's port can arrive after its reload
-   * already attached the new one.
+   * A page went away: close its port. Listeners stay for the next one. With `port`, only that port
+   * (whichever view holds it), and only while it is still attached: the close of an old page's
+   * port can arrive after its reload already attached the new one. Without, every view's port of
+   * the panel (the plugin is going).
    */
   detach(pluginId: string, panelId: string, port?: PanelPort): void {
     const key = `${pluginId}/${panelId}`
-    const old = this.ports.get(key)
-    if (!old || (port !== undefined && old.port !== port)) return
-    this.ports.delete(key)
+    const views = this.ports.get(key)
+    if (!views) return
+    for (const [v, attached] of [...views]) {
+      if (port === undefined || attached.port === port) this.detachView(key, v)
+    }
+  }
+
+  private detachView(key: string, view: string): void {
+    const views = this.ports.get(key)
+    const old = views?.get(view)
+    if (!views || !old) return
+    views.delete(view)
+    if (views.size === 0) this.ports.delete(key)
     old.unsubscribe()
     try {
       old.port.close()
@@ -190,23 +224,29 @@ export class PanelPorts {
     }
   }
 
-  /** Whether the panel has a port now (a post would be delivered). */
+  /** Whether the panel has a port in any view now (a post would be delivered). */
   connected(pluginId: string, panelId: string): boolean {
     return this.ports.has(`${pluginId}/${panelId}`)
   }
 
-  /** Send to the panel; false when it has no port (the message is dropped). */
+  /**
+   * Send to the panel's page in every view; false when it has no port at all (the message is
+   * dropped). One view's broken port is logged and does not keep the message from the others.
+   */
   post(pluginId: string, panelId: string, message: unknown): boolean {
     const text = encodePortMessage(message, 'panels.post')
-    const attached = this.ports.get(`${pluginId}/${panelId}`)
-    if (!attached) return false
-    try {
-      attached.port.postMessage(text)
-      return true
-    } catch (err) {
-      this.log(pluginId, `panels.post to ${panelId} failed: ${errorText(err)}`)
-      return false
+    const views = this.ports.get(`${pluginId}/${panelId}`)
+    if (!views) return false
+    let delivered = false
+    for (const [view, attached] of [...views]) {
+      try {
+        attached.port.postMessage(text)
+        delivered = true
+      } catch (err) {
+        this.log(pluginId, `panels.post to ${panelId}${view !== DESKTOP_PAGE ? ` (${view})` : ''} failed: ${errorText(err)}`)
+      }
     }
+    return delivered
   }
 
   onMessage(pluginId: string, panelId: string, listener: MessageListener): Disposer {

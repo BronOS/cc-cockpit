@@ -29,7 +29,7 @@
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
 //   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
 //   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
-//   slot.close { pluginId, id }               a slot frame this host provides ended (SlotInstance.onClose)
+//   slot.close { pluginId, id, view? }        a slot frame this host provides ended (SlotInstance.onClose)
 //   settingsPage.close { pluginId, id }       the plugin's settings page ended (SettingsPageInstance.onClose)
 //   overlay.ended { key }                     a typed overlay went: its type buttons' runs go
 // Requests to main (checked there against this host's own project and plugins):
@@ -48,10 +48,10 @@
 //   log        { pluginId, level, text }      a ctx.log line
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)
 // Next to the RPC, main hands over panel ports (src/main/plugins/panel-ports.ts): a message
-// `{ "panelPort": { pluginId, panelId } }` with the port in its transfer list. Those never reach the
+// `{ "panelPort": { pluginId, panelId, view? } }` with the port in its transfer list. Those never reach the
 // RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts). A slot frame the
-// plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params? } }`
-// and ends with the `slot.close { pluginId, id }` event or its port closing (host/ctx/slots.ts).
+// plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params?, view? } }`
+// and ends with the `slot.close { pluginId, id, view? }` event or its port closing (host/ctx/slots.ts).
 // A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope } }`, ended by
 // `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts).
 import { HostContexts, type LogLevel } from './ctx'
@@ -89,7 +89,7 @@ function start(): void {
     const slotTag = slotOpenTag(e.data)
     if (slotTag) {
       // A slot frame (this plugin provides the page in it); the close of THIS port ends THIS frame.
-      const slotPort: PanelPort = fromMainPort(raw, () => contexts.detachSlotPort(slotTag.pluginId, slotTag.id, slotPort))
+      const slotPort: PanelPort = fromMainPort(raw, () => contexts.detachSlotPort(slotTag.pluginId, slotTag.id, slotPort, slotTag.view))
       contexts.attachSlotPort(slotTag, slotPort)
       return
     }
@@ -108,7 +108,7 @@ function start(): void {
     // The detach on close is tied to THIS port: the close of a reloaded page's old port can come
     // after the new port is attached, and must not take the new one down.
     const panelPort: PanelPort = fromMainPort(raw, () => contexts.detachPanelPort(tag.pluginId, tag.panelId, panelPort))
-    contexts.attachPanelPort(tag.pluginId, tag.panelId, panelPort)
+    contexts.attachPanelPort(tag.pluginId, tag.panelId, panelPort, tag.view)
   }
   const port: RpcPort = {
     postMessage: (message) => parentPort.postMessage(message),

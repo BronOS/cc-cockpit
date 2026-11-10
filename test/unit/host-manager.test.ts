@@ -1726,6 +1726,9 @@ describe('HostManager', () => {
       expect(factory.last.ports).toEqual([{ message: JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board' } }), port }])
       // What the host reads back off that message (host/index.ts).
       expect(panelPortTag(factory.last.ports[0]!.message)).toEqual({ pluginId: 'a.one', panelId: 'board' })
+      // A remote view's page: the tag names the view, so the host keeps one port per view.
+      expect(manager.sendPanelPort('p1', 'a.one', 'board', port, 'web:3')).toBe(true)
+      expect(panelPortTag(factory.last.ports[1]!.message)).toEqual({ pluginId: 'a.one', panelId: 'board', view: 'web:3' })
     })
 
     it('keeps the ports of a plugin whose scheduled job fails, drops all of them when the host goes', async () => {
@@ -1874,6 +1877,12 @@ describe('HostManager', () => {
       slotted.closeSlot('p1', 'a.one', 's1')
       await flush()
       expect(hostEvents).toContainEqual({ event: 'slot.close', params: { pluginId: 'a.one', id: 's1' } })
+      // A remote view's instance of the frame: open and close both name the view.
+      expect(slotted.sendSlotPort('p1', { ...open, view: 'web:2' }, port)).toBe(true)
+      expect(factory.last.ports.at(-1)).toEqual({ message: JSON.stringify({ slotOpen: { ...open, view: 'web:2' } }), port })
+      slotted.closeSlot('p1', 'a.one', 's1', 'web:2')
+      await flush()
+      expect(hostEvents).toContainEqual({ event: 'slot.close', params: { pluginId: 'a.one', id: 's1', view: 'web:2' } })
       // No host: nothing to tell.
       slotted.closeSlot('p2', 'a.one', 's1')
     })

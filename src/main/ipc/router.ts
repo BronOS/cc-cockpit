@@ -451,8 +451,8 @@ export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): 
 
 /** What the plugin panel handlers need (panel-ports.ts, host-manager.ts). */
 export interface PanelHandlerDeps {
-  /** Connect a panel instance of the sender's window (PanelPortHub.connect); false when refused. */
-  connect(projectId: string, windowId: number, panelKey: unknown, nonce: unknown): boolean
+  /** Connect a panel instance of the calling view (PanelPortHub.connect); false when refused. */
+  connect(projectId: string, viewId: ViewId, panelKey: unknown, nonce: unknown): boolean
   /** Start the project's plugin host again if it gave up (HostManager.restartStopped). */
   restartHost(projectId: string): Promise<void>
   /** A header action click (HostManager.panelAction); false when the host dropped it. */
@@ -464,9 +464,10 @@ export interface PanelHandlerDeps {
  * passed on as renderer input, and PanelPortHub only looks them up inside that project.
  */
 export function registerPanelHandlers(router: IpcRouter, deps: PanelHandlerDeps): void {
-  router.handleProject('panels.connect', (ctx, payload) => {
+  // The port goes back to the view that asked (main's id from the caller, design-web.md §5.3).
+  router.handleProject('panels.connect', (ctx, payload, view) => {
     const { panelKey, nonce } = fields('panels.connect', payload)
-    return deps.connect(ctx.projectId, ctx.windowId, panelKey, nonce)
+    return deps.connect(ctx.projectId, view.viewId, panelKey, nonce)
   })
   router.handleProject('plugins.restart', (ctx) => deps.restartHost(ctx.projectId))
   // The project is the sender's; the key and id are only looked up in that project's host
@@ -483,10 +484,10 @@ export function registerPanelHandlers(router: IpcRouter, deps: PanelHandlerDeps)
 
 /** What the slot frame handlers need (panel-ports.ts, layout-service.ts). */
 export interface SlotHandlerDeps {
-  /** Connect a slot frame of the sender's window (PanelPortHub.connectSlot); false when refused. */
-  connect(projectId: string, windowId: number, frameId: unknown, nonce: unknown): boolean
-  /** The shell unmounted the frame (PanelPortHub.disconnectSlot). */
-  disconnect(projectId: string, frameId: string): void
+  /** Connect a slot frame of the calling view (PanelPortHub.connectSlot); false when refused. */
+  connect(projectId: string, viewId: ViewId, frameId: unknown, nonce: unknown): boolean
+  /** The calling view's shell unmounted the frame (PanelPortHub.disconnectSlot): only that view's instance. */
+  disconnect(projectId: string, viewId: ViewId, frameId: string): void
   /** The frame's page asked for a height (LayoutService.setSlotHeight); false when refused. */
   setHeight(projectId: string, frameId: string, height: number): boolean
 }
@@ -502,12 +503,13 @@ export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): 
     if (typeof frameId !== 'string' || frameId.length > 40) throw new Error(`${channel}: frameId must be a short string`)
     return frameId
   }
-  router.handleProject('slots.connect', (ctx, payload) => {
+  // Keyed by the calling view: each view's frame of an id is its own instance (design-web.md §5.3).
+  router.handleProject('slots.connect', (ctx, payload, view) => {
     const frameId = frameIdOf('slots.connect', payload)
-    return deps.connect(ctx.projectId, ctx.windowId, frameId, fields('slots.connect', payload).nonce)
+    return deps.connect(ctx.projectId, view.viewId, frameId, fields('slots.connect', payload).nonce)
   })
-  router.handleProject('slots.disconnect', (ctx, payload) => {
-    deps.disconnect(ctx.projectId, frameIdOf('slots.disconnect', payload))
+  router.handleProject('slots.disconnect', (ctx, payload, view) => {
+    deps.disconnect(ctx.projectId, view.viewId, frameIdOf('slots.disconnect', payload))
     return null
   })
   router.handleProject('slots.height', (ctx, payload) => {
@@ -522,10 +524,10 @@ export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): 
 export interface SettingsPageHandlerDeps {
   /** The page's URL for the sender's project, or that the plugin does not run there; null when it has no such page. */
   info(projectId: string, pluginId: string, scope: SettingsPageScope): SettingsPageInfo | null
-  /** Connect the page of the sender's window (PanelPortHub.connectSettingsPage); false when refused. */
-  connect(projectId: string, windowId: number, pluginId: string, scope: SettingsPageScope, nonce: unknown): boolean
-  /** The shell unmounted the page (PanelPortHub.disconnectSettingsPage). */
-  disconnect(projectId: string, pluginId: string): void
+  /** Connect the page in the calling view (PanelPortHub.connectSettingsPage); false when refused. */
+  connect(projectId: string, viewId: ViewId, pluginId: string, scope: SettingsPageScope, nonce: unknown): boolean
+  /** The calling view's shell unmounted the page (PanelPortHub.disconnectSettingsPage): ends it only when that view holds it. */
+  disconnect(projectId: string, viewId: ViewId, pluginId: string): void
 }
 
 /**
@@ -549,17 +551,17 @@ export function registerSettingsPageHandlers(router: IpcRouter, deps: SettingsPa
   router.handleProject('settingsPage.info', (ctx, payload) =>
     deps.info(ctx.projectId, pluginIdOf('settingsPage.info', payload), scopeOf('settingsPage.info', payload))
   )
-  router.handleProject('settingsPage.connect', (ctx, payload) =>
+  router.handleProject('settingsPage.connect', (ctx, payload, view) =>
     deps.connect(
       ctx.projectId,
-      ctx.windowId,
+      view.viewId,
       pluginIdOf('settingsPage.connect', payload),
       scopeOf('settingsPage.connect', payload),
       fields('settingsPage.connect', payload).nonce
     )
   )
-  router.handleProject('settingsPage.disconnect', (ctx, payload) => {
-    deps.disconnect(ctx.projectId, pluginIdOf('settingsPage.disconnect', payload))
+  router.handleProject('settingsPage.disconnect', (ctx, payload, view) => {
+    deps.disconnect(ctx.projectId, view.viewId, pluginIdOf('settingsPage.disconnect', payload))
     return null
   })
 }

@@ -44,6 +44,7 @@ import { createSettingsPageApi, SettingsPageHub, type SettingsPageOpenTag } from
 import { createStorage, type StorageHandle } from './storage'
 import { createThemesApi } from './themes'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
+import { viewIdOf, type ViewId } from '../../shared/views'
 import { OverlayButtonRegistry } from '../overlay-buttons'
 import { createWebviewApi, WebviewHub } from './webview'
 
@@ -587,16 +588,17 @@ export class HostContexts {
 
   /**
    * Attach a panel's MessagePort (host/index.ts calls this when main hands the host a port tagged
-   * with plugin and panel id). Only for a plugin that runs here and a panel its manifest declares;
+   * with plugin and panel id, and `view` for a remote view's page). Only for a plugin that runs here and a panel its manifest declares;
    * false (and the port closed) otherwise.
    */
-  attachPanelPort(pluginId: string, panelId: string, port: PanelPort): boolean {
+  attachPanelPort(pluginId: string, panelId: string, port: PanelPort, view?: ViewId): boolean {
     const rt = this.runtimes.get(pluginId)
     if (!rt || rt.disposed || !rt.spec.panels.includes(panelId)) {
       port.close()
       return false
     }
-    this.ports.attach(pluginId, panelId, port)
+    // One port per view (design-web.md §5.3); `view` absent is the desktop window's page.
+    this.ports.attach(pluginId, panelId, port, view)
     return true
   }
 
@@ -621,8 +623,8 @@ export class HostContexts {
   }
 
   /** The slot page's end of the port closed (reload, unmount): ends only that port's frame. */
-  detachSlotPort(pluginId: string, id: string, port: PanelPort): void {
-    this.slots.close(pluginId, id, port)
+  detachSlotPort(pluginId: string, id: string, port: PanelPort, view?: ViewId): void {
+    this.slots.close(pluginId, id, view, port)
   }
 
   /**
@@ -687,8 +689,11 @@ export class HostContexts {
       return
     }
     if (event === 'slot.close') {
-      const { pluginId, id } = (params ?? {}) as Record<string, unknown>
-      if (typeof pluginId === 'string' && typeof id === 'string') this.slots.close(pluginId, id)
+      const { pluginId, id, view } = (params ?? {}) as Record<string, unknown>
+      // `view` names which view's frame of that id ended (a remote one); absent: the desktop's. One
+      // that is not a view main mints is dropped, never read as the desktop's frame.
+      if (view !== undefined && viewIdOf(view) === undefined) return
+      if (typeof pluginId === 'string' && typeof id === 'string') this.slots.close(pluginId, id, viewIdOf(view))
       return
     }
     if (event === 'settingsPage.close') {

@@ -497,7 +497,9 @@ function start(): void {
       firstTab.disarm(projectId)
       tabs.closeProject(projectId)
       // Its view's hidden mark (terminal sizes) goes with it; its tabs' sizes went with the tabs.
+      // So do the desktop page's slot instances and the settings page it held (panel-ports.ts).
       tabs.viewGone(desktopViewId(windowId))
+      panelPorts.viewGone(desktopViewId(windowId))
       // No window, no selection: a reopened window reports its own once its page loads.
       sessions.setActive(projectId, undefined)
       // The user closed the window: its tabs are over, so is their record. While quitting the
@@ -1066,15 +1068,16 @@ function start(): void {
       return { host: port1, renderer: port2 }
     },
     runningPanels: (projectId, pluginId) => hosts.runningPanels(projectId, pluginId),
-    toHost: (projectId, pluginId, panelId, port) => hosts.sendPanelPort(projectId, pluginId, panelId, port),
-    // The window's desktop view for now; remote views get their ports relayed (design-web.md §5.4).
-    toRenderer: (windowId, payload, port) => views.postPort(desktopViewId(windowId), PANEL_PORT_CHANNEL, payload, port),
+    toHost: (projectId, pluginId, panelId, port, view) => hosts.sendPanelPort(projectId, pluginId, panelId, port, view),
+    // The view that asked (design-web.md §5.3). A remote view cannot take a port until the gateway
+    // relays them (Task 22): postPort throws and the hub closes both ends.
+    toRenderer: (viewId, payload, port) => views.postPort(viewId, PANEL_PORT_CHANNEL, payload, port),
     reload: (projectId, pluginIds) => sendToProject(projectId, 'panels.reload', { pluginIds }),
     close: (port) => port.close(),
     // Slot frames: looked up in the layout's own records, the port to the provider's host only.
     slotFrame: (projectId, frameId) => layouts.slotFrame(projectId, frameId),
     slotToHost: (projectId, open, port) => hosts.sendSlotPort(projectId, open, port),
-    slotClosed: (projectId, pluginId, frameId) => hosts.closeSlot(projectId, pluginId, frameId),
+    slotClosed: (projectId, pluginId, frameId, view) => hosts.closeSlot(projectId, pluginId, frameId, view),
     // Settings pages (design-next §5.4): the plugin's backend in the sender window's host only.
     settingsPageScopes: (projectId, pluginId) => hosts.runningSettingsPage(projectId, pluginId),
     settingsPageToHost: (projectId, open, port) => hosts.sendSettingsPagePort(projectId, open, port),
@@ -1916,7 +1919,7 @@ function start(): void {
   })
 
   registerPanelHandlers(router, {
-    connect: (projectId, windowId, panelKey, nonce) => panelPorts.connect(projectId, windowId, panelKey, nonce),
+    connect: (projectId, viewId, panelKey, nonce) => panelPorts.connect(projectId, viewId, panelKey, nonce),
     restartHost: (projectId) => hosts.restartStopped(projectId),
     panelAction: (projectId, panelKey, actionId) => hosts.panelAction(projectId, panelKey, actionId)
   })
@@ -1931,12 +1934,12 @@ function start(): void {
       if (!enabledIds(projectId).includes(pluginId)) return { enabled: false }
       return { enabled: true, src: pluginFileUrl(pluginId, page.entry) }
     },
-    connect: (projectId, windowId, pluginId, scope, nonce) => panelPorts.connectSettingsPage(projectId, windowId, pluginId, scope, nonce),
-    disconnect: (projectId, pluginId) => panelPorts.disconnectSettingsPage(projectId, pluginId)
+    connect: (projectId, viewId, pluginId, scope, nonce) => panelPorts.connectSettingsPage(projectId, viewId, pluginId, scope, nonce),
+    disconnect: (projectId, viewId, pluginId) => panelPorts.disconnectSettingsPage(projectId, viewId, pluginId)
   })
   registerSlotHandlers(router, {
-    connect: (projectId, windowId, frameId, nonce) => panelPorts.connectSlot(projectId, windowId, frameId, nonce),
-    disconnect: (projectId, frameId) => panelPorts.disconnectSlot(projectId, frameId),
+    connect: (projectId, viewId, frameId, nonce) => panelPorts.connectSlot(projectId, viewId, frameId, nonce),
+    disconnect: (projectId, viewId, frameId) => panelPorts.disconnectSlot(projectId, viewId, frameId),
     setHeight: (projectId, frameId, height) => layouts.setSlotHeight(projectId, frameId, height)
   })
 
@@ -2057,7 +2060,11 @@ function start(): void {
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     // A browser left: the tabs it sized fall back to a remaining visible view (terminal-sizes.ts).
-    viewGone: (viewId) => tabs.viewGone(viewId),
+    // Its slot instances and the settings page it held end too (panel-ports.ts viewGone).
+    viewGone: (viewId) => {
+      tabs.viewGone(viewId)
+      panelPorts.viewGone(viewId)
+    },
     log: (m) => console.warn(m)
   })
   webGateway.setSocketHandler((ws, _req, device) => {

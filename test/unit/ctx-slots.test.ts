@@ -169,6 +169,31 @@ describe('ctx.slots.onOpen', () => {
     expect(secondClosed).toBe(1)
   })
 
+  it("keeps one frame id open in several views at once; main's close and a port's close end only that view's", () => {
+    const { contexts, provider } = setup()
+    const slots: SlotInstance[] = []
+    provider.slots.onOpen('agenda', (s) => slots.push(s))
+    const desktop = openFrame(contexts, TAG)
+    const browser = openFrame(contexts, { ...TAG, view: 'web:1' })
+    const other = openFrame(contexts, { ...TAG, view: 'web:2' })
+    // Three instances; opening the browser's did not close the desktop's.
+    expect(slots).toHaveLength(3)
+    expect(desktop.port.closed || browser.port.closed || other.port.closed).toBe(false)
+    const ended: number[] = []
+    slots.forEach((s, i) => s.onClose(() => ended.push(i)))
+    // main closes the browser's frame: only that one.
+    contexts.handleEvent('slot.close', { pluginId: 'p.cal', id: 's1', view: 'web:1' })
+    expect(ended).toEqual([1])
+    // A close naming a view main never mints is not read as the desktop's.
+    contexts.handleEvent('slot.close', { pluginId: 'p.cal', id: 's1', view: 'desktop:1' })
+    expect(ended).toEqual([1])
+    // The other browser's page port closes: only its frame.
+    contexts.detachSlotPort('p.cal', 's1', other.port, 'web:2')
+    expect(ended).toEqual([1, 2])
+    contexts.handleEvent('slot.close', { pluginId: 'p.cal', id: 's1' })
+    expect(ended).toEqual([1, 2, 0])
+  })
+
   it('a throwing onOpen or onClose listener is logged and does not stop the others', () => {
     const { contexts, provider, logs } = setup()
     const order: string[] = []
@@ -217,6 +242,10 @@ describe('slotOpenTag', () => {
     expect(slotOpenTag(JSON.stringify({ slotOpen: { ...TAG, id: '../x' } }))).toBeUndefined()
     expect(slotOpenTag(JSON.stringify({ slotOpen: { ...TAG, type: 'Bad Type' } }))).toBeUndefined()
     expect(slotOpenTag(JSON.stringify({ slotOpen: { ...TAG, host: { kind: 'app', place: 'sidebar' } } }))).toBeUndefined()
+    expect(slotOpenTag(JSON.stringify({ slotOpen: { ...TAG, view: 'web:3' } }))).toEqual({ ...TAG, view: 'web:3' })
+    // A view main does not mint is refused, never read as the desktop window's frame.
+    expect(slotOpenTag(JSON.stringify({ slotOpen: { ...TAG, view: 'desktop:1' } }))).toBeUndefined()
+    expect(slotOpenTag(JSON.stringify({ slotOpen: { ...TAG, view: 5 } }))).toBeUndefined()
     expect(slotOpenTag('{')).toBeUndefined()
     expect(slotOpenTag(5)).toBeUndefined()
     expect(slotOpenTag('x'.repeat(40_000))).toBeUndefined()

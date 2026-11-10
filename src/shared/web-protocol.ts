@@ -66,9 +66,14 @@ export const CLOSE = Object.freeze({
 
 /**
  * What a joining view gets in `ready` (design-web.md §5.1): enough to draw the window without a
- * round trip. Tasks 17, 23 and 24 extend it (panel headers and slot frames, pending asks, held
- * pages), each with its own snapshot test. `tabs` is the plain list, not `tabs.list`: that call
- * resets terminal flow (TabManager.attach), which a remote view must never do to the desktop.
+ * round trip. Tasks 23 and 24 extend it (pending asks, held pages), each with its own snapshot
+ * test. `tabs` is the plain list, not `tabs.list`: that call resets terminal flow
+ * (TabManager.attach), which a remote view must never do to the desktop.
+ *
+ * `layout` is main's LayoutService view, so it already carries every panel's header, badge and
+ * error (`PanelInfo`), its slot frames (`PanelInfo.slots`) and the top bar's (`appSlots`), under
+ * the same frame ids the desktop draws: a browser's frame of an id connects to its own instance of
+ * that frame (`slots.connect`, keyed by view in panel-ports.ts). Placement params never travel.
  */
 export interface WebSnapshot {
   tabs: TabInfo[]

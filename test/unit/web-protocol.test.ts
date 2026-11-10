@@ -11,6 +11,8 @@ import * as wsModule from 'ws'
 import type { EventChannel, LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, type ProjectContext } from '../../src/main/ipc/router'
 import { OverlayManager } from '../../src/main/overlays/overlay-manager'
+import { LayoutService } from '../../src/main/layout/layout-service'
+import { defaultLayout, type LayoutState } from '../../src/shared/layout'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { ViewRegistry } from '../../src/main/views/view-registry'
 import { AccessLog } from '../../src/main/web/access-log'
@@ -334,6 +336,39 @@ describe('windowSnapshot leaves the desktop as it was', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // design-web.md §5.1: a joining view gets the panel headers, badges and slot frames with the
+  // layout, read from main's LayoutService (the same view the desktop's layout.get answers).
+  it('carries panel headers, badges, slot frames and app slots from the layout service', () => {
+    const stored = new Map<string, LayoutState>([['p1', defaultLayout()]])
+    const providers = new Map<string, { pluginId: string; entry: string; minHeight: number; maxHeight: number; epoch: number }>([
+      ['agenda', { pluginId: 'a.cal', entry: 'agenda.html', minHeight: 48, maxHeight: 320, epoch: 1 }],
+      ['sessions-strip', { pluginId: 'cockpit.sessions', entry: 'strip.html', minHeight: 24, maxHeight: 40, epoch: 1 }]
+    ])
+    const layouts = new LayoutService({
+      getLayout: (id) => stored.get(id),
+      setLayout: (id, layout) => void stored.set(id, layout),
+      publish: () => {},
+      slotProvider: (_id, type) => providers.get(type)
+    })
+    layouts.setPluginPanels('p1', 'a.inbox', [{ id: 'main', title: 'Inbox', defaultZone: 'left', slots: ['agenda'] }])
+    const header = { meta: '3 new', actions: [{ id: 'refresh', title: 'Refresh', icon: 'refresh' as const }] }
+    layouts.setBadge('p1', 'a.inbox/main', { kind: 'count', count: 3 })
+    layouts.setHeader('p1', 'a.inbox/main', header)
+    layouts.setSlots('p1', 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 100, params: { day: 1 } }])
+    const snap = windowSnapshot(
+      { tabs: { list: () => [] }, layouts, overlays: { infos: () => [] } },
+      { windowId: 1, projectId: 'p1' }
+    )
+    const panel = snap.layout.panels.find((p) => p.panelKey === 'a.inbox/main')
+    expect(panel).toMatchObject({ badge: { kind: 'count', count: 3 }, header })
+    expect(panel?.slots).toEqual([expect.objectContaining({ id: expect.stringMatching(/^s\d+$/), type: 'agenda', pluginId: 'a.cal' })])
+    // The placement's params stay in main (the provider gets them with its port), never in a view.
+    expect(JSON.stringify(snap)).not.toContain('"day"')
+    expect(snap.layout.appSlots).toEqual([expect.objectContaining({ type: 'sessions-strip', pluginId: 'cockpit.sessions' })])
+    // The same frame ids the desktop's view of the layout has: a browser's frame connects to the same frame.
+    expect(snap.layout).toEqual(layouts.view('p1'))
   })
 
   it('a project with no layout record throws (the connection closes with `failed`)', () => {

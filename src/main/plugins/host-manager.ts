@@ -51,6 +51,7 @@
 // one); unit tests pass a fake and drive time with fake timers.
 import { join } from 'node:path'
 import { errorText } from '../../shared/error-text'
+import type { ViewId } from '../../shared/views'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
@@ -868,12 +869,13 @@ export class HostManager {
 
   /**
    * Hand the project's host one end of a panel's channel, tagged with the plugin and panel id
-   * (the caller took them from `runningPanels`). False when there is no host process to take it.
+   * (the caller took them from `runningPanels`) and, for a remote view's page, main's view id (the
+   * host keeps one port per view). False when there is no host process to take it.
    */
-  sendPanelPort(projectId: string, pluginId: string, panelId: string, port: unknown): boolean {
+  sendPanelPort(projectId: string, pluginId: string, panelId: string, port: unknown, view?: ViewId): boolean {
     const proc = this.hosts.get(projectId)?.proc
     if (!proc) return false
-    proc.transferPort(JSON.stringify({ panelPort: { pluginId, panelId } }), port)
+    proc.transferPort(JSON.stringify({ panelPort: { pluginId, panelId, ...(view !== undefined ? { view } : {}) } }), port)
     return true
   }
 
@@ -913,7 +915,7 @@ export class HostManager {
    */
   sendSlotPort(
     projectId: string,
-    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue },
+    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue; view?: ViewId },
     port: unknown
   ): boolean {
     const rec = this.hosts.get(projectId)
@@ -922,11 +924,14 @@ export class HostManager {
     return true
   }
 
-  /** Tell the provider's host a slot frame is gone (`slot.close`); nothing when there is no host. */
-  closeSlot(projectId: string, pluginId: string, id: string): void {
+  /**
+   * Tell the provider's host a slot frame is gone (`slot.close`) in one view (`view` for a remote
+   * one, absent for the desktop page); nothing when there is no host.
+   */
+  closeSlot(projectId: string, pluginId: string, id: string, view?: ViewId): void {
     const rec = this.hosts.get(projectId)
     if (!rec?.rpc || rec.stopping) return
-    rec.rpc.emit('slot.close', { pluginId, id })
+    rec.rpc.emit('slot.close', { pluginId, id, ...(view !== undefined ? { view } : {}) })
   }
 
   /**

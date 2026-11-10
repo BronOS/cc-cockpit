@@ -400,13 +400,13 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/web/protocol.ts` (`ready` gains panel headers/badges and slot frames)
 - Create: `test/fakes/fake-main-port.ts` (port); Modify: `test/unit/panel-ports.test.ts`
 
-- [ ] the host keeps one port per (panel, view); `post` fans out; `onMessage` hears every page; a reload in one view
+- [x] the host keeps one port per (panel, view); `post` fans out; `onMessage` hears every page; a reload in one view
       replaces only its port
-- [ ] slots: `openSlots`, `withinCap`, `connectSlot` keyed by view, so each view's frame is its own slot instance
-- [ ] settings pages keyed by view (held by one view, Task 24)
-- [ ] write tests: two views get a post, a reload replaces only its own port, two slot frames of one id in two views do
+- [x] slots: `openSlots`, `withinCap`, `connectSlot` keyed by view, so each view's frame is its own slot instance
+- [x] settings pages keyed by view (held by one view, Task 24)
+- [x] write tests: two views get a post, a reload replaces only its own port, two slot frames of one id in two views do
       not close each other, caps per view, the `ready` snapshot carries headers, badges and slot frames
-- [ ] run tests, `npm run test:plugins` and `npm run test:e2e` - must pass before next task
+- [x] run tests, `npm run test:plugins` and `npm run test:e2e` - must pass before next task
 
 ### Task 18: Origin view in the plugin host [model: opus]
 

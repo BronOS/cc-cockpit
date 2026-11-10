@@ -19,7 +19,7 @@
 // still renders (and queues what it posts, see src/sdk/panel.ts).
 //
 // Capped: at most MAX_CONNECTS_PER_PANEL connects per CONNECT_WINDOW_MS for one panel of one
-// window (refused like the cases above). A page may `location.reload()` itself in a loop (its
+// view (refused like the cases above). A page may `location.reload()` itself in a loop (its
 // sandbox allows it) and the shell asks again on every load; each connect costs MAIN a channel, a
 // port transfer to the host and the page's files re-read, not only the plugin's own host.
 //
@@ -50,6 +50,20 @@
 //                           end comes back under `@settings/<pluginId>`.
 //   disconnectSettingsPage  the shell unmounted it (`settingsPage.disconnect`): onClose.
 //
+// Views (design-web.md §5.3): a project window can have several live views at once, its desktop
+// page and remote browser views (shared/views.ts). Every connect comes from one view (main's own
+// id from the router's CallView, never the page's word) and its page end goes back to THAT view:
+//
+//   panels      the host keeps one port per (panel, view); a remote view's tag carries its id, a
+//               desktop's has none (unchanged shape). A reload in one view replaces only its port.
+//   slots       each view's frame of an id is its own instance: open, reconnect, unmount and the
+//               connect cap are keyed by view, so two views showing one frame never close each
+//               other's. A layout change that drops a frame closes it in every view.
+//   settings    one page per plugin at a time, held by the view that connected last (design-web.md
+//               §5.4, take over in Task 24): an unmount from any other view does not close it.
+//   viewGone    a view left (a browser, or the desktop window closed): its slot instances and the
+//               page it held end.
+//
 // No Electron import: the channel factory (MessageChannelMain) and the two senders are injected
 // by index.ts; unit tests pass fakes.
 
@@ -58,6 +72,7 @@ import { SLOT_FRAME_ID_PATTERN, slotPortKey, type SlotHost } from '../../shared/
 import type { JsonValue } from '../../sdk/types'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope, settingsPagePortKey } from '../../shared/settings-page'
+import { isRemoteViewId, type ViewId } from '../../shared/views'
 import type { SlotFrameRecord } from '../layout/layout-service'
 
 /** Two entangled ends; P is Electron's MessagePortMain in the app, a fake in tests. */
@@ -73,10 +88,16 @@ export interface PanelPortDeps<P> {
    * (HostManager.runningPanels). The returned strings are main's own records.
    */
   runningPanels(projectId: string, pluginId: string): readonly string[] | undefined
-  /** Hand the host its end, tagged (HostManager.sendPanelPort); false when there is no host. */
-  toHost(projectId: string, pluginId: string, panelId: string, port: P): boolean
-  /** Post the renderer end to the window (ViewRegistry.postPort on PANEL_PORT_CHANNEL). */
-  toRenderer(windowId: number, payload: { panelKey: string; nonce: number }, port: P): void
+  /**
+   * Hand the host its end, tagged (HostManager.sendPanelPort); false when there is no host. `view`
+   * is set for a remote view's page only (the host keeps one port per view; absent = desktop).
+   */
+  toHost(projectId: string, pluginId: string, panelId: string, port: P, view?: ViewId): boolean
+  /**
+   * Post the page end to the view that asked (ViewRegistry.postPort on PANEL_PORT_CHANNEL). Throws
+   * when the view is gone or cannot take a port; both ends are then closed.
+   */
+  toRenderer(viewId: ViewId, payload: { panelKey: string; nonce: number }, port: P): void
   /** Tell the project's window to reload these plugins' panels (`panels.reload`). */
   reload(projectId: string, pluginIds: string[]): void
   close(port: P): void
@@ -85,11 +106,11 @@ export interface PanelPortDeps<P> {
   /** Hand the provider's host its end with what onOpen gets (HostManager.sendSlotPort); false when it does not run. */
   slotToHost?(
     projectId: string,
-    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue },
+    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue; view?: ViewId },
     port: P
   ): boolean
-  /** The frame is gone: tell the provider's host (HostManager.closeSlot). */
-  slotClosed?(projectId: string, pluginId: string, frameId: string): void
+  /** The frame is gone in a view (`view` set for a remote one): tell the provider's host (HostManager.closeSlot). */
+  slotClosed?(projectId: string, pluginId: string, frameId: string, view?: ViewId): void
   /** The scopes of the plugin's settings page when it runs in the project's host now (HostManager.runningSettingsPage). */
   settingsPageScopes?(projectId: string, pluginId: string): readonly SettingsPageScope[] | undefined
   /** Hand the plugin's host its end of a settings page (HostManager.sendSettingsPagePort); false when it does not run. */
@@ -101,11 +122,28 @@ export interface PanelPortDeps<P> {
   now?: () => number
 }
 
+/** A slot frame instance whose port went out to one view. */
+interface OpenSlot {
+  projectId: string
+  pluginId: string
+  frameId: string
+  viewId: ViewId
+}
+
+/** What a host's tag carries for a view: a remote view's id, nothing for a desktop page (unchanged shape). */
+function remoteOnly(viewId: ViewId): { view?: ViewId } {
+  return isRemoteViewId(viewId) ? { view: viewId } : {}
+}
+
+function slotKey(projectId: string, viewId: ViewId, frameId: string): string {
+  return `${projectId}\n${viewId}\n${frameId}`
+}
+
 /** Longest panel key looked at (a plugin id is at most 100, a contribution id 64). */
 const MAX_PANEL_KEY_LENGTH = 200
 
 /**
- * Connects one panel of one window may make per CONNECT_WINDOW_MS. A well-behaved page connects
+ * Connects one panel of one view may make per CONNECT_WINDOW_MS. A well-behaved page connects
  * once per load: at window open, on a host restart (`panels.reload`) and when the user moves or
  * reopens it, far fewer than this in ten seconds.
  */
@@ -115,12 +153,15 @@ export const CONNECT_WINDOW_MS = 10_000
 export class PanelPortHub<P> {
   private readonly log: (message: string) => void
   private readonly now: () => number
-  /** Recent connect times per `<projectId>\n<windowId>\n<pluginId>/<panelId>` (main's own ids). */
+  /** Recent connect times per `<projectId>\n<viewId>\n<pluginId>/<panelId>` (main's own ids). */
   private readonly recent = new Map<string, { times: number[]; logged: boolean }>()
-  /** `<projectId>\n<frameId>` -> the provider of a slot frame whose port went out and is not closed yet. */
-  private readonly openSlots = new Map<string, { projectId: string; pluginId: string; frameId: string }>()
-  /** `<projectId>\n<pluginId>` -> the id of the plugin's settings page whose port went out and is not closed yet. */
-  private readonly openPages = new Map<string, { projectId: string; pluginId: string; id: string }>()
+  /** `<projectId>\n<viewId>\n<frameId>` -> the provider of a slot frame whose port went out to that view and is not closed yet. */
+  private readonly openSlots = new Map<string, OpenSlot>()
+  /**
+   * `<projectId>\n<pluginId>` -> the plugin's settings page whose port went out and is not closed
+   * yet, and the view holding it (one page per plugin, whichever view connected last).
+   */
+  private readonly openPages = new Map<string, { projectId: string; pluginId: string; id: string; viewId: ViewId }>()
   private nextPageId = 1
 
   constructor(private readonly deps: PanelPortDeps<P>) {
@@ -129,10 +170,10 @@ export class PanelPortHub<P> {
   }
 
   /**
-   * Connect one panel instance of the asking window. `projectId` and `windowId` are what main
-   * resolved from the sender; `panelKey` and `nonce` are renderer input and only looked up.
+   * Connect one panel instance of the asking view. `projectId` and `viewId` are what main resolved
+   * from the caller; `panelKey` and `nonce` are renderer input and only looked up.
    */
-  connect(projectId: string, windowId: number, panelKey: unknown, nonce: unknown): boolean {
+  connect(projectId: string, viewId: ViewId, panelKey: unknown, nonce: unknown): boolean {
     if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
     if (typeof panelKey !== 'string' || panelKey.length > MAX_PANEL_KEY_LENGTH) return false
     // Plugin ids hold dots but no slash, contribution ids neither: the last slash splits them.
@@ -143,12 +184,14 @@ export class PanelPortHub<P> {
     const panelId = panels?.find((p) => p === panelKey.slice(slash + 1))
     if (panels === undefined || panelId === undefined) return false
     const pluginId = panelKey.slice(0, slash)
-    if (!this.withinCap(projectId, windowId, pluginId, panelId)) return false
+    // Per view: a phone's reload loop does not use up the desktop page's budget.
+    if (!this.withinCap(projectId, viewId, pluginId, panelId)) return false
 
     const channel = this.deps.createChannel()
     let sent = false
     try {
-      sent = this.deps.toHost(projectId, pluginId, panelId, channel.host)
+      const { view } = remoteOnly(viewId)
+      sent = this.deps.toHost(projectId, pluginId, panelId, channel.host, view)
     } catch (err) {
       this.log(`panel ${pluginId}/${panelId}: handing the host its port failed: ${errorText(err)}`)
     }
@@ -159,10 +202,11 @@ export class PanelPortHub<P> {
       return false
     }
     try {
-      this.deps.toRenderer(windowId, { panelKey: `${pluginId}/${panelId}`, nonce }, channel.renderer)
+      this.deps.toRenderer(viewId, { panelKey: `${pluginId}/${panelId}`, nonce }, channel.renderer)
     } catch (err) {
-      // The window is closing; the host's end hears nothing and goes when the host does.
-      this.log(`panel ${pluginId}/${panelId}: posting the window its port failed: ${errorText(err)}`)
+      // The view is closing (or cannot take a port): closing the page end tells the host's end,
+      // which detaches only this view's port.
+      this.log(`panel ${pluginId}/${panelId}: posting the view its port failed: ${errorText(err)}`)
       this.closeQuietly(channel.renderer)
       return false
     }
@@ -170,11 +214,11 @@ export class PanelPortHub<P> {
   }
 
   /**
-   * Connect one slot frame of the asking window (see the top of the file). `projectId` and
-   * `windowId` are what main resolved from the sender; `frameId` and `nonce` are renderer input and
-   * only looked up. False when refused: no such frame now, the provider not running, over the cap.
+   * Connect one slot frame of the asking view (see the top of the file). `projectId` and `viewId`
+   * are what main resolved from the caller; `frameId` and `nonce` are renderer input and only
+   * looked up. False when refused: no such frame now, the provider not running, over the cap.
    */
-  connectSlot(projectId: string, windowId: number, frameId: unknown, nonce: unknown): boolean {
+  connectSlot(projectId: string, viewId: ViewId, frameId: unknown, nonce: unknown): boolean {
     if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
     if (typeof frameId !== 'string' || !SLOT_FRAME_ID_PATTERN.test(frameId)) return false
     const frame = this.deps.slotFrame?.(projectId, frameId)
@@ -182,16 +226,24 @@ export class PanelPortHub<P> {
     // From here on the ids are main's own strings (the record's), not the renderer's.
     const id = frame.info.id
     const pluginId = frame.info.pluginId
-    if (!this.withinCap(projectId, windowId, pluginId, slotPortKey(id))) return false
-    // Its page loaded again: the provider's instance for the old load goes first.
-    this.disconnectSlot(projectId, id)
+    if (!this.withinCap(projectId, viewId, pluginId, slotPortKey(id))) return false
+    // Its page loaded again in this view: the provider's instance for the old load goes first.
+    // The same frame in another view is another instance and stays.
+    this.disconnectSlot(projectId, viewId, id)
 
     const channel = this.deps.createChannel()
     let sent = false
     try {
       sent = this.deps.slotToHost(
         projectId,
-        { pluginId, id, type: frame.info.type, host: frame.host, ...(frame.params !== undefined ? { params: frame.params } : {}) },
+        {
+          pluginId,
+          id,
+          type: frame.info.type,
+          host: frame.host,
+          ...(frame.params !== undefined ? { params: frame.params } : {}),
+          ...remoteOnly(viewId)
+        },
         channel.host
       )
     } catch (err) {
@@ -202,32 +254,33 @@ export class PanelPortHub<P> {
       this.closeQuietly(channel.renderer)
       return false
     }
-    this.openSlots.set(`${projectId}\n${id}`, { projectId, pluginId, frameId: id })
+    this.openSlots.set(slotKey(projectId, viewId, id), { projectId, pluginId, frameId: id, viewId })
     try {
-      this.deps.toRenderer(windowId, { panelKey: slotPortKey(id), nonce }, channel.renderer)
+      this.deps.toRenderer(viewId, { panelKey: slotPortKey(id), nonce }, channel.renderer)
     } catch (err) {
-      this.log(`slot ${frame.info.type} of ${pluginId}: posting the window its port failed: ${errorText(err)}`)
+      this.log(`slot ${frame.info.type} of ${pluginId}: posting the view its port failed: ${errorText(err)}`)
       this.closeQuietly(channel.renderer)
-      this.disconnectSlot(projectId, id)
+      this.disconnectSlot(projectId, viewId, id)
       return false
     }
     return true
   }
 
   /**
-   * Connect the plugin's settings page in the asking window (see the top of the file). `projectId`
-   * and `windowId` are what main resolved from the sender; `pluginId`, `scope` and `nonce` are
+   * Connect the plugin's settings page in the asking view (see the top of the file). `projectId`
+   * and `viewId` are what main resolved from the caller; `pluginId`, `scope` and `nonce` are
    * renderer input and only looked up. False when refused.
    */
-  connectSettingsPage(projectId: string, windowId: number, pluginId: unknown, scope: unknown, nonce: unknown): boolean {
+  connectSettingsPage(projectId: string, viewId: ViewId, pluginId: unknown, scope: unknown, nonce: unknown): boolean {
     if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
     if (typeof pluginId !== 'string' || pluginId.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(pluginId)) return false
     if (!isSettingsPageScope(scope) || !this.deps.settingsPageToHost) return false
     const scopes = this.deps.settingsPageScopes?.(projectId, pluginId)
     if (scopes === undefined || !scopes.includes(scope)) return false
-    if (!this.withinCap(projectId, windowId, pluginId, settingsPagePortKey(pluginId))) return false
-    // One page per plugin at a time: the older one (another load, or the other scope) ends first.
-    this.disconnectSettingsPage(projectId, pluginId)
+    if (!this.withinCap(projectId, viewId, pluginId, settingsPagePortKey(pluginId))) return false
+    // One page per plugin at a time: the older one (another load, the other scope, or the page in
+    // another view) ends first, and this view holds it now.
+    this.endPage(projectId, pluginId)
 
     const id = `p${this.nextPageId++}`
     const channel = this.deps.createChannel()
@@ -243,21 +296,31 @@ export class PanelPortHub<P> {
       return false
     }
     const key = `${projectId}\n${pluginId}`
-    this.openPages.set(key, { projectId, pluginId, id })
+    this.openPages.set(key, { projectId, pluginId, id, viewId })
     try {
-      this.deps.toRenderer(windowId, { panelKey: settingsPagePortKey(pluginId), nonce }, channel.renderer)
+      this.deps.toRenderer(viewId, { panelKey: settingsPagePortKey(pluginId), nonce }, channel.renderer)
     } catch (err) {
-      this.log(`settings page of ${pluginId}: posting the window its port failed: ${errorText(err)}`)
+      this.log(`settings page of ${pluginId}: posting the view its port failed: ${errorText(err)}`)
       this.closeQuietly(channel.renderer)
-      this.disconnectSettingsPage(projectId, pluginId)
+      this.endPage(projectId, pluginId)
       return false
     }
     return true
   }
 
-  /** The shell unmounted the plugin's settings page in the project's window: its backend hears the close (once). */
-  disconnectSettingsPage(projectId: string, pluginId: unknown): void {
+  /**
+   * The shell of `viewId` unmounted the plugin's settings page: its backend hears the close (once).
+   * Only when that view holds the page: a view whose page was taken by another one unmounting its
+   * stale copy must not end the page the other view shows now.
+   */
+  disconnectSettingsPage(projectId: string, viewId: ViewId, pluginId: unknown): void {
     if (typeof pluginId !== 'string') return
+    if (this.openPages.get(`${projectId}\n${pluginId}`)?.viewId !== viewId) return
+    this.endPage(projectId, pluginId)
+  }
+
+  /** End the plugin's open settings page, whichever view holds it: its backend hears the close (once). */
+  private endPage(projectId: string, pluginId: string): void {
     const key = `${projectId}\n${pluginId}`
     const open = this.openPages.get(key)
     if (!open) return
@@ -269,17 +332,33 @@ export class PanelPortHub<P> {
     }
   }
 
-  /** The shell unmounted a slot frame of the project: its provider hears the close (once). */
-  disconnectSlot(projectId: string, frameId: unknown): void {
+  /** The shell of `viewId` unmounted a slot frame of the project: its provider hears that view's close (once). */
+  disconnectSlot(projectId: string, viewId: ViewId, frameId: unknown): void {
     if (typeof frameId !== 'string') return
-    const key = `${projectId}\n${frameId}`
+    const key = slotKey(projectId, viewId, frameId)
     const open = this.openSlots.get(key)
     if (!open) return
     this.openSlots.delete(key)
     this.tellClosed(open)
   }
 
-  /** The project's slot frames are now `ids` (LayoutService framesChanged): every other open one closes. */
+  /**
+   * A view is gone (a browser left, or its window closed): its slot instances end and the settings
+   * page it held ends, so the providers do not keep serving a page nobody shows. Its panel ports
+   * need nothing here: the page ends close with the view, and the host hears it on each port.
+   */
+  viewGone(viewId: ViewId): void {
+    for (const [key, open] of [...this.openSlots]) {
+      if (open.viewId !== viewId) continue
+      this.openSlots.delete(key)
+      this.tellClosed(open)
+    }
+    for (const open of [...this.openPages.values()]) {
+      if (open.viewId === viewId) this.endPage(open.projectId, open.pluginId)
+    }
+  }
+
+  /** The project's slot frames are now `ids` (LayoutService framesChanged): every other open one closes, in every view. */
   slotFramesChanged(projectId: string, ids: ReadonlySet<string>): void {
     for (const [key, open] of [...this.openSlots]) {
       if (open.projectId !== projectId || ids.has(open.frameId)) continue
@@ -288,9 +367,10 @@ export class PanelPortHub<P> {
     }
   }
 
-  private tellClosed(open: { projectId: string; pluginId: string; frameId: string }): void {
+  private tellClosed(open: OpenSlot): void {
     try {
-      this.deps.slotClosed?.(open.projectId, open.pluginId, open.frameId)
+      const { view } = remoteOnly(open.viewId)
+      this.deps.slotClosed?.(open.projectId, open.pluginId, open.frameId, view)
     } catch (err) {
       this.log(`slot frame ${open.frameId} of ${open.pluginId}: telling the host it closed failed: ${errorText(err)}`)
     }
@@ -305,14 +385,14 @@ export class PanelPortHub<P> {
   /**
    * Count this connect against the panel's cap; false when it is over. Keyed by main's resolved
    * ids only, so a renderer cannot grow the map with made-up keys (one entry per declared panel
-   * of a running plugin per window; an entry whose times all aged out is dropped on the next look).
+   * of a running plugin per view; an entry whose times all aged out is dropped on the next look).
    */
-  private withinCap(projectId: string, windowId: number, pluginId: string, panelId: string): boolean {
+  private withinCap(projectId: string, viewId: ViewId, pluginId: string, panelId: string): boolean {
     const now = this.now()
     for (const [k, v] of this.recent) {
       if (v.times.every((t) => now - t >= CONNECT_WINDOW_MS)) this.recent.delete(k)
     }
-    const key = `${projectId}\n${windowId}\n${pluginId}/${panelId}`
+    const key = `${projectId}\n${viewId}\n${pluginId}/${panelId}`
     const entry = this.recent.get(key) ?? { times: [], logged: false }
     entry.times = entry.times.filter((t) => now - t < CONNECT_WINDOW_MS)
     this.recent.set(key, entry)

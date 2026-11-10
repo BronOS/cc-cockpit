@@ -15,6 +15,7 @@
 import type { Disposer, JsonValue, PluginContext, SlotInstance } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { MAX_SLOT_PARAMS_BYTES, SLOT_FRAME_ID_PATTERN, SLOT_TYPE_PATTERN, type SlotHost } from '../../shared/slots'
+import { viewIdOf, type ViewId } from '../../shared/views'
 import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
 
 type MessageListener = (message: JsonValue) => void
@@ -31,6 +32,16 @@ export interface SlotOpenTag {
   type: string
   host: SlotHost
   params?: JsonValue
+  /**
+   * The remote view whose frame this is (design-web.md §5.3); absent: the desktop window's. One
+   * frame id can be open in several views at once, each its own instance with its own port.
+   */
+  view?: ViewId
+}
+
+/** The frames map's key: one frame id per view (absent view: the desktop window's). */
+function frameKey(pluginId: string, id: string, view: ViewId | undefined): string {
+  return view === undefined ? `${pluginId}/${id}` : `${pluginId}/${id}\n${view}`
 }
 
 function hostOf(raw: unknown): SlotHost | undefined {
@@ -53,7 +64,17 @@ export function slotOpenTag(data: unknown): SlotOpenTag | undefined {
     const host = hostOf(tag.host)
     if (typeof pluginId !== 'string' || typeof id !== 'string' || !SLOT_FRAME_ID_PATTERN.test(id)) return undefined
     if (typeof type !== 'string' || !SLOT_TYPE_PATTERN.test(type) || !host) return undefined
-    return { pluginId, id, type, host, ...(params !== undefined ? { params: params as JsonValue } : {}) }
+    // A view main did not mint is refused, never read as the desktop's frame (it would close it).
+    const view = viewIdOf(tag.view)
+    if (tag.view !== undefined && view === undefined) return undefined
+    return {
+      pluginId,
+      id,
+      type,
+      host,
+      ...(params !== undefined ? { params: params as JsonValue } : {}),
+      ...(view !== undefined ? { view } : {})
+    }
   } catch {
     // Not one of main's port messages.
   }
@@ -64,6 +85,7 @@ export function slotOpenTag(data: unknown): SlotOpenTag | undefined {
 interface Frame {
   readonly pluginId: string
   readonly id: string
+  readonly view: ViewId | undefined
   readonly port: PanelPort
   readonly unsubscribe: () => void
   readonly messageListeners: Set<MessageListener>
@@ -75,7 +97,7 @@ interface Frame {
 export class SlotHub {
   /** `<pluginId>/<type>` -> listeners. */
   private readonly openers = new Map<string, Set<(slot: SlotInstance) => void>>()
-  /** `<pluginId>/<frameId>` -> frame. */
+  /** frameKey(pluginId, frameId, view) -> frame. */
   private readonly frames = new Map<string, Frame>()
 
   constructor(private readonly log: (pluginId: string, message: string) => void) {}
@@ -95,12 +117,13 @@ export class SlotHub {
 
   /**
    * A frame opened (host/index.ts calls this for main's `slotOpen` port). The caller checked the
-   * plugin runs here and declares the type. A frame with the same id is closed first (main does
-   * that too, a reconnect of one id). `onPortClose` is how the adapter reports the page's end
-   * going away; it ends only this frame, never a newer one with the same id.
+   * plugin runs here and declares the type. A frame with the same id IN THE SAME VIEW is closed
+   * first (main does that too, a reconnect of one id); the same frame in another view is another
+   * instance and stays. `onPortClose` is how the adapter reports the page's end going away; it
+   * ends only this frame, never a newer one with the same id.
    */
   open(tag: SlotOpenTag, port: PanelPort): void {
-    const key = `${tag.pluginId}/${tag.id}`
+    const key = frameKey(tag.pluginId, tag.id, tag.view)
     const old = this.frames.get(key)
     if (old) this.end(old)
     const messageListeners = new Set<MessageListener>()
@@ -108,6 +131,7 @@ export class SlotHub {
     const frame: Frame = {
       pluginId: tag.pluginId,
       id: tag.id,
+      view: tag.view,
       port,
       unsubscribe: port.onMessage((raw) => this.receive(frame, raw)),
       messageListeners,
@@ -129,9 +153,12 @@ export class SlotHub {
     }
   }
 
-  /** main's `slot.close { pluginId, id }`, or the page's port closing (`port`: only that frame's own). */
-  close(pluginId: string, id: string, port?: PanelPort): void {
-    const frame = this.frames.get(`${pluginId}/${id}`)
+  /**
+   * main's `slot.close { pluginId, id, view? }`, or the page's port closing (`port`: only that
+   * frame's own). Only the frame of that id in `view` (absent: the desktop window's).
+   */
+  close(pluginId: string, id: string, view?: ViewId, port?: PanelPort): void {
+    const frame = this.frames.get(frameKey(pluginId, id, view))
     if (frame && (port === undefined || frame.port === port)) this.end(frame)
   }
 
@@ -152,7 +179,7 @@ export class SlotHub {
   private end(frame: Frame): void {
     if (frame.ended) return
     frame.ended = true
-    const key = `${frame.pluginId}/${frame.id}`
+    const key = frameKey(frame.pluginId, frame.id, frame.view)
     if (this.frames.get(key) === frame) this.frames.delete(key)
     frame.unsubscribe()
     try {

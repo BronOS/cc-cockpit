@@ -975,15 +975,15 @@ describe('registerLayoutHandlers', () => {
 })
 
 describe('registerSlotHandlers', () => {
-  it("passes the sender's project and window on with the frame id, refusing junk first", async () => {
+  it("passes the sender's project and view on with the frame id, refusing junk first", async () => {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerSlotHandlers(router, {
-      connect: (projectId, windowId, frameId, nonce) => {
-        calls.push(['connect', projectId, windowId, frameId, nonce])
+      connect: (projectId, viewId, frameId, nonce) => {
+        calls.push(['connect', projectId, viewId, frameId, nonce])
         return frameId === 's1'
       },
-      disconnect: (projectId, frameId) => void calls.push(['disconnect', projectId, frameId]),
+      disconnect: (projectId, viewId, frameId) => void calls.push(['disconnect', projectId, viewId, frameId]),
       setHeight: (projectId, frameId, height) => {
         calls.push(['height', projectId, frameId, height])
         return true
@@ -993,8 +993,8 @@ describe('registerSlotHandlers', () => {
     await expect(ipc.invoke('slots.disconnect', 11, [{ frameId: 's1' }])).resolves.toBeNull()
     await expect(ipc.invoke('slots.height', 11, [{ frameId: 's1', height: 90 }])).resolves.toBe(true)
     expect(calls).toEqual([
-      ['connect', PROJECT_B, 2, 's1', 3],
-      ['disconnect', PROJECT_A, 's1'],
+      ['connect', PROJECT_B, 'desktop:2', 's1', 3],
+      ['disconnect', PROJECT_A, 'desktop:1', 's1'],
       ['height', PROJECT_A, 's1', 90]
     ])
     await expect(ipc.invoke('slots.connect', 11, [{ frameId: 'x'.repeat(41), nonce: 1 }])).rejects.toThrow(/short string/)
@@ -1003,11 +1003,19 @@ describe('registerSlotHandlers', () => {
     await expect(ipc.invoke('slots.height', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('slots.connect', 13, [{ frameId: 's1', nonce: 1 }])).rejects.toThrow(/not a project window/)
     expect(calls).toHaveLength(3)
+    // A remote view's frame is its own instance: main's view id from the caller, a payload's ignored.
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'slots.connect', { frameId: 's1', nonce: 5, viewId: 'desktop:1' })
+    await router.dispatch(web, 'slots.disconnect', { frameId: 's1', viewId: 'desktop:1' })
+    expect(calls.slice(3)).toEqual([
+      ['connect', PROJECT_A, 'web:4', 's1', 5],
+      ['disconnect', PROJECT_A, 'web:4', 's1']
+    ])
   })
 })
 
 describe('registerSettingsPageHandlers', () => {
-  it("passes the sender's project and window on with a checked plugin id and scope, refusing junk first", async () => {
+  it("passes the sender's project and view on with a checked plugin id and scope, refusing junk first", async () => {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerSettingsPageHandlers(router, {
@@ -1015,11 +1023,11 @@ describe('registerSettingsPageHandlers', () => {
         calls.push(['info', projectId, pluginId, scope])
         return pluginId === 'a.one' ? { enabled: true, src: 'cc-plugin://a.one/settings/index.html' } : null
       },
-      connect: (projectId, windowId, pluginId, scope, nonce) => {
-        calls.push(['connect', projectId, windowId, pluginId, scope, nonce])
+      connect: (projectId, viewId, pluginId, scope, nonce) => {
+        calls.push(['connect', projectId, viewId, pluginId, scope, nonce])
         return true
       },
-      disconnect: (projectId, pluginId) => void calls.push(['disconnect', projectId, pluginId])
+      disconnect: (projectId, viewId, pluginId) => void calls.push(['disconnect', projectId, viewId, pluginId])
     })
     // A projectId in the payload is ignored: the sender's own project is used.
     await expect(ipc.invoke('settingsPage.info', 12, [{ pluginId: 'a.one', scope: 'app', projectId: PROJECT_A }])).resolves.toEqual({
@@ -1030,8 +1038,8 @@ describe('registerSettingsPageHandlers', () => {
     await expect(ipc.invoke('settingsPage.disconnect', 11, [{ pluginId: 'a.one' }])).resolves.toBeNull()
     expect(calls).toEqual([
       ['info', PROJECT_B, 'a.one', 'app'],
-      ['connect', PROJECT_A, 1, 'a.one', 'project', 4],
-      ['disconnect', PROJECT_A, 'a.one']
+      ['connect', PROJECT_A, 'desktop:1', 'a.one', 'project', 4],
+      ['disconnect', PROJECT_A, 'desktop:1', 'a.one']
     ])
     await expect(ipc.invoke('settingsPage.info', 11, [{ pluginId: 'A One', scope: 'app' }])).rejects.toThrow(/plugin id/)
     await expect(ipc.invoke('settingsPage.info', 11, [{ pluginId: 'a.one', scope: 'global' }])).rejects.toThrow(/scope/)
@@ -1039,17 +1047,24 @@ describe('registerSettingsPageHandlers', () => {
     await expect(ipc.invoke('settingsPage.disconnect', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('settingsPage.connect', 13, [{ pluginId: 'a.one', scope: 'app', nonce: 1 }])).rejects.toThrow(/not a project window/)
     expect(calls).toHaveLength(3)
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'settingsPage.connect', { pluginId: 'a.one', scope: 'app', nonce: 6, viewId: 'desktop:1' })
+    await router.dispatch(web, 'settingsPage.disconnect', { pluginId: 'a.one', viewId: 'desktop:1' })
+    expect(calls.slice(3)).toEqual([
+      ['connect', PROJECT_A, 'web:4', 'a.one', 'app', 6],
+      ['disconnect', PROJECT_A, 'web:4', 'a.one']
+    ])
   })
 })
 
 describe('registerPanelHandlers', () => {
-  it("connects a panel of the sender's own project and window, and restarts that project's host", async () => {
+  it("connects a panel of the sender's own project and view, and restarts that project's host", async () => {
     const { ipc, router } = setup()
     const connects: unknown[][] = []
     const restarts: string[] = []
     registerPanelHandlers(router, {
-      connect: (projectId, windowId, panelKey, nonce) => {
-        connects.push([projectId, windowId, panelKey, nonce])
+      connect: (projectId, viewId, panelKey, nonce) => {
+        connects.push([projectId, viewId, panelKey, nonce])
         return panelKey === 'a.one/board'
       },
       restartHost: async (projectId) => {
@@ -1059,11 +1074,19 @@ describe('registerPanelHandlers', () => {
     })
     await expect(ipc.invoke('panels.connect', 12, [{ panelKey: 'a.one/board', nonce: 3, projectId: PROJECT_A }])).resolves.toBe(true)
     await expect(ipc.invoke('panels.connect', 11, [{ panelKey: 'other/x', nonce: 4 }])).resolves.toBe(false)
-    // Window and project are the sender's; key and nonce are passed on for the hub to check.
+    // View and project are the sender's; key and nonce are passed on for the hub to check.
     expect(connects).toEqual([
-      [PROJECT_B, 2, 'a.one/board', 3],
-      [PROJECT_A, 1, 'other/x', 4]
+      [PROJECT_B, 'desktop:2', 'a.one/board', 3],
+      [PROJECT_A, 'desktop:1', 'other/x', 4]
     ])
+    // A remote view's connect carries its own view id (the page end goes back to it), never a payload's.
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:9'), 'panels.connect', {
+      panelKey: 'a.one/board',
+      nonce: 5,
+      viewId: 'desktop:1'
+    })
+    expect(connects.at(-1)).toEqual([PROJECT_A, 'web:9', 'a.one/board', 5])
+    connects.pop()
     await expect(ipc.invoke('panels.connect', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('panels.connect', 13, [{ panelKey: 'a.one/board', nonce: 1 }])).rejects.toThrow(
       /not a project window/
