@@ -147,7 +147,7 @@ import { ViewRegistry } from './views/view-registry'
 import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
-import { WebConnections } from './web/connection'
+import { WebConnections, windowSnapshot } from './web/connection'
 import { WebGateway } from './web/gateway'
 import { webAccessOf } from './web/settings'
 import { desktopViewId } from '../shared/views'
@@ -1992,12 +1992,8 @@ function start(): void {
     dispatch: (caller, channel, payload) => router.dispatch(caller, channel, payload),
     addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
-    snapshot: ({ windowId, projectId }) => {
-      const layout = layouts.view(projectId)
-      if (!layout) throw new Error('project record is gone')
-      // tabs.list, never tabs.attach: a joining view must not reset the desktop's terminal flow.
-      return { tabs: tabs.list(projectId), layout, overlays: overlays.list(windowId) }
-    },
+    // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
+    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays }, ctx),
     log: (m) => console.warn(m)
   })
   webGateway.setSocketHandler((ws, _req, device) => {

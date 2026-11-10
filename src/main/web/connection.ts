@@ -12,7 +12,7 @@
 // No `ws` import: the gateway hands in its socket as `WsLike`, tests pass a fake.
 
 import { errorText } from '../../shared/error-text'
-import type { EventChannel } from '../../shared/ipc'
+import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
 import { remoteViewId, type ViewId } from '../../shared/views'
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
@@ -67,6 +67,26 @@ export interface WebConnectionDeps {
   snapshot(ctx: ProjectContext): WebSnapshot
   log(message: string): void
   helloTimeoutMs?: number
+}
+
+/**
+ * What a join reads for `ready`. Plain reads only, and typed so: the desktop's re-attach calls
+ * (`TabManager.attach`, `OverlayManager.list`) reset the desktop's terminal flow, and `list` also
+ * marks every html overlay's page as not ready (an opener's later posts wait in the outbox for a
+ * `pageReady` the desktop page, which did not reload, never sends) and brings its loader back. A
+ * browser joining or reconnecting must leave the desktop exactly as it was.
+ */
+export interface SnapshotSources {
+  tabs: { list(projectId: string): TabInfo[] }
+  layouts: { view(projectId: string): LayoutView | undefined }
+  overlays: { infos(windowId: number): OverlayInfo[] }
+}
+
+/** The window's state for `ready` (`WebConnectionDeps.snapshot`); throws when the project is gone. */
+export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }: ProjectContext): WebSnapshot {
+  const layout = sources.layouts.view(projectId)
+  if (!layout) throw new Error('project record is gone')
+  return { tabs: sources.tabs.list(projectId), layout, overlays: sources.overlays.infos(windowId) }
 }
 
 /** Accepts gateway sockets (`WebGateway.setSocketHandler`) and mints a view id for each. */
@@ -144,14 +164,22 @@ export class WebConnection {
       this.deps.log(`web access: view ${this.viewId} snapshot failed: ${errorText(err)}`)
       return this.close(CLOSE.failed, 'snapshot failed')
     }
-    this.caller = caller
     // Registered in the same tick as the snapshot, and `ready` is the first frame on the socket:
-    // every event after the snapshot reaches this view, none of them before `ready`.
-    this.removeView = this.deps.addView(windowId, this.viewId, {
-      send: (channel, payload) => this.event(channel, payload),
-      isClosed: () => this.closed,
-      windowClosed: () => this.close(CLOSE.windowClosed, 'window closed')
-    })
+    // every event after the snapshot reaches this view, none of them before `ready`. Guarded like
+    // the snapshot: this runs in `ws`'s message listener, so a throw here (addRemote refuses a
+    // duplicate view id, which monotonic ids rule out today) must close the socket, not escape
+    // into the receiver as an uncaught exception in main.
+    try {
+      this.removeView = this.deps.addView(windowId, this.viewId, {
+        send: (channel, payload) => this.event(channel, payload),
+        isClosed: () => this.closed,
+        windowClosed: () => this.close(CLOSE.windowClosed, 'window closed')
+      })
+    } catch (err) {
+      this.deps.log(`web access: view ${this.viewId} bind failed: ${errorText(err)}`)
+      return this.close(CLOSE.failed, 'bind failed')
+    }
+    this.caller = caller
     this.deps.log(`web access: view ${this.viewId} (device ${this.device.id}) joined window ${windowId}`)
     this.send({ t: 'ready', v: PROTOCOL_VERSION, view: this.viewId, snapshot })
   }

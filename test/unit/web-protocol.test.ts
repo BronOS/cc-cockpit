@@ -8,13 +8,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
-import type { LayoutView } from '../../src/shared/ipc'
+import type { EventChannel, LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, type ProjectContext } from '../../src/main/ipc/router'
+import { OverlayManager } from '../../src/main/overlays/overlay-manager'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { ViewRegistry } from '../../src/main/views/view-registry'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
-import { MAX_PENDING_INVOKES, WebConnections, type WsLike } from '../../src/main/web/connection'
+import { MAX_PENDING_INVOKES, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
 import { DeviceStore, type WebDevice } from '../../src/main/web/devices'
 import { WebGateway, type WsModule } from '../../src/main/web/gateway'
 import {
@@ -28,6 +29,7 @@ import {
   PROTOCOL_VERSION
 } from '../../src/main/web/protocol'
 import { webAccessOf } from '../../src/main/web/settings'
+import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const DEVICE: WebDevice = { id: 'dev1', name: 'phone', createdAt: 0, lastSeenAt: 0, mode: 'link' }
 const LAYOUT = { zones: {} } as unknown as LayoutView
@@ -245,6 +247,74 @@ describe('handshake', () => {
     const junk = connect('p1')
     junk.feed('{not json')
     expect(junk.closedWith?.code).toBe(CLOSE.badFrame)
+  })
+
+  it('a bind that throws closes the socket with `failed` instead of escaping the message listener', () => {
+    const { connect, views, logs } = setup()
+    // The id the next connection mints is taken: ViewRegistry.addRemote throws on it.
+    views.addRemote(1, 'web:1', { send: () => {}, isClosed: () => false })
+    let ws: FakeWs | undefined
+    expect(() => (ws = connect('p1'))).not.toThrow()
+    expect(ws?.closedWith?.code).toBe(CLOSE.failed)
+    expect(ws?.sent).toEqual([])
+    expect(logs.some((m) => m.includes('bind failed'))).toBe(true)
+    // The view that held the id is untouched.
+    expect(views.viewsOf(1)).toEqual(['desktop:1', 'web:1'])
+  })
+})
+
+// The incident behind SnapshotSources: the join read overlays with OverlayManager.list, the
+// desktop's re-attach call, which marked the desktop's html pages not ready (posts then waited in
+// the outbox for good), brought their loader back and reset its terminal overlays' flow.
+describe('windowSnapshot leaves the desktop as it was', () => {
+  it('html pages stay ready (a post is delivered, no loader) and a paused terminal stays paused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ccc-web-snap-'))
+    try {
+      const backend = new FakePtyBackend()
+      const emitted: Array<{ channel: EventChannel; payload: unknown }> = []
+      const overlays = new OverlayManager({
+        backend,
+        views: {
+          create: () => {
+            throw new Error('no url views here')
+          },
+          focusWindow: () => {}
+        },
+        isWindowOpen: () => true,
+        env: () => ({ PATH: '/usr/bin', TERM: 'xterm-256color' }),
+        emit: (_windowId, channel, payload) => emitted.push({ channel, payload }),
+        commandForChord: () => undefined,
+        log: () => {}
+      })
+      void overlays.open(1, { kind: 'html', src: 'cc-plugin://a.one/p.html' }, 'plugin a.one', undefined, { onMessage: () => {} })
+      void overlays.open(1, { kind: 'terminal', argv: ['yes'], cwd: dir }, 'test')
+      const [page] = overlays.infos(1)
+      overlays.pageReady(1, page!.id)
+      const pty = backend.last
+      // Flood past the high-water mark without acks: the desktop's terminal overlay is paused.
+      pty.emit('y'.repeat(2 * 1024 * 1024))
+      expect(pty.paused).toBe(true)
+      const tabs = { list: vi.fn(() => []), attach: vi.fn() }
+      const snap = windowSnapshot({ tabs, layouts: { view: () => LAYOUT }, overlays }, { windowId: 1, projectId: 'p1' })
+      expect(snap.overlays.map((o) => o.id)).toEqual(overlays.infos(1).map((o) => o.id))
+      expect(snap.overlays.some((o) => o.loading === true)).toBe(false)
+      expect(tabs.list).toHaveBeenCalledWith('p1')
+      expect(tabs.attach).not.toHaveBeenCalled()
+      // No flow reset: the PTY stays paused until the desktop acks.
+      expect(pty.paused).toBe(true)
+      expect(pty.resumeCalls).toBe(0)
+      // The page is still ready: the opener's post goes out at once, not into the outbox.
+      emitted.length = 0
+      expect(overlays.post(1, page!.id, '"hi"')).toBe(true)
+      expect(emitted).toEqual([{ channel: 'overlays.message', payload: { overlayId: page!.id, message: '"hi"' } }])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a project with no layout record throws (the connection closes with `failed`)', () => {
+    const sources = { tabs: { list: () => [] }, layouts: { view: () => undefined }, overlays: { infos: () => [] } }
+    expect(() => windowSnapshot(sources, { windowId: 1, projectId: 'p1' })).toThrow('project record is gone')
   })
 })
 
