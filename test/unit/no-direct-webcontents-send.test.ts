@@ -21,12 +21,26 @@ const ALLOWED = new Set(
   ].map((p) => p.split('/').join(sep))
 )
 
-/** The patterns that bypass the registry; whitespace inside a member access is tolerated. */
+/**
+ * The patterns that bypass the registry; whitespace inside a member access is tolerated. A line
+ * scan cannot follow data flow, so the aliased forms (`const wc = win.webContents; wc.send(x)`, a
+ * member access split over two lines) are caught by the member allow-list below rather than by
+ * the call itself. An alias of `event.sender` (`const s = event.sender; s.send(x)`) still slips
+ * through: this is a guard against the usual shapes, and review covers the rest.
+ */
 const FORBIDDEN = [
   /webContents\s*\.\s*send\s*\(/,
   /webContents\s*\.\s*postMessage\s*\(/,
   /\bgetAllWindows\s*\(/,
-  /\bgetAllWebContents\s*\(/
+  /\bgetAllWebContents\s*\(/,
+  // electron's `webContents` module: `webContents.fromId(id).send(...)`.
+  /\bwebContents\s*\.\s*fromId\s*\(/,
+  // An IPC event's sender is a WebContents too, and `event.reply` sends through it.
+  /\bsender\s*\??\.\s*(send|postMessage)\s*\(/,
+  /\.\s*reply\s*\(/,
+  // A `.webContents` access may only read the id, focus the page or listen: anything else (a
+  // `send`, `?.send`, an alias `= win.webContents`, a member on the next line) is refused.
+  /\??\.\s*webContents\b(?!\s*\??\.\s*(id\b|focus\s*\(|on\s*\())/
 ]
 
 function sources(dir: string): string[] {
@@ -73,9 +87,26 @@ describe('no direct webContents sends outside the view registry', () => {
       'for (const w of BrowserWindow.getAllWindows()) {}',
       'webContents.getAllWebContents()',
       'win.webContents\n  .send(x)'.replace('\n  ', ' '),
+      'const wc = win.webContents',
+      'BrowserWindow.fromId(id)?.webContents',
+      'win?.webContents?.send(x)',
+      'webContents.fromId(id)?.send(x)',
+      'event.sender.send(x)',
+      'event.reply(x)',
       '// win.webContents.send(x) is not allowed here',
       ' * getAllWindows() in a doc comment'
     ].join('\n')
-    expect(offences('x.ts', sample)).toEqual(['x.ts:1', 'x.ts:2', 'x.ts:3', 'x.ts:4', 'x.ts:5'])
+    // Every line but the two comments.
+    expect(offences('x.ts', sample)).toEqual(Array.from({ length: 11 }, (_, i) => `x.ts:${i + 1}`))
+  })
+
+  it('lets the read-only webContents uses through', () => {
+    const sample = [
+      'windows.resolveSender(win.webContents.id)',
+      'win.webContents.focus()',
+      "win.webContents.on('did-navigate', () => {})",
+      'this.log(`refused, webContents ${event.sender.id}`)'
+    ].join('\n')
+    expect(offences('x.ts', sample)).toEqual([])
   })
 })
