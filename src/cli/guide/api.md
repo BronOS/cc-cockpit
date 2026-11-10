@@ -92,6 +92,14 @@ with full Node access.
   message is dropped silently, not queued, and nothing throws; it throws only for a message that
   is not JSON or over 1 MiB. So do not push state at the panel from `activate`: have the page
   send a first message when it loads (`ccPanel.post({ hello: 1 })`) and answer that.
+- `ctx.panels.post(panelId, message, { view })` and the listener's second argument `{ view }`: with web access
+  a project is shown in several views at once (the desktop window and browsers), and each has its own page of the
+  panel. `post` without options goes to the page in every view (right for state); `{ view }`, the `view` the
+  listener was given (`'desktop'` or `web:<n>`), answers only the page that asked (search results, a refusal).
+  A view that has no page of the panel any more drops the message; a `view` that is not one throws. A
+  listener keeps its origin view for the calls it makes (`ctx.sessions.focus` acts in that view) only until it
+  returns or its returned promise settles (10 s cap): work started fire-and-forget (timers, unreturned promises)
+  gets no view, so `return` or `await` your promise.
 - `ctx.panels.show(panelId)`: bring one of your own panels into sight (either kind): a hidden
   panel comes back, a closed one opens and its zone expands (a side zone the window auto-hid for a
   narrow terminal shows again too). Use it when a command should make

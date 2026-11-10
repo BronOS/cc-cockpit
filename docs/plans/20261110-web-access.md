@@ -432,12 +432,12 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `plugins/files` (search results), `plugins/sessions` (`refused` message) to reply per page
 - Modify: guide drift tests, plugin tests
 
-- [ ] `ctx.panels.onMessage(fn(msg, { view }))` and `ctx.panels.post(msg, { view })`; no second argument keeps
+- [x] `ctx.panels.onMessage(fn(msg, { view }))` and `ctx.panels.post(msg, { view })`; no second argument keeps
       broadcasting
-- [ ] guide text for the new argument (drift tests); types copied to the example
-- [ ] the files and sessions plugins answer per-page requests to the asking view
-- [ ] write tests: a targeted post reaches one view, broadcast reaches all, plugin tests for the two plugins
-- [ ] run tests (`npm test`, `npm run test:plugins`) - must pass before next task
+- [x] guide text for the new argument (drift tests); types copied to the example
+- [x] the files and sessions plugins answer per-page requests to the asking view
+- [x] write tests: a targeted post reaches one view, broadcast reaches all, plugin tests for the two plugins
+- [x] run tests (`npm test`, `npm run test:plugins`) - must pass before next task
 
 ### Task 20: Plugin pages and inline overlays over HTTP [model: opus]
 
@@ -633,6 +633,6 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - performance: 8 busy Claude tabs with a remote view, main stays responsive
 
 **External system updates:**
-- `BronOS/cc-cockpit-plugin-example` gets the relative-URL change and the types (`examples/plugin`)
+- `BronOS/cc-cockpit-plugin-example` gets the relative-URL change and the types (`examples/plugin`); Task 19 changed `examples/plugin/sdk/types.ts` (`panels.post` `{ view }`, listener `from`), not yet pushed there
 - marketplace plugins (bronos.*) switch to relative URLs over time; the check warns until then
 - release notes for the app version that ships it

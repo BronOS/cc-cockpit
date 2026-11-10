@@ -261,6 +261,41 @@ describe('the host side of a panel port', () => {
     expect(heard).toEqual(['from desktop', 'from browser'])
   })
 
+  it('a post with { view } reaches that one view; the listener is told which page spoke', async () => {
+    const contexts = new HostContexts({ log: () => {} })
+    const ctx = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js', panels: ['board'] }))
+    const heard: { m: unknown; view: string }[] = []
+    ctx.panels.onMessage('board', (m, from) => heard.push({ m, view: from.view }))
+    const desktop = channel(1)
+    const b1 = channel(2)
+    const b2 = channel(3)
+    receive(contexts, tag, desktop.host)
+    receive(contexts, viewTag(W1), b1.host)
+    receive(contexts, viewTag(W2), b2.host)
+    const got: Record<string, unknown[]> = { d: [], b1: [], b2: [] }
+    for (const [k, c] of [['d', desktop], ['b1', b1], ['b2', b2]] as const) {
+      c.renderer.on('message', (e: { data: unknown }) => got[k]?.push(e.data))
+      c.renderer.start()
+    }
+    desktop.renderer.postMessage('"a"')
+    b2.renderer.postMessage('"b"')
+    await flush()
+    expect(heard).toEqual([{ m: 'a', view: 'desktop' }, { m: 'b', view: W2 }])
+    ctx.panels.post('board', { to: 'one' }, { view: W2 })
+    ctx.panels.post('board', { to: 'desktop' }, { view: 'desktop' })
+    ctx.panels.post('board', { all: 1 })
+    await flush()
+    expect(got.b2).toEqual(['{"to":"one"}', '{"all":1}'])
+    expect(got.d).toEqual(['{"to":"desktop"}', '{"all":1}'])
+    expect(got.b1).toEqual(['{"all":1}'])
+    // A view that has no page drops the message (nothing else gets it); a bad view throws.
+    ctx.panels.post('board', { lost: 1 }, { view: 'web:99' })
+    await flush()
+    expect(got.b1).toEqual(['{"all":1}'])
+    expect(() => ctx.panels.post('board', { x: 1 }, { view: 'nope' })).toThrow(/view/)
+    expect(() => ctx.panels.post('board', { x: 1 }, { view: 'desktop:1' })).toThrow(/view/)
+  })
+
   it("a reload in one view replaces only that view's port; a view's page going leaves the others", async () => {
     const { contexts, heard, post } = host()
     const desktop = channel(1)

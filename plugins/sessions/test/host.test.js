@@ -16,7 +16,7 @@ function fakeCtx({ own = [], all = [], app = {}, fail = {} } = {}) {
     settings: { app },
     log: { info() {}, warn: (m) => calls.push(['warn', m]), error() {} },
     panels: {
-      post: (panel, m) => calls.push(['post', panel, m]),
+      post: (panel, m, options) => calls.push(options ? ['post', panel, m, options] : ['post', panel, m]),
       header: (panel, h) => {
         if (fail.header) throw new Error('header refused')
         calls.push(['header', panel, h])
@@ -209,5 +209,20 @@ test('openFile for a tab id the panel never had is refused without a call', asyn
   await listeners.panel[0]({ type: 'openFile', tabId: 'unknown', path: '/p/a.js' })
   assert.deepEqual(calls.filter((c) => c[0] === 'openFile'), [])
   assert.deepEqual(calls.filter((c) => c[0] === 'post').at(-1), ['post', 'sessions', { type: 'refused', tabId: 'unknown', path: '/p/a.js' }])
+  host.deactivate()
+})
+
+test('refused goes to the page that asked, and only that page', async () => {
+  const host = load()
+  const own = [{ tabId: 't1', status: 'idle', notes: [], files: ['/p/a.js'] }]
+  const { ctx, calls, listeners } = fakeCtx({ own })
+  host.activate(ctx)
+  await tick()
+  await listeners.panel[0]({ type: 'openFile', tabId: 't1', path: '/etc/passwd' }, { view: 'web:3' })
+  await listeners.panel[0]({ type: 'openFile', tabId: 't1', path: '/p/gone.js' }, { view: 'desktop' })
+  const refused = calls.filter((c) => c[0] === 'post' && c[2].type === 'refused')
+  assert.deepEqual(refused.map((c) => c[3]), [{ view: 'web:3' }, { view: 'desktop' }])
+  // The list itself is state: still a broadcast.
+  assert.equal(calls.filter((c) => c[0] === 'post' && c[2].type === 'state').every((c) => c.length === 3), true)
   host.deactivate()
 })

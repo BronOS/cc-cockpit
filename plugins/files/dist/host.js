@@ -72,9 +72,9 @@ exports.activate = (ctx) => {
   const saveExpanded = () =>
     ctx.storage.set(EXPANDED_KEY, [...expanded].filter(Boolean).slice(0, MAX_EXPANDED)).catch((e) => ctx.log.error(`expanded save: ${e.message}`))
 
-  const post = (m) => {
+  const post = (m, view) => {
     try {
-      ctx.panels.post(PANEL, m)
+      ctx.panels.post(PANEL, m, view ? { view } : undefined)
     } catch (e) {
       ctx.log.warn(`post: ${e.message}`)
     }
@@ -260,8 +260,11 @@ exports.activate = (ctx) => {
 
   let searchSeq = 0
   disposers.push(
-    ctx.panels.onMessage(PANEL, async (m) => {
+    ctx.panels.onMessage(PANEL, async (m, from) => {
       if (!m || typeof m !== 'object') return
+      // A search answer and a failure belong to the page that asked (another view shows its own
+      // query); the tree state everywhere else is shared, so it still goes to every view.
+      const reply = (r) => post(r, from && from.view)
       try {
         if (m.type === 'hello' || m.type === 'refresh') {
           await sendAll()
@@ -315,10 +318,10 @@ exports.activate = (ctx) => {
           const all = await tree.searchablePaths(exec, root)
           if (seq !== searchSeq) return // a newer query is on its way
           const { paths, total } = tree.rankMatches(all, m.query, { hideHidden: options().hideHidden })
-          post({ type: 'results', query: m.query, paths, total })
+          reply({ type: 'results', query: m.query, paths, total })
         }
       } catch (e) {
-        post({ type: 'error', message: e.message })
+        reply({ type: 'error', message: e.message })
       }
     }),
   )

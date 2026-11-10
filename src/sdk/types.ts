@@ -653,9 +653,20 @@ export interface PluginContext {
    * of the plugin's to talk to); `show` works for both kinds.
    */
   readonly panels: {
-    /** JSON only, at most 1 MiB. Dropped while the panel is not shown (it asks again when it connects). */
-    post(panelId: string, message: JsonValue): void
-    onMessage(panelId: string, listener: (message: JsonValue) => void): Disposer
+    /**
+     * JSON only, at most 1 MiB. Dropped while the panel is not shown (it asks again when it connects).
+     * With no `options` the message goes to the panel's page in every view (the desktop window and
+     * each browser showing the project): right for state pushes. `{ view }` (the `view` a listener
+     * got) sends to that one view's page: right for an answer to one page's request. A view that
+     * has no page of the panel any more drops the message; a `view` that is not one throws.
+     */
+    post(panelId: string, message: JsonValue, options?: { view?: string }): void
+    /**
+     * The second argument says which page posted: `view` is `'desktop'` for the desktop window's own
+     * page, else the id of a browser view (`web:<n>`). It stays valid for `post`'s `{ view }` after
+     * the listener returned. Calls the listener makes (`ctx.sessions.focus`) already act in that view.
+     */
+    onMessage(panelId: string, listener: (message: JsonValue, from: { view: string }) => void): Disposer
     /**
      * Bring one of this plugin's own panels (either kind, a `webview` one included) into sight: a
      * hidden panel comes back, a closed one opens, its zone expands. Throws for an undeclared id;

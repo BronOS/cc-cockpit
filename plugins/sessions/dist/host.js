@@ -30,9 +30,9 @@ exports.activate = (ctx) => {
 
   const filesShown = () => view.filesShownOf((ctx.settings.app || {}).filesShown)
 
-  const postPanel = (m) => {
+  const postPanel = (m, view) => {
     try {
-      ctx.panels.post(PANEL, m)
+      ctx.panels.post(PANEL, m, view ? { view } : undefined)
     } catch (e) {
       ctx.log.warn(`post: ${e.message}`)
     }
@@ -84,7 +84,7 @@ exports.activate = (ctx) => {
     .catch((e) => ctx.log.warn(`list: ${e.message}`))
 
   disposers.push(
-    ctx.panels.onMessage(PANEL, async (m) => {
+    ctx.panels.onMessage(PANEL, async (m, from) => {
       if (!m || typeof m !== 'object') return
       try {
         if (m.type === 'hello') {
@@ -96,14 +96,14 @@ exports.activate = (ctx) => {
           // The page shows only files of the list it was sent; anything else is refused here
           // without a call (main would refuse it too).
           if (!session || typeof m.path !== 'string' || !session.files.includes(m.path)) {
-            postPanel({ type: 'refused', tabId: m.tabId, path: m.path })
+            postPanel({ type: 'refused', tabId: m.tabId, path: m.path }, from && from.view)
             return
           }
           try {
             await ctx.sessions.openFile(m.tabId, m.path)
           } catch (e) {
             ctx.log.warn(`openFile: ${e.message}`)
-            postPanel({ type: 'refused', tabId: m.tabId, path: m.path })
+            postPanel({ type: 'refused', tabId: m.tabId, path: m.path }, from && from.view)
           }
         }
       } catch (e) {

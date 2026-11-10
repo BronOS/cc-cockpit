@@ -156,7 +156,20 @@ export function panelPortTag(data: unknown): { pluginId: string; panelId: string
   return undefined
 }
 
-type MessageListener = (message: JsonValue) => void
+type PageListener = (message: JsonValue) => void
+type MessageListener = (message: JsonValue, from: PanelMessageSource) => void
+
+/**
+ * Which page a panel message came from, as a plugin sees it (the second argument of
+ * `ctx.panels.onMessage` listeners; `post`'s `{ view }` target takes the same value): the
+ * desktop window's own page is `DESKTOP_VIEW`, a remote browser page its view id (`web:<n>`).
+ */
+export interface PanelMessageSource {
+  readonly view: string
+}
+
+/** The `view` a plugin sees for the desktop window's own page. */
+export const DESKTOP_VIEW = 'desktop'
 
 interface Attached {
   port: PanelPort
@@ -233,13 +246,16 @@ export class PanelPorts {
   /**
    * Send to the panel's page in every view; false when it has no port at all (the message is
    * dropped). One view's broken port is logged and does not keep the message from the others.
+   * `only` (DESKTOP_VIEW or a remote view id) sends to that one view's page: false when it has
+   * none (the view left or reloads), and nothing reaches another view.
    */
-  post(pluginId: string, panelId: string, message: unknown): boolean {
+  post(pluginId: string, panelId: string, message: unknown, only?: string): boolean {
     const text = encodePortMessage(message, 'panels.post')
     const views = this.ports.get(`${pluginId}/${panelId}`)
     if (!views) return false
     let delivered = false
     for (const [view, attached] of [...views]) {
+      if (only !== undefined && view !== (only === DESKTOP_VIEW ? DESKTOP_PAGE : only)) continue
       try {
         attached.port.postMessage(text)
         delivered = true
@@ -253,7 +269,7 @@ export class PanelPorts {
   onMessage(pluginId: string, panelId: string, listener: MessageListener): Disposer {
     const key = `${pluginId}/${panelId}`
     const set = this.listeners.get(key) ?? new Set<MessageListener>()
-    const entry: MessageListener = (m) => listener(m)
+    const entry: MessageListener = (m, from) => listener(m, from)
     set.add(entry)
     this.listeners.set(key, set)
     return () => {
@@ -287,7 +303,7 @@ export class PanelPorts {
       try {
         dispatchInView(
           view,
-          () => listener(structuredClone(got.value)),
+          () => listener(structuredClone(got.value), { view: view ?? DESKTOP_VIEW }),
           (err) => this.log(pluginId, `a panels.onMessage listener failed: ${errorText(err)}`)
         )
       } catch (err) {
@@ -348,7 +364,7 @@ export class PanelActions {
 interface OverlayLink {
   readonly pluginId: string
   readonly handle: string
-  readonly listeners: Set<MessageListener>
+  readonly listeners: Set<PageListener>
   /** Button id -> click handlers (main's `overlay.buttonClick` for an opener button runs them, `click`). */
   readonly buttonHandlers: Map<string, Set<() => unknown>>
   /** The Discuss context answerers, in the order added; the first to return text wins (main asks over RPC). */
@@ -579,13 +595,13 @@ export function createUiApi(
         overlayMessageText(message)
         send('overlay.post', { pluginId, handle: link.handle, message })
       },
-      onMessage: (listener: MessageListener): Disposer => {
+      onMessage: (listener: PageListener): Disposer => {
         htmlOnly('onMessage')
         if (typeof listener !== 'function') throw new TypeError('overlay onMessage needs a function')
         const current = link
         if (!current || current.ended) return () => {}
         deps.alive()
-        const entry: MessageListener = (m) => listener(m)
+        const entry: PageListener = (m) => listener(m)
         current.listeners.add(entry)
         return () => {
           current.listeners.delete(entry)
@@ -651,9 +667,16 @@ export function createUiApi(
 
   return {
     panels: Object.freeze({
-      post: (panelId: string, message: JsonValue): void => {
+      post: (panelId: string, message: JsonValue, options?: { view?: string }): void => {
         deps.alive()
-        ports.post(pluginId, htmlPanel(deps, panelId, 'panels.post'), message)
+        const id = htmlPanel(deps, panelId, 'panels.post')
+        const view = options?.view
+        // Only a view a listener was told of (or 'desktop') names a page; anything else is a bug in
+        // the plugin, not a message to drop quietly.
+        if (view !== undefined && view !== DESKTOP_VIEW && viewIdOf(view) === undefined) {
+          throw new TypeError(`panels.post: view must be the \`view\` a panels.onMessage listener got, not ${JSON.stringify(view)}`)
+        }
+        ports.post(pluginId, id, message, view)
       },
       onMessage: (panelId: string, listener: MessageListener): Disposer => {
         deps.alive()
