@@ -182,7 +182,11 @@ export class WebConnection {
   }
 
   private message(data: unknown, isBinary: boolean): void {
-    if (this.closed) return
+    // Not only our own close: a socket the gateway is closing (web access turned off, gateway.ts
+    // `close` with a notice) is CLOSING for up to CLOSE_GRACE_MS, and `ws` still emits the frames the
+    // peer sent before its close frame. A page (or a hostile one ignoring the handshake) must not
+    // reach IPC, terminal input included, after the person turned web access off.
+    if (this.closed || this.ws.readyState !== OPEN) return
     if (isBinary) return this.close(CLOSE.badFrame, 'text frames only')
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : Array.isArray(data) ? Buffer.concat(data as Buffer[]).toString('utf8') : String(data)
     const frame = parseClientFrame(text)

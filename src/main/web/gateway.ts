@@ -228,8 +228,10 @@ export class WebGateway {
   }
 
   private async applyNow(settings: WebAccessSettings): Promise<GatewayStatus> {
-    this.setMode(settings.mode)
     const plan = listenPlanOf(settings)
+    // Turning off while also leaving None: every socket gets the turned-off notice below, the None
+    // ones too, rather than a plain terminate (1006) the page would retry against a closed server.
+    this.setMode(settings.mode, plan.ok)
     if (!plan.ok) {
       // Turned off (or to a setting refused): the views are told so, and stop retrying (bridge.ts).
       await this.close(CLOSE.turnedOff)
@@ -263,11 +265,12 @@ export class WebGateway {
     return this.current
   }
 
-  private setMode(mode: WebAccessMode): void {
+  /** `purge`: drop the anonymous sockets when leaving None (false when every socket is closing anyway). */
+  private setMode(mode: WebAccessMode, purge: boolean): void {
     const before = this.deps.auth.mode
     this.deps.auth.setMode(mode)
     // Leaving None: whoever came in without signing in is out now, and must sign in to come back.
-    if (before === 'none' && mode !== 'none') {
+    if (purge && before === 'none' && mode !== 'none') {
       for (const [ws, device] of this.sockets) if (device.mode === 'none') ws.terminate()
     }
   }

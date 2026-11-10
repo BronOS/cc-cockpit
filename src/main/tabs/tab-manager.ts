@@ -19,7 +19,7 @@ import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
-import { DesktopFlow } from '../terminals/desktop-flow'
+import { DesktopFlow, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
@@ -128,6 +128,7 @@ export interface TerminalTap {
  * is flow-controlled on its own (DesktopFlow). `release` hands it back to the renderer's acks.
  */
 export interface TerminalFlow {
+  /** Deferred while the desktop owes more than VIEW_LOW_WATER of the tab's output (TabManager `pendingTake`). */
   take(tabId: string): void
   ack(tabId: string, count: number): void
   release(tabId: string): void
@@ -315,6 +316,18 @@ export class TabManager {
   private lastFlagColor: FlagColor = DEFAULT_FLAG_COLOR
   /** The desktop's output of the tabs the terminal tap consumes (terminals/desktop-flow.ts). */
   private readonly desktop: DesktopFlow
+  /**
+   * Tabs the tap asked to take while the desktop owed more than VIEW_LOW_WATER of their output (web
+   * access turned on while a page is behind, its pty perhaps paused on it). Taken then, the debt
+   * would put the desktop `behind` on the next chunk and resync it from the copy, which for a tab
+   * taken while running is a blank baseline: a page that had missed nothing would lose its screen
+   * and scrollback. So the tab stays on the desktop's acks (today's path; the tap still numbers and
+   * mirrors its output, its acks are ignored by the pty) and is taken once the desktop's acks bring
+   * the debt down to VIEW_LOW_WATER (`ack`, `attach`). What the worker has not parsed of it by then
+   * is not on main's count: its later acks land on the fresh one, clamped at zero (the next pause
+   * comes a little later, as after any flow switch).
+   */
+  private readonly pendingTake = new Set<string>()
 
   constructor(options: TabManagerOptions) {
     this.options = options
@@ -338,14 +351,16 @@ export class TabManager {
     })
     tap?.bindFlow?.({
       take: (id) => {
-        // Only a live pty (the tap calls this right after a spawn, or for a running tab when web
-        // access is turned on); a tab without one stays as it is. What the desktop was sent and has
-        // not acked moves with it: its acks for that output now land on the desktop's own count.
-        const owed = this.pty.flowOf(id) === 'view' ? this.pty.unackedOf(id) : 0
-        if (this.pty.setFlow(id, 'main')) this.desktop.take(id, owed)
+        // A desktop deep in debt keeps the pty until it has caught up (`pendingTake`).
+        if (this.pty.flowOf(id) === 'view' && this.pty.unackedOf(id) > VIEW_LOW_WATER) {
+          this.pendingTake.add(id)
+          return
+        }
+        this.takeFlow(id)
       },
       ack: (id, count) => this.pty.ack(id, count, 'main'),
       release: (id) => {
+        this.pendingTake.delete(id)
         // And back: the pty counts what the desktop still owes, so a page that is behind keeps
         // pausing Claude as it did before web access (today's path), rather than a fresh count.
         const owed = this.desktop.release(id)
@@ -376,9 +391,29 @@ export class TabManager {
   attach(projectId: string): TabInfo[] {
     for (const tab of this.order.get(projectId) ?? []) {
       if (this.desktop.holds(tab.id)) this.desktop.resync(tab.id)
-      else this.pty.resetFlow(tab.id)
+      else {
+        this.pty.resetFlow(tab.id)
+        this.takePending(tab.id)
+      }
     }
     return this.list(projectId)
+  }
+
+  /**
+   * Main consumes the tab's pty from now (TerminalFlow.take). Only a live pty (the tap asks right
+   * after a spawn, or for a running tab when web access is turned on); a tab without one stays as
+   * it is. What the desktop was sent and has not acked moves with it: its acks for that output now
+   * land on the desktop's own count.
+   */
+  private takeFlow(id: string): void {
+    this.pendingTake.delete(id)
+    const owed = this.pty.flowOf(id) === 'view' ? this.pty.unackedOf(id) : 0
+    if (this.pty.setFlow(id, 'main')) this.desktop.take(id, owed)
+  }
+
+  /** A tab waiting to be taken (`pendingTake`) is taken once the desktop's debt is down to VIEW_LOW_WATER. */
+  private takePending(id: string): void {
+    if (this.pendingTake.has(id) && this.pty.unackedOf(id) <= VIEW_LOW_WATER) this.takeFlow(id)
   }
 
   /** Start a tab. Throws (and creates nothing) for an unknown project, a bad cwd or a failed spawn. */
@@ -630,7 +665,10 @@ export class TabManager {
     const tab = this.find(projectId, tabId)
     if (!tab) return
     if (this.desktop.holds(tab.id)) this.desktop.ack(tab.id, count)
-    else this.pty.ack(tab.id, count)
+    else {
+      this.pty.ack(tab.id, count)
+      this.takePending(tab.id)
+    }
   }
 
   /**
@@ -791,6 +829,7 @@ export class TabManager {
     // The desktop's flow first: the tap's close ends the tab's joins and releases it, and a desktop
     // still held then would try to rejoin a closed tab and log a stale screen that nobody sees.
     this.desktop.closed(tab.id)
+    this.pendingTake.delete(tab.id)
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
     this.tap((t) => t.closed(tab.id))
     this.notify((l) => l.closed?.(tab.id))

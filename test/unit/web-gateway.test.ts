@@ -349,6 +349,20 @@ describe('Origin check (upgrade and state-changing requests)', () => {
     expect(gw.connections().size).toBe(0)
   })
 
+  it('turning off and leaving None in one save: the anonymous sockets get the notice too, not a plain drop', async () => {
+    const { gw, port } = await listening()
+    const host = `127.0.0.1:${port}`
+    gw.setSocketHandler(() => undefined)
+    const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin: `http://${host}` })
+    await new Promise<void>((resolve, reject) => {
+      client.on('open', () => resolve())
+      client.on('error', reject)
+    })
+    const closed = new Promise<number>((resolve) => client.on('close', (code) => resolve(code)))
+    expect(await gw.apply(webAccessOf({ enabled: false, port, mode: 'link' }))).toEqual({ state: 'off' })
+    expect(await closed).toBe(CLOSE.turnedOff)
+  })
+
   it('stop closes open sockets', async () => {
     const { gw, port } = await listening()
     const host = `127.0.0.1:${port}`

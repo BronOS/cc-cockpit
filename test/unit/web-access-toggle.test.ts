@@ -289,6 +289,41 @@ describe('turning on: running tabs from a baseline', () => {
   })
 })
 
+describe('turning on while a desktop is deep in debt', () => {
+  it('the pty stays the desktop\'s until its page caught up, then main takes it; the page is never resynced from the blank copy', async () => {
+    const { m, open, truthText } = setup()
+    const a = open()
+    a.page.holdAcks = true
+    let n = 0
+    let guard = 0
+    while (!a.pty.paused && guard++ < 100) a.emit(chunk(n++))
+    // Paused on the page: it owes more than HIGH_WATER (a background window during output).
+    expect(a.pty.paused).toBe(true)
+    m.start()
+    expect(m.seq(a.id)).toBe(1)
+    // Not taken: still paused until the page acks, as with web access off.
+    await m.whenParsed(a.id)
+    await tick()
+    expect(a.pty.paused).toBe(true)
+    // The page catches up: the pty resumes, and main takes it (its debt is under VIEW_LOW_WATER now).
+    a.page.holdAcks = false
+    await a.page.release()
+    expect(a.pty.paused).toBe(false)
+    const before = m.seq(a.id)!
+    a.emit('after catching up\r\n')
+    await until(() => m.seq(a.id)! > before)
+    await written(a.page.t)
+    expect(a.page.snapshots).toBe(0)
+    expect(text(a.page.t)).toBe(await truthText(a.id))
+    // Main's now: a page that stops acking no longer pauses the pty.
+    a.page.holdAcks = true
+    await flood(a, 3 * HIGH_WATER, n)
+    await m.whenParsed(a.id)
+    await tick()
+    expect(a.pty.paused).toBe(false)
+  })
+})
+
 describe('toggling while a tab floods', () => {
   it('on, then off, mid-flood: the pty never sticks and the desktop ends up with the whole stream', async () => {
     const { m, open, truthText } = setup()
@@ -408,12 +443,62 @@ describe('a toggle during a drain', () => {
     expect(m.turningOff).toBe(false)
     expect(m.running).toBe(true)
     expect(workers).toHaveLength(1)
-    // b: a fresh stream (the worker freed its old terminal on release); a: the same stream.
+    // b: a fresh stream (the worker freed its old terminal on release and has reported that close,
+    // so it numbers from 1 again); a: the same stream.
     expect(m.seq(b.id)).toBe(1)
     expect(m.seq(a.id)).toBe(before)
     a.page.holdAcks = false
     await a.page.release()
     await until(() => a.page.snapshots === 1)
+  })
+
+  it('on again in the same turn a drain released a tab: the old stream\'s late answers are not the new one\'s, the flood never stalls', async () => {
+    const { m, open } = setup()
+    const a = open()
+    const b = open()
+    m.start()
+    // a's desktop is behind, so the drain below waits on it and keeps the worker.
+    a.page.holdAcks = true
+    await flood(a, 3 * VIEW_HIGH_WATER, 0)
+    await m.whenParsed(a.id)
+    // b's desktop is live (under its limit), with items posted and not parsed when the drain releases it.
+    let n = 0
+    for (let i = 0; i < 10; i++) b.emit(chunk(n++))
+    const old = m.seq(b.id)!
+    expect(old).toBeGreaterThan(10)
+    expect(m.parsed(b.id)!).toBeLessThan(old)
+    const off = m.drain()
+    expect(m.seq(b.id)).toBeUndefined()
+    // In the same turn: the worker has not answered for b's old stream (its data, its close).
+    m.start()
+    expect(workers).toHaveLength(1)
+    // The baseline comes after the close (old + 1), so nothing the old stream reports moves it.
+    expect(m.seq(b.id)).toBe(old + 2)
+    expect(m.parsed(b.id)).toBe(old + 1)
+    await off
+    for (let i = 0; i < 5; i++) {
+      await tick()
+      expect(m.parsed(b.id)!).toBeLessThanOrEqual(m.seq(b.id)!)
+    }
+    expect(m.parsed(b.id)!).toBeLessThanOrEqual(m.seq(b.id)!)
+    // Main consumes b's pty again: a page that stops acking cannot pause it, and the worker's real
+    // `parsed` keeps it going (no watchdog restart).
+    b.page.holdAcks = true
+    await flood(b, 4 * HIGH_WATER, n)
+    await m.whenParsed(b.id)
+    expect(m.parsed(b.id)).toBe(m.seq(b.id))
+    expect(m.inflightItems(b.id)).toBe(0)
+    expect(logs.some((l) => l.includes('worker ended'))).toBe(false)
+    expect(workers).toHaveLength(1)
+    // A view joining now gets a snapshot that meets the stream, matching the copy.
+    const frames: string[] = []
+    const vt = new ViewTerminals({ mirror: m, canFollow: () => true, send: (f) => frames.push(f.t) })
+    expect(vt.select(b.id)).toBe(true)
+    await until(() => frames.includes('term.snapshot'))
+    expect(logs.some((l) => l.includes('does not meet the stream'))).toBe(false)
+    vt.dispose()
+    b.page.holdAcks = false
+    await b.page.release()
   })
 
   it('a tab spawned while draining is not taken, a held tab restarting is handed back, a crash ends the drain', async () => {

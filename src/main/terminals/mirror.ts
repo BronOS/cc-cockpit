@@ -29,14 +29,16 @@
 // any full-screen TUI) fills it in; until then a view that joins, or a desktop that resyncs, sees
 // only what came after the baseline. The desktop itself keeps its screen: it stays on the direct
 // path, live, and is resynced from the copy only if it falls behind or reloads. Then the tab's
-// flow goes to main (`take`, with what the desktop was already sent and not acked carried over).
+// flow goes to main (`take`, with what the desktop was already sent and not acked carried over;
+// TabManager defers that while the desktop owes much, so a debt alone never forces the resync).
 //
 // Turning off (`drain`): the gateway has closed the remote views first (access-service.ts). A tab
 // whose desktop is live has been sent everything, and is handed back to the desktop's acks at
 // once; one whose desktop is behind or resyncing stays held, so the copy can still resync it, and
 // is released as soon as it is live again (checked every DRAIN_POLL_MS). Past DRAIN_MS the rest is
 // released as it is (logged as possibly stale), and the worker ends. A `start` while draining keeps
-// the worker and takes back the tabs already released, from a new baseline.
+// the worker and takes back the tabs already released, from a new baseline numbered on above their
+// old stream (the same worker may still be answering for it: `closedSeqs`).
 //
 // Flow (Task 12, design-web.md §5.2): the mirror is the pty's one flow consumer for every tab it
 // holds. TabManager binds a TerminalFlow; the mirror `take`s each tab at its spawn, acks the
@@ -238,6 +240,15 @@ function validSize(cols: number, rows: number): boolean {
 export class TerminalMirror implements TerminalTap {
   private worker: MirrorWorkerLike | null = null
   private readonly tabs = new Map<string, TabStream>()
+  /**
+   * The `close` seq of tabs closed while the current worker runs, until it reports that close
+   * parsed. The worker's messages carry no stream identity, only a tab id and a seq: a tab opened
+   * again before then (a `start` calling a drain off re-adopts tabs the drain already released) is
+   * numbered on from here, so the old stream's late `parsed` (its data items, the close itself) are
+   * at or below the new stream's `parsed` and ignored, never read as the new stream's progress (they
+   * would ack output the worker never parsed and leave the pty unacked until the watchdog fires).
+   */
+  private readonly closedSeqs = new Map<string, number>()
   private readonly inspects = new Map<number, PendingInspect>()
   private nextInspect = 1
   private nextSnapshot = 1
@@ -321,6 +332,7 @@ export class TerminalMirror implements TerminalTap {
     this.endAllViews()
     this.releaseAll()
     this.tabs.clear()
+    this.closedSeqs.clear()
     worker?.terminate()
     this.endDrain()
   }
@@ -353,9 +365,11 @@ export class TerminalMirror implements TerminalTap {
   private open(tabId: string, cols: number, rows: number): void {
     let tab = this.tabs.get(tabId)
     if (!tab) {
+      // Above the old stream of the same tab if the worker may still answer for it (closedSeqs).
+      const base = this.closedSeqs.get(tabId) ?? 0
       tab = {
-        seq: 0,
-        parsed: 0,
+        seq: base,
+        parsed: base,
         cols,
         rows,
         inflight: [],
@@ -434,7 +448,8 @@ export class TerminalMirror implements TerminalTap {
     if (!this.worker || !tab) return
     this.tabs.delete(tabId)
     // Posted, not given to the views: they are told with `closed` instead.
-    this.worker.post({ t: 'item', tabId, item: { seq: ++tab.seq, kind: 'close' } })
+    this.closedSeqs.set(tabId, ++tab.seq)
+    this.worker.post({ t: 'item', tabId, item: { seq: tab.seq, kind: 'close' } })
     for (const w of tab.waiters.splice(0)) w.resolve()
     this.endViews(tab)
     // A pty still paused for the copy would hold back the exit's last output: it is the desktop's again.
@@ -658,6 +673,10 @@ export class TerminalMirror implements TerminalTap {
     if (message.t !== 'log') this.answered = true
     switch (message.t) {
       case 'parsed': {
+        // The worker's last word on a closed stream: whatever it reports for the tab from here on
+        // belongs to a stream opened after it, so a new one may number from 0 again.
+        const closedAt = this.closedSeqs.get(message.tabId)
+        if (closedAt !== undefined && message.seq >= closedAt) this.closedSeqs.delete(message.tabId)
         const tab = this.tabs.get(message.tabId)
         if (!tab || message.seq <= tab.parsed) return
         tab.parsed = message.seq
@@ -709,6 +728,9 @@ export class TerminalMirror implements TerminalTap {
     // The old worker's silence is not the new one's: the check starts over with it.
     this.disarmWatchdog()
     this.drop(new Error('terminal mirror worker restarted'))
+    // Nothing the old worker posts reaches `received` any more (spawnWorker), so no late answer
+    // for a closed stream can come.
+    this.closedSeqs.clear()
     const now = this.now()
     this.restarts = this.restarts.filter((at) => now - at < RESTART_WINDOW_MS)
     if (this.restarts.length >= MAX_RESTARTS) {

@@ -349,6 +349,19 @@ describe('invoke', () => {
     ])
   })
 
+  it('a socket being closed (web access turned off: CLOSING for the grace) dispatches nothing more', async () => {
+    const { connect, router } = setup()
+    const input = vi.fn()
+    router.handleProject('layout.get', input)
+    const ws = connect('p1')
+    // The gateway called close(4503): `ws` still emits the frames the peer sent before its close frame.
+    ws.readyState = 2
+    ws.feed({ t: 'invoke', id: 1, ch: 'layout.get' })
+    await flush()
+    expect(input).not.toHaveBeenCalled()
+    expect(ws.sent.filter((f) => f.t === 'result')).toEqual([])
+  })
+
   it('unknown and `no`-class channels answer refused without reaching a handler; the socket stays', async () => {
     const { connect, router } = setup()
     const reopen = vi.fn()
