@@ -1030,7 +1030,11 @@ function start(): void {
       // layout is shared, the reveal is one screen's.
       showPanel: (projectId, panelKey, view) => {
         const windowId = windows.windowIdOf(projectId)
-        return layouts.show(projectId, panelKey, view ?? (windowId === undefined ? undefined : desktopViewId(windowId)))
+        const target = view ?? (windowId === undefined ? undefined : desktopViewId(windowId))
+        // The window's only view (web access off): the project-wide send already reaches it, so one
+        // publish with `reveal` rather than a plain one plus a targeted one.
+        const only = target !== undefined && windowId !== undefined && views.viewsOf(windowId).length <= 1
+        return layouts.show(projectId, panelKey, only ? undefined : target)
       },
       // The check behind a request's view hint (HostApi originOf).
       viewWindow: (viewId) => views.windowOf(viewId),
