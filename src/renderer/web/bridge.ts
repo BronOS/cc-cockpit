@@ -1,0 +1,410 @@
+// The web shell's `window.cockpit` (design-web.md §2, §3): the same `invoke` / `on` the Electron
+// preload (src/preload/index.ts) gives the shell, over the view's one WebSocket to the gateway.
+// The React shell cannot tell the two apart; everything that differs lives here.
+//
+// - Allow-lists. Only the channels of src/shared/ipc.ts pass, as in the preload, and a channel
+//   whose remote class is `no` is refused here before it is sent (design §3: "the browser bridge
+//   checks them too"). Main checks every frame again (main/web/protocol.ts, the router); this is
+//   the page's own review point, not the authority.
+// - One socket, one view. The socket says `hello` with the project, main binds it to that project's
+//   window and answers `ready` with a fresh view id and the window's snapshot. Nothing else in a
+//   frame names a window or a project.
+// - Drops. No resume tokens in v1 (design §3): a dropped view reconnects (with backoff) and gets a
+//   fresh `ready`; whatever happened while away is in that snapshot, not replayed. While away the
+//   status is `away` (the page shows "host unreachable"), calls in flight reject, and new calls
+//   reject at once rather than wait: a click queued for minutes and replayed on reconnect could act
+//   on a tab that is gone (and typing must never land late in a Claude session).
+// - Events keep their listeners across reconnects: the page subscribes once, the bridge routes
+//   every `event` frame of the current socket to the listeners of its channel.
+//
+// No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
+// the unit tests (plain Node) drive the bridge with a fake socket and fake time.
+
+import { EVENT_CHANNELS, INVOKE_CHANNELS, remoteAllowed, type CockpitApi } from '../../shared/ipc'
+import {
+  CLOSE,
+  MAX_FRAME_BYTES,
+  PROTOCOL_VERSION,
+  type ClientFrame,
+  type ReadyFrame,
+  type WebSnapshot
+} from '../../shared/web-protocol'
+import type { ViewId } from '../../shared/views'
+
+/** The parts of a browser WebSocket the bridge uses (`WebSocket` itself fits). */
+export interface SocketLike {
+  readonly readyState: number
+  send(data: string): void
+  close(code?: number, reason?: string): void
+  onopen: ((ev: unknown) => void) | null
+  onmessage: ((ev: { data: unknown }) => void) | null
+  onclose: ((ev: { code: number; reason: string }) => void) | null
+  onerror: ((ev: unknown) => void) | null
+}
+
+/** `WebSocket.OPEN`. */
+const OPEN = 1
+
+/**
+ * Where the page stands with the host:
+ * - `connecting`: the first connection, before any `ready` (the page draws nothing yet);
+ * - `ready`: bound to the window as `view`, `generation` counting the `ready`s of this page (1 is
+ *   the first; a higher one is a reconnect, after which the page redraws from fresh state);
+ * - `away`: the socket dropped (or never opened); the next attempt is due at `retryAt`;
+ * - `gone`: main said this view cannot come back by retrying (the project window closed or is not
+ *   open, or the page is from another app version); `reason` is for the person.
+ */
+export type BridgeStatus =
+  | { state: 'connecting' }
+  | { state: 'ready'; view: ViewId; generation: number }
+  | { state: 'away'; retryAt: number; attempt: number }
+  | { state: 'gone'; reason: string }
+
+export interface Timers {
+  now(): number
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+export interface WebBridgeOptions {
+  /** The socket's URL (`ws(s)://<host>/ws`, `socketUrl`). */
+  url: string
+  /** The project this page shows; main binds the view to the window that has it open. */
+  project: string
+  createSocket(url: string): SocketLike
+  timers?: Timers
+  /** Delay before reconnect attempt n (1-based); default `reconnectDelay`. */
+  delay?(attempt: number): number
+  /** How long after the socket opens `ready` may take before the bridge gives up on that socket. */
+  readyTimeoutMs?: number
+}
+
+export interface WebBridge {
+  /** What `window.cockpit` is set to. */
+  readonly api: CockpitApi
+  status(): BridgeStatus
+  /** The latest `ready` snapshot (undefined before the first). */
+  snapshot(): WebSnapshot | undefined
+  /** Be told of every status change; returns the unsubscribe function. */
+  onStatus(listener: (status: BridgeStatus) => void): () => void
+  /** Skip the wait and try now (the "host unreachable" notice's Retry). Only while `away`. */
+  retryNow(): void
+  /** Close for good (page unload); nothing reconnects after this. */
+  close(): void
+}
+
+/** Error text of a call that could not reach the host (the page shows it as any IPC error). */
+export const UNREACHABLE = 'host unreachable'
+
+/** Backoff: 0.5 s, 1 s, 2 s, ... capped at 10 s. A LAN drop comes back fast; a sleeping host is not hammered. */
+export function reconnectDelay(attempt: number): number {
+  return Math.min(10_000, 500 * 2 ** Math.max(0, Math.min(attempt - 1, 10)))
+}
+
+/** Main's `ready` normally comes within a tick of `hello`; this only catches a hung handshake. */
+export const READY_TIMEOUT_MS = 10_000
+
+/**
+ * Close codes after which retrying cannot help (CLOSE, shared/web-protocol.ts), with what the
+ * person is told. Everything else (a network drop, a restart of the app, a refused upgrade,
+ * `tooLarge`, which is defined as "reconnect to a fresh snapshot") is retried.
+ */
+const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
+  [CLOSE.noProject, 'This project is not open on the host.'],
+  [CLOSE.windowClosed, 'The project window was closed on the host.'],
+  [CLOSE.version, 'The cockpit on the host was updated. Reload the page.']
+])
+
+/** The socket URL for a page loaded from `location` (same host, ws or wss to match http or https). */
+export function socketUrl(location: { protocol: string; host: string }, path: string): string {
+  return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`
+}
+
+const invokeChannels: ReadonlySet<string> = new Set(INVOKE_CHANNELS)
+const eventChannels: ReadonlySet<string> = new Set(EVENT_CHANNELS)
+
+/** Strict base64 (linear: one class, one optional tail), as main's decoder. */
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
+
+function bytesToBase64(bytes: Uint8Array): string {
+  // btoa takes a "binary string"; built in chunks so a large payload does not overflow the
+  // argument list of String.fromCharCode.
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(binary)
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64)
+  const out = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+  return out
+}
+
+/** A client frame as JSON text, each Uint8Array as `{ $bytes }` (main's decodeJson turns it back). */
+export function encodeClientFrame(frame: ClientFrame): string {
+  return JSON.stringify(frame, (_key, value: unknown) =>
+    value instanceof Uint8Array ? { $bytes: bytesToBase64(value) } : value
+  )
+}
+
+/** Server JSON with every `{ $bytes: <base64> }` (exactly that one key) back as a Uint8Array. */
+export function decodeServerJson(text: string): unknown {
+  return JSON.parse(text, (_key, value: unknown) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
+    const keys = Object.keys(value)
+    if (keys.length !== 1 || keys[0] !== '$bytes') return value
+    const b64 = (value as { $bytes: unknown }).$bytes
+    if (typeof b64 !== 'string' || b64.length % 4 !== 0 || !BASE64.test(b64)) return value
+    return base64ToBytes(b64)
+  })
+}
+
+/** UTF-8 size of a frame, without building the encoded bytes (MAX_FRAME_BYTES check). */
+export function utf8Length(text: string): number {
+  let n = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const d = text.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        n += 4
+        i++
+      } else n += 3
+    } else n += 3
+  }
+  return n
+}
+
+const defaultTimers: Timers = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>)
+}
+
+interface Pending {
+  resolve(value: unknown): void
+  reject(err: Error): void
+}
+
+export function createWebBridge(options: WebBridgeOptions): WebBridge {
+  const timers = options.timers ?? defaultTimers
+  const delay = options.delay ?? reconnectDelay
+  const readyTimeoutMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS
+
+  const listeners = new Map<string, Set<(payload: unknown) => void>>()
+  const statusListeners = new Set<(status: BridgeStatus) => void>()
+  // Calls of the current socket only: a drop rejects them all, so an id is never answered by
+  // another socket's result (ids restart nowhere: one counter for the page's life).
+  const pending = new Map<number, Pending>()
+  let nextId = 1
+  let status: BridgeStatus = { state: 'connecting' }
+  let snapshot: WebSnapshot | undefined
+  let generation = 0
+  let attempt = 0
+  let socket: SocketLike | undefined
+  let retryTimer: unknown
+  let readyTimer: unknown
+  let closed = false
+
+  const setStatus = (next: BridgeStatus): void => {
+    status = next
+    for (const listener of [...statusListeners]) {
+      try {
+        listener(next)
+      } catch (err) {
+        console.error('web bridge: status listener failed', err)
+      }
+    }
+  }
+
+  const rejectAll = (): void => {
+    const calls = [...pending.values()]
+    pending.clear()
+    for (const call of calls) call.reject(new Error(UNREACHABLE))
+  }
+
+  const clearReadyTimer = (): void => {
+    if (readyTimer !== undefined) timers.clearTimeout(readyTimer)
+    readyTimer = undefined
+  }
+
+  const scheduleRetry = (): void => {
+    attempt += 1
+    const wait = delay(attempt)
+    setStatus({ state: 'away', retryAt: timers.now() + wait, attempt })
+    retryTimer = timers.setTimeout(() => {
+      retryTimer = undefined
+      connect()
+    }, wait)
+  }
+
+  /** The current socket ended (closed by either side, or failed to open). */
+  const dropped = (s: SocketLike, code: number): void => {
+    if (s !== socket) return
+    socket = undefined
+    clearReadyTimer()
+    rejectAll()
+    if (closed) return
+    const final = FINAL_CLOSES.get(code)
+    if (final !== undefined) {
+      setStatus({ state: 'gone', reason: final })
+      return
+    }
+    scheduleRetry()
+  }
+
+  const onFrame = (s: SocketLike, data: unknown): void => {
+    if (s !== socket) return
+    if (typeof data !== 'string') return
+    let frame: unknown
+    try {
+      frame = decodeServerJson(data)
+    } catch {
+      console.warn('web bridge: frame is not JSON')
+      return
+    }
+    if (typeof frame !== 'object' || frame === null) return
+    const f = frame as Record<string, unknown>
+    if (f.t === 'ready') {
+      if (status.state === 'ready' || f.v !== PROTOCOL_VERSION || typeof f.view !== 'string') return
+      clearReadyTimer()
+      const ready = f as unknown as ReadyFrame
+      snapshot = ready.snapshot
+      attempt = 0
+      generation += 1
+      setStatus({ state: 'ready', view: ready.view, generation })
+      return
+    }
+    if (f.t === 'result') {
+      if (typeof f.id !== 'number') return
+      const call = pending.get(f.id)
+      if (!call) return
+      pending.delete(f.id)
+      if (f.ok === true) call.resolve(f.v)
+      // As the preload: main's error message only (never a stack), as an Error.
+      else call.reject(new Error(typeof f.err === 'string' ? f.err : 'failed'))
+      return
+    }
+    if (f.t === 'event') {
+      // Main sends only allowed events (protocol.ts eventAllowed); the page checks again, as the
+      // preload's `on` refuses a channel outside the shared list.
+      if (status.state !== 'ready' || typeof f.ch !== 'string' || !eventChannels.has(f.ch) || !remoteAllowed(f.ch)) return
+      const set = listeners.get(f.ch)
+      if (!set) return
+      for (const listener of [...set]) {
+        try {
+          listener(f.p)
+        } catch (err) {
+          console.error(`web bridge: listener of ${f.ch} failed`, err)
+        }
+      }
+    }
+  }
+
+  const connect = (): void => {
+    if (closed) return
+    let s: SocketLike
+    try {
+      s = options.createSocket(options.url)
+    } catch (err) {
+      // A malformed URL or a blocked scheme throws synchronously; treated like a failed open.
+      console.warn('web bridge: socket failed', err)
+      scheduleRetry()
+      return
+    }
+    socket = s
+    s.onopen = () => {
+      if (s !== socket) return
+      s.send(encodeClientFrame({ t: 'hello', v: PROTOCOL_VERSION, project: options.project }))
+      readyTimer = timers.setTimeout(() => {
+        readyTimer = undefined
+        if (s === socket) s.close()
+      }, readyTimeoutMs)
+    }
+    s.onmessage = (ev) => onFrame(s, ev.data)
+    s.onclose = (ev) => dropped(s, ev.code)
+    // `error` is always followed by `close`; nothing to do here.
+    s.onerror = () => undefined
+  }
+
+  const api: CockpitApi = {
+    invoke: (channel, ...payload) => {
+      // The page is untrusted JS as far as main is concerned, but this check is the page's own:
+      // the same refusal the preload gives, plus the remote class.
+      if (typeof channel !== 'string' || !invokeChannels.has(channel)) {
+        return Promise.reject(new Error('invalid channel'))
+      }
+      if (!remoteAllowed(channel)) return Promise.reject(new Error('not available in a remote view'))
+      const s = socket
+      if (status.state !== 'ready' || !s || s.readyState !== OPEN) return Promise.reject(new Error(UNREACHABLE))
+      const id = nextId++
+      let text: string
+      try {
+        text = encodeClientFrame({ t: 'invoke', id, ch: channel, p: payload[0] })
+      } catch {
+        return Promise.reject(new Error('payload is not serializable'))
+      }
+      // Main would close the socket (1009) on a frame this big, dropping every other call with it.
+      if (utf8Length(text) > MAX_FRAME_BYTES) return Promise.reject(new Error('payload too large'))
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        try {
+          s.send(text)
+        } catch {
+          pending.delete(id)
+          reject(new Error(UNREACHABLE))
+        }
+      }) as ReturnType<CockpitApi['invoke']>
+    },
+    on: (channel, listener) => {
+      if (typeof channel !== 'string' || !eventChannels.has(channel)) throw new Error('invalid channel')
+      // A `no`-class event (window.state, the update notice, ...) is never sent to a remote view.
+      // The shared shell subscribes to some of them unconditionally, so this is a listener that
+      // never fires rather than a throw that would break the page.
+      if (!remoteAllowed(channel)) return () => undefined
+      const fn = listener as (payload: unknown) => void
+      let set = listeners.get(channel)
+      if (!set) listeners.set(channel, (set = new Set()))
+      set.add(fn)
+      return () => {
+        set.delete(fn)
+      }
+    }
+  }
+
+  connect()
+
+  return {
+    api,
+    status: () => status,
+    snapshot: () => snapshot,
+    onStatus(listener) {
+      statusListeners.add(listener)
+      return () => {
+        statusListeners.delete(listener)
+      }
+    },
+    retryNow() {
+      if (closed || status.state !== 'away' || retryTimer === undefined) return
+      timers.clearTimeout(retryTimer)
+      retryTimer = undefined
+      connect()
+    },
+    close() {
+      if (closed) return
+      closed = true
+      if (retryTimer !== undefined) timers.clearTimeout(retryTimer)
+      retryTimer = undefined
+      clearReadyTimer()
+      const s = socket
+      socket = undefined
+      rejectAll()
+      s?.close()
+    }
+  }
+}

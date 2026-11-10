@@ -217,11 +217,11 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `electron.vite.config.ts` (a web renderer build)
 - Create: `test/unit/web-bridge.test.ts`
 
-- [ ] a web build of the React shell next to the Electron one
-- [ ] `bridge.ts` provides `window.cockpit` (`invoke`/`on`) over the socket with the same allow-lists as the preload
-- [ ] reconnect after a drop with a fresh `ready` snapshot; a "host unreachable" state while away
-- [ ] write tests for the bridge (allow-lists, invoke/result matching, events, reconnect and re-snapshot)
-- [ ] run tests - must pass before next task
+- [x] a web build of the React shell next to the Electron one
+- [x] `bridge.ts` provides `window.cockpit` (`invoke`/`on`) over the socket with the same allow-lists as the preload
+- [x] reconnect after a drop with a fresh `ready` snapshot; a "host unreachable" state while away
+- [x] write tests for the bridge (allow-lists, invoke/result matching, events, reconnect and re-snapshot)
+- [x] run tests - must pass before next task
 
 ### Task 8: Web shell part 2: serving, sign-in page, picker, chrome, zone sizes [model: opus]
 

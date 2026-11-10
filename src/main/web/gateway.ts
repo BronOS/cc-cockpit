@@ -29,7 +29,7 @@ import type { AccessLog } from './access-log'
 import { deviceCookie, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
 import type { WebDevice } from './devices'
-import { MAX_FRAME_BYTES } from './protocol'
+import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
 import { listenPlanOf, type ListenPlan } from './settings'
 
 export type WsModule = typeof import('ws')
@@ -38,8 +38,8 @@ export type WsModule = typeof import('ws')
 // a bigger one before it is buffered whole.
 export { MAX_FRAME_BYTES }
 
-/** Where the browser opens its one WebSocket per view. */
-export const WS_PATH = '/ws'
+/** Where the browser opens its one WebSocket per view (shared with the bridge, web-protocol.ts). */
+export { WS_PATH }
 /** The page posts the access link's token here (auth.ts). */
 export const SIGN_IN_LINK_PATH = '/auth/link'
 /** What the page asks first: the mode, and whether this browser is signed in. */

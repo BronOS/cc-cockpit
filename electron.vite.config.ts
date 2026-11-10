@@ -13,6 +13,10 @@ import { defineConfig } from 'electron-vite'
 //                          wrapped in a function by the banner/footer below)
 //   out/preload/index.js   renderer bridge
 //   out/renderer/          shell UI
+//   out/renderer/web/      the web shell (design-web.md §2): the same React shell with the socket
+//                          bridge (src/renderer/web/) instead of the preload, a second input of the
+//                          renderer build so both share one set of chunks under out/renderer/assets;
+//                          the web access gateway serves it to a browser
 // cli and host are extra Node entries of the main build: they share main's Node target and
 // externalisation rules, and their input keys carry the directory so one `outDir: out` yields
 // the three folders above.
@@ -66,7 +70,10 @@ export default defineConfig({
       outDir: resolve(__dirname, 'out/renderer'),
       emptyOutDir: true,
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/renderer/index.html') }
+        input: {
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          web: resolve(__dirname, 'src/renderer/web/index.html')
+        }
       }
     }
   }

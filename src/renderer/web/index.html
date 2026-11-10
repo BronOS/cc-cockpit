@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- The web shell (design-web.md §2): the same React shell as index.html one level up, served by the
+     web access gateway to a browser. No CSP meta here: the gateway sends the shell's CSP as a header
+     on every answer (main/web/checks.ts webShellCsp), and a meta tag could only narrow it. -->
+<html lang="en" class="cc-shell">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <title>cc-cockpit</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

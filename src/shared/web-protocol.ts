@@ -1,0 +1,60 @@
+// The web access wire protocol's shared half (design-web.md §3): the constants and frame types both
+// ends speak. Main's side (src/main/web/protocol.ts: parsing, the Node `$bytes` codec, the
+// allow-list checks) and the browser bridge (src/renderer/web/bridge.ts) import them from here, so
+// a frame or a close code cannot drift between the two. Types and plain values only: this file is
+// bundled into the web shell, so no Node (`Buffer`) and no Electron.
+
+import type { LayoutView, OverlayInfo, TabInfo } from './ipc'
+import type { ViewId } from './views'
+
+/** Bumped on any incompatible frame change; a client speaking another version is closed. */
+export const PROTOCOL_VERSION = 1
+
+/** Where the browser opens its one WebSocket per view (the gateway refuses an upgrade elsewhere). */
+export const WS_PATH = '/ws'
+
+/**
+ * Largest frame either way (design-web.md §3): a 1 MiB panel message wrapped in a frame must fit.
+ * `ws` enforces it on what a view sends (gateway.ts `maxPayload`, close 1009); main checks its own
+ * frames before sending (connection.ts), and the bridge checks an invoke before sending it.
+ */
+export const MAX_FRAME_BYTES = 4 * 1024 * 1024
+
+/** Close codes main uses (4000-4999 is the application range of RFC 6455). */
+export const CLOSE = Object.freeze({
+  /** A frame that is not one of ours: binary, not JSON, a wrong shape, or out of order. */
+  badFrame: 4400,
+  /** No `hello` in time. */
+  noHello: 4401,
+  /** The project named in `hello` has no open window (or it is not a project window). */
+  noProject: 4404,
+  /** The view's window closed. */
+  windowClosed: 4410,
+  /** A frame main had to send was over MAX_FRAME_BYTES; the view reconnects to a fresh snapshot. */
+  tooLarge: 4413,
+  /** The client speaks another protocol version (a stale page after an app update). */
+  version: 4426,
+  /** The snapshot could not be built (the project record went away mid-handshake). */
+  failed: 4500
+})
+
+/**
+ * What a joining view gets in `ready` (design-web.md §5.1): enough to draw the window without a
+ * round trip. Tasks 17, 23 and 24 extend it (panel headers and slot frames, pending asks, held
+ * pages), each with its own snapshot test. `tabs` is the plain list, not `tabs.list`: that call
+ * resets terminal flow (TabManager.attach), which a remote view must never do to the desktop.
+ */
+export interface WebSnapshot {
+  tabs: TabInfo[]
+  layout: LayoutView
+  overlays: OverlayInfo[]
+}
+
+export type HelloFrame = { t: 'hello'; v: number; project: string }
+export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
+export type ClientFrame = HelloFrame | InvokeFrame
+
+export type ReadyFrame = { t: 'ready'; v: number; view: ViewId; snapshot: WebSnapshot }
+export type ResultFrame = { t: 'result'; id: number; ok: true; v: unknown } | { t: 'result'; id: number; ok: false; err: string }
+export type EventFrame = { t: 'event'; ch: string; p: unknown }
+export type ServerFrame = ReadyFrame | ResultFrame | EventFrame

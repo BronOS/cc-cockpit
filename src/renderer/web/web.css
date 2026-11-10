@@ -1,0 +1,35 @@
+/* The web shell's own bits (main.tsx): the "host unreachable" notice and the start-up states. */
+.web-unreachable {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--cc-status-ended) 45%, transparent);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-error);
+  color: var(--cc-fg);
+  font: var(--cc-text-sm) var(--cc-font-ui);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+}
+.web-unreachable button {
+  font: inherit;
+  padding: 2px 10px;
+  border: 1px solid var(--cc-border, currentColor);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.web-state {
+  display: grid;
+  place-items: center;
+  height: 100vh;
+  margin: 0;
+  color: var(--cc-fg-muted, var(--cc-fg));
+  font: var(--cc-text-md) var(--cc-font-ui);
+}
