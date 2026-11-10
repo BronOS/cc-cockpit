@@ -44,6 +44,7 @@ describe('dataPaths', () => {
       hooksJson: '/data/hooks.json',
       claudePluginsDir: '/data/claude-plugins',
       secretsJson: '/data/secrets.json',
+      webAccessJson: '/data/web-access.json',
       binDir: '/data/bin',
       cccWrapper: '/data/bin/ccc',
       defaultSocket: '/data/app.sock'

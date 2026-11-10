@@ -144,6 +144,9 @@ import { rendererLocation } from './windows/create-window'
 import { ElectronWindowFactory } from './windows/electron-window-factory'
 import { blurSupport } from './windows/window-chrome'
 import { ViewRegistry } from './views/view-registry'
+import { AccessLog } from './web/access-log'
+import { WebAuth } from './web/auth'
+import { DeviceStore } from './web/devices'
 import { WebGateway } from './web/gateway'
 import { webAccessOf } from './web/settings'
 import { desktopViewId } from '../shared/views'
@@ -1215,7 +1218,16 @@ function start(): void {
   // with the commands that use them (hook: Task 14, below; the user commands: Task 21, below).
   // Web access (design-web.md): off by default. Constructing it costs nothing (no listener, `ws`
   // not loaded); apply() below starts it only when `app.json` › `webAccess.enabled` is true.
-  const webGateway = new WebGateway({ log: (m) => console.warn(m) })
+  // The device file is read here (a missing one stays missing: nothing is written until a device
+  // signs in or a token is made).
+  const webAccessLog = new AccessLog({ filePath: join(paths.logsDir, 'web-access.log') })
+  const webDevices = new DeviceStore({
+    filePath: paths.webAccessJson,
+    accessLog: webAccessLog,
+    notify: (text) => showNotification(text, 'cc-cockpit web access')
+  })
+  const webAuth = new WebAuth({ devices: webDevices, secrets: secretStore, accessLog: webAccessLog })
+  const webGateway = new WebGateway({ log: (m) => console.warn(m), auth: webAuth, accessLog: webAccessLog })
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
@@ -2230,6 +2242,7 @@ function start(): void {
     registry.flushAll()
     pluginIndex.flush()
     pluginSecrets.flush()
+    webDevices.flush()
     // After hosts.disposeAll(): no host is left to write after this.
     appStorage.flush()
   })

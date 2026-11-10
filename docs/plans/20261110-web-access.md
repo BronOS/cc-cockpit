@@ -179,18 +179,19 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Create: `src/main/web/devices.ts`, `src/main/web/auth.ts`
 - Modify: `src/main/web/gateway.ts`, secret store wiring
 - Create: `test/unit/web-devices.test.ts`, `test/unit/web-auth.test.ts`
+- ➕ Also created `src/main/web/access-log.ts` (the access log); `src/main/paths.ts` gained `webAccessJson`
 
-- [ ] device store in the app data dir (hashed secrets, sliding 30-day expiry, no rotation), revoke and revoke all;
+- [x] device store in the app data dir (hashed secrets, sliding 30-day expiry, no rotation), revoke and revoke all;
       a new device raises a desktop notification (through the existing notifier adapter)
-- [ ] access link mode: a 256-bit token in the secret store, `<origin>/#t=<token>`; a POST (Origin-checked) exchanges it
+- [x] access link mode: a 256-bit token in the secret store, `<origin>/#t=<token>`; a POST (Origin-checked) exchanges it
       for the device cookie; regenerate kills token and its devices; a one-time "add a device" token valid 10 minutes
-- [ ] None mode on loopback (no sign-in; Host and Origin still apply)
-- [ ] failed attempts slowed by a token bucket with a fixed delay, never a lockout, never keyed by peer address;
+- [x] None mode on loopback (no sign-in; Host and Origin still apply)
+- [x] failed attempts slowed by a token bucket with a fixed delay, never a lockout, never keyed by peer address;
       constant-time compares
-- [ ] access log: sign-in, connect, disconnect, revoke, mode change; never terminal text, prompts or secrets
-- [ ] write tests: sign-in success, used one-time token, regenerated token, expired/revoked device, cookie flags per
+- [x] access log: sign-in, connect, disconnect, revoke, mode change; never terminal text, prompts or secrets
+- [x] write tests: sign-in success, used one-time token, regenerated token, expired/revoked device, cookie flags per
       origin, the bucket under a burst, a request without a valid cookie refused, the log never carries a token or text
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 6: Wire protocol and WebCaller binding [model: opus]
 

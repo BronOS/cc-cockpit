@@ -11,17 +11,23 @@
 //    SameSite, is what keeps another localhost page out (checks.ts says why).
 //  - The web shell's CSP and `Cache-Control: no-store` on every answer.
 //  - Loopback binds only (settings.ts listenPlanOf) until TLS and the §4.3 confirms (Task 28).
-// An upgrade that passes the checks goes to the socket handler main installs (the wire protocol,
-// Task 6, behind the device cookie, Task 5); with none installed it is refused, so a skeleton
-// gateway never hands anyone a socket.
+// Behind those, sign-in (auth.ts, plan Task 5): `/` and the sign-in routes are open, everything
+// else (the upgrade first) needs a device (`WebAuth.authorize`: the device cookie, or None mode).
+// An upgrade that passes goes to the socket handler main installs (the wire protocol, Task 6);
+// with none installed it is refused, so the gateway never hands anyone a socket before that.
+// Sockets are tracked by device: a revoke closes that device's sockets at once, and leaving None
+// mode closes the anonymous ones. Connects and disconnects go to the access log.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { hostname, networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
 // Types only: erased at build time, so this file does not load `ws` (see loadWs below).
 import type { WebSocket, WebSocketServer } from 'ws'
-import type { WebAccessSettings } from '../../shared/types'
+import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
+import type { AccessLog } from './access-log'
+import { deviceCookie, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
+import type { WebDevice } from './devices'
 import { listenPlanOf, type ListenPlan } from './settings'
 
 export type WsModule = typeof import('ws')
@@ -34,9 +40,18 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024
 
 /** Where the browser opens its one WebSocket per view. */
 export const WS_PATH = '/ws'
+/** The page posts the access link's token here (auth.ts). */
+export const SIGN_IN_LINK_PATH = '/auth/link'
+/** What the page asks first: the mode, and whether this browser is signed in. */
+export const SESSION_PATH = '/auth/session'
+/** A sign-in body is a token and a device name; anything bigger is not one. */
+export const MAX_SIGN_IN_BODY = 4096
 
 export interface GatewayDeps {
   log(message: string): void
+  /** Sign-in and devices (auth.ts). */
+  auth: WebAuth
+  accessLog: AccessLog
   /** Loads `ws`; tests count the calls. Default: a dynamic import, the only one in main. */
   loadWs?: () => Promise<WsModule>
   /** os.networkInterfaces / os.hostname, read only for a network bind (Task 28). */
@@ -52,8 +67,8 @@ export type GatewayStatus =
   | { state: 'failed'; reason: string }
   | { state: 'listening'; bind: string; port: number }
 
-/** A socket that passed Host and Origin; the handler owns it from here (Task 6). */
-export type SocketHandler = (ws: WebSocket, req: IncomingMessage) => void
+/** A socket that passed Host, Origin and sign-in; the handler owns it from here (Task 6). */
+export type SocketHandler = (ws: WebSocket, req: IncomingMessage, device: WebDevice) => void
 
 type OkPlan = Extract<ListenPlan, { ok: true }>
 
@@ -63,6 +78,34 @@ const PLACEHOLDER_HTML =
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** The body as text, or undefined once it passes `max` bytes (the rest is not read). */
+function readBody(req: IncomingMessage, max: number): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    let done = false
+    req.on('data', (chunk: Buffer) => {
+      if (done) return
+      size += chunk.length
+      if (size > max) {
+        done = true
+        req.pause()
+        resolve(undefined)
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      if (!done) resolve(Buffer.concat(chunks).toString('utf8'))
+      done = true
+    })
+    req.on('error', () => {
+      if (!done) resolve(undefined)
+      done = true
+    })
+  })
 }
 
 function refuseUpgrade(socket: Duplex, status: string): void {
@@ -81,8 +124,15 @@ export class WebGateway {
   /** apply/stop run one at a time: a toggle while a start is still listening must not race it. */
   private queue: Promise<unknown> = Promise.resolve()
   private ws: WsModule | undefined
+  /** Every handed-out socket and the device it belongs to. */
+  private readonly sockets = new Map<WebSocket, WebDevice>()
 
-  constructor(private readonly deps: GatewayDeps) {}
+  constructor(private readonly deps: GatewayDeps) {
+    deps.auth.devices.onRevoked((ids) => {
+      const gone = new Set(ids)
+      for (const [ws, device] of this.sockets) if (gone.has(device.id)) ws.terminate()
+    })
+  }
 
   /** What the gateway is doing now (for the log, the settings page and tests). */
   status(): GatewayStatus {
@@ -121,6 +171,7 @@ export class WebGateway {
   }
 
   private async applyNow(settings: WebAccessSettings): Promise<GatewayStatus> {
+    this.setMode(settings.mode)
     const plan = listenPlanOf(settings)
     if (!plan.ok) {
       await this.close()
@@ -152,6 +203,15 @@ export class WebGateway {
     this.current = { state: 'listening', bind: plan.bind, port: plan.port }
     this.deps.log(`web access: listening on http://${plan.bind.includes(':') ? `[${plan.bind}]` : plan.bind}:${plan.port}`)
     return this.current
+  }
+
+  private setMode(mode: WebAccessMode): void {
+    const before = this.deps.auth.mode
+    this.deps.auth.setMode(mode)
+    // Leaving None: whoever came in without signing in is out now, and must sign in to come back.
+    if (before === 'none' && mode !== 'none') {
+      for (const [ws, device] of this.sockets) if (device.mode === 'none') ws.terminate()
+    }
   }
 
   private use(plan: OkPlan): void {
@@ -211,8 +271,16 @@ export class WebGateway {
     return this.plan?.externalOrigin !== undefined ? [own, this.plan.externalOrigin] : [own]
   }
 
-  private send(res: ServerResponse, host: string | undefined, status: number, type: string, body: string): void {
+  private send(
+    res: ServerResponse,
+    host: string | undefined,
+    status: number,
+    type: string,
+    body: string,
+    extra: Record<string, string> = {}
+  ): void {
     res.writeHead(status, {
+      ...extra,
       'Content-Type': type,
       'Content-Security-Policy': webShellCsp(host === undefined ? [] : this.frameOrigins(host)),
       'Cache-Control': 'no-store',
@@ -236,8 +304,49 @@ export class WebGateway {
       return this.send(res, host, 403, 'text/plain; charset=utf-8', 'origin not allowed')
     }
     const path = (req.url ?? '/').split('?')[0]
+    // Open without sign-in: the page (it signs in from there) and the sign-in routes.
     if (safe && path === '/') return this.send(res, host, 200, 'text/html; charset=utf-8', method === 'HEAD' ? '' : PLACEHOLDER_HTML)
+    if (method === 'GET' && path === SESSION_PATH) return this.session(req, res, host)
+    if (method === 'POST' && path === SIGN_IN_LINK_PATH) {
+      // Never an unhandled rejection in main: a failure answers 500 when the request is still there.
+      return void this.signIn(req, res, host).catch((err: unknown) => {
+        this.deps.log(`web access: sign-in failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'sign-in failed' })
+      })
+    }
+    // Everything else needs a device: a request without a valid cookie learns nothing more.
+    if (!this.deps.auth.authorize(req.headers.cookie)) return this.json(res, host, 401, { error: 'not signed in' })
     this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
+  }
+
+  private json(res: ServerResponse, host: string, status: number, value: unknown, extra: Record<string, string> = {}): void {
+    this.send(res, host, status, 'application/json; charset=utf-8', JSON.stringify(value), extra)
+  }
+
+  private session(req: IncomingMessage, res: ServerResponse, host: string): void {
+    const device = this.deps.auth.authorize(req.headers.cookie)
+    this.json(res, host, 200, { mode: this.deps.auth.mode ?? 'link', device: device ? { id: device.id, name: device.name } : null })
+  }
+
+  private async signIn(req: IncomingMessage, res: ServerResponse, host: string): Promise<void> {
+    // The Origin was checked before the route (request above); the cookie's flags follow it.
+    const origin = String(req.headers.origin)
+    if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+      req.resume()
+      return this.json(res, host, 415, { error: 'expected JSON' })
+    }
+    const text = await readBody(req, MAX_SIGN_IN_BODY)
+    if (text === undefined) return this.json(res, host, 413, { error: 'too large' }, { Connection: 'close' })
+    let body: unknown
+    try {
+      body = JSON.parse(text)
+    } catch {
+      return this.json(res, host, 400, { error: 'expected JSON' })
+    }
+    const result = await this.deps.auth.signInWithToken(body)
+    if (res.destroyed) return
+    if (!result.ok) return this.json(res, host, result.status, { error: result.error })
+    this.json(res, host, 200, { device: { id: result.device.id, name: result.device.name } }, { 'Set-Cookie': deviceCookie(result.cookie, origin) })
   }
 
   private originRule(): { scheme: 'http'; externalOrigin?: string } {
@@ -253,17 +362,25 @@ export class WebGateway {
       return refuseUpgrade(socket, '403 Forbidden')
     }
     if ((req.url ?? '').split('?')[0] !== WS_PATH) return refuseUpgrade(socket, '404 Not Found')
+    const device = this.deps.auth.authorize(req.headers.cookie)
+    if (!device) return refuseUpgrade(socket, '401 Unauthorized')
     const handler = this.handler
     const wss = this.wss
     if (!handler || !wss) return refuseUpgrade(socket, '401 Unauthorized')
     wss.handleUpgrade(req, socket, head, (ws) => {
+      this.sockets.set(ws, device)
+      this.deps.accessLog.write({ event: 'connect', device: device.id, name: device.name })
+      ws.on('close', () => {
+        this.sockets.delete(ws)
+        this.deps.accessLog.write({ event: 'disconnect', device: device.id, name: device.name })
+      })
       // `ws` reports an oversize or malformed frame as an 'error' on the socket (after sending the
       // close code to the client): unheard, it would be an uncaught exception in main.
       ws.on('error', (err) => {
         this.deps.log(`web access: socket closed: ${errorText(err)}`)
         ws.terminate()
       })
-      handler(ws, req)
+      handler(ws, req, device)
     })
   }
 }

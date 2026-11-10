@@ -1,11 +1,16 @@
 // Web access gateway skeleton (main/web/gateway.ts, plan Task 4): off costs nothing, loopback only,
 // and the always-on Host / Origin checks, CSP and no-store on every request and upgrade.
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { request } from 'node:http'
 import { createServer, type AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
+import { fakeSecretStore } from '../../src/main/secrets/secret-store'
+import { AccessLog } from '../../src/main/web/access-log'
+import { WebAuth } from '../../src/main/web/auth'
+import { DeviceStore } from '../../src/main/web/devices'
 import { WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
 
@@ -66,23 +71,35 @@ function upgrade(port: number, headers: Record<string, string>, path = '/ws'): P
 }
 
 let gateway: WebGateway | undefined
+const dirs: string[] = []
 afterEach(async () => {
   await gateway?.stop()
   gateway = undefined
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
 function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: ReturnType<typeof vi.fn>; logs: string[] } {
   const logs: string[] = []
   const loadWs = vi.fn(async (): Promise<WsModule> => wsModule)
-  const gw = new WebGateway({ log: (m) => logs.push(m), loadWs, ...over })
+  const dir = mkdtempSync(join(tmpdir(), 'ccc-gw-'))
+  dirs.push(dir)
+  const accessLog = new AccessLog()
+  const devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog })
+  const auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog })
+  const gw = new WebGateway({ log: (m) => logs.push(m), loadWs, auth, accessLog, ...over })
   gateway = gw
   return { gw, loadWs, logs }
 }
 
+/**
+ * Listening with these settings. `mode: 'none'` unless a test names another: these tests are about
+ * Host, Origin and the listener, and None (no sign-in) is where only those stand in the way.
+ * Sign-in has its own tests (web-auth.test.ts).
+ */
 async function listening(over: object = {}, deps: Partial<GatewayDeps> = {}): Promise<{ gw: WebGateway; port: number; logs: string[] }> {
   const port = await freePort()
   const { gw, logs } = make(deps)
-  const status = await gw.apply(webAccessOf({ enabled: true, port, ...over }))
+  const status = await gw.apply(webAccessOf({ enabled: true, port, mode: 'none', ...over }))
   expect(status).toEqual({ state: 'listening', bind: '127.0.0.1', port })
   return { gw, port, logs }
 }
@@ -246,7 +263,7 @@ describe('Origin check (upgrade and state-changing requests)', () => {
       expect((await http(port, { method: 'POST', path: '/sign-in', headers: { Host: host, Origin: origin } })).status, origin).toBe(403)
     }
     expect((await http(port, { method: 'POST', path: '/sign-in', headers: { Host: host } })).status).toBe(403)
-    // Its own origin passes the check (and finds no route yet: sign-in comes with Task 5).
+    // Its own origin passes the check and finds no route.
     expect((await http(port, { method: 'POST', path: '/sign-in', headers: { Host: host, Origin: `http://${host}` } })).status).toBe(404)
     expect(logs.join('\n')).toContain('POST refused')
   })

@@ -59,6 +59,8 @@ export interface DataPaths {
   claudePluginsDir: string
   /** Plugin secrets (`ctx.secrets`, secret settings fields), encrypted values only. */
   secretsJson: string
+  /** Web access devices and the access link's token record (main/web/devices.ts). */
+  webAccessJson: string
   binDir: string
   cccWrapper: string
   /** The default socket location; use `socketPath()` for the effective one (it may fall back). */
@@ -78,6 +80,7 @@ export function dataPaths(dataDir: string): DataPaths {
     hooksJson: join(dataDir, 'hooks.json'),
     claudePluginsDir: join(dataDir, 'claude-plugins'),
     secretsJson: join(dataDir, 'secrets.json'),
+    webAccessJson: join(dataDir, 'web-access.json'),
     binDir: join(dataDir, 'bin'),
     cccWrapper: join(dataDir, 'bin', 'ccc'),
     defaultSocket: join(dataDir, 'app.sock')
