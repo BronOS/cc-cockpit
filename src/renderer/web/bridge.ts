@@ -77,6 +77,15 @@ export interface WebBridgeOptions {
   delay?(attempt: number): number
   /** How long after the socket opens `ready` may take before the bridge gives up on that socket. */
   readyTimeoutMs?: number
+  /**
+   * Asked once per drop: is this browser still signed in (the gateway's `/auth/session`)? A revoked
+   * or expired device gets the same 1006 as a network drop (the upgrade is refused), so without this
+   * the page would say "host unreachable" and retry forever. Resolves false only on a definite
+   * "signed out"; a failed request (host really unreachable) must resolve true or reject.
+   */
+  checkSession?(): Promise<boolean>
+  /** How long a `ready` connection must stay up before the backoff starts over; default `STABLE_MS`. */
+  stableMs?: number
 }
 
 export interface WebBridge {
@@ -101,7 +110,13 @@ export function reconnectDelay(attempt: number): number {
   return Math.min(10_000, 500 * 2 ** Math.max(0, Math.min(attempt - 1, 10)))
 }
 
-/** Main's `ready` normally comes within a tick of `hello`; this only catches a hung handshake. */
+/**
+ * A connection that main accepts and closes at once (a `tooLarge` on every join) must not reset the
+ * backoff, or the page would reconnect and remount the whole shell every 0.5 s forever.
+ */
+export const STABLE_MS = 10_000
+
+/** From the socket's creation to `ready`: it covers a TCP connect that hangs (a host asleep, a phone changing networks) as well as a hung handshake. */
 export const READY_TIMEOUT_MS = 10_000
 
 /**
@@ -195,6 +210,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   const timers = options.timers ?? defaultTimers
   const delay = options.delay ?? reconnectDelay
   const readyTimeoutMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS
+  const stableMs = options.stableMs ?? STABLE_MS
 
   const listeners = new Map<string, Set<(payload: unknown) => void>>()
   const statusListeners = new Set<(status: BridgeStatus) => void>()
@@ -210,6 +226,9 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   let retryTimer: unknown
   let readyTimer: unknown
   let closed = false
+  let readyAt: number | undefined
+  // Bumped on every drop and connect, so a late session answer never acts on a newer state.
+  let epoch = 0
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -249,6 +268,9 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     socket = undefined
     clearReadyTimer()
     rejectAll()
+    epoch += 1
+    if (readyAt !== undefined && timers.now() - readyAt >= stableMs) attempt = 0
+    readyAt = undefined
     if (closed) return
     const final = FINAL_CLOSES.get(code)
     if (final !== undefined) {
@@ -256,6 +278,22 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       return
     }
     scheduleRetry()
+    askSession()
+  }
+
+  /** After a drop: a signed-out browser cannot retry its way back, so it stops and says so. */
+  const askSession = (): void => {
+    if (!options.checkSession) return
+    const mine = epoch
+    options.checkSession().then(
+      (signedIn) => {
+        if (signedIn || closed || mine !== epoch || status.state !== 'away') return
+        if (retryTimer !== undefined) timers.clearTimeout(retryTimer)
+        retryTimer = undefined
+        setStatus({ state: 'gone', reason: 'This browser is signed out of the host. Sign in again.' })
+      },
+      () => undefined
+    )
   }
 
   const onFrame = (s: SocketLike, data: unknown): void => {
@@ -275,7 +313,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       clearReadyTimer()
       const ready = f as unknown as ReadyFrame
       snapshot = ready.snapshot
-      attempt = 0
+      readyAt = timers.now()
       generation += 1
       setStatus({ state: 'ready', view: ready.view, generation })
       return
@@ -318,13 +356,14 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       return
     }
     socket = s
+    epoch += 1
+    readyTimer = timers.setTimeout(() => {
+      readyTimer = undefined
+      if (s === socket) s.close()
+    }, readyTimeoutMs)
     s.onopen = () => {
       if (s !== socket) return
       s.send(encodeClientFrame({ t: 'hello', v: PROTOCOL_VERSION, project: options.project }))
-      readyTimer = timers.setTimeout(() => {
-        readyTimer = undefined
-        if (s === socket) s.close()
-      }, readyTimeoutMs)
     }
     s.onmessage = (ev) => onFrame(s, ev.data)
     s.onclose = (ev) => dropped(s, ev.code)
@@ -390,9 +429,21 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       }
     },
     retryNow() {
-      if (closed || status.state !== 'away' || retryTimer === undefined) return
-      timers.clearTimeout(retryTimer)
-      retryTimer = undefined
+      if (closed || status.state !== 'away') return
+      if (retryTimer !== undefined) {
+        timers.clearTimeout(retryTimer)
+        retryTimer = undefined
+      } else if (socket) {
+        // A connect that hangs: drop it (its late events are ignored, `s !== socket`) and start again.
+        const old = socket
+        socket = undefined
+        clearReadyTimer()
+        try {
+          old.close()
+        } catch {
+          // already dead
+        }
+      } else return
       connect()
     },
     close() {

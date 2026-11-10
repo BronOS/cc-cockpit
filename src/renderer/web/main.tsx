@@ -9,7 +9,7 @@
 //   whose calls fail until the socket is back.
 import { StrictMode, useEffect, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
-import { WS_PATH } from '../../shared/web-protocol'
+import { SESSION_PATH, WS_PATH } from '../../shared/web-protocol'
 import { App } from '../App'
 import { setPrefs, startPrefs } from '../prefs/prefs-store'
 import { startTheme } from '../theme/apply-theme'
@@ -107,10 +107,22 @@ if (project === '') {
     project,
     // The DOM WebSocket's handler types name its own event classes; the bridge reads `data`,
     // `code` and `reason` only.
-    createSocket: (url) => new WebSocket(url) as unknown as SocketLike
+    createSocket: (url) => new WebSocket(url) as unknown as SocketLike,
+    // Only a definite "device: null" counts as signed out; a failed request means the host is away.
+    checkSession: async () => {
+      const res = await fetch(SESSION_PATH, { credentials: 'same-origin', cache: 'no-store' })
+      if (!res.ok) return true
+      const body = (await res.json()) as { device?: unknown }
+      return body.device !== null
+    }
   })
   window.cockpit = bridge.api
   window.addEventListener('pagehide', () => bridge.close())
+  // Closing the socket on pagehide makes the page eligible for the back/forward cache; a page
+  // restored from it has a closed bridge that still says `ready`. Start over from a fresh load.
+  window.addEventListener('pageshow', (ev) => {
+    if (ev.persisted) location.reload()
+  })
   createRoot(root).render(
     <StrictMode>
       <WebRoot bridge={bridge} />

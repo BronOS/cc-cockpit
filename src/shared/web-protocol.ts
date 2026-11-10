@@ -12,6 +12,8 @@ export const PROTOCOL_VERSION = 1
 
 /** Where the browser opens its one WebSocket per view (the gateway refuses an upgrade elsewhere). */
 export const WS_PATH = '/ws'
+/** What the page asks the gateway: the mode, and whether this browser is signed in (also used by the bridge after a drop). */
+export const SESSION_PATH = '/auth/session'
 
 /**
  * Largest frame either way (design-web.md §3): a 1 MiB panel message wrapped in a frame must fit.

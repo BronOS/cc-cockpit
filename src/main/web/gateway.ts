@@ -24,6 +24,7 @@ import { hostname, networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
 // Types only: erased at build time, so this file does not load `ws` (see loadWs below).
 import type { WebSocket, WebSocketServer } from 'ws'
+import { SESSION_PATH } from '../../shared/web-protocol'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
 import { deviceCookie, type WebAuth } from './auth'
@@ -43,7 +44,7 @@ export { WS_PATH }
 /** The page posts the access link's token here (auth.ts). */
 export const SIGN_IN_LINK_PATH = '/auth/link'
 /** What the page asks first: the mode, and whether this browser is signed in. */
-export const SESSION_PATH = '/auth/session'
+export { SESSION_PATH }
 /** A sign-in body is a token and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
 

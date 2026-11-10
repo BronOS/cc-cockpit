@@ -10,6 +10,8 @@ import {
   createWebBridge,
   decodeServerJson,
   encodeClientFrame,
+  READY_TIMEOUT_MS,
+  STABLE_MS,
   reconnectDelay,
   socketUrl,
   UNREACHABLE,
@@ -107,13 +109,14 @@ afterEach(() => {
   for (const b of bridges.splice(0)) b.close()
 })
 
-function rig(): Rig {
+function rig(checkSession?: () => Promise<boolean>): Rig {
   const sockets: FakeSocket[] = []
   const timers = new FakeTimers()
   const bridge = createWebBridge({
     url: 'ws://127.0.0.1:7330/ws',
     project: 'p1',
     timers,
+    checkSession,
     createSocket: (url) => {
       const s = new FakeSocket(url)
       sockets.push(s)
@@ -447,8 +450,57 @@ describe('drops and reconnect', () => {
       r.timers.advance(reconnectDelay(i + 1))
     }
     connect(r)
+    r.timers.advance(STABLE_MS)
     r.last().serverClose(1006)
     expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+  })
+
+  it('keeps the backoff when a connection is closed right after ready', () => {
+    const r = rig()
+    connect(r)
+    for (let i = 1; i <= 3; i++) {
+      r.last().serverClose(CLOSE.tooLarge)
+      expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: i })
+      r.timers.advance(reconnectDelay(i))
+      connect(r)
+    }
+  })
+
+  it('gives up on a socket that never opens, and retryNow drops a pending connect', () => {
+    const r = rig()
+    r.timers.advance(READY_TIMEOUT_MS)
+    expect(r.last().closedWith).toBeDefined()
+    r.last().serverClose(1006)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+    r.timers.advance(500)
+    expect(r.sockets).toHaveLength(2)
+    // Away with a connect pending: Retry now drops it and starts over instead of doing nothing.
+    const hung = r.last()
+    r.bridge.retryNow()
+    expect(r.sockets).toHaveLength(3)
+    expect(hung.closedWith).toBeDefined()
+    // The dropped socket's late close does not count as the new one ending.
+    hung.serverClose(1006)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+    connect(r)
+    expect(r.bridge.status().state).toBe('ready')
+  })
+
+  it('goes to a signed-out state when the session check says so, and keeps retrying when it fails', async () => {
+    const answers = [Promise.reject(new Error('net')), Promise.resolve(false)]
+    const r = rig(() => answers.shift()!)
+    connect(r)
+    r.last().serverClose(1006)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(r.bridge.status().state).toBe('away')
+    r.timers.advance(500)
+    r.last().serverClose(1006)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(r.bridge.status()).toMatchObject({ state: 'gone', reason: expect.stringContaining('signed out') })
+    r.timers.advance(60_000)
+    expect(r.sockets).toHaveLength(2)
   })
 
   it('caps the backoff', () => {
@@ -477,8 +529,8 @@ describe('drops and reconnect', () => {
     r.last().serverClose(1006)
     r.bridge.retryNow()
     expect(r.sockets).toHaveLength(2)
-    // The cancelled timer does not open a third socket later.
-    r.bridge.retryNow()
+    // The cancelled timer does not open another socket later (a pending connect is dropped by a
+    // second Retry now, see below; here the next one is the only extra).
     r.timers.advance(60_000)
     expect(r.sockets).toHaveLength(2)
   })
