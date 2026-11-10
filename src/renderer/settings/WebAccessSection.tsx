@@ -156,7 +156,8 @@ function AddressForm(props: {
   const id = useId()
   const [draft, setDraft] = useState<WebAccessDraft>(() => draftOf(form))
   // Follow main's copy when it changes (another window, a refused save): adjusted while rendering.
-  const savedKey = JSON.stringify(form)
+  // Only the address fields: a toggle or the sign-in select changes the rest of `form` and must not drop an unsaved edit.
+  const savedKey = JSON.stringify([form.port, form.externalOrigin, form.hosts])
   const [seen, setSeen] = useState(savedKey)
   if (seen !== savedKey) {
     setSeen(savedKey)
@@ -251,7 +252,12 @@ function LinkRows(props: { listening: boolean; busy: string | null; run: Action[
   }, [access])
   useEffect(() => {
     if (!once.shown) return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
+    const timer = setInterval(() => {
+      const t = Date.now()
+      setNow(t)
+      // An expired one-time link leaves renderer state at once, as the access link does after REVEAL_MS.
+      setOnce((r) => (r.expiresAt !== undefined && t >= r.expiresAt ? hide(r) : r))
+    }, 1000)
     return () => clearInterval(timer)
   }, [once])
   const show = (): void => {
@@ -262,7 +268,8 @@ function LinkRows(props: { listening: boolean; busy: string | null; run: Action[
   const regenerate = (): void => {
     setConfirmRegenerate(false)
     void props.run('web-link', () => window.cockpit.invoke('settings.webAccessRegenerate')).then((reply) => {
-      if (reply) setAccess(revealFrom(reply))
+      // Hidden: the new link appears only on a Show press, as the section promises.
+      if (reply) setAccess(hiddenReveal())
       props.reload()
     })
   }

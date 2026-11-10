@@ -333,6 +333,12 @@ describe('WebAccessService', () => {
       expect(service.indicator()).toEqual({ connected: 2 })
     })
 
+    it('counts every socket of the anonymous None device', () => {
+      open.set('none', 3)
+      open.set('b', 2)
+      expect(service.indicator()).toEqual({ connected: 4 })
+    })
+
     it('warns only while a risky choice is live', async () => {
       // A hand-edited file asks for none on a network address: refused, nothing listens, no badge.
       stored = { enabled: true, bind: '0.0.0.0', mode: 'none' }

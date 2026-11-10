@@ -14,7 +14,7 @@ import type {
   WebLinkReply
 } from '../../shared/web-access'
 import type { WebAuth } from './auth'
-import { linkOrigin } from './auth'
+import { linkOrigin, NONE_DEVICE } from './auth'
 import type { GatewayStatus } from './gateway'
 import { applyWebAccessPatch, listenPlanOf, webAccessOf, webAccessRisks } from './settings'
 
@@ -101,7 +101,11 @@ export class WebAccessService {
     const settings = this.settings()
     const listening = this.deps.gateway.status().state === 'listening'
     const risks = listening ? webAccessRisks(settings) : []
-    const out: WebAccessIndicator = { connected: this.deps.gateway.connections().size }
+    // None's browsers all share one anonymous device id, so count that one's sockets: three
+    // anonymous browsers must not read as one device (the chip is their only desktop view).
+    let connected = 0
+    for (const [id, sockets] of this.deps.gateway.connections()) connected += id === NONE_DEVICE.id ? sockets : 1
+    const out: WebAccessIndicator = { connected }
     if (risks.length > 0) out.warning = risks.join(' ')
     return out
   }
