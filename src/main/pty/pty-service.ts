@@ -104,6 +104,9 @@ interface Entry {
   paused: boolean
   /** Whose acks count (see the header). */
   flow: FlowSource
+  /** The size the pty has now (the spawn size, then every size it took). */
+  cols: number
+  rows: number
 }
 
 export class PtyService {
@@ -127,7 +130,9 @@ export class PtyService {
       timer: null,
       unacked: 0,
       paused: false,
-      flow: 'view'
+      flow: 'view',
+      cols: options.cols,
+      rows: options.rows
     }
     this.ptys.set(id, entry)
     handle.onData((data) => {
@@ -166,7 +171,23 @@ export class PtyService {
     const entry = this.ptys.get(id)
     if (!entry) return false
     entry.handle.resize(cols, rows)
+    entry.cols = cols
+    entry.rows = rows
     return true
+  }
+
+  /**
+   * The size the running pty has now; undefined for an unknown or exited one. What the terminal
+   * mirror starts a tab that was running before web access was turned on at (its baseline).
+   */
+  sizeOf(id: string): { cols: number; rows: number } | undefined {
+    const entry = this.ptys.get(id)
+    return entry ? { cols: entry.cols, rows: entry.rows } : undefined
+  }
+
+  /** Output sent to the consumer and not acked yet; 0 for an unknown or exited PTY. */
+  unackedOf(id: string): number {
+    return this.ptys.get(id)?.unacked ?? 0
   }
 
   /**
@@ -203,20 +224,25 @@ export class PtyService {
 
   /**
    * Hand the PTY's flow control to `source` (the terminal mirror takes a tab it holds, and gives it
-   * back when it stops). The count starts over and a paused PTY resumes: what the old consumer was
-   * sent and never acked will never be acked by the new one. Its late acks are ignored (wrong
-   * source) or, after a switch back, land on the fresh count and are clamped at zero, so at worst
-   * the next pause comes a little later. False for an unknown or exited PTY.
+   * back when it stops). The count starts over at `owed`: what the new consumer was already sent
+   * and has not acked (the desktop's own count when main hands a tab back to it, so its later acks
+   * land on what they are for), 0 when it was sent nothing. A paused PTY resumes once that is at
+   * or below LOW_WATER, and one that owes more than HIGH_WATER pauses, as a flush would. Late acks
+   * of the old consumer are ignored (wrong source) or, after a switch back, clamped at zero, so at
+   * worst the next pause comes a little later. False for an unknown or exited PTY.
    */
-  setFlow(id: string, source: FlowSource): boolean {
+  setFlow(id: string, source: FlowSource, owed = 0): boolean {
     const entry = this.ptys.get(id)
     if (!entry) return false
     if (entry.flow === source) return true
     entry.flow = source
-    entry.unacked = 0
-    if (entry.paused) {
+    entry.unacked = Number.isFinite(owed) && owed > 0 ? owed : 0
+    if (entry.paused && entry.unacked <= LOW_WATER) {
       entry.paused = false
       entry.handle.resume()
+    } else if (!entry.paused && entry.unacked > HIGH_WATER) {
+      entry.paused = true
+      entry.handle.pause()
     }
     return true
   }

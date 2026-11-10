@@ -288,9 +288,17 @@ describe('web access on: main consumes the pty, the desktop drops and resyncs', 
     await flood(backend.last, 2 * VIEW_HIGH_WATER)
     m.stop()
     expect(logs.some((l) => l.includes('released while the desktop was behind'))).toBe(true)
-    // Today's path: every chunk to the desktop, the desktop's missing acks pause the pty.
-    const before = s.events.length
+    // The pty counts what the desktop still owes (its limit's worth): the next chunk pauses it, until
+    // the page acks what it was sent.
     const pty = backend.last
+    pty.emit(chunk(0))
+    expect(pty.paused).toBe(true)
+    page.holdAcks = false
+    await page.release()
+    expect(pty.paused).toBe(false)
+    // Today's path: every chunk to the desktop, the desktop's missing acks pause the pty.
+    page.holdAcks = true
+    const before = s.events.length
     for (let n = 0; !pty.paused; n++) pty.emit(chunk(n))
     expect(s.events.length - before).toBe(HIGH_WATER / FLUSH_BYTES + 1)
     page.holdAcks = false

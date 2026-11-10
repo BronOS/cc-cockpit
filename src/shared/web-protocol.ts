@@ -58,6 +58,8 @@ export const CLOSE = Object.freeze({
   tooLarge: 4413,
   /** The client speaks another protocol version (a stale page after an app update). */
   version: 4426,
+  /** Web access was turned off on the host (or set to something it refuses): retrying cannot help. */
+  turnedOff: 4503,
   /** The snapshot could not be built (the project record went away mid-handshake). */
   failed: 4500
 })

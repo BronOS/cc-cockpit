@@ -38,9 +38,10 @@ export interface WebAccessServiceDeps {
   emit(indicator: WebAccessIndicator): void
   /**
    * The headless terminals (terminals/mirror.ts): running only while the settings mean the gateway
-   * listens, so web access off costs no worker and loads no xterm package.
+   * listens, so web access off costs no worker and loads no xterm package. `drain` turns them off
+   * once the desktops have all their output (mirror.ts header); it never rejects.
    */
-  terminals?: { start(): void; stop(): void }
+  terminals?: { start(): void; drain(): Promise<void> }
 }
 
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
@@ -126,29 +127,34 @@ export class WebAccessService {
     this.deps.write(result.value)
     // The settings are saved first: a refused or failed start must not lose what the person typed.
     const settings = webAccessOf(this.deps.read())
-    this.syncTerminals(settings)
-    await this.deps.gateway.apply(settings)
+    await this.applySettings(settings)
     this.changed()
     return this.view()
   }
 
   /** Reads the stored settings again and applies them (start-up). */
   apply(): Promise<GatewayStatus> {
-    const settings = this.settings()
-    this.syncTerminals(settings)
-    return this.deps.gateway.apply(settings)
+    return this.applySettings(this.settings())
   }
 
   /**
-   * Synchronous and before the gateway starts: at start-up the tabs restored after this must
-   * already be mirrored from their first item. Follows the settings' plan, not the listener's
-   * outcome: a port in use is a passing failure (the next apply retries), a refused setting is not.
+   * The terminals follow the settings' plan, not the listener's outcome: a port in use is a
+   * passing failure (the next apply retries), a refused setting is not.
+   *
+   * On: started synchronously and before the gateway, so tabs restored at start-up after this are
+   * mirrored from their first item, and running tabs get their baseline before any view can join.
+   * Off: after the gateway, which closes the remote views with their notice first (design: the
+   * person sees "turned off", not a dropped stream); then the terminals drain, not awaited (it can
+   * take up to DRAIN_MS while a desktop catches up), and only if the settings still say off by then:
+   * a quick off-then-on must not end the mirror the second change started.
    */
-  private syncTerminals(settings: WebAccessSettings): void {
+  private async applySettings(settings: WebAccessSettings): Promise<GatewayStatus> {
     const terminals = this.deps.terminals
-    if (!terminals) return
-    if (listenPlanOf(settings).ok) terminals.start()
-    else terminals.stop()
+    const on = listenPlanOf(settings).ok
+    if (on) terminals?.start()
+    const status = await this.deps.gateway.apply(settings)
+    if (!on && terminals && !listenPlanOf(this.settings()).ok) void terminals.drain()
+    return status
   }
 
   async link(): Promise<WebLinkReply> {

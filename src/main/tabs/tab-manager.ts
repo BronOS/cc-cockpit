@@ -131,6 +131,13 @@ export interface TerminalFlow {
   take(tabId: string): void
   ack(tabId: string, count: number): void
   release(tabId: string): void
+  /**
+   * The tabs with a running pty and the size each has now: what the mirror starts from when web
+   * access is turned on while they run (mirror.ts `start`, their baseline).
+   */
+  running?(): Array<{ tabId: string; cols: number; rows: number }>
+  /** Whether the desktop was sent all of the tab's output (DesktopFlow.settled): safe to release. */
+  settled?(tabId: string): boolean
 }
 
 /**
@@ -331,14 +338,28 @@ export class TabManager {
     })
     tap?.bindFlow?.({
       take: (id) => {
-        // Only a live pty (the tap calls this right after a spawn); a tab without one stays as it is.
-        if (this.pty.setFlow(id, 'main')) this.desktop.take(id)
+        // Only a live pty (the tap calls this right after a spawn, or for a running tab when web
+        // access is turned on); a tab without one stays as it is. What the desktop was sent and has
+        // not acked moves with it: its acks for that output now land on the desktop's own count.
+        const owed = this.pty.flowOf(id) === 'view' ? this.pty.unackedOf(id) : 0
+        if (this.pty.setFlow(id, 'main')) this.desktop.take(id, owed)
       },
       ack: (id, count) => this.pty.ack(id, count, 'main'),
       release: (id) => {
-        this.pty.setFlow(id, 'view')
-        this.desktop.release(id)
-      }
+        // And back: the pty counts what the desktop still owes, so a page that is behind keeps
+        // pausing Claude as it did before web access (today's path), rather than a fresh count.
+        const owed = this.desktop.release(id)
+        this.pty.setFlow(id, 'view', owed)
+      },
+      running: () => {
+        const out: Array<{ tabId: string; cols: number; rows: number }> = []
+        for (const id of this.byId.keys()) {
+          const size = this.pty.sizeOf(id)
+          if (size) out.push({ tabId: id, ...size })
+        }
+        return out
+      },
+      settled: (id) => this.desktop.settled(id)
     })
   }
 

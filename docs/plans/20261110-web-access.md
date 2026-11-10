@@ -325,14 +325,17 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `src/main/web/gateway.ts`, `src/main/terminals/mirror.ts`, `src/main/pty/pty-service.ts`,
   `src/main/tabs/tab-manager.ts`
 - Create: `test/unit/web-access-toggle.test.ts`
+- ➕ Also modified `src/main/terminals/desktop-flow.ts` (`take` with the desktop's debt, `release` returns it,
+  `settled`), `src/main/web/access-service.ts` (off: gateway first, then `drain`), `src/shared/web-protocol.ts` +
+  `src/renderer/web/bridge.ts` (`CLOSE.turnedOff`, a final close), `docs/features.md` (known limitation: blank baseline)
 
-- [ ] on: create mirrors for running tabs from a baseline (the desktop's current screen via a snapshot of what the pty
+- [x] on: create mirrors for running tabs from a baseline (the desktop's current screen via a snapshot of what the pty
       sends next, documented), start numbering there, then hand flow control to main
-- [ ] off: close remote views with a notice, hand flow control back to the desktop ack path, tear the mirrors and the
+- [x] off: close remote views with a notice, hand flow control back to the desktop ack path, tear the mirrors and the
       worker down
-- [ ] write tests: toggling on and off while a tab floods (no stuck pty, no lost desktop output), on with several tabs,
+- [x] write tests: toggling on and off while a tab floods (no stuck pty, no lost desktop output), on with several tabs,
       off with a remote view attached
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 14: Main answers terminal queries [model: opus]
 

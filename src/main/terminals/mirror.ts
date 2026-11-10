@@ -20,7 +20,23 @@
 //
 // Off costs nothing: no worker, no xterm package loaded, and every tap call returns at once. The
 // worker is started by `start()` (WebAccessService, when the settings mean the gateway listens) and
-// ended by `stop()`.
+// ended by `drain()` (web access turned off at runtime) or `stop()` (the app quits).
+//
+// Turning on while tabs run (Task 13): their earlier output never passed through here, and main
+// has no copy of it (only each page's xterm does). So `start` gives every running tab a baseline: a
+// blank terminal at the size its pty has now (a `spawn` item, seq 1), numbered from there; the copy
+// is what the pty sends next. A program that redraws (Claude does on its next render, a resize, or
+// any full-screen TUI) fills it in; until then a view that joins, or a desktop that resyncs, sees
+// only what came after the baseline. The desktop itself keeps its screen: it stays on the direct
+// path, live, and is resynced from the copy only if it falls behind or reloads. Then the tab's
+// flow goes to main (`take`, with what the desktop was already sent and not acked carried over).
+//
+// Turning off (`drain`): the gateway has closed the remote views first (access-service.ts). A tab
+// whose desktop is live has been sent everything, and is handed back to the desktop's acks at
+// once; one whose desktop is behind or resyncing stays held, so the copy can still resync it, and
+// is released as soon as it is live again (checked every DRAIN_POLL_MS). Past DRAIN_MS the rest is
+// released as it is (logged as possibly stale), and the worker ends. A `start` while draining keeps
+// the worker and takes back the tabs already released, from a new baseline.
 //
 // Flow (Task 12, design-web.md §5.2): the mirror is the pty's one flow consumer for every tab it
 // holds. TabManager binds a TerminalFlow; the mirror `take`s each tab at its spawn, acks the
@@ -91,6 +107,14 @@ export const STALL_MS = 5_000
  */
 export const MAX_BACKLOG_CHARS = 8 * 1024 * 1024
 
+/**
+ * Turning off waits at most this long for desktops that are behind to be resynced from the copy
+ * (see the header); the tabs still behind then are released as they are.
+ */
+export const DRAIN_MS = 5_000
+/** How often a drain checks whether the desktops it waits on are live again. */
+export const DRAIN_POLL_MS = 50
+
 /** Same bounds as PtyService (validSize). */
 const MAX_DIM = 1000
 
@@ -142,6 +166,14 @@ export interface TerminalMirrorOptions {
   inspectTimeoutMs?: number
   snapshotTimeoutMs?: number
   stallMs?: number
+  drainMs?: number
+  drainPollMs?: number
+}
+
+interface Drain {
+  poll: ReturnType<typeof setInterval>
+  deadline: ReturnType<typeof setTimeout>
+  done: Array<() => void>
 }
 
 /**
@@ -217,6 +249,8 @@ export class TerminalMirror implements TerminalTap {
   private watchdog: ReturnType<typeof setTimeout> | null = null
   /** The current worker posted something since the watchdog was armed. */
   private answered = false
+  /** Turning off, waiting on desktops that are behind (see the header). */
+  private draining: Drain | null = null
   private readonly log: (message: string) => void
   private readonly now: () => number
 
@@ -231,17 +265,53 @@ export class TerminalMirror implements TerminalTap {
   }
 
   /**
-   * Start the worker; nothing is mirrored before. Tabs already running are not picked up here:
-   * their earlier output never passed through the mirror (Task 13 starts them from a baseline).
+   * Start the worker and take every tab already running from a baseline (see the header). While a
+   * drain is under way it is called off instead: the worker stays, and the tabs it released are
+   * taken back.
    */
   start(): void {
+    if (this.draining) {
+      this.endDrain()
+      this.adopt()
+      return
+    }
     if (this.worker) return
     this.failed = false
     this.restarts = []
     this.worker = this.spawnWorker()
+    this.adopt()
   }
 
-  /** End the worker and forget every tab (web access off, app quit). */
+  /**
+   * Turn off (web access switched off at runtime): every tab goes back to the desktop's acks once
+   * the desktop has all of its output, at the latest after DRAIN_MS, then the worker ends (see the
+   * header). Resolves when the mirror stopped, or when a `start` called the drain off.
+   */
+  drain(): Promise<void> {
+    if (!this.worker) return Promise.resolve()
+    return new Promise((resolve) => {
+      if (!this.draining) {
+        const poll = setInterval(() => this.settle(), this.options.drainPollMs ?? DRAIN_POLL_MS)
+        poll.unref?.()
+        const deadline = setTimeout(() => {
+          const left = [...this.tabs.keys()]
+          if (left.length > 0) this.log(`terminal mirror: turning off, tabs ${left.join(', ')} not resynced in time`)
+          this.stop()
+        }, this.options.drainMs ?? DRAIN_MS)
+        deadline.unref?.()
+        this.draining = { poll, deadline, done: [] }
+      }
+      this.draining.done.push(resolve)
+      this.settle()
+    })
+  }
+
+  /** Whether a drain is under way (tests, diagnostics). */
+  get turningOff(): boolean {
+    return this.draining !== null
+  }
+
+  /** End the worker and forget every tab (the app quits, a drain is over). */
   stop(): void {
     const worker = this.worker
     this.worker = null
@@ -252,6 +322,7 @@ export class TerminalMirror implements TerminalTap {
     this.releaseAll()
     this.tabs.clear()
     worker?.terminate()
+    this.endDrain()
   }
 
   /** Told after the worker restarted: every tab's copy is blank from its current seq on. */
@@ -269,6 +340,17 @@ export class TerminalMirror implements TerminalTap {
 
   spawned(tabId: string, cols: number, rows: number): void {
     if (!this.worker || !validSize(cols, rows)) return
+    if (this.draining) {
+      // Turning off: a new tab is not taken, and a restarted one (a new pty) goes back to the
+      // desktop now; its old content is the desktop's own, nothing to resync from the copy.
+      if (this.tabs.has(tabId)) this.closed(tabId)
+      return
+    }
+    this.open(tabId, cols, rows)
+  }
+
+  /** Number the tab's spawn (its first, a restart's, or a running tab's baseline) and take its flow. */
+  private open(tabId: string, cols: number, rows: number): void {
     let tab = this.tabs.get(tabId)
     if (!tab) {
       tab = {
@@ -288,13 +370,51 @@ export class TerminalMirror implements TerminalTap {
     tab.rows = rows
     this.send(tabId, tab, { seq: ++tab.seq, kind: 'spawn', cols, rows })
     // Every spawn, a restart too: the restarted process is a new pty, whose flow starts as the
-    // desktop's. Before any output (node-pty reads on a later tick).
+    // desktop's. Before any output (node-pty reads on a later tick; a running tab's next chunk
+    // comes on a later turn too, main being single-threaded).
     this.flowCall('take', () => this.flow?.take(tabId))
+  }
+
+  /** Take every running tab the mirror does not hold yet, from a blank baseline (see the header). */
+  private adopt(): void {
+    let running: Array<{ tabId: string; cols: number; rows: number }> = []
+    this.flowCall('running', () => {
+      running = this.flow?.running?.() ?? []
+    })
+    for (const { tabId, cols, rows } of running) {
+      if (!this.worker) return
+      if (!this.tabs.has(tabId) && validSize(cols, rows)) this.open(tabId, cols, rows)
+    }
+  }
+
+  /** A drain's check: hand back every tab whose desktop has all its output; stop once none is left. */
+  private settle(): void {
+    if (!this.draining) return
+    for (const tabId of [...this.tabs.keys()]) {
+      let settled = true
+      this.flowCall('settled', () => {
+        settled = this.flow?.settled?.(tabId) ?? true
+      })
+      // Released like a closed tab: the worker frees its terminal, views end (remote ones are gone
+      // with their sockets already; a late one finds the tab no longer held), the pty is the desktop's.
+      if (settled) this.closed(tabId)
+    }
+    if (this.tabs.size === 0) this.stop()
+  }
+
+  /** The drain is over (stopped, or called off by `start`): its timers go, its callers are told. */
+  private endDrain(): void {
+    const drain = this.draining
+    if (!drain) return
+    this.draining = null
+    clearInterval(drain.poll)
+    clearTimeout(drain.deadline)
+    for (const done of drain.done) done()
   }
 
   data(tabId: string, chunk: string): void {
     const tab = this.tabs.get(tabId)
-    // A tab spawned before the mirror started is not mirrored (see start()).
+    // A tab the mirror does not hold (spawned while it was turning off) is not mirrored.
     if (!this.worker || !tab || chunk.length === 0) return
     tab.unparsedChars += chunk.length
     this.send(tabId, tab, { seq: ++tab.seq, kind: 'data', data: chunk })
@@ -581,6 +701,11 @@ export class TerminalMirror implements TerminalTap {
 
   private crashed(reason: string): void {
     this.log(`terminal mirror worker ended (${reason})`)
+    if (this.draining) {
+      // Turning off anyway: no new worker for the few tabs still waiting; they are released as they are.
+      this.stop()
+      return
+    }
     // The old worker's silence is not the new one's: the check starts over with it.
     this.disarmWatchdog()
     this.drop(new Error('terminal mirror worker restarted'))

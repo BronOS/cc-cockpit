@@ -87,21 +87,41 @@ export class DesktopFlow {
     this.low = deps.lowWater ?? VIEW_LOW_WATER
   }
 
-  /** Main consumes this tab's pty now: the desktop is counted from here, live. A restart keeps the state. */
-  take(tabId: string): void {
-    if (!this.tabs.has(tabId)) this.tabs.set(tabId, { mode: 'live', unacked: 0, join: null, leave: null, failedJoins: 0, stale: false })
+  /**
+   * Main consumes this tab's pty now: the desktop is counted from here, live, starting at `owed`
+   * (what it was sent and has not acked: a tab taken while running, web access turned on, carries
+   * the pty's count over so the page's late acks land on what they are for). A restart keeps the state.
+   */
+  take(tabId: string, owed = 0): void {
+    if (this.tabs.has(tabId)) return
+    const unacked = Number.isFinite(owed) && owed > 0 ? owed : 0
+    this.tabs.set(tabId, { mode: 'live', unacked, join: null, leave: null, failedJoins: 0, stale: false })
   }
 
-  /** Back to today's path (the mirror stopped or gave up, the tab closed). */
-  release(tabId: string): void {
+  /**
+   * Back to today's path (the mirror stopped or gave up, the tab closed). Returns what the desktop
+   * was sent and has not acked, for the pty's count (PtyService.setFlow `owed`).
+   */
+  release(tabId: string): number {
     const t = this.tabs.get(tabId)
-    if (!t) return
+    if (!t) return 0
     this.tabs.delete(tabId)
     this.leave(t)
     // Nothing is left to resync from: the screen stays as it was until new output redraws it. The
     // mirror stopping ends the joins first (their rejoin then finds no mirror and flips the tab to
     // live), so `stale` is what tells a desktop that was dropped.
     if (t.mode !== 'live' || t.stale) this.deps.log(`terminal flow: tab ${tabId} released while the desktop was behind; its screen may be stale`)
+    return t.unacked
+  }
+
+  /**
+   * Whether the desktop was sent every chunk of the tab (it is live, on the direct path): the
+   * mirror turning off may hand the tab back now without the desktop missing anything. A tab not
+   * held here counts as settled.
+   */
+  settled(tabId: string): boolean {
+    const t = this.tabs.get(tabId)
+    return !t || t.mode === 'live'
   }
 
   /** Whether the desktop's output and acks for this tab go through here. */

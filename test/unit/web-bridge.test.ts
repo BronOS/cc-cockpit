@@ -620,7 +620,8 @@ describe('drops and reconnect', () => {
   it.each([
     [CLOSE.noProject, 'not open'],
     [CLOSE.windowClosed, 'closed'],
-    [CLOSE.version, 'Reload']
+    [CLOSE.version, 'Reload'],
+    [CLOSE.turnedOff, 'turned off']
   ])('close %i is final: gone, no retry', (code, text) => {
     const r = rig()
     connect(r)

@@ -13,6 +13,7 @@ import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
+import { CLOSE } from '../../src/shared/web-protocol'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
 
 /** A port nothing listens on right now (the OS's pick, always above 1024). */
@@ -109,7 +110,7 @@ describe('off', () => {
   it('listens on nothing and never loads ws', async () => {
     const port = await freePort()
     const { gw, loadWs } = make()
-    expect(await gw.apply(webAccessOf({ enabled: false, port }))).toEqual({ state: 'off' })
+    expect(await gw.apply(webAccessOf({ enabled: false, port, mode: 'none' }))).toEqual({ state: 'off' })
     expect(await gw.apply(webAccessOf(undefined))).toEqual({ state: 'off' })
     expect(gw.address()).toBeUndefined()
     expect(loadWs).not.toHaveBeenCalled()
@@ -152,7 +153,7 @@ describe('start and stop with the setting', () => {
     expect(await gw.apply(webAccessOf({ enabled: true, port }))).toEqual({ state: 'listening', bind: '127.0.0.1', port })
     expect(gw.address()?.port).toBe(port)
     expect((await http(port, { headers: { Host: `127.0.0.1:${port}` } })).status).toBe(200)
-    expect(await gw.apply(webAccessOf({ enabled: false, port }))).toEqual({ state: 'off' })
+    expect(await gw.apply(webAccessOf({ enabled: false, port, mode: 'none' }))).toEqual({ state: 'off' })
     expect(gw.address()).toBeUndefined()
     await expect(http(port, { headers: { Host: `127.0.0.1:${port}` } })).rejects.toThrow(/ECONNREFUSED/)
     await gw.apply(webAccessOf({ enabled: true, port }))
@@ -327,6 +328,25 @@ describe('Origin check (upgrade and state-changing requests)', () => {
     // 1009 "message too big", sent by ws before it drops the socket; main logs it, nothing throws.
     expect(await closed).toBe(1009)
     await serverClosed
+  })
+
+  it('turning web access off closes open sockets with the turned-off notice (plan Task 13)', async () => {
+    const { gw, port } = await listening()
+    const host = `127.0.0.1:${port}`
+    const serverClosed = new Promise<void>((resolve) => {
+      gw.setSocketHandler((ws) => ws.on('close', () => resolve()))
+    })
+    const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin: `http://${host}` })
+    await new Promise<void>((resolve, reject) => {
+      client.on('open', () => resolve())
+      client.on('error', reject)
+    })
+    const closed = new Promise<number>((resolve) => client.on('close', (code) => resolve(code)))
+    expect(await gw.apply(webAccessOf({ enabled: false, port, mode: 'none' }))).toEqual({ state: 'off' })
+    // The page shows "turned off" and stops retrying (bridge.ts FINAL_CLOSES).
+    expect(await closed).toBe(CLOSE.turnedOff)
+    await serverClosed
+    expect(gw.connections().size).toBe(0)
   })
 
   it('stop closes open sockets', async () => {

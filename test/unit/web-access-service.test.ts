@@ -189,13 +189,16 @@ describe('WebAccessService', () => {
     expect(v.risks).toEqual([])
   })
 
-  it('runs the headless terminals only while the settings mean the gateway listens, started before it', async () => {
+  it('runs the headless terminals only while the settings mean the gateway listens: started before it, drained after it', async () => {
     const calls: string[] = []
+    let release: (() => void) | undefined
     const withTerminals = new WebAccessService({
       gateway: {
         ...gateway,
-        apply: (settings) => {
+        apply: async (settings) => {
           calls.push(`gateway ${settings.enabled}`)
+          // A gateway close that takes a while (the views' close handshake), when a test asks.
+          if (release) await new Promise<void>((resolve) => (release = resolve))
           return gateway.apply(settings)
         }
       },
@@ -205,24 +208,44 @@ describe('WebAccessService', () => {
         stored = { ...(stored as object | undefined), enabled: next.enabled, port: next.port, hosts: next.hosts, mode: next.mode }
       },
       emit: () => undefined,
-      terminals: { start: () => calls.push('start'), stop: () => calls.push('stop') }
+      terminals: {
+        start: () => calls.push('start'),
+        drain: async () => {
+          calls.push('drain')
+        }
+      }
     })
-    // Start-up with web access off: stopped (a no-op), so nothing is loaded.
+    // Start-up with web access off: drained after the gateway (a no-op), so nothing is loaded.
     await withTerminals.apply()
-    expect(calls).toEqual(['stop', 'gateway false'])
+    expect(calls).toEqual(['gateway false', 'drain'])
     calls.length = 0
     // On: started synchronously before the gateway, so tabs restored next are mirrored from item 1.
     const pending = withTerminals.set({ enabled: true })
     expect(calls).toEqual(['start', 'gateway true'])
     await pending
     calls.length = 0
+    // Off: the gateway first (it closes the remote views with their notice), then the drain.
     await withTerminals.set({ enabled: false })
-    expect(calls).toEqual(['stop', 'gateway false'])
+    expect(calls).toEqual(['gateway false', 'drain'])
     calls.length = 0
     // A stored setting the gateway refuses (a network bind before Task 28) runs no worker either.
     stored = { enabled: true, bind: '0.0.0.0' }
     await withTerminals.apply()
-    expect(calls).toEqual(['stop', 'gateway true'])
+    expect(calls).toEqual(['gateway true', 'drain'])
+    calls.length = 0
+    // Off, then on again before the off reached the gateway: the drain is skipped, the mirror stays.
+    stored = { enabled: true }
+    await withTerminals.apply()
+    calls.length = 0
+    release = () => undefined
+    const off = withTerminals.set({ enabled: false })
+    await Promise.resolve()
+    const finishOff = release
+    release = undefined
+    const on = withTerminals.set({ enabled: true })
+    finishOff()
+    await Promise.all([off, on])
+    expect(calls).toEqual(['gateway false', 'start', 'gateway true'])
     withTerminals.dispose()
   })
 

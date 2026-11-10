@@ -27,7 +27,7 @@ import type { Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 // Types only: erased at build time, so this file does not load `ws` (see loadWs below).
 import type { WebSocket, WebSocketServer } from 'ws'
-import { PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, type WebProjectEntry, type WebSessionReply } from '../../shared/web-protocol'
+import { CLOSE, PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, type WebProjectEntry, type WebSessionReply } from '../../shared/web-protocol'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
 import { deviceCookie, type WebAuth } from './auth'
@@ -38,6 +38,9 @@ import { listenPlanOf, type ListenPlan } from './settings'
 import { realShellFile, shellFileOf } from './shell-files'
 
 export type WsModule = typeof import('ws')
+
+/** A view closed with a notice has this long to answer the close handshake before it is dropped. */
+export const CLOSE_GRACE_MS = 1_000
 
 // Largest frame a view may send (design-web.md §3, protocol.ts): `ws` closes the socket (1009) on
 // a bigger one before it is buffered whole.
@@ -228,7 +231,8 @@ export class WebGateway {
     this.setMode(settings.mode)
     const plan = listenPlanOf(settings)
     if (!plan.ok) {
-      await this.close()
+      // Turned off (or to a setting refused): the views are told so, and stop retrying (bridge.ts).
+      await this.close(CLOSE.turnedOff)
       this.current = settings.enabled ? { state: 'refused', reason: plan.reason } : { state: 'off' }
       if (this.current.state === 'refused') this.deps.log(`web access: not listening: ${plan.reason}`)
       return this.current
@@ -300,7 +304,14 @@ export class WebGateway {
     })
   }
 
-  private async close(): Promise<void> {
+  /**
+   * Stops listening. Open sockets are dropped, or, with `notice`, closed with that code so the page
+   * can say why (web access turned off). The close handshake is waited for before the server goes
+   * (closing the server's connections would cut the close frame off: the page would see 1006 and
+   * retry), at most CLOSE_GRACE_MS; a peer that does not answer by then is dropped, so no socket (and
+   * no view) outlives the gateway.
+   */
+  private async close(notice?: number): Promise<void> {
     const server = this.server
     const wss = this.wss
     this.server = undefined
@@ -308,7 +319,25 @@ export class WebGateway {
     this.plan = undefined
     this.hosts = new Set()
     if (wss) {
-      for (const client of wss.clients) client.terminate()
+      const clients = [...wss.clients]
+      if (notice === undefined || clients.length === 0) {
+        for (const client of clients) client.terminate()
+      } else {
+        await new Promise<void>((resolve) => {
+          let open = clients.length
+          const timer = setTimeout(resolve, CLOSE_GRACE_MS)
+          timer.unref()
+          for (const client of clients) {
+            client.once('close', () => {
+              if (--open > 0) return
+              clearTimeout(timer)
+              resolve()
+            })
+            client.close(notice, 'web access off')
+          }
+        })
+        for (const client of clients) client.terminate()
+      }
       wss.close()
     }
     if (!server) return

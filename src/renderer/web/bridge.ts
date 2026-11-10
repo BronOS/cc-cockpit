@@ -132,7 +132,8 @@ export const READY_TIMEOUT_MS = 10_000
 const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
   [CLOSE.noProject, 'This project is not open on the host.'],
   [CLOSE.windowClosed, 'The project window was closed on the host.'],
-  [CLOSE.version, 'The cockpit on the host was updated. Reload the page.']
+  [CLOSE.version, 'The cockpit on the host was updated. Reload the page.'],
+  [CLOSE.turnedOff, 'Web access was turned off on the host.']
 ])
 
 /** The socket URL for a page loaded from `location` (same host, ws or wss to match http or https). */

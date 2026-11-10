@@ -427,6 +427,10 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   blank copies: a terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind)
   shows a blank screen until Claude redraws, and a shell tab until it prints again. After three restarts within a
   minute web access stops mirroring until it is turned on again, and the tabs run as with web access off.
+- Turning web access on while tabs run starts each tab's copy blank, at its current size: a browser that opens such a
+  tab (or a desktop page that reloads or falls behind) sees only what the tab printed since, until its program redraws
+  (Claude on its next update, a shell when it prints again). Turning it off closes the browsers with a notice and waits
+  up to 5 seconds for a desktop tab that fell behind to be resynced before it ends the copies.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name
   (and no gist) until Claude sets the title again.
