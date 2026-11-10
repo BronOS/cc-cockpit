@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
 import { fakeSecretStore, SecretStoreError, type SecretStore } from '../../src/main/secrets/secret-store'
-import { AccessLog } from '../../src/main/web/access-log'
+import { AccessLog, FAILED_SIGN_IN_WINDOW_MS } from '../../src/main/web/access-log'
 import {
   ADD_DEVICE_TTL_MS,
   AttemptLimiter,
@@ -20,7 +20,7 @@ import {
   NONE_DEVICE,
   WebAuth
 } from '../../src/main/web/auth'
-import { DeviceStore } from '../../src/main/web/devices'
+import { DeviceStore, MAX_DEVICES } from '../../src/main/web/devices'
 import { WebGateway, type SocketHandler, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
 
@@ -148,6 +148,14 @@ describe('access link', () => {
     expect(await a.signInWithToken({ token: tokenOf(res.link) })).toMatchObject({ ok: true })
   })
 
+  it('regenerate also kills a pending one-time link', async () => {
+    const a = auth()
+    const once = tokenOf(a.addDeviceLink(ORIGIN).link)
+    await a.regenerate(ORIGIN)
+    expect(await a.signInWithToken({ token: once })).toMatchObject({ ok: false, status: 401 })
+    expect(devices.list()).toEqual([])
+  })
+
   it('without a keychain: no access token, regenerate still revokes, the one-time link still works', async () => {
     const good = auth()
     const old = await linkToken(good)
@@ -191,6 +199,24 @@ describe('one-time "add a device" link', () => {
     const token = tokenOf(a.addDeviceLink(ORIGIN).link)
     const results = await Promise.all([a.signInWithToken({ token }), a.signInWithToken({ token })])
     expect(results.filter((r) => r.ok)).toHaveLength(1)
+  })
+
+  it('is not used up when the store is full (503), only by a sign-in that added a device', async () => {
+    const a = auth()
+    for (let i = 0; i < MAX_DEVICES; i++) devices.add(`d${i}`, 'add')
+    const token = tokenOf(a.addDeviceLink(ORIGIN).link)
+    expect(await a.signInWithToken({ token })).toMatchObject({ ok: false, status: 503 })
+    devices.revoke(devices.list()[0]?.id ?? '')
+    expect(await a.signInWithToken({ token })).toMatchObject({ ok: true, device: { mode: 'add' } })
+    expect(await a.signInWithToken({ token })).toMatchObject({ ok: false, status: 401 })
+  })
+
+  it('an attempt whose client is gone never runs: no device, the token stays usable', async () => {
+    const a = auth()
+    const token = tokenOf(a.addDeviceLink(ORIGIN).link)
+    expect(await a.signInWithToken({ token }, () => true)).toMatchObject({ ok: false, status: 499 })
+    expect(devices.list()).toEqual([])
+    expect(await a.signInWithToken({ token }, () => false)).toMatchObject({ ok: true })
   })
 })
 
@@ -283,6 +309,19 @@ describe('AttemptLimiter', () => {
     expect(await Promise.all([a, b])).toEqual([{ ok: false }, { ok: false }])
   })
 
+  it('a queued attempt whose caller left is dropped after its wait, without running', async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const limiter = new AttemptLimiter({ capacity: 0, delayMs: 1, sleep: () => gate })
+    let gone = false
+    const ran = vi.fn(() => ({ ok: true }))
+    const pending = limiter.run(ran, () => gone)
+    gone = true
+    release()
+    expect(await pending).toBe('cancelled')
+    expect(ran).not.toHaveBeenCalled()
+  })
+
   it('WebAuth answers 429 when the limiter is busy', async () => {
     const limiter = new AttemptLimiter({ capacity: 0, maxWaiting: 0 })
     expect(await auth({ limiter }).signInWithToken({ token: 'x' })).toMatchObject({ ok: false, status: 429 })
@@ -338,9 +377,12 @@ function upgrade(port: number, headers: Record<string, string>): Promise<number>
   })
 }
 
-async function served(settings: object = {}): Promise<{ a: WebAuth; gw: WebGateway; port: number; host: string; origin: string }> {
+async function served(
+  settings: object = {},
+  limiter?: AttemptLimiter
+): Promise<{ a: WebAuth; gw: WebGateway; port: number; host: string; origin: string }> {
   const port = await freePort()
-  const a = auth()
+  const a = auth(limiter ? { limiter } : {})
   const gw = new WebGateway({ log: () => undefined, auth: a, accessLog, loadWs: async (): Promise<WsModule> => wsModule })
   gateway = gw
   expect((await gw.apply(webAccessOf({ enabled: true, port, ...settings }))).state).toBe('listening')
@@ -403,6 +445,35 @@ describe('gateway: sign-in over HTTP', () => {
     expect(wrong.status).toBe(401)
     expect(wrong.headers['set-cookie']).toBeUndefined()
     expect(devices.list()).toEqual([])
+  })
+
+  it('a client that hangs up while its attempt waits gets no device and spends no one-time token', async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let waiting: () => void = () => undefined
+    const queued = new Promise<void>((resolve) => (waiting = resolve))
+    const limiter = new AttemptLimiter({
+      capacity: 0,
+      delayMs: 1,
+      sleep: () => {
+        waiting()
+        return gate
+      }
+    })
+    const { a, port, host, origin } = await served({}, limiter)
+    const token = tokenOf(a.addDeviceLink(ORIGIN).link)
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/auth/link', headers: { Host: host, Origin: origin, 'Content-Type': 'application/json' } })
+    req.on('error', () => undefined)
+    req.end(JSON.stringify({ token }))
+    await queued
+    req.destroy()
+    // Loopback: the server sees the close at once; give it a moment before the turn comes.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(devices.list()).toEqual([])
+    expect(accessLog.recent().some((e) => e.event === 'sign-in')).toBe(false)
+    expect(await a.signInWithToken({ token })).toMatchObject({ ok: true })
   })
 
   it('a request or an upgrade without a valid cookie is refused', async () => {
@@ -499,5 +570,40 @@ describe('the access log', () => {
     for (const hash of hashes) expect(text).not.toContain(hash)
     expect(text).not.toContain('rm -rf')
     expect(text).not.toContain(DEVICE_COOKIE)
+  })
+
+  it('collapses a run of failed sign-ins into one line and a count, so a flood keeps the history', () => {
+    const path = join(dir, 'logs', 'flood.log')
+    const log = new AccessLog({ filePath: path, now: () => clock })
+    log.write({ event: 'sign-in', device: 'd1', name: 'Phone', detail: 'link' })
+    const start = clock
+    for (let i = 0; i < 500; i++) {
+      log.write({ event: 'sign-in-failed', detail: 'link' })
+      clock += 1000
+    }
+    const lines = (): Array<Record<string, unknown>> =>
+      readFileSync(path, 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+    // Inside one window: the first failure only, the rest are counted.
+    expect(lines()).toHaveLength(2)
+    // Another entry ends the run: its count is written first, at the last failure's time.
+    log.write({ event: 'revoke', device: 'd1', name: 'Phone' })
+    expect(lines().slice(1)).toEqual([
+      { at: new Date(start).toISOString(), event: 'sign-in-failed', detail: 'link' },
+      { at: new Date(clock - 1000).toISOString(), event: 'sign-in-failed', detail: 'link', count: 499 },
+      { at: new Date(clock).toISOString(), event: 'revoke', device: 'd1', name: 'Phone' }
+    ])
+    // A failure past the window starts a new run; flush (quit) writes a pending count.
+    log.write({ event: 'sign-in-failed', detail: 'link' })
+    clock += FAILED_SIGN_IN_WINDOW_MS - 1
+    log.write({ event: 'sign-in-failed', detail: 'link' })
+    clock += 1
+    log.write({ event: 'sign-in-failed', detail: 'link' })
+    log.flush()
+    log.flush()
+    expect(lines().slice(4).map((l) => l['count'])).toEqual([undefined, 1, undefined])
+    expect(log.recent().map((e) => e.count ?? 1).reduce((x, y) => x + y, 0)).toBe(1 + 500 + 1 + 3)
   })
 })

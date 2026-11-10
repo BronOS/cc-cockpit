@@ -2243,6 +2243,7 @@ function start(): void {
     pluginIndex.flush()
     pluginSecrets.flush()
     webDevices.flush()
+    webAccessLog.flush()
     // After hosts.disposeAll(): no host is left to write after this.
     appStorage.flush()
   })

@@ -126,6 +126,50 @@ describe('sliding expiry, no rotation', () => {
     clock += 11 * DAY
     expect(s.list().map((d) => d.name)).toEqual(['new'])
   })
+
+  it('an open socket is use: a device connected for 30+ days with no request does not expire', () => {
+    const s = store()
+    const added = s.add('tab left open', 'link')
+    if (!added) throw new Error('not added')
+    const gone: string[][] = []
+    s.onRevoked((ids) => gone.push([...ids]))
+    s.socketOpened(added.device.id)
+    s.socketOpened(added.device.id)
+    clock += DEVICE_IDLE_MS + DAY
+    // list/add (the desktop's indicator) see it connected, and mark it seen.
+    expect(s.list()).toMatchObject([{ id: added.device.id, lastSeenAt: clock }])
+    clock += DEVICE_IDLE_MS + DAY
+    expect(s.check(added.cookie)?.lastSeenAt).toBe(clock)
+    // One of two sockets closing keeps it connected; the last one closing marks it seen then.
+    clock += DEVICE_IDLE_MS + DAY
+    s.socketClosed(added.device.id)
+    expect(s.list()).toHaveLength(1)
+    clock += 5 * DAY
+    s.socketClosed(added.device.id)
+    expect(s.list()).toMatchObject([{ lastSeenAt: clock }])
+    expect(gone).toEqual([])
+    // From the last close on, the 30 idle days count as usual.
+    clock += DEVICE_IDLE_MS + 1
+    expect(s.list()).toEqual([])
+    expect(gone).toEqual([[added.device.id]])
+  })
+
+  it('quit marks connected devices seen on disk; a revoked device closing its socket is harmless', () => {
+    const s = store()
+    const kept = s.add('kept', 'link')
+    const revoked = s.add('revoked', 'link')
+    if (!kept || !revoked) throw new Error('not added')
+    s.socketOpened(kept.device.id)
+    s.socketOpened(revoked.device.id)
+    s.revoke(revoked.device.id)
+    s.socketClosed(revoked.device.id)
+    clock += 10 * DAY
+    s.flush()
+    expect(onDisk().devices).toMatchObject([{ id: kept.device.id, lastSeenAt: clock }])
+    // After a restart nothing is connected: the saved time is where the idle days start.
+    clock += DEVICE_IDLE_MS - 1
+    expect(store().check(kept.cookie)?.name).toBe('kept')
+  })
 })
 
 describe('revoke', () => {

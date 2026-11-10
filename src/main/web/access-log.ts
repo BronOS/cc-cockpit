@@ -12,12 +12,21 @@
 // Synchronous appends, like plugin-log.ts: entries are rare (a sign-in, a socket opening), and an
 // entry written just before a crash must not be lost. A recent ring stays in memory for the
 // desktop's device list (plan Task 9).
+//
+// Failed sign-ins are the exception to "rare": under a flood the limiter (auth.ts) lets about one
+// through a second, and a line each would rotate the real sign-in and revoke history out of the
+// two 1 MiB files within hours. So repeats are collapsed: the first failure of a run is written at
+// once, the ones after it (same detail, within `FAILED_SIGN_IN_WINDOW_MS`, nothing else logged in
+// between) become one line with a `count`, written when the run ends (another entry, a failure
+// past the window, or `flush` at quit).
 import * as nodeFs from 'node:fs'
 import { dirname } from 'node:path'
 
 export const MAX_ACCESS_LOG_BYTES = 1024 * 1024
 /** Entries kept in memory for the desktop's view. */
 export const ACCESS_LOG_RING = 200
+/** Repeated failed sign-ins within this long are one line and a count (see the header). */
+export const FAILED_SIGN_IN_WINDOW_MS = 10 * 60 * 1000
 /** Longest string kept in an entry field. */
 const MAX_FIELD = 120
 
@@ -42,8 +51,10 @@ export interface AccessEntry {
 }
 
 export interface LoggedAccessEntry extends AccessEntry {
-  /** ISO time. */
+  /** ISO time (of the last failure, on a collapsed line). */
   at: string
+  /** On a collapsed `sign-in-failed` line: how many failures it stands for. Absent means one. */
+  count?: number
 }
 
 export interface AccessLogFs {
@@ -83,6 +94,8 @@ export class AccessLog {
   private readonly ring: LoggedAccessEntry[] = []
   private size: number | undefined
   private dirReady = false
+  /** The current run of failed sign-ins: the failures after its first line are only counted. */
+  private failed: { detail: string | undefined; startedAt: number; lastAt: number; more: number } | undefined
 
   constructor(options: AccessLogOptions = {}) {
     this.filePath = options.filePath
@@ -94,12 +107,45 @@ export class AccessLog {
 
   /** Appends one entry. Never throws: a failed write is logged and the entry stays in the ring. */
   write(entry: AccessEntry): void {
+    const now = this.now()
     // Only the known fields, rebuilt: an object with extra fields (a frame, a token) passed in by
     // mistake loses them here.
-    const out: LoggedAccessEntry = { at: new Date(this.now()).toISOString(), event: entry.event }
+    const out: LoggedAccessEntry = { at: new Date(now).toISOString(), event: entry.event }
     if (entry.device !== undefined) out.device = plainText(entry.device, 40)
     if (entry.name !== undefined) out.name = plainText(entry.name)
     if (entry.detail !== undefined) out.detail = plainText(entry.detail)
+    if (entry.event === 'sign-in-failed') {
+      const run = this.failed
+      if (run && run.detail === out.detail && now - run.startedAt < FAILED_SIGN_IN_WINDOW_MS) {
+        run.more++
+        run.lastAt = now
+        return
+      }
+      this.endFailedRun()
+      this.append(out)
+      this.failed = { detail: out.detail, startedAt: now, lastAt: now, more: 0 }
+      return
+    }
+    this.endFailedRun()
+    this.append(out)
+  }
+
+  /** Writes a pending collapsed `sign-in-failed` line (quit). */
+  flush(): void {
+    this.endFailedRun()
+  }
+
+  private endFailedRun(): void {
+    const run = this.failed
+    this.failed = undefined
+    if (!run || run.more === 0) return
+    const out: LoggedAccessEntry = { at: new Date(run.lastAt).toISOString(), event: 'sign-in-failed' }
+    if (run.detail !== undefined) out.detail = run.detail
+    out.count = run.more
+    this.append(out)
+  }
+
+  private append(out: LoggedAccessEntry): void {
     this.ring.push(out)
     if (this.ring.length > ACCESS_LOG_RING) this.ring.shift()
     if (this.filePath === undefined) return

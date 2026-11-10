@@ -10,7 +10,10 @@
 //  - Sliding expiry: a device unused for 30 days is gone (dropped when it next shows up, and from
 //    the list). The cookie is never rotated: a rotation races a device's parallel requests and its
 //    open sockets, which cannot take a `Set-Cookie`. `lastSeenAt` moves at most once a minute, so
-//    a busy page does not rewrite the file.
+//    a busy page does not rewrite the file. An open socket is use too: a tab left connected for a
+//    month makes no request, so the gateway reports its sockets (`socketOpened`/`socketClosed`), a
+//    connected device never expires, and it counts as seen whenever the store looks (list, add,
+//    a check, the close, quit).
 //  - Revoke, revoke all, and revoke every device a sign-in method let in (regenerating the access
 //    link, auth.ts). Revoking tells the listeners at once (the gateway closes the device's sockets;
 //    plugin-page tokens die with them, plan Task 20), and is flushed to disk before it returns.
@@ -156,6 +159,8 @@ export class DeviceStore {
   private readonly notify: (text: string) => void
   private readonly now: () => number
   private readonly listeners = new Set<RevokedListener>()
+  /** Open sockets per device id (the gateway's reports). In memory only: none survive a restart. */
+  private readonly open = new Map<string, number>()
 
   constructor(options: DeviceStoreOptions) {
     this.accessLog = options.accessLog
@@ -228,16 +233,27 @@ export class DeviceStore {
     const ok = matchesHash(parts.secret, record?.secretHash ?? '0'.repeat(64)) && record !== undefined
     if (!ok || !record) return undefined
     const now = this.now()
-    if (now - record.lastSeenAt > DEVICE_IDLE_MS) {
+    if (now - record.lastSeenAt > DEVICE_IDLE_MS && !this.open.has(record.id)) {
       this.drop([record.id], 'expired')
       return undefined
     }
-    if (now - record.lastSeenAt >= TOUCH_INTERVAL_MS) {
-      record.lastSeenAt = now
-      // Debounced: a lost `lastSeenAt` only makes a device look a minute older.
-      this.file.save()
-    }
+    this.seen(record, now)
     return publicOf(record)
+  }
+
+  /** The gateway handed a socket to this device: it is in use for as long as the socket is open. */
+  socketOpened(id: string): void {
+    this.open.set(id, (this.open.get(id) ?? 0) + 1)
+  }
+
+  /** One of the device's sockets closed: it was in use until now. */
+  socketClosed(id: string): void {
+    const left = (this.open.get(id) ?? 0) - 1
+    if (left > 0) this.open.set(id, left)
+    else this.open.delete(id)
+    // A revoked device is gone already; its sockets closing find no record.
+    const record = this.file.data.devices.find((d) => d.id === id)
+    if (record) this.seen(record, this.now(), true)
   }
 
   /** Revokes one device; false when there is none with that id. */
@@ -279,15 +295,31 @@ export class DeviceStore {
     this.commit()
   }
 
-  /** Writes any pending change (quit). */
+  /** Writes any pending change (quit). Connected devices count as seen now: their sockets close after this. */
   flush(): void {
+    const now = this.now()
+    for (const d of this.file.data.devices) if (this.open.has(d.id)) this.seen(d, now, true)
     this.file.flush()
   }
 
   private expire(): void {
     const now = this.now()
-    const gone = this.file.data.devices.filter((d) => now - d.lastSeenAt > DEVICE_IDLE_MS).map((d) => d.id)
+    const gone: string[] = []
+    for (const d of this.file.data.devices) {
+      // A live socket is use, however long since the last request.
+      if (this.open.has(d.id)) this.seen(d, now)
+      else if (now - d.lastSeenAt > DEVICE_IDLE_MS) gone.push(d.id)
+    }
     if (gone.length > 0) this.drop(gone, 'expired')
+  }
+
+  /** Marks a device used at `now`; at most once a minute unless `always` (a close, quit). */
+  private seen(record: DeviceRecord, now: number, always = false): void {
+    if (!always && now - record.lastSeenAt < TOUCH_INTERVAL_MS) return
+    if (record.lastSeenAt === now) return
+    record.lastSeenAt = now
+    // Debounced: a lost `lastSeenAt` only makes a device look a minute older.
+    this.file.save()
   }
 
   private drop(ids: readonly string[], event: 'revoke' | 'expired', reason?: string): number {

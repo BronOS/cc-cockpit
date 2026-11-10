@@ -343,7 +343,9 @@ export class WebGateway {
     } catch {
       return this.json(res, host, 400, { error: 'expected JSON' })
     }
-    const result = await this.deps.auth.signInWithToken(body)
+    // A client that hung up while its attempt waited in the limiter gets no device (its cookie
+    // would be lost) and does not use up a one-time token.
+    const result = await this.deps.auth.signInWithToken(body, () => res.destroyed)
     if (res.destroyed) return
     if (!result.ok) return this.json(res, host, result.status, { error: result.error })
     this.json(res, host, 200, { device: { id: result.device.id, name: result.device.name } }, { 'Set-Cookie': deviceCookie(result.cookie, origin) })
@@ -369,9 +371,13 @@ export class WebGateway {
     if (!handler || !wss) return refuseUpgrade(socket, '401 Unauthorized')
     wss.handleUpgrade(req, socket, head, (ws) => {
       this.sockets.set(ws, device)
+      // An open socket keeps its device from expiring (devices.ts); None's anonymous one has no record.
+      const tracked = device.mode !== 'none'
+      if (tracked) this.deps.auth.devices.socketOpened(device.id)
       this.deps.accessLog.write({ event: 'connect', device: device.id, name: device.name })
       ws.on('close', () => {
         this.sockets.delete(ws)
+        if (tracked) this.deps.auth.devices.socketClosed(device.id)
         this.deps.accessLog.write({ event: 'disconnect', device: device.id, name: device.name })
       })
       // `ws` reports an oversize or malformed frame as an 'error' on the socket (after sending the

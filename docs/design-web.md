@@ -139,7 +139,9 @@ their own browser. They apply in every auth mode, None included:
   Origin: it gets a bearer handshake of its own, §10.)
 - **Secrets**: compared in constant time, stored hashed. Failed attempts are slowed (a token bucket with a fixed
   delay), never locked out: a lockout lets anyone who can reach the address keep the person out. Never keyed by peer
-  address: behind `tailscale serve` or a proxy every peer is 127.0.0.1.
+  address: behind `tailscale serve` or a proxy every peer is 127.0.0.1. The waiting queue is capped, so a sustained
+  flood makes new sign-ins answer "busy" for as long as it lasts (signed-in devices are untouched); accepted, since
+  one global bucket cannot tell the person's attempt from the flood's.
 - **Device cookie**: `HttpOnly`, `SameSite=Strict`, `Secure` unless the external origin is loopback http. Not rotated
   (a rotation races a device's parallel requests and its open WebSockets, which cannot receive `Set-Cookie`); the
   server keeps a sliding expiry instead (30 days of no use).
