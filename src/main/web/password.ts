@@ -28,8 +28,13 @@ export interface ScryptOptions {
 /** The async scrypt (main: Node's thread-pool one); tests pass a fake to count and gate calls. */
 export type ScryptFn = (password: string, salt: Buffer, keylen: number, options: ScryptOptions) => Promise<Buffer>
 
-/** N = 2^15, r = 8, p = 1: OWASP's minimum for scrypt, about 50-100 ms and 32 MiB per hash. */
-export const SCRYPT_DEFAULTS = Object.freeze({ N: 2 ** 15, r: 8, p: 1 })
+/**
+ * N = 2^15, r = 8, p = 3: one of OWASP's equal-cost forms of its scrypt minimum (N = 2^17, r = 8, p = 1),
+ * about 100-300 ms and 32 MiB per hash. The p lanes run one after another in Node, so p buys time at
+ * the memory of p = 1: SCRYPT_MAXMEM and the parse bounds below need no change. p = 1 at 2^15 was a
+ * quarter of OWASP's cost; stored hashes carry their own parameters, so old ones keep working.
+ */
+export const SCRYPT_DEFAULTS = Object.freeze({ N: 2 ** 15, r: 8, p: 3 })
 const KEY_LENGTH = 32
 const SALT_LENGTH = 16
 /** Room for N=2^16 (128 * N * r = 64 MiB); Node's default 32 MiB is exactly the defaults' need and refuses them. */

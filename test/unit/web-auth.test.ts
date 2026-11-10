@@ -13,6 +13,7 @@ import { AccessLog, FAILED_SIGN_IN_WINDOW_MS } from '../../src/main/web/access-l
 import {
   ADD_DEVICE_TTL_MS,
   AttemptLimiter,
+  CONFIRM_BUSY_ERROR,
   CONFIRM_MAX_WRONG,
   CONFIRM_TTL_MS,
   cookieValues,
@@ -56,14 +57,16 @@ function cheapHasher(over: { scrypt?: ScryptFn; maxConcurrent?: number } = {}): 
   return new PasswordHasher({ params: { N: 1024, r: 8, p: 1 }, ...over })
 }
 
-function auth(over: { secrets?: SecretStore; limiter?: AttemptLimiter; hasher?: PasswordHasher; notify?: (text: string) => void } = {}): WebAuth {
+function auth(
+  over: { secrets?: SecretStore; limiter?: AttemptLimiter; hasher?: PasswordHasher; notify?: (text: string) => void; log?: (m: string) => void } = {}
+): WebAuth {
   const a = new WebAuth({
     devices,
     secrets: over.secrets ?? fakeSecretStore(),
     accessLog,
     hasher: over.hasher ?? cheapHasher(),
     now: () => clock,
-    log: () => undefined,
+    log: over.log ?? (() => undefined),
     ...(over.limiter ? { limiter: over.limiter } : {}),
     ...(over.notify ? { notify: over.notify } : {})
   })
@@ -760,7 +763,7 @@ describe('password sign-in', () => {
 
   it('a wrong password, no password, a malformed body, or another mode is refused', async () => {
     const a = passwordAuth()
-    expect(await a.signInWithPassword({ password: 'anything' })).toMatchObject({ ok: false, status: 401, error: 'no password is set on the desktop' })
+    expect(await a.signInWithPassword({ password: 'anything' })).toMatchObject({ ok: false, status: 401, error: 'wrong password' })
     await a.setPassword('correct horse')
     expect(await a.signInWithPassword({ password: 'wrong horse' })).toMatchObject({ ok: false, status: 401, error: 'wrong password' })
     expect(await a.signInWithPassword({})).toMatchObject({ ok: false, status: 400 })
@@ -770,6 +773,22 @@ describe('password sign-in', () => {
     expect(await a.signInWithPassword({ password: 'correct horse' })).toMatchObject({ ok: false, status: 409 })
     expect(devices.list()).toEqual([])
     expect(accessLog.recent().some((e) => e.event === 'sign-in-failed' && e.detail === 'password')).toBe(true)
+  })
+
+  it('answers no password set and an unreadable one as a wrong password; only the desktop log tells them apart', async () => {
+    const logged: string[] = []
+    const a = passwordAuth({ log: (m) => logged.push(m) })
+    expect(await a.signInWithPassword({ password: 'anything' })).toEqual({ ok: false, status: 401, error: 'wrong password' })
+    expect(logged.some((m) => m.includes('no password is set'))).toBe(true)
+    await a.setPassword('correct horse')
+    // A fresh WebAuth (no cached hash) whose keychain cannot decrypt the stored record.
+    const store = fakeSecretStore()
+    const broken = passwordAuth({
+      secrets: { ...store, decrypt: async () => Promise.reject(new SecretStoreError('keychain locked')) },
+      log: (m) => logged.push(m)
+    })
+    expect(await broken.signInWithPassword({ password: 'correct horse' })).toEqual({ ok: false, status: 401, error: 'wrong password' })
+    expect(logged.some((m) => m.includes('cannot read the password: keychain locked'))).toBe(true)
   })
 
   it('refuses a short password, and without a keychain stores none', async () => {
@@ -893,7 +912,9 @@ describe('desktop confirm', () => {
   it('one request at a time: a second is refused while one waits, and can ask once it is answered', async () => {
     const a = confirmAuth()
     const first = await ask(a)
-    expect(await a.requestConfirm({ name: 'Attacker' })).toMatchObject({ ok: false, status: 409 })
+    // The text sends the person to the desktop: the waiting request may be someone else's.
+    expect(await a.requestConfirm({ name: 'Attacker' })).toEqual({ ok: false, status: 409, error: CONFIRM_BUSY_ERROR })
+    expect(CONFIRM_BUSY_ERROR).toContain('not yours, deny it there')
     expect(a.confirmAsk()?.name).toBe('Phone')
     a.answerConfirm(first.id, false, undefined)
     const second = await ask(a, 'Laptop')

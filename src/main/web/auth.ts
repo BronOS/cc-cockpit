@@ -71,6 +71,12 @@ export const CONFIRM_COLLECT_MS = 60 * 1000
 export const CONFIRM_MAX_WRONG = 3
 /** Digits of the code the browser shows; the person types it, nobody guesses it. */
 export const CONFIRM_CODE_DIGITS = 6
+/**
+ * The browser's answer while another request waits. It may not be the person's (an attacker can keep
+ * the one slot taken), so it says what to do about that rather than only to wait.
+ */
+export const CONFIRM_BUSY_ERROR =
+  'another browser is waiting for an answer on the desktop; if that request is not yours, deny it there and check who can reach this address, otherwise try again in a few minutes'
 
 /** The anonymous caller of None mode: no record, nothing to revoke. */
 export const NONE_DEVICE: Readonly<WebDevice> = Object.freeze({ id: 'none', name: 'No sign-in', createdAt: 0, lastSeenAt: 0, mode: 'none' })
@@ -471,7 +477,10 @@ export class WebAuth {
     if (this.currentMode !== 'password') return { ok: false, status: 409, error: 'sign-in with a password is off' }
     if (!matches || generation !== this.passwordGeneration) {
       this.accessLog.write({ event: 'sign-in-failed', detail: 'password' })
-      return { ok: false, status: 401, error: encoded === undefined ? 'no password is set on the desktop' : 'wrong password' }
+      // The same answer with no password set or an unreadable one: a caller who is not signed in
+      // must not learn whether a password exists (the time taken says nothing either, see above).
+      // The cause is in the desktop's log (passwordHash).
+      return { ok: false, status: 401, error: 'wrong password' }
     }
     if (cancelled?.()) return { ok: false, status: 499, error: 'the request is gone' }
     const added = this.devices.add(name, 'password')
@@ -482,7 +491,10 @@ export class WebAuth {
   /** The stored hash, decrypted once per record; undefined with none set or an unreadable one (logged). */
   private async passwordHash(): Promise<string | undefined> {
     const record = this.devices.password()
-    if (!record) return undefined
+    if (!record) {
+      this.log('web access: a password sign-in, but no password is set')
+      return undefined
+    }
     if (this.passwordCache?.stored === record.stored) return this.passwordCache.encoded
     try {
       const encoded = await this.secrets.decrypt(record.stored)
@@ -519,7 +531,9 @@ export class WebAuth {
     this.lapse()
     // A denied one blocks nothing: its browser learns `gone` when it polls next.
     if (this.ask && this.ask.state !== 'denied') {
-      return { ok: false, status: 409, error: 'another browser is waiting for an answer on the desktop; try again in a few minutes' }
+      // The header's known limit: the waiting request may be someone else's, holding the slot. The
+      // person reading this is the one who can find out, so the text sends them to the desktop.
+      return { ok: false, status: 409, error: CONFIRM_BUSY_ERROR }
     }
     const code = String(randomInt(0, 10 ** CONFIRM_CODE_DIGITS)).padStart(CONFIRM_CODE_DIGITS, '0')
     const ticket = randomSecret()

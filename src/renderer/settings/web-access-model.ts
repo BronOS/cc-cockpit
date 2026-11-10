@@ -184,8 +184,15 @@ export function confirmCodeReady(code: string): boolean {
   return digits === 6
 }
 
+/**
+ * Said under every mode: a mode change signs no device out (each mode ends in the same device
+ * cookie, and main checks only that). Someone who leaves the access link because it leaked would
+ * otherwise think the devices it let in are out with it; Revoke all is what signs them out.
+ */
+export const MODE_CHANGE_KEEPS_DEVICES = 'Changing it signs no browser out: use Revoke all below for that.'
+
 export function modeHelp(mode: WebAccessMode): string {
-  return MODE_TEXT[mode].help
+  return `${MODE_TEXT[mode].help} ${MODE_CHANGE_KEEPS_DEVICES}`
 }
 
 /** "just now", "5 min ago", "3 days ago": a device's last use, as a short phrase. */

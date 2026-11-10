@@ -19,6 +19,8 @@ import {
   indicatorTitle,
   isDirty,
   modeNeedsPassword,
+  MODE_CHANGE_KEEPS_DEVICES,
+  modeHelp,
   modeOptions,
   passwordDraftProblem,
   patchOf,
@@ -110,6 +112,14 @@ describe('the sign-in modes', () => {
     const options = modeOptions()
     expect(options.map((o) => o.value)).toEqual(['link', 'password', 'confirm', 'none'])
     expect(options.every((o) => !('unavailable' in o))).toBe(true)
+  })
+
+  it('every mode says a change signs no browser out (devices keep their cookie across modes)', () => {
+    for (const o of modeOptions()) {
+      expect(modeHelp(o.value)).toContain(o.help)
+      expect(modeHelp(o.value)).toContain(MODE_CHANGE_KEEPS_DEVICES)
+    }
+    expect(MODE_CHANGE_KEEPS_DEVICES).toContain('Revoke all')
   })
 
   it('the password mode asks for a password first when none is set', () => {
