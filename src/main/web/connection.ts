@@ -118,6 +118,8 @@ export interface SnapshotSources {
   overlays: { infos(windowId: number): OverlayInfo[] }
   /** A plain read of the window's pending plugin close asks (CloseAsks.pendingFor). */
   closeAsks: { pendingFor(windowId: number): Array<{ requestId: string; tabId: string }> }
+  /** A plain read of the window's pending `ccc plugin link` confirms (LinkAsks.pendingFor). */
+  linkAsks: { pendingFor(windowId: number): WebSnapshot['linkAsks'] }
 }
 
 /** The window's state for `ready` (`WebConnectionDeps.snapshot`); throws when the project is gone. */
@@ -128,7 +130,8 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
     tabs: sources.tabs.list(projectId),
     layout,
     overlays: sources.overlays.infos(windowId),
-    closeAsks: sources.closeAsks.pendingFor(windowId)
+    closeAsks: sources.closeAsks.pendingFor(windowId),
+    linkAsks: sources.linkAsks.pendingFor(windowId)
   }
 }
 

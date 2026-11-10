@@ -354,6 +354,8 @@ describe('appPageMatcher', () => {
 describe('core handlers', () => {
   function core(overrides: Partial<CoreHandlerDeps> = {}): {
     ipc: FakeIpcMain
+    router: IpcRouter
+    notices: Array<[string, string]>
     opened: string[]
     dialogs: number[]
     external: string[]
@@ -364,6 +366,7 @@ describe('core handlers', () => {
   } {
     const { ipc, router } = setup()
     const ran: string[] = []
+    const notices: Array<[string, string]> = []
     const pickers = { count: 0, callers: [] as number[] }
     const opened: string[] = []
     const dialogs: number[] = []
@@ -400,6 +403,9 @@ describe('core handlers', () => {
       openExternal: (url) => {
         external.push(url)
       },
+      linkNotice: (viewId, url) => {
+        notices.push([viewId, url])
+      },
       currentTheme: () => BUILTIN_THEMES[0]!,
       shellPrefs: () => ({ tabCloseSide: 'left', zoneAutoHide: true, minTerminalWidth: 720, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }),
       commands: (projectId) => ({
@@ -411,7 +417,7 @@ describe('core handlers', () => {
       },
       ...overrides
     })
-    return { ipc, opened, dialogs, external, relinked, forgotten, ran, pickers }
+    return { ipc, router, notices, opened, dialogs, external, relinked, forgotten, ran, pickers }
   }
 
   it("window.info answers with the sender's own project", async () => {
@@ -575,6 +581,16 @@ describe('core handlers', () => {
     await ipc.invoke('app.openExternal', 11, [{ url: 'https://example.com/a b?x=1#h' }])
     await ipc.invoke('app.openExternal', 13, [{ url: 'http://localhost:3000' }])
     expect(external).toEqual(['https://example.com/a%20b?x=1#h', 'http://localhost:3000/'])
+  })
+
+  it('app.openExternal from a remote view is a notice to that view, never opened on the host', async () => {
+    const { router, external, notices } = core()
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'https://example.com/x' })
+    expect(external).toEqual([])
+    expect(notices).toEqual([['web:3', 'https://example.com/x']])
+    // The same checks as the desktop's: a bad scheme is refused before any notice.
+    await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'file:///etc/passwd' })).rejects.toThrow(/app\.openExternal/)
+    expect(notices).toHaveLength(1)
   })
 
   it('app.openExternal refuses other schemes and malformed payloads', async () => {
@@ -819,6 +835,10 @@ describe('registerSessionHandlers', () => {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerSessionHandlers(router, {
+      linkAnswer: (windowId, requestId, allow) => {
+        calls.push(['linkAnswer', windowId, requestId, allow])
+        return true
+      },
       snapshotFor: (projectId) => {
         calls.push(['snapshotFor', projectId])
         return { own: [] }
@@ -850,6 +870,16 @@ describe('registerSessionHandlers', () => {
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: false, declined: 'yes' }])).rejects.toThrow()
     await expect(ipc.invoke('sessions.closeAnswer', 13, [{ requestId: 'close-1', closed: false }])).rejects.toThrow()
     expect(calls).toHaveLength(2)
+  })
+
+  it('links.answer passes the sender’s window, never one from the payload, and checks the shape', async () => {
+    const { ipc, calls } = sessionsSetup()
+    await expect(ipc.invoke('links.answer', 12, [{ requestId: 'link-1', allow: true, windowId: 1 }])).resolves.toBe(true)
+    expect(calls).toEqual([['linkAnswer', 2, 'link-1', true]])
+    await expect(ipc.invoke('links.answer', 12, [{ requestId: 'link-1', allow: 'yes' }])).rejects.toThrow()
+    await expect(ipc.invoke('links.answer', 12, [{ requestId: 7, allow: true }])).rejects.toThrow()
+    await expect(ipc.invoke('links.answer', 13, [{ requestId: 'link-1', allow: true }])).rejects.toThrow()
+    expect(calls).toHaveLength(1)
   })
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {
@@ -1692,10 +1722,23 @@ describe('registerUpdateHandlers', () => {
     expect(calls).toEqual([['dismiss', '9.9.9']])
   })
 
+  it('openRelease from a remote view names that view (a notice there, nothing opened on the host)', async () => {
+    const { router } = setup()
+    const calls: unknown[][] = []
+    registerUpdateHandlers(router, {
+      state: () => ({ current: '1.0.0', enabled: true, available: null }),
+      setEnabled: () => undefined,
+      dismiss: () => undefined,
+      openRelease: (...args) => void calls.push(args)
+    })
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4'), 'updates.openRelease', { url: 'https://evil.example' })
+    expect(calls).toEqual([['web:4']])
+  })
+
   it('ignores any payload on openRelease', async () => {
     const { ipc, calls } = updateSetup()
     await ipc.invoke('updates.openRelease', 11, [{ url: 'https://evil.example' }])
-    expect(calls).toEqual([['openRelease']])
+    expect(calls).toEqual([['openRelease', undefined]])
   })
 })
 

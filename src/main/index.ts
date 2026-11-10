@@ -86,6 +86,7 @@ import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, 
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
+import { chooseLinkConfirm, LinkAsks } from './plugins/link-asks'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
@@ -522,6 +523,7 @@ function start(): void {
       webviews.closeWindow(windowId)
       // A plugin's close waiting on this window's dialog is answered: not closed by it.
       closeAsks.windowClosed(windowId)
+      linkAsks.windowClosed(windowId)
     },
     // The folder went missing between the close and the new window (WindowManager logs it): the
     // project is closed after all. Its queued plan goes, as when a launch cannot open a window;
@@ -587,6 +589,12 @@ function start(): void {
     send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
     viewsOf: (windowId) => views.viewsOf(windowId)
+  })
+  // `ccc plugin link`'s confirm while a browser view is attached (link-asks.ts): an in-page dialog on
+  // every view of the window, first `links.answer` wins. With no browser view the native dialog is used.
+  const linkAsks = new LinkAsks({
+    send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
+    settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
   })
   // ctx.sessions.close's body (HostApi checked the tab is the project's); a function so the test
   // hook `pluginCloseTab` runs the very same path.
@@ -1083,6 +1091,9 @@ function start(): void {
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget. A
       // lambda, as for ctx.oauth: the e2e's recorder replaces shell.openExternal after launch.
       openExternal: (url) => shell.openExternal(url),
+      linkNotice: (viewId, url) => {
+        views.toView(viewId, 'app.linkNotice', { url })
+      },
       // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
       // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
       systemFiles
@@ -1438,12 +1449,16 @@ function start(): void {
   registerPluginDevHandlers(socket, {
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     inspectLink: (path) => plugins.inspectLink(path),
-    confirmLink:
-      testLinkConfirm?.confirm ??
-      electronConfirmLink({
-        windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
-        showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
-      }),
+    confirmLink: chooseLinkConfirm({
+      hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+      shared: (windowId, info, signal) => linkAsks.ask(windowId, info, signal),
+      native:
+        testLinkConfirm?.confirm ??
+        electronConfirmLink({
+          windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
+          showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
+        })
+    }),
     linkAndEnable: async (projectId, info) => {
       // keepLinked: linked by now (Settings, another window, while the dialog was open) is fine,
       // the person allowed exactly that folder; unlinked meanwhile links it again.
@@ -1584,6 +1599,9 @@ function start(): void {
     forget: (id) => forgetMissing(registry, id),
     // The router already checked the scheme (webUrlOf); main is the only place a link leaves the app.
     openExternal: (url) => shell.openExternal(url),
+    linkNotice: (viewId, url) => {
+      views.toView(viewId, 'app.linkNotice', { url })
+    },
     currentTheme: () => themes.current(),
     // `appearance` is built below; start() runs to its end before any IPC message is handled.
     shellPrefs: () => appearance.prefs(),
@@ -1934,9 +1952,11 @@ function start(): void {
       updateChecker.settingChanged()
     },
     dismiss: (version) => updateChecker.dismiss(version),
-    openRelease: () => {
+    openRelease: (remoteView) => {
       const a = updateChecker.available()
-      if (a) return shell.openExternal(a.url)
+      if (!a) return
+      if (remoteView !== undefined) views.toView(remoteView, 'app.linkNotice', { url: a.url })
+      else return shell.openExternal(a.url)
     }
   })
   registerProjectSettingsHandlers(router, {
@@ -2127,7 +2147,7 @@ function start(): void {
     addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
-    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks }, ctx),
+    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),
@@ -2199,7 +2219,8 @@ function start(): void {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
-    closeAnswer: (windowId, viewId, requestId, answer) => closeAsks.answer(windowId, viewId, requestId, answer)
+    closeAnswer: (windowId, viewId, requestId, answer) => closeAsks.answer(windowId, viewId, requestId, answer),
+    linkAnswer: (windowId, requestId, allow) => linkAsks.answer(windowId, requestId, allow)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

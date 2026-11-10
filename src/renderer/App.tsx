@@ -4,6 +4,7 @@ import { ProjectPicker } from './picker/ProjectPicker'
 import { currentShellChrome } from './shell-kind'
 import { startSeeThrough } from './theme/apply-see-through'
 import { TabsPane } from './tabs/TabsPane'
+import { ShellNotices } from './notices/ShellNotices'
 
 /**
  * Every window loads the same page; main says which one this is (picker or which project). The
@@ -36,5 +37,10 @@ export function App(): React.JSX.Element {
   if (info.kind === 'picker') return <ProjectPicker info={info} />
   // TabsPane hosts the terminal tabs, the zones with plugin panels, the overlay stack and the
   // settings overlay.
-  return <TabsPane project={info.project} fullScreen={info.fullScreen === true} />
+  return (
+    <>
+      <TabsPane project={info.project} fullScreen={info.fullScreen === true} />
+      <ShellNotices />
+    </>
+  )
 }

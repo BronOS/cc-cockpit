@@ -1,0 +1,99 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { chooseLinkConfirm, LINK_ASK_MS, LinkAsks, type LinkAskInfo } from '../../src/main/plugins/link-asks'
+import type { LinkDialogInfo } from '../../src/main/plugins/link-request'
+
+const INFO: LinkDialogInfo = { id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' }
+
+function setup(send = true): { asks: LinkAsks; sent: Array<[number, LinkAskInfo]>; settled: Array<[number, string]> } {
+  const sent: Array<[number, LinkAskInfo]> = []
+  const settled: Array<[number, string]> = []
+  const asks = new LinkAsks({
+    send: (w, a) => (sent.push([w, a]), send),
+    settled: (w, id) => void settled.push([w, id])
+  })
+  return { asks, sent, settled }
+}
+
+afterEach(() => vi.useRealTimers())
+
+describe('LinkAsks (the shared in-page link confirm)', () => {
+  it('Allow from any view of the window settles true once, and every view hears it settled', async () => {
+    const { asks, sent, settled } = setup()
+    const p = asks.ask(1, INFO)
+    const id = sent[0]![1].requestId
+    expect(sent[0]![1]).toMatchObject(INFO)
+    expect(asks.pendingFor(1)).toEqual([{ requestId: id, ...INFO }])
+    expect(asks.answer(1, id, true)).toBe(true)
+    await expect(p).resolves.toBe(true)
+    expect(settled).toEqual([[1, id]])
+    // The second view's answer finds nothing, whatever it says.
+    expect(asks.answer(1, id, false)).toBe(false)
+    expect(asks.pendingFor(1)).toEqual([])
+  })
+
+  it('Deny settles false', async () => {
+    const { asks, sent } = setup()
+    const p = asks.ask(1, INFO)
+    asks.answer(1, sent[0]![1].requestId, false)
+    await expect(p).resolves.toBe(false)
+  })
+
+  it('another window cannot answer, and a non-boolean-true answer is never Allow', async () => {
+    const { asks, sent } = setup()
+    const p = asks.ask(1, INFO)
+    const id = sent[0]![1].requestId
+    expect(asks.answer(2, id, true)).toBe(false)
+    expect(asks.pendingFor(1)).toHaveLength(1)
+    asks.answer(1, id, 'yes' as unknown as boolean)
+    await expect(p).resolves.toBe(false)
+  })
+
+  it('no view took the ask: Deny at once', async () => {
+    const { asks } = setup(false)
+    await expect(asks.ask(1, INFO)).resolves.toBe(false)
+    expect(asks.size).toBe(0)
+  })
+
+  it('a closed window, an aborted caller and the timeout are all Deny', async () => {
+    vi.useFakeTimers()
+    const { asks, settled } = setup()
+    const closed = asks.ask(1, INFO)
+    asks.windowClosed(1)
+    await expect(closed).resolves.toBe(false)
+    const controller = new AbortController()
+    const gone = asks.ask(1, INFO, controller.signal)
+    controller.abort()
+    await expect(gone).resolves.toBe(false)
+    await expect(asks.ask(1, INFO, AbortSignal.abort())).resolves.toBe(false)
+    const slow = asks.ask(1, INFO)
+    vi.advanceTimersByTime(LINK_ASK_MS)
+    await expect(slow).resolves.toBe(false)
+    expect(settled).toHaveLength(3)
+    expect(asks.size).toBe(0)
+  })
+
+  it('pendingFor lists only the window’s own asks, oldest first', () => {
+    const { asks } = setup()
+    void asks.ask(1, INFO)
+    void asks.ask(2, { ...INFO, id: 'y.q' })
+    void asks.ask(1, { ...INFO, id: 'z.r' })
+    expect(asks.pendingFor(1).map((a) => a.id)).toEqual(['x.p', 'z.r'])
+    expect(asks.pendingFor(2).map((a) => a.id)).toEqual(['y.q'])
+  })
+})
+
+describe('chooseLinkConfirm', () => {
+  it('uses the shared ask while a browser view is attached and the native dialog otherwise', async () => {
+    let remote = false
+    const calls: string[] = []
+    const confirm = chooseLinkConfirm({
+      hasRemoteView: () => remote,
+      shared: async () => (calls.push('shared'), true),
+      native: async () => (calls.push('native'), false)
+    })
+    await expect(confirm(1, INFO)).resolves.toBe(false)
+    remote = true
+    await expect(confirm(1, INFO)).resolves.toBe(true)
+    expect(calls).toEqual(['native', 'shared'])
+  })
+})

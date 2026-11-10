@@ -888,6 +888,12 @@ export interface IpcInvokeMap {
    * view of the window declined, so a covered browser cannot cancel the dialog the desktop shows.
    */
   'sessions.closeAnswer': { req: { requestId: string; closed: boolean; declined?: boolean }; res: boolean }
+  /**
+   * The answer to a `links.ask` (the in-page confirm of `ccc plugin link`): Allow or Deny. Settles
+   * only an ask main sent to the sender's own window; the first answer from any view wins (design-web.md
+   * §5.1); false for any other id.
+   */
+  'links.answer': { req: { requestId: string; allow: boolean }; res: boolean }
 
   // Zones.
   /** The sender's project layout, reconciled with the panels that exist. Plain query. */
@@ -1347,6 +1353,20 @@ export interface IpcEventMap {
    */
   'sessions.closeSettled': { requestId: string }
   /**
+   * `ccc plugin link` asks to link a plugin folder (design-web.md §6.1, plan Task 25): shown as an in-page
+   * dialog on every view of the window while a browser view is attached, first answer wins. The strings
+   * are display-safe (linkDialogInfo). With no browser view attached the native dialog is used and this is not sent.
+   */
+  'links.ask': { requestId: string; id: string; name: string; path: string; caller: 'tab' | 'project' }
+  /** A `links.ask` is over (answered in some view, or dropped): a view still showing it takes it down. */
+  'links.settled': { requestId: string }
+  /**
+   * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
+   * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
+   * Sent only to the view that asked; `url` is http(s), checked by main.
+   */
+  'app.linkNotice': { url: string }
+  /**
    * A plugin's settings page moved (design-web.md §5.4): `viewId` and `device` name the view that
    * holds it now, both null when no view does (the page closed). A view showing the page that is
    * not the holder any more shows "Open on <device> — Take over" in its place.
@@ -1439,6 +1459,7 @@ export const INVOKE_CHANNELS = [
   'sessions.list',
   'sessions.cancelQueued',
   'sessions.closeAnswer',
+  'links.answer',
   'layout.get',
   'layout.set',
   'commands.list',
@@ -1559,6 +1580,9 @@ export const EVENT_CHANNELS = [
   'sessions.snapshot',
   'sessions.closeAsk',
   'sessions.closeSettled',
+  'links.ask',
+  'links.settled',
+  'app.linkNotice',
   'settingsPage.held',
   'project.updated',
   'projects.changed',
@@ -1651,6 +1675,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'sessions.closeAsk': 'yes',
   'sessions.closeSettled': 'yes',
   'sessions.closeAnswer': 'yes',
+  // The in-page link confirm is a shared ask like the close ask; the notice goes to the asking view.
+  'links.answer': 'yes',
+  'links.ask': 'yes',
+  'links.settled': 'yes',
+  'app.linkNotice': 'yes',
   'project.updated': 'yes',
 
   // Zones, commands, plugin panels, slots and settings pages: project work, per view from Task 17.

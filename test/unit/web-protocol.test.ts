@@ -11,6 +11,7 @@ import * as wsModule from 'ws'
 import type { EventChannel, LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
+import { LinkAsks } from '../../src/main/plugins/link-asks'
 import { OverlayManager } from '../../src/main/overlays/overlay-manager'
 import { LayoutService } from '../../src/main/layout/layout-service'
 import { defaultLayout, type LayoutState } from '../../src/shared/layout'
@@ -182,7 +183,8 @@ function setup(
         tabs: [{ id: `${projectId}-t1` } as never],
         layout: LAYOUT,
         overlays: [{ id: `o${windowId}` } as never],
-        closeAsks: []
+        closeAsks: [],
+        linkAsks: []
       })),
     // No tab is held: these tests are about frames and events (the terminal stream has its own below).
     mirror: over.mirror ?? { join: () => undefined },
@@ -210,7 +212,7 @@ describe('handshake', () => {
         t: 'ready',
         v: PROTOCOL_VERSION,
         view: 'web:1',
-        snapshot: { tabs: [{ id: 'p1-t1' }], layout: LAYOUT, overlays: [{ id: 'o1' }], closeAsks: [] },
+        snapshot: { tabs: [{ id: 'p1-t1' }], layout: LAYOUT, overlays: [{ id: 'o1' }], closeAsks: [], linkAsks: [] },
         // No pagePaths source: no paths (plugin frames stay empty), never a failed handshake.
         paths: { plugins: {}, overlays: '' }
       }
@@ -407,7 +409,7 @@ describe('windowSnapshot leaves the desktop as it was', () => {
       expect(pty.paused).toBe(true)
       const tabs = { list: vi.fn(() => []), attach: vi.fn() }
       const snap = windowSnapshot(
-        { tabs, layouts: { view: () => LAYOUT }, overlays, closeAsks: { pendingFor: () => [] } },
+        { tabs, layouts: { view: () => LAYOUT }, overlays, closeAsks: { pendingFor: () => [] }, linkAsks: { pendingFor: () => [] } },
         { windowId: 1, projectId: 'p1' }
       )
       expect(snap.overlays.map((o) => o.id)).toEqual(overlays.infos(1).map((o) => o.id))
@@ -446,7 +448,7 @@ describe('windowSnapshot leaves the desktop as it was', () => {
     layouts.setHeader('p1', 'a.inbox/main', header)
     layouts.setSlots('p1', 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 100, params: { day: 1 } }])
     const snap = windowSnapshot(
-      { tabs: { list: () => [] }, layouts, overlays: { infos: () => [] }, closeAsks: { pendingFor: () => [] } },
+      { tabs: { list: () => [] }, layouts, overlays: { infos: () => [] }, closeAsks: { pendingFor: () => [] }, linkAsks: { pendingFor: () => [] } },
       { windowId: 1, projectId: 'p1' }
     )
     const panel = snap.layout.panels.find((p) => p.panelKey === 'a.inbox/main')
@@ -464,7 +466,7 @@ describe('windowSnapshot leaves the desktop as it was', () => {
       tabs: { list: () => [] },
       layouts: { view: () => undefined },
       overlays: { infos: () => [] },
-      closeAsks: { pendingFor: () => [] }
+      closeAsks: { pendingFor: () => [] }, linkAsks: { pendingFor: () => [] }
     }
     expect(() => windowSnapshot(sources, { windowId: 1, projectId: 'p1' })).toThrow('project record is gone')
   })
@@ -911,11 +913,11 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
 describe('shared asks', () => {
   function sharedSetup() {
     // Filled in below: `snapshot` reads them lazily, at each hello.
-    const late = {} as { asks: CloseAsks; overlays: OverlayManager }
+    const late = {} as { asks: CloseAsks; links: LinkAsks; overlays: OverlayManager }
     const ctx = setup({
       snapshot: ((c: ProjectContext) =>
         windowSnapshot(
-          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: late.asks },
+          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: late.asks, linkAsks: late.links },
           c
         )) as never,
       viewGone: () => late.asks.viewGone()
@@ -927,7 +929,12 @@ describe('shared asks', () => {
       settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
       viewsOf: (windowId) => views.viewsOf(windowId)
     }))
+    const links = (late.links = new LinkAsks({
+      send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
+      settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
+    }))
     registerSessionHandlers(router, {
+      linkAnswer: (windowId, requestId, allow) => links.answer(windowId, requestId, allow),
       snapshotFor: () => ({ own: [] }) as never,
       cancelQueued: () => false,
       closeAnswer: (windowId, viewId, requestId, answer) => asks.answer(windowId, viewId, requestId, answer)
@@ -948,7 +955,7 @@ describe('shared asks', () => {
       log: () => {}
     }))
     router.handleProject('overlays.close', (c, payload) => overlays.close(c.windowId, (payload as { overlayId: string }).overlayId))
-    return { ...ctx, asks, overlays, backend }
+    return { ...ctx, asks, links, overlays, backend }
   }
 
   const answers = (ws: FakeWs): unknown[] => ws.frames('result').map((f) => (f.ok === true ? f.v : f.err))
@@ -985,6 +992,35 @@ describe('shared asks', () => {
     expect(events(foreign, 'sessions.closeSettled')).toEqual([])
     // Settled: a later join no longer sees it.
     expect((connect('p1').frames('ready')[0]!.snapshot as { closeAsks: unknown }).closeAsks).toEqual([])
+  })
+
+  it('link confirm: every view is asked, a late join sees it in ready, another window is refused, first answer settles all', async () => {
+    const { connect, desktop, links } = sharedSetup()
+    const early = connect('p1')
+    const info = { id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' as const }
+    const result = links.ask(1, info)
+    const ask = { requestId: 'link-1', ...info }
+    expect(desktop.send).toHaveBeenCalledWith('links.ask', ask)
+    expect(events(early, 'links.ask')).toEqual([ask])
+    const late = connect('p1')
+    expect((late.frames('ready')[0]!.snapshot as { linkAsks: unknown }).linkAsks).toEqual([ask])
+    // Another window's view names the id: refused, the ask still waits.
+    const foreign = connect('p2')
+    foreign.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: true } })
+    await flush()
+    expect(answers(foreign)).toEqual([false])
+    expect(links.size).toBe(1)
+    // A malformed answer is an error, never an Allow.
+    early.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: 'yes' } })
+    await flush()
+    expect(links.size).toBe(1)
+    late.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: true } })
+    await flush()
+    await expect(result).resolves.toBe(true)
+    expect(desktop.send).toHaveBeenCalledWith('links.settled', { requestId: 'link-1' })
+    expect(events(early, 'links.settled')).toEqual([{ requestId: 'link-1' }])
+    expect(events(foreign, 'links.settled')).toEqual([])
+    expect((connect('p1').frames('ready')[0]!.snapshot as { linkAsks: unknown }).linkAsks).toEqual([])
   })
 
   it('close ask: a browser that leaves after every other view declined ends the ask', async () => {
@@ -1034,7 +1070,7 @@ describe('html overlays held by one view', () => {
     const ctx = setup({
       snapshot: ((c: ProjectContext) =>
         windowSnapshot(
-          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: { pendingFor: () => [] } as never },
+          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: { pendingFor: () => [] }, linkAsks: { pendingFor: () => [] } as never },
           c
         )) as never,
       viewGone: (viewId) => late.overlays.viewGone(viewId)

@@ -477,6 +477,11 @@ export interface HostApiDeps {
    */
   openExternal?(url: string): Promise<void>
   /**
+   * ctx.openExternal from a remote view: the clickable notice in that view instead of the host's
+   * browser (`app.linkNotice` to the view, ViewRegistry.toView). Absent: a remote caller's link opens on the host.
+   */
+  linkNotice?(view: ViewId, url: string): void
+  /**
    * ctx.files.reveal / openWithSystem / trash (main/files/system-files.ts SystemFiles): `caller` is
    * this host's scope, `path` the plugin's, checked there. `trash` resolves false when the person
    * said no; `signal` closes its dialog when the host goes. Without it the three are refused.
@@ -797,7 +802,7 @@ export class HostApi {
       'appStorage.increment': (params) =>
         this.appStorageCall(params, 'appStorage.increment', (store, id, p) => store.increment(id, p.key, p.by)),
       'themes.set': (params) => this.themesSet(params),
-      'oauth.authorize': (params) => this.oauthAuthorize(params),
+      'oauth.authorize': (params, meta) => this.oauthAuthorize(params, meta),
       'oauth.refresh': (params) => this.oauthRefresh(params),
       'webview.navigate': (params) => this.webviewNavigate(params),
       'webview.back': (params) => this.webviewStep(params, 'back'),
@@ -805,9 +810,9 @@ export class HostApi {
       'webview.reload': (params) => this.webviewStep(params, 'reload'),
       'webview.current': (params) => this.webviewCurrent(params),
       'files.open': (params) => this.filesOpen(params),
-      openExternal: (params) => this.openExternal(params),
-      'files.reveal': (params) => this.filesReveal(params),
-      'files.openWithSystem': (params) => this.filesOpenWithSystem(params),
+      openExternal: (params, meta) => this.openExternal(params, meta),
+      'files.reveal': (params, meta) => this.filesReveal(params, meta),
+      'files.openWithSystem': (params, meta) => this.filesOpenWithSystem(params, meta),
       'files.trash': (params) => this.filesTrash(params)
     }
   }
@@ -1472,7 +1477,7 @@ export class HostApi {
    * env stays narrow on purpose. A refused URL spends no budget (the check is cheap and opens
    * nothing); one handed to the OS does even when the OS then fails, since a tab may have opened.
    */
-  private async openExternal(params: unknown): Promise<null> {
+  private async openExternal(params: unknown, meta?: RpcMeta): Promise<null> {
     this.alive()
     const { pluginId, url } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'openExternal')
@@ -1482,6 +1487,14 @@ export class HostApi {
       throw new Error(
         `openExternal: more than ${MAX_EXTERNAL_OPENS_PER_WINDOW} links in ${EXTERNAL_OPEN_WINDOW_MS / 1000} s; try again in a moment`
       )
+    }
+    // A remote view's click (design-web.md §6.1): the host's browser is not the person's screen, so
+    // that view gets a clickable notice and nothing opens on the host. Decided by the view main knows
+    // (originOf), never by anything the plugin sent. Same budget as a desktop open.
+    const remote = this.originOf(meta)
+    if (remote !== undefined && this.deps.linkNotice) {
+      this.deps.linkNotice(remote, href)
+      return null
     }
     try {
       await this.deps.openExternal(href)
@@ -1506,6 +1519,15 @@ export class HostApi {
     return { pluginId: plugin.id, path, api }
   }
 
+  /**
+   * Refuses a request that came from a remote view (design-web.md §6.1): the file manager and the
+   * default app open on the host's screen, which the person in a browser cannot see. Thrown before the
+   * budget is spent. The view is the one main knows (originOf), never a payload field.
+   */
+  private desktopOnly(meta: RpcMeta | undefined, method: string, what: string): void {
+    if (this.originOf(meta) !== undefined) throw new Error(`${method}: ${what} happens on the host's screen; do it on the desktop`)
+  }
+
   private get caller(): { windowId: number; projectId: string } {
     return { windowId: this.scope.windowId, projectId: this.scope.projectId }
   }
@@ -1514,8 +1536,9 @@ export class HostApi {
    * ctx.files.reveal: a project file or folder shown in the file manager. As for files.open, the
    * budget is spent before the path is resolved: a refused path costs fs lookups in main too.
    */
-  private async filesReveal(params: unknown): Promise<null> {
+  private async filesReveal(params: unknown, meta?: RpcMeta): Promise<null> {
     const { pluginId, path, api } = this.systemFilesRequest(params, 'files.reveal')
+    this.desktopOnly(meta, 'files.reveal', 'showing a file in the file manager')
     if (!this.reveals.take(pluginId)) {
       throw new Error(`files.reveal: more than ${MAX_REVEALS_PER_WINDOW} in ${SYSTEM_OPEN_WINDOW_MS / 1000} s; try again in a moment`)
     }
@@ -1528,8 +1551,9 @@ export class HostApi {
   }
 
   /** ctx.files.openWithSystem: a project file with its default app; runnable files are refused there. */
-  private async filesOpenWithSystem(params: unknown): Promise<null> {
+  private async filesOpenWithSystem(params: unknown, meta?: RpcMeta): Promise<null> {
     const { pluginId, path, api } = this.systemFilesRequest(params, 'files.openWithSystem')
+    this.desktopOnly(meta, 'files.openWithSystem', 'opening a file with its default app')
     if (!this.systemOpens.take(pluginId)) {
       throw new Error(
         `files.openWithSystem: more than ${MAX_SYSTEM_OPENS_PER_WINDOW} in ${SYSTEM_OPEN_WINDOW_MS / 1000} s; try again in a moment`
@@ -2009,10 +2033,13 @@ export class HostApi {
   // it checks `revoked` like sessions and overlays; refresh touches no window and, like secrets,
   // works until the process is gone: a deactivate() refreshing a token to store it is not refused.
 
-  private async oauthAuthorize(params: unknown): Promise<OAuthTokens> {
+  private async oauthAuthorize(params: unknown, meta?: RpcMeta): Promise<OAuthTokens> {
     this.alive()
     const { pluginId, spec } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'oauth.authorize')
+    // The sign-in opens the host's browser and waits on a loopback redirect to the host: a person in
+    // a browser view cannot complete it (design-web.md §6.1). Before the budget is spent.
+    if (this.originOf(meta) !== undefined) throw new Error('oauth.authorize: sign in on the desktop (this needs the host\'s browser)')
     // Everything that can be refused is refused before the budget is spent and a browser opens.
     const checked = this.checked('oauth.authorize', () => checkOAuthSpec(spec))
     // Synchronous up to the authorize call below: the entry is set before the host's next message

@@ -456,6 +456,13 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   reload: whatever the page had typed but not sent is lost) and the other place shows the note instead. When a browser
   holding an overlay's page leaves (or reconnects), the page goes back to the desktop. When the place holding a settings
   page closes it, a place showing the note loads it.
+- Some things only the desktop can do. In a browser, a link a page or plugin asks to open (`openExternal`, the update
+  notice's release link) shows as a notice to click; the host's own browser is not opened. Showing a file in the file
+  manager or opening it with its default app is refused with a message, and a plugin's OAuth sign-in says to sign in
+  on the desktop. Moving a file to the Trash (confirmed in the window), notifications (they stay on the host) are the
+  same as on the desktop. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,
+  the confirm of `ccc plugin link` is an in-page dialog on every place (first answer wins); with none attached it is the
+  native dialog.
 - A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),
   with or without Shift, and Ctrl+Tab / Ctrl+Shift+Tab. In a browser the cockpit's commands bound to one of them use
   the same chord with Alt (Option) added: New Claude Tab Ctrl+Alt+T (⌥⌘T on a Mac), New Shell Tab Ctrl+Alt+Shift+T,

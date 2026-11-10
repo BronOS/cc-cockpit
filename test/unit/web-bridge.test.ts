@@ -94,7 +94,8 @@ const SNAPSHOT: WebSnapshot = {
   tabs: [],
   layout: {} as WebSnapshot['layout'],
   overlays: [],
-  closeAsks: []
+  closeAsks: [],
+  linkAsks: []
 }
 
 interface Rig {
@@ -755,6 +756,24 @@ describe('plugin paths (Task 20)', () => {
 
 // Shared asks (plan Task 23): close asks pending at `ready`, and ones that arrived before the shell
 // subscribed, are handed to each new `sessions.closeAsk` listener; a settled one is not.
+describe('pending link asks', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
+  const ask = (n: number): Record<string, unknown> => ({ requestId: `link-${n}`, id: 'x.p', name: 'P', path: '/p', caller: 'tab' })
+
+  it('hands ready’s list and early events to a late links.ask listener, minus settled and malformed ones', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, linkAsks: [ask(1), ask(2), { requestId: 'link-9' }] } })
+    s.serverSend({ t: 'event', ch: 'links.settled', p: { requestId: 'link-2' } })
+    s.serverSend({ t: 'event', ch: 'links.ask', p: ask(3) })
+    const got: unknown[] = []
+    anyApi(r.api).on('links.ask', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([ask(1), ask(3)])
+  })
+})
+
 describe('pending close asks', () => {
   const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
 

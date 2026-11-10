@@ -2136,6 +2136,75 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     expect(views).toEqual(['web:1', undefined, undefined, undefined])
   })
 
+  // Desktop-only features (design-web.md §6.1, plan Task 25): the caller type is main's (originOf), never a payload field.
+  it('openExternal from a remote view is a notice to that view; the desktop and an unknown view open on the host', async () => {
+    const opened: string[] = []
+    const notices: unknown[][] = []
+    deps.openExternal = async (url) => {
+      opened.push(url)
+    }
+    deps.linkNotice = (...args) => {
+      notices.push(args)
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    const host = hostWithMeta()
+    const params = { pluginId: 'a.one', url: 'https://example.com/a' }
+    await host('openExternal', params, { view: 'web:1' })
+    expect(opened).toEqual([])
+    expect(notices).toEqual([['web:1', 'https://example.com/a']])
+    // A view of another window, one main never had, no view, and a forged field in the payload.
+    for (const meta of [{ view: 'web:2' }, { view: 'web:99' }, {}]) await host('openExternal', { ...params, pluginId: 'a.two' }, meta)
+    await host('openExternal', { ...params, view: 'web:1', remote: true }, {})
+    expect(opened).toHaveLength(4)
+    expect(notices).toHaveLength(1)
+    // The URL is still checked before a notice.
+    await expect(host('openExternal', { pluginId: 'a.one', url: 'file:///etc/passwd' }, { view: 'web:1' })).rejects.toThrow()
+    expect(notices).toHaveLength(1)
+  })
+
+  it('files.reveal and files.openWithSystem are refused for a remote view and run for the desktop', async () => {
+    const calls: string[] = []
+    deps.systemFiles = {
+      reveal: async (_c, path) => void calls.push(`reveal ${String(path)}`),
+      openWithSystem: async (_c, path) => void calls.push(`open ${String(path)}`),
+      trash: async () => true
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    const host = hostWithMeta()
+    const params = { pluginId: 'a.one', path: 'src/a.ts' }
+    await expect(host('files.reveal', params, { view: 'web:1' })).rejects.toThrow(/do it on the desktop/)
+    await expect(host('files.openWithSystem', params, { view: 'web:1' })).rejects.toThrow(/do it on the desktop/)
+    expect(calls).toEqual([])
+    await host('files.reveal', params, {})
+    await host('files.openWithSystem', params, { view: 'web:99' })
+    await host('files.reveal', { ...params, view: 'web:1' }, {})
+    expect(calls).toEqual(['reveal src/a.ts', 'open src/a.ts', 'reveal src/a.ts'])
+  })
+
+  it('files.trash stays the same for a remote view (the confirm is in the window)', async () => {
+    const trashed: string[] = []
+    deps.systemFiles = {
+      reveal: async () => undefined,
+      openWithSystem: async () => undefined,
+      trash: async (_c, path) => {
+        trashed.push(String(path))
+        return true
+      }
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    await expect(hostWithMeta()('files.trash', { pluginId: 'a.one', path: 'x.txt' }, { view: 'web:1' })).resolves.toEqual({ trashed: true })
+    expect(trashed).toEqual(['x.txt'])
+  })
+
+  it('oauth.authorize says to sign in on the desktop for a remote view, before any browser opens', async () => {
+    let authorizes = 0
+    deps.oauth = { ...unusedOAuth, authorize: async () => (authorizes++, { accessToken: 't' } as never) }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    const spec = { authorizeUrl: 'https://idp.example/auth', tokenUrl: 'https://idp.example/token', clientId: 'c', scopes: ['s'] }
+    await expect(hostWithMeta()('oauth.authorize', { pluginId: 'a.one', spec }, { view: 'web:1' })).rejects.toThrow(/sign in on the desktop/)
+    expect(authorizes).toBe(0)
+  })
+
   it('ignores every view hint when main cannot check views', async () => {
     const focused: unknown[][] = []
     deps.focusTab = (...args) => {

@@ -3,7 +3,7 @@ import type { OverlayInfo } from '../../shared/ipc'
 import { registerHandlers } from '../commands/keybindings'
 import { HeldElsewhere } from '../plugins/HeldElsewhere'
 import { usePrefs } from '../prefs/prefs-store'
-import { holdsPage } from '../shell-kind'
+import { holdsPage, isWebShell } from '../shell-kind'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { DiscussButton } from './DiscussPopover'
 import type { DiscussTab } from './discuss-tabs'
@@ -243,6 +243,18 @@ export function OverlayStack(props: {
  * is open it reports zero bounds instead (urlViewBounds): the view would cover the menu.
  */
 function UrlBody(props: { overlayId: string; url: string; menuOpen: boolean }): React.JSX.Element {
+  // A native view of the host's window: a browser view has none to lay over this area (design-web.md §6.1).
+  if (isWebShell()) {
+    return (
+      <p className="desktop-only-note" role="status" data-url={props.url}>
+        This page is available on the desktop.
+      </p>
+    )
+  }
+  return <NativeUrlBody {...props} />
+}
+
+function NativeUrlBody(props: { overlayId: string; url: string; menuOpen: boolean }): React.JSX.Element {
   const { overlayId, menuOpen } = props
   const el = useRef<HTMLDivElement>(null)
 

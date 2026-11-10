@@ -155,6 +155,8 @@ export interface WebSnapshot {
    * view joining mid-ask shows the dialog too; `sessions.closeSettled` takes them down.
    */
   closeAsks: Array<IpcEventMap['sessions.closeAsk']>
+  /** `ccc plugin link` confirms still waiting (LinkAsks.pendingFor): replayed to the shell's `links.ask` listener like `closeAsks`. */
+  linkAsks: Array<IpcEventMap['links.ask']>
 }
 
 export type HelloFrame = { t: 'hello'; v: number; project: string }

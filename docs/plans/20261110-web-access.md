@@ -551,15 +551,20 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/socket/handlers.ts`, `ctx.files.reveal`/`openWithSystem`), web shell UI for notices and placeholders
 - Modify: their tests
 
-- [ ] `openExternal` and link clicks from a remote view: a clickable notice in that view
-- ➕ the in-page link confirm is a shared ask (Task 23): shown on every view of the window, first answer wins, a
+- [x] `openExternal` and link clicks from a remote view: a clickable notice in that view
+- [x] ➕ the in-page link confirm is a shared ask (Task 23): shown on every view of the window, first answer wins, a
       settle event for the others and the pending ones in `ready` (follow `CloseAsks` / `sessions.closeSettled`)
-- [ ] the link confirm as an in-page dialog for remote views; `reveal`/`openWithSystem` refused with a message; `trash`
+- [x] the link confirm as an in-page dialog for remote views; `reveal`/`openWithSystem` refused with a message; `trash`
       unchanged; OAuth sign-in says "sign in on the desktop"; notifications stay on the host
-- [ ] Browser panel and URL overlays: an "available on the desktop" placeholder in remote views
-- [ ] write tests per adapted channel (remote vs desktop caller), and that every adapted handler decides by the caller
+- [x] Browser panel and URL overlays: an "available on the desktop" placeholder in remote views
+- [x] write tests per adapted channel (remote vs desktop caller), and that every adapted handler decides by the caller
       type main bound, never by anything in the payload
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+
+      Note: `app.linkNotice` goes to the asking view only (`app.openExternal`, `updates.openRelease`, `ctx.openExternal`);
+      `ctx.files.reveal` / `openWithSystem` and `ctx.oauth.authorize` refuse a remote origin view; `trash` unchanged.
+      The link confirm is `LinkAsks` (`links.ask` / `links.answer` / `links.settled`, `ready.linkAsks`): in-page on every
+      view while a browser is attached, the native dialog otherwise. Placeholders are in `WebviewPanel` and the url overlay.
 
 ### Task 26: Window lifetime with remote views [model: opus]
 

@@ -339,6 +339,11 @@ export interface CoreHandlerDeps {
   pickerOpenFolderKey(): string | undefined
   /** Hand an already validated http(s) URL to the system browser. */
   openExternal(url: string): void | Promise<void>
+  /**
+   * The clickable notice for a remote view (`app.linkNotice` to that view only, design-web.md §6.1): a
+   * browser cannot open a tab without a click, and the host's browser is not the person's screen.
+   */
+  linkNotice(viewId: ViewId, url: string): void
   /** The theme every window shows now (app-wide, never per project). */
   currentTheme(): Theme
   /** The app settings the shell page applies itself (AppearanceService.prefs), defaults applied. */
@@ -425,8 +430,11 @@ export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): 
     deps.forget(id)
   })
 
-  router.handleWindow('app.openExternal', async (_ctx, payload) => {
-    await deps.openExternal(webUrlOf((payload as { url?: unknown } | undefined)?.url))
+  // `adapted`: decided by the view main bound to the call (`view.remote`), never by the payload.
+  router.handleWindow('app.openExternal', async (_ctx, payload, view) => {
+    const url = webUrlOf((payload as { url?: unknown } | undefined)?.url)
+    if (view.remote) deps.linkNotice(view.viewId, url)
+    else await deps.openExternal(url)
   })
 
   // Read-only and app-wide: any of our windows may ask. Changes arrive as `theme.changed`.
@@ -823,8 +831,11 @@ export interface UpdateHandlerDeps {
   setEnabled(value: boolean): void
   /** `version` is a string the renderer sent, not yet compared with the offer. */
   dismiss(version: string): void
-  /** Opens the release page of the available version, which main built; nothing from a renderer. */
-  openRelease(): void | Promise<void>
+  /**
+   * Opens the release page of the available version, which main built; nothing from a renderer.
+   * `remoteView`: the asking browser view, which gets a clickable notice instead (design-web.md §6.1).
+   */
+  openRelease(remoteView?: ViewId): void | Promise<void>
 }
 
 export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDeps): void {
@@ -840,7 +851,7 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
     if (typeof version === 'string') deps.dismiss(version)
   })
   // No payload is read: the URL is main's own.
-  router.handleWindow('updates.openRelease', () => deps.openRelease())
+  router.handleWindow('updates.openRelease', (_ctx, _payload, view) => deps.openRelease(view.remote ? view.viewId : undefined))
 }
 
 /** The "Install ccc command" row of General (CccCommandInstaller, main/hooks/ccc-install.ts). */
@@ -1078,6 +1089,8 @@ export interface SessionHandlerDeps {
    * window wins, a decline waits for the others; false for an ask its window was not sent.
    */
   closeAnswer(windowId: number, viewId: ViewId, requestId: string, answer: { closed: boolean; declined: boolean }): boolean
+  /** A view's Allow or Deny of a `ccc plugin link` confirm (LinkAsks.answer): the first from any view of the window wins. */
+  linkAnswer(windowId: number, requestId: string, allow: boolean): boolean
 }
 
 /**
@@ -1096,6 +1109,13 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
 
   // The window and the view are the sender's (ctx, view), never values in the payload: only a view
   // of the window an ask went to can settle it (shared ask: any of its views, first answer wins).
+  // Window from the sender, never the payload (LinkAsks.answer ignores another window's id).
+  router.handleProject('links.answer', (ctx, payload) => {
+    const { requestId, allow } = fields('links.answer', payload)
+    if (typeof requestId !== 'string') throw new Error('links.answer: requestId must be a string')
+    if (typeof allow !== 'boolean') throw new Error('links.answer: allow must be a boolean')
+    return deps.linkAnswer(ctx.windowId, requestId, allow)
+  })
   router.handleProject('sessions.closeAnswer', (ctx, payload, view) => {
     const { requestId, closed, declined } = fields('sessions.closeAnswer', payload)
     if (typeof requestId !== 'string') throw new Error('sessions.closeAnswer: requestId must be a string')

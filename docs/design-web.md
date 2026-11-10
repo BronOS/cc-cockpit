@@ -330,8 +330,8 @@ show "host unreachable" and reconnect.
 | Feature | Desktop view | Remote view |
 |---|---|---|
 | `ctx.notify` | OS notification and sound | unchanged: stays on the host (Web Notifications need a secure context and do not wake a sleeping phone; later) |
-| `ctx.openExternal`, link clicks | the OS browser | a clickable notice in the view (a page cannot open a tab without a click) |
-| Link-confirm dialog (`socket/handlers.ts:404`) | native dialog | an in-page dialog |
+| `ctx.openExternal`, link clicks | the OS browser | a clickable notice in the view (a page cannot open a tab without a click): `app.linkNotice` to the asking view only, from `app.openExternal`, `updates.openRelease` and `ctx.openExternal`; the caller type is main's (`view.remote`, `originOf`), never the payload |
+| Link-confirm dialog (`socket/handlers.ts:404`) | native dialog | an in-page dialog, shown while any browser view is attached on every view of the window (desktop included), first answer wins (`LinkAsks`, `links.ask` / `links.answer` / `links.settled`, pending ones in `ready.linkAsks`); with no browser attached the native dialog as before |
 | `ctx.files.reveal`, `openWithSystem` | file manager, default app | refused with a message |
 | `ctx.files.trash` | host trash | unchanged |
 | Folder dialogs, plugin link | native | `no` (do it on the desktop) |

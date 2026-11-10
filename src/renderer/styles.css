@@ -3804,3 +3804,43 @@ ul.settings-alert {
 .held-elsewhere-take:hover {
   background: var(--cc-accent-soft);
 }
+
+/* A link the host would have opened in its browser, shown to click in a remote view (ShellNotices). */
+.link-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  max-width: min(640px, 92vw);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface, #222);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #444);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  z-index: 119;
+}
+.link-notice-link {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  text-decoration: underline;
+}
+.link-notice-close {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.desktop-only-note {
+  padding: 16px;
+  opacity: 0.75;
+  text-align: center;
+}

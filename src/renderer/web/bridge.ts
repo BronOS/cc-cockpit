@@ -30,7 +30,8 @@
 //   `sessions.closeAsk`, dropping each `sessions.closeSettled`) and hands it to every new
 //   `sessions.closeAsk` listener as if the asks had just arrived. The shell subscribes when it
 //   mounts, which is after `ready` (and again after each reconnect's remount), so without this a
-//   view joining mid-ask would never show the dialog.
+//   view joining mid-ask would never show the dialog. The `ccc plugin link` confirm (`links.ask` /
+//   `links.settled`, `ready`'s `linkAsks`, main/plugins/link-asks.ts) is the same (SHARED_ASKS).
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -126,6 +127,30 @@ function closeAskOf(value: unknown): { requestId: string; tabId: string } | unde
   const { requestId, tabId } = value as Record<string, unknown>
   return typeof requestId === 'string' && typeof tabId === 'string' ? { requestId, tabId } : undefined
 }
+
+/** A `links.ask` from main (an event or `ready`'s list), checked; undefined when malformed. */
+function linkAskOf(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  const caller = v.caller
+  if (typeof v.requestId !== 'string' || typeof v.id !== 'string' || typeof v.name !== 'string' || typeof v.path !== 'string') return undefined
+  if (caller !== 'tab' && caller !== 'project') return undefined
+  return { requestId: v.requestId, id: v.id, name: v.name, path: v.path, caller }
+}
+
+/**
+ * The shared asks the bridge keeps for a late subscriber (see the top of the file): the event that
+ * opens one, the one that settles it, `ready`'s list and the checker of an item.
+ */
+const SHARED_ASKS: ReadonlyArray<{
+  ask: string
+  settled: string
+  field: 'closeAsks' | 'linkAsks'
+  parse(value: unknown): { requestId: string } | undefined
+}> = [
+  { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', parse: closeAskOf },
+  { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', parse: (v) => linkAskOf(v) as { requestId: string } | undefined }
+]
 
 /** Main's paths, checked: string prefixes under the gateway's own paths only, else none. */
 export function pagePathsOf(value: unknown): WebPagePaths {
@@ -303,7 +328,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   // The current socket's relayed panel ports (a new socket starts with none).
   let ports: PortRelay | undefined
   // Plugin close asks of this window still waiting, by request id (see the top of the file).
-  let closeAsks = new Map<string, { requestId: string; tabId: string }>()
+  const sharedAsks = new Map<string, Map<string, { requestId: string }>>(SHARED_ASKS.map((k) => [k.ask, new Map()]))
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -347,7 +372,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     ports = undefined
     // Asks held for a late subscriber: the next `ready` carries the live set again, and until then
     // a remount would be shown a dialog main may already have settled.
-    closeAsks = new Map()
+    for (const m of sharedAsks.values()) m.clear()
     epoch += 1
     if (readyAt !== undefined && timers.now() - readyAt >= stableMs) attempt = 0
     readyAt = undefined
@@ -378,12 +403,14 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
 
   /** Follow the window's pending close asks from the events, before the listeners hear them. */
   const trackAsk = (channel: string, payload: unknown): void => {
-    if (channel === 'sessions.closeAsk') {
-      const ask = closeAskOf(payload)
-      if (ask) closeAsks.set(ask.requestId, ask)
-    } else if (channel === 'sessions.closeSettled') {
-      const id = (payload as { requestId?: unknown } | null)?.requestId
-      if (typeof id === 'string') closeAsks.delete(id)
+    for (const kind of SHARED_ASKS) {
+      if (channel === kind.ask) {
+        const ask = kind.parse(payload)
+        if (ask) sharedAsks.get(kind.ask)!.set(ask.requestId, ask)
+      } else if (channel === kind.settled) {
+        const id = (payload as { requestId?: unknown } | null)?.requestId
+        if (typeof id === 'string') sharedAsks.get(kind.ask)!.delete(id)
+      }
     }
   }
 
@@ -449,11 +476,15 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       const ready = f as unknown as ReadyFrame
       snapshot = ready.snapshot
       // The snapshot's list replaces the old socket's: asks settled while away are not in it.
-      closeAsks = new Map()
-      if (Array.isArray(ready.snapshot?.closeAsks)) {
-        for (const item of ready.snapshot.closeAsks as unknown[]) {
-          const ask = closeAskOf(item)
-          if (ask) closeAsks.set(ask.requestId, ask)
+      for (const kind of SHARED_ASKS) {
+        const held = sharedAsks.get(kind.ask)!
+        held.clear()
+        const list: unknown = ready.snapshot?.[kind.field]
+        if (Array.isArray(list)) {
+          for (const item of list as unknown[]) {
+            const ask = kind.parse(item)
+            if (ask) held.set(ask.requestId, ask)
+          }
         }
       }
       // Before the status change: the shell mounts on `ready` and draws plugin images at once.
@@ -582,20 +613,21 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       let set = listeners.get(channel)
       if (!set) listeners.set(channel, (set = new Set()))
       set.add(fn)
-      if (channel === 'sessions.closeAsk' && closeAsks.size > 0) {
+      const held = sharedAsks.get(channel)
+      if (held !== undefined && held.size > 0) {
         // A turn later, as an event would come: the subscriber's own setup has finished. Only to a
         // listener still subscribed then (StrictMode subscribes, drops and subscribes again), and
         // only asks still pending then (a settle may have come in between).
-        const asks = [...closeAsks.keys()]
+        const asks = [...held.keys()]
         queueMicrotask(() => {
           if (!set.has(fn)) return
           for (const id of asks) {
-            const ask = closeAsks.get(id)
+            const ask = held.get(id)
             if (!ask) continue
             try {
               fn({ ...ask })
             } catch (err) {
-              console.error('web bridge: listener of sessions.closeAsk failed', err)
+              console.error(`web bridge: listener of ${channel} failed`, err)
             }
           }
         })
