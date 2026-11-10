@@ -137,6 +137,20 @@ describe('the last-typed device per tab', () => {
     expect(typed).toHaveLength(4)
   })
 
+  it('a view that is gone is no longer the last typist, and the views are told', async () => {
+    const { tabs, typed, remote } = setup()
+    const a = tabs.create(P, { kind: 'shell' })
+    const b = tabs.create(P, { kind: 'shell' })
+    await remote('web:4', a.id, 'x')
+    await remote('web:5', b.id, 'y')
+    typed.length = 0
+    tabs.viewGone('web:4')
+    expect(typed).toEqual([{ tabId: a.id, viewId: null, device: null }])
+    expect(tabs.list(P).map((t) => t.typedBy)).toEqual([undefined, { viewId: 'web:5', device: '<b>tablet</b>' }])
+    tabs.viewGone('web:4')
+    expect(typed).toHaveLength(1)
+  })
+
   it('a terminal reply is no typing', () => {
     const { tabs, typed } = setup()
     const tab = tabs.create(P, { kind: 'shell' })

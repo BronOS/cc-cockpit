@@ -1273,8 +1273,10 @@ export interface IpcEventMap {
   /**
    * The person typed in another view of the tab than before (TabInfo.typedBy): sent when the view
    * changes, not per key. `device` is the requester's own text for a browser: plain text only.
+   * `viewId` and `device` null: the view that typed last is gone (TabManager.viewGone), nobody is
+   * shown as the last typist.
    */
-  'tabs.typed': { tabId: string; viewId: string; device: string }
+  'tabs.typed': { tabId: string; viewId: string | null; device: string | null }
   /**
    * The tab's process ended (`signal` is the terminating signal number, else null). `gen` is that
    * process's TabInfo.gen, so an exit is never applied to a later process of the same tab.

@@ -1167,7 +1167,12 @@ function start(): void {
       : {}),
     closeOnCleanExit: () => !quitting && tabExitOf(registry.app.data.tabExit) === 'close-clean',
     // TabInfo.typedBy: a browser by its device's name (webConnections exists by the time anyone types).
-    deviceOf: (viewId): string => (isRemoteViewId(viewId) ? (webConnections.deviceName(viewId) ?? 'a browser') : 'Desktop'),
+    // A browser may name its device "Desktop": the label is all a page shows, so a browser never reads as the desktop.
+    deviceOf: (viewId): string => {
+      if (!isRemoteViewId(viewId)) return 'Desktop'
+      const name = webConnections.deviceName(viewId) ?? 'a browser'
+      return name.trim().toLowerCase() === 'desktop' ? 'Desktop (browser)' : name
+    },
     emit: sendToProject
   })
   // Saved tabs follow the live ones (restore.ts); the saves go through the record's debounced

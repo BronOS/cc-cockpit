@@ -188,7 +188,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     })
     // Who typed last (TerminalView shows it when that was another view).
     const offTyped = window.cockpit.on('tabs.typed', ({ tabId, viewId, device }) => {
-      dispatch({ type: 'typed', tabId, typedBy: { viewId, device } })
+      dispatch({ type: 'typed', tabId, typedBy: viewId === null || device === null ? null : { viewId, device } })
     })
     const offExit = window.cockpit.on('tabs.exit', ({ tabId, code, signal, gen }) => {
       dispatch({ type: 'exited', tabId, exit: { code, signal }, gen })

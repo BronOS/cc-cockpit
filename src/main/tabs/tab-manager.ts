@@ -767,6 +767,13 @@ export class TabManager {
   /** A view is gone (a browser's connection closed): its tabs' sizes fall back to a remaining view. */
   viewGone(viewId: ViewId): void {
     this.sizes.viewGone(viewId)
+    // A view that left is not "the last typist" (and a reconnecting browser gets a fresh id, so its
+    // own old typing would read as another device's): clear it and tell the remaining views.
+    for (const tab of this.byId.values()) {
+      if (tab.typedBy?.viewId !== viewId) continue
+      delete tab.typedBy
+      this.options.emit(tab.projectId, 'tabs.typed', { tabId: tab.id, viewId: null, device: null })
+    }
   }
 
   /** The view whose size the tab's pty has (tests, diagnostics). */

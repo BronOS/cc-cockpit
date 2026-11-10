@@ -212,6 +212,16 @@ describe('handshake', () => {
     expect(conns.size()).toBe(2)
   })
 
+  it('deviceName is the signed-in device of an open view, undefined once it is gone', () => {
+    const { connect, conns } = setup()
+    const ws = connect('p1')
+    expect(conns.deviceName('web:1')).toBe('phone')
+    expect(conns.deviceName('web:2')).toBeUndefined()
+    ws.drop()
+    ws.close()
+    expect(conns.deviceName('web:1')).toBeUndefined()
+  })
+
   it('an event right after hello comes after ready, never before it', () => {
     const { connect, views } = setup()
     const ws = connect('p1')

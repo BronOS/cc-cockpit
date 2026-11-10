@@ -458,7 +458,7 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   another command has no chord in the browser (the palette still runs it), and a chord rebound to one the browser
   leaves alone works as it is. Which chords count follows the browser's system while the table is the host's: a Mac
   host's Cmd chords are Meta (Windows or Super key) chords in a Linux or Windows browser, which the system often takes,
-  and some Linux desktops take Ctrl+Alt+T for themselves. Ctrl+W typed in a browser terminal (a shell's "delete word")
+  some Linux desktops take Ctrl+Alt+T for themselves, and on Windows (and Linux layouts with AltGr) Ctrl+Alt is AltGr, so on a layout where AltGr+T, W or N types a character the Alt chord takes it from the terminal. Ctrl+W typed in a browser terminal (a shell's "delete word")
   closes the browser tab.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name

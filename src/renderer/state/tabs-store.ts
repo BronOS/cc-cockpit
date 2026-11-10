@@ -81,7 +81,7 @@ export type TabsAction =
    * The person typed in another view of the tab (`tabs.typed`, TabInfo.typedBy). Not by generation
    * either: it is about the tab, and main sends it only when the view changes.
    */
-  | { type: 'typed'; tabId: string; typedBy: { viewId: string; device: string } }
+  | { type: 'typed'; tabId: string; typedBy: { viewId: string; device: string } | null }
 
 export const initialTabsState: TabsState = {
   tabs: [],
@@ -194,7 +194,16 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
     }
     case 'typed': {
       if (!state.tabs.some((t) => t.id === action.tabId)) return state
-      const tabs = state.tabs.map((t) => (t.id === action.tabId ? { ...t, typedBy: { ...action.typedBy } } : t))
+      const tabs = state.tabs.map((t) => {
+        if (t.id !== action.tabId) return t
+        // null: the typing view is gone.
+        if (action.typedBy === null) {
+          const rest = { ...t }
+          delete rest.typedBy
+          return rest
+        }
+        return { ...t, typedBy: { ...action.typedBy } }
+      })
       return { ...state, tabs }
     }
     case 'exited': {
