@@ -634,6 +634,8 @@ describe('registerTabHandlers', () => {
       restart: rec('restart', info) as TabHandlerDeps['restart'],
       input: rec('input') as TabHandlerDeps['input'],
       resize: rec('resize') as TabHandlerDeps['resize'],
+      fit: rec('fit', true) as TabHandlerDeps['fit'],
+      visible: rec('visible') as TabHandlerDeps['visible'],
       ack: rec('ack') as TabHandlerDeps['ack'],
       select: rec('select') as TabHandlerDeps['select'],
       list: rec('list', [info]) as TabHandlerDeps['list'],
@@ -664,6 +666,25 @@ describe('registerTabHandlers', () => {
     await expect(router.dispatch(web, 'tabs.ack', { tabId: 't1', count: 'x' })).rejects.toThrow(/count/)
   })
 
+  it("keys terminal sizes, fits, visibility and input by the caller's own view, never one from the payload", async () => {
+    const { ipc, router, calls } = tabsSetup()
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    await router.dispatch(web, 'tabs.resize', { tabId: 't1', cols: 40, rows: 20, viewId: 'desktop:1' })
+    await router.dispatch(web, 'tabs.input', { tabId: 't1', data: 'x', viewId: 'desktop:1' })
+    await expect(router.dispatch(web, 'tabs.fit', { tabId: 't1', viewId: 'desktop:1' })).resolves.toBe(true)
+    await router.dispatch(web, 'tabs.visibility', { visible: false, viewId: 'desktop:1' })
+    await expect(ipc.invoke('tabs.fit', 12, [{ tabId: 't1', viewId: 'web:3' }])).resolves.toBe(true)
+    await ipc.invoke('tabs.visibility', 11, [{ visible: true }])
+    expect(calls).toEqual([
+      ['resize', PROJECT_A, 't1', 40, 20, 'web:3'],
+      ['input', PROJECT_A, 't1', 'x', 'web:3'],
+      ['fit', PROJECT_A, 't1', 'web:3'],
+      ['visible', 'web:3', false],
+      ['fit', PROJECT_B, 't1', 'desktop:2'],
+      ['visible', 'desktop:1', true]
+    ])
+  })
+
   it("acts on the sender's project, ignoring any project named in the payload; attach, create and restart get the sender's window", async () => {
     const { ipc, calls } = tabsSetup()
     await ipc.invoke('tabs.list', 11)
@@ -685,8 +706,8 @@ describe('registerTabHandlers', () => {
       ['rename', PROJECT_A, 't1', 'Mine'],
       ['rename', PROJECT_A, 't1', null],
       ['restart', PROJECT_B, 't1', 2],
-      ['input', PROJECT_A, 't1', 'ls\r'],
-      ['resize', PROJECT_A, 't1', 80, 24],
+      ['input', PROJECT_A, 't1', 'ls\r', 'desktop:1'],
+      ['resize', PROJECT_A, 't1', 80, 24, 'desktop:1'],
       ['ack', PROJECT_A, 't1', 5],
       ['select', PROJECT_B, 't1']
     ])
@@ -780,7 +801,11 @@ describe('registerTabHandlers', () => {
       ['tabs.resize', [{ tabId: 't1', cols: '80', rows: 24 }]],
       ['tabs.ack', [{ tabId: 't1', count: '5' }]],
       ['tabs.selected', [{ tabId: 3 }]],
-      ['tabs.selected', []]
+      ['tabs.selected', []],
+      ['tabs.fit', [{}]],
+      ['tabs.fit', [{ tabId: 5 }]],
+      ['tabs.visibility', [{ visible: 'no' }]],
+      ['tabs.visibility', []]
     ]
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()

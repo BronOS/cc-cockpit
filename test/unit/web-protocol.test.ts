@@ -144,7 +144,12 @@ const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve
 
 /** Two project windows (1: p1, 2: p2), a real router and registry, and a connection factory. */
 function setup(
-  over: { snapshot?: (ctx: ProjectContext) => never; mirror?: TerminalSource; hasTab?: (projectId: string, tabId: string) => boolean } = {}
+  over: {
+    snapshot?: (ctx: ProjectContext) => never
+    mirror?: TerminalSource
+    hasTab?: (projectId: string, tabId: string) => boolean
+    viewGone?: (viewId: string) => void
+  } = {}
 ) {
   const windows = new Map<string, number>([
     ['p1', 1],
@@ -175,6 +180,7 @@ function setup(
     // No tab is held: these tests are about frames and events (the terminal stream has its own below).
     mirror: over.mirror ?? { join: () => undefined },
     hasTab: over.hasTab ?? (() => false),
+    ...(over.viewGone ? { viewGone: over.viewGone } : {}),
     log: (m) => logs.push(m),
     helloTimeoutMs: 50
   })
@@ -612,6 +618,34 @@ class FakeMirror implements TerminalSource {
     }
   }
 }
+
+describe('a view leaving (terminal sizes, Task 15)', () => {
+  it('tells main once, for a bound view only, when the socket drops or main closes it', () => {
+    const gone: string[] = []
+    const { connect, windows } = setup({ viewGone: (id) => gone.push(id) })
+    const a = connect('p1')
+    const b = connect('p1')
+    // Never bound (no hello): it had no sizes to fall back from.
+    const c = connect()
+    a.drop()
+    a.drop()
+    c.drop()
+    windows.delete('p1')
+    b.feed({ t: 'hello', v: PROTOCOL_VERSION, project: 'p1' })
+    expect(gone).toEqual(['web:1', 'web:2'])
+  })
+
+  it('a throwing fallback is logged, the view still leaves', () => {
+    const { connect, logs, conns } = setup({
+      viewGone: () => {
+        throw new Error('boom')
+      }
+    })
+    connect('p1').drop()
+    expect(conns.size()).toBe(0)
+    expect(logs.some((l) => l.includes('size fallback failed: boom'))).toBe(true)
+  })
+})
 
 describe('terminal streams (term.* frames instead of tabs.data)', () => {
   function terminals() {

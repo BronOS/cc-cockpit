@@ -68,7 +68,7 @@ function sleepSync(ms: number): boolean {
 const MAX_COLS = 1000
 const MAX_ROWS = 1000
 
-function validSize(cols: number, rows: number): boolean {
+export function validSize(cols: number, rows: number): boolean {
   return (
     Number.isInteger(cols) &&
     Number.isInteger(rows) &&

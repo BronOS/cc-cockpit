@@ -11,6 +11,7 @@ import { commandForEvent } from '../commands/keybindings'
 import { currentPrefs, onPrefs } from '../prefs/prefs-store'
 import { xtermLookOptions } from '../theme/see-through'
 import { currentXtermTheme, onXtermTheme } from '../theme/theme-store'
+import { drawAt, type TermSize, usableSize } from './terminal-draw'
 import { loadTerminalFont, sameFont, xtermFontOptions } from './terminal-font'
 
 function openLink(uri: string): void {
@@ -27,6 +28,11 @@ export interface TerminalIo {
   input(data: string): void
   ack(count: number): void
   resize(cols: number, rows: number): void
+  /**
+   * "Fit to this screen": the pty takes this view's size (`tabs.fit`). Absent for a terminal whose
+   * pty only this view sizes (an overlay's): it never gets a size item, so it never offers one.
+   */
+  fit?(): void
 }
 
 /** The tab channels. Failures are dropped: main ignores a tab that is gone. */
@@ -40,9 +46,15 @@ export function tabIo(tabId: string): TerminalIo {
     },
     resize: (cols, rows) => {
       window.cockpit.invoke('tabs.resize', { tabId, cols, rows }).catch(() => {})
+    },
+    fit: () => {
+      window.cockpit.invoke('tabs.fit', { tabId }).catch(() => {})
     }
   }
 }
+
+/** How long the pty's size must differ from this view's before "Fit to this screen" shows. */
+const FIT_BUTTON_DELAY_MS = 400
 
 /** ESC c: full reset (screen, scrollback, modes), parsed in order with the writes before it. */
 const RIS = '\x1bc'
@@ -63,6 +75,17 @@ export class TerminalSession {
   private observer: ResizeObserver | undefined
   private container: HTMLElement | undefined
   private lastSize = ''
+  /**
+   * The pty's size from main's stream (`tabs.data` size items and snapshots); undefined until the
+   * first one, while this view sizes the pty as today (the terminal fits its pane). Once known, the
+   * terminal is drawn at it whatever the pane: another view may size the pty (terminal-sizes.ts).
+   */
+  private ptySize: TermSize | undefined
+  /** What this view's pane fits, as last measured (and reported to main). */
+  private ownSize: TermSize | undefined
+  /** "Fit to this screen", shown over the terminal while the pty has another view's size. */
+  private fitButton: HTMLButtonElement | undefined
+  private fitTimer: ReturnType<typeof setTimeout> | undefined
   private renderWatch: { dispose(): void } | undefined
   private disposed = false
   private readonly offTheme: () => void
@@ -125,11 +148,21 @@ export class TerminalSession {
    * re-attaching, design-web.md §5.2). The terminal starts over with it: a full reset (RIS) goes in
    * the same write, so output queued before it is still parsed first, then wiped, never drawn over
    * the snapshot. Not acked: main never counts a snapshot.
+   *
+   * `size`: the pty's size at this point of the stream (a size item, `data` '', or a snapshot's size;
+   * design-web.md §5.2 "Size"). From then on the terminal is drawn at the pty's size, not its pane's.
    */
-  write(data: string, reset = false): void {
+  write(data: string, reset = false, size?: TermSize): void {
     if (this.disposed) return
+    // The size applies at its point of the stream: after the writes queued before it are parsed
+    // (they wrap at the old size, as on every other copy), before the ones after it. xterm runs a
+    // write's callback before it parses the next write.
+    if (usableSize(size)) {
+      const at = { cols: size.cols, rows: size.rows }
+      this.term.write('', () => this.setPtySize(at))
+    }
     if (reset) this.term.write(`${RIS}${data}`)
-    else this.term.write(data, () => this.io.ack(data.length))
+    else if (data.length > 0) this.term.write(data, () => this.io.ack(data.length))
   }
 
   /** Show the terminal in `container`; safe to call again with a new container (a remount). */
@@ -152,7 +185,7 @@ export class TerminalSession {
     this.container = undefined
   }
 
-  /** Forget the size main knows: a restarted PTY starts at the default size, not ours. */
+  /** Send our size again (a restarted PTY): main applies it when this view sizes the tab. */
   resetSize(): void {
     this.lastSize = ''
     this.refit()
@@ -196,12 +229,66 @@ export class TerminalSession {
       })
       return
     }
-    this.fit.fit()
-    const { cols, rows } = this.term
-    const size = `${cols}x${rows}`
+    const own = this.fit.proposeDimensions()
+    if (!own || !(own.cols > 0) || !(own.rows > 0)) return
+    this.ownSize = { cols: own.cols, rows: own.rows }
+    // Until main has told a size, fit the pane as today (the pty follows this view's report).
+    if (!this.ptySize) this.fit.fit()
+    this.layout()
+    const size = `${own.cols}x${own.rows}`
     if (size === this.lastSize) return
     this.lastSize = size
-    this.io.resize(cols, rows)
+    this.io.resize(own.cols, own.rows)
+  }
+
+  /** The pty took `size` (a size item reached its point of the stream): draw at it. */
+  private setPtySize(size: TermSize): void {
+    if (this.disposed) return
+    this.ptySize = size
+    if (this.term.cols !== size.cols || this.term.rows !== size.rows) this.term.resize(size.cols, size.rows)
+    this.layout()
+  }
+
+  /** Scale or letterbox the pty-sized terminal in the pane, and show "Fit to this screen" when they differ. */
+  private layout(): void {
+    const el = this.term.element
+    if (!el) return
+    const { scale, fit } = drawAt(this.ownSize, this.ptySize)
+    el.style.transformOrigin = 'top left'
+    el.style.transform = scale < 1 ? `scale(${scale})` : ''
+    const container = this.container
+    if (!fit || !this.io.fit || !container) {
+      clearTimeout(this.fitTimer)
+      this.fitTimer = undefined
+      if (this.fitButton) this.fitButton.hidden = true
+      return
+    }
+    // Not at once: while this view sizes the pty, its own resize differs from the pty's size for
+    // one round trip to main (a window being dragged), which must not flash the button.
+    if (this.fitButton && !this.fitButton.hidden) return
+    this.fitTimer ??= setTimeout(() => {
+      this.fitTimer = undefined
+      if (!this.disposed && drawAt(this.ownSize, this.ptySize).fit) this.showFit()
+    }, FIT_BUTTON_DELAY_MS)
+  }
+
+  private showFit(): void {
+    const container = this.container
+    if (!container) return
+    if (!this.fitButton) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'terminal-fit'
+      button.textContent = 'Fit to this screen'
+      button.title = 'Resize the terminal to this window (it has another screen’s size now)'
+      button.addEventListener('click', () => {
+        this.io.fit?.()
+        this.focus()
+      })
+      this.fitButton = button
+    }
+    if (this.fitButton.parentElement !== container) container.appendChild(this.fitButton)
+    this.fitButton.hidden = false
   }
 
   dispose(): void {
@@ -210,6 +297,7 @@ export class TerminalSession {
     this.offTheme()
     this.offPrefs()
     this.detach()
+    clearTimeout(this.fitTimer)
     this.renderWatch?.dispose()
     this.term.dispose()
   }
@@ -231,10 +319,13 @@ export class SessionRegistry {
   /** Closed tabs: late output for them must not resurrect a session that nobody disposes. */
   private readonly closed = new Set<string>()
 
-  /** Output for a tab (`reset`: a whole screen, TerminalSession.write); dropped when the tab is closed. */
-  write(tabId: string, data: string, reset = false): void {
+  /**
+   * Output for a tab (`reset`: a whole screen; `size`: the pty's size at this point, TerminalSession.write);
+   * dropped when the tab is closed.
+   */
+  write(tabId: string, data: string, reset = false, size?: TermSize): void {
     if (this.closed.has(tabId)) return
-    this.get(tabId).write(data, reset)
+    this.get(tabId).write(data, reset, size)
   }
 
   get(tabId: string): TerminalSession {

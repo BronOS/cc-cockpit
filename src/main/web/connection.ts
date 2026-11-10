@@ -77,6 +77,8 @@ export interface WebConnectionDeps {
   mirror: TerminalSource
   /** Whether `tabId` is one of the project's tabs now (TabManager's own table). */
   hasTab(projectId: string, tabId: string): boolean
+  /** The view is gone (TabManager.viewGone): the tabs it sized fall back to a remaining view. */
+  viewGone?(viewId: ViewId): void
   log(message: string): void
   helloTimeoutMs?: number
 }
@@ -338,6 +340,13 @@ export class WebConnection {
     this.terminals = undefined
     this.removeView?.()
     this.removeView = undefined
+    if (this.caller) {
+      try {
+        this.deps.viewGone?.(this.viewId)
+      } catch (err) {
+        this.deps.log(`web access: view ${this.viewId} size fallback failed: ${errorText(err)}`)
+      }
+    }
     this.onGone()
     if (this.caller) this.deps.log(`web access: view ${this.viewId} left`)
   }

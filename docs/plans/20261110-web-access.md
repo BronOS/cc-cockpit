@@ -358,14 +358,20 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Modify: `src/main/tabs/tab-manager.ts`, `src/renderer/tabs/terminal-session.ts`, the web shell terminal view
 - Modify: their tests
+- ➕ Also created `src/main/tabs/terminal-sizes.ts` (`TerminalSizes`, the per-view size policy),
+  `src/renderer/tabs/terminal-draw.ts` (`drawAt`), `test/unit/terminal-sizes.test.ts`; new channels `tabs.fit` and
+  `tabs.visibility` (`src/shared/ipc.ts`, `src/main/ipc/router.ts`); `tabs.data` carries `cols`/`rows` (size items,
+  snapshot sizes); modified `src/main/terminals/desktop-flow.ts` (sizes through a resync), `src/main/web/connection.ts`
+  (`viewGone`), `src/renderer/web/bridge.ts`, `src/renderer/tabs/TabsPane.tsx`, `src/renderer/styles.css`,
+  `src/main/index.ts`, `docs/features.md`
 
-- [ ] main remembers each view's size; the pty takes a view's size on an explicit take (typing after another view typed,
+- [x] main remembers each view's size; the pty takes a view's size on an explicit take (typing after another view typed,
       debounced, or "Fit to this screen"), not on every resize observer call
-- [ ] size items go into the numbered stream; views draw at the pty size (scaled or letterboxed); the desktop handles
+- [x] size items go into the numbered stream; views draw at the pty size (scaled or letterboxed); the desktop handles
       the size event
-- [ ] when the sizing view leaves or is hidden, fall back to a remaining visible view
-- [ ] write tests: alternating typing does not resize per keystroke, fallback on disconnect, a hidden window never sizes
-- [ ] run tests - must pass before next task
+- [x] when the sizing view leaves or is hidden, fall back to a remaining visible view
+- [x] write tests: alternating typing does not resize per keystroke, fallback on disconnect, a hidden window never sizes
+- [x] run tests - must pass before next task
 
 ### Task 16: Input from any view, typing indicator, keys [model: opus]
 

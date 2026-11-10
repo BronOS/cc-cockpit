@@ -916,10 +916,31 @@ iframe:focus-visible {
 /* The fit addon measures the host's content box, so this padding is room around the text, not
    cells lost off the edge. Less on the right: xterm's scrollbar sits there. */
 .terminal-host {
+  position: relative;
   flex: 1;
   min-height: 0;
   padding: 8px 6px 8px 12px;
   background: var(--cc-terminal-bg);
+  /* Another view may size the pty (web access, terminal-sizes.ts): the terminal is then drawn at
+     the pty's size, scaled down (a transform keeps its layout box) or letterboxed; nothing spills. */
+  overflow: hidden;
+}
+/* "Fit to this screen" (terminal-session.ts): over the terminal while it has another view's size. */
+.terminal-fit {
+  position: absolute;
+  right: 18px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 3px 10px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-accent);
+  background: var(--cc-bg-banner);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  cursor: pointer;
+}
+.terminal-fit:hover {
+  background: var(--cc-accent-soft);
 }
 .exited-banner {
   flex: none;

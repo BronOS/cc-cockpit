@@ -926,8 +926,14 @@ export interface TabHandlerDeps {
   flag(projectId: string, tabId: string, patch: unknown): TabFlag | null
   toggleFlag(projectId: string, tabId: string): TabFlag | null
   restart(projectId: string, tabId: string, windowId: number): TabInfo | Promise<TabInfo>
-  input(projectId: string, tabId: string, data: string): void
-  resize(projectId: string, tabId: string, cols: number, rows: number): void
+  /** `viewId`: the view that typed (a typing take of the terminal's size, terminal-sizes.ts). */
+  input(projectId: string, tabId: string, data: string, viewId: ViewId): void
+  /** The view's own size for the tab; the pty takes it only while that view sizes the tab. */
+  resize(projectId: string, tabId: string, cols: number, rows: number, viewId: ViewId): void
+  /** "Fit to this screen": the view takes the tab's size now. */
+  fit(projectId: string, tabId: string, viewId: ViewId): boolean
+  /** The view was hidden or shown: hidden views never size a tab. */
+  visible(viewId: ViewId, visible: boolean): void
   ack(projectId: string, tabId: string, count: number): void
   /** The window shows this tab now (SessionRegistry.setActive after a check that it is the project's). */
   select(projectId: string, tabId: string): void
@@ -1012,18 +1018,27 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     tabs.restart(ctx.projectId, tabIdOf('tabs.restart', payload), ctx.windowId)
   )
 
-  router.handleProject('tabs.input', (ctx, payload) => {
+  router.handleProject('tabs.input', (ctx, payload, view) => {
     const data = fields('tabs.input', payload).data
     if (typeof data !== 'string') throw new Error('tabs.input: data must be a string')
-    tabs.input(ctx.projectId, tabIdOf('tabs.input', payload), data)
+    tabs.input(ctx.projectId, tabIdOf('tabs.input', payload), data, view.viewId)
   })
 
-  router.handleProject('tabs.resize', (ctx, payload) => {
+  // Sizes are kept per view, keyed by the id main bound to the caller (never one from the payload).
+  router.handleProject('tabs.resize', (ctx, payload, view) => {
     const { cols, rows } = fields('tabs.resize', payload)
     if (typeof cols !== 'number' || typeof rows !== 'number') {
       throw new Error('tabs.resize: cols and rows must be numbers')
     }
-    tabs.resize(ctx.projectId, tabIdOf('tabs.resize', payload), cols, rows)
+    tabs.resize(ctx.projectId, tabIdOf('tabs.resize', payload), cols, rows, view.viewId)
+  })
+
+  router.handleProject('tabs.fit', (ctx, payload, view) => tabs.fit(ctx.projectId, tabIdOf('tabs.fit', payload), view.viewId))
+
+  router.handleProject('tabs.visibility', (_ctx, payload, view) => {
+    const visible = fields('tabs.visibility', payload).visible
+    if (typeof visible !== 'boolean') throw new Error('tabs.visibility: visible must be a boolean')
+    tabs.visible(view.viewId, visible)
   })
 
   // `adapted`: a remote view's ack is its own flow (it never reaches the pty, which main consumes

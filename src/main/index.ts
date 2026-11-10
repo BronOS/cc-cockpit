@@ -495,6 +495,8 @@ function start(): void {
       pluginSecrets.evictProject(projectId)
       firstTab.disarm(projectId)
       tabs.closeProject(projectId)
+      // Its view's hidden mark (terminal sizes) goes with it; its tabs' sizes went with the tabs.
+      tabs.viewGone(desktopViewId(windowId))
       // No window, no selection: a reopened window reports its own once its page loads.
       sessions.setActive(projectId, undefined)
       // The user closed the window: its tabs are over, so is their record. While quitting the
@@ -1961,11 +1963,14 @@ function start(): void {
     // means "the person typed" because nothing main or a plugin types ever comes through here.
     // With web access on, the view's own query replies are stripped (main's copy answers them,
     // TabManager.viewInput); the registry sees what reached the pty.
-    input: (projectId, tabId, data) => {
-      const sent = tabs.viewInput(projectId, tabId, data)
+    input: (projectId, tabId, data, viewId) => {
+      const sent = tabs.viewInput(projectId, tabId, data, viewId)
       sessions.userInput(projectId, tabId, sent)
     },
-    resize: (projectId, tabId, cols, rows) => tabs.resize(projectId, tabId, cols, rows),
+    // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
+    resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
+    fit: (projectId, tabId, viewId) => tabs.fit(projectId, tabId, viewId),
+    visible: (viewId, visible) => tabs.viewVisible(viewId, visible),
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),
     // A remote view: the plain list (never the desktop's re-attach), and its own terminal flow and
     // joins (web/connection.ts). Only reached by a web caller, which exists once webConnections does.
@@ -2042,6 +2047,8 @@ function start(): void {
     snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    // A browser left: the tabs it sized fall back to a remaining visible view (terminal-sizes.ts).
+    viewGone: (viewId) => tabs.viewGone(viewId),
     log: (m) => console.warn(m)
   })
   webGateway.setSocketHandler((ws, _req, device) => {

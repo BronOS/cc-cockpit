@@ -1226,7 +1226,18 @@ export interface IpcInvokeMap {
   'tabs.restart': { req: { tabId: string }; res: TabInfo }
   /** The user typing or pasting: goes straight to the PTY. Programmatic text uses the send gate. */
   'tabs.input': { req: { tabId: string; data: string }; res: void }
+  /**
+   * The view's pane fits `cols` x `rows` for the tab. Main remembers it per view; the pty takes it
+   * only while this view sizes the tab (design-web.md §5.2 "Size", main/tabs/terminal-sizes.ts).
+   */
   'tabs.resize': { req: { tabId: string; cols: number; rows: number }; res: void }
+  /**
+   * "Fit to this screen": the pty takes this view's size for the tab now. False when the view has
+   * not reported a size for it or is hidden.
+   */
+  'tabs.fit': { req: { tabId: string }; res: boolean }
+  /** The view was hidden or shown (`document.visibilityState`): a hidden view never sizes a tab. */
+  'tabs.visibility': { req: { visible: boolean }; res: void }
   /** The renderer wrote `count` characters (string length) of output into xterm. */
   'tabs.ack': { req: { tabId: string; count: number }; res: void }
   /**
@@ -1244,7 +1255,13 @@ export interface IpcEventMap {
    * whole screen (a resync after the view fell behind, or a re-attach, while web access is on,
    * design-web.md §5.2): the terminal starts over with it, and it is not acked.
    */
-  'tabs.data': { tabId: string; data: string; reset?: true }
+  /**
+   * A tab's output. `reset`: `data` is a whole screen (a resync), the terminal starts over with it.
+   * `cols`/`rows`: the pty's size at this point of the stream (design-web.md §5.2 "Size"): with
+   * `reset`, the snapshot's size; alone (`data` ''), a size item: the pty took another size after the
+   * output before it. The terminal draws at that size (scaled or letterboxed when its pane differs).
+   */
+  'tabs.data': { tabId: string; data: string; reset?: true; cols?: number; rows?: number }
   /**
    * The tab's process ended (`signal` is the terminating signal number, else null). `gen` is that
    * process's TabInfo.gen, so an exit is never applied to a later process of the same tab.
@@ -1464,6 +1481,8 @@ export const INVOKE_CHANNELS = [
   'tabs.restart',
   'tabs.input',
   'tabs.resize',
+  'tabs.fit',
+  'tabs.visibility',
   'tabs.ack',
   'tabs.selected'
 ] as const satisfies readonly InvokeChannel[]
@@ -1715,6 +1734,9 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.restart': 'yes',
   'tabs.input': 'yes',
   'tabs.resize': 'yes',
+  // Sizes are per view (the router passes the CallView's id); the same rule for every view.
+  'tabs.fit': 'yes',
+  'tabs.visibility': 'yes',
   'tabs.ack': 'adapted',
   'tabs.selected': 'adapted',
   'tabs.data': 'adapted',

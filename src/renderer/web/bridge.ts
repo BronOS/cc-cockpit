@@ -19,8 +19,9 @@
 // - Terminals (design §5.2): a remote view's tab output comes as `term.snapshot` (in parts, joined
 //   here) and `term.data` frames, never as `tabs.data` events; the bridge hands them to the shell's
 //   `tabs.data` listeners, a whole snapshot with `reset` (the terminal starts over with it, and the
-//   shell does not ack it), so TerminalSession is the same in both shells. Size items are not
-//   passed on yet (per-view sizes, plan Task 15).
+//   shell does not ack it), so TerminalSession is the same in both shells. Size items go to the
+//   same listeners as `tabs.data` with `cols`/`rows` and an empty `data` (in stream order), and a
+//   snapshot carries its size: the page draws at the pty's size (per-view sizes, plan Task 15).
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -141,6 +142,20 @@ export function socketUrl(location: { protocol: string; host: string }, path: st
   return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`
 }
 
+/** A terminal size in a frame from main: whole numbers in the pty's bounds (PtyService), else ignored. */
+function sizeOf(cols: unknown, rows: unknown): { cols: number; rows: number } | undefined {
+  const ok =
+    typeof cols === 'number' &&
+    typeof rows === 'number' &&
+    Number.isInteger(cols) &&
+    Number.isInteger(rows) &&
+    cols >= 1 &&
+    rows >= 1 &&
+    cols <= 1000 &&
+    rows <= 1000
+  return ok ? { cols, rows } : undefined
+}
+
 const invokeChannels: ReadonlySet<string> = new Set(INVOKE_CHANNELS)
 const eventChannels: ReadonlySet<string> = new Set(EVENT_CHANNELS)
 
@@ -236,7 +251,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   // Bumped on every drop and connect, so a late session answer never acts on a newer state.
   let epoch = 0
   // Snapshot parts received so far per tab (the current socket's; a new socket starts empty).
-  let snapParts = new Map<string, { seq: number; parts: number; data: string[] }>()
+  let snapParts = new Map<string, { seq: number; parts: number; cols: number; rows: number; data: string[] }>()
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -322,13 +337,19 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     if (typeof tabId !== 'string' || typeof f.seq !== 'number' || !Number.isSafeInteger(f.seq)) return
     if (f.t === 'term.data') {
       if (typeof f.data === 'string') emit('tabs.data', { tabId, data: f.data })
+      // A size item: the pty took this size here in the stream (an empty `data` carries it, in order).
+      else {
+        const size = sizeOf(f.cols, f.rows)
+        if (size) emit('tabs.data', { tabId, data: '', ...size })
+      }
       return
     }
     const { part, parts, data } = f
-    if (typeof part !== 'number' || typeof parts !== 'number' || typeof data !== 'string') return
+    const size = sizeOf(f.cols, f.rows)
+    if (typeof part !== 'number' || typeof parts !== 'number' || typeof data !== 'string' || !size) return
     if (!Number.isSafeInteger(parts) || parts < 1 || !Number.isSafeInteger(part) || part < 1 || part > parts) return
     let got = snapParts.get(tabId)
-    if (part === 1) snapParts.set(tabId, (got = { seq: f.seq, parts, data: [] }))
+    if (part === 1) snapParts.set(tabId, (got = { seq: f.seq, parts, ...size, data: [] }))
     // Main sends the parts back to back; anything else is a broken stream, dropped whole.
     if (!got || got.seq !== f.seq || got.parts !== parts || got.data.length !== part - 1) {
       snapParts.delete(tabId)
@@ -338,7 +359,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     got.data.push(data)
     if (part < parts) return
     snapParts.delete(tabId)
-    emit('tabs.data', { tabId, data: got.data.join(''), reset: true })
+    // The screen was serialized at cols x rows: the terminal takes that size before parsing it.
+    emit('tabs.data', { tabId, data: got.data.join(''), reset: true, cols: got.cols, rows: got.rows })
   }
 
   const onFrame = (s: SocketLike, data: unknown): void => {

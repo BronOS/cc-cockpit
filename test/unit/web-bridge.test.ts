@@ -414,12 +414,30 @@ describe('terminal frames', () => {
     s.serverSend(part('t1', 4, 2, 3, 'cd'))
     // Another tab's snapshot may interleave; each tab is joined on its own.
     s.serverSend(part('t2', 9, 1, 1, 'other'))
-    expect(seen.mock.calls).toEqual([[{ tabId: 't2', data: 'other', reset: true }]])
+    expect(seen.mock.calls).toEqual([[{ tabId: 't2', data: 'other', reset: true, cols: 80, rows: 24 }]])
     s.serverSend(part('t1', 4, 3, 3, 'ef'))
     s.serverSend({ t: 'term.data', tabId: 't1', seq: 5, data: 'live' })
-    // A size item is not passed on yet (per-view sizes, plan Task 15).
+    // A size item: the same listeners, in stream order, an empty data carrying the size (Task 15).
     s.serverSend({ t: 'term.data', tabId: 't1', seq: 6, cols: 100, rows: 30 })
-    expect(seen.mock.calls.slice(1)).toEqual([[{ tabId: 't1', data: 'abcdef', reset: true }], [{ tabId: 't1', data: 'live' }]])
+    s.serverSend({ t: 'term.data', tabId: 't1', seq: 7, data: 'after' })
+    expect(seen.mock.calls.slice(1)).toEqual([
+      [{ tabId: 't1', data: 'abcdef', reset: true, cols: 80, rows: 24 }],
+      [{ tabId: 't1', data: 'live' }],
+      [{ tabId: 't1', data: '', cols: 100, rows: 30 }],
+      [{ tabId: 't1', data: 'after' }]
+    ])
+  })
+
+  it('drops size items and snapshots with a size outside the pty bounds', () => {
+    const r = rig()
+    const s = connect(r)
+    const seen = vi.fn()
+    r.api.on('tabs.data', seen)
+    for (const [cols, rows] of [[0, 24], [80, 1001], [80.5, 24], ['80', 24]]) {
+      s.serverSend({ t: 'term.data', tabId: 't1', seq: 1, cols, rows })
+      s.serverSend({ t: 'term.snapshot', tabId: 't1', seq: 1, cols, rows, part: 1, parts: 1, data: 'x' })
+    }
+    expect(seen).not.toHaveBeenCalled()
   })
 
   it('drops a snapshot whose parts come out of order, and junk terminal frames', () => {
@@ -458,7 +476,7 @@ describe('terminal frames', () => {
     s2.serverSend(part('t1', 4, 2, 2, 'new socket'))
     expect(seen).not.toHaveBeenCalled()
     s2.serverSend(part('t1', 8, 1, 1, 'fresh'))
-    expect(seen).toHaveBeenCalledWith({ tabId: 't1', data: 'fresh', reset: true })
+    expect(seen).toHaveBeenCalledWith({ tabId: 't1', data: 'fresh', reset: true, cols: 80, rows: 24 })
   })
 })
 

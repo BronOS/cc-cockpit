@@ -18,19 +18,29 @@ import type { TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
-import { PtyService } from '../pty/pty-service'
+import { PtyService, validSize } from '../pty/pty-service'
 import { stripQueryReplies } from '../sessions/terminal-reports'
 import { DesktopFlow, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
+import type { ViewId } from '../../shared/views'
+import { TerminalSizes } from './terminal-sizes'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
 
 /**
  * A new PTY starts at this size; the renderer sends the real one (`tabs.resize`) as soon as
- * xterm has measured its container, which it can only do after the tab exists.
+ * xterm has measured its container, which it can only do after the tab exists. A restart spawns at
+ * the size the tab had (its sizing view's, terminal-sizes.ts), so a view's screen is not reflowed
+ * to 80 x 24 and back.
  */
 const INITIAL_COLS = 80
 const INITIAL_ROWS = 24
+
+/**
+ * The view a size or a key is from when the caller names none: the desktop window (tests, and
+ * main's own callers). The router passes the CallView's id, `desktop:<windowId>` or `web:<n>`.
+ */
+const DESKTOP_VIEW: ViewId = 'desktop'
 
 /**
  * A shell tab that ends sooner than this after its spawn keeps its banner even under
@@ -90,6 +100,8 @@ export interface TabManagerOptions {
   closeOnCleanExit?(): boolean
   /** Clock for a shell tab's minimum life (SHELL_MIN_LIFE_MS); tests inject one. Default Date.now. */
   now?: () => number
+  /** Overrides TAKE_DEBOUNCE_MS (terminal-sizes.ts) for tests. */
+  sizeDebounceMs?: number
   /** Overrides SHELL_MIN_LIFE_MS; main sets it only under CC_COCKPIT_TEST so e2e can exit fast. */
   shellMinLifeMs?: number
   log?: (message: string) => void
@@ -339,6 +351,8 @@ export class TabManager {
    * comes a little later, as after any flow switch).
    */
   private readonly pendingTake = new Set<string>()
+  /** Each view's size per tab and which one the pty takes (terminal-sizes.ts, design-web.md §5.2). */
+  private readonly sizes: TerminalSizes
 
   constructor(options: TabManagerOptions) {
     this.options = options
@@ -351,10 +365,21 @@ export class TabManager {
       }
     })
     const tap = options.terminalTap
+    this.sizes = new TerminalSizes({
+      apply: (id, cols, rows) => this.applySize(id, cols, rows),
+      ...(options.sizeDebounceMs === undefined ? {} : { debounceMs: options.sizeDebounceMs })
+    })
     this.desktop = new DesktopFlow({
-      emit: (tabId, data, reset) => {
+      emit: (tabId, data, reset, size) => {
         const tab = this.byId.get(tabId)
-        if (tab) this.options.emit(tab.projectId, 'tabs.data', reset ? { tabId, data, reset: true } : { tabId, data })
+        if (!tab) return
+        const payload: IpcEventMap['tabs.data'] = { tabId, data }
+        if (reset) payload.reset = true
+        if (size) {
+          payload.cols = size.cols
+          payload.rows = size.rows
+        }
+        this.options.emit(tab.projectId, 'tabs.data', payload)
       },
       join: (tabId, view) => tap?.join?.(tabId, view),
       seq: (tabId) => tap?.seq?.(tabId),
@@ -676,9 +701,11 @@ export class TabManager {
    * mouse reports pass from any view, and a reply glued to a key keeps the key. Off, the chunk goes
    * as it is: the desktop answers as before. Returns what reached the pty ('' for an unknown tab).
    */
-  viewInput(projectId: string, tabId: string, data: string): string {
+  viewInput(projectId: string, tabId: string, data: string, viewId: ViewId = DESKTOP_VIEW): string {
     const tab = this.find(projectId, tabId)
     if (!tab) return ''
+    // Typing after another view typed takes the terminal's size (after the debounce).
+    this.sizes.typed(tab.id, viewId)
     let answers = false
     this.tap((t) => {
       answers = t.answers?.(tab.id) ?? false
@@ -688,10 +715,55 @@ export class TabManager {
     return rest
   }
 
-  resize(projectId: string, tabId: string, cols: number, rows: number): void {
+  /**
+   * A view measured the tab's pane (its resize observer). Remembered per view; the pty takes it only
+   * when that view sizes the tab (terminal-sizes.ts): another view's resize does not redraw Claude.
+   */
+  resize(projectId: string, tabId: string, cols: number, rows: number, viewId: ViewId = DESKTOP_VIEW): void {
     const tab = this.find(projectId, tabId)
-    // Terminal tap: only a size the pty took (PtyService validates; an exited tab has no pty).
-    if (tab && this.pty.resize(tab.id, cols, rows)) this.tap((t) => t.resized(tab.id, cols, rows))
+    // Renderer-supplied: a junk size is not even remembered (PtyService would refuse it anyway).
+    if (!tab || !validSize(cols, rows)) return
+    this.sizes.report(tab.id, viewId, cols, rows)
+  }
+
+  /**
+   * "Fit to this screen": the view takes the tab's size now. False when the view has not reported a
+   * size for the tab (it has not shown it) or is hidden.
+   */
+  fit(projectId: string, tabId: string, viewId: ViewId = DESKTOP_VIEW): boolean {
+    const tab = this.find(projectId, tabId)
+    return tab ? this.sizes.take(tab.id, viewId) : false
+  }
+
+  /** A view was hidden or shown (a minimized window, a background browser tab): hidden ones never size. */
+  viewVisible(viewId: ViewId, visible: boolean): void {
+    this.sizes.visible(viewId, visible)
+  }
+
+  /** A view is gone (a browser's connection closed): its tabs' sizes fall back to a remaining view. */
+  viewGone(viewId: ViewId): void {
+    this.sizes.viewGone(viewId)
+  }
+
+  /** The view whose size the tab's pty has (tests, diagnostics). */
+  sizerOf(tabId: string): ViewId | undefined {
+    return this.sizes.sizerOf(tabId)
+  }
+
+  /**
+   * The pty takes a size: the terminal tap numbers it in the tab's stream (remote views get it as a
+   * `term.data` size item), and the desktop gets it as a `tabs.data` size item in the same order as
+   * its output, so every copy wraps the lines before it at the old size and the ones after at the
+   * new. While the desktop is behind or resyncing, its join delivers the size instead (DesktopFlow).
+   * A size the pty already has is nothing (no item anywhere).
+   */
+  private applySize(id: string, cols: number, rows: number): void {
+    const tab = this.byId.get(id)
+    const before = this.pty.sizeOf(id)
+    if (!tab || !before || (before.cols === cols && before.rows === rows)) return
+    if (!this.pty.resize(id, cols, rows)) return
+    if (this.desktop.passes(id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data: '', cols, rows })
+    this.tap((t) => t.resized(id, cols, rows))
   }
 
   /** The desktop renderer's ack: the pty's flow, or the desktop's own while main consumes the pty. */
@@ -812,9 +884,14 @@ export class TabManager {
       // window without `--project`. Main refuses a window token for `hook` and `session.*`.
       tab: { tabId: tab.id, token, sock: this.options.sock() }
     })
-    this.pty.spawn(tab.id, argv, { cwd: tab.cwd, env, cols: INITIAL_COLS, rows: INITIAL_ROWS })
+    // A restart at the size the sizing view has (a new tab has none yet: the default).
+    const { cols, rows } = this.sizes.sizeOf(tab.id) ?? { cols: INITIAL_COLS, rows: INITIAL_ROWS }
+    this.pty.spawn(tab.id, argv, { cwd: tab.cwd, env, cols, rows })
     // Terminal tap: after a spawn that worked and before any output (node-pty reads on a later tick).
-    this.tap((t) => t.spawned(tab.id, INITIAL_COLS, INITIAL_ROWS))
+    this.tap((t) => t.spawned(tab.id, cols, rows))
+    // The desktop's copy of a restarted tab is told the size too (a new tab's page has drawn nothing
+    // yet and sends its own size first). Ordered before any output: node-pty reads on a later tick.
+    if (tab.gen > 0 && this.desktop.passes(tab.id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: tab.id, data: '', cols, rows })
     // After the spawn: a failed one leaves the tab (and the generation its exit reported) as it was.
     tab.gen += 1
     tab.spawnedAt = this.now()
@@ -864,6 +941,7 @@ export class TabManager {
     // still held then would try to rejoin a closed tab and log a stale screen that nobody sees.
     this.desktop.closed(tab.id)
     this.pendingTake.delete(tab.id)
+    this.sizes.tabGone(tab.id)
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
     this.tap((t) => t.closed(tab.id))
     this.notify((l) => l.closed?.(tab.id))

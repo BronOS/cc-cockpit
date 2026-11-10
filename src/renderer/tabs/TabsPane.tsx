@@ -180,8 +180,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     // Subscribe before asking for the list so no output or exit falls between the two. Output of
     // a tab whose view is not mounted yet is parsed by its session all the same.
-    const offData = window.cockpit.on('tabs.data', ({ tabId, data, reset }) => {
-      sessions.write(tabId, data, reset === true)
+    const offData = window.cockpit.on('tabs.data', ({ tabId, data, reset, cols, rows }) => {
+      // `cols`/`rows`: the pty's size at this point of the stream (a size item or a snapshot's).
+      const size = typeof cols === 'number' && typeof rows === 'number' ? { cols, rows } : undefined
+      sessions.write(tabId, data, reset === true, size)
     })
     const offExit = window.cockpit.on('tabs.exit', ({ tabId, code, signal, gen }) => {
       dispatch({ type: 'exited', tabId, exit: { code, signal }, gen })
@@ -234,6 +236,20 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     })
   }, [state.activeId])
 
+  // Whether this view is on screen (a minimized window, a background browser tab): main lets only
+  // a visible view size a tab's pty (main/tabs/terminal-sizes.ts). Told on mount (a page loading
+  // hidden) and on every change.
+  useEffect(() => {
+    const report = (): void => {
+      window.cockpit.invoke('tabs.visibility', { visible: document.visibilityState !== 'hidden' }).catch((err: unknown) => {
+        console.warn('reporting the visibility failed', err)
+      })
+    }
+    report()
+    document.addEventListener('visibilitychange', report)
+    return () => document.removeEventListener('visibilitychange', report)
+  }, [])
+
   const run = (action: Promise<unknown>): void => {
     setError(null)
     action.catch((err: unknown) => setError(ipcErrorMessage(err)))
@@ -284,7 +300,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     run(
       window.cockpit.invoke('tabs.restart', { tabId }).then((tab) => {
         if (removed.current.has(tabId)) return
-        // Main respawned the PTY at its default size; send ours again.
+        // Main respawned the PTY (at the tab's last size); send ours again, applied if we size it.
         sessions.get(tabId).resetSize()
         dispatch({ type: 'restarted', tab })
       })

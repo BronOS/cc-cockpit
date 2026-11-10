@@ -430,7 +430,7 @@ describe('TabManager tap points', () => {
     tabs.resize(P, tab.id, 0, 40)
     tabs.resize('bbbbbbbbbbbbbbbb', tab.id, 50, 50)
     backend.last.exit(1)
-    // An exited tab has no pty: the size is not taken, so not tapped.
+    // An exited tab has no pty: the size is not taken, so not tapped; it is remembered for the view.
     tabs.resize(P, tab.id, 90, 30)
     tabs.restart(P, tab.id)
     tabs.close(P, tab.id)
@@ -438,7 +438,8 @@ describe('TabManager tap points', () => {
       `spawned ${tab.id} 80x24`,
       `data ${tab.id} hello`,
       `resized ${tab.id} 120x40`,
-      `spawned ${tab.id} 80x24`,
+      // A restart spawns at the sizing view's size (Task 15), not 80 x 24 and back.
+      `spawned ${tab.id} 90x30`,
       `closed ${tab.id}`
     ])
   })

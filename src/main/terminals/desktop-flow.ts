@@ -48,8 +48,11 @@ export const VIEW_LOW_WATER = VIEW_HIGH_WATER / 2
 export const MAX_REJOINS = 3
 
 export interface DesktopFlowDeps {
-  /** Output for the desktop view (`tabs.data`); `reset`: a whole screen, the terminal starts over. */
-  emit(tabId: string, data: string, reset: boolean): void
+  /**
+   * Output for the desktop view (`tabs.data`); `reset`: a whole screen, the terminal starts over.
+   * `size`: the pty's size at that point of the stream (a snapshot's, or a size item with `data` '').
+   */
+  emit(tabId: string, data: string, reset: boolean, size?: { cols: number; rows: number }): void
   /** The mirror's `join` (TerminalTap); undefined when it does not hold the tab. */
   join(tabId: string, view: MirrorView): (() => void) | undefined
   /** The newest item the mirror numbered for the tab. */
@@ -120,6 +123,16 @@ export class DesktopFlow {
    * held here counts as settled.
    */
   settled(tabId: string): boolean {
+    const t = this.tabs.get(tabId)
+    return !t || t.mode === 'live'
+  }
+
+  /**
+   * Whether an item of the tab goes to the desktop directly now (TabManager's size items): a tab
+   * not held, or live. While behind or joining, the join delivers sizes in stream order (or the
+   * snapshot carries the size).
+   */
+  passes(tabId: string): boolean {
     const t = this.tabs.get(tabId)
     return !t || t.mode === 'live'
   }
@@ -195,7 +208,7 @@ export class DesktopFlow {
         if (!current()) return
         t.failedJoins = 0
         t.stale = false
-        this.deps.emit(tabId, snapshot.data, true)
+        this.deps.emit(tabId, snapshot.data, true, { cols: snapshot.cols, rows: snapshot.rows })
         this.caughtUp(tabId, t, snapshot.seq)
       },
       item: (item) => {
@@ -209,8 +222,10 @@ export class DesktopFlow {
           }
           t.unacked += item.data.length
           this.deps.emit(tabId, item.data, false)
+        } else if (item.kind === 'resize' || item.kind === 'spawn') {
+          // The size the pty took (another view's, or a restart's), in stream order (Task 15).
+          this.deps.emit(tabId, '', false, { cols: item.cols, rows: item.rows })
         }
-        // Sizes and a restart's spawn: the desktop's xterm sizes the pty itself (Task 15 per view).
         this.caughtUp(tabId, t, item.seq)
       },
       closed: () => {
