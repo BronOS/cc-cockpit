@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Terminal } from '@xterm/headless'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import { oscColorReply, parseCssColor, TerminalMirror } from '../../src/main/terminals/mirror'
 import type { FromWorker } from '../../src/main/terminals/mirror-protocol'
@@ -142,6 +143,24 @@ describe('web access on: main answers', () => {
     expect(tabs.viewInput(P, tab.id, `${ESC}[I${mouse}`)).toBe(`${ESC}[I${mouse}`)
     expect(tabs.viewInput(P, tab.id, `${ESC}[0n`)).toBe('')
     expect(written(pty)).toBe(`ab${ESC}[I${mouse}`)
+    mirror.stop()
+  })
+
+  it('the index.ts glue: a stripped reply never sets SessionInfo.typed, a real key does (a plugin send stays accepted until then)', () => {
+    const { mirror, tabs } = setup()
+    mirror.start()
+    const tab = tabs.create(P, { kind: 'claude' })
+    const reg = new SessionRegistry({ projectName: () => 'x', broadcast: () => {}, write: () => {} })
+    reg.tabStarted({ tabId: tab.id, projectId: P, kind: 'claude', cwd: '/proj' })
+    // What index.ts does for the renderer's tabs.input.
+    const input = (data: string): void => reg.userInput(P, tab.id, tabs.viewInput(P, tab.id, data))
+    input(`${ESC}[12;5R${ESC}[?1;2c`)
+    expect(reg.get(tab.id)?.typed).toBe(false)
+    input(`${ESC}[I`)
+    expect(reg.get(tab.id)?.typed).toBe(false)
+    input(`${ESC}[1;1Rh`)
+    expect(reg.get(tab.id)?.typed).toBe(true)
+    reg.dispose()
     mirror.stop()
   })
 

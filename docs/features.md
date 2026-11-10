@@ -437,6 +437,10 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   Palette colour queries (OSC 4) go unanswered then, a see-through window reports the theme's background rather than
   the transparent one, and Shift+F3 / Ctrl+F3 (the same bytes as a cursor position reply) do not reach the program.
   A query the program sends in the moment web access is switched on or off can go unanswered.
+  It can also be answered twice: switching web access off right after a query that the app already answered can let the
+  desktop's own reply, still unparsed in its terminal, reach the program as well. A tab that was already running when
+  web access was switched on (or whose copy was reset) is answered from a blank copy, so a cursor position or mode
+  query then reports the top-left corner and default modes rather than the program's real state.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name
   (and no gist) until Claude sets the title again.

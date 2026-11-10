@@ -83,7 +83,7 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
 - `serviceProviders` in the project record also holds the reserved key `@open-file` (plugin id or `@builtin`; a service name
   never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
 - `SessionInfo.typed` (`session-registry.ts`) is set from the person's input only (the renderer's terminal `onData` through
-  `TabManager.input`); terminal reports (focus, cursor and size replies) do not count. It is sticky for the tab's life. Main
+  `TabManager.viewInput`, which strips a view's own query replies while web access is on); terminal reports (focus, cursor and size replies) do not count. It is sticky for the tab's life. Main
   enforces it: a plugin `sessions.send` to a typed tab is rejected and that tab's queued plugin texts are dropped, so a plugin
   never has to be trusted to check. `QueuedText.origin` in the send gate (`send-gate.ts`) tells a plugin's text from the
   person's (Discuss), and only plugin-origin texts are dropped.

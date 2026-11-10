@@ -228,12 +228,12 @@ export class SessionRegistry {
    * The user typed into the tab (renderer keystrokes only, never the gate's own paste). A key that
    * answers a permission dialog moves a `needs-permission` tab to `working` (status-reducer.ts
    * isAnswerKey says why and which keys). `projectId` is the window's project as main resolved it:
-   * a tab of another project is ignored, as TabManager.input ignores it.
+   * a tab of another project is ignored, as TabManager.viewInput ignores it.
    *
    * The first chunk that is the person's (terminal-reports.ts isPersonInput: not only focus, mouse
    * and other replies xterm sends by itself) sets `typed`, the takeover flag plugins read as
    * SessionInfo.typed; it reports one change and never flips back. That this means a PERSON rests
-   * on the one caller: main's `tabs.input` IPC handler, fed by the renderer's terminal `onData`.
+   * on the one caller: main's `tabs.input` IPC handler (through `TabManager.viewInput`), fed by the renderer's terminal `onData`.
    * Nothing main types reaches this method: the send gate writes its paste through the registry's
    * `write` option (TabManager.input directly, index.ts), so neither a plugin's `ctx.sessions.send`
    * nor Discuss can set the flag.
