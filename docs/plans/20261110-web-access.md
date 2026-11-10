@@ -200,15 +200,15 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `src/main/web/gateway.ts`, `src/main/views/view-registry.ts`, `src/main/ipc/router.ts`
 - Create: `test/unit/web-protocol.test.ts`
 
-- [ ] frames per Technical Details: `hello`/`ready`, `invoke`/`result`, `event`; 4 MiB cap, `$bytes` encoding; the
+- [x] frames per Technical Details: `hello`/`ready`, `invoke`/`result`, `event`; 4 MiB cap, `$bytes` encoding; the
       allow-lists and remote class checked on every frame
-- [ ] an upgrade with a valid device cookie (Task 5) binds to one open project window as a remote view (`WebCaller`,
+- [x] an upgrade with a valid device cookie (Task 5) binds to one open project window as a remote view (`WebCaller`,
       fresh `viewId`); the `ready` snapshot starts with tabs, layout and the overlay stack (Tasks 17, 23 and 24 extend
       it, each with its own snapshot test)
-- [ ] the router dispatches web frames through the same handlers; errors return the message only, as IPC does
-- [ ] write tests: invoke round trip, unknown channel, `no` class, oversize frame closes the socket, `$bytes`, events
+- [x] the router dispatches web frames through the same handlers; errors return the message only, as IPC does
+- [x] write tests: invoke round trip, unknown channel, `no` class, oversize frame closes the socket, `$bytes`, events
       reach only views of their project, a view cannot switch project mid-connection, no cookie no upgrade
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 7: Web shell part 1: web build, bridge, reconnect [model: opus]
 

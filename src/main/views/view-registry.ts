@@ -29,6 +29,12 @@ export interface ViewSink<P = unknown> {
   postPort?(channel: string, payload: unknown, port: P): void
   /** Gone for good (the webContents destroyed, the socket closed): skipped from then on. */
   isClosed(): boolean
+  /**
+   * The view's window closed and the view was dropped (`removeWindow`). A remote view closes its
+   * socket here, so a browser does not sit on a window that is gone (it reconnects to the picker).
+   * Absent for a desktop view: its page goes with its window.
+   */
+  windowClosed?(): void
 }
 
 export interface ViewRegistryOptions {
@@ -73,12 +79,25 @@ export class ViewRegistry<P = unknown> {
   }
 
   /**
-   * A window closed: every view of it goes, the remote ones too (the gateway closes their sockets
-   * on its own; an event between the two must not reach a view of a window that is gone).
+   * A window closed: every view of it goes, the remote ones too, and each is told (`windowClosed`:
+   * a remote view closes its socket). Removed first and told after, so an event a closing view's
+   * teardown sends cannot reach a view of the window that is gone; one that throws is logged and
+   * the others are still told.
    */
   removeWindow(windowId: number): void {
+    const gone: Array<[ViewId, ViewSink<P>]> = []
     for (const [id, entry] of this.views) {
-      if (entry.windowId === windowId) this.views.delete(id)
+      if (entry.windowId === windowId) {
+        this.views.delete(id)
+        gone.push([id, entry.sink])
+      }
+    }
+    for (const [id, sink] of gone) {
+      try {
+        sink.windowClosed?.()
+      } catch (err) {
+        this.logLine(`view ${id}: window close failed: ${errorText(err)}`)
+      }
     }
   }
 
@@ -145,9 +164,13 @@ export class ViewRegistry<P = unknown> {
     } catch (err) {
       // One broken view must not keep the event from the others (a loop over webContents.send
       // used to stop at the first throw).
-      const log = this.options.log ?? ((m: string) => console.warn(m))
-      log(`event ${channel} to view ${id} failed: ${errorText(err)}`)
+      this.logLine(`event ${channel} to view ${id} failed: ${errorText(err)}`)
       return false
     }
+  }
+
+  private logLine(message: string): void {
+    const log = this.options.log ?? ((m: string) => console.warn(m))
+    log(message)
   }
 }

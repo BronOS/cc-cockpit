@@ -147,6 +147,7 @@ import { ViewRegistry } from './views/view-registry'
 import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
+import { WebConnections } from './web/connection'
 import { WebGateway } from './web/gateway'
 import { webAccessOf } from './web/settings'
 import { desktopViewId } from '../shared/views'
@@ -1982,6 +1983,25 @@ function start(): void {
     loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId),
     button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click),
     discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target)
+  })
+
+  // Remote views (design-web.md §2.1, §3): each socket the gateway accepted binds to one open
+  // project window at `hello` and reaches the same router handlers. Installed here, once every
+  // handler is registered; the gateway refuses upgrades until then.
+  const webConnections = new WebConnections({
+    dispatch: (caller, channel, payload) => router.dispatch(caller, channel, payload),
+    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
+    windowIdOf: (projectId) => windows.windowIdOf(projectId),
+    snapshot: ({ windowId, projectId }) => {
+      const layout = layouts.view(projectId)
+      if (!layout) throw new Error('project record is gone')
+      // tabs.list, never tabs.attach: a joining view must not reset the desktop's terminal flow.
+      return { tabs: tabs.list(projectId), layout, overlays: overlays.list(windowId) }
+    },
+    log: (m) => console.warn(m)
+  })
+  webGateway.setSocketHandler((ws, _req, device) => {
+    webConnections.accept(ws, device)
   })
 
   // One object for every file click, so `shown` (the diffs open now) outlives a single call.

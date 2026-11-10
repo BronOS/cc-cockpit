@@ -13,8 +13,9 @@
 //  - Loopback binds only (settings.ts listenPlanOf) until TLS and the §4.3 confirms (Task 28).
 // Behind those, sign-in (auth.ts, plan Task 5): `/` and the sign-in routes are open, everything
 // else (the upgrade first) needs a device (`WebAuth.authorize`: the device cookie, or None mode).
-// An upgrade that passes goes to the socket handler main installs (the wire protocol, Task 6);
-// with none installed it is refused, so the gateway never hands anyone a socket before that.
+// An upgrade that passes goes to the socket handler main installs (the wire protocol,
+// connection.ts); with none installed it is refused, so the gateway never hands out a socket
+// nobody speaks the protocol on.
 // Sockets are tracked by device: a revoke closes that device's sockets at once, and leaving None
 // mode closes the anonymous ones. Connects and disconnects go to the access log.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
@@ -28,15 +29,14 @@ import type { AccessLog } from './access-log'
 import { deviceCookie, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
 import type { WebDevice } from './devices'
+import { MAX_FRAME_BYTES } from './protocol'
 import { listenPlanOf, type ListenPlan } from './settings'
 
 export type WsModule = typeof import('ws')
 
-/**
- * Largest frame a view may send (design-web.md §3): a 1 MiB panel message wrapped in a frame must
- * fit. `ws` closes the socket (1009) on a bigger one before it is buffered whole.
- */
-export const MAX_FRAME_BYTES = 4 * 1024 * 1024
+// Largest frame a view may send (design-web.md §3, protocol.ts): `ws` closes the socket (1009) on
+// a bigger one before it is buffered whole.
+export { MAX_FRAME_BYTES }
 
 /** Where the browser opens its one WebSocket per view. */
 export const WS_PATH = '/ws'
@@ -67,7 +67,7 @@ export type GatewayStatus =
   | { state: 'failed'; reason: string }
   | { state: 'listening'; bind: string; port: number }
 
-/** A socket that passed Host, Origin and sign-in; the handler owns it from here (Task 6). */
+/** A socket that passed Host, Origin and sign-in; the handler (connection.ts) owns it from here. */
 export type SocketHandler = (ws: WebSocket, req: IncomingMessage, device: WebDevice) => void
 
 type OkPlan = Extract<ListenPlan, { ok: true }>
@@ -145,7 +145,7 @@ export class WebGateway {
     return addr !== null && typeof addr === 'object' ? addr : undefined
   }
 
-  /** Installs who takes checked sockets (the wire protocol, Task 6). Undefined: every upgrade is refused. */
+  /** Installs who takes checked sockets (`WebConnections.accept`). Undefined: every upgrade is refused. */
   setSocketHandler(handler: SocketHandler | undefined): void {
     this.handler = handler
   }

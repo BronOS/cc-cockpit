@@ -139,6 +139,29 @@ describe('ViewRegistry', () => {
     expect(views.viewsOf(1)).toEqual([])
   })
 
+  it('tells each view of a closing window, after it left the registry; a throwing one does not stop the rest', () => {
+    const logs: string[] = []
+    const views = new ViewRegistry<FakePort>({ windowIdOf: () => 1, log: (m) => logs.push(m) })
+    const seenDuring: string[][] = []
+    const told: string[] = []
+    views.addDesktop(1, new FakeSink())
+    views.addRemote(1, remoteViewId(1), {
+      send: () => undefined,
+      isClosed: () => false,
+      windowClosed: () => {
+        seenDuring.push(views.viewsOf(1))
+        throw new Error('socket gone')
+      }
+    })
+    views.addRemote(1, remoteViewId(2), { send: () => undefined, isClosed: () => false, windowClosed: () => told.push('web:2') })
+    views.addRemote(2, remoteViewId(3), { send: () => undefined, isClosed: () => false, windowClosed: () => told.push('web:3') })
+    views.removeWindow(1)
+    expect(seenDuring).toEqual([[]])
+    expect(told).toEqual(['web:2'])
+    expect(logs.join('\n')).toMatch(/web:1: window close failed: socket gone/)
+    expect(views.viewsOf(2)).toEqual(['web:3'])
+  })
+
   it('refuses a remote view id that is already registered', () => {
     const views = registry()
     views.addRemote(1, remoteViewId(1), new FakeSink())
