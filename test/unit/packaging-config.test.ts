@@ -6,7 +6,11 @@ import { describe, expect, it } from 'vitest'
 
 const root = join(__dirname, '..', '..')
 const yml = readFileSync(join(root, 'electron-builder.yml'), 'utf8')
-const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+  scripts: Record<string, string>
+  dependencies: Record<string, string>
+  devDependencies: Record<string, string>
+}
 
 describe('electron-builder.yml', () => {
   it('clears shared write access from the packed app before making installers', () => {
@@ -18,6 +22,29 @@ describe('electron-builder.yml', () => {
     // out/ holds cli, host, sdk/panel.js and preload next to main: all of it goes into app.asar.
     expect(yml).toMatch(/^ {2}- out\/\*\*$/m)
     expect(yml).toMatch(/^ {2}- node_modules\/node-pty\/\*\*$/m)
+  })
+
+  it('ships the web access worker and the packages it and the gateway load at run time', () => {
+    // The worker is its own entry of the main build, out/main/mirror-worker.js, where main starts
+    // it from (src/main/index.ts: join(__dirname, 'mirror-worker.js')); out/** carries it.
+    const vite = readFileSync(join(root, 'electron.vite.config.ts'), 'utf8')
+    expect(vite).toContain("'main/mirror-worker': resolve(__dirname, 'src/main/terminals/mirror-worker.ts')")
+    expect(readFileSync(join(root, 'src', 'main', 'index.ts'), 'utf8')).toContain("nodeMirrorWorker(join(__dirname, 'mirror-worker.js'))")
+    expect(yml).toMatch(/^ {2}- out\/\*\*$/m)
+    // Required at run time (kept external by the build), so production dependencies, which
+    // electron-builder copies into the package; a devDependency would be missing there. Pinned exactly.
+    const runtime = {
+      ws: '8.22.0',
+      '@xterm/headless': '6.0.0',
+      '@xterm/addon-serialize': '0.14.0',
+      '@xterm/addon-unicode11': '0.9.0'
+    }
+    for (const [name, version] of Object.entries(runtime)) {
+      expect(pkg.dependencies[name], name).toBe(version)
+      expect(pkg.devDependencies[name], name).toBeUndefined()
+    }
+    // Nothing of it is unpacked or filtered out: plain JavaScript read from app.asar.
+    expect(yml).not.toMatch(/^ {2}- '?!.*(xterm|ws|mirror)/m)
   })
 
   it('ships the bundled plugins as plain files under resources/plugins', () => {

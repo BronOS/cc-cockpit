@@ -146,10 +146,14 @@ export class PtyService {
     this.ptys.get(id)?.handle.write(data)
   }
 
-  resize(id: string, cols: number, rows: number): void {
+  /** True when a running pty took the size (the terminal mirror numbers only those, tab-manager.ts). */
+  resize(id: string, cols: number, rows: number): boolean {
     // Renderer-supplied: main validates rather than trusting node-pty's partial checks.
-    if (!validSize(cols, rows)) return
-    this.ptys.get(id)?.handle.resize(cols, rows)
+    if (!validSize(cols, rows)) return false
+    const entry = this.ptys.get(id)
+    if (!entry) return false
+    entry.handle.resize(cols, rows)
+    return true
   }
 
   /** The renderer wrote `count` characters of this PTY's output into xterm. */

@@ -90,6 +90,25 @@ export interface TabManagerOptions {
   /** Overrides SHELL_MIN_LIFE_MS; main sets it only under CC_COCKPIT_TEST so e2e can exit fast. */
   shellMinLifeMs?: number
   log?: (message: string) => void
+  /**
+   * The headless terminals of web access (terminals/mirror.ts, design-web.md §5.2). Called
+   * synchronously at the marked tap points; the mirror itself returns at once while web access is
+   * off. Absent in tests that do not need it.
+   */
+  terminalTap?: TerminalTap
+}
+
+/**
+ * What a headless copy of a tab's terminal needs, told synchronously and in stream order: the
+ * pty's spawn size (a new tab and a restart), the SAME flushed chunks the renderer gets in
+ * `tabs.data` (same strings, same order), every size the pty took, and the tab going away.
+ * A throwing tap is logged like a lifecycle listener and never undoes the tab operation.
+ */
+export interface TerminalTap {
+  spawned(tabId: string, cols: number, rows: number): void
+  data(tabId: string, chunk: string): void
+  resized(tabId: string, cols: number, rows: number): void
+  closed(tabId: string): void
 }
 
 /**
@@ -531,7 +550,8 @@ export class TabManager {
 
   resize(projectId: string, tabId: string, cols: number, rows: number): void {
     const tab = this.find(projectId, tabId)
-    if (tab) this.pty.resize(tab.id, cols, rows)
+    // Terminal tap: only a size the pty took (PtyService validates; an exited tab has no pty).
+    if (tab && this.pty.resize(tab.id, cols, rows)) this.tap((t) => t.resized(tab.id, cols, rows))
   }
 
   ack(projectId: string, tabId: string, count: number): void {
@@ -647,6 +667,8 @@ export class TabManager {
       tab: { tabId: tab.id, token, sock: this.options.sock() }
     })
     this.pty.spawn(tab.id, argv, { cwd: tab.cwd, env, cols: INITIAL_COLS, rows: INITIAL_ROWS })
+    // Terminal tap: after a spawn that worked and before any output (node-pty reads on a later tick).
+    this.tap((t) => t.spawned(tab.id, INITIAL_COLS, INITIAL_ROWS))
     // After the spawn: a failed one leaves the tab (and the generation its exit reported) as it was.
     tab.gen += 1
     tab.spawnedAt = this.now()
@@ -680,7 +702,20 @@ export class TabManager {
     return tab
   }
 
+  /** Call the terminal tap, if any; a throwing one is logged like a lifecycle listener. */
+  private tap(call: (tap: TerminalTap) => void): void {
+    const tap = this.options.terminalTap
+    if (!tap) return
+    try {
+      call(tap)
+    } catch (err) {
+      this.log(`terminal tap failed: ${errorText(err)}`)
+    }
+  }
+
   private remove(tab: Tab): void {
+    // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
+    this.tap((t) => t.closed(tab.id))
     this.notify((l) => l.closed?.(tab.id))
     this.byId.delete(tab.id)
     const tabs = this.order.get(tab.projectId)
@@ -713,6 +748,8 @@ export class TabManager {
     const tab = this.byId.get(id)
     if (!tab) return
     this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data })
+    // Terminal tap: the same chunk, right after the renderer's, so both see one order.
+    this.tap((t) => t.data(id, data))
     if (tab.kind === 'claude') this.notify((l) => l.output?.(id, data))
   }
 

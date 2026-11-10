@@ -36,6 +36,11 @@ export interface WebAccessServiceDeps {
   write(next: WebAccessSettings): void
   /** Tells the desktop windows (`webAccess.changed`). */
   emit(indicator: WebAccessIndicator): void
+  /**
+   * The headless terminals (terminals/mirror.ts): running only while the settings mean the gateway
+   * listens, so web access off costs no worker and loads no xterm package.
+   */
+  terminals?: { start(): void; stop(): void }
 }
 
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
@@ -120,14 +125,30 @@ export class WebAccessService {
     if (!result.ok) throw new Error(result.error)
     this.deps.write(result.value)
     // The settings are saved first: a refused or failed start must not lose what the person typed.
-    await this.deps.gateway.apply(webAccessOf(this.deps.read()))
+    const settings = webAccessOf(this.deps.read())
+    this.syncTerminals(settings)
+    await this.deps.gateway.apply(settings)
     this.changed()
     return this.view()
   }
 
   /** Reads the stored settings again and applies them (start-up). */
   apply(): Promise<GatewayStatus> {
-    return this.deps.gateway.apply(this.settings())
+    const settings = this.settings()
+    this.syncTerminals(settings)
+    return this.deps.gateway.apply(settings)
+  }
+
+  /**
+   * Synchronous and before the gateway starts: at start-up the tabs restored after this must
+   * already be mirrored from their first item. Follows the settings' plan, not the listener's
+   * outcome: a port in use is a passing failure (the next apply retries), a refused setting is not.
+   */
+  private syncTerminals(settings: WebAccessSettings): void {
+    const terminals = this.deps.terminals
+    if (!terminals) return
+    if (listenPlanOf(settings).ok) terminals.start()
+    else terminals.stop()
   }
 
   async link(): Promise<WebLinkReply> {

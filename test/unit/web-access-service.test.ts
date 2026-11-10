@@ -189,6 +189,43 @@ describe('WebAccessService', () => {
     expect(v.risks).toEqual([])
   })
 
+  it('runs the headless terminals only while the settings mean the gateway listens, started before it', async () => {
+    const calls: string[] = []
+    const withTerminals = new WebAccessService({
+      gateway: {
+        ...gateway,
+        apply: (settings) => {
+          calls.push(`gateway ${settings.enabled}`)
+          return gateway.apply(settings)
+        }
+      },
+      auth,
+      read: () => stored,
+      write: (next) => {
+        stored = { ...(stored as object | undefined), enabled: next.enabled, port: next.port, hosts: next.hosts, mode: next.mode }
+      },
+      emit: () => undefined,
+      terminals: { start: () => calls.push('start'), stop: () => calls.push('stop') }
+    })
+    // Start-up with web access off: stopped (a no-op), so nothing is loaded.
+    await withTerminals.apply()
+    expect(calls).toEqual(['stop', 'gateway false'])
+    calls.length = 0
+    // On: started synchronously before the gateway, so tabs restored next are mirrored from item 1.
+    const pending = withTerminals.set({ enabled: true })
+    expect(calls).toEqual(['start', 'gateway true'])
+    await pending
+    calls.length = 0
+    await withTerminals.set({ enabled: false })
+    expect(calls).toEqual(['stop', 'gateway false'])
+    calls.length = 0
+    // A stored setting the gateway refuses (a network bind before Task 28) runs no worker either.
+    stored = { enabled: true, bind: '0.0.0.0' }
+    await withTerminals.apply()
+    expect(calls).toEqual(['stop', 'gateway true'])
+    withTerminals.dispose()
+  })
+
   it('stores a change, applies it to the gateway and answers with the new view', async () => {
     const v = await service.set({ enabled: true, port: 8123, hosts: ['box.local'] })
     expect(stored).toMatchObject({ enabled: true, port: 8123, hosts: ['box.local:8123'] })

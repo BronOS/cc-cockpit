@@ -5,6 +5,9 @@ import { defineConfig } from 'electron-vite'
 
 // Build layout (the rest of the app, the ccc wrapper and the plugin host spawner rely on it):
 //   out/main/index.js      Electron main
+//   out/main/mirror-worker.js  web access's headless terminals, a worker_threads entry main starts
+//                          from its own folder (src/main/terminals/mirror-worker.ts); it requires
+//                          @xterm/headless and the addons from node_modules, never main code
 //   out/cli/index.js       the `ccc` CLI (run as Node by the generated wrapper)
 //   out/host/index.js      plugin host (utilityProcess entry)
 //   out/sdk/panel.js       the panel SDK, a classic browser script served at
@@ -37,6 +40,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           'main/index': resolve(__dirname, 'src/main/index.ts'),
+          'main/mirror-worker': resolve(__dirname, 'src/main/terminals/mirror-worker.ts'),
           'cli/index': resolve(__dirname, 'src/cli/index.ts'),
           'host/index': resolve(__dirname, 'src/host/index.ts'),
           'sdk/panel': resolve(__dirname, 'src/sdk/panel.ts')

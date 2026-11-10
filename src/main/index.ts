@@ -149,6 +149,7 @@ import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
 import { openProjectEntries, WebConnections, windowSnapshot } from './web/connection'
+import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
 import { WebGateway } from './web/gateway'
 import { desktopViewId } from '../shared/views'
@@ -1120,8 +1121,16 @@ function start(): void {
       })
     }
   })
+  // Web access's headless terminals (design-web.md §5.2): a worker thread holding a copy of every
+  // tab's terminal, started only while web access is on (webAccess below), so off costs nothing.
+  // The worker is the build's out/main/mirror-worker.js, next to this file (electron.vite.config.ts).
+  const terminalMirror = new TerminalMirror({
+    createWorker: nodeMirrorWorker(join(__dirname, 'mirror-worker.js')),
+    log: (m) => console.warn(m)
+  })
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
+    terminalTap: terminalMirror,
     projectPath: (projectId) => registry.get(projectId)?.path,
     loginEnv: () => loginEnv,
     hooksPath: paths.hooksJson,
@@ -1253,7 +1262,8 @@ function start(): void {
         a.webAccess = stored
       })
     },
-    emit: (indicator) => views.toAll('webAccess.changed', indicator)
+    emit: (indicator) => views.toAll('webAccess.changed', indicator),
+    terminals: terminalMirror
   })
   const socket = new SocketServer({
     path: sock,
@@ -2279,6 +2289,7 @@ function start(): void {
     void socket.stop()
     webAccess.dispose()
     void webGateway.stop()
+    terminalMirror.stop()
     sessionGist.dispose()
     rateLimits.dispose()
     sessions.dispose()

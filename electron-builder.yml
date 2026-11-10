@@ -28,8 +28,14 @@
 #  - `publish: null` turns off the publisher electron-builder would infer from the git remote, so no
 #    invocation (a bare `npx electron-builder` in CI with GH_TOKEN, on a tag) can upload; the
 #    `--publish never` in the npm scripts is a second guard.
+#  - Web access (design-web.md) needs no file list of its own: the headless-terminal worker is
+#    out/main/mirror-worker.js (inside out/**), started from app.asar with worker_threads, which
+#    reads the archive as main does; `ws`, @xterm/headless and its addons are `dependencies` in
+#    package.json, so electron-builder copies them into app.asar's node_modules with every other
+#    production package (main and the worker require them at run time, the build keeps them
+#    external). Plain JavaScript, nothing to unpack. All of it loads only while web access is on.
 #  - Layout expectations (checked by test/unit/packaging-config.test.ts): app.asar holds out/cli,
-#    out/host, out/sdk and out/preload; node-pty (pty.node, spawn-helper) is unpacked. Linux
+#    out/host, out/sdk, out/preload and out/main/mirror-worker.js; node-pty (pty.node, spawn-helper) is unpacked. Linux
 #    AppImage launched only via `--appimage-extract-and-run --no-sandbox` (a plain run and Ubuntu
 #    are untested); the deb was built and unpacked but never launched. In an AppImage, execPath and
 #    resourcesPath sit under a per-launch /tmp/.mount_* path, so the `ccc` wrapper works only while

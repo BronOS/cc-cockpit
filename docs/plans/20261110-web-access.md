@@ -269,14 +269,18 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `electron-builder.yml` (worker, `ws` and xterm packages in the package), `package.json` (pin `@xterm/headless@6.0.0`,
   `@xterm/addon-serialize@0.14.0`)
 - Create: `test/unit/terminal-mirror.test.ts` (port spike tests), extend `test/unit/packaging-config.test.ts`
+- ➕ Also created `src/main/terminals/mirror-protocol.ts` (the message types and the worker mark, so neither bundle pulls
+  in the other); `PtyService.resize` returns whether the pty took the size; `WebAccessService` starts and stops the mirror
 
-- [ ] a worker thread holding one headless terminal per tab (5,000 lines), loaded only while web access is on
-- [ ] feed it the same flushed chunks as the views, numbered, with resize, spawn size, restart and close as numbered
+- [x] a worker thread holding one headless terminal per tab (5,000 lines), loaded only while web access is on
+- [x] feed it the same flushed chunks as the views, numbered, with resize, spawn size, restart and close as numbered
       items in the same stream
-- [ ] the bench: main event-loop delay stays low with 8 flooded tabs (the reason for the worker)
-- [ ] write tests: numbering, resize items in order, close frees the terminal, worker restart recovers, the packaging
+- [x] the bench: main event-loop delay stays low with 8 flooded tabs (the reason for the worker) (8 tabs flooded: p50 0.9 ms,
+      p99 1.9 ms; the spike parsing in main had p50 97 ms)
+- [x] write tests: numbering, resize items in order, close frees the terminal, worker restart recovers, the packaging
       config includes the worker and its packages
-- [ ] run tests and `npm run package:dir` (smoke: the packaged app starts with web access on) - must pass before next task
+- [x] run tests and `npm run package:dir` (smoke: the packaged app starts with web access on) - must pass before next task
+      (packaged: gateway answers 200, the worker loads xterm from app.asar and reports ready; off: no worker)
 
 ### Task 11: Gap-free snapshots and joins [model: opus]
 
