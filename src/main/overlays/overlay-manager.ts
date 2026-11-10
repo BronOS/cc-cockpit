@@ -153,7 +153,13 @@ export interface OverlayManagerOptions {
    * Send an event to one view of a window (ViewRegistry.toView): an html overlay's messages go to
    * the view holding its page only. Absent: to the whole window (`emit`), as before web access.
    */
-  emitToView?<C extends EventChannel>(viewId: ViewId, channel: C, payload: IpcEventMap[C]): void
+  emitToView?<C extends EventChannel>(viewId: ViewId, channel: C, payload: IpcEventMap[C]): boolean
+  /**
+   * Whether the remote `viewId` is still a live view of `windowId`. The opener checked it before
+   * awaits (login env, file check); the browser may have left since, with `viewGone` already run
+   * and nothing to hand the page back. Absent: trusted, as before web access.
+   */
+  isViewLive?(viewId: ViewId, windowId: number): boolean
   /** A view's device name for `info.heldBy` ("Desktop", a browser's device). Default: the view id. */
   deviceOf?(viewId: ViewId): string
   /**
@@ -531,7 +537,10 @@ export class OverlayManager {
     // Discuss shows for a typed overlay from the start; an onDiscuss handler adds it later.
     overlay.info = withDiscuss(overlay.info, overlay)
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
-    if (parsed.kind === 'html') this.hold(overlay, view !== undefined && isRemoteViewId(view) ? view : desktopViewId(windowId))
+    if (parsed.kind === 'html') this.hold(
+        overlay,
+        view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) ? view : desktopViewId(windowId)
+      )
     // Every kind keeps it (its buttons' clicks go there); only an html page uses the messaging part.
     if (channel) overlay.channel = channel
     // A failed spawn or view throws out of here (open turns it into a rejection), before the
@@ -678,8 +687,11 @@ export class OverlayManager {
   /** An opener's post to its page: to the holding view only, when the shell can address one. */
   private toPage(overlay: Overlay, message: string): void {
     const payload = { overlayId: overlay.id, message }
-    if (this.options.emitToView && overlay.holder !== undefined) this.options.emitToView(overlay.holder, 'overlays.message', payload)
-    else this.options.emit(overlay.windowId, 'overlays.message', payload)
+    if (this.options.emitToView && overlay.holder !== undefined) {
+      // False: the holder dropped and viewGone has not run yet. Queued, so the desktop's reload of
+      // the page (pageReady) delivers it instead of it being lost with pageReady still true.
+      if (!this.options.emitToView(overlay.holder, 'overlays.message', payload)) overlay.outbox.push(message)
+    } else this.options.emit(overlay.windowId, 'overlays.message', payload)
   }
 
   /** The window's overlays, bottom first; a plain read (no flow-control reset). */

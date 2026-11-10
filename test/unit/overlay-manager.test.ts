@@ -1002,6 +1002,8 @@ describe('html page messages (an opener with a channel)', () => {
 describe('html overlays held by one view (design-web.md §5.4)', () => {
   const page = { kind: 'html', src: 'cc-plugin://a.one/chat.html' }
   /** A manager that also sends to one view, and names devices, as index.ts wires it. */
+  const gone = new Set<string>()
+  beforeEach(() => gone.clear())
   function viewsManager(): { m: OverlayManager; toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }> } {
     const toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }> = []
     const m = new OverlayManager({
@@ -1014,7 +1016,9 @@ describe('html overlays held by one view (design-web.md §5.4)', () => {
       },
       emitToView: <C extends EventChannel>(viewId: string, channel: C, payload: IpcEventMap[C]) => {
         toView.push({ viewId, channel, payload })
+        return !gone.has(viewId)
       },
+      isViewLive: (viewId) => !gone.has(viewId),
       deviceOf: (viewId) => (viewId === 'web:1' ? 'Phone' : viewId === 'web:2' ? 'Tablet' : 'Desktop'),
       commandForChord: () => undefined,
       log: () => {}
@@ -1089,6 +1093,41 @@ describe('html overlays held by one view (design-web.md §5.4)', () => {
     expect(lastStack(W1)).toEqual([])
     expect(m.result(W1, id, 'again', 'web:1')).toBe(false)
     await expect(result).resolves.toEqual({ kind: 'value', value: 'mine' })
+  })
+
+  it('a view that left before start finished does not get the page; a post to a dropped holder waits', () => {
+    const { m, toView } = viewsManager()
+    gone.add('web:1')
+    const first = chat(m, 'web:1')
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    expect(first.id).toBeTruthy()
+    gone.clear()
+    const { id } = chat(m, 'web:2')
+    m.pageReady(W1, id, 'web:2')
+    gone.add('web:2')
+    const sent = toView.length
+    m.post(W1, id, '"late"')
+    expect(toView).toHaveLength(sent + 1)
+    // viewGone hands the page to the desktop, whose load delivers the queued post.
+    m.viewGone('web:2')
+    m.pageReady(W1, id, 'desktop:1')
+    expect(toView.at(-1)).toEqual({ viewId: 'desktop:1', channel: 'overlays.message', payload: { overlayId: id, message: '"late"' } })
+  })
+
+  it('a late result, message or load report from the old holder after a take is dropped', async () => {
+    const { m } = viewsManager()
+    const { id, result, heard } = chat(m, 'web:1')
+    m.pageReady(W1, id, 'web:1')
+    expect(m.take(W1, 'web:2', id)).toBe(true)
+    expect(m.pageMessage(W1, id, '{"a":1}', 'web:1')).toBe(false)
+    expect(heard).toEqual([])
+    expect(m.result(W1, id, 'stale', 'web:1')).toBe(false)
+    m.pageReady(W1, id, 'web:1')
+    m.pageLoaded(W1, id, 'web:1')
+    expect(m.infos(W1)[0]?.loading).toBe(true)
+    expect(m.infos(W1)).toHaveLength(1)
+    expect(m.result(W1, id, 'fresh', 'web:2')).toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'value', value: 'fresh' })
   })
 
   it('take is scoped to the window and to html overlays', () => {

@@ -622,8 +622,9 @@ function start(): void {
     },
     // An html overlay's page lives in one view (design-web.md §5.4): its messages go there only.
     emitToView: (viewId, channel, payload) => {
-      views.toView(viewId, channel, payload)
+      return views.toView(viewId, channel, payload)
     },
+    isViewLive: (viewId, windowId) => views.windowOf(viewId) === windowId,
     deviceOf: (viewId) => viewDevice(viewId),
     commandForChord,
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
