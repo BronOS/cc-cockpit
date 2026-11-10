@@ -33,6 +33,7 @@ import type {
   UpdateState,
   WindowInfo
 } from '../../shared/ipc'
+import { remoteAllowed } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope } from '../../shared/settings-page'
@@ -45,6 +46,7 @@ import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
 import type { SenderContext } from '../windows/window-manager'
+import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
 export interface IpcEventLike {
@@ -108,15 +110,78 @@ export interface ProjectContext {
   projectId: string
 }
 
+/** A SenderContext for a project window (never the picker). */
+export type ProjectSenderContext = Extract<SenderContext, { kind: 'project' }>
+
+/**
+ * A call from the desktop window's own page, through Electron IPC. Authenticated as today: the top
+ * frame, on the app page, of a webContents main opened (`resolveSender`).
+ */
+export interface ElectronCaller {
+  readonly kind: 'electron'
+  readonly event: IpcEventLike
+}
+
+/**
+ * A call from a remote (browser) view over the gateway (design-web.md §2.1). The gateway builds it
+ * once, at handshake, from the project window it bound the connection to (§4) and the view id it
+ * minted: nothing in a frame or a payload can name another window, project or view. Only a project
+ * window: the gateway never binds a remote view to the picker.
+ */
+export interface WebCaller {
+  readonly kind: 'web'
+  readonly context: ProjectSenderContext
+  readonly viewId: ViewId
+  readonly who: Who
+}
+
+export type Caller = ElectronCaller | WebCaller
+
+/**
+ * Build a WebCaller. Main's gateway is the only caller; the check here is a second line against a
+ * gateway bug (a desktop id or a picker context on a remote connection), not input validation.
+ * Frozen so a handler cannot rebind the connection it was handed.
+ */
+export function webCaller(context: ProjectSenderContext, viewId: ViewId, who: Who = 'owner'): WebCaller {
+  if (context.kind !== 'project') throw new Error('webCaller: a remote view binds to a project window only')
+  if (!isRemoteViewId(viewId)) throw new Error('webCaller: not a remote view id')
+  return Object.freeze({
+    kind: 'web',
+    context: Object.freeze({ kind: 'project', windowId: context.windowId, projectId: context.projectId }),
+    viewId,
+    who
+  })
+}
+
+/**
+ * Which view a call came from, the third argument of every handler. Handlers that keep per-view state
+ * (selection, overlay answers, terminal size) key it by `viewId`; the rest ignore it. `remote` is
+ * true for a browser view, for the few `adapted` channels (design §6.1) that answer it differently.
+ */
+export interface CallView {
+  viewId: ViewId
+  who: Who
+  remote: boolean
+}
+
 type Req<C extends InvokeChannel> = IpcInvokeMap[C]['req']
 type Res<C extends InvokeChannel> = IpcInvokeMap[C]['res']
 type Result<C extends InvokeChannel> = Res<C> | Promise<Res<C>>
+
+/** A registered handler, as the router stores it for both transports. */
+type Route = (caller: Caller, payload: unknown) => unknown
 
 export class IpcRouter {
   private readonly ipc: IpcMainLike
   private readonly resolveSender: (senderId: number) => SenderContext | undefined
   private readonly isAppPage: (url: string) => boolean
   private readonly log: (message: string) => void
+  /**
+   * Every handler, by channel, so a web frame reaches the very function an Electron invoke does
+   * (`dispatch`). A Map, not an object: a channel name from a frame is untrusted, and `__proto__`
+   * or `toString` must not resolve to anything.
+   */
+  private readonly routes = new Map<string, Route>()
 
   /** `isAppPage` is normally `appPageMatcher(<where the shell UI is loaded from>)`. */
   constructor(
@@ -134,31 +199,72 @@ export class IpcRouter {
   /** A handler any window main opened may call (the picker included). */
   handleWindow<C extends InvokeChannel>(
     channel: C,
-    handler: (ctx: SenderContext, payload: Req<C>) => Result<C>
+    handler: (ctx: SenderContext, payload: Req<C>, view: CallView) => Result<C>
   ): void {
-    this.ipc.handle(channel, (event, ...args) => {
-      const ctx = this.authenticate(channel, event)
-      // Only the first argument is the payload; extra arguments are dropped, not passed along.
-      return handler(ctx, args[0] as Req<C>)
+    this.register(channel, (caller, payload) => {
+      const { ctx, view } = this.authenticate(channel, caller)
+      return handler(ctx, payload as Req<C>, view)
     })
   }
 
   /** A handler that acts on the sender's project; a picker (no project) is refused. */
   handleProject<C extends InvokeChannel>(
     channel: C,
-    handler: (ctx: ProjectContext, payload: Req<C>) => Result<C>
+    handler: (ctx: ProjectContext, payload: Req<C>, view: CallView) => Result<C>
   ): void {
-    this.ipc.handle(channel, (event, ...args) => {
-      const ctx = this.authenticate(channel, event)
+    this.register(channel, (caller, payload) => {
+      const { ctx, view } = this.authenticate(channel, caller)
       if (ctx.kind !== 'project') {
         this.log(`ipc ${channel}: refused, sender window ${ctx.windowId} has no project`)
         throw new Error(`${channel}: not a project window`)
       }
-      return handler({ windowId: ctx.windowId, projectId: ctx.projectId }, args[0] as Req<C>)
+      return handler({ windowId: ctx.windowId, projectId: ctx.projectId }, payload as Req<C>, view)
     })
   }
 
-  private authenticate(channel: string, event: IpcEventLike): SenderContext {
+  /**
+   * Run a remote view's invoke through the same handler an Electron invoke reaches. Always async,
+   * like `ipcRenderer.invoke`: a throwing handler rejects. The channel is untrusted text from the
+   * frame: an unknown name or a `no`-class channel is refused before any handler runs (authenticate).
+   */
+  dispatch(caller: WebCaller, channel: string, payload: unknown): Promise<unknown> {
+    return Promise.resolve().then(() => {
+      if (!remoteAllowed(channel)) {
+        // The name is not logged: it is whatever the remote frame sent.
+        this.log(`ipc: refused a channel remote views may not call (view ${caller.viewId})`)
+        throw new Error('refused')
+      }
+      const route = this.routes.get(channel)
+      if (!route) {
+        this.log(`ipc ${channel}: no handler (view ${caller.viewId})`)
+        throw new Error(`${channel}: no handler`)
+      }
+      return route(caller, payload)
+    })
+  }
+
+  private register(channel: InvokeChannel, route: Route): void {
+    if (this.routes.has(channel)) throw new Error(`second handler for ${channel}`)
+    this.routes.set(channel, route)
+    // Only the first argument is the payload; extra arguments are dropped, not passed along.
+    this.ipc.handle(channel, (event, ...args) => route({ kind: 'electron', event }, args[0]))
+  }
+
+  private authenticate(channel: string, caller: Caller): { ctx: SenderContext; view: CallView } {
+    if (caller.kind === 'web') {
+      // Checked here as well as in `dispatch`: the router, not each entry point, is the one place a
+      // `no`-class channel (host access, native dialogs, the host's own window) is kept from a
+      // remote view.
+      if (!remoteAllowed(channel)) {
+        this.log(`ipc ${channel}: refused for remote view ${caller.viewId}`)
+        throw new Error(`${channel}: refused`)
+      }
+      return {
+        ctx: caller.context,
+        view: { viewId: caller.viewId, who: caller.who, remote: true }
+      }
+    }
+    const { event } = caller
     if (!event.senderFrame || event.senderFrame.parent !== null) {
       this.log(`ipc ${channel}: refused, not sent by the top frame of webContents ${event.sender.id}`)
       throw new Error(`${channel}: refused`)
@@ -173,7 +279,7 @@ export class IpcRouter {
       this.log(`ipc ${channel}: refused, unknown sender webContents ${event.sender.id}`)
       throw new Error(`${channel}: refused`)
     }
-    return ctx
+    return { ctx, view: { viewId: desktopViewId(ctx.windowId), who: 'owner', remote: false } }
   }
 }
 

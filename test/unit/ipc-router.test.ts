@@ -21,7 +21,8 @@ import {
   type CoreHandlerDeps,
   type IpcEventLike,
   type IpcMainLike,
-  type TabHandlerDeps
+  type TabHandlerDeps,
+  webCaller
 } from '../../src/main/ipc/router'
 import type { SenderContext } from '../../src/main/windows/window-manager'
 import { BUILTIN_THEMES } from '../../src/main/themes/theme-service'
@@ -180,6 +181,112 @@ describe('IpcRouter', () => {
     })
     await expect(ipc.invoke('window.info', 13)).rejects.toThrow(/not a project window/)
     await expect(ipc.invoke('projects.recent', 13)).resolves.toEqual([])
+  })
+})
+
+describe('IpcRouter callers and views', () => {
+  const A_CTX = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+
+  it('gives a desktop caller its window\'s desktop view, unchanged checks otherwise', async () => {
+    const { ipc, router } = setup()
+    const seen: unknown[] = []
+    router.handleProject('tabs.list', (ctx, _payload, view) => {
+      seen.push(ctx, view)
+      return []
+    })
+    await ipc.invoke('tabs.list', 11)
+    expect(seen).toEqual([
+      { windowId: 1, projectId: PROJECT_A },
+      { viewId: 'desktop:1', who: 'owner', remote: false }
+    ])
+    // A `no`-class channel stays open to the desktop: the class only limits remote views.
+    router.handleWindow('projects.openFolder', () => true)
+    await expect(ipc.invoke('projects.openFolder', 11)).resolves.toBe(true)
+  })
+
+  it('resolves a web caller to its bound window and view', async () => {
+    const { router } = setup()
+    const seen: unknown[] = []
+    router.handleProject('tabs.list', (ctx, _payload, view) => {
+      seen.push(ctx, view)
+      return []
+    })
+    router.handleWindow('window.info', (ctx, _payload, view) => {
+      seen.push(ctx, view)
+      return { kind: 'picker', home: '/h' }
+    })
+    const caller = webCaller(A_CTX, 'web:7')
+    await expect(router.dispatch(caller, 'tabs.list', undefined)).resolves.toEqual([])
+    await router.dispatch(caller, 'window.info', undefined)
+    const view = { viewId: 'web:7', who: 'owner', remote: true }
+    expect(seen).toEqual([{ windowId: 1, projectId: PROJECT_A }, view, A_CTX, view])
+  })
+
+  it('ignores a window, project or view named in a web payload', async () => {
+    const { router } = setup()
+    const seen: unknown[] = []
+    router.handleProject('tabs.list', (ctx, payload, view) => {
+      seen.push(ctx, payload, view)
+      return []
+    })
+    const forged = { windowId: 2, projectId: PROJECT_B, viewId: 'web:99', kind: 'electron', who: 'x' }
+    await router.dispatch(webCaller(A_CTX, 'web:1'), 'tabs.list', forged)
+    expect(seen[0]).toEqual({ windowId: 1, projectId: PROJECT_A })
+    expect(seen[1]).toEqual(forged)
+    expect(seen[2]).toEqual({ viewId: 'web:1', who: 'owner', remote: true })
+  })
+
+  it('refuses a no-class channel from a web caller before the handler', async () => {
+    const { router, logs } = setup()
+    let calls = 0
+    router.handleWindow('projects.openFolder', () => {
+      calls++
+      return true
+    })
+    router.handleProject('window.reopen', () => {
+      calls++
+    })
+    const caller = webCaller(A_CTX, 'web:1')
+    await expect(router.dispatch(caller, 'projects.openFolder', undefined)).rejects.toThrow(/refused/)
+    await expect(router.dispatch(caller, 'window.reopen', undefined)).rejects.toThrow(/refused/)
+    expect(calls).toBe(0)
+    expect(logs.join('\n')).toMatch(/remote views may not call \(view web:1\)/)
+  })
+
+  it('refuses unknown and inherited channel names from a web caller', async () => {
+    const { router } = setup()
+    const caller = webCaller(A_CTX, 'web:1')
+    for (const channel of ['nope', '__proto__', 'toString', 'constructor', '']) {
+      await expect(router.dispatch(caller, channel, undefined)).rejects.toThrow(/refused/)
+    }
+    // A `yes` channel with no handler registered is an error, not a crash.
+    await expect(router.dispatch(caller, 'tabs.list', undefined)).rejects.toThrow(/no handler/)
+  })
+
+  it('rejects a throwing handler as a promise, as ipcMain does', async () => {
+    const { router } = setup()
+    router.handleProject('tabs.list', () => {
+      throw new Error('boom')
+    })
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'tabs.list', undefined)).rejects.toThrow('boom')
+  })
+
+  it('refuses a second handler for one channel', () => {
+    const { router } = setup()
+    router.handleProject('tabs.list', () => [])
+    expect(() => router.handleProject('tabs.list', () => [])).toThrow(/second handler/)
+  })
+
+  it('builds only frozen web callers bound to a project window and a remote view id', () => {
+    expect(() => webCaller(A_CTX, 'desktop:1')).toThrow(/remote view id/)
+    expect(() => webCaller(A_CTX, 'web:0')).toThrow(/remote view id/)
+    expect(() =>
+      webCaller({ kind: 'picker', windowId: 3 } as unknown as typeof A_CTX, 'web:1')
+    ).toThrow(/project window/)
+    const caller = webCaller(A_CTX, 'web:2')
+    expect(caller).toEqual({ kind: 'web', context: A_CTX, viewId: 'web:2', who: 'owner' })
+    expect(Object.isFrozen(caller)).toBe(true)
+    expect(Object.isFrozen(caller.context)).toBe(true)
   })
 })
 

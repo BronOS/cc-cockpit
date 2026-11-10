@@ -127,14 +127,14 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Create: `src/shared/views.ts` (port from spike 2)
 - Modify: `test/unit/ipc-router.test.ts`
 
-- [ ] replace `authenticate(channel, event)` with `authenticate(channel, caller)`; `ElectronCaller` keeps today's checks
+- [x] replace `authenticate(channel, event)` with `authenticate(channel, caller)`; `ElectronCaller` keeps today's checks
       (top frame, app page, `sender.id`) and resolves to the window's `SenderContext` plus its desktop `viewId`
-- [ ] define `Caller` / `WebCaller` (bound context from the gateway; never from a payload) and pass `viewId` to
+- [x] define `Caller` / `WebCaller` (bound context from the gateway; never from a payload) and pass `viewId` to
       handlers that need it; others unchanged
-- [ ] refuse a `no`-class channel from a `WebCaller` in the router, before the handler
-- [ ] write tests: Electron caller unchanged (all existing router tests pass), web caller resolves to its bound window,
+- [x] refuse a `no`-class channel from a `WebCaller` in the router, before the handler
+- [x] write tests: Electron caller unchanged (all existing router tests pass), web caller resolves to its bound window,
       a payload naming another window or project has no effect, `no`-class refused for web, `yes` allowed
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 3: ViewRegistry for every event and port post [model: opus]
 
