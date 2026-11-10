@@ -56,6 +56,9 @@ export function tabIo(tabId: string): TerminalIo {
 /** How long the pty's size must differ from this view's before "Fit to this screen" shows. */
 const FIT_BUTTON_DELAY_MS = 400
 
+/** The smallest font a scaled-down terminal is drawn with (xterm cannot measure a cell smaller). */
+const MIN_SCALED_FONT_PX = 4
+
 /** ESC c: full reset (screen, scrollback, modes), parsed in order with the writes before it. */
 const RIS = '\x1bc'
 
@@ -93,6 +96,8 @@ export class TerminalSession {
   /** The font last asked for (applied once it has loaded), and which ask is the latest. */
   private font: TerminalFont
   private fontAsk = 0
+  /** The font size the person chose; the drawn size is smaller while a larger pty is scaled to the pane (layout). */
+  private baseFontSize: number
 
   constructor(
     tabId: string,
@@ -119,6 +124,7 @@ export class TerminalSession {
       this.term.options.theme = xtermLookOptions(seeThrough, theme).theme
     })
     this.font = currentPrefs().terminalFont
+    this.baseFontSize = this.font.size
     // Every prefs push lands here, a tab close side change included: only a new font is applied.
     this.offPrefs = onPrefs((prefs) => this.setFont(prefs.terminalFont))
     this.term.loadAddon(this.fit)
@@ -209,6 +215,7 @@ export class TerminalSession {
       if (this.disposed || ask !== this.fontAsk) return
       // term.options is xterm's proxy: each assignment goes through its option setter.
       Object.assign(this.term.options, xtermFontOptions(font))
+      this.baseFontSize = font.size
       this.refit()
     })
   }
@@ -228,6 +235,12 @@ export class TerminalSession {
         this.refit()
       })
       return
+    }
+    // The pane's size is measured at the chosen font: a scaled-down font (layout) would count more
+    // cells and feed back into the size this view reports. layout() scales again in the same tick.
+    if (this.term.options.fontSize !== this.baseFontSize) {
+      this.term.options.fontSize = this.baseFontSize
+      if (!this.fit.proposeDimensions()) return
     }
     const own = this.fit.proposeDimensions()
     if (!own || !(own.cols > 0) || !(own.rows > 0)) return
@@ -254,8 +267,11 @@ export class TerminalSession {
     const el = this.term.element
     if (!el) return
     const { scale, fit } = drawAt(this.ownSize, this.ptySize)
-    el.style.transformOrigin = 'top left'
-    el.style.transform = scale < 1 ? `scale(${scale})` : ''
+    // Scaled by the font size, not a CSS transform: xterm maps a click with the element's scaled
+    // bounding box but unscaled cell metrics, so every mouse coordinate would be off by the scale.
+    // term.resize keeps cols x rows, so the pty-sized grid just gets smaller cells.
+    const fontSize = scale < 1 ? Math.max(MIN_SCALED_FONT_PX, this.baseFontSize * scale) : this.baseFontSize
+    if (this.term.options.fontSize !== fontSize) this.term.options.fontSize = fontSize
     const container = this.container
     if (!fit || !this.io.fit || !container) {
       clearTimeout(this.fitTimer)

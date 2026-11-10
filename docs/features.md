@@ -443,8 +443,7 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   query then reports the top-left corner and default modes rather than the program's real state.
 - A terminal shown in several places (the desktop window and browsers) has one size: the place that typed last (after
   half a second without the other typing) or that pressed "Fit to this screen". The others draw it at that size, scaled
-  down when it is larger than their pane, with empty space when it is smaller. In a scaled-down terminal mouse clicks
-  and selections land off by the scale (the terminal does not know it is scaled), until "Fit to this screen". A
+  down (a smaller font) when it is larger than their pane, with empty space when it is smaller. A
   minimized window or a browser tab in the background never sizes a terminal while another place shows it.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name

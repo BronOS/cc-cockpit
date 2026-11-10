@@ -276,6 +276,24 @@ describe('TabManager: the pty takes the sizing view, the desktop gets size items
     expect(events).toEqual([{ tabId: tab.id, data: '', cols: 50, rows: 30 }])
   })
 
+  it('an exited tab still gets the desktop its size (no pty to resize), and no remote item', () => {
+    const { tabs, events, tapped } = manager()
+    const tab = tabs.create(P, { kind: 'shell' })
+    tabs.resize(P, tab.id, 100, 30, D)
+    backend.last.exit(0)
+    events.length = 0
+    tapped.length = 0
+    tabs.resize(P, tab.id, 90, 25, D)
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 90, rows: 25 }])
+    expect(tapped).toEqual([])
+    // A phone sizing the exited tab, then the desktop pressing "Fit to this screen".
+    tabs.resize(P, tab.id, 50, 30, W)
+    tabs.resize(P, tab.id, 80, 24, D)
+    events.length = 0
+    expect(tabs.fit(P, tab.id, D)).toBe(true)
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 80, rows: 24 }])
+  })
+
   it('a closed tab forgets its sizes and pending takes', async () => {
     const { tabs } = manager()
     const tab = tabs.create(P, { kind: 'shell' })

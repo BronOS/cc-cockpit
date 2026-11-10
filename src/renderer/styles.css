@@ -922,7 +922,7 @@ iframe:focus-visible {
   padding: 8px 6px 8px 12px;
   background: var(--cc-terminal-bg);
   /* Another view may size the pty (web access, terminal-sizes.ts): the terminal is then drawn at
-     the pty's size, scaled down (a transform keeps its layout box) or letterboxed; nothing spills. */
+     the pty's size, scaled down (a smaller font) or letterboxed; nothing spills. */
   overflow: hidden;
 }
 /* "Fit to this screen" (terminal-session.ts): over the terminal while it has another view's size. */

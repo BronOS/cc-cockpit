@@ -759,8 +759,17 @@ export class TabManager {
    */
   private applySize(id: string, cols: number, rows: number): void {
     const tab = this.byId.get(id)
+    if (!tab) return
     const before = this.pty.sizeOf(id)
-    if (!tab || !before || (before.cols === cols && before.rows === rows)) return
+    if (!before) {
+      // An exited tab has no pty to resize, but the desktop still draws it at the size it was told
+      // (the renderer no longer fits locally once it has a size), so a window resize or "Fit to
+      // this screen" must still reach it: a size item for the desktop only. Remote views have
+      // nothing to wrap, and a restart spawns at the sizer's remembered size.
+      if (this.desktop.passes(id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data: '', cols, rows })
+      return
+    }
+    if (before.cols === cols && before.rows === rows) return
     if (!this.pty.resize(id, cols, rows)) return
     if (this.desktop.passes(id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data: '', cols, rows })
     this.tap((t) => t.resized(id, cols, rows))
