@@ -1,7 +1,7 @@
 // Electron adapter for WindowManager: the only code that turns its requests into BrowserWindows.
 // Kept thin on purpose (covered by e2e, not unit tests); every decision lives in window-manager.ts
 // and window-bounds.ts.
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, screen, type MessagePortMain } from 'electron'
 import type { ProjectView, WindowBounds } from '../../shared/types'
 import { createWindow, loadRenderer } from './create-window'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type Rect } from './window-bounds'
@@ -103,6 +103,13 @@ export class ElectronWindowFactory implements WindowFactory {
     return {
       id,
       senderId,
+      // The desktop view's sink (view-registry.ts): the only place a window's page is sent to. The
+      // registry is Electron-free, so ports arrive typed unknown; main only ever posts MessagePortMain.
+      sink: {
+        send: (channel, payload) => win.webContents.send(channel, payload),
+        postPort: (channel, payload, port) => win.webContents.postMessage(channel, payload, [port as MessagePortMain]),
+        isClosed: () => win.isDestroyed() || win.webContents.isDestroyed()
+      },
       focus: () => {
         if (win.isDestroyed()) return
         if (win.isMinimized()) win.restore()

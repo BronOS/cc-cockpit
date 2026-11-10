@@ -145,15 +145,15 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/overlays/overlay-manager.ts` and `src/main/plugins/panel-ports.ts`
 - Create: `test/unit/view-registry.test.ts`, `test/unit/no-direct-webcontents-send.test.ts`
 
-- [ ] `ViewRegistry` with `toProject`, `toWindow`, `toView`, `toAll`, `postPort`; a desktop view wraps `webContents`,
+- [x] `ViewRegistry` with `toProject`, `toWindow`, `toView`, `toAll`, `postPort`; a desktop view wraps `webContents`,
       a remote view wraps a sink the gateway provides
-- [ ] route every `webContents.send`, `getAllWindows()` broadcast, `sessions.closeAsk` and panel-port post through it
-- [ ] a grep test that fails on `webContents.send` / `getAllWindows()` / `webContents.postMessage` outside the registry
+- [x] route every `webContents.send`, `getAllWindows()` broadcast, `sessions.closeAsk` and panel-port post through it
+- [x] a grep test that fails on `webContents.send` / `getAllWindows()` / `webContents.postMessage` outside the registry
       and the Electron adapter files (`electron-window-factory.ts`, `create-window.ts`, `electron-url-view.ts`,
       `electron-webview.ts`)
-- [ ] write tests: fan-out to two views of one window, project scoping, a closed view is skipped, port posts reach the
+- [x] write tests: fan-out to two views of one window, project scoping, a closed view is skipped, port posts reach the
       right view
-- [ ] run tests and `npm run test:e2e` (the desktop must behave as today) - must pass before next task
+- [x] run tests and `npm run test:e2e` (the desktop must behave as today) - must pass before next task (214 passed; 4 fail identically on the base commit a50e4cd: window-bounds x2 under the tiling WM, reviewer-annotate:282, top-strip:191)
 
 ### Task 4: Gateway skeleton, loopback only, always-on checks [model: opus]
 

@@ -14,6 +14,7 @@ import type { ProjectRegistry } from '../projects/registry'
 import type { ProjectView, WindowBounds } from '../../shared/types'
 import { fitBounds, sanitizeBounds, type Rect } from './window-bounds'
 import { OPAQUE_LOOK, type ProjectWindowLook } from './window-chrome'
+import type { ViewRegistry, ViewSink } from '../views/view-registry'
 
 export type { Rect } from './window-bounds'
 
@@ -23,6 +24,11 @@ export interface WindowHandle {
   readonly id: number
   /** Its renderer's webContents id: what an IPC event carries as `event.sender.id`. */
   readonly senderId: number
+  /**
+   * Its page as a view (design-web.md §2.2): events and port posts reach it only through the
+   * ViewRegistry, which the manager registers it with on creation and drops it from on close.
+   */
+  readonly sink: ViewSink
   /** Bring to front, restoring it first when minimised. */
   focus(): void
   close(): void
@@ -124,6 +130,11 @@ export interface WindowManagerOptions {
    * list to read, and as a sheet it sits over a window that may itself be see-through.
    */
   projectWindowLook?: () => ProjectWindowLook
+  /**
+   * Where every window's page is registered as its desktop view (project windows and the picker:
+   * app-wide events reach both). Absent: nothing is registered (tests that do not look at events).
+   */
+  views?: Pick<ViewRegistry, 'addDesktop' | 'removeWindow'>
   log?: (message: string) => void
 }
 
@@ -211,6 +222,7 @@ export class WindowManager {
     this.picker = handle
     this.pickerParent = parent
     this.senders.set(handle.senderId, { kind: 'picker', windowId: handle.id })
+    this.options.views?.addDesktop(handle.id, handle.sink)
   }
 
   /**
@@ -377,6 +389,8 @@ export class WindowManager {
     this.paths.set(handle, view.path)
     this.projects.set(projectId, handle)
     this.senders.set(handle.senderId, { kind: 'project', windowId: handle.id, projectId })
+    // Before onProjectOpened: the plugin host it starts may already emit to the project.
+    this.options.views?.addDesktop(handle.id, handle.sink)
     this.options.registry.markOpen(projectId)
     this.options.onProjectOpened?.(projectId, handle.id)
 
@@ -397,6 +411,8 @@ export class WindowManager {
 
   private projectClosed(projectId: string, handle: WindowHandle): void {
     this.senders.delete(handle.senderId)
+    // Its views go with it, before onProjectClosed: the tabs killed there emit to a window that is gone.
+    this.options.views?.removeWindow(handle.id)
     this.transparent.delete(handle)
     this.paths.delete(handle)
     const reopenPath = this.reopening.get(handle)
@@ -454,6 +470,7 @@ export class WindowManager {
    */
   private pickerClosed(handle: WindowHandle): void {
     this.senders.delete(handle.senderId)
+    this.options.views?.removeWindow(handle.id)
     // Closed by the user (Esc / Cancel / the close button), not by `closePicker` (which clears
     // `picker` first): a sheet gives the key focus back to its parent on macOS, but not reliably
     // elsewhere, so hand it over explicitly.

@@ -15,6 +15,7 @@ import {
   type WindowHandle
 } from '../../src/main/windows/window-manager'
 import type { ProjectWindowLook } from '../../src/main/windows/window-chrome'
+import { ViewRegistry } from '../../src/main/views/view-registry'
 import type { ProjectView, WindowBounds } from '../../src/shared/types'
 
 /** A window the fake factory made; `userClose()` simulates the user (or quit) closing it. */
@@ -34,6 +35,8 @@ interface FakeWindow extends WindowHandle {
   look?: ProjectWindowLook
   /** Every setBlur call, in order. */
   blurCalls: boolean[]
+  /** Every event its page was sent through its view sink. */
+  sent: Array<{ channel: string; payload: unknown }>
   userClose(): void
 }
 
@@ -88,6 +91,11 @@ class FakeFactory implements WindowFactory {
       bounds: createdWith ?? { x: 10, y: 10, width: 800, height: 600 },
       callbacks,
       blurCalls: [],
+      sent: [],
+      sink: {
+        send: (channel, payload) => win.sent.push({ channel, payload }),
+        isClosed: () => win.closed
+      },
       setBlur(on) {
         win.blurCalls.push(on)
       },
@@ -782,6 +790,28 @@ describe('sender resolution', () => {
     win.userClose()
     expect(wm.resolveSender(win.senderId)).toBeUndefined()
     expect(wm.resolveSender(9999)).toBeUndefined()
+  })
+})
+
+describe('views', () => {
+  it('registers every window as its desktop view and drops it on close', () => {
+    let wm: WindowManager | undefined = undefined
+    const views = new ViewRegistry({ windowIdOf: (projectId) => wm?.windowIdOf(projectId) })
+    wm = new WindowManager({ factory, registry, platform: 'darwin', quit: () => quits++, views })
+    wm.showPicker()
+    const picker = factory.open('picker')[0]!
+    expect(views.viewsOf(picker.id)).toEqual([`desktop:${picker.id}`])
+    const view = wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    // The picker closed on the open: its view went with it.
+    expect(views.viewsOf(picker.id)).toEqual([])
+    views.toProject(view.id, 'tabs.select', { tabId: 't1' })
+    views.toAll('prefs.changed', {})
+    expect(win.sent.map((e) => e.channel)).toEqual(['tabs.select', 'prefs.changed'])
+    expect(picker.sent).toEqual([])
+    win.userClose()
+    expect(views.viewsOf(win.id)).toEqual([])
+    expect(views.toWindow(win.id, 'tabs.select', { tabId: 't1' })).toBe(false)
   })
 })
 

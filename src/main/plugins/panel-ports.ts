@@ -75,7 +75,7 @@ export interface PanelPortDeps<P> {
   runningPanels(projectId: string, pluginId: string): readonly string[] | undefined
   /** Hand the host its end, tagged (HostManager.sendPanelPort); false when there is no host. */
   toHost(projectId: string, pluginId: string, panelId: string, port: P): boolean
-  /** Post the renderer end to the window (webContents.postMessage on PANEL_PORT_CHANNEL). */
+  /** Post the renderer end to the window (ViewRegistry.postPort on PANEL_PORT_CHANNEL). */
   toRenderer(windowId: number, payload: { panelKey: string; nonce: number }, port: P): void
   /** Tell the project's window to reload these plugins' panels (`panels.reload`). */
   reload(projectId: string, pluginIds: string[]): void

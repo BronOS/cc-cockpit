@@ -143,6 +143,8 @@ import { revocationNotice } from './marketplace/marketplace-view'
 import { rendererLocation } from './windows/create-window'
 import { ElectronWindowFactory } from './windows/electron-window-factory'
 import { blurSupport } from './windows/window-chrome'
+import { ViewRegistry } from './views/view-registry'
+import { desktopViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
   asSecondInstanceData,
@@ -302,6 +304,13 @@ function start(): void {
   // What a tab spawn waits for: the login env, and the generated Claude plugin tree (a Claude tab
   // reads its --plugin-dir list at spawn and keeps it for the whole session).
   const spawnReady: Promise<void> = Promise.all([loginEnvReady, claudePlugins.ready]).then(() => undefined)
+  // Every event and port post to a page goes through the view registry (design-web.md §2.2): a
+  // window's desktop page and, with web access on, its remote views. Nothing else here calls
+  // webContents.send / postMessage or getAllWindows() (no-direct-webcontents-send.test.ts).
+  // `windows` is defined below; the lookup runs only once an event is sent, after windows exist.
+  const views: ViewRegistry<Electron.MessagePortMain> = new ViewRegistry({
+    windowIdOf: (projectId): number | undefined => windows.windowIdOf(projectId)
+  })
   // App-wide: one theme for every window. The OS appearance only matters until the user picks one.
   const themes = new ThemeService({
     settings: {
@@ -311,11 +320,7 @@ function start(): void {
       save: () => registry.app.save()
     },
     isDark: () => nativeTheme.shouldUseDarkColors,
-    onChange: (theme) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send('theme.changed', theme)
-      }
-    }
+    onChange: (theme) => views.toAll('theme.changed', theme)
   })
   nativeTheme.on('updated', () => themes.refresh())
   // Installed plugins: their themes register now; the user's active plugin theme comes back as
@@ -441,6 +446,7 @@ function start(): void {
     registry,
     platform: process.platform,
     quit: () => app.quit(),
+    views,
     // The window's plugin host (host-manager.ts); `hosts` is defined below, windows open after ready.
     // Runs after startup only (a window event), by which time sendToWindow below exists.
     onFullScreenChanged: (windowId, fullScreen) => sendToWindow(windowId, 'window.state', { fullScreen }),
@@ -533,26 +539,20 @@ function start(): void {
   // must be the same string, and the CLI recomputes it from the same inputs (paths.ts).
   const uid = process.getuid?.() ?? 'nouid'
   const sock = socketPath(dataDir, process.env, uid, tmpdir())
-  /** Send an event to the window that shows a project (none, or one mid-close, is skipped). */
-  const sendToProject = (projectId: string, channel: EventChannel, payload: unknown): void => {
-    const windowId = windows.windowIdOf(projectId)
-    const win = windowId === undefined ? null : BrowserWindow.fromId(windowId)
-    // A window mid-close may already be destroyed; its tabs are being killed anyway.
-    if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
-  }
-  /** Send an event to a window by id (a closed or closing one is skipped). */
+  /**
+   * Send an event to every view of the window that shows a project (none, or one mid-close, is
+   * skipped: a window mid-close has left the registry; its tabs are being killed anyway).
+   */
+  const sendToProject = (projectId: string, channel: EventChannel, payload: unknown): void =>
+    views.toProject(projectId, channel, payload)
+  /** Send an event to every view of a window by id (a closed or closing one is skipped). */
   const sendToWindow = (windowId: number, channel: EventChannel, payload: unknown): void => {
-    const win = BrowserWindow.fromId(windowId)
-    if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+    views.toWindow(windowId, channel, payload)
   }
   // ctx.sessions.close's asks to a window's tab pane (close-asks.ts): settled by that window's
-  // `sessions.closeAnswer`, or false when it closes or the wait runs out.
-  const closeAsks = new CloseAsks((windowId, ask) => {
-    const win = BrowserWindow.fromId(windowId)
-    if (!win || win.isDestroyed()) return false
-    win.webContents.send('sessions.closeAsk', ask)
-    return true
-  })
+  // `sessions.closeAnswer`, or false when it closes or the wait runs out. False at once when no
+  // view of the window took the ask (nobody could answer it).
+  const closeAsks = new CloseAsks((windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask))
   // ctx.sessions.close's body (HostApi checked the tab is the project's); a function so the test
   // hook `pluginCloseTab` runs the very same path.
   const closeTabForPlugin = (windowId: number, projectId: string, tabId: string): Promise<boolean> => {
@@ -1056,11 +1056,8 @@ function start(): void {
     },
     runningPanels: (projectId, pluginId) => hosts.runningPanels(projectId, pluginId),
     toHost: (projectId, pluginId, panelId, port) => hosts.sendPanelPort(projectId, pluginId, panelId, port),
-    toRenderer: (windowId, payload, port) => {
-      const win = BrowserWindow.fromId(windowId)
-      if (!win || win.isDestroyed()) throw new Error('the window is gone')
-      win.webContents.postMessage(PANEL_PORT_CHANNEL, payload, [port])
-    },
+    // The window's desktop view for now; remote views get their ports relayed (design-web.md §5.4).
+    toRenderer: (windowId, payload, port) => views.postPort(desktopViewId(windowId), PANEL_PORT_CHANNEL, payload, port),
     reload: (projectId, pluginIds) => sendToProject(projectId, 'panels.reload', { pluginIds }),
     close: (port) => port.close(),
     // Slot frames: looked up in the layout's own records, the port to the provider's host only.
@@ -1189,10 +1186,7 @@ function start(): void {
   }
   // Every window shows the bar, so every window hears (the picker ignores it).
   const broadcastUpdateState = (): void => {
-    const state = updateState()
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.webContents.send('updates.changed', state)
-    }
+    views.toAll('updates.changed', updateState())
   }
   const updateChecker: UpdateChecker = new UpdateChecker({
     current: appVersion,
@@ -1710,10 +1704,7 @@ function start(): void {
     // Like the theme: every window (the picker too; it ignores what it does not draw) gets the new
     // prefs, so the change shows in every open tab strip without a reload.
     prefsChanged: () => {
-      const prefs = appearance.prefs()
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send('prefs.changed', prefs)
-      }
+      views.toAll('prefs.changed', appearance.prefs())
     },
     tabCommands: { get: () => registry.app.data.tabCommands },
     windowBackground: {
