@@ -79,9 +79,11 @@ export class TerminalSession {
   private container: HTMLElement | undefined
   private lastSize = ''
   /**
-   * The pty's size from main's stream (`tabs.data` size items and snapshots); undefined until the
-   * first one, while this view sizes the pty as today (the terminal fits its pane). Once known, the
-   * terminal is drawn at it whatever the pane: another view may size the pty (terminal-sizes.ts).
+   * The pty's size from main's stream (`tabs.data` size items and snapshots) while this view follows
+   * it: another view sizes the pty (terminal-sizes.ts), and the terminal is drawn at that size
+   * whatever the pane. Undefined while this view sizes the pty itself (`local` items, and before the
+   * first item): the terminal fits its pane at once, as before web access, and the pty catches up.
+   * The desktop with web access off is always so; a remote view (no `local` from its bridge) follows.
    */
   private ptySize: TermSize | undefined
   /** What this view's pane fits, as last measured (and reported to main). */
@@ -156,16 +158,18 @@ export class TerminalSession {
    * the snapshot. Not acked: main never counts a snapshot.
    *
    * `size`: the pty's size at this point of the stream (a size item, `data` '', or a snapshot's size;
-   * design-web.md §5.2 "Size"). From then on the terminal is drawn at the pty's size, not its pane's.
+   * design-web.md §5.2 "Size"). From then on the terminal is drawn at the pty's size, not its pane's,
+   * unless `local`: this view sizes the pty, so it fits its pane (a window drag must not wait a round
+   * trip to main for every step, and an item from earlier in the drag must not pull it back).
    */
-  write(data: string, reset = false, size?: TermSize): void {
+  write(data: string, reset = false, size?: TermSize, local = false): void {
     if (this.disposed) return
     // The size applies at its point of the stream: after the writes queued before it are parsed
     // (they wrap at the old size, as on every other copy), before the ones after it. xterm runs a
     // write's callback before it parses the next write.
     if (usableSize(size)) {
       const at = { cols: size.cols, rows: size.rows }
-      this.term.write('', () => this.setPtySize(at))
+      this.term.write('', () => (local ? this.fitLocally() : this.setPtySize(at)))
     }
     if (reset) this.term.write(`${RIS}${data}`)
     else if (data.length > 0) this.term.write(data, () => this.io.ack(data.length))
@@ -245,13 +249,20 @@ export class TerminalSession {
     const own = this.fit.proposeDimensions()
     if (!own || !(own.cols > 0) || !(own.rows > 0)) return
     this.ownSize = { cols: own.cols, rows: own.rows }
-    // Until main has told a size, fit the pane as today (the pty follows this view's report).
+    // While this view sizes the pty, fit the pane at once (the pty follows this view's report).
     if (!this.ptySize) this.fit.fit()
     this.layout()
     const size = `${own.cols}x${own.rows}`
     if (size === this.lastSize) return
     this.lastSize = size
     this.io.resize(own.cols, own.rows)
+  }
+
+  /** This view sizes the pty again: fit the pane, no more drawing at another view's size. */
+  private fitLocally(): void {
+    if (this.disposed || !this.ptySize) return
+    this.ptySize = undefined
+    this.refit()
   }
 
   /** The pty took `size` (a size item reached its point of the stream): draw at it. */
@@ -336,12 +347,13 @@ export class SessionRegistry {
   private readonly closed = new Set<string>()
 
   /**
-   * Output for a tab (`reset`: a whole screen; `size`: the pty's size at this point, TerminalSession.write);
+   * Output for a tab (`reset`: a whole screen; `size`: the pty's size at this point; `local`: this view
+   * sizes it, TerminalSession.write);
    * dropped when the tab is closed.
    */
-  write(tabId: string, data: string, reset = false, size?: TermSize): void {
+  write(tabId: string, data: string, reset = false, size?: TermSize, local = false): void {
     if (this.closed.has(tabId)) return
-    this.get(tabId).write(data, reset, size)
+    this.get(tabId).write(data, reset, size, local)
   }
 
   get(tabId: string): TerminalSession {

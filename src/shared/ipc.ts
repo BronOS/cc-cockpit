@@ -1260,8 +1260,10 @@ export interface IpcEventMap {
    * `cols`/`rows`: the pty's size at this point of the stream (design-web.md §5.2 "Size"): with
    * `reset`, the snapshot's size; alone (`data` ''), a size item: the pty took another size after the
    * output before it. The terminal draws at that size (scaled or letterboxed when its pane differs).
+   * `local` (with a size, desktop only): this view sizes the pty, so it fits its own pane at once as
+   * before web access and the size is only the pty catching up; absent, it follows the pty's size.
    */
-  'tabs.data': { tabId: string; data: string; reset?: true; cols?: number; rows?: number }
+  'tabs.data': { tabId: string; data: string; reset?: true; cols?: number; rows?: number; local?: true }
   /**
    * The tab's process ended (`signal` is the terminating signal number, else null). `gen` is that
    * process's TabInfo.gen, so an exit is never applied to a later process of the same tab.

@@ -224,8 +224,9 @@ describe('TabManager: the pty takes the sizing view, the desktop gets size items
     await vi.advanceTimersByTimeAsync(TAKE_DEBOUNCE_MS)
     expect(pty.resizes).toEqual([[120, 40], [50, 30]])
     expect(tabs.sizerOf(tab.id)).toBe(W)
+    // The desktop sized the tab first (`local`: it fits its pane itself); then it follows the browser.
     expect(events).toEqual([
-      { tabId: tab.id, data: '', cols: 120, rows: 40 },
+      { tabId: tab.id, data: '', cols: 120, rows: 40, local: true },
       { tabId: tab.id, data: 'before' },
       { tabId: tab.id, data: '', cols: 50, rows: 30 }
     ])
@@ -284,14 +285,73 @@ describe('TabManager: the pty takes the sizing view, the desktop gets size items
     events.length = 0
     tapped.length = 0
     tabs.resize(P, tab.id, 90, 25, D)
-    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 90, rows: 25 }])
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 90, rows: 25, local: true }])
     expect(tapped).toEqual([])
     // A phone sizing the exited tab, then the desktop pressing "Fit to this screen".
     tabs.resize(P, tab.id, 50, 30, W)
     tabs.resize(P, tab.id, 80, 24, D)
     events.length = 0
     expect(tabs.fit(P, tab.id, D)).toBe(true)
-    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 80, rows: 24 }])
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 80, rows: 24, local: true }])
+  })
+
+  it('web access off: the desktop is the only view, every size item says it fits its pane itself', () => {
+    const { tabs, events } = manager()
+    const tab = tabs.create(P, { kind: 'shell' })
+    // A window drag: each report resizes the pty at once and is marked local, so the page never
+    // waits for (or is pulled back by) an item from earlier in the drag.
+    tabs.resize(P, tab.id, 120, 40, D)
+    tabs.resize(P, tab.id, 121, 40, D)
+    tabs.resize(P, tab.id, 125, 41, D)
+    tabs.viewInput(P, tab.id, 'x', D)
+    // Minimized: the only view still sizes the tab (a restart in a hidden window included).
+    tabs.viewVisible(D, false)
+    tabs.resize(P, tab.id, 100, 30, D)
+    backend.last.exit(0)
+    tabs.restart(P, tab.id)
+    expect(backend.last.options.cols).toBe(100)
+    expect(events.map((e) => `${e.cols}x${e.rows} ${e.local === true}`)).toEqual([
+      '120x40 true',
+      '121x40 true',
+      '125x41 true',
+      '100x30 true',
+      '100x30 true'
+    ])
+  })
+
+  it('the desktop follows while a browser sizes the tab and fits itself again once it sizes it', async () => {
+    const { tabs, events, tapped } = manager()
+    const tab = tabs.create(P, { kind: 'shell' })
+    const pty = backend.last
+    tabs.resize(P, tab.id, 120, 40, D)
+    // The browser reports the same size: nothing to resize when it takes, but the desktop must
+    // hear it no longer sizes the tab (a resize of its own would otherwise fit locally).
+    tabs.resize(P, tab.id, 120, 40, W)
+    events.length = 0
+    expect(tabs.fit(P, tab.id, W)).toBe(true)
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 120, rows: 40 }])
+    // Following: the desktop's own resize is only remembered.
+    tabs.resize(P, tab.id, 130, 40, D)
+    expect(pty.resizes).toEqual([[120, 40]])
+    // The desktop types and takes the size back: local again.
+    tabs.viewInput(P, tab.id, 'x', D)
+    await vi.advanceTimersByTimeAsync(TAKE_DEBOUNCE_MS)
+    expect(events.slice(1)).toEqual([{ tabId: tab.id, data: '', cols: 130, rows: 40, local: true }])
+    // The browser takes again at the desktop's size, then leaves: the desktop sizes again at the
+    // same size, which is a desktop-only item (no pty resize, nothing in the mirror's stream).
+    tabs.resize(P, tab.id, 130, 40, W)
+    expect(tabs.fit(P, tab.id, W)).toBe(true)
+    tapped.length = 0
+    events.length = 0
+    tabs.viewGone(W)
+    expect(tabs.sizerOf(tab.id)).toBe(D)
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 130, rows: 40, local: true }])
+    expect(tapped).toEqual([])
+    expect(pty.resizes).toEqual([[120, 40], [130, 40]])
+    // Told once: the desktop sizing again at the same size is no new item.
+    events.length = 0
+    expect(tabs.fit(P, tab.id, D)).toBe(true)
+    expect(events).toEqual([])
   })
 
   it('a closed tab forgets its sizes and pending takes', async () => {

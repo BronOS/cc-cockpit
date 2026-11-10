@@ -23,7 +23,7 @@ import { stripQueryReplies } from '../sessions/terminal-reports'
 import { DesktopFlow, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
-import type { ViewId } from '../../shared/views'
+import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { TerminalSizes } from './terminal-sizes'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
 
@@ -353,6 +353,11 @@ export class TabManager {
   private readonly pendingTake = new Set<string>()
   /** Each view's size per tab and which one the pty takes (terminal-sizes.ts, design-web.md §5.2). */
   private readonly sizes: TerminalSizes
+  /**
+   * The `local` the desktop was last told per tab (`desktopSize`); absent means true, which is
+   * where the page starts (it fits its pane until main says otherwise).
+   */
+  private readonly desktopLocal = new Map<string, boolean>()
 
   constructor(options: TabManagerOptions) {
     this.options = options
@@ -375,10 +380,7 @@ export class TabManager {
         if (!tab) return
         const payload: IpcEventMap['tabs.data'] = { tabId, data }
         if (reset) payload.reset = true
-        if (size) {
-          payload.cols = size.cols
-          payload.rows = size.rows
-        }
+        if (size) this.desktopSize(tabId, payload, size.cols, size.rows)
         this.options.emit(tab.projectId, 'tabs.data', payload)
       },
       join: (tabId, view) => tap?.join?.(tabId, view),
@@ -762,17 +764,50 @@ export class TabManager {
     if (!tab) return
     const before = this.pty.sizeOf(id)
     if (!before) {
-      // An exited tab has no pty to resize, but the desktop still draws it at the size it was told
-      // (the renderer no longer fits locally once it has a size), so a window resize or "Fit to
-      // this screen" must still reach it: a size item for the desktop only. Remote views have
-      // nothing to wrap, and a restart spawns at the sizer's remembered size.
-      if (this.desktop.passes(id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data: '', cols, rows })
+      // An exited tab has no pty to resize, but a desktop following the pty's size still draws it
+      // at the size it was told, so a window resize or "Fit to this screen" must still reach it: a
+      // size item for the desktop only. Remote views have nothing to wrap, and a restart spawns at
+      // the sizer's remembered size.
+      this.emitDesktopSize(tab, cols, rows)
       return
     }
-    if (before.cols === cols && before.rows === rows) return
+    if (before.cols === cols && before.rows === rows) {
+      // The sizer changed but not the size (a browser left and the desktop sizes again at the same
+      // size): no item for the pty or remote views, but a desktop that was following must hear it
+      // fits its pane again, or it would keep lagging a round trip behind its own window.
+      if ((this.desktopLocal.get(id) ?? true) !== this.desktopSizes(id)) this.emitDesktopSize(tab, cols, rows)
+      return
+    }
     if (!this.pty.resize(id, cols, rows)) return
-    if (this.desktop.passes(id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data: '', cols, rows })
+    this.emitDesktopSize(tab, cols, rows)
     this.tap((t) => t.resized(id, cols, rows))
+  }
+
+  /**
+   * Whether the desktop sizes the tab's pty, so its page fits its pane itself (`tabs.data` `local`):
+   * it is the sizer, or nobody is (a tab no view has measured yet). With web access off the desktop
+   * is the only view and always so: the terminal follows a window drag at once, as before Task 15.
+   */
+  private desktopSizes(id: string): boolean {
+    const sizer = this.sizes.sizerOf(id)
+    return sizer === undefined || !isRemoteViewId(sizer)
+  }
+
+  /** Sets a size (an item's or a snapshot's) on a desktop `tabs.data`, with `local` (desktopSizes). */
+  private desktopSize(id: string, payload: IpcEventMap['tabs.data'], cols: number, rows: number): void {
+    payload.cols = cols
+    payload.rows = rows
+    const local = this.desktopSizes(id)
+    if (local) payload.local = true
+    this.desktopLocal.set(id, local)
+  }
+
+  /** A size item for the desktop, in order with its output (unless its resync delivers sizes). */
+  private emitDesktopSize(tab: Tab, cols: number, rows: number): void {
+    if (!this.desktop.passes(tab.id)) return
+    const payload: IpcEventMap['tabs.data'] = { tabId: tab.id, data: '' }
+    this.desktopSize(tab.id, payload, cols, rows)
+    this.options.emit(tab.projectId, 'tabs.data', payload)
   }
 
   /** The desktop renderer's ack: the pty's flow, or the desktop's own while main consumes the pty. */
@@ -900,7 +935,7 @@ export class TabManager {
     this.tap((t) => t.spawned(tab.id, cols, rows))
     // The desktop's copy of a restarted tab is told the size too (a new tab's page has drawn nothing
     // yet and sends its own size first). Ordered before any output: node-pty reads on a later tick.
-    if (tab.gen > 0 && this.desktop.passes(tab.id)) this.options.emit(tab.projectId, 'tabs.data', { tabId: tab.id, data: '', cols, rows })
+    if (tab.gen > 0) this.emitDesktopSize(tab, cols, rows)
     // After the spawn: a failed one leaves the tab (and the generation its exit reported) as it was.
     tab.gen += 1
     tab.spawnedAt = this.now()
@@ -951,6 +986,7 @@ export class TabManager {
     this.desktop.closed(tab.id)
     this.pendingTake.delete(tab.id)
     this.sizes.tabGone(tab.id)
+    this.desktopLocal.delete(tab.id)
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
     this.tap((t) => t.closed(tab.id))
     this.notify((l) => l.closed?.(tab.id))

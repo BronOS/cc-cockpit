@@ -12,7 +12,8 @@
 // The sizing view's own resizes apply at once (dragging the desktop window still reflows Claude,
 // as today). A view that is not the sizer is only remembered; it draws at the pty's size (scaled or
 // letterboxed, terminal-session.ts) until it takes. With only the desktop (web access off), it is
-// always the sizer: today's behaviour.
+// always the sizer: today's behaviour. A desktop that sizes the tab fits its pane itself, at once
+// (TabManager marks its size items `local`), rather than waiting a round trip for each size item.
 //
 // Hidden views (a minimized window, a browser tab in the background: `tabs.visibility`) never take:
 // a size nobody looks at must not shrink Claude for the person who does. When the sizing view

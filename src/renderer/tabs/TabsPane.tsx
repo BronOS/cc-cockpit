@@ -180,10 +180,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     // Subscribe before asking for the list so no output or exit falls between the two. Output of
     // a tab whose view is not mounted yet is parsed by its session all the same.
-    const offData = window.cockpit.on('tabs.data', ({ tabId, data, reset, cols, rows }) => {
-      // `cols`/`rows`: the pty's size at this point of the stream (a size item or a snapshot's).
+    const offData = window.cockpit.on('tabs.data', ({ tabId, data, reset, cols, rows, local }) => {
+      // `cols`/`rows`: the pty's size at this point of the stream (a size item or a snapshot's);
+      // `local`: this view sizes the pty, so it fits its pane itself (TerminalSession.write).
       const size = typeof cols === 'number' && typeof rows === 'number' ? { cols, rows } : undefined
-      sessions.write(tabId, data, reset === true, size)
+      sessions.write(tabId, data, reset === true, size, local === true)
     })
     const offExit = window.cockpit.on('tabs.exit', ({ tabId, code, signal, gen }) => {
       dispatch({ type: 'exited', tabId, exit: { code, signal }, gen })
