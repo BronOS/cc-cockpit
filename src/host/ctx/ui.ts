@@ -51,6 +51,7 @@ import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
 import { errorText } from '../../shared/error-text'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import type { OverlayButtonRegistry } from '../overlay-buttons'
+import { dispatchInView } from './origin-view'
 
 /** Longest panel message, as JSON text (the RPC cap). */
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
@@ -189,7 +190,7 @@ export class PanelPorts {
     const key = `${pluginId}/${panelId}`
     const v = view ?? DESKTOP_PAGE
     this.detachView(key, v)
-    const unsubscribe = port.onMessage((raw) => this.receive(pluginId, key, raw))
+    const unsubscribe = port.onMessage((raw) => this.receive(pluginId, key, raw, view))
     const views = this.ports.get(key) ?? new Map<string, Attached>()
     views.set(v, { port, unsubscribe })
     this.ports.set(key, views)
@@ -273,9 +274,10 @@ export class PanelPorts {
   /**
    * A message from a panel page. The page is the plugin's own code, but it may show third-party
    * content: anything that is not a JSON string within the cap is dropped (logged), and each
-   * listener gets its own parsed copy.
+   * listener gets its own parsed copy. Each listener runs in its page's view (origin-view.ts), so
+   * the calls it makes act where the click came from.
    */
-  private receive(pluginId: string, key: string, raw: unknown): void {
+  private receive(pluginId: string, key: string, raw: unknown, view: ViewId | undefined): void {
     const got = decodePortMessage(raw)
     if (!got.ok) {
       this.log(pluginId, `dropped a message from panel ${key}: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
@@ -283,7 +285,11 @@ export class PanelPorts {
     }
     for (const listener of [...(this.listeners.get(key) ?? [])]) {
       try {
-        listener(structuredClone(got.value))
+        dispatchInView(
+          view,
+          () => listener(structuredClone(got.value)),
+          (err) => this.log(pluginId, `a panels.onMessage listener failed: ${errorText(err)}`)
+        )
       } catch (err) {
         this.log(pluginId, `a panels.onMessage listener threw: ${errorText(err)}`)
       }

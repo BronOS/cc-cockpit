@@ -589,3 +589,36 @@ describe('LayoutService slots (design-next §2)', () => {
     expect(changes.at(-1)).toEqual([])
   })
 })
+
+describe('LayoutService.show in one view (design-web.md §5.1)', () => {
+  it('stores and publishes the change to every view, and reveals in the given view only', () => {
+    const stored = new Map<string, LayoutState>([[P, hidePanel(defaultLayout(), 'base/sessions')]])
+    const published: LayoutView[] = []
+    const toView: Array<[string, LayoutView]> = []
+    const service = new LayoutService({
+      getLayout: (id) => stored.get(id),
+      setLayout: (id, layout) => stored.set(id, layout),
+      publish: (_id, view) => published.push(view),
+      publishTo: (viewId, view) => toView.push([viewId, view])
+    })
+    service.setPluginPanels(P, 'base', [sessionsDef])
+    published.length = 0
+    expect(zoneOf(stored.get(P)!, 'base/sessions')).toBeUndefined()
+    expect(service.show(P, 'base/sessions', 'web:1')).toBe(true)
+    // The shared layout changed: every view hears it, without the reveal.
+    expect(published).toHaveLength(1)
+    expect(published[0]!.reveal).toBeUndefined()
+    expect(zoneOf(stored.get(P)!, 'base/sessions')).toBe('right')
+    expect(toView.map(([v, view]) => [v, view.reveal])).toEqual([['web:1', 'base/sessions']])
+    // Already shown: only that view is told (its own zone auto-hide may still hide it).
+    expect(service.show(P, 'base/sessions', 'desktop:1')).toBe(true)
+    expect(published).toHaveLength(1)
+    expect(toView.map(([v, view]) => [v, view.reveal])).toEqual([
+      ['web:1', 'base/sessions'],
+      ['desktop:1', 'base/sessions']
+    ])
+    // No view: the reveal goes to every view, as before web access.
+    expect(service.show(P, 'base/sessions')).toBe(true)
+    expect(published.map((v) => v.reveal)).toEqual([undefined, 'base/sessions'])
+  })
+})

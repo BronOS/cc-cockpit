@@ -17,6 +17,7 @@ import { errorText } from '../../shared/error-text'
 import { MAX_SLOT_PARAMS_BYTES, SLOT_FRAME_ID_PATTERN, SLOT_TYPE_PATTERN, type SlotHost } from '../../shared/slots'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
+import { dispatchInView } from './origin-view'
 
 type MessageListener = (message: JsonValue) => void
 
@@ -257,7 +258,11 @@ export class SlotHub {
     }
     for (const listener of [...frame.messageListeners]) {
       try {
-        listener(structuredClone(got.value))
+        dispatchInView(
+          frame.view,
+          () => listener(structuredClone(got.value)),
+          (err) => this.log(frame.pluginId, `a slot onMessage listener failed: ${errorText(err)}`)
+        )
       } catch (err) {
         this.log(frame.pluginId, `a slot onMessage listener threw: ${errorText(err)}`)
       }

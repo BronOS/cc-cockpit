@@ -50,6 +50,7 @@ import type { TabInfo } from '../../src/shared/ipc'
 import { defaultLayout } from '../../src/shared/layout'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 import { unusedOAuth, unusedSecrets } from '../fakes/unused-host-services'
+import type { RpcMeta } from '../../src/host/rpc'
 
 const A = 'aaaaaaaaaaaaaaaa'
 const B = 'bbbbbbbbbbbbbbbb'
@@ -2080,5 +2081,55 @@ describe('sessions scope all, focus, close, openFile', () => {
     await expect(call('sessions.focus', { pluginId: 'a.one', tabId: mine.id })).rejects.toThrow('stopping')
     await expect(call('sessions.close', { pluginId: 'a.one', tabId: mine.id })).rejects.toThrow('stopping')
     await expect(call('sessions.openFile', { pluginId: 'a.one', tabId: mine.id, path: 'x' })).rejects.toThrow('stopping')
+  })
+})
+
+describe('the origin view (design-web.md §5.3 "Where an action came from")', () => {
+  /** HostApi's handlers called as the RPC endpoint does, with the request's meta. */
+  function hostWithMeta(): (method: string, params: unknown, meta: RpcMeta) => Promise<unknown> {
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    const handlers = api.handlers
+    return (method, params, meta) => Promise.resolve().then(() => handlers[method]!(params, meta))
+  }
+
+  /** web:1 is a view of host A's window, web:2 of another window; anything else main does not know. */
+  const viewWindows: Record<string, number> = { 'web:1': WIN_A, 'web:2': WIN_A + 100 }
+
+  it("focus and panels.show act in a view of the host's own window, and ignore any other view", async () => {
+    const focused: unknown[][] = []
+    const shown: unknown[][] = []
+    deps.focusTab = (...args) => {
+      focused.push(args)
+      return true
+    }
+    deps.showPanel = (...args) => {
+      shown.push(args)
+      return true
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    const tab = tabs.create(A, { kind: 'claude' })
+    const host = hostWithMeta()
+    await host('sessions.focus', { pluginId: 'a.one', tabId: tab.id }, { view: 'web:1' })
+    await host('panels.show', { pluginId: 'a.one', panelId: 'board' }, { view: 'web:1' })
+    // Another window's view, one main never had (or that closed), and no view: as without a view.
+    for (const meta of [{ view: 'web:2' }, { view: 'web:99' }, {}]) {
+      await host('sessions.focus', { pluginId: 'a.one', tabId: tab.id }, meta)
+      await host('panels.show', { pluginId: 'a.one', panelId: 'board' }, meta)
+    }
+    expect(focused).toEqual([[tab.id, 'web:1'], [tab.id], [tab.id], [tab.id]])
+    expect(shown).toEqual([[A, 'a.one/board', 'web:1'], [A, 'a.one/board'], [A, 'a.one/board'], [A, 'a.one/board']])
+  })
+
+  it('ignores every view hint when main cannot check views', async () => {
+    const focused: unknown[][] = []
+    deps.focusTab = (...args) => {
+      focused.push(args)
+      return true
+    }
+    delete deps.viewWindow
+    const tab = tabs.create(A, { kind: 'claude' })
+    await hostWithMeta()('sessions.focus', { pluginId: 'a.one', tabId: tab.id }, { view: 'web:1' })
+    expect(focused).toEqual([[tab.id]])
   })
 })

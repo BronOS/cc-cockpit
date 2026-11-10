@@ -88,6 +88,9 @@
 //                                                                refuses runnable files to openWithSystem,
 //                                                                and trash asks the person in this window
 //                                                                first (false: they said no)
+// Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
+// only by sessions.focus (select in that view) and panels.show (reveal there), and only when it is a
+// live view of this host's own window (originOf); otherwise ignored.
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
@@ -166,7 +169,8 @@
 // functions (index.ts), unit tests pass the real pure ones with fakes underneath.
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
-import type { RpcHandler } from '../../host/rpc'
+import type { RpcHandler, RpcMeta } from '../../host/rpc'
+import type { ViewId } from '../../shared/views'
 import type { OAuthTokens, OverlayResult as PluginOverlayResult, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
@@ -327,8 +331,10 @@ export interface HostApiDeps {
   /**
    * Raise the window of any Claude tab and have it select the tab (the strip's click, the router's
    * `sessions.focus`); false for an id that is no Claude tab. Without it ctx.sessions.focus is refused.
+   * `view`: the remote view of this host's window the plugin acts for (originOf); the tab is then
+   * selected in that view only when it is that window's, else as without a view.
    */
-  focusTab?(tabId: string): boolean
+  focusTab?(tabId: string, view?: ViewId): boolean
   /**
    * Close a tab of `projectId` in its window `windowId` through the person's close path (the close
    * dialog when it is running and the setting asks): true once it closed, false on Cancel or when the
@@ -408,9 +414,15 @@ export interface HostApiDeps {
   slotAvailable?(projectId: string, type: string): boolean
   /**
    * LayoutService.show (ctx.panels.show): unhide, open, expand its zone; false for a panel the
-   * project does not have. Without it the request is refused.
+   * project does not have. Without it the request is refused. `view`: the remote view of this host's
+   * window the plugin acts for (originOf), the one whose screen reveals the panel.
    */
-  showPanel?(projectId: string, panelKey: string): boolean
+  showPanel?(projectId: string, panelKey: string, view?: ViewId): boolean
+  /**
+   * The window a view belongs to (ViewRegistry.windowOf), undefined for an unknown or closed one: the
+   * check behind originOf. Without it every view hint is ignored.
+   */
+  viewWindow?(viewId: ViewId): number | undefined
   /**
    * OverlayManager.open (after the login env); `peerGone` dismisses it, `channel` talks with its page,
    * `pluginId` is the opener, in whose folder its buttons' `.svg` icons resolve.
@@ -747,12 +759,12 @@ export class HostApi {
       'sessions.open': (params) => this.open(params),
       'sessions.openShell': (params) => this.openShell(params),
       'sessions.openCommand': (params) => this.openCommand(params),
-      'sessions.focus': (params) => this.focus(params),
+      'sessions.focus': (params, meta) => this.focus(params, meta),
       'sessions.close': (params) => this.close(params),
       'sessions.openFile': (params) => this.sessionFile(params),
       'sessions.rename': (params) => this.rename(params),
       badge: (params) => this.badge(params),
-      'panels.show': (params) => this.showPanel(params),
+      'panels.show': (params, meta) => this.showPanel(params, meta),
       'panels.header': (params) => this.panelHeader(params),
       'panels.slots': (params) => this.panelSlots(params),
       'slots.available': (params) => this.slotAvailable(params),
@@ -1024,11 +1036,24 @@ export class HostApi {
   }
 
   /**
+   * The view a request acts for (design-web.md §5.3 "Where an action came from"): the remote view the
+   * host named (rpc.ts `view`, the page whose message the plugin's listener is handling), only when
+   * main knows it as a live view of THIS host's window. A view of another window, a closed one or
+   * one never minted is ignored and the call acts as it would without (the desktop's): it is a hint
+   * for where an action shows, and a host must not steer another window's screen with it.
+   */
+  private originOf(meta: RpcMeta | undefined): ViewId | undefined {
+    const view = meta?.view
+    if (view === undefined || !this.deps.viewWindow) return undefined
+    return this.deps.viewWindow(view) === this.scope.windowId ? view : undefined
+  }
+
+  /**
    * ctx.sessions.focus: any window's Claude tab, by design (the top bar strip's click, cockpit.sessions):
    * it only moves the person's focus, reveals nothing and types nothing. main resolves the tab's
    * window from its own registry (focusTab), never from anything in the request.
    */
-  private focus(params: unknown): boolean {
+  private focus(params: unknown, meta?: RpcMeta): boolean {
     this.alive()
     const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.focus')
@@ -1038,7 +1063,8 @@ export class HostApi {
       throw new Error(`sessions.focus: more than ${MAX_FOCUSES_PER_WINDOW} focuses in ${FOCUS_WINDOW_MS / 1000} s`)
     }
     // An id that is no Claude tab moved nothing: it costs nothing either.
-    if (this.deps.session(tabId) === undefined || !this.deps.focusTab(tabId)) {
+    const view = this.originOf(meta)
+    if (this.deps.session(tabId) === undefined || !(view === undefined ? this.deps.focusTab(tabId) : this.deps.focusTab(tabId, view))) {
       this.focuses.refund(plugin.id)
       return false
     }
@@ -1391,7 +1417,7 @@ export class HostApi {
    * (a loop would fight the user's hide); showing a panel already shown changes nothing and
    * publishes nothing (LayoutService.show).
    */
-  private showPanel(params: unknown): null {
+  private showPanel(params: unknown, meta?: RpcMeta): null {
     this.alive()
     const { pluginId, panelId } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'panels.show')
@@ -1403,7 +1429,9 @@ export class HostApi {
       throw new Error(`panels.show: more than ${MAX_PANEL_SHOWS_PER_WINDOW} calls in ${PANEL_SHOW_WINDOW_MS / 1000} s`)
     }
     const key = `${plugin.id}/${panelId}`
-    if (!this.deps.showPanel(this.scope.projectId, key)) throw new Error(`panels.show: no panel ${key} in this window`)
+    const view = this.originOf(meta)
+    const shown = view === undefined ? this.deps.showPanel(this.scope.projectId, key) : this.deps.showPanel(this.scope.projectId, key, view)
+    if (!shown) throw new Error(`panels.show: no panel ${key} in this window`)
     return null
   }
 

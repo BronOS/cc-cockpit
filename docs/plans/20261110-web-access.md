@@ -415,14 +415,14 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/plugins/host-api.ts`, `src/main/ipc/router.ts` (`tabs.selected`, `activeTab`)
 - Modify: `test/unit/host-api.test.ts`; Create: `test/unit/origin-view.test.ts`
 
-- [ ] listener dispatch runs with its view (`AsyncLocalStorage`); RPC calls carry it; bounded so timers started inside a
+- [x] listener dispatch runs with its view (`AsyncLocalStorage`); RPC calls carry it; bounded so timers started inside a
       listener get no view
-- [ ] main treats the view as a hint: checked against the asking host's project, else ignored
-- [ ] per-view tab selection; the project's `activeTab` is the selection of the view that acted last;
+- [x] main treats the view as a hint: checked against the asking host's project, else ignored
+- [x] per-view tab selection; the project's `activeTab` is the selection of the view that acted last;
       `sessions.focus` and `panels.show` act in the origin view
-- [ ] write tests: a click in one view selects there only, a forged view id is ignored, a timer started in a listener
+- [x] write tests: a click in one view selects there only, a forged view id is ignored, a timer started in a listener
       has no view, `activeTab` follows the last-acting view
-- [ ] run tests, `npm run test:plugins` and `npm run test:e2e` - must pass before next task
+- [x] run tests, `npm run test:plugins` and `npm run test:e2e` - must pass before next task
 
 ### Task 19: `{ view }` on ctx.panels, and the bundled plugins that need it [model: sonnet]
 

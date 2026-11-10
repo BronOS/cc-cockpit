@@ -658,10 +658,10 @@ describe('registerTabHandlers', () => {
       ['list', PROJECT_A],
       // The remote ack never reaches TabManager (the pty's or the desktop's flow).
       ['viewAck', 'web:3', 't1', 7],
-      ['select', PROJECT_A, 't1'],
+      ['select', PROJECT_A, 't1', 'web:3'],
       ['viewSelect', 'web:3', 't1'],
       ['ack', PROJECT_A, 't1', 5],
-      ['select', PROJECT_A, 't1']
+      ['select', PROJECT_A, 't1', 'desktop:1']
     ])
     await expect(router.dispatch(web, 'tabs.ack', { tabId: 't1', count: 'x' })).rejects.toThrow(/count/)
   })
@@ -709,7 +709,7 @@ describe('registerTabHandlers', () => {
       ['input', PROJECT_A, 't1', 'ls\r', 'desktop:1'],
       ['resize', PROJECT_A, 't1', 80, 24, 'desktop:1'],
       ['ack', PROJECT_A, 't1', 5],
-      ['select', PROJECT_B, 't1']
+      ['select', PROJECT_B, 't1', 'desktop:2']
     ])
   })
 

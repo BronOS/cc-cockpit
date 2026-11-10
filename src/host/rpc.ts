@@ -2,7 +2,7 @@
 // Plugin host RPC). The same class runs on both ends: main talks to the utilityProcess it spawned,
 // the host talks to its parent port.
 //
-//   request   { "id": n, "method": string, "params"?: any }
+//   request   { "id": n, "method": string, "params"?: any, "view"?: string }
 //   response  { "id": n, "result"?: any }  |  { "id": n, "error": string }
 //   event     { "event": string, "params"?: any }
 //
@@ -10,6 +10,12 @@
 // then a plain length check (the same 1 MiB as the CLI socket), nothing exotic (functions, Maps,
 // cyclic graphs) can cross, and a later transfer list (Task 28 hands out MessagePorts) still works
 // next to a string.
+//
+// A host request may carry `view` (design-web.md §5.3 "Where an action came from"): the remote
+// view whose page message the calling listener is handling (host/ctx/origin-view.ts). It is a hint
+// for WHERE an action shows (a focus from the phone's click selects on the phone), never who may do
+// it: only an id main could have minted survives the parse, and main checks it belongs to this
+// host's own window before using it (plugins/host-api.ts originOf); anything else acts as before.
 //
 // Identity is NOT in the messages. On main's side one endpoint exists per host process, and its
 // handlers close over the project main spawned that process for; a host can name any project or
@@ -23,6 +29,7 @@
 // Pure Node, no Electron import: unit tests drive it over an in-memory port pair.
 
 import { errorText, toError } from '../shared/error-text'
+import { viewIdOf, type ViewId } from '../shared/views'
 
 /** The longest message accepted or sent, in UTF-16 code units of its JSON (~1 MiB). */
 export const MAX_RPC_MESSAGE_LENGTH = 1024 * 1024
@@ -39,7 +46,19 @@ export interface RpcPort {
   onMessage(listener: (message: unknown) => void): () => void
 }
 
-export type RpcHandler = (params: unknown) => unknown
+/** What a request carries next to its params: the view it acts for, if any (see the top). */
+export interface RpcMeta {
+  view?: ViewId
+}
+
+/** A call's options: its timeout, an abort signal, and (host to main) the view it acts for. */
+export interface RpcCallOptions {
+  timeoutMs?: number
+  signal?: AbortSignal
+  view?: ViewId
+}
+
+export type RpcHandler = (params: unknown, meta?: RpcMeta) => unknown
 
 export interface RpcEndpointOptions {
   port: RpcPort
@@ -85,7 +104,7 @@ export class RpcClosedError extends Error {
 }
 
 type Incoming =
-  | { kind: 'request'; id: number; method: string; params: unknown }
+  | { kind: 'request'; id: number; method: string; params: unknown; view?: ViewId }
   | { kind: 'response'; id: number; ok: true; result: unknown }
   | { kind: 'response'; id: number; ok: false; error: string }
   | { kind: 'event'; event: string; params: unknown }
@@ -113,7 +132,10 @@ export function parseRpcMessage(raw: unknown, maxLength = MAX_RPC_MESSAGE_LENGTH
   const id = m.id as number
   if ('method' in m) {
     if (!isName(m.method)) return 'bad method name'
-    return { kind: 'request', id, method: m.method, params: m.params }
+    // A view that is not one main mints is dropped (the request acts as the desktop's), never refused:
+    // it is a hint, and the call itself is the plugin's to make.
+    const view = viewIdOf(m.view)
+    return { kind: 'request', id, method: m.method, params: m.params, ...(view !== undefined ? { view } : {}) }
   }
   // A response carries `id` and exactly one of `result`/`error`; anything else ({ id, foo }, or
   // both result and error) is not something this protocol sends and must not settle call `id`.
@@ -177,14 +199,14 @@ export class RpcEndpoint {
    * never answers (a handler stuck in a loop blocks the host's event loop, so not even its
    * `cli.cancel` gets through).
    */
-  call(method: string, params?: unknown, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<unknown> {
+  call(method: string, params?: unknown, options: RpcCallOptions = {}): Promise<unknown> {
     if (this.closedReason !== undefined) return Promise.reject(new RpcClosedError(this.closedReason))
     const { signal } = options
     if (signal?.aborted) return Promise.reject(new RpcAbortedError(method))
     const id = this.nextId++
     let text: string
     try {
-      text = this.encode({ id, method, params })
+      text = this.encode({ id, method, params, ...(options.view !== undefined ? { view: options.view } : {}) })
     } catch (err) {
       return Promise.reject(toError(err))
     }
@@ -289,19 +311,19 @@ export class RpcEndpoint {
         return
       }
       case 'request':
-        void this.answer(msg.id, msg.method, msg.params)
+        void this.answer(msg.id, msg.method, msg.params, msg.view !== undefined ? { view: msg.view } : {})
         return
     }
   }
 
-  private async answer(id: number, method: string, params: unknown): Promise<void> {
+  private async answer(id: number, method: string, params: unknown, meta: RpcMeta): Promise<void> {
     const handler = this.handlers.get(method)
     let reply: object
     if (!handler) {
       reply = { id, error: `unknown method: ${method}` }
     } else {
       try {
-        reply = { id, result: await handler(params) }
+        reply = { id, result: await handler(params, meta) }
       } catch (err) {
         reply = { id, error: errorText(err) }
       }

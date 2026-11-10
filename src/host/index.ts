@@ -55,11 +55,12 @@
 // A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope } }`, ended by
 // `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts).
 import { HostContexts, type LogLevel } from './ctx'
+import { carryView } from './ctx/origin-view'
 import { settingsPageOpenTag } from './ctx/settings-page'
 import { slotOpenTag } from './ctx/slots'
 import { fromMainPort, panelPortTag, type MainPortLike, type PanelPort } from './ctx/ui'
 import { parsePluginSpecs, parseServiceProviders, PluginLoader } from './loader'
-import { RpcEndpoint, type RpcPort } from './rpc'
+import { RpcEndpoint, type RpcCallOptions, type RpcPort } from './rpc'
 import { installShutdownHandlers } from './shutdown'
 
 /** A message on the parent port; `ports` holds a transferred panel port. */
@@ -125,7 +126,9 @@ function start(): void {
   // The loader's own messages ("plugin x: activate() failed") go to main's console via stderr.
   const contexts = new HostContexts({
     log: (pluginId: string, level: LogLevel, text: string) => rpc.emit('log', { pluginId, level, text }),
-    call: (method, params, options) => rpc.call(method, params, options),
+    // Every request names the remote view whose page message is being handled, if any
+    // (ctx/origin-view.ts), so main can act where the click came from.
+    call: carryView((method, params, options?: RpcCallOptions) => rpc.call(method, params, options)),
     emit: (event, params) => rpc.emit(event, params),
     env: process.env,
     services: () => loader.services

@@ -135,6 +135,7 @@ import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
 import { TabManager } from './tabs/tab-manager'
 import { viewInputHandler } from './tabs/view-input'
+import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -153,7 +154,7 @@ import { openProjectEntries, WebConnections, windowSnapshot } from './web/connec
 import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
 import { WebGateway } from './web/gateway'
-import { desktopViewId, isRemoteViewId } from '../shared/views'
+import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
   asSecondInstanceData,
@@ -500,7 +501,9 @@ function start(): void {
       // So do the desktop page's slot instances and the settings page it held (panel-ports.ts).
       tabs.viewGone(desktopViewId(windowId))
       panelPorts.viewGone(desktopViewId(windowId))
-      // No window, no selection: a reopened window reports its own once its page loads.
+      // No window, no selection: a reopened window reports its own once its page loads. Every
+      // view's selection of it goes first, so a remote view closing after this hands nothing back.
+      selections.closeProject(projectId)
       sessions.setActive(projectId, undefined)
       // The user closed the window: its tabs are over, so is their record. While quitting the
       // same callback runs for every window and the saved tabs are exactly what must stay; on a
@@ -805,6 +808,9 @@ function start(): void {
     getLayout: (projectId) => registry.get(projectId)?.layout,
     setLayout: (projectId, next) => registry.setLayout(projectId, next),
     publish: (projectId, view) => sendToProject(projectId, 'layout.updated', view),
+    publishTo: (viewId, view) => {
+      views.toView(viewId, 'layout.updated', view)
+    },
     enabledPlugins: enabledIds,
     // Slots (design-next §2): who draws a type is the project's pick among the plugins its host
     // runs now; a frame that goes is closed in its provider's host; a placement over the frame cap
@@ -998,7 +1004,8 @@ function start(): void {
       // ctx.sessions scope 'all' (HostApi checks the manifest's `access` declaration first).
       summaries: (projectId) => sessions.summariesFor(projectId),
       // ctx.sessions.focus: any window's Claude tab (the cockpit.sessions strip's click).
-      focusTab: (tabId) => focusClaudeTab(tabId),
+      // With the view the plugin acted for (HostApi checked it is a view of this host's window).
+      focusTab: (tabId, view) => focusClaudeTab(tabId, view),
       // ctx.sessions.close: HostApi checked the tab is this project's. A running tab asks in its
       // window, so that window is raised first when it will (the dialog is the person's, they must
       // see it); an idle tab closes without moving their focus. The renderer decides the rest
@@ -1019,7 +1026,14 @@ function start(): void {
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
       slotAvailable: (projectId, type): boolean => hosts.slotProvider(projectId, type) !== undefined,
-      showPanel: (projectId, panelKey) => layouts.show(projectId, panelKey),
+      // Revealed in the view the plugin acted for, else the desktop's (design-web.md §5.1): the stored
+      // layout is shared, the reveal is one screen's.
+      showPanel: (projectId, panelKey, view) => {
+        const windowId = windows.windowIdOf(projectId)
+        return layouts.show(projectId, panelKey, view ?? (windowId === undefined ? undefined : desktopViewId(windowId)))
+      },
+      // The check behind a request's view hint (HostApi originOf).
+      viewWindow: (viewId) => views.windowOf(viewId),
       openOverlay,
       postOverlay: (windowId, overlayId, text) => overlays.post(windowId, overlayId, text),
       closeOverlay: (windowId, overlayId) => overlays.close(windowId, overlayId),
@@ -1135,6 +1149,12 @@ function start(): void {
     // OSC 10/11/12 colour queries are answered from the app theme's terminal palette.
     colors: () => themes.current().xterm,
     log: (m) => console.warn(m)
+  })
+  // Each view's selected tab and the project's active tab, the selection of the view that acted
+  // last (design-web.md §5.1). Functions: `tabs` is defined just below.
+  const selections = new ViewSelections({
+    isTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    setActive: (projectId, tabId) => sessions.setActive(projectId, tabId)
   })
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
@@ -1977,7 +1997,8 @@ function start(): void {
     // same path (tabs/view-input.ts): `typed` and the send gate apply unchanged.
     input: viewInputHandler({
       viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
-      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data)
+      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+      acted: (projectId, tabId, viewId) => selections.acted(projectId, viewId, tabId)
     }),
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
@@ -1989,11 +2010,10 @@ function start(): void {
     list: (projectId) => tabs.list(projectId),
     viewAck: (viewId, tabId, count) => webConnections.ack(viewId, tabId, count),
     viewSelect: (viewId, tabId) => webConnections.select(viewId, tabId),
-    // The tab pane's selection, for SessionInfo.active. Only a tab of the sender's project counts:
-    // anything else (a tab closed while the message travelled, a foreign id) leaves it as it was.
-    select: (projectId, tabId) => {
-      if (tabs.list(projectId).some((t) => t.id === tabId)) sessions.setActive(projectId, tabId)
-    },
+    // A view's tab pane selection, for SessionInfo.active (the view that acted last,
+    // tabs/view-selections.ts). Only a tab of the sender's project counts: anything else (a tab
+    // closed while the message travelled, a foreign id) leaves it as it was.
+    select: (projectId, tabId, viewId) => selections.acted(projectId, viewId, tabId),
     // With each entry's chord from the project's resolved key table, shown next to its label.
     commands: (projectId) => {
       const keys = new Map(commands.view(projectId).commands.map((c) => [c.id, c.key]))
@@ -2061,9 +2081,11 @@ function start(): void {
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     // A browser left: the tabs it sized fall back to a remaining visible view (terminal-sizes.ts).
     // Its slot instances and the settings page it held end too (panel-ports.ts viewGone).
+    // The project's active tab goes back to a remaining view's selection (view-selections.ts).
     viewGone: (viewId) => {
       tabs.viewGone(viewId)
       panelPorts.viewGone(viewId)
+      selections.viewGone(viewId)
     },
     log: (m) => console.warn(m)
   })
@@ -2099,12 +2121,23 @@ function start(): void {
   }
   // ctx.sessions.focus may name a tab of any project; main finds its window
   // from its own registry entry and only moves focus there, then tells that window's renderer to
-  // select it. False for an id that is no Claude tab (any more).
-  const focusClaudeTab = (tabId: string): boolean => {
+  // select it. False for an id that is no Claude tab (any more). Per view (tabs/view-selections.ts
+  // focusTabInView): in the view the plugin acted for when it is a view of the tab's window, else
+  // the tab's desktop window is raised and selects it.
+  const focusClaudeTab = (tabId: string, view?: ViewId): boolean => {
     const entry = sessions.get(tabId)
-    if (!entry || !windows.focusProject(entry.projectId)) return false
-    sendToProject(entry.projectId, 'tabs.select', { tabId })
-    return true
+    if (!entry) return false
+    return focusTabInView(
+      {
+        windowOfProject: (projectId) => windows.windowIdOf(projectId),
+        windowOfView: (viewId) => views.windowOf(viewId),
+        raise: (projectId) => windows.focusProject(projectId),
+        select: (viewId, id) => views.toView(viewId, 'tabs.select', { tabId: id })
+      },
+      entry.projectId,
+      tabId,
+      view
+    )
   }
   registerSessionHandlers(router, {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),

@@ -937,8 +937,12 @@ export interface TabHandlerDeps {
   /** The view was hidden or shown: hidden views never size a tab. */
   visible(viewId: ViewId, visible: boolean): void
   ack(projectId: string, tabId: string, count: number): void
-  /** The window shows this tab now (SessionRegistry.setActive after a check that it is the project's). */
-  select(projectId: string, tabId: string): void
+  /**
+   * The view `viewId` shows this tab now (design-web.md §5.1): its own selection, and the project's
+   * active tab as the view that acted last (tabs/view-selections.ts, after a check that the tab is
+   * the project's).
+   */
+  select(projectId: string, tabId: string, viewId: ViewId): void
   /**
    * A remote view's terminal flow (web/view-terminals.ts, design-web.md §5.2): its ack counts for
    * that view alone, and its selection joins the tab's terminal stream for it. Keyed by the view id
@@ -1058,7 +1062,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   // snapshot, then live output); the desktop parses every tab's output all along.
   router.handleProject('tabs.selected', (ctx, payload, view) => {
     const tabId = tabIdOf('tabs.selected', payload)
-    tabs.select(ctx.projectId, tabId)
+    tabs.select(ctx.projectId, tabId, view.viewId)
     if (view.remote) tabs.viewSelect(view.viewId, tabId)
   })
 }

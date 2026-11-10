@@ -9,12 +9,19 @@
 // SessionRegistry). The send gate's own paste never comes through here (it writes through
 // TabManager.input), which is what lets `typed` mean "the person typed".
 import type { ViewId } from '../../shared/views'
+import { isPersonInput } from '../sessions/terminal-reports'
 
 export interface ViewInputDeps {
   /** TabManager.viewInput: strips the view's query replies, writes the rest, notes who typed. */
   viewInput(projectId: string, tabId: string, data: string, viewId: ViewId): string
   /** SessionRegistry.userInput: `typed` (the takeover) and the answer-key step. */
   userInput(projectId: string, tabId: string, data: string): void
+  /**
+   * ViewSelections.acted: the person typed into this view's tab, so its selection is the project's
+   * active tab now (design-web.md §5.1, the view that acted last). A focus or mouse report, which a
+   * view sends just by being clicked into, does not count.
+   */
+  acted?(projectId: string, tabId: string, viewId: ViewId): void
 }
 
 /** The router's `tabs.input` dependency. The registry sees what reached the pty, not the raw chunk. */
@@ -22,5 +29,6 @@ export function viewInputHandler(deps: ViewInputDeps): (projectId: string, tabId
   return (projectId, tabId, data, viewId) => {
     const sent = deps.viewInput(projectId, tabId, data, viewId)
     deps.userInput(projectId, tabId, sent)
+    if (isPersonInput(sent)) deps.acted?.(projectId, tabId, viewId)
   }
 }

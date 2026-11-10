@@ -20,6 +20,7 @@
 // window: it publishes only when the frames changed.
 import type { JsonValue } from '../../sdk/types'
 import type { PanelKind } from '../../shared/manifest'
+import type { ViewId } from '../../shared/views'
 import type { LayoutView, PanelBadge, PanelHeaderInfo, PanelInfo, PanelSettingsTarget, SlotFrameInfo } from '../../shared/ipc'
 import {
   APP_SLOT_TYPES,
@@ -93,6 +94,11 @@ export interface LayoutServiceDeps {
   setLayout(projectId: string, layout: LayoutState): void
   /** Tell the project's window the view changed (a no-op when it has none open). */
   publish(projectId: string, view: LayoutView): void
+  /**
+   * Tell one view of the project's window (ViewRegistry.toView): `show`'s `reveal`, which belongs to
+   * the screen the action came from (design-web.md §5.1). Absent: the reveal goes to every view.
+   */
+  publishTo?(viewId: ViewId, view: LayoutView): void
   /**
    * The plugins enabled for the project (its record). A stored panel of an enabled plugin that has
    * not declared its panels yet is kept in place by `set` (see there). Absent: none are.
@@ -220,16 +226,27 @@ export class LayoutService {
    * `reveal` set: a panel already open in an expanded zone may still be off screen because the
    * window auto-hid that zone for a narrow terminal (renderer/zones/auto-hide.ts), which the stored
    * layout does not record. False for a panel the project does not have now.
+   *
+   * `viewId`: the one view whose screen reveals it (the view the plugin acted for, or the desktop's):
+   * the stored layout is shared, so a change still reaches every view, but only that view gets the
+   * `reveal` (another screen's zone auto-hide is its own business).
    */
-  show(projectId: string, panelKey: string): boolean {
+  show(projectId: string, panelKey: string, viewId?: ViewId): boolean {
     if (!this.hasKey(projectId, panelKey)) return false
     const stored = this.deps.getLayout(projectId)
     if (!stored) return false
     const current = reconcile(stored, this.available(projectId))
     const fallback = this.available(projectId).find((p) => p.panelKey === panelKey)?.defaultZone ?? 'left'
     const next = showPanel(current, panelKey, fallback)
-    const view = next === current ? this.view(projectId) : this.store(projectId, next)
-    if (view) this.send(projectId, { ...view, reveal: panelKey })
+    const changed = next !== current
+    const view = changed ? this.store(projectId, next) : this.view(projectId)
+    if (!view) return true
+    if (viewId === undefined || !this.deps.publishTo) {
+      this.send(projectId, { ...view, reveal: panelKey })
+      return true
+    }
+    if (changed) this.send(projectId, view)
+    this.deps.publishTo(viewId, { ...view, reveal: panelKey })
     return true
   }
 
