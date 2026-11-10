@@ -1,6 +1,6 @@
 // The renderer <-> main IPC contract: channel names and payload shapes. Types plus a few
-// constants (the two channel lists, the panel port names) and only type imports, so the preload,
-// the renderer and main all import it.
+// constants (the two channel lists, the panel port names, each channel's remote class with its
+// lookup) and only type imports, so the preload, the renderer and main all import it.
 //
 // Nothing in a request names the caller's project or window. main resolves both from
 // `event.sender` (src/main/ipc/router.ts); a project id that does travel in a payload (a recent
@@ -1466,4 +1466,220 @@ export type InvokeChannelsComplete = Exhaustive<
 export type EventChannelsComplete = Exhaustive<
   Exclude<EventChannel, (typeof EVENT_CHANNELS)[number]>
 >
+
+/**
+ * What a remote view (a browser signed in through web access, docs/design-web.md §2.3) may do with
+ * a channel:
+ * - `yes`: the same as the desktop view. A signed-in device is the person at the keyboard (§4), so
+ *   ordinary project work is allowed: tabs, terminals, panels, overlays, plugin settings, marketplace
+ *   installs.
+ * - `no`: refused for a remote caller before any handler runs (an invoke), never sent to a remote
+ *   view (an event). For what needs the host's own screen (native dialogs, window controls, the
+ *   picker window, `WebContentsView`s) and for anything that would let a remote view widen its own
+ *   access or change what the app trusts.
+ * - `adapted`: allowed, but the handler answers a remote caller differently (design §6.1: a link
+ *   opens as a notice in the view, not in the host's browser). The handler decides by the caller
+ *   main bound, never by the payload.
+ */
+export type RemoteClass = 'yes' | 'no' | 'adapted'
+
+/**
+ * The remote class of every invoke and event channel. Typed over both maps, so a channel added to
+ * either without a class, or a class for a name that is no channel, fails to compile; a unit test
+ * (ipc-remote-class.test.ts) checks the same against the runtime lists. Classify conservatively: a
+ * wrong `no` only sends the person to the desktop, a wrong `yes` exposes the host.
+ *
+ * One name is both an invoke and an event channel (`overlays.message`, a page's post up and the
+ * opener's post down); it has one class, which must fit both directions.
+ */
+export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteClass>> = Object.freeze({
+  // Window and picker. The gateway binds a remote view to one project window (design §4), so it is
+  // never the picker window: the picker's own channels are `no` (the web shell lists open windows
+  // itself, from the gateway). Reopen and full screen act on the host's window.
+  'window.info': 'yes',
+  'window.reopen': 'no',
+  'window.state': 'no',
+  'projects.recent': 'no',
+  // Native folder dialog on the host's screen.
+  'projects.openFolder': 'no',
+  'projects.openRecent': 'no',
+  // Opens the native picker window on the host, as a modal child of the desktop window.
+  'projects.showPicker': 'no',
+  'projects.closePicker': 'no',
+  // Native folder dialog.
+  'projects.relink': 'no',
+  'projects.forget': 'no',
+  'projects.changed': 'no',
+  // The host's browser: a remote view gets a clickable notice instead (§6.1).
+  'app.openExternal': 'adapted',
+
+  // Update notice. It is not shown in a remote view (§6.1), so its dismissal is desktop-only; the
+  // state and the setting stay readable and settable from Settings › General like any app pref.
+  'updates.state': 'yes',
+  'updates.changed': 'yes',
+  'updates.setEnabled': 'yes',
+  'updates.dismiss': 'no',
+  // Opens main's release URL in the host's browser: a notice in a remote view, like openExternal.
+  'updates.openRelease': 'adapted',
+
+  'theme.get': 'yes',
+  'theme.changed': 'yes',
+  'prefs.get': 'yes',
+  'prefs.changed': 'yes',
+
+  // Claude status and plugin close asks (shared asks, first answer wins: plan Task 23).
+  'sessions.list': 'yes',
+  'sessions.snapshot': 'yes',
+  'sessions.cancelQueued': 'yes',
+  'sessions.closeAsk': 'yes',
+  'sessions.closeAnswer': 'yes',
+  'project.updated': 'yes',
+
+  // Zones, commands, plugin panels, slots and settings pages: project work, per view from Task 17.
+  'layout.get': 'yes',
+  'layout.set': 'yes',
+  'layout.updated': 'yes',
+  'commands.list': 'yes',
+  'commands.run': 'yes',
+  'commands.updated': 'yes',
+  // A chord typed into a native webview on the desktop: only the view it was typed in runs it.
+  'commands.trigger': 'no',
+  'panels.connect': 'yes',
+  'panels.action': 'yes',
+  'panels.reload': 'yes',
+  'plugins.restart': 'yes',
+  'slots.connect': 'yes',
+  'slots.disconnect': 'yes',
+  'slots.height': 'yes',
+  'settingsPage.info': 'yes',
+  'settingsPage.connect': 'yes',
+  'settingsPage.disconnect': 'yes',
+
+  // Settings › Projects. Opening a known project only makes its window on the host (a remote view
+  // then picks it in the gateway's list); relink is a native folder dialog.
+  'settings.projects': 'yes',
+  'settings.projectOpen': 'yes',
+  'settings.projectRelink': 'no',
+  'settings.projectRemove': 'yes',
+
+  // Settings › Plugins and the marketplace (design §2.3: plugin settings, browsing and installs are
+  // project work). Secret fields are write-only in both saves (SecretFieldsView says only `set`).
+  'settings.plugins': 'yes',
+  'settings.pluginInstall': 'yes',
+  // Native folder dialog.
+  'settings.pluginLink': 'no',
+  'settings.pluginUpdate': 'yes',
+  'settings.pluginUninstall': 'yes',
+  'settings.pluginBundledOff': 'yes',
+  'settings.pluginServices': 'yes',
+  'settings.pluginServiceProvider': 'yes',
+  'settings.marketplace': 'yes',
+  'settings.marketplaceInstall': 'yes',
+  'settings.marketplaceUpdate': 'yes',
+  'settings.marketplaceUpdateAll': 'yes',
+  'settings.marketplaceRefresh': 'yes',
+  'settings.marketplacePreview': 'yes',
+  // The index list is the app's trust root for the marketplace (which listings appear as checked
+  // installs, and where revocations come from), not project work: changed on the desktop only.
+  'settings.marketplaceSetUrls': 'no',
+  'settings.pluginSettingsSave': 'yes',
+  'settings.pluginProjectDefaultsSave': 'yes',
+
+  // Settings › This Project, General, Appearance: the person's own preferences.
+  'settings.project': 'yes',
+  'settings.projectPluginEnable': 'yes',
+  'settings.projectPluginSettingsSave': 'yes',
+  'settings.projectPanelMove': 'yes',
+  'settings.projectColorSet': 'yes',
+  'settings.appearance': 'yes',
+  'settings.themeSet': 'yes',
+  'settings.keySet': 'yes',
+  'settings.tabExitSet': 'yes',
+  'settings.claudeTabOnOpenSet': 'yes',
+  'settings.sessionGistSet': 'yes',
+  'settings.statusLineUsageSet': 'yes',
+  'settings.discussPromptSet': 'yes',
+  'settings.projectDiscussPromptSet': 'yes',
+  'settings.notificationSoundsSet': 'yes',
+  'settings.notificationSoundOptions': 'yes',
+  'settings.notificationSoundSet': 'yes',
+  // Notifications and their sound stay on the host (§6.1): a remote view never gets the chime. The
+  // bytes are only for a sound preview in Settings, answered by the caller main bound (Task 25).
+  'notify.chime': 'no',
+  'notify.soundData': 'adapted',
+  'settings.zoneAutoHideSet': 'yes',
+  'settings.minTerminalWidthSet': 'yes',
+  'settings.confirmTabClose': 'yes',
+  'settings.confirmTabCloseSet': 'yes',
+  'settings.tabCloseSideSet': 'yes',
+  'settings.terminalFontSet': 'yes',
+  // Only the host's windows are transparent or blurred; harmless from anywhere.
+  'settings.windowBackgroundSet': 'yes',
+  'settings.tabCommandsSet': 'yes',
+  // The `ccc` link in ~/.local/bin is machine setup outside the app's data dir, done on the desktop.
+  // The start-up offer is answered once per launch (ccc-offer.ts), so a remote view must not take
+  // it from the desktop window; its "Don't ask again" goes with it. The status stays readable.
+  'settings.cccStatus': 'yes',
+  'settings.cccInstall': 'no',
+  'settings.cccOfferSet': 'no',
+  'ccc.offer': 'no',
+
+  // Overlays. URL overlays are a WebContentsView on the host's window (a placeholder remotely, §6.1),
+  // so placing one is desktop-only; terminal and html overlays are project work (Tasks 23-24).
+  'overlays.list': 'yes',
+  'overlays.updated': 'yes',
+  'overlays.close': 'yes',
+  'overlays.input': 'yes',
+  'overlays.resize': 'yes',
+  'overlays.ack': 'yes',
+  'overlays.data': 'yes',
+  'overlays.bounds': 'no',
+  'overlays.result': 'yes',
+  'overlays.message': 'yes',
+  'overlays.ready': 'yes',
+  'overlays.loaded': 'yes',
+  'overlays.button': 'yes',
+  'overlays.discuss': 'yes',
+
+  // Webview panels: a WebContentsView in the host's window ("available on the desktop", §6.1).
+  'webviews.placement': 'no',
+  'webviews.step': 'no',
+  'webviews.current': 'no',
+  'webviews.navigated': 'no',
+
+  // Tabs and terminals. Input from a remote view is the person typing (`typed` and the send gate
+  // apply unchanged, Task 16); the flag is the person's, and a remote view is the person.
+  'tabs.list': 'yes',
+  'tabs.create': 'yes',
+  'tabs.commands': 'yes',
+  'tabs.close': 'yes',
+  'tabs.reorder': 'yes',
+  'tabs.rename': 'yes',
+  'tabs.flag': 'yes',
+  'tabs.toggleFlag': 'yes',
+  'tabs.restart': 'yes',
+  'tabs.input': 'yes',
+  'tabs.resize': 'yes',
+  'tabs.ack': 'yes',
+  'tabs.selected': 'yes',
+  'tabs.data': 'yes',
+  'tabs.exit': 'yes',
+  'tabs.removed': 'yes',
+  'tabs.select': 'yes',
+  'tabs.added': 'yes'
+})
+
+/**
+ * The remote class of a channel name from anywhere (a socket frame is untrusted text). A name that
+ * is not an own key of REMOTE_CLASS is `no`: `hasOwn`, not `in` or a plain lookup, so `toString`,
+ * `__proto__` or `constructor` never resolve to something inherited.
+ */
+export function remoteClassOf(channel: string): RemoteClass {
+  return Object.hasOwn(REMOTE_CLASS, channel) ? REMOTE_CLASS[channel as InvokeChannel | EventChannel] : 'no'
+}
+
+/** Whether a remote view may call (or be sent) this channel at all: `yes` and `adapted`. Unknown is no. */
+export function remoteAllowed(channel: string): boolean {
+  return remoteClassOf(channel) !== 'no'
+}
 

@@ -111,14 +111,14 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `src/shared/ipc.ts`
 - Create: `test/unit/ipc-remote-class.test.ts`
 
-- [ ] add a `remote: 'yes' | 'no' | 'adapted'` class next to every invoke and event channel (design §2.3: `no` for
+- [x] add a `remote: 'yes' | 'no' | 'adapted'` class next to every invoke and event channel (design §2.3: `no` for
       web-access settings and devices, `projects.openFolder`, `settings.pluginLink`, `window.reopen`, full screen,
       `webviews.*`, URL overlays; `adapted` for the §6.1 features; `yes` for project work); a wrong `yes` exposes the
       host, so classify conservatively
-- [ ] export `REMOTE_CLASS` and `remoteAllowed(channel)`; an unclassified or unknown channel is `no`
-- [ ] write a drift test: every channel in `INVOKE_CHANNELS` and `EVENT_CHANNELS` has a class, no extra keys
-- [ ] write tests for `remoteAllowed` (yes, no, adapted, unknown channel → no)
-- [ ] run tests - must pass before next task
+- [x] export `REMOTE_CLASS` and `remoteAllowed(channel)`; an unclassified or unknown channel is `no`
+- [x] write a drift test: every channel in `INVOKE_CHANNELS` and `EVENT_CHANNELS` has a class, no extra keys
+- [x] write tests for `remoteAllowed` (yes, no, adapted, unknown channel → no)
+- [x] run tests - must pass before next task
 
 ### Task 2: Caller with views in IpcRouter [model: opus]
 
