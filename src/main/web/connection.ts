@@ -156,7 +156,11 @@ export class WebConnection {
   private pending = 0
   private removeView: (() => void) | undefined
   private terminals: ViewTerminals | undefined
-  /** Tabs whose terminal frames failed once already: a second failure closes the view. */
+  /**
+   * Tabs whose terminal frames failed and have not been resynced since: a second failure before the
+   * resync's snapshot goes out closes the view. A snapshot sent whole clears the tab (`synced`), so
+   * an unrelated failure hours later resyncs again.
+   */
   private readonly failedTabs = new Set<string>()
   private readonly helloTimer: ReturnType<typeof setTimeout>
 
@@ -230,7 +234,10 @@ export class WebConnection {
       mirror: this.deps.mirror,
       canFollow: (tabId) => this.deps.hasTab(caller.context.projectId, tabId),
       send: (frame) => this.send(frame),
-      failed: (tabId, err) => this.terminalFailed(tabId, err)
+      failed: (tabId, err) => this.terminalFailed(tabId, err),
+      synced: (tabId) => {
+        this.failedTabs.delete(tabId)
+      }
     })
     this.deps.log(`web access: view ${this.viewId} (device ${this.device.id}) joined window ${windowId}`)
     this.send({ t: 'ready', v: PROTOCOL_VERSION, view: this.viewId, snapshot })
@@ -267,8 +274,9 @@ export class WebConnection {
   /**
    * A tab's terminal frames could not be sent (view-terminals.ts left the tab): the page may hold a
    * partial snapshot or a gap. Resync by joining the tab again, on a later turn (not inside the
-   * mirror's callback); a second failure on the same tab closes the view, which reconnects to a
-   * fresh `ready`, rather than loop on a send that keeps failing.
+   * mirror's callback); a second failure on the same tab before that resync's snapshot went out
+   * closes the view, which reconnects to a fresh `ready`, rather than loop on a send that keeps
+   * failing.
    */
   private terminalFailed(tabId: string, err: unknown): void {
     if (this.closed) return

@@ -29,16 +29,25 @@
 // that is what bounds main's buffers here: `inflight` is at most the unparsed backlog, and a waiting
 // view's `held` is pruned to the items after the parsed seq, a subset of `inflight`. A view never
 // pauses the pty; each one is flow-controlled on its own and resynced when it falls behind
-// (desktop-flow.ts, web/view-terminals.ts). MAX_BACKLOG_CHARS is a backstop for a worker that falls
-// that far behind anyway (flow control not bound, a bug): it is treated as a crash.
+// (desktop-flow.ts, web/view-terminals.ts).
+//
+// Because the mirror is the consumer, a worker that stops answering (an infinite loop, a deadlock)
+// would leave every pty it holds paused at HIGH_WATER and the desktop's tabs frozen: flow control
+// keeps the backlog at about 1 MiB, so no size limit ever sees it. So a hang is detected by time:
+// a worker that owes main an answer (items posted and not parsed, a snapshot asked) and posts
+// nothing for STALL_MS, or leaves a snapshot unanswered for SNAPSHOT_TIMEOUT_MS, is hung and handled
+// as a crash (`hung`): ended, restarted, its backlog acked so the ptys resume. MAX_BACKLOG_CHARS is
+// a separate backstop for a worker that falls that far behind while still answering, which only a
+// broken flow binding allows.
 //
 // A worker that dies (a crash, out of memory) is started again with a blank terminal per tab at
 // main's current seq ("reset"): the content before is lost with it, the numbering goes on, and the
 // restart listeners are told. Views that are live keep their stream and their screen: they hold the
 // real content, which a resync from the blank copy would wipe (Claude redraws its screen soon, and
-// the copy catches up then). Restarts are bounded: past
-// MAX_RESTARTS within RESTART_WINDOW_MS the mirror gives up (logs, mirrors nothing) rather than
-// loop on a crash it keeps hitting; the tabs themselves never depend on it.
+// the copy catches up then; until then a view that resyncs, a desktop page reload among them, gets
+// the blank copy). Restarts are bounded: past MAX_RESTARTS within RESTART_WINDOW_MS the mirror gives
+// up (logs, mirrors nothing) rather than loop on a crash it keeps hitting, and hands every pty back
+// to the desktop's acks, so the tabs run as with web access off.
 //
 // No Electron here: vitest drives it with an in-process fake worker; the real one is
 // `nodeMirrorWorker` (worker_threads, which Electron's main process supports as Node does).
@@ -60,16 +69,25 @@ export const RESTART_WINDOW_MS = 60_000
 /** An `inspect` the worker never answers (it hung) fails after this rather than waiting forever. */
 export const INSPECT_TIMEOUT_MS = 10_000
 /**
- * A snapshot the worker never answers: the waiting views are ended (`closed`) rather than held
- * forever with their held items growing. Far above the worker's own ground wait (300 ms): only a
- * hung or drowning worker gets here.
+ * A snapshot the worker never answers: the worker counts as hung and is restarted (`hung`), which
+ * asks the new one for the views still waiting. Far above the worker's own ground wait (300 ms), so
+ * a worker that answers anything at all gets here only if it lost the request (a bug); a stalled
+ * one is usually caught first by STALL_MS.
  */
 export const SNAPSHOT_TIMEOUT_MS = 10_000
 /**
+ * A worker that owes main an answer (items not parsed, a snapshot) and posts nothing at all for this
+ * long is hung (see the header). It reports `parsed` after every item, each at most one flushed
+ * chunk (64 KiB, milliseconds of parsing), so a healthy one is never silent this long; the check
+ * runs once per period, so a hang is caught within one to two periods.
+ */
+export const STALL_MS = 5_000
+/**
  * Output characters of one tab posted to the worker and not parsed, past which the worker counts as
- * drowned and is restarted like a crashed one. Flow control pauses the pty at a eighth of this
+ * drowned and is restarted like a crashed one. Flow control pauses the pty at an eighth of this
  * (pty-service.ts HIGH_WATER, 1 MiB), so only a broken flow binding ever reaches it; it keeps
- * `inflight` (and the `held` lists, a subset) bounded even then.
+ * `inflight` (and the `held` lists, a subset) bounded even then. A worker that stops answering never
+ * gets here (the pty pauses first): STALL_MS and SNAPSHOT_TIMEOUT_MS catch that.
  */
 export const MAX_BACKLOG_CHARS = 8 * 1024 * 1024
 
@@ -123,6 +141,7 @@ export interface TerminalMirrorOptions {
   now?: () => number
   inspectTimeoutMs?: number
   snapshotTimeoutMs?: number
+  stallMs?: number
 }
 
 /**
@@ -194,6 +213,10 @@ export class TerminalMirror implements TerminalTap {
   private failed = false
   private readonly restartListeners = new Set<() => void>()
   private flow: TerminalFlow | null = null
+  /** The stall check (see STALL_MS), armed while the worker owes an answer. */
+  private watchdog: ReturnType<typeof setTimeout> | null = null
+  /** The current worker posted something since the watchdog was armed. */
+  private answered = false
   private readonly log: (message: string) => void
   private readonly now: () => number
 
@@ -223,6 +246,7 @@ export class TerminalMirror implements TerminalTap {
     const worker = this.worker
     this.worker = null
     this.failed = false
+    this.disarmWatchdog()
     this.drop(new Error('terminal mirror stopped'))
     this.endAllViews()
     this.releaseAll()
@@ -393,6 +417,7 @@ export class TerminalMirror implements TerminalTap {
   private send(tabId: string, tab: TabStream, item: MirrorItem): void {
     tab.inflight.push(item)
     this.worker?.post({ t: 'item', tabId, item })
+    this.armWatchdog()
     // Over a copy: a view's callback may leave, or a view may join (its held list, copied from
     // `inflight`, already has this item) while the others are served.
     for (const [view, state] of [...tab.views]) {
@@ -407,14 +432,17 @@ export class TerminalMirror implements TerminalTap {
     if (!worker) return
     const id = this.nextSnapshot++
     const timer = setTimeout(() => {
-      if (tab.request?.id !== id) return
+      if (tab.request?.id !== id || this.worker !== worker) return
       tab.request = null
-      this.log(`terminal mirror: no snapshot of tab ${tabId} in ${this.options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS} ms`)
-      this.endWaiting(tab)
+      // Not just the waiting views' problem: a worker that does not answer a snapshot is not
+      // parsing either, and the ptys it holds are paused on it. The restart asks the new worker
+      // for every view still waiting (or, past the budget, ends them and releases the ptys).
+      this.hung(`no snapshot of tab ${tabId} in ${this.options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS} ms`)
     }, this.options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS)
     timer.unref?.()
     tab.request = { id, timer }
     worker.post({ t: 'snapshot', id, tabId })
+    this.armWatchdog()
   }
 
   private cancelRequest(tab: TabStream): void {
@@ -506,6 +534,8 @@ export class TerminalMirror implements TerminalTap {
   }
 
   private received(message: FromWorker): void {
+    // Any answer shows the worker's loop runs; a log line is not an answer.
+    if (message.t !== 'log') this.answered = true
     switch (message.t) {
       case 'parsed': {
         const tab = this.tabs.get(message.tabId)
@@ -551,6 +581,8 @@ export class TerminalMirror implements TerminalTap {
 
   private crashed(reason: string): void {
     this.log(`terminal mirror worker ended (${reason})`)
+    // The old worker's silence is not the new one's: the check starts over with it.
+    this.disarmWatchdog()
     this.drop(new Error('terminal mirror worker restarted'))
     const now = this.now()
     this.restarts = this.restarts.filter((at) => now - at < RESTART_WINDOW_MS)
@@ -598,10 +630,46 @@ export class TerminalMirror implements TerminalTap {
    * seq, the restart budget spent), which empties every `inflight` and acks the backlog.
    */
   private drowned(tabId: string): void {
+    this.hung(`tab ${tabId} over ${MAX_BACKLOG_CHARS} characters behind`)
+  }
+
+  /**
+   * The worker is not doing its job (drowned, stalled, a snapshot never answered): ended and
+   * handled as a crash, so every backlog is acked (the paused ptys resume) and the views still
+   * waiting are asked again of the new worker, within the restart budget.
+   */
+  private hung(reason: string): void {
     const worker = this.worker
     if (!worker) return
     worker.terminate()
-    this.crashed(`tab ${tabId} over ${MAX_BACKLOG_CHARS} characters behind`)
+    this.crashed(reason)
+  }
+
+  /** Start the stall check if it is not running (something was just posted the worker must answer). */
+  private armWatchdog(): void {
+    if (this.watchdog || !this.worker) return
+    this.answered = false
+    const worker = this.worker
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null
+      if (this.worker !== worker) return
+      // Owing nothing (everything parsed, no snapshot out): idle is fine; the next post re-arms.
+      if (!this.owesAnswer()) return
+      if (this.answered) return this.armWatchdog()
+      this.hung(`no answer in ${this.options.stallMs ?? STALL_MS} ms`)
+    }, this.options.stallMs ?? STALL_MS)
+    this.watchdog.unref?.()
+  }
+
+  private disarmWatchdog(): void {
+    if (this.watchdog) clearTimeout(this.watchdog)
+    this.watchdog = null
+  }
+
+  /** Whether the worker has items to report parsed or a snapshot to answer. */
+  private owesAnswer(): boolean {
+    for (const tab of this.tabs.values()) if (tab.inflight.length > 0 || tab.request) return true
+    return false
   }
 
   /**

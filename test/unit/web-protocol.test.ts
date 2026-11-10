@@ -19,7 +19,7 @@ import { MAX_PENDING_INVOKES, WebConnections, windowSnapshot, type WsLike } from
 import { DeviceStore, type WebDevice } from '../../src/main/web/devices'
 import type { TerminalSource } from '../../src/main/web/view-terminals'
 import type { MirrorView } from '../../src/main/terminals/mirror'
-import { VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../../src/main/terminals/desktop-flow'
+import { MAX_REJOINS, VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../../src/main/terminals/desktop-flow'
 import { WebGateway, type WsModule } from '../../src/main/web/gateway'
 import {
   CLOSE,
@@ -666,6 +666,45 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
     expect(ws.closedWith?.code).toBe(CLOSE.failed)
     expect(logs.some((l) => l.includes('terminal frames failed'))).toBe(true)
     ws.send = realSend
+  })
+
+  it('a resync that went out clears the failure: a later, unrelated one resyncs again instead of closing', async () => {
+    const { conns, mirror, ws } = terminals()
+    conns.select('web:1', 'p1-t1')
+    const snap = { seq: 1, cols: 80, rows: 24, data: 'a' }
+    const realSend = ws.send.bind(ws)
+    const failing = (): void => {
+      ws.send = () => {
+        throw new Error('socket closing')
+      }
+    }
+    failing()
+    mirror.joins[0]!.view.snapshot(snap)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    ws.send = realSend
+    mirror.joins[1]!.view.snapshot(snap)
+    expect(ws.frames('term.snapshot')).toHaveLength(1)
+    // Much later, a data frame fails: resynced once more, the view stays open.
+    failing()
+    mirror.joins[1]!.view.item({ seq: 2, kind: 'data', data: 'x' })
+    expect(mirror.joins[1]!.left).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    ws.send = realSend
+    expect(ws.closedWith).toBeUndefined()
+    expect(mirror.joins).toHaveLength(3)
+  })
+
+  it(`joins that keep ending before their snapshot stop after ${MAX_REJOINS}: resynced once more, then the view closes`, async () => {
+    const { conns, mirror, ws, logs } = terminals()
+    conns.select('web:1', 'p1-t1')
+    for (let i = 0; i < MAX_REJOINS; i++) mirror.joins[i]!.view.closed()
+    // Given up: no fourth join in this turn, the connection's resync comes on a later one.
+    expect(mirror.joins).toHaveLength(MAX_REJOINS)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(mirror.joins).toHaveLength(MAX_REJOINS + 1)
+    expect(logs.some((l) => l.includes(`no snapshot after ${MAX_REJOINS} joins`))).toBe(true)
+    for (let i = MAX_REJOINS; i < 2 * MAX_REJOINS; i++) mirror.joins[i]!.view.closed()
+    expect(ws.closedWith?.code).toBe(CLOSE.failed)
   })
 
   it('the socket closing leaves every followed tab', () => {

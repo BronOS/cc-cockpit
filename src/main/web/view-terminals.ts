@@ -7,8 +7,9 @@
 // view selects it. A tab joined once stays followed while the view lasts, as the desktop keeps every
 // tab's terminal parsing whether it shows or not: going back to it costs nothing, and its xterm in
 // the page is current. A tab that closes is forgotten; a stream that ends for any other reason
-// (mirror.ts `MirrorView.closed`: the snapshot never came, or came out of step) is joined again
-// while the mirror still holds the tab.
+// (mirror.ts `MirrorView.closed`: the worker had no terminal for it, or the snapshot came out of
+// step) is joined again while the mirror still holds the tab, MAX_REJOINS times in a row at most;
+// then the tab is left and the connection told (`failed`), as for a send that failed.
 //
 // Flow (Task 12, "every view drops and resyncs"): main is the pty's consumer, so a view never pauses
 // Claude; instead each view counts the output characters it was sent and has not acked
@@ -25,7 +26,7 @@
 
 import type { TermDataFrame, TermSnapshotFrame } from '../../shared/web-protocol'
 import type { MirrorView } from '../terminals/mirror'
-import { VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../terminals/desktop-flow'
+import { MAX_REJOINS, VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import { MAX_FRAME_BYTES, termDataFrame, termSnapshotFrames } from './protocol'
 
 /** The part of TerminalMirror a view uses. */
@@ -43,6 +44,8 @@ export interface ViewTerminalsDeps {
   maxFrameBytes?: number
   /** A send failed for this tab; the view already left it, so the page must resync (select again). */
   failed?(tabId: string, err: unknown): void
+  /** The tab's snapshot went out whole: the page's screen is in step again. */
+  synced?(tabId: string): void
   /** Flow limits in output characters (VIEW_HIGH_WATER / VIEW_LOW_WATER); tests pass small ones. */
   highWater?: number
   lowWater?: number
@@ -57,6 +60,8 @@ interface Followed {
   unacked: number
   /** Over the limit: no live data until the page acks down to the low mark, then a fresh join. */
   behind: boolean
+  /** Joins in a row that ended before their snapshot (MAX_REJOINS). */
+  failedJoins: number
 }
 
 export class ViewTerminals {
@@ -79,7 +84,7 @@ export class ViewTerminals {
     if (this.disposed) return false
     if (this.followed.has(tabId)) return true
     if (!this.deps.canFollow(tabId)) return false
-    const f: Followed = { leave: null, join: null, unacked: 0, behind: false }
+    const f: Followed = { leave: null, join: null, unacked: 0, behind: false, failedJoins: 0 }
     this.followed.set(tabId, f)
     if (this.join(tabId, f)) return true
     this.followed.delete(tabId)
@@ -165,9 +170,14 @@ export class ViewTerminals {
       // The parts go out back to back, in one call: nothing of this tab can come between them.
       snapshot: (snapshot) => {
         if (!current()) return
+        let sent = false
         this.guarded(tabId, () => {
           for (const frame of termSnapshotFrames(tabId, snapshot, maxBytes)) this.deps.send(frame)
+          sent = true
         })
+        if (!sent) return
+        f.failedJoins = 0
+        this.deps.synced?.(tabId)
       },
       item: (item) => {
         if (!current()) return
@@ -191,6 +201,12 @@ export class ViewTerminals {
         // again and is forgotten; a snapshot that never came, or came out of step, is asked again.
         f.leave = null
         f.join = null
+        if (++f.failedJoins >= MAX_REJOINS) {
+          // Not looping between main and the worker: the connection resyncs once, then closes.
+          this.followed.delete(tabId)
+          this.deps.failed?.(tabId, new Error(`no snapshot after ${MAX_REJOINS} joins`))
+          return
+        }
         if (!this.join(tabId, f)) this.followed.delete(tabId)
       }
     }

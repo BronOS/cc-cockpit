@@ -9,7 +9,7 @@ import { Terminal } from '@xterm/headless'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FLUSH_BYTES, HIGH_WATER } from '../../src/main/pty/pty-service'
 import { TabManager } from '../../src/main/tabs/tab-manager'
-import { DesktopFlow, VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../../src/main/terminals/desktop-flow'
+import { DesktopFlow, MAX_REJOINS, VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../../src/main/terminals/desktop-flow'
 import {
   MAX_BACKLOG_CHARS,
   TerminalMirror,
@@ -136,14 +136,15 @@ class StalledWorker implements MirrorWorkerLike {
   }
 }
 
-function setup(worker: () => MirrorWorkerLike = () => new FakeWorker()) {
+function setup(worker: () => MirrorWorkerLike = () => new FakeWorker(), options: { stallMs?: number } = {}) {
   const mirror = new TerminalMirror({
     createWorker: () => {
       const w = worker()
       workers.push(w)
       return w
     },
-    log: (m) => logs.push(m)
+    log: (m) => logs.push(m),
+    stallMs: options.stallMs
   })
   let page: DesktopPage | undefined
   const events: Array<IpcEventMap['tabs.data']> = []
@@ -370,11 +371,62 @@ describe("main's buffers stay bounded under a flood", () => {
     expect(m.inflightItems('t')).toBe(0)
     expect(logs.some((l) => l.includes('behind'))).toBe(true)
   })
+
+  it('a worker that stops answering is restarted: the paused pty resumes and the desktop is resynced and live', async () => {
+    // The first worker hangs (takes everything, answers nothing); the restarted one works.
+    const s = setup(() => (workers.length === 0 ? new StalledWorker() : new FakeWorker()), { stallMs: 50 })
+    m = s.mirror
+    m.start()
+    const tab = s.tabs.create(P, { kind: 'shell' })
+    const page = s.newPage(tab.id)
+    const pty = backend.last
+    // Main stops reading at its limit (the copy is not parsing), the desktop past its own.
+    for (let n = 0; !pty.paused; n++) pty.emit(chunk(n))
+    expect(pty.paused).toBe(true)
+    // Without the stall check this stays paused forever: nothing ever acks it.
+    await until(() => !pty.paused)
+    expect((workers[0] as StalledWorker).terminated).toBe(true)
+    expect(workers).toHaveLength(2)
+    expect(logs.some((l) => l.includes('no answer in 50 ms'))).toBe(true)
+    // Its resync (asked of the hung worker) is answered by the new one: the desktop is live again.
+    await until(() => page.snapshots === 1)
+    pty.emit('after the restart\r\n')
+    await wait(20)
+    expect(s.events.at(-1)).toEqual({ tabId: tab.id, data: 'after the restart\r\n' })
+  })
+
+  /** A desktop dropped at its limit that caught up and now waits for a snapshot the stalled worker never sends. */
+  async function joiningOnStalledWorker() {
+    const s = setup(() => new StalledWorker())
+    m = s.mirror
+    m.start()
+    const tab = s.tabs.create(P, { kind: 'shell' })
+    s.newPage(tab.id)
+    const pty = backend.last
+    for (let n = 0; !pty.paused; n++) pty.emit(chunk(n))
+    const stalled = workers[0] as StalledWorker
+    await until(() => stalled.received.some((msg) => msg.t === 'snapshot'))
+    return { s, tab }
+  }
+
+  it('web access going off while the desktop waits for its resync logs that its screen may be stale', async () => {
+    await joiningOnStalledWorker()
+    m!.stop()
+    expect(logs.some((l) => l.includes('released while the desktop was behind'))).toBe(true)
+  })
+
+  it('a tab closed while the desktop waits for its resync is just gone (no stale-screen log)', async () => {
+    const { s, tab } = await joiningOnStalledWorker()
+    s.tabs.close(P, tab.id)
+    expect(logs.some((l) => l.includes('released while the desktop was behind'))).toBe(false)
+    expect(m!.seq(tab.id)).toBeUndefined()
+  })
 })
 
 /** A worker the test answers by hand: which items it parsed, and when the snapshot is taken. */
 class ManualWorker implements MirrorWorkerLike {
   readonly received: ToWorker[] = []
+  terminated = false
   private listener: (m: FromWorker) => void = () => undefined
   post(message: ToWorker): void {
     this.received.push(message)
@@ -383,7 +435,9 @@ class ManualWorker implements MirrorWorkerLike {
     this.listener = listener
   }
   onExit(): void {}
-  terminate(): void {}
+  terminate(): void {
+    this.terminated = true
+  }
   send(message: FromWorker): void {
     this.listener(message)
   }
@@ -413,6 +467,64 @@ describe('held items of a waiting view', () => {
     worker.send({ t: 'snapshot', ids: worker.snapshotIds(), tabId: 't', snapshot: { seq: 9, cols: 80, rows: 24, data: 'screen' } })
     expect(got.map((x) => x.seq)).toEqual([9, 10, 11])
     m.stop()
+  })
+})
+
+describe('the stall check', () => {
+  it('a worker that answers in time, or owes nothing, is not hung; one silent while it owes an answer is', async () => {
+    const created: ManualWorker[] = []
+    const acks: number[] = []
+    const m = new TerminalMirror({
+      createWorker: () => {
+        const w = new ManualWorker()
+        created.push(w)
+        return w
+      },
+      log: (l) => logs.push(l),
+      stallMs: 100
+    })
+    m.bindFlow({ take: () => undefined, ack: (_id, n) => acks.push(n), release: () => undefined })
+    m.start()
+    m.spawned('t', 80, 24)
+    created[0]!.send({ t: 'parsed', tabId: 't', seq: 1 })
+    // Idle: everything answered, nothing owed, however long.
+    await wait(250)
+    expect(created).toHaveLength(1)
+    // Slow but steady: an answer every 20 ms while one item is always still owed.
+    for (let i = 0; i < 12; i++) {
+      m.data('t', `x${i}`)
+      await wait(20)
+      created[0]!.send({ t: 'parsed', tabId: 't', seq: m.seq('t')! - 1 })
+    }
+    expect(created).toHaveLength(1)
+    // 'x11', the one item never answered.
+    expect(m.backlog('t')).toBe(3)
+    // Silent while it owes an item: hung, restarted, and the backlog acked so the pty resumes.
+    await until(() => created.length === 2)
+    expect(created[0]!.terminated).toBe(true)
+    expect(logs.some((l) => l.includes('no answer in 100 ms'))).toBe(true)
+    expect(m.backlog('t')).toBe(0)
+    expect(acks.at(-1)).toBe(3)
+    m.stop()
+  })
+
+  it('stopping ends the check: a stopped mirror restarts nothing', async () => {
+    const created: ManualWorker[] = []
+    const m = new TerminalMirror({
+      createWorker: () => {
+        const w = new ManualWorker()
+        created.push(w)
+        return w
+      },
+      log: (l) => logs.push(l),
+      stallMs: 20
+    })
+    m.start()
+    m.spawned('t', 80, 24)
+    m.stop()
+    await wait(60)
+    expect(created).toHaveLength(1)
+    expect(logs.some((l) => l.includes('no answer'))).toBe(false)
   })
 })
 
@@ -457,6 +569,47 @@ describe('DesktopFlow on its own', () => {
     ])
     expect(f.modeOf('t')).toBe('live')
     expect(f.unackedOf('t')).toBe(3)
+  })
+
+  it(`joins that keep ending before their snapshot stop after ${MAX_REJOINS}: live again, and logged`, () => {
+    const views: MirrorView[] = []
+    const { f, out } = flow((_id, v) => {
+      views.push(v)
+      return () => undefined
+    }, 5)
+    f.take('t')
+    f.resync('t')
+    for (let i = 0; i < MAX_REJOINS; i++) views[i]!.closed()
+    expect(views).toHaveLength(MAX_REJOINS)
+    expect(f.modeOf('t')).toBe('live')
+    expect(logs.some((l) => l.includes('could not be resynced'))).toBe(true)
+    expect(f.data('t', 'next')).toBe(true)
+    expect(out).toEqual([])
+    // A later episode tries again from scratch, and a snapshot resets the count.
+    f.resync('t')
+    views.at(-1)!.closed()
+    views.at(-1)!.snapshot({ seq: 5, cols: 80, rows: 24, data: 'screen' })
+    expect(f.modeOf('t')).toBe('live')
+    expect(views).toHaveLength(MAX_REJOINS + 2)
+  })
+
+  it('a rejoin the stopping mirror refuses leaves the tab live but marked: the release logs the stale screen', () => {
+    let up = true
+    const views: MirrorView[] = []
+    const { f } = flow((_id, v) => {
+      if (!up) return undefined
+      views.push(v)
+      return () => undefined
+    })
+    f.take('t')
+    f.resync('t')
+    // mirror.stop(): the joins end first (their rejoin finds no mirror), then the release.
+    up = false
+    views[0]!.closed()
+    expect(f.modeOf('t')).toBe('live')
+    expect(logs).toEqual([])
+    f.release('t')
+    expect(logs.some((l) => l.includes('released while the desktop was behind'))).toBe(true)
   })
 })
 

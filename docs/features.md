@@ -423,6 +423,10 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   reports the tool done, not on a key; a cancelled question (Esc) keeps showing until Claude's
   next turn, and a background subagent's tool call while the dialog is up shows "working".
 - Closing a whole project window, or quitting, does not ask, even with running tabs.
+- Web access keeps a headless copy of each terminal in a worker. If that worker crashes or hangs, it is restarted with
+  blank copies: a terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind)
+  shows a blank screen until Claude redraws, and a shell tab until it prints again. After three restarts within a
+  minute web access stops mirroring until it is turned on again, and the tabs run as with web access off.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name
   (and no gist) until Claude sets the title again.

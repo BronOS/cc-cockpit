@@ -972,10 +972,12 @@ describe('snapshots and joins', () => {
     expect(m.waitingViews('t')).toBe(0)
   })
 
-  it('ends the waiting views when the worker never answers', async () => {
+  it('a worker that never answers a snapshot counts as hung: restarted, the new one answers the waiting views', async () => {
     m = mirror({ snapshotTimeoutMs: 20 })
     m.start()
     m.spawned('t', 20, 5)
+    m.data('t', 'before')
+    await settle(m, 't')
     // The worker hangs on snapshots only.
     const w = workers[0]!
     const handle = w.terms.handle.bind(w.terms)
@@ -983,12 +985,41 @@ describe('snapshots and joins', () => {
     const view = new ReplayView()
     m.join('t', view)
     await wait(60)
-    expect(view.isClosed).toBe(true)
-    expect(m.waitingViews('t')).toBe(0)
     expect(logs.some((l) => l.includes('no snapshot of tab t'))).toBe(true)
-    // The stream goes on for others; a late answer is ignored.
+    expect(w.terminated).toBe(true)
+    expect(workers).toHaveLength(2)
+    // Not ended: it starts from the new worker's blank copy at the current seq, then the stream.
+    expect(view.isClosed).toBe(false)
+    expect(view.snap).toMatchObject({ seq: 2, cols: 20, rows: 5 })
     m.data('t', 'later')
     await settle(m, 't')
+    expect(view.data).toBe('later')
+    expect(m.waitingViews('t')).toBe(0)
+  })
+
+  it('past the restart budget a snapshot that never comes ends the waiting views', async () => {
+    // Every worker hangs on snapshots: each timeout spends a restart, then the mirror gives up.
+    m = new TerminalMirror({
+      createWorker: () => {
+        const w = new FakeWorker()
+        const handle = w.terms.handle.bind(w.terms)
+        w.terms.handle = (message) => (message.t === 'snapshot' ? undefined : handle(message))
+        workers.push(w)
+        return w
+      },
+      log: (l) => logs.push(l),
+      now: () => clock,
+      snapshotTimeoutMs: 10
+    })
+    m.start()
+    m.spawned('t', 20, 5)
+    const view = new ReplayView()
+    m.join('t', view)
+    for (let i = 0; i < 100 && !m.gaveUp; i++) await wait(10)
+    expect(m.gaveUp).toBe(true)
+    expect(workers).toHaveLength(MAX_RESTARTS + 1)
+    expect(view.isClosed).toBe(true)
+    expect(view.snap).toBeNull()
   })
 
   it('a worker restart asks the new worker for the waiting views; they start from the blank copy', async () => {

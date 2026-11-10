@@ -22,6 +22,12 @@
 // `lowWater`); they land on the fresh count, clamped at zero, so the limit is a little loose, never
 // stuck.
 //
+// A join that ends before its snapshot (`closed`: the worker has no terminal for the tab, or the
+// snapshot did not meet the stream) is asked again, MAX_REJOINS times in a row at most: then the
+// desktop goes back to live output as it is, logged, rather than loop between main and the worker
+// with nothing on its screen. (A worker that does not answer at all is restarted by the mirror,
+// which asks the new one: that is not a failed join.)
+//
 // A page that reloads asks for its tabs again (`TabManager.attach`): instead of today's
 // `resetFlow`, every tab held here is resynced, so a reload gets its screens back.
 //
@@ -38,6 +44,8 @@ import type { MirrorView } from './mirror'
 export const VIEW_HIGH_WATER = HIGH_WATER
 /** Rejoin once the view is down to this, as the pty resumes at LOW_WATER (no flapping). */
 export const VIEW_LOW_WATER = VIEW_HIGH_WATER / 2
+/** Joins in a row that may end before their snapshot before the desktop gives up resyncing. */
+export const MAX_REJOINS = 3
 
 export interface DesktopFlowDeps {
   /** Output for the desktop view (`tabs.data`); `reset`: a whole screen, the terminal starts over. */
@@ -60,6 +68,13 @@ interface TabFlow {
   /** The current join (identity: callbacks of an older one are ignored) and its leave function. */
   join: object | null
   leave: (() => void) | null
+  /** Joins in a row that ended before their snapshot (MAX_REJOINS). */
+  failedJoins: number
+  /**
+   * The desktop missed output (or reloaded) and could not be resynced: the mirror no longer held
+   * the tab when asked. Its screen shows what it had until new output redraws it.
+   */
+  stale: boolean
 }
 
 export class DesktopFlow {
@@ -74,7 +89,7 @@ export class DesktopFlow {
 
   /** Main consumes this tab's pty now: the desktop is counted from here, live. A restart keeps the state. */
   take(tabId: string): void {
-    if (!this.tabs.has(tabId)) this.tabs.set(tabId, { mode: 'live', unacked: 0, join: null, leave: null })
+    if (!this.tabs.has(tabId)) this.tabs.set(tabId, { mode: 'live', unacked: 0, join: null, leave: null, failedJoins: 0, stale: false })
   }
 
   /** Back to today's path (the mirror stopped or gave up, the tab closed). */
@@ -83,8 +98,10 @@ export class DesktopFlow {
     if (!t) return
     this.tabs.delete(tabId)
     this.leave(t)
-    // Nothing is left to resync from: the screen stays as it was until new output redraws it.
-    if (t.mode !== 'live') this.deps.log(`terminal flow: tab ${tabId} released while the desktop was behind; its screen may be stale`)
+    // Nothing is left to resync from: the screen stays as it was until new output redraws it. The
+    // mirror stopping ends the joins first (their rejoin then finds no mirror and flips the tab to
+    // live), so `stale` is what tells a desktop that was dropped.
+    if (t.mode !== 'live' || t.stale) this.deps.log(`terminal flow: tab ${tabId} released while the desktop was behind; its screen may be stale`)
   }
 
   /** Whether the desktop's output and acks for this tab go through here. */
@@ -156,6 +173,8 @@ export class DesktopFlow {
     const view: MirrorView = {
       snapshot: (snapshot) => {
         if (!current()) return
+        t.failedJoins = 0
+        t.stale = false
         this.deps.emit(tabId, snapshot.data, true)
         this.caughtUp(tabId, t, snapshot.seq)
       },
@@ -178,8 +197,14 @@ export class DesktopFlow {
         if (!current()) return
         t.join = null
         t.leave = null
-        // The snapshot never came (timed out, out of step) and the mirror still holds the tab: ask
-        // again. A mirror that stopped returns no join, and its release follows.
+        // The snapshot never came (no terminal in the worker, out of step): ask again, a few times.
+        // A mirror that stopped (or a closed tab) returns no join, and its release follows.
+        if (++t.failedJoins >= MAX_REJOINS) {
+          t.failedJoins = 0
+          t.mode = 'live'
+          this.deps.log(`terminal flow: tab ${tabId} could not be resynced (${MAX_REJOINS} joins ended early); live output again, its screen may be stale`)
+          return
+        }
         this.rejoin(tabId, t)
       }
     }
@@ -193,8 +218,10 @@ export class DesktopFlow {
     }
     if (!leave) {
       // The mirror does not hold the tab (stopping, or closed): live as it is; a release follows.
+      // The desktop was dropped or reloaded and gets no snapshot now (`release` logs it).
       t.join = null
       t.mode = 'live'
+      t.stale = true
       return
     }
     t.leave = leave

@@ -767,9 +767,11 @@ export class TabManager {
   }
 
   private remove(tab: Tab): void {
+    // The desktop's flow first: the tap's close ends the tab's joins and releases it, and a desktop
+    // still held then would try to rejoin a closed tab and log a stale screen that nobody sees.
+    this.desktop.closed(tab.id)
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
     this.tap((t) => t.closed(tab.id))
-    this.desktop.closed(tab.id)
     this.notify((l) => l.closed?.(tab.id))
     this.byId.delete(tab.id)
     const tabs = this.order.get(tab.projectId)
