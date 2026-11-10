@@ -48,6 +48,15 @@ export function isOwnView(viewId: string): boolean {
   return webShell ? viewId === ownView : !isRemoteViewId(viewId)
 }
 
+/**
+ * Whether this page holds a page that lives in one view of the window (design-web.md §5.4: an html
+ * overlay's page, OverlayInfo.heldBy): absent names the window's desktop view, so with web access
+ * off the desktop page always holds it and nothing changes.
+ */
+export function holdsPage(heldBy: { viewId: string } | undefined): boolean {
+  return heldBy === undefined ? !webShell : isOwnView(heldBy.viewId)
+}
+
 /** Test hook: back to the Electron shell. */
 export function resetShellKindForTest(): void {
   webShell = false

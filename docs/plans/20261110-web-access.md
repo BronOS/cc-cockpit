@@ -530,13 +530,19 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/plugins/panel-ports.ts`, `src/main/web/protocol.ts` (`ready`)
 - Modify: their tests
 
-- [ ] an HTML overlay's page lives in one view (the opener's, or the last to take it); other views show
+- [x] an HTML overlay's page lives in one view (the opener's, or the last to take it); other views show
       "Open on <device> — Take over"; taking over reloads the page there (pageReady and outbox reset as on a reload)
-- [ ] `post({ result })` settles the opener once; the overlay closes on every view
-- [ ] plugin settings pages the same
-- [ ] write tests: take over moves the page, the old view's port closes, the result settles once, a joining view sees
+- [x] `post({ result })` settles the opener once; the overlay closes on every view
+- [x] plugin settings pages the same
+- [x] write tests: take over moves the page, the old view's port closes, the result settles once, a joining view sees
       "open on <device>"
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+
+      Note: `OverlayInfo.heldBy` names a browser holder (absent = the desktop, shape unchanged without web access);
+      `overlays.take` is the take over; the holder is the opener's origin view (HostApi.originOf) else the desktop; a
+      browser holder leaving hands the page back to the desktop. Settings pages: take over is the view's own
+      `settingsPage.connect`, `settingsPage.info` carries `heldBy`, `settingsPage.held` tells every view. `ready` needed
+      no new field (the overlay infos carry `heldBy`).
 
 ### Task 25: Desktop-only features for remote views [model: sonnet]
 

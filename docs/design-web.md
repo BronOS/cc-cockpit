@@ -276,6 +276,15 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   a desktop reload does today.
 - **Plugin settings pages** the same: `connectSettingsPage` already keeps one page per plugin (`panel-ports.ts`),
   shown in one view with take over.
+- **As built** (plan Task 24): an html overlay's holder is the opener's origin view (a plugin's `ctx.overlay.open` from
+  a listener handling a browser's message, checked to be a live view of the window), else the desktop's.
+  `OverlayInfo.heldBy` names a browser holder and its device; absent means the desktop, so the shape without web
+  access is unchanged. `overlays.take` moves it to the calling view; `overlays.ready`/`loaded`/`message`/`result` from
+  any other view are dropped, and the opener's posts go to the holder's view only (`emitToView`). A view's own reload
+  (`overlays.list`) resets only the pages it holds; a browser holder leaving hands the page back to the desktop (a
+  reconnect is a new view, so it loses the hold). Settings pages: Take over is the taking view's own
+  `settingsPage.connect`; `settingsPage.info` carries `heldBy`, and every change of holder is sent to the project's
+  views as `settingsPage.held` (null when the page closed, and a view showing the note then loads it).
 
 ### 5.5 Plugin pages over HTTP
 

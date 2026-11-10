@@ -15,6 +15,17 @@
 // callback, kept on the overlay record: nothing a renderer sends can name another receiver, and a
 // page can only reach the record through an id of its own window's stack.
 //
+// Views (design-web.md §5.4): a window can have several live views (its desktop page and browser
+// views). Terminal overlays are shared by all of them (first answer wins), but an html overlay's
+// page lives in ONE view, its `holder`: the opener's view (a plugin's origin view, else the
+// desktop's), or the last view to take it over (`take`). Main has one `pageReady` flag and one
+// outbox per overlay and plugins treat the page as one (the reviewer posts `init` once), so only
+// the holder's page talks: `pageReady`, `pageLoaded`, `result` and `pageMessage` from any other view
+// are dropped, and the opener's posts go to the holder's view only. The others show "Open on
+// <device> — Take over" (`info.heldBy`, present when a browser holds it). A take, and the holder
+// leaving (back to the desktop), reload the page as a desktop reload does: `pageReady` false, the
+// loader back, the opener's posts queued again until the new page's port is up.
+//
 // No Electron import: terminal overlays run on a PtyBackend (its own PtyService, separate from
 // the tabs'), url overlays go through a UrlViewFactory (the WebContentsView adapter is
 // electron-url-view.ts), and renderer events leave through `emit`. Unit tests pass fakes.
@@ -57,6 +68,7 @@ import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { composeDiscuss, DiscussSessionBudget } from './discuss'
 import { PtyService } from '../pty/pty-service'
 import type { SendOrigin } from '../sessions/status-reducer'
+import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
 type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
@@ -137,6 +149,13 @@ export interface OverlayManagerOptions {
   env(token: string): Record<string, string>
   /** Send an event to a window's renderer (a closed window drops it). */
   emit<C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]): void
+  /**
+   * Send an event to one view of a window (ViewRegistry.toView): an html overlay's messages go to
+   * the view holding its page only. Absent: to the whole window (`emit`), as before web access.
+   */
+  emitToView?<C extends EventChannel>(viewId: ViewId, channel: C, payload: IpcEventMap[C]): void
+  /** A view's device name for `info.heldBy` ("Desktop", a browser's device). Default: the view id. */
+  deviceOf?(viewId: ViewId): string
   /**
    * The command a chord fires in this window (main's command registry with the user's overrides),
    * so `overlay.pop` / `overlay.closeTop` follow a rebinding in keys typed into a url view.
@@ -362,6 +381,11 @@ interface Overlay {
   pageReady: boolean
   outbox: OverlayOutbox
   /**
+   * An html overlay's view: the one whose page is the overlay's page (see the top of the file). Only
+   * that view's page reports, answers and gets the opener's posts. Unused by the other kinds.
+   */
+  holder?: ViewId
+  /**
    * When an html overlay's loader goes (spec `ready`): at the port (`load`, the default) or when the
    * page says so (`manual`). Unused by the other kinds, whose loader follows their view or program.
    */
@@ -441,10 +465,11 @@ export class OverlayManager {
     opener: string,
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
-    pluginId?: string
+    pluginId?: string,
+    view?: ViewId
   ): Promise<OverlayResult> {
     try {
-      return this.start(windowId, spec, opener, peerGone, channel, pluginId)
+      return this.start(windowId, spec, opener, peerGone, channel, pluginId, view)
     } catch (err) {
       return Promise.reject(toError(err))
     }
@@ -459,6 +484,10 @@ export class OverlayManager {
    * `pluginId` is the plugin that opened it (absent for the CLI and core): its buttons' `.svg` icons
    * are files of that plugin's folder. The overlay goes on the stack here, at once, with a loader
    * (`info.loading`) until its body is ready (design-next §3.4; see `loaded`).
+   *
+   * `view` is the view the opening action came from (HostApi.originOf: a live remote view of THIS
+   * window, checked by the caller): an html overlay's page opens there. Absent, or not a remote
+   * view's id: the window's desktop view.
    */
   start(
     windowId: number,
@@ -466,7 +495,8 @@ export class OverlayManager {
     opener: string,
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
-    pluginId?: string
+    pluginId?: string,
+    view?: ViewId
   ): Promise<OverlayResult> {
     const parsed = parseOverlaySpec(spec)
     // Before anything is created: no program, no view, no stack for a window that is gone.
@@ -501,6 +531,7 @@ export class OverlayManager {
     // Discuss shows for a typed overlay from the start; an onDiscuss handler adds it later.
     overlay.info = withDiscuss(overlay.info, overlay)
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
+    if (parsed.kind === 'html') this.hold(overlay, view !== undefined && isRemoteViewId(view) ? view : desktopViewId(windowId))
     // Every kind keeps it (its buttons' clicks go there); only an html page uses the messaging part.
     if (channel) overlay.channel = channel
     // A failed spawn or view throws out of here (open turns it into a rejection), before the
@@ -572,19 +603,83 @@ export class OverlayManager {
     return found ? { windowId: found.windowId } : undefined
   }
 
-  /** The window's overlays, bottom first. Also the re-attach point after a renderer reload. */
-  list(windowId: number): OverlayInfo[] {
+  /**
+   * The window's overlays, bottom first. Also the re-attach point after a renderer reload; `viewId`
+   * is the view that reloaded (the router's; default the desktop's).
+   */
+  list(windowId: number, viewId: ViewId = desktopViewId(windowId)): OverlayInfo[] {
     const stack = this.stacks.get(windowId) ?? []
     // The old page never acked what it was sent; a paused PTY would otherwise stay paused.
     for (const o of stack) if (o.info.kind === 'terminal') this.pty.resetFlow(o.id)
-    // Its html pages reload with it: an opener's posts wait again until each one's port is up, and
-    // the loader is back until the page is ready again (a `manual` page calls ready() once more).
-    // A url view and a PTY live in main and do not reload with the renderer.
-    for (const o of stack) {
-      o.pageReady = false
-      if (o.info.kind === 'html') o.info = { ...o.info, loading: true }
-    }
+    // The html pages it holds reload with it: an opener's posts wait again until each one's port is
+    // up, and the loader is back until the page is ready again (a `manual` page calls ready() once
+    // more). A page another view holds did not reload. A url view and a PTY live in main and do
+    // not reload with the renderer.
+    for (const o of stack) if (o.info.kind === 'html' && o.holder === viewId) this.reloading(o)
     return this.infos(windowId)
+  }
+
+  /**
+   * "Take over" (design-web.md §5.4): the html overlay's page moves to `viewId`, a view of the
+   * window main resolved for the caller, and loads there as on a reload. True when it is open in
+   * this window as an html overlay (also when the view already holds it: nothing changes then).
+   */
+  take(windowId: number, viewId: ViewId, overlayId: string): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (overlay?.info.kind !== 'html') return false
+    if (overlay.holder === viewId) return true
+    this.hold(overlay, viewId)
+    this.reloading(overlay)
+    this.log(`overlay ${overlay.id}: its page moved to view ${viewId}`)
+    this.changed(windowId)
+    return true
+  }
+
+  /**
+   * A view is gone (a browser left): the html pages it held go back to their window's desktop view,
+   * which loads them, so an overlay is never left with nobody able to show or answer it.
+   */
+  viewGone(viewId: ViewId): void {
+    if (!isRemoteViewId(viewId)) return
+    const touched = new Set<number>()
+    for (const overlay of this.byId.values()) {
+      if (overlay.holder !== viewId) continue
+      this.hold(overlay, desktopViewId(overlay.windowId))
+      this.reloading(overlay)
+      touched.add(overlay.windowId)
+    }
+    for (const windowId of touched) this.changed(windowId)
+  }
+
+  /** `viewId` holds the html overlay's page now; `info.heldBy` names a browser, absent for the desktop. */
+  private hold(overlay: Overlay, viewId: ViewId): void {
+    overlay.holder = viewId
+    const info = { ...overlay.info }
+    if (isRemoteViewId(viewId)) info.heldBy = { viewId, device: this.options.deviceOf?.(viewId) ?? viewId }
+    else delete info.heldBy
+    overlay.info = info
+  }
+
+  /** The html overlay's page loads anew (a reload, a take): posts wait for its port, the loader is back. */
+  private reloading(overlay: Overlay): void {
+    overlay.pageReady = false
+    overlay.info = { ...overlay.info, loading: true }
+  }
+
+  /**
+   * The page of an html overlay that `viewId` holds, else undefined: what any other view's renderer
+   * says about the page (it has none, or a stale one from before a take) is dropped.
+   */
+  private held(windowId: number, overlayId: string, viewId: ViewId): Overlay | undefined {
+    const overlay = this.find(windowId, overlayId)
+    return overlay?.info.kind === 'html' && overlay.holder === viewId ? overlay : undefined
+  }
+
+  /** An opener's post to its page: to the holding view only, when the shell can address one. */
+  private toPage(overlay: Overlay, message: string): void {
+    const payload = { overlayId: overlay.id, message }
+    if (this.options.emitToView && overlay.holder !== undefined) this.options.emitToView(overlay.holder, 'overlays.message', payload)
+    else this.options.emit(overlay.windowId, 'overlays.message', payload)
   }
 
   /** The window's overlays, bottom first; a plain read (no flow-control reset). */
@@ -710,11 +805,12 @@ export class OverlayManager {
   /**
    * An html overlay's page posted its result (relayed by the renderer). The value is copied as
    * JSON: the opener prints or forwards it, so it must be plain data and bounded in size. False
-   * for an unknown overlay, a non-html one, or a value that is not JSON or too large.
+   * for an unknown overlay, a non-html one, a view that does not hold its page, or a value that is
+   * not JSON or too large. The first accepted result settles the opener; later ones find it gone.
    */
-  result(windowId: number, overlayId: string, value: unknown): boolean {
-    const overlay = this.find(windowId, overlayId)
-    if (overlay?.info.kind !== 'html') return false
+  result(windowId: number, overlayId: string, value: unknown, viewId: ViewId = desktopViewId(windowId)): boolean {
+    const overlay = this.held(windowId, overlayId, viewId)
+    if (!overlay) return false
     let json: string | undefined
     try {
       json = JSON.stringify(value)
@@ -741,43 +837,45 @@ export class OverlayManager {
     if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       throw new RangeError(`overlay post: message exceeds ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
     }
-    if (overlay.pageReady) this.options.emit(windowId, 'overlays.message', { overlayId, message: text })
+    if (overlay.pageReady) this.toPage(overlay, text)
     else overlay.outbox.push(text)
     return true
   }
 
   /**
    * The renderer handed an html overlay's page its port (on every page load): what the opener
-   * posted before goes out now, in order. A no-op for an overlay without a channel.
+   * posted before goes out now, in order. A no-op for an overlay without a channel, and from a view
+   * that does not hold the page.
    */
-  pageReady(windowId: number, overlayId: string): void {
-    const overlay = this.find(windowId, overlayId)
-    if (overlay?.info.kind !== 'html') return
+  pageReady(windowId: number, overlayId: string, viewId: ViewId = desktopViewId(windowId)): void {
+    const overlay = this.held(windowId, overlayId, viewId)
+    if (!overlay) return
     // The page loaded and has its port: a `ready: 'load'` overlay is ready (an inline page reports
     // its load here too, with no channel behind it).
     if (overlay.ready === 'load') this.loaded(overlay)
     if (!overlay.channel) return
     overlay.pageReady = true
-    for (const message of overlay.outbox.drain()) this.options.emit(windowId, 'overlays.message', { overlayId, message })
+    for (const message of overlay.outbox.drain()) this.toPage(overlay, message)
   }
 
   /**
    * An html overlay's page says it has drawn (`ccPanel.ready()`): the loader goes, whatever its
    * `ready` mode (a `load` page calling it early changes nothing worse than an early port).
    */
-  pageLoaded(windowId: number, overlayId: string): void {
-    const overlay = this.find(windowId, overlayId)
-    if (overlay?.info.kind === 'html') this.loaded(overlay)
+  pageLoaded(windowId: number, overlayId: string, viewId: ViewId = desktopViewId(windowId)): void {
+    const overlay = this.held(windowId, overlayId, viewId)
+    if (overlay) this.loaded(overlay)
   }
 
   /**
    * An html overlay's page posted a message that is not a result (relayed by the renderer of the
    * window it is in). Only to the channel of the overlay's own opener; false (dropped, logged) for
-   * an overlay of another window, one without a channel, or text that is not JSON within the limit.
+   * an overlay of another window, one without a channel, a view that does not hold the page, or text
+   * that is not JSON within the limit.
    */
-  pageMessage(windowId: number, overlayId: string, text: unknown): boolean {
-    const overlay = this.find(windowId, overlayId)
-    if (!overlay?.channel || overlay.info.kind !== 'html') return false
+  pageMessage(windowId: number, overlayId: string, text: unknown, viewId: ViewId = desktopViewId(windowId)): boolean {
+    const overlay = this.held(windowId, overlayId, viewId)
+    if (!overlay?.channel) return false
     if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       this.log(`overlay ${overlay.id}: dropped a page message: not a JSON string of at most ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
       return false

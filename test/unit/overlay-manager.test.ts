@@ -999,6 +999,140 @@ describe('html page messages (an opener with a channel)', () => {
   })
 })
 
+describe('html overlays held by one view (design-web.md §5.4)', () => {
+  const page = { kind: 'html', src: 'cc-plugin://a.one/chat.html' }
+  /** A manager that also sends to one view, and names devices, as index.ts wires it. */
+  function viewsManager(): { m: OverlayManager; toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }> } {
+    const toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }> = []
+    const m = new OverlayManager({
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: <C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]) => {
+        events.push({ windowId, channel, payload })
+      },
+      emitToView: <C extends EventChannel>(viewId: string, channel: C, payload: IpcEventMap[C]) => {
+        toView.push({ viewId, channel, payload })
+      },
+      deviceOf: (viewId) => (viewId === 'web:1' ? 'Phone' : viewId === 'web:2' ? 'Tablet' : 'Desktop'),
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    return { m, toView }
+  }
+  function chat(m: OverlayManager, view?: string): { result: Promise<OverlayResult>; id: string; heard: unknown[] } {
+    const heard: unknown[] = []
+    const result = m.open(W1, page, 'plugin a.one', undefined, { onMessage: (message) => heard.push(message) }, 'a.one', view)
+    return { result, id: m.infos(W1).at(-1)!.id, heard }
+  }
+
+  it('opens in the desktop view by default (no heldBy: the shape without web access)', () => {
+    const { m } = viewsManager()
+    const { id } = chat(m)
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    // The desktop holds it: its reports count.
+    m.pageReady(W1, id, 'desktop:1')
+    expect(m.infos(W1)[0]?.loading).toBeUndefined()
+  })
+
+  it('opens in the view the opening action came from, named with its device', () => {
+    const { m } = viewsManager()
+    chat(m, 'web:1')
+    expect(m.infos(W1)[0]?.heldBy).toEqual({ viewId: 'web:1', device: 'Phone' })
+    // A terminal or url overlay is shared by every view: never held.
+    void m.open(W1, terminal(['sleep', '9']), 'test', undefined, undefined, undefined, 'web:1')
+    expect(m.infos(W1)[1]).not.toHaveProperty('heldBy')
+  })
+
+  it('take over moves the page: heldBy names the new view, the loader is back, posts wait for its port', () => {
+    const { m, toView } = viewsManager()
+    const { id } = chat(m)
+    m.pageReady(W1, id, 'desktop:1')
+    m.post(W1, id, '"one"')
+    expect(toView).toEqual([{ viewId: 'desktop:1', channel: 'overlays.message', payload: { overlayId: id, message: '"one"' } }])
+    // Nothing goes to the window as a whole: the page is one view's.
+    expect(events.filter((e) => e.channel === 'overlays.message')).toEqual([])
+
+    expect(m.take(W1, 'web:1', id)).toBe(true)
+    expect(lastStack(W1)[0]).toMatchObject({ heldBy: { viewId: 'web:1', device: 'Phone' }, loading: true })
+    // The old holder's page is gone from main's point of view: its late reports are dropped.
+    m.post(W1, id, '"two"')
+    m.pageReady(W1, id, 'desktop:1')
+    expect(toView).toHaveLength(1)
+    expect(lastStack(W1)[0]?.loading).toBe(true)
+    // The new page's port is up: the queued post goes to that view, and the loader goes.
+    m.pageReady(W1, id, 'web:1')
+    expect(toView.at(-1)).toEqual({ viewId: 'web:1', channel: 'overlays.message', payload: { overlayId: id, message: '"two"' } })
+    expect(lastStack(W1)[0]?.loading).toBeUndefined()
+
+    // Taken back by the desktop: heldBy goes (absent = the desktop's).
+    expect(m.take(W1, 'desktop:1', id)).toBe(true)
+    expect(lastStack(W1)[0]).not.toHaveProperty('heldBy')
+    // Taking what the view already holds changes nothing.
+    const count = events.length
+    expect(m.take(W1, 'desktop:1', id)).toBe(true)
+    expect(events).toHaveLength(count)
+  })
+
+  it('only the holder answers, reports and messages; the result settles the opener once', async () => {
+    const { m } = viewsManager()
+    const { id, result, heard } = chat(m, 'web:1')
+    expect(m.pageMessage(W1, id, '{"a":1}', 'desktop:1')).toBe(false)
+    expect(m.pageMessage(W1, id, '{"a":2}', 'web:1')).toBe(true)
+    expect(heard).toEqual([{ a: 2 }])
+    m.pageLoaded(W1, id, 'web:2')
+    expect(m.infos(W1)[0]?.loading).toBe(true)
+    expect(m.result(W1, id, 'not mine', 'desktop:1')).toBe(false)
+    expect(m.result(W1, id, 'mine', 'web:1')).toBe(true)
+    // Closed on every view (one stack per window), and a second answer finds it gone.
+    expect(lastStack(W1)).toEqual([])
+    expect(m.result(W1, id, 'again', 'web:1')).toBe(false)
+    await expect(result).resolves.toEqual({ kind: 'value', value: 'mine' })
+  })
+
+  it('take is scoped to the window and to html overlays', () => {
+    const { m } = viewsManager()
+    const { id } = chat(m)
+    expect(m.take(W2, 'web:1', id)).toBe(false)
+    expect(m.take(W1, 'web:1', 'nope')).toBe(false)
+    void m.open(W1, terminal(['sleep', '9']), 'test')
+    expect(m.take(W1, 'web:1', m.infos(W1)[1]!.id)).toBe(false)
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+  })
+
+  it("a view's reload (list) reloads only the pages it holds", () => {
+    const { m } = viewsManager()
+    const remote = chat(m, 'web:1')
+    const local = chat(m)
+    m.pageReady(W1, remote.id, 'web:1')
+    m.pageReady(W1, local.id, 'desktop:1')
+    const infos = m.list(W1, 'desktop:1')
+    expect(infos.find((o) => o.id === local.id)?.loading).toBe(true)
+    expect(infos.find((o) => o.id === remote.id)?.loading).toBeUndefined()
+  })
+
+  it('the holding view leaving gives the page back to the desktop, which loads it', () => {
+    const { m, toView } = viewsManager()
+    const { id } = chat(m, 'web:1')
+    m.pageReady(W1, id, 'web:1')
+    m.post(W1, id, '1')
+    // Another view leaving changes nothing.
+    const count = events.length
+    m.viewGone('web:2')
+    expect(events).toHaveLength(count)
+    m.viewGone('web:1')
+    expect(lastStack(W1)[0]).not.toHaveProperty('heldBy')
+    expect(lastStack(W1)[0]?.loading).toBe(true)
+    m.post(W1, id, '2')
+    m.pageReady(W1, id, 'desktop:1')
+    expect(toView.map((e) => [e.viewId, (e.payload as { message: string }).message])).toEqual([
+      ['web:1', '1'],
+      ['desktop:1', '2']
+    ])
+  })
+})
+
 describe('window close and quit', () => {
   it('open for a window that closed meanwhile rejects and creates nothing', async () => {
     const m = manager()

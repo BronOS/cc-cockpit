@@ -548,7 +548,21 @@ export interface ProjectPluginView {
 }
 
 /** `settingsPage.info`: the page's URL when the plugin runs in this project, else only that it does not. */
-export type SettingsPageInfo = { enabled: true; src: string } | { enabled: false }
+/**
+ * The view holding a page that lives in one view at a time (design-web.md §5.4: an html overlay's
+ * page, a plugin settings page) and its device's name, display text only. A page shows "Open on
+ * <device> — Take over" when the view is not itself (shell-kind.ts isOwnView).
+ */
+export interface PageHolder {
+  viewId: string
+  device: string
+}
+
+/**
+ * `heldBy`: the page is open in a view now (design-web.md §5.4), the one that connected it last.
+ * Another view shows "Open on <device> — Take over" instead of loading it.
+ */
+export type SettingsPageInfo = { enabled: true; src: string; heldBy?: PageHolder } | { enabled: false }
 
 /** A panel that exists for the project and where it sits ('hidden': under the strip's "..."). */
 export interface ProjectPanelView {
@@ -800,6 +814,12 @@ export type OverlayInfo = OverlayInfoBody & {
    * terminal until the program's first output.
    */
   loading?: true
+  /**
+   * An html overlay's page lives in one view (design-web.md §5.4): present when a browser view holds
+   * it, absent when the window's desktop view does (the shape without web access). Every other view
+   * shows "Open on <device> — Take over" (`overlays.take`) instead of the page.
+   */
+  heldBy?: PageHolder
 }
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
@@ -934,6 +954,8 @@ export interface IpcInvokeMap {
   'settingsPage.connect': { req: { pluginId: string; scope: SettingsPageScope; nonce: number }; res: boolean }
   /** The shell unmounted the plugin's settings page: its backend hears onClose. */
   'settingsPage.disconnect': { req: { pluginId: string }; res: null }
+  // Taking a settings page over is a plain `settingsPage.connect` from the view that takes it: one
+  // page per plugin, the last view to connect holds it (`settingsPage.held` tells the others).
 
   // Settings overlay. Any project window may call these; the data is app-wide.
   /** Every known project, most recently opened first. */
@@ -1164,6 +1186,12 @@ export interface IpcInvokeMap {
    */
   'overlays.loaded': { req: { overlayId: string }; res: void }
   /**
+   * "Take over" on an html overlay held by another view of the window (design-web.md §5.4): the
+   * page moves to the calling view and loads there, as on a reload (the opener's posts wait for its
+   * new port). False for an overlay that is gone, of another window, or not an html one.
+   */
+  'overlays.take': { req: { overlayId: string }; res: boolean }
+  /**
    * A click on a toolbar button: the opener's (`source: 'opener'`) or one another plugin added for
    * the overlay's type (`'type'`, with its `pluginId`). False when main dropped it (not a button it
    * shows now, busy, disabled).
@@ -1318,6 +1346,12 @@ export interface IpcEventMap {
    * showing its dialog takes it down without answering. Sent to every view of the window.
    */
   'sessions.closeSettled': { requestId: string }
+  /**
+   * A plugin's settings page moved (design-web.md §5.4): `viewId` and `device` name the view that
+   * holds it now, both null when no view does (the page closed). A view showing the page that is
+   * not the holder any more shows "Open on <device> — Take over" in its place.
+   */
+  'settingsPage.held': { pluginId: string; viewId: string | null; device: string | null }
   /**
    * This window's project changed on main's side (its colour was set, from this window's settings
    * or any other way): what `window.info` would now say about it. Project windows only.
@@ -1488,6 +1522,7 @@ export const INVOKE_CHANNELS = [
   'overlays.message',
   'overlays.ready',
   'overlays.loaded',
+  'overlays.take',
   'overlays.button',
   'overlays.discuss',
   'webviews.placement',
@@ -1524,6 +1559,7 @@ export const EVENT_CHANNELS = [
   'sessions.snapshot',
   'sessions.closeAsk',
   'sessions.closeSettled',
+  'settingsPage.held',
   'project.updated',
   'projects.changed',
   'tabs.select',
@@ -1638,6 +1674,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settingsPage.info': 'yes',
   'settingsPage.connect': 'yes',
   'settingsPage.disconnect': 'yes',
+  'settingsPage.held': 'yes',
 
   // Settings › Projects. Opening a known project only makes its window on the host (a remote view
   // then picks it in the gateway's list); relink is a native folder dialog.
@@ -1734,6 +1771,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'overlays.message': 'yes',
   'overlays.ready': 'yes',
   'overlays.loaded': 'yes',
+  'overlays.take': 'yes',
   'overlays.button': 'yes',
   'overlays.discuss': 'yes',
 

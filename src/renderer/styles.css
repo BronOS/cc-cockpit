@@ -3774,3 +3774,33 @@ ul.settings-alert {
   border-radius: 1px;
   background: var(--cc-accent);
 }
+
+/* "Open on <device> — Take over" (HeldElsewhere, design-web.md §5.4): in place of an html overlay's
+   page or a plugin settings page that another view of the window holds. */
+.held-elsewhere {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.held-elsewhere-text {
+  overflow-wrap: anywhere;
+}
+.held-elsewhere-take {
+  padding: 2px 8px;
+  font: inherit;
+  color: var(--cc-accent);
+  background: none;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  cursor: pointer;
+}
+.held-elsewhere-take:hover {
+  background: var(--cc-accent-soft);
+}

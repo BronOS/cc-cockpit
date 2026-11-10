@@ -450,6 +450,12 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   keyboards on one machine would; there is no turn-taking. When the last keys in a tab came from another place, its
   terminal shows "Typed last on <device>" (the browser's device name, or "Desktop"); never for your own typing, so
   never with web access off.
+- An html overlay's page (a plugin's page, `ccc overlay --html`) and a plugin's settings page are open in one place at
+  a time: where the overlay was opened (the place whose click opened it, else the desktop), or where the settings page
+  was opened last. The other places show "Open on <device> — Take over"; Take over loads the page there anew (as a
+  reload: whatever the page had typed but not sent is lost) and the other place shows the note instead. When a browser
+  holding an overlay's page leaves (or reconnects), the page goes back to the desktop. When the place holding a settings
+  page closes it, a place showing the note loads it.
 - A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),
   with or without Shift, and Ctrl+Tab / Ctrl+Shift+Tab. In a browser the cockpit's commands bound to one of them use
   the same chord with Alt (Option) added: New Claude Tab Ctrl+Alt+T (⌥⌘T on a Mac), New Shell Tab Ctrl+Alt+Shift+T,

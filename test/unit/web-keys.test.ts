@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { chordOf, commandForEvent, registerHandlers, resetKeybindings, setCommands } from '../../src/renderer/commands/keybindings'
 import { browserKeeps, webKeyTable, withAlt } from '../../src/renderer/commands/web-keys'
-import { isOwnView, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
+import { holdsPage, isOwnView, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
 import type { CommandsView } from '../../src/shared/ipc'
 
 afterEach(() => {
@@ -106,5 +106,17 @@ describe('isOwnView', () => {
     expect(isOwnView('web:1')).toBe(true)
     expect(isOwnView('web:2')).toBe(false)
     expect(isOwnView('desktop:3')).toBe(false)
+  })
+})
+
+describe('holdsPage (an html overlay held by one view, design-web.md §5.4)', () => {
+  it('no heldBy is the desktop view: the desktop page holds it, a browser does not', () => {
+    expect(holdsPage(undefined)).toBe(true)
+    expect(holdsPage({ viewId: 'web:1' })).toBe(false)
+    markWebShell()
+    setOwnView('web:1')
+    expect(holdsPage(undefined)).toBe(false)
+    expect(holdsPage({ viewId: 'web:1' })).toBe(true)
+    expect(holdsPage({ viewId: 'web:2' })).toBe(false)
   })
 })

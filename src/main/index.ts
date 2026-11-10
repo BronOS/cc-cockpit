@@ -568,6 +568,17 @@ function start(): void {
   const sendToWindow = (windowId: number, channel: EventChannel, payload: unknown): void => {
     views.toWindow(windowId, channel, payload)
   }
+  /**
+   * A view's device name as pages show it (TabInfo.typedBy, an html overlay's or settings page's
+   * holder): a browser by its device's name (`webConnections` exists by the time anyone asks). A
+   * browser may name its device "Desktop": the label is all a page shows, so a browser never reads
+   * as the desktop.
+   */
+  const viewDevice = (viewId: ViewId): string => {
+    if (!isRemoteViewId(viewId)) return 'Desktop'
+    const name = webConnections.deviceName(viewId) ?? 'a browser'
+    return name.trim().toLowerCase() === 'desktop' ? 'Desktop (browser)' : name
+  }
   // ctx.sessions.close's asks to a window's tab pane (close-asks.ts): shown on every view of the
   // window, settled by the first `sessions.closeAnswer` from any of them (then every view hears
   // `sessions.closeSettled`), or false when it closes or the wait runs out. False at once when no
@@ -609,6 +620,11 @@ function start(): void {
       if (channel === 'overlays.updated') webviews.setWindowCovered(windowId, (payload as OverlayInfo[]).length > 0)
       sendToWindow(windowId, channel, payload)
     },
+    // An html overlay's page lives in one view (design-web.md §5.4): its messages go there only.
+    emitToView: (viewId, channel, payload) => {
+      views.toView(viewId, channel, payload)
+    },
+    deviceOf: (viewId) => viewDevice(viewId),
     commandForChord,
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
     typeButtons: (windowId): OverlayTypeButtons | undefined => hosts.overlayButtons(windowId),
@@ -726,10 +742,11 @@ function start(): void {
     opener: string,
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
-    pluginId?: string
+    pluginId?: string,
+    view?: ViewId
   ): Promise<OverlayResult> => {
     await loginEnvReady
-    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId)
+    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId, view)
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
@@ -1107,7 +1124,11 @@ function start(): void {
     // Settings pages (design-next §5.4): the plugin's backend in the sender window's host only.
     settingsPageScopes: (projectId, pluginId) => hosts.runningSettingsPage(projectId, pluginId),
     settingsPageToHost: (projectId, open, port) => hosts.sendSettingsPagePort(projectId, open, port),
-    settingsPageClosed: (projectId, pluginId, id) => hosts.closeSettingsPage(projectId, pluginId, id)
+    settingsPageClosed: (projectId, pluginId, id) => hosts.closeSettingsPage(projectId, pluginId, id),
+    // Who holds a settings page now (design-web.md §5.4): every view of the project hears it, the
+    // ones it is not theirs any more show "Open on <device> — Take over".
+    settingsPageHeld: (projectId, pluginId, viewId) =>
+      sendToProject(projectId, 'settingsPage.held', { pluginId, viewId, device: viewId === null ? null : viewDevice(viewId) })
   })
   /**
    * The folder `cc-plugin://<pluginId>/` serves from: an installed, valid plugin enabled in at
@@ -1201,13 +1222,8 @@ function start(): void {
       ? { shellMinLifeMs: Number(process.env.CC_COCKPIT_SHELL_MIN_LIFE_MS) || 0 }
       : {}),
     closeOnCleanExit: () => !quitting && tabExitOf(registry.app.data.tabExit) === 'close-clean',
-    // TabInfo.typedBy: a browser by its device's name (webConnections exists by the time anyone types).
-    // A browser may name its device "Desktop": the label is all a page shows, so a browser never reads as the desktop.
-    deviceOf: (viewId): string => {
-      if (!isRemoteViewId(viewId)) return 'Desktop'
-      const name = webConnections.deviceName(viewId) ?? 'a browser'
-      return name.trim().toLowerCase() === 'desktop' ? 'Desktop (browser)' : name
-    },
+    // TabInfo.typedBy: the typing view's device (viewDevice).
+    deviceOf: (viewId) => viewDevice(viewId),
     emit: sendToProject
   })
   // Saved tabs follow the live ones (restore.ts); the saves go through the record's debounced
@@ -1982,7 +1998,10 @@ function start(): void {
       const page = plugin?.state.ok ? plugin.manifest?.contributes?.settings?.page : undefined
       if (!page || !page.scopes.includes(scope)) return null
       if (!enabledIds(projectId).includes(pluginId)) return { enabled: false }
-      return { enabled: true, src: pluginFileUrl(pluginId, page.entry) }
+      // Open in a view now: the asking view shows who holds it, with Take over (design-web.md §5.4).
+      const holder = panelPorts.settingsPageHolder(projectId, pluginId)
+      const src = pluginFileUrl(pluginId, page.entry)
+      return holder === undefined ? { enabled: true, src } : { enabled: true, src, heldBy: { viewId: holder, device: viewDevice(holder) } }
     },
     connect: (projectId, viewId, pluginId, scope, nonce) => panelPorts.connectSettingsPage(projectId, viewId, pluginId, scope, nonce),
     disconnect: (projectId, viewId, pluginId) => panelPorts.disconnectSettingsPage(projectId, viewId, pluginId)
@@ -2084,16 +2103,17 @@ function start(): void {
   })
 
   registerOverlayHandlers(router, {
-    list: (windowId) => overlays.list(windowId),
+    list: (windowId, viewId) => overlays.list(windowId, viewId),
     close: (windowId, overlayId) => overlays.close(windowId, overlayId),
     input: (windowId, overlayId, data) => overlays.input(windowId, overlayId, data),
     resize: (windowId, overlayId, cols, rows) => overlays.resize(windowId, overlayId, cols, rows),
     ack: (windowId, overlayId, count) => overlays.ack(windowId, overlayId, count),
     setBounds: (windowId, overlayId, bounds) => overlays.setBounds(windowId, overlayId, bounds),
-    result: (windowId, overlayId, value) => overlays.result(windowId, overlayId, value),
-    message: (windowId, overlayId, text) => overlays.pageMessage(windowId, overlayId, text),
-    ready: (windowId, overlayId) => overlays.pageReady(windowId, overlayId),
-    loaded: (windowId, overlayId) => overlays.pageLoaded(windowId, overlayId),
+    result: (windowId, overlayId, value, viewId) => overlays.result(windowId, overlayId, value, viewId),
+    message: (windowId, overlayId, text, viewId) => overlays.pageMessage(windowId, overlayId, text, viewId),
+    ready: (windowId, overlayId, viewId) => overlays.pageReady(windowId, overlayId, viewId),
+    loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
+    take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
     button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click),
     discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target)
   })
@@ -2116,6 +2136,8 @@ function start(): void {
     viewGone: (viewId) => {
       tabs.viewGone(viewId)
       panelPorts.viewGone(viewId)
+      // The html overlay pages it held go back to the desktop view (overlay-manager.ts).
+      overlays.viewGone(viewId)
       selections.viewGone(viewId)
       // A plugin close every remaining view declined ends now (close-asks.ts).
       closeAsks.viewGone()

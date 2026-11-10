@@ -60,7 +60,11 @@
 //               connect cap are keyed by view, so two views showing one frame never close each
 //               other's. A layout change that drops a frame closes it in every view.
 //   settings    one page per plugin at a time, held by the view that connected last (design-web.md
-//               §5.4, take over in Task 24): an unmount from any other view does not close it.
+//               §5.4): an unmount from any other view does not close it. "Take over" in another
+//               view is a plain connect from there. Every change of holder is told to the project's
+//               views (`settingsPageHeld` -> `settingsPage.held`), so a view whose page was taken
+//               shows "Open on <device> — Take over" instead, and `settingsPageHolder` answers a
+//               view that opens the page while another holds it.
 //   viewGone    a view left (a browser, or the desktop window closed): its slot instances and the
 //               page it held end.
 //
@@ -117,6 +121,11 @@ export interface PanelPortDeps<P> {
   settingsPageToHost?(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope }, port: P): boolean
   /** The page is gone: tell the plugin's host (HostManager.closeSettingsPage). */
   settingsPageClosed?(projectId: string, pluginId: string, id: string): void
+  /**
+   * The view holding the plugin's settings page changed (null: none holds it, the page closed):
+   * tell the project's views (`settingsPage.held`). Called once per change, after it.
+   */
+  settingsPageHeld?(projectId: string, pluginId: string, viewId: ViewId | null): void
   log?: (message: string) => void
   /** Clock for the connect cap (tests); Date.now by default. */
   now?: () => number
@@ -279,7 +288,9 @@ export class PanelPortHub<P> {
     if (scopes === undefined || !scopes.includes(scope)) return false
     if (!this.withinCap(projectId, viewId, pluginId, settingsPagePortKey(pluginId))) return false
     // One page per plugin at a time: the older one (another load, the other scope, or the page in
-    // another view) ends first, and this view holds it now.
+    // another view: a take over) ends first, and this view holds it now. The views hear only the
+    // outcome below, not the gap between the two.
+    const before = this.settingsPageHolder(projectId, pluginId)
     this.endPage(projectId, pluginId)
 
     const id = `p${this.nextPageId++}`
@@ -293,6 +304,7 @@ export class PanelPortHub<P> {
     if (!sent) {
       this.closeQuietly(channel.host)
       this.closeQuietly(channel.renderer)
+      if (before !== undefined) this.held(projectId, pluginId)
       return false
     }
     const key = `${projectId}\n${pluginId}`
@@ -303,9 +315,25 @@ export class PanelPortHub<P> {
       this.log(`settings page of ${pluginId}: posting the view its port failed: ${errorText(err)}`)
       this.closeQuietly(channel.renderer)
       this.endPage(projectId, pluginId)
+      this.held(projectId, pluginId)
       return false
     }
+    if (before !== viewId) this.held(projectId, pluginId)
     return true
+  }
+
+  /** The view holding the plugin's settings page in the project now, if one does (settingsPage.info). */
+  settingsPageHolder(projectId: string, pluginId: string): ViewId | undefined {
+    return this.openPages.get(`${projectId}\n${pluginId}`)?.viewId
+  }
+
+  /** Tell the project's views who holds the plugin's settings page now (see the top of the file). */
+  private held(projectId: string, pluginId: string): void {
+    try {
+      this.deps.settingsPageHeld?.(projectId, pluginId, this.settingsPageHolder(projectId, pluginId) ?? null)
+    } catch (err) {
+      this.log(`settings page of ${pluginId}: telling the views who holds it failed: ${errorText(err)}`)
+    }
   }
 
   /**
@@ -317,6 +345,7 @@ export class PanelPortHub<P> {
     if (typeof pluginId !== 'string') return
     if (this.openPages.get(`${projectId}\n${pluginId}`)?.viewId !== viewId) return
     this.endPage(projectId, pluginId)
+    this.held(projectId, pluginId)
   }
 
   /** End the plugin's open settings page, whichever view holds it: its backend hears the close (once). */
@@ -358,7 +387,9 @@ export class PanelPortHub<P> {
       this.tellClosed(open)
     }
     for (const open of [...this.openPages.values()]) {
-      if (open.viewId === viewId) this.endPage(open.projectId, open.pluginId)
+      if (open.viewId !== viewId) continue
+      this.endPage(open.projectId, open.pluginId)
+      this.held(open.projectId, open.pluginId)
     }
   }
 

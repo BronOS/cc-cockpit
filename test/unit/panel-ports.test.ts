@@ -579,6 +579,58 @@ describe('PanelPortHub settings pages (design-next §5.4)', () => {
     expect(closed).toEqual(['p1:a.one:p1'])
   })
 
+  it('tells the views who holds the page on every change of holder (take over, unmount, view gone)', () => {
+    const held: Array<[string, string, string | null]> = []
+    const scopes: Record<string, readonly ('app' | 'project')[]> = { 'a.one': ['app'], 'a.app': ['app'] }
+    const { hub: h } = hub({
+      settingsPageScopes: (projectId, pluginId) => (projectId === 'p1' ? scopes[pluginId] : undefined),
+      settingsPageToHost: () => true,
+      settingsPageHeld: (projectId, pluginId, viewId) => void held.push([projectId, pluginId, viewId])
+    })
+    expect(h.settingsPageHolder('p1', 'a.one')).toBeUndefined()
+    h.connectSettingsPage('p1', D1, 'a.one', 'app', 1)
+    expect(held).toEqual([['p1', 'a.one', D1]])
+    expect(h.settingsPageHolder('p1', 'a.one')).toBe(D1)
+    // The same view reloading its page: still its, nothing to tell.
+    h.connectSettingsPage('p1', D1, 'a.one', 'app', 2)
+    expect(held).toHaveLength(1)
+    // Take over from a browser: one event naming it (not a "closed" in between).
+    h.connectSettingsPage('p1', W1, 'a.one', 'app', 1)
+    expect(held.at(-1)).toEqual(['p1', 'a.one', W1])
+    expect(held).toHaveLength(2)
+    expect(h.settingsPageHolder('p1', 'a.one')).toBe(W1)
+    // The old holder unmounting its copy changes nothing; the holder's unmount closes it.
+    h.disconnectSettingsPage('p1', D1, 'a.one')
+    expect(held).toHaveLength(2)
+    h.disconnectSettingsPage('p1', W1, 'a.one')
+    expect(held.at(-1)).toEqual(['p1', 'a.one', null])
+    expect(h.settingsPageHolder('p1', 'a.one')).toBeUndefined()
+    // The holder leaving closes it too.
+    h.connectSettingsPage('p1', W2, 'a.app', 'app', 1)
+    h.viewGone(W2)
+    expect(held.slice(-2)).toEqual([
+      ['p1', 'a.app', W2],
+      ['p1', 'a.app', null]
+    ])
+  })
+
+  it('a take over the host refuses leaves nobody holding it, and says so', () => {
+    const held: Array<[string, string | null]> = []
+    let running = true
+    const { hub: h } = hub({
+      settingsPageScopes: () => ['app'],
+      settingsPageToHost: () => running,
+      settingsPageHeld: (_projectId, _pluginId, viewId) => void held.push(['a.one', viewId])
+    })
+    h.connectSettingsPage('p1', D1, 'a.one', 'app', 1)
+    running = false
+    expect(h.connectSettingsPage('p1', W1, 'a.one', 'app', 1)).toBe(false)
+    expect(held).toEqual([
+      ['a.one', D1],
+      ['a.one', null]
+    ])
+  })
+
   it('caps connects per page of a window like a panel', () => {
     const { hub: h } = pageHub()
     for (let i = 0; i < MAX_CONNECTS_PER_PANEL; i++) expect(h.connectSettingsPage('p1', D1, 'a.one', 'app', i)).toBe(true)

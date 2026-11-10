@@ -2121,6 +2121,21 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     expect(shown).toEqual([[A, 'a.one/board', 'web:1'], [A, 'a.one/board'], [A, 'a.one/board'], [A, 'a.one/board']])
   })
 
+  it("overlay.open opens in a view of the host's own window, and ignores any other view", async () => {
+    const views: unknown[] = []
+    deps.openOverlay = (_windowId, _spec, _opener, _peerGone, _channel, _pluginId, view) => {
+      views.push(view)
+      return Promise.resolve({ kind: 'dismissed' })
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    const host = hostWithMeta()
+    const spec = { kind: 'terminal', argv: ['true'] }
+    for (const meta of [{ view: 'web:1' }, { view: 'web:2' }, { view: 'web:99' }, {}]) {
+      await host('overlay.open', { pluginId: 'a.one', spec }, meta)
+    }
+    expect(views).toEqual(['web:1', undefined, undefined, undefined])
+  })
+
   it('ignores every view hint when main cannot check views', async () => {
     const focused: unknown[][] = []
     deps.focusTab = (...args) => {

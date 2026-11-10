@@ -89,8 +89,9 @@
 //                                                                and trash asks the person in this window
 //                                                                first (false: they said no)
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
-// only by sessions.focus (select in that view) and panels.show (reveal there), and only when it is a
-// live view of this host's own window (originOf); otherwise ignored.
+// only by sessions.focus (select in that view), panels.show (reveal there) and overlay.open (an html
+// page opens in that view, design-web.md §5.4), and only when it is a live view of this host's own
+// window (originOf); otherwise ignored.
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
@@ -433,7 +434,9 @@ export interface HostApiDeps {
     opener: string,
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
-    pluginId?: string
+    pluginId?: string,
+    /** The live remote view of this window the request came from (originOf): an html page opens there. */
+    view?: ViewId
   ): Promise<OverlayResult>
   /** OverlayManager.post. Without it (and closeOverlay) ctx.overlay.start's post/close are refused. */
   postOverlay?(windowId: number, overlayId: string, text: string): boolean
@@ -768,7 +771,7 @@ export class HostApi {
       'panels.header': (params) => this.panelHeader(params),
       'panels.slots': (params) => this.panelSlots(params),
       'slots.available': (params) => this.slotAvailable(params),
-      'overlay.open': (params) => this.overlay(params),
+      'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
       'overlay.focus': (params) => this.overlayFocus(params),
@@ -1561,8 +1564,10 @@ export class HostApi {
     }
   }
 
-  private async overlay(params: unknown): Promise<PluginOverlayResult> {
+  private async overlay(params: unknown, meta?: RpcMeta): Promise<PluginOverlayResult> {
     this.alive()
+    // Read now, before any await: the view is checked against the window as it is at the request.
+    const view = this.originOf(meta)
     const { pluginId, spec, handle } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'overlay.open')
     if (handle !== undefined && (typeof handle !== 'string' || !HANDLE_RE.test(handle))) {
@@ -1647,7 +1652,8 @@ export class HostApi {
           `plugin ${plugin.id}`,
           peerGone,
           channel,
-          plugin.id
+          plugin.id,
+          view
         )
       } catch (err) {
         // The manager rejects only before it creates anything (a bad argv or url, a program that

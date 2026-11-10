@@ -1143,7 +1143,8 @@ export function registerLayoutHandlers(router: IpcRouter, deps: LayoutHandlerDep
 
 /** What the overlay handlers need from main (the overlay manager), all scoped to a window. */
 export interface OverlayHandlerDeps {
-  list(windowId: number): OverlayInfo[]
+  /** The calling view's re-attach (OverlayManager.list): only the html pages it holds reload. */
+  list(windowId: number, viewId: ViewId): OverlayInfo[]
   close(windowId: number, overlayId: string): boolean
   input(windowId: number, overlayId: string, data: string): void
   resize(windowId: number, overlayId: string, cols: number, rows: number): void
@@ -1153,13 +1154,19 @@ export interface OverlayHandlerDeps {
     overlayId: string,
     bounds: { x: number; y: number; width: number; height: number }
   ): void
-  result(windowId: number, overlayId: string, value: unknown): boolean
+  /**
+   * The page, the reports and the answer below come from the view holding an html overlay's page
+   * only (design-web.md §5.4); the manager drops them from any other view of the window.
+   */
+  result(windowId: number, overlayId: string, value: unknown, viewId: ViewId): boolean
   /** A plugin overlay page's message (OverlayManager.pageMessage checks text and size). */
-  message(windowId: number, overlayId: string, text: string): boolean
+  message(windowId: number, overlayId: string, text: string, viewId: ViewId): boolean
   /** The page's port is up (OverlayManager.pageReady). */
-  ready(windowId: number, overlayId: string): void
+  ready(windowId: number, overlayId: string, viewId: ViewId): void
   /** The page called `ccPanel.ready()` (OverlayManager.pageLoaded): its loader goes. */
-  loaded(windowId: number, overlayId: string): void
+  loaded(windowId: number, overlayId: string, viewId: ViewId): void
+  /** "Take over": the html overlay's page moves to the calling view (OverlayManager.take). */
+  take(windowId: number, viewId: ViewId, overlayId: string): boolean
   /** A toolbar button click (OverlayManager.buttonClick checks it is a button it shows now). */
   button(windowId: number, overlayId: string, click: OverlayButtonClick): boolean
   /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again). */
@@ -1173,7 +1180,7 @@ export interface OverlayHandlerDeps {
  * the manager bounds them further (bounds, result size).
  */
 export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerDeps): void {
-  router.handleProject('overlays.list', (ctx) => deps.list(ctx.windowId))
+  router.handleProject('overlays.list', (ctx, _payload, view) => deps.list(ctx.windowId, view.viewId))
 
   router.handleProject('overlays.close', (ctx, payload) =>
     deps.close(ctx.windowId, overlayIdOf('overlays.close', payload))
@@ -1212,28 +1219,34 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     deps.setBounds(ctx.windowId, overlayIdOf('overlays.bounds', payload), { x, y, width, height })
   })
 
-  router.handleProject('overlays.result', (ctx, payload) =>
+  router.handleProject('overlays.result', (ctx, payload, view) =>
     deps.result(
       ctx.windowId,
       overlayIdOf('overlays.result', payload),
-      fields('overlays.result', payload).value
+      fields('overlays.result', payload).value,
+      view.viewId
     )
   )
 
   // Only to the opener of an overlay of the SENDER's window (the manager looks the id up there).
-  router.handleProject('overlays.message', (ctx, payload) => {
+  router.handleProject('overlays.message', (ctx, payload, view) => {
     const message = fields('overlays.message', payload).message
     if (typeof message !== 'string') throw new Error('overlays.message: message must be a string')
-    return deps.message(ctx.windowId, overlayIdOf('overlays.message', payload), message)
+    return deps.message(ctx.windowId, overlayIdOf('overlays.message', payload), message, view.viewId)
   })
 
-  router.handleProject('overlays.ready', (ctx, payload) => {
-    deps.ready(ctx.windowId, overlayIdOf('overlays.ready', payload))
+  router.handleProject('overlays.ready', (ctx, payload, view) => {
+    deps.ready(ctx.windowId, overlayIdOf('overlays.ready', payload), view.viewId)
   })
 
-  router.handleProject('overlays.loaded', (ctx, payload) => {
-    deps.loaded(ctx.windowId, overlayIdOf('overlays.loaded', payload))
+  router.handleProject('overlays.loaded', (ctx, payload, view) => {
+    deps.loaded(ctx.windowId, overlayIdOf('overlays.loaded', payload), view.viewId)
   })
+
+  // The calling view's own id from the router, never a view named in the payload.
+  router.handleProject('overlays.take', (ctx, payload, view) =>
+    deps.take(ctx.windowId, view.viewId, overlayIdOf('overlays.take', payload))
+  )
 
   // Only a button of an overlay of the SENDER's window; the manager checks it is one it shows.
   router.handleProject('overlays.button', (ctx, payload) => {

@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
 import type { EventChannel, LayoutView } from '../../src/shared/ipc'
-import { IpcRouter, registerSessionHandlers, type ProjectContext } from '../../src/main/ipc/router'
+import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { OverlayManager } from '../../src/main/overlays/overlay-manager'
 import { LayoutService } from '../../src/main/layout/layout-service'
@@ -1021,5 +1021,120 @@ describe('shared asks', () => {
     expect(events(late, 'overlays.updated').at(-1)).toEqual([])
     expect(desktop.send).toHaveBeenLastCalledWith('overlays.updated', [])
     expect(events(foreign, 'overlays.updated')).toEqual([])
+  })
+})
+
+// Held pages (design-web.md §5.4, plan Task 24): an html overlay's page lives in one view. The
+// others see "Open on <device>" (`heldBy`), a joining view too (in `ready`); Take over moves the
+// page, only the holder's page talks to main, the opener's posts go to the holder only, the first
+// result settles the opener and the overlay closes on every view.
+describe('html overlays held by one view', () => {
+  function heldSetup() {
+    const late = {} as { overlays: OverlayManager; conns: WebConnections }
+    const ctx = setup({
+      snapshot: ((c: ProjectContext) =>
+        windowSnapshot(
+          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: { pendingFor: () => [] } as never },
+          c
+        )) as never,
+      viewGone: (viewId) => late.overlays.viewGone(viewId)
+    })
+    const { views, router, conns } = ctx
+    late.conns = conns
+    const overlays = (late.overlays = new OverlayManager({
+      backend: new FakePtyBackend(),
+      views: {
+        create: () => {
+          throw new Error('no url views here')
+        },
+        focusWindow: () => {}
+      },
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: (windowId, channel, payload) => void views.toWindow(windowId, channel, payload),
+      emitToView: (viewId, channel, payload) => void views.toView(viewId, channel, payload),
+      deviceOf: (viewId) => (viewId.startsWith('web:') ? (late.conns.deviceName(viewId) ?? 'a browser') : 'Desktop'),
+      commandForChord: () => undefined,
+      log: () => {}
+    }))
+    registerOverlayHandlers(router, {
+      list: (windowId, viewId) => overlays.list(windowId, viewId),
+      close: (windowId, overlayId) => overlays.close(windowId, overlayId),
+      input: () => {},
+      resize: () => {},
+      ack: () => {},
+      setBounds: () => {},
+      result: (windowId, overlayId, value, viewId) => overlays.result(windowId, overlayId, value, viewId),
+      message: (windowId, overlayId, text, viewId) => overlays.pageMessage(windowId, overlayId, text, viewId),
+      ready: (windowId, overlayId, viewId) => overlays.pageReady(windowId, overlayId, viewId),
+      loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
+      take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
+      button: () => false,
+      discuss: () => Promise.resolve({ ok: false, error: 'no' })
+    })
+    return { ...ctx, overlays }
+  }
+
+  const answers = (ws: FakeWs): unknown[] => ws.frames('result').map((f) => (f.ok === true ? f.v : f.err))
+  const events = (ws: FakeWs, ch: string): unknown[] => ws.frames('event').filter((f) => f.ch === ch).map((f) => f.p)
+  const page = { kind: 'html', src: 'cc-plugin://a.one/chat.html' }
+
+  it('take over moves the page; the old view cannot answer; a late join sees who holds it; the result settles once', async () => {
+    const { connect, desktop, overlays } = heldSetup()
+    const phone = connect('p1')
+    const heard: unknown[] = []
+    const opened = overlays.open(1, page, 'plugin a.one', undefined, { onMessage: (m) => heard.push(m) }, 'a.one')
+    const id = overlays.infos(1)[0]!.id
+    // Opened on the desktop: the browser is told where (no heldBy = the desktop).
+    expect(events(phone, 'overlays.updated').at(-1)).toEqual([expect.not.objectContaining({ heldBy: expect.anything() })])
+    overlays.post(1, id, '"hi"')
+    desktop.send.mockClear()
+
+    phone.feed({ t: 'invoke', id: 1, ch: 'overlays.take', p: { overlayId: id } })
+    await flush()
+    expect(answers(phone)).toEqual([true])
+    const moved = { viewId: 'web:1', device: 'phone' }
+    expect(events(phone, 'overlays.updated').at(-1)).toEqual([expect.objectContaining({ id, heldBy: moved, loading: true })])
+    expect(desktop.send).toHaveBeenCalledWith('overlays.updated', [expect.objectContaining({ heldBy: moved })])
+    // A view joining now sees the page is open on the phone.
+    const late = connect('p1')
+    expect((late.frames('ready')[0]!.snapshot as { overlays: unknown }).overlays).toEqual([expect.objectContaining({ id, heldBy: moved })])
+
+    // The phone's page loads: the opener's queued post goes to the phone only.
+    phone.feed({ t: 'invoke', id: 2, ch: 'overlays.ready', p: { overlayId: id } })
+    await flush()
+    expect(events(phone, 'overlays.message')).toEqual([{ overlayId: id, message: '"hi"' }])
+    expect(events(late, 'overlays.message')).toEqual([])
+    expect(desktop.send).not.toHaveBeenCalledWith('overlays.message', expect.anything())
+    // The late view (not the holder) cannot talk for the page or answer it.
+    late.feed({ t: 'invoke', id: 1, ch: 'overlays.message', p: { overlayId: id, message: '{"x":1}' } })
+    late.feed({ t: 'invoke', id: 2, ch: 'overlays.result', p: { overlayId: id, value: 'late' } })
+    await flush()
+    expect(answers(late)).toEqual([false, false])
+    expect(heard).toEqual([])
+    // The holder answers: the opener hears it once, the overlay closes on every view.
+    phone.feed({ t: 'invoke', id: 3, ch: 'overlays.result', p: { overlayId: id, value: 'sent' } })
+    phone.feed({ t: 'invoke', id: 4, ch: 'overlays.result', p: { overlayId: id, value: 'again' } })
+    await flush()
+    expect(answers(phone).slice(-2)).toEqual([true, false])
+    await expect(opened).resolves.toEqual({ kind: 'value', value: 'sent' })
+    expect(events(late, 'overlays.updated').at(-1)).toEqual([])
+    expect(desktop.send).toHaveBeenLastCalledWith('overlays.updated', [])
+  })
+
+  it('another window cannot take it; the holder leaving hands it back to the desktop', async () => {
+    const { connect, overlays } = heldSetup()
+    const phone = connect('p1')
+    void overlays.open(1, page, 'plugin a.one')
+    const id = overlays.infos(1)[0]!.id
+    const foreign = connect('p2')
+    foreign.feed({ t: 'invoke', id: 1, ch: 'overlays.take', p: { overlayId: id } })
+    phone.feed({ t: 'invoke', id: 1, ch: 'overlays.take', p: { overlayId: id } })
+    await flush()
+    expect(answers(foreign)).toEqual([false])
+    expect(overlays.infos(1)[0]?.heldBy).toEqual({ viewId: 'web:1', device: 'phone' })
+    phone.drop()
+    expect(overlays.infos(1)[0]).not.toHaveProperty('heldBy')
+    expect(overlays.infos(1)[0]?.loading).toBe(true)
   })
 })

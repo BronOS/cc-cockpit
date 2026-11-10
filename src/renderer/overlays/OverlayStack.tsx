@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { OverlayInfo } from '../../shared/ipc'
 import { registerHandlers } from '../commands/keybindings'
+import { HeldElsewhere } from '../plugins/HeldElsewhere'
 import { usePrefs } from '../prefs/prefs-store'
+import { holdsPage } from '../shell-kind'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { DiscussButton } from './DiscussPopover'
 import type { DiscussTab } from './discuss-tabs'
@@ -28,6 +30,11 @@ function overlayIo(overlayId: string): TerminalIo {
 
 function closeOverlay(overlayId: string): void {
   window.cockpit.invoke('overlays.close', { overlayId }).catch(() => {})
+}
+
+/** "Take over": the html overlay's page moves to this view (main reloads it here, the holder shows the note). */
+function takeOverlay(overlayId: string): void {
+  window.cockpit.invoke('overlays.take', { overlayId }).catch((err: unknown) => console.warn('overlay take over failed', err))
 }
 
 /**
@@ -155,6 +162,11 @@ export function OverlayStack(props: {
         const overlay = stack[i]
         if (!overlay) return null
         const active = i === stack.length - 1
+        // An html overlay's page lives in one view (design-web.md §5.4): in the others, the device
+        // that has it and Take over, and no loader (the loading is the holder's).
+        const elsewhere =
+          overlay.kind === 'html' && !holdsPage(overlay.heldBy) ? (overlay.heldBy?.device ?? 'Desktop') : undefined
+        const loading = overlay.loading === true && elsewhere === undefined
         return (
           <div
             key={overlay.id}
@@ -198,12 +210,15 @@ export function OverlayStack(props: {
                 )
               }
             />
-            <div className="overlay-body" data-loading={overlay.loading ? 'true' : undefined}>
+            <div className="overlay-body" data-loading={loading ? 'true' : undefined}>
               {overlay.kind === 'terminal' && (
                 <TerminalOverlay overlayId={overlay.id} active={active} sessions={terms} />
               )}
-              {overlay.kind === 'html' && (
+              {overlay.kind === 'html' && elsewhere === undefined && (
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
+              )}
+              {elsewhere !== undefined && (
+                <HeldElsewhere device={elsewhere} className="overlay-held-elsewhere" onTakeOver={() => takeOverlay(overlay.id)} />
               )}
               {overlay.kind === 'url' && (
                 <UrlBody
@@ -212,7 +227,7 @@ export function OverlayStack(props: {
                   menuOpen={menuOpenFor === overlay.id || discussOpenFor === overlay.id}
                 />
               )}
-              <OverlayLoader loading={overlay.loading === true} />
+              <OverlayLoader loading={loading} />
             </div>
             </div>
           </div>

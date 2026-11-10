@@ -1704,8 +1704,8 @@ describe('registerOverlayHandlers', () => {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerOverlayHandlers(router, {
-      list: (windowId) => {
-        calls.push(['list', windowId])
+      list: (windowId, viewId) => {
+        calls.push(['list', windowId, viewId])
         return []
       },
       close: (windowId, overlayId) => {
@@ -1717,19 +1717,23 @@ describe('registerOverlayHandlers', () => {
         calls.push(['resize', windowId, overlayId, cols, rows]),
       ack: (windowId, overlayId, count) => calls.push(['ack', windowId, overlayId, count]),
       setBounds: (windowId, overlayId, bounds) => calls.push(['bounds', windowId, overlayId, bounds]),
-      result: (windowId, overlayId, value) => {
-        calls.push(['result', windowId, overlayId, value])
+      result: (windowId, overlayId, value, viewId) => {
+        calls.push(['result', windowId, overlayId, value, viewId])
         return true
       },
-      message: (windowId, overlayId, text) => {
-        calls.push(['message', windowId, overlayId, text])
+      message: (windowId, overlayId, text, viewId) => {
+        calls.push(['message', windowId, overlayId, text, viewId])
         return true
       },
-      ready: (windowId, overlayId) => {
-        calls.push(['ready', windowId, overlayId])
+      ready: (windowId, overlayId, viewId) => {
+        calls.push(['ready', windowId, overlayId, viewId])
       },
-      loaded: (windowId, overlayId) => {
-        calls.push(['loaded', windowId, overlayId])
+      loaded: (windowId, overlayId, viewId) => {
+        calls.push(['loaded', windowId, overlayId, viewId])
+      },
+      take: (windowId, viewId, overlayId) => {
+        calls.push(['take', windowId, viewId, overlayId])
+        return true
       },
       button: (windowId, overlayId, click) => {
         calls.push(['button', windowId, overlayId, click])
@@ -1755,21 +1759,24 @@ describe('registerOverlayHandlers', () => {
     await ipc.invoke('overlays.message', 12, [{ overlayId: 'o2', message: '{"n":1}', windowId: 1 }])
     await ipc.invoke('overlays.ready', 11, [{ overlayId: 'o1', windowId: 2 }])
     await ipc.invoke('overlays.loaded', 12, [{ overlayId: 'o2', windowId: 1 }])
+    // The taking view is the sender's own, never one the payload names.
+    await ipc.invoke('overlays.take', 12, [{ overlayId: 'o2', viewId: 'web:1', windowId: 1 }])
     await ipc.invoke('overlays.button', 11, [{ overlayId: 'o1', source: 'opener', buttonId: 'b', pluginId: 'x', windowId: 2 }])
     await ipc.invoke('overlays.button', 12, [{ overlayId: 'o2', source: 'type', pluginId: 'p.one', buttonId: 'edit' }])
     await ipc.invoke('overlays.discuss', 11, [{ overlayId: 'o1', target: { kind: 'tab', tabId: 't1', windowId: 2 } }])
     await ipc.invoke('overlays.discuss', 12, [{ overlayId: 'o2', target: { kind: 'new', tabId: 'x' } }])
     expect(calls).toEqual([
-      ['list', 1],
+      ['list', 1, 'desktop:1'],
       ['close', 2, 'o1'],
       ['input', 1, 'o1', 'x'],
       ['resize', 1, 'o1', 80, 24],
       ['ack', 1, 'o1', 3],
       ['bounds', 2, 'o2', { x: 0, y: 30, width: 10, height: 20 }],
-      ['result', 2, 'o2', { a: 1 }],
-      ['message', 2, 'o2', '{"n":1}'],
-      ['ready', 1, 'o1'],
-      ['loaded', 2, 'o2'],
+      ['result', 2, 'o2', { a: 1 }, 'desktop:2'],
+      ['message', 2, 'o2', '{"n":1}', 'desktop:2'],
+      ['ready', 1, 'o1', 'desktop:1'],
+      ['loaded', 2, 'o2', 'desktop:2'],
+      ['take', 2, 'desktop:2', 'o2'],
       // An opener click carries no plugin id: the opener is the overlay's own.
       ['button', 1, 'o1', { source: 'opener', buttonId: 'b' }],
       ['button', 2, 'o2', { source: 'type', pluginId: 'p.one', buttonId: 'edit' }],
@@ -1798,6 +1805,7 @@ describe('registerOverlayHandlers', () => {
       ['overlays.ready', [{ overlayId: 7 }]],
       ['overlays.loaded', [{ overlayId: 7 }]],
       ['overlays.loaded', []],
+      ['overlays.take', [{ overlayId: 7 }]],
       ['overlays.button', [{ overlayId: 'o', source: 'opener', buttonId: 5 }]],
       ['overlays.button', [{ overlayId: 'o', source: 'type', buttonId: 'b' }]],
       ['overlays.button', [{ overlayId: 'o', source: 'page', buttonId: 'b' }]],
