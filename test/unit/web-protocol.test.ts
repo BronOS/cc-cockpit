@@ -332,6 +332,29 @@ describe('plugin paths (Task 20)', () => {
     expect(logs.some((l) => l.includes('plugin paths failed: boom'))).toBe(true)
   })
 
+  // The re-mint race: the gateway drops a revoked device's tokens, then terminates its sockets
+  // (CLOSING now, the 'close' event later). A plugin-set change in that gap must not mint that
+  // device fresh tokens (nothing would drop them again: its id is gone), nor count its view.
+  it('a closing socket gets no new paths and shows nothing in deviceViews', () => {
+    let n = 1
+    const asked: string[] = []
+    const { connect, conns } = setup({
+      pagePaths: (id) => {
+        asked.push(id)
+        return pathsOf(n)(id)
+      }
+    })
+    const ws = connect('p1')
+    expect(asked).toEqual(['dev1'])
+    expect(conns.deviceViews('dev1')).toEqual([{ windowId: 1, projectId: 'p1' }])
+    ws.readyState = 2
+    n = 2
+    conns.pathsChanged()
+    expect(asked).toEqual(['dev1'])
+    expect(ws.frames('paths')).toEqual([])
+    expect(conns.deviceViews('dev1')).toEqual([])
+  })
+
   it("deviceViews lists the windows a device's bound views show, none once they are gone", () => {
     const { connect, conns } = setup()
     const other: WebDevice = { ...DEVICE, id: 'dev2', name: 'tablet' }

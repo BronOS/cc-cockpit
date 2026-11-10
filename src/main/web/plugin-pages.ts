@@ -39,10 +39,14 @@
 // Root-absolute URLs. Plugin pages were written for `cc-plugin://<id>/`, where `/x` is the plugin's
 // own `x`, and the guide used to tell every page to load `/__sdk/panel.js`. Under a path prefix
 // `/x` is the gateway's root instead: outside the token and outside the CSP. So HTML files get their
-// root-absolute `src` and `href` attributes rewritten into the prefix. URLs built in script or CSS
-// (`fetch('/data.json')`, `url(/x.png)`) are not rewritten and fail (CSP-blocked); the guide steers
-// new plugins to relative URLs (plan Task 21). The SDK is served at `<prefix>__sdk/panel.js`, so
-// both the rewritten `/__sdk/panel.js` and a relative `./__sdk/panel.js` reach it.
+// root-absolute `src` and `href` attributes rewritten into the prefix (a space after the quote
+// included: a browser strips it). URLs built in script or CSS (`fetch('/data.json')`, `url(/x.png)`),
+// and those in other attributes (`srcset`, `poster`, `<form action>`) or with an entity-encoded
+// slash, are not rewritten and fail closed (CSP-blocked, never another plugin's prefix); the guide
+// and the plugin check steer plugins to relative URLs (plan Task 21). The rewrite works on the
+// bytes as latin1, so a page in any ASCII-compatible charset comes out byte for byte as the desktop
+// serves it, plus the ASCII prefix. The SDK is served at `<prefix>__sdk/panel.js`, so both the
+// rewritten `/__sdk/panel.js` and a relative `./__sdk/panel.js` reach it.
 import { randomBytes } from 'node:crypto'
 import { overlayPageHeaders } from '../overlays/overlay-manager'
 import { pluginCsp, servePluginRequest } from '../plugins/plugin-protocol'
@@ -110,6 +114,12 @@ export class PageTokens {
     return token
   }
 
+  /**
+   * A plain Map lookup, not a constant-time compare: the key is hashed, and a string compare runs
+   * only against a stored token in the same bucket, so the time taken says nothing about how much
+   * of a guess matches a live token; with 192 random bits there is nothing to guess byte by byte.
+   * devices.ts compares in constant time because there the id is public and only the secret is checked.
+   */
   lookup(token: string): { deviceId: string; key: string } | undefined {
     return this.byToken.get(token)
   }
@@ -170,10 +180,12 @@ export function pageNotFound(): PageAnswer {
 }
 
 /**
- * Root-absolute `src` / `href` attributes (`/x`, not `//host`), quoted or not: the only URLs
- * rewritten into the prefix. Linear: no nested quantifiers.
+ * Root-absolute `src` / `href` attributes (`/x`, not `//host`), quoted or not, with or without
+ * spaces after the quote: the only URLs rewritten into the prefix. Linear: no nested quantifiers,
+ * and the two space runs around the quote cannot split one run between them (the quote is required
+ * before the second), which would make a long run of spaces quadratic.
  */
-const ROOT_ATTR = /(\s(?:src|href)\s*=\s*["']?)\/(?![/\\])/gi
+const ROOT_ATTR = /(\s(?:src|href)\s*=\s*(?:["']\s*)?)\/(?![/\\])/gi
 
 /** An HTML page's root-absolute `src`/`href` attributes pointed into the plugin's prefix. */
 export function rewriteRootUrls(html: string, prefix: string): string {
@@ -229,7 +241,8 @@ export class PluginPages {
     // The token names one plugin: another plugin's id under it is refused like an unknown token.
     // Only the second is logged: a page trying another plugin's files is worth a line, while
     // made-up tokens are anyone past the Host check and would only flood the log.
-    if (!owner || owner.key !== pluginId) {
+    // The overlay key is not a plugin id: never a plugin folder lookup, whatever the projects hold.
+    if (!owner || owner.key !== pluginId || owner.key === OVERLAY_KEY) {
       if (owner) this.deps.log?.(`web access: plugin path refused (token of another plugin)`)
       return pageNotFound()
     }
@@ -252,7 +265,9 @@ export class PluginPages {
     const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
     const prefix = pluginPrefix(token as string, pluginId)
     let body = Buffer.from(await res.arrayBuffer())
-    if (contentType.startsWith('text/html')) body = Buffer.from(rewriteRootUrls(body.toString('utf8'), prefix), 'utf8')
+    // latin1 both ways is byte for byte: a page in another charset, or with invalid UTF-8, keeps
+    // its bytes (a UTF-8 round trip would turn them into U+FFFD); the prefix is ASCII.
+    if (contentType.startsWith('text/html')) body = Buffer.from(rewriteRootUrls(body.toString('latin1'), prefix), 'latin1')
     return {
       status: 200,
       headers: {

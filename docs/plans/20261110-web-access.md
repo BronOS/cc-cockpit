@@ -472,6 +472,8 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - [ ] the guide tells plugin pages to use relative URLs (`./__sdk/panel.js`) and why (web access)
 - [ ] a warning (not an error) from the plugin check and the marketplace tools when a page's HTML, JS or CSS uses a
       root-absolute URL
+      (the HTTP rewrite in `plugin-pages.ts` covers only `src`/`href`: `srcset`, `poster`, `<form action>` and
+      entity-encoded slashes stay root-absolute and fail closed, so the check flags them too)
 - [ ] the example plugin and the bundled plugins switched to relative URLs where simple; rebuilt dists committed
 - [ ] write tests: the check flags `/dist/x.js` in HTML and in a JS string, passes relative ones
 - [ ] run tests, `npm run test:plugins`, and the e2e specs for bundled plugins, panels and overlays - must pass before

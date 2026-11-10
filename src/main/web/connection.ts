@@ -226,9 +226,13 @@ export class WebConnection {
     return this.device.name
   }
 
-  /** The window and project this view is bound to, once `hello` bound it. */
+  /**
+   * The window and project this view is bound to, once `hello` bound it, while its socket is open.
+   * A socket the gateway is closing (a revoked device: `terminate` now, the 'close' event later)
+   * shows nothing already, so plugin-pages.ts serves its device nothing in that gap.
+   */
   binding(): ProjectContext | undefined {
-    return this.caller ? { windowId: this.caller.context.windowId, projectId: this.caller.context.projectId } : undefined
+    return this.caller && !this.closed && this.ws.readyState === OPEN ? { windowId: this.caller.context.windowId, projectId: this.caller.context.projectId } : undefined
   }
 
   private message(data: unknown, isBinary: boolean): void {
@@ -311,7 +315,10 @@ export class WebConnection {
 
   /** Sends the view its paths again when they changed (WebConnections.pathsChanged). */
   refreshPaths(): void {
-    if (this.closed || !this.caller) return
+    // Not for a socket that is closing: the gateway drops a revoked device's tokens, then terminates
+    // its sockets, and the 'close' event that takes the view out comes later. A plugin-set change
+    // in that gap would mint the revoked device fresh tokens that nothing drops again (its id is gone).
+    if (this.closed || !this.caller || this.ws.readyState !== OPEN) return
     const paths = this.pagePaths()
     const text = JSON.stringify(paths)
     if (text === this.sentPaths) return

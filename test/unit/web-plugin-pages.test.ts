@@ -280,6 +280,31 @@ describe('plugin files', () => {
     expect((await pages.serve(`${prefix}sub/x.js`, 'PUT', [ORIGIN])).status).toBe(404)
   })
 
+  it('rewrites an HTML page byte for byte: another charset and invalid UTF-8 keep their bytes', async () => {
+    const pages = pagesOf(world())
+    const prefix = pages.paths('dev1').plugins['a.plugin']!
+    // `é` in latin1 (0xE9, invalid UTF-8 on its own) and a lone continuation byte.
+    const head = Buffer.from('<meta charset="iso-8859-1"><p>caf', 'latin1')
+    const tail = Buffer.from('</p><script src="/x.js"></script>', 'latin1')
+    writeFileSync(join(dirs['a.plugin']!, 'latin.html'), Buffer.concat([head, Buffer.from([0xe9, 0x80]), tail]))
+    const res = await pages.serve(`${prefix}latin.html`, 'GET', [ORIGIN])
+    expect(res.status).toBe(200)
+    expect(res.body.equals(Buffer.concat([head, Buffer.from([0xe9, 0x80]), Buffer.from(`</p><script src="${prefix}x.js"></script>`, 'latin1')]))).toBe(true)
+  })
+
+  it('rewriteRootUrls takes spaces after the quote (a browser strips them), and stays linear on long space runs', () => {
+    expect(rewriteRootUrls('<img src=" /x"><img src= /y><a href=\'  /z\'>', '/p/T/a.b/')).toBe(
+      '<img src=" /p/T/a.b/x"><img src= /p/T/a.b/y><a href=\'  /p/T/a.b/z\'>'
+    )
+    expect(rewriteRootUrls('<a href=" //h/x"><a href=" x">', '/p/')).toBe('<a href=" //h/x"><a href=" x">')
+    // No `/` after the spaces: a backtracking regex splitting the run between two quantifiers would
+    // take seconds here.
+    const long = ` src="${' '.repeat(200_000)}x`.repeat(5)
+    const started = Date.now()
+    expect(rewriteRootUrls(long, '/p/')).toBe(long)
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
   it('rewriteRootUrls leaves protocol-relative, relative and absolute URLs alone', () => {
     expect(rewriteRootUrls('<a href="/x">', '/p/T/a.b/')).toBe('<a href="/p/T/a.b/x">')
     expect(rewriteRootUrls('<a HREF = \'/x\'>', '/p/T/a.b/')).toBe('<a HREF = \'/p/T/a.b/x\'>')
@@ -319,6 +344,15 @@ describe('inline overlays', () => {
     const tokA = plugins['a.plugin']!.split('/')[2]!
     expect(await get(`/o/${tokA}/${OVERLAY_ID}/`)).toBe(404)
     expect(await get(`/p/${overlays.split('/')[2]}/@overlays/x`)).toBe(404)
+    // Refused for the key itself, before any folder lookup: not only because no project enables
+    // `@overlays` (nor because the resolver's id rule refuses the `@`).
+    const p1 = w.enabled.get('p1')!
+    const asked: string[] = []
+    w.enabled.set('p1', { has: (id: string) => (asked.push(id), true) } as unknown as Set<string>)
+    dirs['@overlays'] = dirs['a.plugin']!
+    expect(await get(`/p/${overlays.split('/')[2]}/@overlays/panel.html`)).toBe(404)
+    expect(asked).toEqual([])
+    w.enabled.set('p1', p1)
     // Unknown overlay, an overlay of a window the device has no view of.
     expect(await get(`${overlays}${OTHER_OVERLAY}/`)).toBe(404)
     w.overlays.set(OTHER_OVERLAY, { windowId: 2, html: '<p>other window</p>' })
