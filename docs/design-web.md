@@ -336,6 +336,28 @@ show "host unreachable" and reconnect.
    Tailscale and SSH docs.
 6. Later: the desktop as a remote client, multi-user (§10), a phone layout, headless mode (§9).
 
+## 7a. Spike results (2026-11-10, branch `spike/web-terminal-mirror`, not merged)
+
+Proved in a browser on the LAN (`CC_COCKPIT_WEB_SPIKE=<port>`, `CC_COCKPIT_WEB_SPIKE_BIND=0.0.0.0`): a live Claude tab
+mirrored with its full screen on join, live output on both screens, and input from the browser reaching Claude.
+Unit tests: a randomized run (400 frames, random splits and joins, resizes) rebuilds every view identical to the
+mirror; split CSI/OSC/surrogate cases; Host/Origin/token checks.
+
+What changes in this design:
+- **Resizes are numbered in the same stream as output** (a resize must land at the same point in every copy), so
+  §3's `term.data` carries both data and size items.
+- **Headless terminals go to a worker thread.** xterm parses in slices of up to 12 ms per terminal, so N flooding
+  tabs stall main for about N×12 ms (8 tabs flooded: p50 97 ms); a full-scrollback snapshot blocks 30–70 ms. Paced
+  output is cheap (p50 1.1 ms). Memory: about 9 MiB per tab at 5,000 lines.
+- **Serialization gaps.** The serialize addon drops cursor visibility (25), synchronized output (2026), SGR mouse
+  encoding (1006/1016), the scroll region and the cursor style; the spike re-emits them. Still lost: charsets, the
+  saved cursor, the normal screen's state while the alt screen is on, tab stops, the title.
+- **Ground state** needs xterm's private parser fields; if they move, the check degrades to "always ready".
+- Over plain http on an IP nothing the page needs is missing (copy and paste go through xterm's own textarea).
+
+Not proved yet: main answering terminal queries, main as the flow consumer, a plugin panel over HTTP, cookies and
+devices, access through a proxy.
+
 ## 8. Testing
 
 - Router, gateway, view registry: unit tests with a fake socket (the router already takes a fake `ipcMain`).
