@@ -195,12 +195,15 @@ withSessions('with cockpit.sessions off there is no strip and no Sessions panel;
   // On by default: its panel icon and its strip frame are there.
   const icon = page.getByRole('button', { name: /^Sessions/ })
   await expect(icon).toHaveCount(1, { timeout: 15_000 })
-  await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(1)
+  // Two frames: the sessions strip and bundled cockpit.usage's usage-meter.
+  await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(2)
 
   // Off app-wide (Settings › Plugins, a bundled plugin's switch): the host restarts without it.
   await page.evaluate<void>("window.cockpit.invoke('settings.pluginBundledOff', { id: 'cockpit.sessions', off: true })")
   await expect(icon).toHaveCount(0, { timeout: 15_000 })
-  await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(0)
+  // Only the sessions strip goes; cockpit.usage's meter stays.
+  await expect(page.locator('.top-strip [data-slot-frame][data-slot-plugin="cockpit.sessions"]')).toHaveCount(0)
+  await expect(page.locator('.top-strip [data-slot-frame]')).toHaveCount(1)
   await expect(page.locator('section.panel[aria-label="Sessions"]')).toHaveCount(0)
   // The bar is the project, the "+" and the gear.
   await expect(page.locator('.top-strip .strip-open-project')).toBeVisible()

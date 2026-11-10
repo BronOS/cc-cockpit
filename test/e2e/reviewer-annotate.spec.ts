@@ -284,7 +284,7 @@ test('annotate companion: two columns with their own facts, a remembered divider
   const { run } = await linkCaller(cockpit)
   const TITLE2 = 'Notes: Re: the login redirect'
   const annotate = async (): Promise<void> => {
-    expect(await run('companion')).toEqual({ ok: true, value: { opened: true }, features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original'] })
+    expect(await run('companion')).toEqual({ ok: true, value: { opened: true }, features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail'] })
     await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE2])
   }
   await annotate()
