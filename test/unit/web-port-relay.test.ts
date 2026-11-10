@@ -626,13 +626,22 @@ describe('browser relay', () => {
   })
 })
 
-/** A frame as FrameLoads sees it: what was loaded and posted. */
+/**
+ * A frame as FrameLoads sees it: what was loaded (src on the element), remounted (a new element) and
+ * posted. `gen` is the generation of the element in the document now.
+ */
 class FakeFrame implements FrameTarget {
   readonly loads: string[] = []
+  readonly remounts: number[] = []
   readonly posts: Array<{ message: unknown; ports: number }> = []
   hasWindow = true
+  gen = 0
   load(url: string): void {
     this.loads.push(url)
+  }
+  remount(frame: number): void {
+    this.gen = frame
+    this.remounts.push(frame)
   }
   post(message: unknown, transfer?: MessagePort[]): boolean {
     if (!this.hasWindow) return false
@@ -646,9 +655,10 @@ class FakeFrame implements FrameTarget {
 
 const PORT_MESSAGE = { type: 'cc-plugin.port' }
 const THEME = { type: 'cc-plugin.theme' }
+const PAGE = '/p/t/a.one/panel.html'
 
 describe('FrameLoads (navigation guard)', () => {
-  function loads(guard: boolean, over: { connect?: (deliver: (port: MessagePort) => void) => () => void } = {}) {
+  function loads(guard: boolean, over: { early?: boolean; connect?: (deliver: (port: MessagePort) => void) => () => void } = {}) {
     const frame = new FakeFrame()
     let now = 100_000
     const timers: Array<{ fn: () => void; at: number }> = []
@@ -656,6 +666,7 @@ describe('FrameLoads (navigation guard)', () => {
     const cleanups = vi.fn()
     const l = new FrameLoads({
       guard,
+      early: over.early ?? guard,
       portMessage: PORT_MESSAGE,
       target: frame,
       theme: () => THEME,
@@ -681,25 +692,39 @@ describe('FrameLoads (navigation guard)', () => {
         t.fn()
       }
     }
-    return { l, frame, connects, cleanups, advance }
+    /** The element in the document now fires `load`. */
+    const load = (): void => l.loaded(frame.gen)
+    return { l, frame, connects, cleanups, advance, load }
   }
 
-  it('desktop: every load gets the theme and a port, as before', () => {
+  /** A relay whose port.open hands port1 to `page()`; `sent` holds the frames to main. */
+  function relay() {
+    const sent: Array<Record<string, unknown>> = []
+    let page: MessagePort | undefined
+    const r = new BrowserPortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, port) => ((page = port), true) })
+    return { r, sent, page: () => page! }
+  }
+
+  it('desktop: every load gets the theme and a port, asked for at the load, as before', () => {
     const { l, frame, connects } = loads(false)
-    l.loaded()
-    l.loaded()
+    l.loaded(0)
+    l.loaded(0)
     expect(connects).toHaveLength(2)
     expect(frame.types()).toEqual(['cc-plugin.theme', 'cc-plugin.theme'])
     expect(frame.loads).toEqual([])
+    expect(frame.remounts).toEqual([])
   })
 
-  it('web: the load the shell started gets the theme, then the intro and the port', () => {
-    const { l, frame, connects } = loads(true)
-    l.started('/p/t/a.one/panel.html')
-    l.loaded()
+  it('web: the port is asked for when the shell sets src, held, and posted inside the load it expected', () => {
+    const { l, frame, connects, load } = loads(true)
+    l.started(PAGE)
     expect(connects).toHaveLength(1)
+    // It arrives before the page has loaded: nothing goes into the frame yet.
     const ch = new MessageChannel()
     connects[0]!(ch.port1)
+    expect(frame.posts).toEqual([])
+    load()
+    expect(connects).toHaveLength(1)
     expect(frame.types()).toEqual(['cc-plugin.theme', 'cc-plugin.slot', 'cc-plugin.port'])
     expect(frame.posts.at(-1)?.ports).toBe(1)
     // Theme changes reach the served page.
@@ -708,153 +733,224 @@ describe('FrameLoads (navigation guard)', () => {
     ch.port2.close()
   })
 
-  it('web: a navigated frame gets no theme and no port; src goes back to the canonical path first', () => {
-    const { l, frame, connects, cleanups } = loads(true)
-    l.started('/p/t/a.one/panel.html')
-    l.loaded()
-    expect(connects).toHaveLength(1)
-    // The page navigated itself: the old load's request is cancelled, nothing is posted, src is reset.
-    l.loaded()
-    expect(cleanups).toHaveBeenCalledOnce()
-    expect(connects).toHaveLength(1)
-    expect(frame.loads).toEqual(['/p/t/a.one/panel.html'])
-    const before = frame.posts.length
-    l.themeChanged(THEME)
-    expect(frame.posts).toHaveLength(before)
-    // A port that arrives late for the old load is closed, not posted.
+  it('web: a port slower than the page is posted when it arrives', () => {
+    const { l, frame, connects, load } = loads(true)
+    l.started(PAGE)
+    load()
+    expect(frame.types()).toEqual(['cc-plugin.theme'])
     const ch = new MessageChannel()
     connects[0]!(ch.port1)
-    expect(frame.posts).toHaveLength(before)
-    // The reset load is the shell's own: served.
-    l.loaded()
-    expect(connects).toHaveLength(2)
-    expect(frame.types().at(-1)).toBe('cc-plugin.theme')
+    expect(frame.types()).toEqual(['cc-plugin.theme', 'cc-plugin.slot', 'cc-plugin.port'])
     ch.port2.close()
   })
 
+  it('web: a navigated frame gets no theme and no port; a new frame element is mounted, not src on the old one', () => {
+    const { l, frame, connects, cleanups, load } = loads(true)
+    const { r, sent, page } = relay()
+    l.started(PAGE)
+    // The port arrives and is held; the page navigates before its own load: it is never posted.
+    r.open('a.one/board', 1)
+    connects[0]!(page())
+    load()
+    expect(frame.types().at(-1)).toBe('cc-plugin.port')
+    const before = frame.posts.length
+    // The page navigated itself: its port ends (main hears it), the element is replaced.
+    load()
+    expect(cleanups).toHaveBeenCalledOnce()
+    expect(sent).toEqual([{ t: 'port.close', key: 'a.one/board', nonce: 1 }])
+    expect(frame.loads).toEqual([])
+    expect(frame.remounts).toEqual([1])
+    expect(frame.posts).toHaveLength(before)
+    l.themeChanged(THEME)
+    expect(frame.posts).toHaveLength(before)
+    // The new element's port is asked for at once; a late port of the old request is closed.
+    expect(connects).toHaveLength(2)
+    const late = new MessageChannel()
+    connects[0]!(late.port1)
+    expect(frame.posts).toHaveLength(before)
+    // The new element's first load is the shell's own: served.
+    load()
+    expect(frame.types().at(-1)).toBe('cc-plugin.theme')
+    late.port2.close()
+  })
+
+  it('web: a load of the replaced element (its page cancelled our navigation with its own) is never served', () => {
+    const { l, frame, connects, load } = loads(true)
+    l.started(PAGE)
+    load()
+    // A link without a target: a foreign page loads in the frame; a new element is asked for.
+    load()
+    expect(frame.remounts).toEqual([1])
+    const posts = frame.posts.length
+    // The port for the new element arrives; then the old element fires a load (the foreign page's
+    // own next destination), before React put the new element in.
+    const ch = new MessageChannel()
+    connects[1]!(ch.port1)
+    l.loaded(0)
+    expect(frame.posts).toHaveLength(posts)
+    expect(frame.remounts).toEqual([1])
+    // The new element's first load gets the theme and the held port.
+    load()
+    expect(frame.types().slice(posts)).toEqual(['cc-plugin.theme', 'cc-plugin.slot', 'cc-plugin.port'])
+    ch.port2.close()
+  })
+
+  it('web: a new src is a new frame element too', () => {
+    const { l, frame, connects, load } = loads(true)
+    l.started(PAGE)
+    load()
+    l.started('/p/t/a.one/other.html')
+    expect(frame.remounts).toEqual([1])
+    expect(connects).toHaveLength(2)
+    // A load the old element still fires is ignored; the new one's is served.
+    l.loaded(0)
+    expect(frame.types()).toEqual(['cc-plugin.theme'])
+    load()
+    expect(frame.types()).toEqual(['cc-plugin.theme', 'cc-plugin.theme'])
+  })
+
   it(`web: after ${MAX_FRAME_RESETS} resets in ${FRAME_RESET_WINDOW_MS / 1000} s the frame is stopped (blank) until a new src`, () => {
-    const { l, frame, connects, advance } = loads(true)
-    l.started('/p/t/a.one/panel.html')
-    // A page that navigates again on every load: each unexpected load is reset, then served once.
+    const { l, frame, connects, advance, load } = loads(true)
+    l.started(PAGE)
+    // A page that navigates again on every load: each unexpected load remounts, then is served once.
     for (let i = 0; i < MAX_FRAME_RESETS; i++) {
-      l.loaded()
-      l.loaded()
+      load()
+      load()
       advance(100)
     }
-    expect(frame.loads).toHaveLength(MAX_FRAME_RESETS)
-    expect(frame.loads).not.toContain(BLANK_URL)
-    // The last reset is served; the page navigates once more: stopped.
-    l.loaded()
-    l.loaded()
-    expect(frame.loads.at(-1)).toBe(BLANK_URL)
-    const served = connects.length
+    expect(frame.remounts).toHaveLength(MAX_FRAME_RESETS)
+    expect(frame.loads).toEqual([])
+    // The last remount is served; the page navigates once more: stopped.
+    load()
+    load()
+    expect(frame.loads).toEqual([BLANK_URL])
+    expect(frame.remounts).toHaveLength(MAX_FRAME_RESETS)
+    const asked = connects.length
+    const posts = frame.posts.length
     // The blank load and anything after it are ignored.
-    l.loaded()
-    l.loaded()
-    expect(connects).toHaveLength(served)
-    expect(frame.loads.at(-1)).toBe(BLANK_URL)
-    // A new src (React sets it) starts over.
-    l.started('/p/t/a.one/panel.html')
-    l.loaded()
-    expect(connects).toHaveLength(served + 1)
+    load()
+    load()
+    expect(connects).toHaveLength(asked)
+    expect(frame.posts).toHaveLength(posts)
+    // A new src starts over.
+    l.started('/p/t/a.one/other.html')
+    load()
+    expect(connects).toHaveLength(asked + 1)
+    expect(frame.posts).toHaveLength(posts + 1)
   })
 
   it('web: resets older than the window do not count', () => {
-    const { l, frame, advance } = loads(true)
-    l.started('/p/t/a.one/panel.html')
+    const { l, frame, advance, load } = loads(true)
+    l.started(PAGE)
     for (let i = 0; i < MAX_FRAME_RESETS * 2; i++) {
-      l.loaded()
-      l.loaded()
+      load()
+      load()
       advance(FRAME_RESET_WINDOW_MS / MAX_FRAME_RESETS + 1)
     }
     expect(frame.loads).not.toContain(BLANK_URL)
+    expect(frame.remounts).toHaveLength(MAX_FRAME_RESETS * 2)
   })
 
   it('web: no path for the page (undefined src) serves nothing', () => {
-    const { l, connects, frame } = loads(true)
+    const { l, connects, frame, load } = loads(true)
     l.started(undefined)
-    l.loaded()
+    load()
     expect(connects).toHaveLength(0)
     expect(frame.posts).toHaveLength(0)
     expect(frame.loads).toHaveLength(0)
+    expect(frame.remounts).toHaveLength(0)
+  })
+
+  it('web, a port made at the load (overlays): asked for at each served load, so a page put back gets a fresh one', () => {
+    const { l, frame, connects, load } = loads(true, { early: false })
+    l.started(PAGE)
+    expect(connects).toHaveLength(0)
+    load()
+    expect(connects).toHaveLength(1)
+    connects[0]!(new MessageChannel().port1)
+    expect(frame.types()).toEqual(['cc-plugin.theme', 'cc-plugin.slot', 'cc-plugin.port'])
+    // The page navigated itself: nothing for it; the new element's load gets a new port.
+    load()
+    expect(connects).toHaveLength(1)
+    load()
+    expect(connects).toHaveLength(2)
+    connects[1]!(new MessageChannel().port1)
+    expect(frame.types().filter((t) => t === 'cc-plugin.port')).toHaveLength(2)
   })
 
   it('a relayed port is released when its page goes (next load or unmount)', () => {
-    const { l, connects } = loads(true)
-    const sent: Array<Record<string, unknown>> = []
-    let page: MessagePort | undefined
-    const relay = new BrowserPortRelay({
-      send: (f) => {
-        sent.push(f)
-        return true
-      },
-      deliver: (_k, _n, port) => {
-        page = port
-        return true
-      }
-    })
-    l.started('/p/t/a.one/panel.html')
-    l.loaded()
-    relay.open('a.one/board', 4)
-    connects[0]!(page!)
-    expect(relay.size()).toBe(1)
+    const { l, connects, load } = loads(true)
+    const { r, sent, page } = relay()
+    l.started(PAGE)
+    load()
+    r.open('a.one/board', 4)
+    connects[0]!(page())
+    expect(r.size()).toBe(1)
     // The frame navigated: its page is gone, main hears port.close.
-    l.loaded()
+    load()
     expect(sent).toEqual([{ t: 'port.close', key: 'a.one/board', nonce: 4 }])
-    expect(relay.size()).toBe(0)
+    expect(r.size()).toBe(0)
     // And on unmount.
-    l.loaded()
-    relay.open('a.one/board', 5)
-    connects[1]!(page!)
+    load()
+    r.open('a.one/board', 5)
+    connects[1]!(page())
     l.dispose()
     expect(sent.at(-1)).toEqual({ t: 'port.close', key: 'a.one/board', nonce: 5 })
   })
 
-  it("main ending a panel's port reloads its frame later; a slot's does not", () => {
+  it('a port held for a load that never came is released when the frame unmounts', () => {
+    const { l, connects } = loads(true)
+    const { r, sent, page } = relay()
+    l.started(PAGE)
+    r.open('a.one/board', 1)
+    connects[0]!(page())
+    l.dispose()
+    expect(sent).toEqual([{ t: 'port.close', key: 'a.one/board', nonce: 1 }])
+  })
+
+  it("main ending a panel's port mounts its frame again later; a slot's does not", () => {
     for (const key of ['a.one/board', '@slot/s1']) {
-      const { l, connects, frame, advance } = loads(true)
-      let page: MessagePort | undefined
-      const relay = new BrowserPortRelay({ send: () => true, deliver: (_k, _n, port) => ((page = port), true) })
-      l.started('/p/t/x/panel.html')
-      l.loaded()
-      relay.open(key, 1)
-      connects[0]!(page!)
-      relay.remoteClosed(key, 1)
+      const { l, connects, frame, advance, load } = loads(true)
+      const { r, page } = relay()
+      l.started(PAGE)
+      load()
+      r.open(key, 1)
+      connects[0]!(page())
+      r.remoteClosed(key, 1)
       advance(PANEL_RECONNECT_MS)
-      expect(frame.loads).toEqual(key.startsWith('@') ? [] : ['/p/t/x/panel.html'])
-      // The reload is the shell's own load: served.
+      expect(frame.remounts).toEqual(key.startsWith('@') ? [] : [1])
+      expect(frame.loads).toEqual([])
+      // The new element's load is the shell's own: served, with a new port asked for at the remount.
       if (key.startsWith('@')) continue
-      l.loaded()
       expect(connects).toHaveLength(2)
+      load()
+      expect(frame.types().at(-1)).toBe('cc-plugin.theme')
     }
   })
 
   it('a page that loads again before the reconnect is due cancels it', () => {
-    const { l, connects, frame, advance } = loads(true)
-    let page: MessagePort | undefined
-    const relay = new BrowserPortRelay({ send: () => true, deliver: (_k, _n, port) => ((page = port), true) })
-    l.started('/p/t/x/panel.html')
-    l.loaded()
-    relay.open('a.one/board', 1)
-    connects[0]!(page!)
-    relay.remoteClosed('a.one/board', 1)
-    // panels.reload remounted / reloaded it first.
-    l.started('/p/t/x/panel.html')
-    l.loaded()
+    const { l, connects, frame, advance, load } = loads(true)
+    const { r, page } = relay()
+    l.started(PAGE)
+    load()
+    r.open('a.one/board', 1)
+    connects[0]!(page())
+    r.remoteClosed('a.one/board', 1)
+    // panels.reload loaded it again first.
+    l.started(PAGE)
+    load()
     advance(PANEL_RECONNECT_MS)
-    expect(frame.loads).toEqual([])
+    expect(frame.remounts).toEqual([])
   })
 
   it('a frame with no window closes the port it cannot hand over and releases it', () => {
-    const { l, frame, connects } = loads(true)
-    const sent: Array<Record<string, unknown>> = []
-    let page: MessagePort | undefined
-    const relay = new BrowserPortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, port) => ((page = port), true) })
-    l.started('/p/t/x/panel.html')
-    l.loaded()
+    const { l, frame, connects, load } = loads(true)
+    const { r, sent, page } = relay()
+    l.started(PAGE)
+    load()
     frame.hasWindow = false
-    relay.open('a.one/board', 1)
-    connects[0]!(page!)
+    r.open('a.one/board', 1)
+    connects[0]!(page())
     expect(sent).toEqual([{ t: 'port.close', key: 'a.one/board', nonce: 1 }])
   })
 })

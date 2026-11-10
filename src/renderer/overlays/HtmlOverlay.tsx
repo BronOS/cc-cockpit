@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MAX_QUEUED_MESSAGES, READY_MESSAGE } from '../../sdk/panel-core'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
@@ -112,6 +112,8 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
       // For a no-script frame inside the page (the reviewer's Original view of a mail): its link
       // clicks are popup requests main checks and opens in the system browser (PluginFrame).
       allowPopups
+      // Made here at each served load, which is also when main hears `overlays.ready`.
+      localPort
       onPageMessage={(data) => {
         if (typeOf(data) === READY_MESSAGE) pageDrawn(overlayId)
       }}
@@ -156,8 +158,11 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
   // The web shell loads it from the device's overlay path (page-paths.ts); none: an empty frame.
   const url = isWebShell() ? shellPageUrl(props.src) : props.src
   const frame = useRef<HTMLIFrameElement>(null)
-  const channel = useRef<MessageChannel | null>(null)
+  /** The frame element's generation (FrameLoads replaces it after a load the shell did not start). */
+  const [frameKey, setFrameKey] = useState(0)
   const loads = useRef<FrameLoads | null>(null)
+  /** One answer per overlay, whatever pages it loads. */
+  const answered = useRef(false)
   // Read when the page talks, so the loads below are made once per mount.
   const id = useRef(overlayId)
   useEffect(() => {
@@ -165,36 +170,34 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
   })
 
   // Loads judged as a plugin frame's (web/port-relay.ts): in the web shell a page that navigated
-  // itself is put back on its path, and only a load the shell started is served.
+  // itself is replaced by a new frame on its path, and only a load the shell started is served.
   useLayoutEffect(() => {
     const current = new FrameLoads({
       guard: isWebShell(),
       portMessage: INLINE_PORT_MESSAGE,
-      target: frameTarget(frame),
+      target: frameTarget(frame, setFrameKey),
       connect: (deliver) => {
-        // One port per overlay: a page that loads again (it navigated itself, allowed inside its
-        // sandbox) does not get a second one.
-        if (channel.current) return () => {}
+        // A port per served load: the page that had the last one is gone with it (in the web shell a
+        // page that navigated itself loads again on its path, in a new frame; it needs a live port
+        // to say `ready` and to answer). The clean-up closes this one when that page goes.
         const ch = new MessageChannel()
-        channel.current = ch
-        let answered = false
         ch.port1.onmessage = (event: MessageEvent<unknown>) => {
           // An inline page has no SDK: it says it has drawn with `{ type: 'ready' }` on its port.
           if (typeOf(event.data) === 'ready') {
             pageDrawn(id.current)
             return
           }
-          if (answered || !isResult(event.data)) return
-          answered = true
+          if (answered.current || !isResult(event.data)) return
+          answered.current = true
           sendResult(id.current, event.data.value, () => {
-            answered = false
+            answered.current = false
           })
         }
         // The port is the only thing sent, and only this frame's window receives it.
         deliver(ch.port2)
         // The page has loaded: main takes the loader away (a `ready: 'load'` overlay, the default).
         window.cockpit.invoke('overlays.ready', { overlayId: id.current }).catch(() => {})
-        return () => {}
+        return () => ch.port1.close()
       }
     })
     loads.current = current
@@ -208,16 +211,15 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
     loads.current?.started(url)
   }, [url])
 
-  useEffect(() => () => channel.current?.port1.close(), [])
-
   return (
     <iframe
+      key={frameKey}
       ref={frame}
       className="overlay-html"
       title={props.title}
       sandbox="allow-scripts"
       src={url}
-      onLoad={() => loads.current?.loaded()}
+      onLoad={() => loads.current?.loaded(frameKey)}
     />
   )
 }

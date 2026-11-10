@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
@@ -25,9 +25,11 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  *
  * In the web shell (design-web.md §5.3, §5.5) the page loads from its HTTP path (page-paths.ts), its
  * port from main comes through the socket relay (web/port-relay.ts), and only the loads this
- * component started are served: a page that navigated itself is put back on its own path first
- * (FrameLoads). A relayed port is released when its page goes, since a browser port has no close
- * event of its own.
+ * component started are served: a page that navigated itself is replaced by a new frame element on
+ * its own path (FrameLoads; `frameKey` is that element's generation). The port is asked for when the
+ * load starts and posted in its load event, unless `localPort` (an overlay's port, made here at the
+ * load). A relayed port is released when its page goes, since a browser port has no close event of
+ * its own.
  *
  * `allowPopups` (plugin overlays only, HtmlOverlay) adds `allow-popups`, and nothing else: sandbox
  * flags only add up down the frame tree, so without it on this frame the reviewer's mail frame inside
@@ -45,15 +47,21 @@ export function PluginFrame(props: {
   intro?: object
   onPageMessage?: (data: unknown) => void
   allowPopups?: boolean
+  /** The port is made in the shell at the load (HtmlOverlay), not asked of main: asked for at the load. */
+  localPort?: boolean
 }): React.JSX.Element {
   // The web shell loads the page over HTTP (page-paths.ts); undefined there: no path, an empty frame.
   const url = isWebShell() ? shellPageUrl(props.src) : props.src
   const frame = useRef<HTMLIFrameElement>(null)
+  /** The frame element's generation: FrameLoads replaces the element (a new key) after a foreign load. */
+  const [frameKey, setFrameKey] = useState(0)
   /** Which loads get the theme and a port (web/port-relay.ts), made before the first load can fire. */
   const loads = useRef<FrameLoads | null>(null)
   const connect = useRef(props.connect)
   const intro = useRef(props.intro)
   const onPageMessage = useRef(props.onPageMessage)
+  /** Read once: the loads below are made once per mount. */
+  const localPort = useRef(props.localPort === true)
   useEffect(() => {
     connect.current = props.connect
     intro.current = props.intro
@@ -66,8 +74,9 @@ export function PluginFrame(props: {
   useLayoutEffect(() => {
     const current = new FrameLoads({
       guard: isWebShell(),
+      early: !localPort.current,
       portMessage,
-      target: frameTarget(frame),
+      target: frameTarget(frame, setFrameKey),
       theme: () => {
         const theme = currentTheme()
         return theme ? themeMessage(theme, isMac) : undefined
@@ -84,7 +93,7 @@ export function PluginFrame(props: {
   }, [])
 
   // React sets `src` in the commit, before any load event can fire; this runs in the same commit,
-  // so the load it starts counts as the shell's own.
+  // so the load it starts counts as the shell's own (a changed `src` gets a new element as well).
   useLayoutEffect(() => {
     loads.current?.started(url)
   }, [url])
@@ -103,22 +112,24 @@ export function PluginFrame(props: {
 
   return (
     <iframe
+      key={frameKey}
       ref={frame}
       className={props.className}
       title={props.title}
       sandbox={props.allowPopups === true ? 'allow-scripts allow-popups' : 'allow-scripts'}
       src={url}
-      onLoad={() => loads.current?.loaded()}
+      onLoad={() => loads.current?.loaded(frameKey)}
     />
   )
 }
 
-/** A frame element as FrameLoads drives it. */
-export function frameTarget(frame: { readonly current: HTMLIFrameElement | null }): FrameTarget {
+/** A frame element as FrameLoads drives it; `remount` sets the element's React key (a new element). */
+export function frameTarget(frame: { readonly current: HTMLIFrameElement | null }, remount: (key: number) => void): FrameTarget {
   return {
     load: (to) => {
       if (frame.current) frame.current.src = to
     },
+    remount,
     post: (message, transfer) => {
       const target = frame.current?.contentWindow
       // '*': a sandboxed frame's origin is opaque, there is no origin to name; only this frame's

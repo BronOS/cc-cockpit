@@ -18,14 +18,26 @@
 // FrameLoads. The one place a plugin frame's loads are judged, for both shells (PluginFrame and the
 // inline overlay). On the desktop main blocks a frame navigating anywhere (create-window.ts), so
 // every load gets the theme and a port as before. In the web shell nothing can block it and the
-// shell cannot read a sandboxed cross-origin frame's URL, so only a load the shell started (it set
-// `src`) gets the theme and a port; any other load (the page navigated or reloaded itself, a link
-// without a target) has `src` set back to the canonical path first, and only that load is served.
-// A page that keeps navigating is stopped (blank) after MAX_FRAME_RESETS resets in
-// FRAME_RESET_WINDOW_MS, rather than reloaded in a loop. What this cannot see: a page that
-// navigates away before its first load event fires (its script runs before `load`), or a port
-// that arrives in the instant between a navigation committing and its load event; both need the
-// plugin's own page to do it, and the plugin's own backend is all its port reaches.
+// shell cannot read a sandboxed cross-origin frame's URL, so only the first load of a frame element
+// whose `src` the shell set gets the theme and a port. Any other load (the page navigated or
+// reloaded itself, a link without a target) replaces the frame ELEMENT with a new one on the
+// canonical path (`remount`), whose first load is served. Setting `src` on the old element would not
+// do: the page in it is still alive and can start a navigation of its own right after ours (a timer
+// in its onload), which replaces ours, so the "expected" load would be its destination's, and it
+// would get the plugin's port. A removed element's page dies with it, and a sandboxed page cannot
+// navigate a sibling frame. Loads carry the element's generation, so one from a replaced element is
+// ignored. A new `src` and the reconnect reload remount too, for the same reason. A page that keeps
+// navigating is stopped (blank) after MAX_FRAME_RESETS resets in FRAME_RESET_WINDOW_MS, rather than
+// reloaded in a loop.
+//
+// A port from main (panels, slots, settings pages: `early`) is asked for when the shell starts the
+// load, held, and posted inside the load event the shell expected, so it lands in that page and no
+// other: a page it navigates to cannot hold the gap open by delaying its own load event.
+// When the port is slower than the page, it is posted on arrival; until then the page has nothing
+// from its backend, so only a link it drew by itself, clicked before the port arrives, could take
+// the frame somewhere else first. What this cannot see: a plugin page navigating away before its
+// first load event fires (its script runs before `load`). Both need the plugin's own page (or a
+// click within that round trip), and the plugin's own backend is all its port reaches.
 //
 // DOM-free (the frame, the timers and the channel factory are passed in) so unit tests run it in
 // plain Node, whose MessageChannel behaves as the browser's.
@@ -155,7 +167,7 @@ export class PortRelay {
   }
 }
 
-/** Resets of a frame's `src` allowed per FRAME_RESET_WINDOW_MS before the frame is stopped. */
+/** Resets of a frame allowed per FRAME_RESET_WINDOW_MS before the frame is stopped. */
 export const MAX_FRAME_RESETS = 5
 export const FRAME_RESET_WINDOW_MS = 10_000
 /** After main ended a panel's port, its frame loads again this much later (a host restart's own reload usually comes first). */
@@ -165,8 +177,13 @@ export const BLANK_URL = 'about:blank'
 
 /** The frame as FrameLoads drives it (PluginFrame passes its iframe). */
 export interface FrameTarget {
-  /** Navigate the frame (set `src`). */
+  /** Navigate the current frame element (set `src`); only to stop it (BLANK_URL). */
   load(url: string): void
+  /**
+   * Replace the frame element with a new one (a new browsing context) at the shell's own `src`; the
+   * new element's loads report `frame` to `loaded`. The old element goes with its page in it.
+   */
+  remount(frame: number): void
   /** Post into the frame's current page; false when it has no window. */
   post(message: unknown, transfer?: MessagePort[]): boolean
 }
@@ -175,13 +192,19 @@ export interface FrameLoadsOptions {
   target: FrameTarget
   /** Web shell: only loads the shell started are served (see the header); desktop: every load. */
   guard: boolean
+  /**
+   * Web shell, a port main hands out (panels, slots, settings pages): ask for it when the shell
+   * starts a load rather than at the load, and post it inside the load event (see the header).
+   * Off for a port made here at load (overlays), whose `connect` also says the page has loaded.
+   */
+  early?: boolean
   /** The message that hands the page its port (`cc-plugin.port`, `cc-overlay.port`). */
   portMessage: object
   /** The theme message for a page now; undefined: none (inline overlays, or no theme yet). */
   theme?(): object | undefined
   /** Posted just before the port on every served load (a slot frame's `cc-plugin.slot`). */
   intro?(): object | undefined
-  /** Ask for this load's port; returns the clean-up for the load (PluginFrame's `connect`). */
+  /** Ask for a port; returns the clean-up for that request (PluginFrame's `connect`). */
   connect(deliver: (port: MessagePort) => void): () => void
   now?(): number
   setTimeout?(fn: () => void, ms: number): unknown
@@ -194,68 +217,80 @@ function isPanelKey(key: string): boolean {
   return !key.startsWith('@')
 }
 
+/** Close a port this will not hand over, and tell main when it is a relayed one. */
+function drop(port: MessagePort): void {
+  port.close()
+  relayHandleOf(port)?.release()
+}
+
 export class FrameLoads {
   private url: string | undefined
-  /** The next load is one the shell started (it set `src`). */
+  /** `started` has run: a later different `src` is a new frame element (guard). */
+  private begun = false
+  /** The generation of the frame element now in the document (FrameTarget.remount). */
+  private frame = 0
+  /** The next load of this element is the one the shell started (its first). */
   private expect = false
   /** Stopped after too many resets; loads are ignored until `started` again. */
   private stopped = false
   private resets: number[] = []
   /** The page in the frame now is one this served (theme and port). */
   private served = false
-  /** Bumped on every load, so a late port or reconnect of an earlier load is dropped. */
-  private load = 0
+  /** Bumped whenever a page (or the request for its port) ends, so a late port or reconnect of it is dropped. */
+  private visit = 0
   private cleanup: (() => void) | undefined
+  /** An early port that arrived before its load (early mode), posted in that load's event. */
+  private held: MessagePort | undefined
   private handle: RelayHandle | undefined
   private reconnect: unknown
 
   constructor(private readonly o: FrameLoadsOptions) {}
 
-  /** The shell set the frame's `src` to `url` (mount, or a new src); undefined: no page to load. */
-  started(url: string | undefined): void {
-    this.url = url
-    this.expect = url !== undefined
-    this.stopped = false
-    this.resets = []
+  private get early(): boolean {
+    return this.o.guard && this.o.early === true
   }
 
-  /** The frame fired `load`. */
-  loaded(): void {
-    this.load++
-    // Whatever page had the port is gone now (a browser port has no close event: say it).
+  /** The shell set the frame's `src` to `url` (mount, or a new src); undefined: no page to load. */
+  started(url: string | undefined): void {
+    const changed = this.begun && url !== this.url
+    this.begun = true
+    this.url = url
+    this.stopped = false
+    this.resets = []
+    if (!this.o.guard) return
+    // A new src on the old element could be cancelled by a page that is not ours (see the header).
+    if (changed) return this.remount()
     this.endPage()
+    this.expect = url !== undefined
+    if (this.expect && this.early) this.ask()
+  }
+
+  /** The frame element of generation `frame` fired `load`. */
+  loaded(frame: number): void {
+    // An element already replaced: whatever loaded in it is nobody's (it is leaving the document).
+    if (frame !== this.frame) return
     if (this.o.guard) {
-      if (this.stopped || this.url === undefined) return
-      if (!this.expect) return this.reset()
+      if (this.stopped || this.url === undefined || !this.expect) {
+        // Whatever page had the port is gone now (a browser port has no close event: say it).
+        this.endPage()
+        if (!this.stopped && this.url !== undefined) this.reset()
+        return
+      }
       this.expect = false
     }
+    // Early: the request was made when the shell started this load, and must outlive it.
+    if (!this.early) this.endPage()
     this.served = true
     const theme = this.o.theme?.()
     if (theme) this.o.target.post(theme)
-    const load = this.load
-    this.cleanup = this.o.connect((port) => {
-      // Only for the load that asked (its clean-up cancels a late port; this is the backstop).
-      const handle = relayHandleOf(port)
-      if (load !== this.load || !this.served) {
-        port.close()
-        handle?.release()
-        return
-      }
-      const intro = this.o.intro?.()
-      if (intro) this.o.target.post(intro)
-      if (!this.o.target.post(this.o.portMessage, [port])) {
-        port.close()
-        handle?.release()
-        return
-      }
-      if (!handle) return
-      this.handle = handle
-      // Main ended a panel's port (its host restarted, or the view fell behind): load the page again
-      // so it connects again, unless another load came first. Not for a slot or a settings page:
-      // main ends those on purpose (the frame left the layout, another view took the page), and a
-      // reload would take them straight back.
-      if (isPanelKey(handle.key)) handle.onClosed(() => this.scheduleReconnect(load))
-    })
+    if (this.early) {
+      // Posted inside the load event the shell expected, so into the page that fired it.
+      const held = this.held
+      this.held = undefined
+      if (held) this.hand(this.visit, held)
+      return
+    }
+    this.ask()
   }
 
   /** The theme changed: the served page gets it (a page the guard did not serve gets nothing). */
@@ -273,18 +308,70 @@ export class FrameLoads {
     this.endPage()
   }
 
+  /** Ask for a port for the current visit (at the load, or early when the shell starts one). */
+  private ask(): void {
+    const visit = this.visit
+    this.cleanup = this.o.connect((port) => this.arrived(visit, port))
+  }
+
+  private arrived(visit: number, port: MessagePort): void {
+    // Only for the visit that asked (its clean-up cancels a late port; this is the backstop).
+    if (visit !== this.visit) return drop(port)
+    if (!this.served) {
+      // Early, before its load: held for the load event.
+      if (!this.early) return drop(port)
+      if (this.held) drop(this.held)
+      this.held = port
+      return
+    }
+    // Served already: the port was slower than the page (early), or asked at the load (overlays,
+    // the desktop). See the header for what an early port arriving late still allows.
+    this.hand(visit, port)
+  }
+
+  private hand(visit: number, port: MessagePort): void {
+    const intro = this.o.intro?.()
+    if (intro) this.o.target.post(intro)
+    if (!this.o.target.post(this.o.portMessage, [port])) return drop(port)
+    const handle = relayHandleOf(port)
+    if (!handle) return
+    this.handle = handle
+    // Main ended a panel's port (its host restarted, or the view fell behind): load the page again
+    // so it connects again, unless another load came first. Not for a slot or a settings page:
+    // main ends those on purpose (the frame left the layout, another view took the page), and a
+    // reload would take them straight back.
+    if (isPanelKey(handle.key)) handle.onClosed(() => this.scheduleReconnect(visit))
+  }
+
   private endPage(): void {
     this.served = false
+    this.visit++
     this.clearReconnect()
     const cleanup = this.cleanup
     const handle = this.handle
+    const held = this.held
     this.cleanup = undefined
     this.handle = undefined
+    this.held = undefined
     cleanup?.()
     handle?.release()
+    if (held) drop(held)
   }
 
-  /** A load the shell did not start: back to the canonical path, or stop when it keeps happening. */
+  /**
+   * A new frame element for the shell's own `src`, its first load served. Not `src` on the old one:
+   * the page in it could start a navigation of its own after ours, which replaces ours, and its
+   * load would then look like the one the shell started. The old element's page dies with it.
+   */
+  private remount(): void {
+    this.endPage()
+    this.frame++
+    this.expect = this.url !== undefined
+    this.o.target.remount(this.frame)
+    if (this.expect && this.early) this.ask()
+  }
+
+  /** A load the shell did not start: a fresh frame on the canonical path, or stop when it keeps happening. */
   private reset(): void {
     const url = this.url
     if (url === undefined) return
@@ -293,22 +380,21 @@ export class FrameLoads {
     if (this.resets.length >= MAX_FRAME_RESETS) {
       this.stopped = true
       this.o.log?.(`plugin frame ${url}: navigated away ${MAX_FRAME_RESETS} times in ${FRAME_RESET_WINDOW_MS / 1000} s, stopped`)
+      // Whatever the page in it does from here, no load of this element is served (`stopped`).
       this.o.target.load(BLANK_URL)
       return
     }
     this.resets.push(now)
-    this.expect = true
-    this.o.target.load(url)
+    this.remount()
   }
 
-  private scheduleReconnect(load: number): void {
+  private scheduleReconnect(visit: number): void {
     const set = this.o.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
     this.clearReconnect()
     this.reconnect = set(() => {
       this.reconnect = undefined
-      if (load !== this.load || this.url === undefined) return
-      this.expect = true
-      this.o.target.load(this.url)
+      if (visit !== this.visit || this.url === undefined) return
+      this.remount()
     }, PANEL_RECONNECT_MS)
   }
 

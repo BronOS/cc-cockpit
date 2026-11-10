@@ -290,8 +290,11 @@ CLI dialogs, panel headers and badges, slot frames.
   size cap.
 - **Navigation.** The desktop blocks a frame navigating elsewhere (`create-window.ts:61`), and the shell cannot read a
   sandboxed cross-origin frame's URL. So in the web build, any load of a plugin frame that the shell did not start
-  resets the frame's `src` to its canonical path before a port is handed over (`PluginFrame.onLoad` today hands a port
-  on every load).
+  replaces the frame element with a new one on the canonical path, whose first load alone is served (`PluginFrame.onLoad`
+  on the desktop hands a port on every load). Not `src` on the old element: its page is still alive and could start a
+  navigation of its own after the shell's, which cancels the shell's, and its load would look like the expected one.
+  A port from main is asked for when the shell starts the load and posted inside that load's event
+  (`renderer/web/port-relay.ts` FrameLoads).
 - **The shell's own plugin images** (`img-src … cc-plugin:` in `renderer/index.html`) map to the same paths.
 - **Inline overlays** (`cc-overlay://`) are served from memory under a path valid while the overlay is open (reloads
   included): `/o/<token>/<overlayId>/`, one overlay token per device, and only for an overlay in a window the device
