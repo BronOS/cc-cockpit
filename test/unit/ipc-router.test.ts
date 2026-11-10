@@ -831,12 +831,12 @@ describe('registerTabHandlers', () => {
 })
 
 describe('registerSessionHandlers', () => {
-  function sessionsSetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
+  function sessionsSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerSessionHandlers(router, {
-      linkAnswer: (windowId, requestId, allow) => {
-        calls.push(['linkAnswer', windowId, requestId, allow])
+      linkAnswer: (windowId, requestId, allow, remote) => {
+        calls.push(['linkAnswer', windowId, requestId, allow, remote])
         return true
       },
       snapshotFor: (projectId) => {
@@ -852,7 +852,7 @@ describe('registerSessionHandlers', () => {
         return true
       }
     })
-    return { ipc, calls }
+    return { ipc, router, calls }
   }
 
   it('sessions.closeAnswer passes the sender’s window and view, never ones from the payload', async () => {
@@ -874,12 +874,23 @@ describe('registerSessionHandlers', () => {
 
   it('links.answer passes the sender’s window, never one from the payload, and checks the shape', async () => {
     const { ipc, calls } = sessionsSetup()
-    await expect(ipc.invoke('links.answer', 12, [{ requestId: 'link-1', allow: true, windowId: 1 }])).resolves.toBe(true)
-    expect(calls).toEqual([['linkAnswer', 2, 'link-1', true]])
+    await expect(ipc.invoke('links.answer', 12, [{ requestId: 'link-1', allow: true, windowId: 1, remote: true }])).resolves.toBe(true)
+    expect(calls).toEqual([['linkAnswer', 2, 'link-1', true, false]])
     await expect(ipc.invoke('links.answer', 12, [{ requestId: 'link-1', allow: 'yes' }])).rejects.toThrow()
     await expect(ipc.invoke('links.answer', 12, [{ requestId: 7, allow: true }])).rejects.toThrow()
     await expect(ipc.invoke('links.answer', 13, [{ requestId: 'link-1', allow: true }])).rejects.toThrow()
     expect(calls).toHaveLength(1)
+  })
+
+  it('links.answer tells main a remote view answered from the view it bound, never from the payload', async () => {
+    const { router, calls } = sessionsSetup()
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'links.answer', { requestId: 'link-1', allow: true, remote: false, viewId: 'desktop:1' })
+    await router.dispatch(web, 'links.answer', { requestId: 'link-1', allow: false })
+    expect(calls).toEqual([
+      ['linkAnswer', 1, 'link-1', true, true],
+      ['linkAnswer', 1, 'link-1', false, true]
+    ])
   })
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {

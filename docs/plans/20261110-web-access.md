@@ -565,6 +565,7 @@ remote client, a phone layout, headless server mode (design §9, §10).
       `ctx.files.reveal` / `openWithSystem` and `ctx.oauth.authorize` refuse a remote origin view; `trash` unchanged.
       The link confirm is `LinkAsks` (`links.ask` / `links.answer` / `links.settled`, `ready.linkAsks`): in-page on every
       view while a browser is attached, the native dialog otherwise. Placeholders are in `WebviewPanel` and the url overlay.
+      ⚠️ Remote views can only deny a plugin link; approving needs the desktop — confirm with Oleg.
 
 ### Task 26: Window lifetime with remote views [model: opus]
 

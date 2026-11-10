@@ -934,7 +934,7 @@ describe('shared asks', () => {
       settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
     }))
     registerSessionHandlers(router, {
-      linkAnswer: (windowId, requestId, allow) => links.answer(windowId, requestId, allow),
+      linkAnswer: (windowId, requestId, allow, remote) => links.answer(windowId, requestId, allow, { remote }),
       snapshotFor: () => ({ own: [] }) as never,
       cancelQueued: () => false,
       closeAnswer: (windowId, viewId, requestId, answer) => asks.answer(windowId, viewId, requestId, answer)
@@ -1014,13 +1014,32 @@ describe('shared asks', () => {
     early.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: 'yes' } })
     await flush()
     expect(links.size).toBe(1)
-    late.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: true } })
+    // A browser's Allow is refused, whatever the payload claims: approving is the desktop's.
+    late.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: true, remote: false, viewId: 'desktop:1' } })
     await flush()
+    expect(answers(late)).toEqual([false])
+    expect(links.size).toBe(1)
+    expect(events(early, 'links.settled')).toEqual([])
+    // The desktop's Allow (main's own desktop view of window 1) settles it for every view.
+    expect(links.answer(1, 'link-1', true, { remote: false })).toBe(true)
     await expect(result).resolves.toBe(true)
     expect(desktop.send).toHaveBeenCalledWith('links.settled', { requestId: 'link-1' })
     expect(events(early, 'links.settled')).toEqual([{ requestId: 'link-1' }])
+    expect(events(late, 'links.settled')).toEqual([{ requestId: 'link-1' }])
     expect(events(foreign, 'links.settled')).toEqual([])
     expect((connect('p1').frames('ready')[0]!.snapshot as { linkAsks: unknown }).linkAsks).toEqual([])
+  })
+
+  it('link confirm: a browser’s Deny settles it for every view, the desktop included', async () => {
+    const { connect, desktop, links } = sharedSetup()
+    const web = connect('p1')
+    const result = links.ask(1, { id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' })
+    web.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: false } })
+    await flush()
+    expect(answers(web)).toEqual([true])
+    await expect(result).resolves.toBe(false)
+    expect(desktop.send).toHaveBeenCalledWith('links.settled', { requestId: 'link-1' })
+    expect(events(web, 'links.settled')).toEqual([{ requestId: 'link-1' }])
   })
 
   it('close ask: a browser that leaves after every other view declined ends the ask', async () => {

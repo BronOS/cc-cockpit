@@ -891,7 +891,8 @@ export interface IpcInvokeMap {
   /**
    * The answer to a `links.ask` (the in-page confirm of `ccc plugin link`): Allow or Deny. Settles
    * only an ask main sent to the sender's own window; the first answer from any view wins (design-web.md
-   * §5.1); false for any other id.
+   * §5.1); false for any other id. A remote view may only Deny: its Allow is refused (false, the ask
+   * keeps waiting for the desktop), since a linked plugin runs with full access to the host (§6.1).
    */
   'links.answer': { req: { requestId: string; allow: boolean }; res: boolean }
 
@@ -1354,7 +1355,8 @@ export interface IpcEventMap {
   'sessions.closeSettled': { requestId: string }
   /**
    * `ccc plugin link` asks to link a plugin folder (design-web.md §6.1, plan Task 25): shown as an in-page
-   * dialog on every view of the window while a browser view is attached, first answer wins. The strings
+   * dialog on every view of the window while a browser view is attached, first answer wins (a browser
+   * may only Deny; Allow is the desktop's). The strings
    * are display-safe (linkDialogInfo). With no browser view attached the native dialog is used and this is not sent.
    */
   'links.ask': { requestId: string; id: string; name: string; path: string; caller: 'tab' | 'project' }
@@ -1676,7 +1678,8 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'sessions.closeSettled': 'yes',
   'sessions.closeAnswer': 'yes',
   // The in-page link confirm is a shared ask like the close ask; the notice goes to the asking view.
-  'links.answer': 'yes',
+  // A remote view's answer may only Deny (its Allow is refused: approving a plugin link is the desktop's).
+  'links.answer': 'adapted',
   'links.ask': 'yes',
   'links.settled': 'yes',
   'app.linkNotice': 'yes',

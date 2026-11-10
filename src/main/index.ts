@@ -591,7 +591,8 @@ function start(): void {
     viewsOf: (windowId) => views.viewsOf(windowId)
   })
   // `ccc plugin link`'s confirm while a browser view is attached (link-asks.ts): an in-page dialog on
-  // every view of the window, first `links.answer` wins. With no browser view the native dialog is used.
+  // every view of the window, first `links.answer` wins, but only the desktop view can Allow (a browser
+  // may Deny). With no browser view the native dialog is used.
   const linkAsks = new LinkAsks({
     send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
@@ -2220,7 +2221,7 @@ function start(): void {
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
     closeAnswer: (windowId, viewId, requestId, answer) => closeAsks.answer(windowId, viewId, requestId, answer),
-    linkAnswer: (windowId, requestId, allow) => linkAsks.answer(windowId, requestId, allow)
+    linkAnswer: (windowId, requestId, allow, remote) => linkAsks.answer(windowId, requestId, allow, { remote })
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

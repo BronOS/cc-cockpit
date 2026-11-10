@@ -1166,6 +1166,12 @@ iframe:focus-visible {
 .confirm-buttons .confirm-danger {
   color: var(--cc-status-ended, #cd3131);
 }
+/* In place of a button only the desktop may press (the plugin link confirm in a browser). */
+.confirm-buttons .confirm-note {
+  margin-right: auto;
+  align-self: center;
+  color: var(--cc-fg-muted);
+}
 
 /* Claude status. The dot colours are theme variables; the fallbacks are for a theme (a plugin's)
    that does not define them. Spacing comes from the row it sits in (gap), not the dot. */

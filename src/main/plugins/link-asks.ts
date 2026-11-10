@@ -6,6 +6,12 @@
 // view joining mid-ask finds it in its `ready` snapshot. With no remote view attached the native
 // dialog (link-dialog.ts) is used as before, so a desktop-only person sees no change.
 //
+// Only the desktop can Allow (plan Task 25, review): a linked plugin runs with full access to the
+// host, and design-web.md §6.1 keeps plugin linking off remote views ("do it on the desktop"). A
+// browser view sees the ask and may Deny it, but its Allow is refused and the ask keeps waiting for
+// the desktop (or runs out). Whether the answer is remote is the router's (the view main bound to
+// the call), never anything the page sent.
+//
 // Never allows by itself: no view to show it, a closed window, a vanished `ccc` caller (`signal`) or
 // the wait running out all settle Deny. The CLI waits for the person with no timeout, but this ask
 // must end (a window can sit unattended), so it carries LINK_ASK_MS like the close ask.
@@ -71,13 +77,16 @@ export class LinkAsks {
   }
 
   /**
-   * A view's answer. The router took the window from the sender, never from the payload: another
-   * window naming the id is ignored. First answer wins; false for an unknown or settled id.
+   * A view's answer. The router took the window and `remote` from the sender, never from the
+   * payload: another window naming the id is ignored. First answer wins; false for an unknown or
+   * settled id, and for a remote view's Allow, which leaves the ask waiting for the desktop.
    */
-  answer(windowId: number, requestId: string, allow: boolean): boolean {
+  answer(windowId: number, requestId: string, allow: boolean, from: { remote: boolean }): boolean {
     const entry = this.pending.get(requestId)
     if (!entry || entry.windowId !== windowId) return false
-    this.settle(requestId, allow === true)
+    const allowed = allow === true
+    if (allowed && from.remote !== false) return false
+    this.settle(requestId, allowed)
     return true
   }
 

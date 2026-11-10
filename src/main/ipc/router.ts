@@ -1089,8 +1089,11 @@ export interface SessionHandlerDeps {
    * window wins, a decline waits for the others; false for an ask its window was not sent.
    */
   closeAnswer(windowId: number, viewId: ViewId, requestId: string, answer: { closed: boolean; declined: boolean }): boolean
-  /** A view's Allow or Deny of a `ccc plugin link` confirm (LinkAsks.answer): the first from any view of the window wins. */
-  linkAnswer(windowId: number, requestId: string, allow: boolean): boolean
+  /**
+   * A view's Allow or Deny of a `ccc plugin link` confirm (LinkAsks.answer): the first from any view of
+   * the window wins, but a remote view's Allow is refused (only the desktop approves a plugin link).
+   */
+  linkAnswer(windowId: number, requestId: string, allow: boolean, remote: boolean): boolean
 }
 
 /**
@@ -1107,15 +1110,18 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     return deps.cancelQueued(ctx.projectId, tabIdOf('sessions.cancelQueued', payload), itemId)
   })
 
-  // The window and the view are the sender's (ctx, view), never values in the payload: only a view
-  // of the window an ask went to can settle it (shared ask: any of its views, first answer wins).
-  // Window from the sender, never the payload (LinkAsks.answer ignores another window's id).
-  router.handleProject('links.answer', (ctx, payload) => {
+  // `adapted`: the window and whether the caller is a remote view are the sender's (ctx, view.remote),
+  // never values in the payload. LinkAsks.answer ignores another window's id and refuses a remote
+  // Allow: a browser may Deny a plugin link, only the desktop may approve one (design-web.md §6.1).
+  router.handleProject('links.answer', (ctx, payload, view) => {
     const { requestId, allow } = fields('links.answer', payload)
     if (typeof requestId !== 'string') throw new Error('links.answer: requestId must be a string')
     if (typeof allow !== 'boolean') throw new Error('links.answer: allow must be a boolean')
-    return deps.linkAnswer(ctx.windowId, requestId, allow)
+    return deps.linkAnswer(ctx.windowId, requestId, allow, view.remote)
   })
+
+  // The window and the view are the sender's (ctx, view), never values in the payload: only a view
+  // of the window an ask went to can settle it (shared ask: any of its views, first answer wins).
   router.handleProject('sessions.closeAnswer', (ctx, payload, view) => {
     const { requestId, closed, declined } = fields('sessions.closeAnswer', payload)
     if (typeof requestId !== 'string') throw new Error('sessions.closeAnswer: requestId must be a string')

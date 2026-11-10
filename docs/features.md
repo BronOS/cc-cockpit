@@ -461,8 +461,8 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   manager or opening it with its default app is refused with a message, and a plugin's OAuth sign-in says to sign in
   on the desktop. Moving a file to the Trash (confirmed in the window), notifications (they stay on the host) are the
   same as on the desktop. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,
-  the confirm of `ccc plugin link` is an in-page dialog on every place (first answer wins); with none attached it is the
-  native dialog.
+  the confirm of `ccc plugin link` is an in-page dialog on every place (first answer wins); a browser can only Deny it
+  (it says "Approve on the desktop"), Allow is the desktop's; with none attached it is the native dialog.
 - A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),
   with or without Shift, and Ctrl+Tab / Ctrl+Shift+Tab. In a browser the cockpit's commands bound to one of them use
   the same chord with Alt (Option) added: New Claude Tab Ctrl+Alt+T (⌥⌘T on a Mac), New Shell Tab Ctrl+Alt+Shift+T,

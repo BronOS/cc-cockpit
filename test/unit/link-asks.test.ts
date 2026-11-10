@@ -3,6 +3,8 @@ import { chooseLinkConfirm, LINK_ASK_MS, LinkAsks, type LinkAskInfo } from '../.
 import type { LinkDialogInfo } from '../../src/main/plugins/link-request'
 
 const INFO: LinkDialogInfo = { id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' }
+const DESKTOP = { remote: false }
+const REMOTE = { remote: true }
 
 function setup(send = true): { asks: LinkAsks; sent: Array<[number, LinkAskInfo]>; settled: Array<[number, string]> } {
   const sent: Array<[number, LinkAskInfo]> = []
@@ -23,18 +25,18 @@ describe('LinkAsks (the shared in-page link confirm)', () => {
     const id = sent[0]![1].requestId
     expect(sent[0]![1]).toMatchObject(INFO)
     expect(asks.pendingFor(1)).toEqual([{ requestId: id, ...INFO }])
-    expect(asks.answer(1, id, true)).toBe(true)
+    expect(asks.answer(1, id, true, DESKTOP)).toBe(true)
     await expect(p).resolves.toBe(true)
     expect(settled).toEqual([[1, id]])
     // The second view's answer finds nothing, whatever it says.
-    expect(asks.answer(1, id, false)).toBe(false)
+    expect(asks.answer(1, id, false, DESKTOP)).toBe(false)
     expect(asks.pendingFor(1)).toEqual([])
   })
 
   it('Deny settles false', async () => {
     const { asks, sent } = setup()
     const p = asks.ask(1, INFO)
-    asks.answer(1, sent[0]![1].requestId, false)
+    asks.answer(1, sent[0]![1].requestId, false, DESKTOP)
     await expect(p).resolves.toBe(false)
   })
 
@@ -42,10 +44,34 @@ describe('LinkAsks (the shared in-page link confirm)', () => {
     const { asks, sent } = setup()
     const p = asks.ask(1, INFO)
     const id = sent[0]![1].requestId
-    expect(asks.answer(2, id, true)).toBe(false)
+    expect(asks.answer(2, id, true, DESKTOP)).toBe(false)
     expect(asks.pendingFor(1)).toHaveLength(1)
-    asks.answer(1, id, 'yes' as unknown as boolean)
+    asks.answer(1, id, 'yes' as unknown as boolean, DESKTOP)
     await expect(p).resolves.toBe(false)
+  })
+
+  it('a remote view’s Allow is refused and the ask keeps waiting for the desktop', async () => {
+    const { asks, sent, settled } = setup()
+    const p = asks.ask(1, INFO)
+    const id = sent[0]![1].requestId
+    expect(asks.answer(1, id, true, REMOTE)).toBe(false)
+    // A `remote` that is not exactly false is never the desktop.
+    expect(asks.answer(1, id, true, {} as { remote: boolean })).toBe(false)
+    expect(asks.pendingFor(1)).toHaveLength(1)
+    expect(settled).toEqual([])
+    expect(asks.answer(1, id, true, DESKTOP)).toBe(true)
+    await expect(p).resolves.toBe(true)
+  })
+
+  it('a remote view’s Deny settles false for every view', async () => {
+    const { asks, sent, settled } = setup()
+    const p = asks.ask(1, INFO)
+    const id = sent[0]![1].requestId
+    expect(asks.answer(1, id, false, REMOTE)).toBe(true)
+    await expect(p).resolves.toBe(false)
+    expect(settled).toEqual([[1, id]])
+    // The desktop's late Allow finds nothing.
+    expect(asks.answer(1, id, true, DESKTOP)).toBe(false)
   })
 
   it('no view took the ask: Deny at once', async () => {
