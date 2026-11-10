@@ -15,6 +15,7 @@ import {
   type WindowHandle
 } from '../../src/main/windows/window-manager'
 import type { ProjectWindowLook } from '../../src/main/windows/window-chrome'
+import type { CloseChoice } from '../../src/main/windows/close-dialog'
 import { ViewRegistry } from '../../src/main/views/view-registry'
 import type { ProjectView, WindowBounds } from '../../src/shared/types'
 
@@ -27,6 +28,8 @@ interface FakeWindow extends WindowHandle {
   closed: boolean
   minimized: boolean
   fullScreen: boolean
+  /** Off screen (kept running for a browser); `focus` shows it again, as BrowserWindow.show. */
+  hidden: boolean
   /** The project window id this picker was created as a modal child of. */
   parentId?: number
   bounds: WindowBounds
@@ -88,6 +91,7 @@ class FakeFactory implements WindowFactory {
       closed: false,
       minimized: false,
       fullScreen: false,
+      hidden: false,
       bounds: createdWith ?? { x: 10, y: 10, width: 800, height: 600 },
       callbacks,
       blurCalls: [],
@@ -101,8 +105,13 @@ class FakeFactory implements WindowFactory {
       },
       focus() {
         win.focused++
+        win.hidden = false
       },
-      // Programmatic close and a user close look the same to the manager: `closed` fires.
+      hide() {
+        win.hidden = true
+      },
+      // Programmatic close and a user close look the same to the manager: `close` is asked
+      // (onCloseRequested, which may keep the window open, as preventDefault does), then `closed`.
       close() {
         win.userClose()
       },
@@ -117,6 +126,7 @@ class FakeFactory implements WindowFactory {
       },
       userClose() {
         if (win.closed) return
+        if (callbacks.onCloseRequested?.()) return
         win.closed = true
         callbacks.onClosed?.()
       }
@@ -812,6 +822,255 @@ describe('views', () => {
     win.userClose()
     expect(views.viewsOf(win.id)).toEqual([])
     expect(views.toWindow(win.id, 'tabs.select', { tabId: 't1' })).toBe(false)
+  })
+})
+
+describe('window lifetime with remote views (design-web.md §5.6)', () => {
+  interface Lifetime {
+    wm: WindowManager
+    /** Device names per window id, as index.ts reads them from the view registry. */
+    devices: Map<number, string[]>
+    asks: Array<{ windowId: number; devices: readonly string[]; answer(choice: CloseChoice): void; fail(err: Error): void }>
+    closed: string[]
+    visibility: Array<[number, boolean]>
+    logs: string[]
+  }
+
+  function lifetime(platform: NodeJS.Platform = 'linux', withAsk = true): Lifetime {
+    const l: Lifetime = { devices: new Map(), asks: [], closed: [], visibility: [], logs: [] } as unknown as Lifetime
+    l.wm = new WindowManager({
+      factory,
+      registry,
+      platform,
+      quit: () => quits++,
+      onProjectClosed: (projectId) => l.closed.push(projectId),
+      remoteDevices: (windowId) => l.devices.get(windowId) ?? [],
+      ...(withAsk
+        ? {
+            askClose: (windowId: number, devices: readonly string[]) =>
+              new Promise<CloseChoice>((resolve, reject) => {
+                l.asks.push({ windowId, devices, answer: resolve, fail: reject })
+              })
+          }
+        : {}),
+      onWindowVisibility: (windowId, visible) => l.visibility.push([windowId, visible]),
+      log: (m) => l.logs.push(m)
+    })
+    return l
+  }
+
+  /** Lets the ask's promise settle (the manager acts on the answer a microtask later). */
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('with no remote view a close closes at once, as before: no ask', () => {
+    const l = lifetime()
+    const a = l.wm.openPath(folder('a'))
+    factory.open('project')[0]!.userClose()
+    expect(l.asks).toHaveLength(0)
+    expect(l.closed).toEqual([a.id])
+  })
+
+  it('with no askClose wired (web access never set up) every close goes ahead', () => {
+    const l = lifetime('linux', false)
+    const a = l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    expect(l.closed).toEqual([a.id])
+  })
+
+  it('with a browser attached it asks, naming the devices, and keeps the window open meanwhile', async () => {
+    const l = lifetime()
+    l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel', 'iPad'])
+    win.userClose()
+    expect(l.asks.map((a) => [a.windowId, a.devices])).toEqual([[win.id, ['Pixel', 'iPad']]])
+    expect(win.closed).toBe(false)
+    // A second click on the close button while the dialog is up: the same ask, not a second one.
+    win.userClose()
+    expect(l.asks).toHaveLength(1)
+    await settle()
+    expect(win.closed).toBe(false)
+  })
+
+  it('"Close for everyone" closes the window as before: the project and its tabs end', async () => {
+    const l = lifetime()
+    const a = l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    l.asks[0]!.answer('everyone')
+    await settle()
+    expect(win.closed).toBe(true)
+    expect(l.closed).toEqual([a.id])
+    expect(l.wm.windowIdOf(a.id)).toBeUndefined()
+    expect(registry.openIds()).toEqual([])
+    // Asked once: the close the answer starts is not asked again.
+    expect(l.asks).toHaveLength(1)
+    // The last window went: the picker, as for any close.
+    expect(factory.open('picker')).toHaveLength(1)
+  })
+
+  it('"Keep running" hides the window: the project stays open, its view is marked hidden, no picker', async () => {
+    const l = lifetime()
+    const a = l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    l.asks[0]!.answer('keep')
+    await settle()
+    expect(win.closed).toBe(false)
+    expect(win.hidden).toBe(true)
+    expect(l.wm.isHidden(win.id)).toBe(true)
+    expect(l.closed).toEqual([])
+    expect(l.wm.windowIdOf(a.id)).toBe(win.id)
+    expect(registry.openIds()).toEqual([a.id])
+    expect(l.visibility).toEqual([[win.id, false]])
+    expect(factory.open('picker')).toHaveLength(0)
+    expect(quits).toBe(0)
+  })
+
+  it('Cancel leaves the window as it was', async () => {
+    const l = lifetime()
+    l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    l.asks[0]!.answer('cancel')
+    await settle()
+    expect(win.closed).toBe(false)
+    expect(win.hidden).toBe(false)
+    expect(l.visibility).toEqual([])
+    // Asked again on the next close.
+    win.userClose()
+    expect(l.asks).toHaveLength(2)
+  })
+
+  it('a dialog that fails closes for everyone: a window must never be impossible to close', async () => {
+    const l = lifetime()
+    const a = l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    l.asks[0]!.fail(new Error('no dialog'))
+    await settle()
+    expect(win.closed).toBe(true)
+    expect(l.closed).toEqual([a.id])
+    expect(l.logs.join('\n')).toMatch(/no dialog/)
+  })
+
+  async function keptRunning(l: Lifetime, name = 'a'): Promise<{ id: string; win: FakeWindow }> {
+    const view = l.wm.openPath(folder(name))
+    const win = factory.open('project').find((w) => w.projectId === view.id)!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    l.asks.at(-1)!.answer('keep')
+    await settle()
+    expect(win.hidden).toBe(true)
+    return { id: view.id, win }
+  }
+
+  it('opening the project again (the picker, ccc open) shows the hidden window, no second window', async () => {
+    const l = lifetime()
+    const { id, win } = await keptRunning(l)
+    const focused = win.focused
+    l.wm.openPath(registry.get(id)!.path)
+    expect(win.hidden).toBe(false)
+    expect(win.focused).toBe(focused + 1)
+    expect(l.wm.isHidden(win.id)).toBe(false)
+    expect(l.visibility).toEqual([
+      [win.id, false],
+      [win.id, true]
+    ])
+    expect(factory.open('project')).toHaveLength(1)
+    // From the picker's recent list too (a hidden window again first).
+    win.userClose()
+    l.asks.at(-1)!.answer('keep')
+    await settle()
+    expect(win.hidden).toBe(true)
+    l.wm.showPicker()
+    l.wm.openRecent(id)
+    expect(win.hidden).toBe(false)
+    expect(factory.open('picker')).toHaveLength(0)
+  })
+
+  it('the dock (activate) shows the hidden window; a bare relaunch (focusAny) does too', async () => {
+    const l = lifetime('darwin')
+    const { win } = await keptRunning(l)
+    l.wm.activate()
+    expect(win.hidden).toBe(false)
+    expect(factory.open('picker')).toHaveLength(0)
+    win.userClose()
+    l.asks.at(-1)!.answer('keep')
+    await settle()
+    l.wm.focusAny()
+    expect(win.hidden).toBe(false)
+  })
+
+  it('focusAny prefers a window on screen over a hidden one; activate leaves a visible one alone', async () => {
+    const l = lifetime('darwin')
+    const { win: hidden } = await keptRunning(l, 'a')
+    l.wm.openPath(folder('b'))
+    const shown = factory.open('project').find((w) => w !== hidden)!
+    l.wm.focusAny()
+    expect(hidden.hidden).toBe(true)
+    expect(shown.focused).toBeGreaterThan(0)
+    l.wm.activate()
+    expect(hidden.hidden).toBe(true)
+  })
+
+  it('a plugin or another view raising the project (focusProject) never shows a hidden window', async () => {
+    const l = lifetime()
+    const { id, win } = await keptRunning(l)
+    expect(l.wm.focusProject(id)).toBe(true)
+    expect(win.hidden).toBe(true)
+  })
+
+  it('hiding closes a modal picker over the window; a picker asked for from a hidden window is standalone', async () => {
+    const l = lifetime()
+    l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.wm.showPicker(win.id)
+    const sheet = factory.open('picker')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    l.asks[0]!.answer('keep')
+    await settle()
+    expect(sheet.closed).toBe(true)
+    expect(win.hidden).toBe(true)
+    l.wm.showPicker(win.id)
+    expect(factory.open('picker')[0]!.parentId).toBeUndefined()
+  })
+
+  it('never asks while quitting or for a reopen; an answer arriving after the quit is ignored', async () => {
+    const l = lifetime()
+    const a = l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    // Reopen: the window comes straight back, nothing to ask.
+    l.wm.reopen(a.id)
+    expect(l.asks).toHaveLength(0)
+    const next = factory.open('project')[0]!
+    l.devices.set(next.id, ['Pixel'])
+    next.userClose()
+    expect(l.asks).toHaveLength(1)
+    l.wm.beginQuit()
+    next.userClose()
+    expect(next.closed).toBe(true)
+    l.asks[0]!.answer('keep')
+    await settle()
+    expect(next.hidden).toBe(false)
+  })
+
+  it('a hidden window closes with the rest on quit, and its hidden mark goes with it', async () => {
+    const l = lifetime()
+    const { id, win } = await keptRunning(l)
+    l.wm.beginQuit()
+    win.userClose()
+    expect(win.closed).toBe(true)
+    expect(l.closed).toEqual([id])
+    expect(l.wm.isHidden(win.id)).toBe(false)
   })
 })
 

@@ -59,7 +59,12 @@ export class ElectronWindowFactory implements WindowFactory {
       callbacks.onBoundsChanged()
       callbacks.onFullScreenChanged(false)
     })
-    win.on('close', callbacks.onBoundsChanged)
+    // The manager may keep the window open: browsers have it open, and it asks the person first
+    // (window-manager.ts closeRequested, design-web.md §5.6); it closes or hides it once answered.
+    win.on('close', (event) => {
+      callbacks.onBoundsChanged()
+      if (callbacks.onCloseRequested?.()) event.preventDefault()
+    })
     return this.finish(win, callbacks.onClosed)
   }
 
@@ -115,6 +120,9 @@ export class ElectronWindowFactory implements WindowFactory {
         if (win.isMinimized()) win.restore()
         win.show()
         win.focus()
+      },
+      hide: () => {
+        if (!win.isDestroyed()) win.hide()
       },
       close: () => {
         if (!win.isDestroyed()) win.close()

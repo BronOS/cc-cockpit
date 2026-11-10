@@ -422,7 +422,12 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   (plugins and `ccc sessions` see status `needs-permission` with that tool). It ends when Claude
   reports the tool done, not on a key; a cancelled question (Esc) keeps showing until Claude's
   next turn, and a background subagent's tool call while the dialog is up shows "working".
-- Closing a whole project window, or quitting, does not ask, even with running tabs.
+- Closing a whole project window, or quitting, does not ask, even with running tabs. With a browser attached to the
+  window, closing it asks "Close for everyone" (the browser is told the window closed) or "Keep running for <device>":
+  the window is hidden and its tabs keep running for the browser. Opening the project again (the project picker,
+  `ccc open`, the dock, or starting the app again) shows it; a plugin or a click in a browser never does. On Linux there
+  is no dock: a window kept running there comes back through the picker of another window, `ccc open` or starting the
+  app again. Quitting closes the browsers with a notice ("quit on the host"); they do not reconnect on their own.
 - Web access keeps a headless copy of each terminal in a worker. If that worker crashes or hangs, it is restarted with
   blank copies: a terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind)
   shows a blank screen until Claude redraws, and a shell tab until it prints again. After three restarts within a

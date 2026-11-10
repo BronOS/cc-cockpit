@@ -146,6 +146,8 @@ import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-s
 import { revocationNotice } from './marketplace/marketplace-view'
 import { rendererLocation } from './windows/create-window'
 import { ElectronWindowFactory } from './windows/electron-window-factory'
+import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
+import { CLOSE } from '../shared/web-protocol'
 import { blurSupport } from './windows/window-chrome'
 import { ViewRegistry } from './views/view-registry'
 import { AccessLog } from './web/access-log'
@@ -455,12 +457,41 @@ function start(): void {
         showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
       })
   })
+  // Closing a window that browsers have open asks first (design-web.md §5.6, windows/close-dialog.ts):
+  // close for everyone, or keep it running hidden for them. In a test run the dialog is
+  // QueuedCloseAsk, driven by the `answerWindowClose` and `windowCloseAsks` hooks.
+  const testCloseAsk = testRun ? new QueuedCloseAsk() : undefined
+  // Desktop views of windows kept running hidden: their own `tabs.visibility` cannot mark them
+  // visible again (a hidden renderer is throttled and must never size a tab, terminal-sizes.ts);
+  // only the window being shown again does.
+  const hiddenDesktopViews = new Set<ViewId>()
   const windows = new WindowManager({
     factory: new ElectronWindowFactory(),
     registry,
     platform: process.platform,
     quit: () => app.quit(),
     views,
+    // One name per device with a live browser view of the window. `webConnections` is defined
+    // further down; this runs on a window's close, long after startup.
+    remoteDevices: (windowId) => {
+      const names = new Set<string>()
+      for (const viewId of views.viewsOf(windowId)) {
+        if (isRemoteViewId(viewId)) names.add(webConnections.deviceName(viewId) ?? 'a browser')
+      }
+      return [...names]
+    },
+    askClose:
+      testCloseAsk?.ask ??
+      electronAskClose({
+        windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
+        showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
+      }),
+    onWindowVisibility: (windowId, visible) => {
+      const viewId = desktopViewId(windowId)
+      if (visible) hiddenDesktopViews.delete(viewId)
+      else hiddenDesktopViews.add(viewId)
+      tabs.viewVisible(viewId, visible)
+    },
     // The window's plugin host (host-manager.ts); `hosts` is defined below, windows open after ready.
     // Runs after startup only (a window event), by which time sendToWindow below exists.
     onFullScreenChanged: (windowId, fullScreen) => sendToWindow(windowId, 'window.state', { fullScreen }),
@@ -505,6 +536,7 @@ function start(): void {
       // So do the desktop page's slot instances and the settings page it held (panel-ports.ts).
       tabs.viewGone(desktopViewId(windowId))
       panelPorts.viewGone(desktopViewId(windowId))
+      hiddenDesktopViews.delete(desktopViewId(windowId))
       // No window, no selection: a reopened window reports its own once its page loads. Every
       // view's selection of it goes first, so a remote view closing after this hands nothing back.
       selections.closeProject(projectId)
@@ -2074,7 +2106,8 @@ function start(): void {
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
     fit: (projectId, tabId, viewId) => tabs.fit(projectId, tabId, viewId),
-    visible: (viewId, visible) => tabs.viewVisible(viewId, visible),
+    // A window kept running hidden stays hidden for the sizes whatever its page reports.
+    visible: (viewId, visible) => tabs.viewVisible(viewId, visible && !hiddenDesktopViews.has(viewId)),
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),
     // A remote view: the plain list (never the desktop's re-attach), and its own terminal flow and
     // joins (web/connection.ts). Only reached by a web caller, which exists once webConnections does.
@@ -2352,6 +2385,12 @@ function start(): void {
             testLinkConfirm?.answer(...answers)
           },
           linkDialogs: () => testLinkConfirm?.dialogs() ?? [],
+          // Closing a window browsers have open asks; a test queues the answers ('everyone', 'keep',
+          // 'cancel'; none is cancel) and reads which windows asked, for which devices.
+          answerWindowClose: (...answers: Array<'everyone' | 'keep' | 'cancel'>) => {
+            testCloseAsk?.answer(...answers)
+          },
+          windowCloseAsks: () => testCloseAsk?.asks() ?? [],
           // ctx.files.trash's confirm, the same way: queued answers (none denies) and what it said.
           answerTrash: (...answers: boolean[]) => {
             testTrashConfirm?.answer(...answers)
@@ -2418,6 +2457,9 @@ function start(): void {
     // Before the windows close and kill the tabs: nothing from here on may overwrite the saved tabs.
     restorer.freeze()
     windows.beginQuit()
+    // Every browser view is told the app quit (bridge.ts shows it and stops retrying), before the
+    // windows close: each would otherwise close its views as "the window was closed".
+    webConnections.endAll(CLOSE.appQuit, 'app quit')
   })
   app.on('will-quit', () => {
     updateChecker.stop()

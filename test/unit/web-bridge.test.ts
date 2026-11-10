@@ -642,7 +642,9 @@ describe('drops and reconnect', () => {
     [CLOSE.noProject, 'not open'],
     [CLOSE.windowClosed, 'closed'],
     [CLOSE.version, 'Reload'],
-    [CLOSE.turnedOff, 'turned off']
+    [CLOSE.turnedOff, 'turned off'],
+    // The app quit on the host (design-web.md §5.6): said so, not retried as "host unreachable".
+    [CLOSE.appQuit, 'quit on the host']
   ])('close %i is final: gone, no retry', (code, text) => {
     const r = rig()
     connect(r)

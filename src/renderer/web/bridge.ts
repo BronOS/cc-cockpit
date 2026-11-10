@@ -207,6 +207,7 @@ const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
   [CLOSE.windowClosed, 'The project window was closed on the host.'],
   [CLOSE.version, 'The cockpit on the host was updated. Reload the page.'],
   [CLOSE.turnedOff, 'Web access was turned off on the host.'],
+  [CLOSE.appQuit, 'cc-cockpit was quit on the host. Reload this page once it runs again.'],
   [CLOSE.tooManyViews, 'This browser has too many views of this project open. Close one, then reload this page.']
 ])
 

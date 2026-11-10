@@ -666,6 +666,25 @@ describe('events and window lifetime', () => {
     views.toProject('p1', 'layout.updated', {})
     expect(ws.frames('event')).toEqual([])
   })
+
+  it('quitting closes every view with the quit notice, before the windows close (design-web.md §5.6)', () => {
+    const { connect, conns, views } = setup()
+    const a = connect('p1')
+    const b = connect('p2')
+    // Still waiting for hello: told too.
+    const early = connect()
+    conns.endAll(CLOSE.appQuit, 'app quit')
+    for (const ws of [a, b, early]) expect(ws.closedWith).toEqual({ code: CLOSE.appQuit, reason: 'app quit' })
+    expect(conns.size()).toBe(0)
+    expect(views.viewsOf(1)).toEqual(['desktop:1'])
+    // The windows closing afterwards change nothing: the views already went with the quit notice.
+    views.removeWindow(1)
+    expect(a.closedWith?.code).toBe(CLOSE.appQuit)
+    // A socket accepted during the quit gets the same notice at once and never binds.
+    const late = connect('p1')
+    expect(late.closedWith?.code).toBe(CLOSE.appQuit)
+    expect(late.sent).toEqual([])
+  })
 })
 
 describe('through the gateway', () => {

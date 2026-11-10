@@ -15,6 +15,7 @@ import type { ProjectView, WindowBounds } from '../../shared/types'
 import { fitBounds, sanitizeBounds, type Rect } from './window-bounds'
 import { OPAQUE_LOOK, type ProjectWindowLook } from './window-chrome'
 import type { ViewRegistry, ViewSink } from '../views/view-registry'
+import type { AskClose, CloseChoice } from './close-dialog'
 
 export type { Rect } from './window-bounds'
 
@@ -29,8 +30,14 @@ export interface WindowHandle {
    * ViewRegistry, which the manager registers it with on creation and drops it from on close.
    */
   readonly sink: ViewSink
-  /** Bring to front, restoring it first when minimised. */
+  /** Bring to front, restoring it first when minimised and showing it when hidden. */
   focus(): void
+  /**
+   * Take it off screen without closing it (kept running for a browser, design-web.md §5.6). Its
+   * page lives on, throttled; `focus` shows it again.
+   */
+  hide(): void
+  /** Ask it to close: the factory's `onCloseRequested` is asked first, as for the person's own close. */
   close(): void
   /**
    * The normal (not maximised / fullscreen) bounds, which is what is worth persisting, plus the
@@ -62,6 +69,12 @@ export interface WindowCallbacks {
   onFullScreenChanged(fullScreen: boolean): void
   /** The window is gone (user close, programmatic close, or quit). */
   onClosed(): void
+  /**
+   * The window is about to close (Electron's `close`, for the person's close button and for
+   * `close()` alike). True keeps it open: the manager asks what the close means first and closes it
+   * itself once answered. Absent (the picker): every close goes ahead.
+   */
+  onCloseRequested?(): boolean
 }
 
 /** The Electron side, behind an interface so the logic here runs under vitest with a fake. */
@@ -135,6 +148,22 @@ export interface WindowManagerOptions {
    * app-wide events reach both). Absent: nothing is registered (tests that do not look at events).
    */
   views?: Pick<ViewRegistry, 'addDesktop' | 'removeWindow'>
+  /**
+   * The names of the devices with a live remote view of this window, one per device (design-web.md
+   * §5.6). Absent or empty: closing the window closes it, as without web access.
+   */
+  remoteDevices?: (windowId: number) => readonly string[]
+  /**
+   * Asks the person what closing a window with remote views means (close-dialog.ts). Absent: every
+   * close goes ahead, as before web access.
+   */
+  askClose?: AskClose
+  /**
+   * A project window was hidden (kept running for a browser) or shown again. index.ts marks its
+   * desktop view hidden for the terminal sizes: a hidden renderer is throttled, and a size nobody
+   * looks at must never shrink Claude for the browser that does (terminal-sizes.ts).
+   */
+  onWindowVisibility?: (windowId: number, visible: boolean) => void
   log?: (message: string) => void
 }
 
@@ -158,6 +187,16 @@ export class WindowManager {
   private readonly paths = new Map<WindowHandle, string>()
   /** The project window the open picker is a modal child of (none: a standalone picker). */
   private pickerParent: WindowHandle | undefined
+  /**
+   * Project windows kept running for a browser (design-web.md §5.6): off screen, project open,
+   * tabs alive. Opening the project again (`openView`: the picker, `ccc open`) or the dock
+   * (`activate`) shows the window; nothing a plugin or a remote view does shows it.
+   */
+  private readonly hidden = new Set<WindowHandle>()
+  /** Windows whose close dialog is up: a second close while it is up waits for the same answer. */
+  private readonly asking = new Set<WindowHandle>()
+  /** Windows this manager is closing after "Close for everyone": their `close` is not asked again. */
+  private readonly closing = new Set<WindowHandle>()
   /**
    * Set on `before-quit`. Quitting closes every window one by one, and each `closed` must not be
    * read as "the user closed it": that would open a picker mid-quit (which can cancel the quit)
@@ -208,7 +247,8 @@ export class WindowManager {
     }
     let parent: WindowHandle | undefined
     if (callerWindowId !== undefined) {
-      for (const h of this.projects.values()) if (h.id === callerWindowId) parent = h
+      // Never a hidden window: a sheet on a window that is off screen would be off screen too.
+      for (const h of this.projects.values()) if (h.id === callerWindowId && !this.hidden.has(h)) parent = h
     }
     let handle: WindowHandle | undefined = undefined
     handle = this.options.factory.createPickerWindow(
@@ -228,25 +268,28 @@ export class WindowManager {
   /**
    * Surface the app (a bare relaunch through `second-instance`): focus a project window through
    * its handle, which un-minimises it first (BrowserWindow.focus alone does not), else show the
-   * picker. The most recently opened project window is chosen; closed ones have already left
-   * `projects`.
+   * picker. The most recently opened visible project window is chosen, else the most recently
+   * opened hidden one, which is shown (relaunching the app is the person asking for it on this
+   * screen); closed ones have already left `projects`.
    */
   focusAny(): void {
-    let last: WindowHandle | undefined
-    for (const handle of this.projects.values()) last = handle
-    if (last) last.focus()
+    const last = this.lastWindow()
+    if (last) this.show(last)
     else this.showPicker()
   }
 
   /**
    * Bring a project's window to front (un-minimising it, via its handle). False when that project
    * has no open window. The caller names the project from main's own tables (a session entry),
-   * never from a renderer payload.
+   * never from a renderer payload. A window kept running for a browser stays hidden (true: the
+   * project is open): what raises a window here is a plugin or a click in another view (a session
+   * chip, ctx.sessions.focus, a plugin's tab close), and only the person opening the project again
+   * on this machine brings it back (design-web.md §5.6).
    */
   focusProject(projectId: string): boolean {
     const handle = this.projects.get(projectId)
     if (!handle) return false
-    handle.focus()
+    if (!this.hidden.has(handle)) handle.focus()
     return true
   }
 
@@ -255,9 +298,22 @@ export class WindowManager {
     return [...this.projects].map(([projectId, handle]) => ({ projectId, windowId: handle.id }))
   }
 
-  /** macOS dock click: an app with no window shows the picker. */
+  /**
+   * macOS dock click: an app with no window on screen shows the most recent window kept running
+   * for a browser (the dock is one of the ways back, design-web.md §5.6), else the picker.
+   */
   activate(): void {
-    if (this.projects.size === 0 && !this.picker) this.showPicker()
+    if (this.picker) return
+    if ([...this.projects.values()].some((h) => !this.hidden.has(h))) return
+    const last = this.lastWindow()
+    if (last) this.show(last)
+    else this.showPicker()
+  }
+
+  /** Whether this project window is kept running hidden for a browser (false for an unknown window). */
+  isHidden(windowId: number): boolean {
+    for (const h of this.hidden) if (h.id === windowId) return true
+    return false
   }
 
   /** Call on `before-quit`; from here on closing windows is not a user action. */
@@ -348,7 +404,8 @@ export class WindowManager {
   private openView(view: ProjectView, { keepPicker = false }: { keepPicker?: boolean } = {}): ProjectView {
     const existing = this.projects.get(view.id)
     if (existing) {
-      existing.focus()
+      // Opening the project again is how a window kept running for a browser comes back.
+      this.show(existing)
       // Picked in a picker the user opened over open projects (the top strip's "+"): the pick is
       // done, so the picker goes as it does when a new window opens.
       this.closePicker()
@@ -381,7 +438,8 @@ export class WindowManager {
         },
         onClosed: () => {
           if (handle) this.projectClosed(projectId, handle)
-        }
+        },
+        onCloseRequested: () => (handle ? this.closeRequested(projectId, handle) : false)
       },
       look
     )
@@ -409,8 +467,82 @@ export class WindowManager {
     picker.close()
   }
 
+  /**
+   * The window is about to close (design-web.md §5.6). True keeps it open for now: browsers have it
+   * open, so the person is asked whether the close is for everyone or only for this screen, and the
+   * answer closes or hides it. Nothing asks while quitting (quit closes every view, with a notice),
+   * for a reopen (the window comes straight back) or for the close the answer itself starts.
+   */
+  private closeRequested(projectId: string, handle: WindowHandle): boolean {
+    if (this.quitting || this.reopening.has(handle) || this.closing.has(handle)) return false
+    if (this.projects.get(projectId) !== handle) return false
+    // The dialog is up: a second click on the close button waits for the same answer.
+    if (this.asking.has(handle)) return true
+    const ask = this.options.askClose
+    const devices = this.options.remoteDevices?.(handle.id) ?? []
+    if (!ask || devices.length === 0) return false
+    this.asking.add(handle)
+    const answered = (choice: CloseChoice): void => this.closeAnswered(projectId, handle, choice)
+    ask(handle.id, devices).then(answered, (err: unknown) => {
+      // A dialog that cannot be shown must not leave a window nobody can close (close-dialog.ts).
+      this.logLine(`window close dialog failed: ${errorText(err)}`)
+      answered('everyone')
+    })
+    return true
+  }
+
+  private closeAnswered(projectId: string, handle: WindowHandle, choice: CloseChoice): void {
+    this.asking.delete(handle)
+    // Closed meanwhile (a quit closes it without asking): the answer is about a window that is gone.
+    if (this.quitting || this.projects.get(projectId) !== handle) return
+    if (choice === 'everyone') {
+      this.closing.add(handle)
+      handle.close()
+    } else if (choice === 'keep') {
+      this.hide(handle)
+    }
+  }
+
+  /**
+   * Keep the window running off screen. A modal picker over it goes first (a sheet of a hidden
+   * window would be off screen too, and would hold the window's input when it comes back).
+   */
+  private hide(handle: WindowHandle): void {
+    if (this.hidden.has(handle)) return
+    if (this.pickerParent === handle) this.closePicker()
+    this.hidden.add(handle)
+    handle.hide()
+    this.options.onWindowVisibility?.(handle.id, false)
+  }
+
+  /** Bring a window to front, showing it again when it was kept running hidden. */
+  private show(handle: WindowHandle): void {
+    const wasHidden = this.hidden.delete(handle)
+    handle.focus()
+    if (wasHidden) this.options.onWindowVisibility?.(handle.id, true)
+  }
+
+  /** The most recently opened project window on screen, else the most recently opened hidden one. */
+  private lastWindow(): WindowHandle | undefined {
+    let visible: WindowHandle | undefined
+    let any: WindowHandle | undefined
+    for (const handle of this.projects.values()) {
+      any = handle
+      if (!this.hidden.has(handle)) visible = handle
+    }
+    return visible ?? any
+  }
+
+  private logLine(message: string): void {
+    const log = this.options.log ?? ((m: string) => console.warn(m))
+    log(message)
+  }
+
   private projectClosed(projectId: string, handle: WindowHandle): void {
     this.senders.delete(handle.senderId)
+    this.hidden.delete(handle)
+    this.asking.delete(handle)
+    this.closing.delete(handle)
     // Its views go with it, before onProjectClosed: the tabs killed there emit to a window that is gone.
     this.options.views?.removeWindow(handle.id)
     this.transparent.delete(handle)

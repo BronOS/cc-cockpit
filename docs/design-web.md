@@ -323,6 +323,14 @@ never the sizing or input view. The person gets it back by opening the project a
 dock), which shows the hidden window. Quitting the app closes all views with a notice. When the host sleeps, views
 show "host unreachable" and reconnect.
 
+- **As built** (plan Task 26): `WindowManager.closeRequested` keeps the window open (Electron's `close` prevented)
+  while `windows/close-dialog.ts` asks, as a sheet: Close for everyone, Keep running (the default, Enter)
+  or Cancel (Esc); a box that fails closes for everyone. Nothing asks while quitting, for a reopen, or with no browser view. A hidden
+  window's desktop view is marked hidden for the terminal sizes by main (its own `tabs.visibility` cannot undo it), so a
+  browser sizes the tabs. `openView` (picker, `ccc open`), `activate` (the dock) and `focusAny` (a relaunch) show it;
+  `focusProject` (plugins, chips, a plugin's tab close) leaves it hidden. Quit: `before-quit` closes every view with
+  `CLOSE.appQuit` (4504), final in the bridge, before the windows close (each would otherwise send `windowClosed`).
+
 ## 6. Native features
 
 ### 6.1 Remote view behaviour (v1)

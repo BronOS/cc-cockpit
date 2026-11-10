@@ -155,6 +155,8 @@ export function openProjectEntries(
 export class WebConnections {
   private nextView = 1
   private readonly open = new Map<ViewId, WebConnection>()
+  /** Set by `endAll`: from then on a new socket is closed with the same notice at once. */
+  private ended: { code: number; reason: string } | undefined
 
   constructor(private readonly deps: WebConnectionDeps) {}
 
@@ -164,7 +166,20 @@ export class WebConnections {
       this.boundViews(deviceId, windowId)
     )
     this.open.set(viewId, conn)
+    if (this.ended) conn.end(this.ended.code, this.ended.reason)
     return conn
+  }
+
+  /**
+   * Close every view with a notice the page shows (the app quitting: design-web.md §5.6, `CLOSE.appQuit`),
+   * and every socket accepted after this too. Called on `before-quit`, while the windows are still
+   * open: each window closing would otherwise close its views with `windowClosed` ("the project window
+   * was closed"), and the gateway's stop on `will-quit` drops sockets without a close frame (1006,
+   * which the page retries as "host unreachable"). The close frames go out while the windows close.
+   */
+  endAll(code: number, reason: string): void {
+    this.ended = { code, reason }
+    for (const conn of [...this.open.values()]) conn.end(code, reason)
   }
 
   /**
@@ -465,6 +480,11 @@ export class WebConnection {
     }
     this.ws.send(text)
     return true
+  }
+
+  /** Close the view with `code` (WebConnections.endAll). */
+  end(code: number, reason: string): void {
+    this.close(code, reason)
   }
 
   private close(code: number, reason: string): void {

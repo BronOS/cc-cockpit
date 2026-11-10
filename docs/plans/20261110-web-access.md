@@ -572,13 +572,19 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Modify: `src/main/windows/` (close handling), `src/main/tabs/tab-manager.ts` (`closeProject`), the app quit path
 - Modify: their tests
+- ➕ Created `src/main/windows/close-dialog.ts` (the native sheet, `QueuedCloseAsk` for test runs with the
+  `answerWindowClose` / `windowCloseAsks` hooks), `test/unit/close-dialog.test.ts`; modified
+  `src/main/windows/{window-manager,electron-window-factory}.ts`, `src/main/web/connection.ts` (`endAll`),
+  `src/shared/web-protocol.ts` (`CLOSE.appQuit`), `src/renderer/web/bridge.ts`, `src/main/index.ts`,
+  `docs/features.md`, `docs/design-web.md`; `tab-manager.ts` `closeProject` needed no change ("Close for everyone" is
+  today's close path)
 
-- [ ] closing the desktop window with remote views attached asks "Close for everyone" or "Keep running for <device>";
+- [x] closing the desktop window with remote views attached asks "Close for everyone" or "Keep running for <device>";
       with no remote view it closes as today (no ask); kept running hides the window (never the sizing or input view)
-- [ ] opening the project again (picker, `ccc open`, dock) shows the hidden window
-- [ ] quitting closes remote views with a notice
-- [ ] write tests: no remote view → no ask; both choices; reopen shows it; quit notice sent
-- [ ] run tests - must pass before next task
+- [x] opening the project again (picker, `ccc open`, dock) shows the hidden window
+- [x] quitting closes remote views with a notice
+- [x] write tests: no remote view → no ask; both choices; reopen shows it; quit notice sent
+- [x] run tests - must pass before next task
 
 ### Task 27: Password and desktop-confirm modes [model: opus]
 

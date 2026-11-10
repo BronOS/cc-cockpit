@@ -103,6 +103,12 @@ export const CLOSE = Object.freeze({
   version: 4426,
   /** Web access was turned off on the host (or set to something it refuses): retrying cannot help. */
   turnedOff: 4503,
+  /**
+   * The app is quitting on the host (design-web.md §5.6: quitting closes every view with a notice).
+   * Not retried: nothing will answer until the person starts the app again, and a page retrying in
+   * the background would read as "host unreachable", which is for a host asleep or off the network.
+   */
+  appQuit: 4504,
   /** The snapshot could not be built (the project record went away mid-handshake). */
   failed: 4500,
   /**
