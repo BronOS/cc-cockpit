@@ -5,6 +5,7 @@
 // bundled into the web shell, so no Node (`Buffer`) and no Electron.
 
 import type { LayoutView, OverlayInfo, TabInfo } from './ipc'
+import type { WebAccessMode } from './types'
 import type { ViewId } from './views'
 
 /** Bumped on any incompatible frame change; a client speaking another version is closed. */
@@ -14,6 +15,27 @@ export const PROTOCOL_VERSION = 1
 export const WS_PATH = '/ws'
 /** What the page asks the gateway: the mode, and whether this browser is signed in (also used by the bridge after a drop). */
 export const SESSION_PATH = '/auth/session'
+/** The page posts the access link's token here (`{ token, name }`, JSON), and gets the device cookie. */
+export const SIGN_IN_LINK_PATH = '/auth/link'
+/** The open project windows a signed-in browser may join (the web project picker, picker.tsx). */
+export const PROJECTS_PATH = '/api/projects'
+
+/** The SESSION_PATH answer: the auth mode, and this browser's device (null: not signed in). */
+export interface WebSessionReply {
+  mode: WebAccessMode
+  device: { id: string; name: string } | null
+}
+
+/**
+ * One row of the PROJECTS_PATH answer (`{ projects: [...] }`): a project that has a window open
+ * on the desktop now. Only those: a remote view binds to an open window (design-web.md §2.1) and
+ * never opens one on the host (`projects.openRecent` is `no`-class).
+ */
+export interface WebProjectEntry {
+  id: string
+  name: string
+  path: string
+}
 
 /**
  * Largest frame either way (design-web.md §3): a 1 MiB panel message wrapped in a frame must fit.

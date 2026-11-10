@@ -285,6 +285,83 @@ export function setZoneCollapsed(
 }
 
 /**
+ * A layout's geometry: zone sizes, collapsed zones and panel sizes. Shared state is which panels
+ * sit in which zone, in what order, open or not; geometry is per view (design-web.md §5.1: a phone
+ * and a desktop differ). Main stores the desktop's in the layout as before; a remote view keeps its
+ * own in the browser (renderer/zones/layout-sync.ts) and main never takes it from a remote view's
+ * `layout.set` (LayoutService.set with `keepGeometry`).
+ */
+export interface LayoutGeometry {
+  zones: Partial<Record<ZoneId, { size: number; collapsed: boolean }>>
+  /** panelKey -> size, of placed panels and of remembered ones (a hidden panel keeps its size). */
+  panels: Record<string, number>
+}
+
+/** The geometry of a layout. */
+export function geometryOf(layout: LayoutState): LayoutGeometry {
+  const zones: LayoutGeometry['zones'] = {}
+  const panels: Record<string, number> = {}
+  for (const [key, m] of Object.entries(layout.remembered)) panels[key] = m.size
+  for (const z of ZONE_IDS) {
+    const zone = layout.zones[z]
+    zones[z] = { size: zone.size, collapsed: zone.collapsed }
+    for (const p of zone.panels) panels[p.panelKey] = p.size
+  }
+  return { zones, panels }
+}
+
+/**
+ * `layout` with the sizes and collapsed states of `geometry` where it has them; panels and zones it
+ * does not name keep their own. The same object when nothing changes.
+ */
+export function withGeometry(layout: LayoutState, geometry: LayoutGeometry): LayoutState {
+  const sizeOf = (key: string, own: number): number => {
+    const size = Object.hasOwn(geometry.panels, key) ? geometry.panels[key] : undefined
+    return typeof size === 'number' && Number.isFinite(size) ? clampSize(size) : own
+  }
+  const zones = { ...layout.zones }
+  for (const z of ZONE_IDS) {
+    const zone = layout.zones[z]
+    const g = geometry.zones[z]
+    zones[z] = {
+      collapsed: typeof g?.collapsed === 'boolean' ? g.collapsed : zone.collapsed,
+      size: typeof g?.size === 'number' && Number.isFinite(g.size) ? clampSize(g.size) : zone.size,
+      panels: zone.panels.map((p) => ({ ...p, size: sizeOf(p.panelKey, p.size) }))
+    }
+  }
+  const remembered: Record<string, RememberedPlacement> = {}
+  for (const [key, m] of Object.entries(layout.remembered)) remembered[key] = { ...m, size: sizeOf(key, m.size) }
+  const next: LayoutState = { zones, hidden: layout.hidden, remembered }
+  return JSON.stringify(next) === JSON.stringify(layout) ? layout : next
+}
+
+/** Cap on the panel sizes a stored geometry keeps (a browser's own copy, renderer/zones/view-geometry.ts). */
+const MAX_GEOMETRY_PANELS = 200
+
+/** Whatever a store holds, as a valid geometry (clamped sizes, known zones, panel keys only); never throws. */
+export function normalizeGeometry(raw: unknown): LayoutGeometry {
+  const out: LayoutGeometry = { zones: {}, panels: {} }
+  if (!isPlainObject(raw)) return out
+  if (isPlainObject(raw.zones)) {
+    for (const z of ZONE_IDS) {
+      const zr = raw.zones[z]
+      if (!isPlainObject(zr) || !isSize(zr.size) || typeof zr.collapsed !== 'boolean') continue
+      out.zones[z] = { size: clampSize(zr.size), collapsed: zr.collapsed }
+    }
+  }
+  if (isPlainObject(raw.panels)) {
+    let n = 0
+    for (const [key, size] of Object.entries(raw.panels)) {
+      if (n >= MAX_GEOMETRY_PANELS) break
+      if (!isPanelKey(key) || !isSize(size)) continue
+      out.panels[key] = clampSize(size)
+      n += 1
+    }
+  }
+  return out
+}
+
+/**
  * Bring the layout in line with the panels that exist now.
  *  - A placed or hidden panel that is no longer available (its plugin was disabled or removed) is
  *    dropped, but its placement is remembered.

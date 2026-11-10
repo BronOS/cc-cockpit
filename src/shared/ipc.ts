@@ -1537,7 +1537,9 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
 
   // Zones, commands, plugin panels, slots and settings pages: project work, per view from Task 17.
   'layout.get': 'yes',
-  'layout.set': 'yes',
+  // Sizes and collapsed zones are per view (design-web.md §5.1): main keeps the desktop's and takes
+  // only the shared part (placement, order, open) from a remote view's layout.
+  'layout.set': 'adapted',
   'layout.updated': 'yes',
   'commands.list': 'yes',
   'commands.run': 'yes',

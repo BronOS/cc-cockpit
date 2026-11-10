@@ -863,6 +863,21 @@ describe('registerLayoutHandlers', () => {
     expect(asked).toEqual([`view ${PROJECT_A}`, `set ${PROJECT_B}`])
   })
 
+  it('a remote view\'s layout.set keeps the stored geometry (sizes are per view); the desktop\'s does not', async () => {
+    const { ipc, router } = setup()
+    const opts: Array<{ keepGeometry?: boolean } | undefined> = []
+    registerLayoutHandlers(router, {
+      view: () => emptyView,
+      set: (_projectId, _layout, o) => {
+        opts.push(o)
+        return emptyView
+      }
+    })
+    await ipc.invoke('layout.set', 11, [{ layout: defaultLayout() }])
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'layout.set', { layout: defaultLayout() })
+    expect(opts).toEqual([undefined, { keepGeometry: true }])
+  })
+
   it('refuses a picker window and a malformed layout', async () => {
     const { ipc, router } = setup()
     registerLayoutHandlers(router, { view: () => emptyView, set: () => emptyView })

@@ -14,6 +14,7 @@
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
 import { remoteViewId, type ViewId } from '../../shared/views'
+import type { WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
 import type { ViewSink } from '../views/view-registry'
@@ -87,6 +88,22 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
   const layout = sources.layouts.view(projectId)
   if (!layout) throw new Error('project record is gone')
   return { tabs: sources.tabs.list(projectId), layout, overlays: sources.overlays.infos(windowId) }
+}
+
+/**
+ * The web picker's list (gateway PROJECTS_PATH): the projects that have a window open now, from
+ * main's window table, never the registry's recents: a remote view can only bind to an open window
+ * (the hello above looks it up the same way) and cannot open one on the host. A window whose
+ * record is gone mid-close is left out. Plain fields only.
+ */
+export function openProjectEntries(
+  windows: { projectWindows(): Array<{ projectId: string }> },
+  record: (projectId: string) => { id: string; name: string; path: string } | undefined
+): WebProjectEntry[] {
+  return windows.projectWindows().flatMap(({ projectId }) => {
+    const r = record(projectId)
+    return r ? [{ id: r.id, name: r.name, path: r.path }] : []
+  })
 }
 
 /** Accepts gateway sockets (`WebGateway.setSocketHandler`) and mints a view id for each. */

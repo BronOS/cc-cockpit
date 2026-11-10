@@ -11,20 +11,22 @@
 //    SameSite, is what keeps another localhost page out (checks.ts says why).
 //  - The web shell's CSP and `Cache-Control: no-store` on every answer.
 //  - Loopback binds only (settings.ts listenPlanOf) until TLS and the §4.3 confirms (Task 28).
-// Behind those, sign-in (auth.ts, plan Task 5): `/` and the sign-in routes are open, everything
-// else (the upgrade first) needs a device (`WebAuth.authorize`: the device cookie, or None mode).
+// Behind those, sign-in (auth.ts, plan Task 5): the web shell (`/` and `/assets/…`, shell-files.ts,
+// plan Task 8) and the sign-in routes are open, everything else (the upgrade first, the project
+// list) needs a device (`WebAuth.authorize`: the device cookie, or None mode).
 // An upgrade that passes goes to the socket handler main installs (the wire protocol,
 // connection.ts); with none installed it is refused, so the gateway never hands out a socket
 // nobody speaks the protocol on.
 // Sockets are tracked by device: a revoke closes that device's sockets at once, and leaving None
 // mode closes the anonymous ones. Connects and disconnects go to the access log.
+import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { hostname, networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
 // Types only: erased at build time, so this file does not load `ws` (see loadWs below).
 import type { WebSocket, WebSocketServer } from 'ws'
-import { SESSION_PATH } from '../../shared/web-protocol'
+import { PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, type WebProjectEntry, type WebSessionReply } from '../../shared/web-protocol'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
 import { deviceCookie, type WebAuth } from './auth'
@@ -32,6 +34,7 @@ import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
 import type { WebDevice } from './devices'
 import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
 import { listenPlanOf, type ListenPlan } from './settings'
+import { realShellFile, shellFileOf } from './shell-files'
 
 export type WsModule = typeof import('ws')
 
@@ -42,9 +45,11 @@ export { MAX_FRAME_BYTES }
 /** Where the browser opens its one WebSocket per view (shared with the bridge, web-protocol.ts). */
 export { WS_PATH }
 /** The page posts the access link's token here (auth.ts). */
-export const SIGN_IN_LINK_PATH = '/auth/link'
+export { SIGN_IN_LINK_PATH }
 /** What the page asks first: the mode, and whether this browser is signed in. */
 export { SESSION_PATH }
+/** The open project windows, for the web project picker; needs a device. */
+export { PROJECTS_PATH }
 /** A sign-in body is a token and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
 
@@ -58,6 +63,14 @@ export interface GatewayDeps {
   /** os.networkInterfaces / os.hostname, read only for a network bind (Task 28). */
   interfaces?: () => ReturnType<typeof networkInterfaces>
   hostname?: () => string
+  /**
+   * The renderer build's output folder (out/renderer), holding the web shell (web/index.html) and
+   * the chunks it shares with the desktop (assets/); shell-files.ts says what is served from it.
+   * Undefined, or not built (a dev run before `npm run build`): `/` answers 503 saying so.
+   */
+  shellDir?: string
+  /** The projects that have a window open now (main's window table), for the web picker. */
+  openProjects?: () => WebProjectEntry[]
 }
 
 export type GatewayStatus =
@@ -73,9 +86,11 @@ export type SocketHandler = (ws: WebSocket, req: IncomingMessage, device: WebDev
 
 type OkPlan = Extract<ListenPlan, { ok: true }>
 
-/** A placeholder until the web build is served (plan Task 8). */
-const PLACEHOLDER_HTML =
-  '<!doctype html><meta charset="utf-8"><title>cc-cockpit</title><p>cc-cockpit web access is on. The web shell is not served yet.</p>'
+/** `/` when there is no web shell to serve (a dev run before `npm run build`). */
+const NOT_BUILT_TEXT = 'cc-cockpit web access is on, but the web shell is not built (npm run build).'
+
+/** Content-hashed assets: a new build writes new names, so a browser may keep these for good. */
+const IMMUTABLE = 'max-age=31536000, immutable'
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -277,14 +292,15 @@ export class WebGateway {
     host: string | undefined,
     status: number,
     type: string,
-    body: string,
+    body: string | Buffer,
     extra: Record<string, string> = {}
   ): void {
     res.writeHead(status, {
+      // Only the hashed assets override it (`IMMUTABLE`); the page, its answers and errors never.
+      'Cache-Control': 'no-store',
       ...extra,
       'Content-Type': type,
       'Content-Security-Policy': webShellCsp(host === undefined ? [] : this.frameOrigins(host)),
-      'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY'
@@ -304,9 +320,15 @@ export class WebGateway {
       this.deps.log(`web access: ${method} refused, origin ${JSON.stringify((req.headers.origin ?? 'none').slice(0, 100))}`)
       return this.send(res, host, 403, 'text/plain; charset=utf-8', 'origin not allowed')
     }
-    const path = (req.url ?? '/').split('?')[0]
-    // Open without sign-in: the page (it signs in from there) and the sign-in routes.
-    if (safe && path === '/') return this.send(res, host, 200, 'text/html; charset=utf-8', method === 'HEAD' ? '' : PLACEHOLDER_HTML)
+    const path = (req.url ?? '/').split('?')[0] ?? '/'
+    // Open without sign-in: the page and its files (it signs in from there, shell-files.ts) and
+    // the sign-in routes.
+    if (safe && (path === '/' || path.startsWith('/assets/'))) {
+      return void this.shellFile(path, method === 'HEAD', res, host).catch((err: unknown) => {
+        this.deps.log(`web access: serving ${path.slice(0, 100)} failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.send(res, host, 500, 'text/plain; charset=utf-8', 'server error')
+      })
+    }
     if (method === 'GET' && path === SESSION_PATH) return this.session(req, res, host)
     if (method === 'POST' && path === SIGN_IN_LINK_PATH) {
       // Never an unhandled rejection in main: a failure answers 500 when the request is still there.
@@ -317,7 +339,40 @@ export class WebGateway {
     }
     // Everything else needs a device: a request without a valid cookie learns nothing more.
     if (!this.deps.auth.authorize(req.headers.cookie)) return this.json(res, host, 401, { error: 'not signed in' })
+    if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, { projects: this.openProjects() })
     this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
+  }
+
+  /** The web shell's page or one of its assets (shell-files.ts); 404 for anything else. */
+  private async shellFile(path: string, head: boolean, res: ServerResponse, host: string): Promise<void> {
+    const dir = this.deps.shellDir
+    const file = dir === undefined ? undefined : shellFileOf(dir, path)
+    const real = file ? await realShellFile(file) : undefined
+    let body: Buffer | undefined
+    if (real !== undefined) {
+      try {
+        body = await readFile(real)
+      } catch {
+        // A folder named like an asset, or the file went away in a rebuild: not found.
+        body = undefined
+      }
+    }
+    if (res.destroyed) return
+    if (!file || body === undefined) {
+      if (path === '/') return this.send(res, host, 503, 'text/plain; charset=utf-8', NOT_BUILT_TEXT)
+      return this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
+    }
+    this.send(res, host, 200, file.type, head ? '' : body, file.immutable ? { 'Cache-Control': IMMUTABLE } : {})
+  }
+
+  /** The open project windows, plain data only; a failing source is an empty list, never a 500 with its text. */
+  private openProjects(): WebProjectEntry[] {
+    try {
+      return (this.deps.openProjects?.() ?? []).map((p) => ({ id: p.id, name: p.name, path: p.path }))
+    } catch (err) {
+      this.deps.log(`web access: listing projects failed: ${errorText(err)}`)
+      return []
+    }
   }
 
   private json(res: ServerResponse, host: string, status: number, value: unknown, extra: Record<string, string> = {}): void {
@@ -326,7 +381,8 @@ export class WebGateway {
 
   private session(req: IncomingMessage, res: ServerResponse, host: string): void {
     const device = this.deps.auth.authorize(req.headers.cookie)
-    this.json(res, host, 200, { mode: this.deps.auth.mode ?? 'link', device: device ? { id: device.id, name: device.name } : null })
+    const reply: WebSessionReply = { mode: this.deps.auth.mode ?? 'link', device: device ? { id: device.id, name: device.name } : null }
+    this.json(res, host, 200, reply)
   }
 
   private async signIn(req: IncomingMessage, res: ServerResponse, host: string): Promise<void> {

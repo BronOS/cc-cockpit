@@ -1031,7 +1031,8 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
 export interface LayoutHandlerDeps {
   /** undefined for a project that has no record (cannot happen for an open window). */
   view(projectId: string): LayoutView | undefined
-  set(projectId: string, layout: unknown): LayoutView | undefined
+  /** `keepGeometry`: a remote view's edit, whose sizes and collapsed zones stay its own (LayoutService.set). */
+  set(projectId: string, layout: unknown, opts?: { keepGeometry?: boolean }): LayoutView | undefined
 }
 
 /**
@@ -1046,7 +1047,9 @@ export function registerLayoutHandlers(router: IpcRouter, deps: LayoutHandlerDep
     return view
   })
 
-  router.handleProject('layout.set', (ctx, payload) => {
+  // `adapted` for a remote view: sizes and collapsed zones are per view (design-web.md §5.1), so
+  // main takes only the shared part of its layout and the desktop's geometry stays as it was.
+  router.handleProject('layout.set', (ctx, payload, callView) => {
     const layout = fields('layout.set', payload).layout
     if (typeof layout !== 'object' || layout === null) {
       throw new Error('layout.set: layout must be an object')
@@ -1054,7 +1057,7 @@ export function registerLayoutHandlers(router: IpcRouter, deps: LayoutHandlerDep
     if (layoutTooLarge(layout as Record<string, unknown>)) {
       throw new Error('layout.set: layout is too large')
     }
-    const view = deps.set(ctx.projectId, layout)
+    const view = callView.remote ? deps.set(ctx.projectId, layout, { keepGeometry: true }) : deps.set(ctx.projectId, layout)
     if (!view) throw new Error('layout.set: project record is gone')
     return view
   })

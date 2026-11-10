@@ -3,7 +3,8 @@
 // plain Node, can play out the races between local edits, `layout.set` answers and
 // `layout.updated` events with a fake bridge.
 import type { CockpitApi, LayoutView, PanelInfo, SlotFrameInfo } from '../../shared/ipc'
-import { defaultLayout, type LayoutState } from '../../shared/layout'
+import { defaultLayout, geometryOf, withGeometry, type LayoutGeometry, type LayoutState } from '../../shared/layout'
+import type { GeometryStore } from './view-geometry'
 
 /** The part of `window.cockpit` this needs; structural so tests can pass a fake. */
 export type LayoutBridge = Pick<CockpitApi, 'invoke' | 'on'>
@@ -30,6 +31,12 @@ const NO_SLOTS: SlotFrameInfo[] = []
  *    in flight), a view from main updates the panels (badges, titles) but not the layout. A badge
  *    publish arriving mid-drag would otherwise put main's old layout back and the flush would send
  *    that, losing the drag; the answer to the edit's `layout.set` brings main's reconciled layout.
+ *
+ * With a `geometry` store (the web shell, a remote view: design-web.md §5.1) zone sizes, collapsed
+ * zones and panel sizes are this view's own: drawn from the store over main's layout, saved there
+ * on every edit, and never sent: `layout.set` carries main's (the desktop's) geometry back, and an
+ * edit that only moved a splitter or collapsed a zone sends nothing at all. Main enforces the same
+ * on its side (LayoutService.set `keepGeometry`), so this is about not sending, not about trust.
  */
 export class LayoutSync {
   private snapshot: LayoutSnapshot = { layout: defaultLayout(), panels: [], appSlots: NO_SLOTS }
@@ -39,8 +46,15 @@ export class LayoutSync {
   /** The edit count main has answered for; `edits !== acked` means a local edit is unanswered. */
   private acked = 0
   private readonly listeners = new Set<() => void>()
+  /** Geometry mode: main's newest layout (its geometry is what `layout.set` sends back). */
+  private main: LayoutState | undefined
+  /** Geometry mode: this view's own geometry, drawn over main's layout. */
+  private local: LayoutGeometry | undefined
 
-  constructor(private readonly bridge: LayoutBridge) {}
+  constructor(
+    private readonly bridge: LayoutBridge,
+    private readonly geometry?: GeometryStore
+  ) {}
 
   /**
    * Subscribe to `layout.updated` and ask for the current view; returns the unsubscribe. Not in
@@ -48,6 +62,7 @@ export class LayoutSync {
    * start / stop / start must leave exactly one subscription.
    */
   start(): () => void {
+    if (this.geometry && this.local === undefined) this.local = this.geometry.load()
     let sawEvent = false
     // Subscribe before asking so an update between the two is not lost; the event is newer than
     // the answer, so the answer is dropped when one arrived first.
@@ -93,8 +108,21 @@ export class LayoutSync {
   flush(): void {
     if (!this.ready) return
     const sent = this.edits
+    let outgoing = this.snapshot.layout
+    if (this.geometry && this.main) {
+      this.local = geometryOf(this.snapshot.layout)
+      this.geometry.save(this.local)
+      outgoing = withGeometry(this.snapshot.layout, geometryOf(this.main))
+      if (JSON.stringify(outgoing) === JSON.stringify(this.main)) {
+        // Only this view's geometry changed: nothing for main. The edit is settled here, and the
+        // layout is main's newest (a view that came during a drag) under this view's geometry.
+        this.acked = sent
+        this.set({ ...this.snapshot, layout: this.display(this.main) })
+        return
+      }
+    }
     this.bridge
-      .invoke('layout.set', { layout: this.snapshot.layout })
+      .invoke('layout.set', { layout: outgoing })
       .then((view) => {
         // An answer to an older `layout.set` must not undo a newer edit.
         if (this.edits !== sent) return
@@ -111,6 +139,7 @@ export class LayoutSync {
     if (!this.ready) return false
     const next = op(this.snapshot.layout)
     if (next === this.snapshot.layout) return false
+    if (this.geometry) this.local = geometryOf(next)
     this.edits += 1
     this.set({ ...this.snapshot, layout: next })
     return true
@@ -118,6 +147,8 @@ export class LayoutSync {
 
   /** A view main sent on its own (an event, or the `layout.get` answer). */
   private onView(view: LayoutView): void {
+    // Main's geometry is the desktop's: kept current even mid-edit, as it is what a send carries back.
+    this.main = view.layout
     // The app's slot frames are not the layout: like the panels, they follow main at once.
     if (this.ready && this.edits !== this.acked) this.set({ ...this.snapshot, panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })
     else this.take(view)
@@ -125,7 +156,13 @@ export class LayoutSync {
 
   private take(view: LayoutView): void {
     this.ready = true
-    this.set({ layout: view.layout, panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })
+    this.main = view.layout
+    this.set({ layout: this.display(view.layout), panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })
+  }
+
+  /** Main's layout as this view draws it: under its own geometry in geometry mode. */
+  private display(layout: LayoutState): LayoutState {
+    return this.geometry && this.local ? withGeometry(layout, this.local) : layout
   }
 
   private set(next: LayoutSnapshot): void {

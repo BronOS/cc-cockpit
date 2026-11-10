@@ -147,7 +147,7 @@ import { ViewRegistry } from './views/view-registry'
 import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
-import { WebConnections, windowSnapshot } from './web/connection'
+import { openProjectEntries, WebConnections, windowSnapshot } from './web/connection'
 import { WebGateway } from './web/gateway'
 import { webAccessOf } from './web/settings'
 import { desktopViewId } from '../shared/views'
@@ -1228,7 +1228,15 @@ function start(): void {
     notify: (text) => showNotification(text, 'cc-cockpit web access')
   })
   const webAuth = new WebAuth({ devices: webDevices, secrets: secretStore, accessLog: webAccessLog })
-  const webGateway = new WebGateway({ log: (m) => console.warn(m), auth: webAuth, accessLog: webAccessLog })
+  const webGateway = new WebGateway({
+    log: (m) => console.warn(m),
+    auth: webAuth,
+    accessLog: webAccessLog,
+    // The renderer build next to main's (out/renderer): the web shell and its shared assets.
+    shellDir: join(__dirname, '../renderer'),
+    // The web picker lists what a remote view can bind to: projects with a window open now.
+    openProjects: () => openProjectEntries(windows, (projectId) => registry.get(projectId))
+  })
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
@@ -1967,7 +1975,7 @@ function start(): void {
 
   registerLayoutHandlers(router, {
     view: (projectId) => layouts.view(projectId),
-    set: (projectId, next) => layouts.set(projectId, next)
+    set: (projectId, next, opts) => layouts.set(projectId, next, opts)
   })
 
   registerOverlayHandlers(router, {

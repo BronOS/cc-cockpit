@@ -417,8 +417,9 @@ What v1 keeps open, and what multi-user adds:
 
 ## 11. Open questions
 
-1. Zone sizes per view: is "the desktop keeps today's, a remote view keeps its own in the browser" enough, or should
-   main keep sizes per device?
+1. ~~Zone sizes per view~~: v1 ships "the desktop keeps today's, a remote view keeps its own in the browser"
+   (browser storage per project; main keeps the desktop's and ignores a remote view's sizes in `layout.set`).
+   Main keeping sizes per device stays possible later.
 2. Headless terminal always on (also fixes desktop reload) or only while the gateway is on? Memory per tab with
    ~5,000 lines needs measuring.
 3. ~~The `{ view }` addition to `ctx.panels`~~: settled by review 2, it ships in phase 3 (bundled plugins need

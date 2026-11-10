@@ -23,6 +23,7 @@ import {
 import { DeviceStore, MAX_DEVICES } from '../../src/main/web/devices'
 import { WebGateway, type SocketHandler, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
+import { writeFakeShellDir } from '../fakes/fake-shell-dir'
 
 const ORIGIN = 'http://127.0.0.1:7330'
 
@@ -383,7 +384,7 @@ async function served(
 ): Promise<{ a: WebAuth; gw: WebGateway; port: number; host: string; origin: string }> {
   const port = await freePort()
   const a = auth(limiter ? { limiter } : {})
-  const gw = new WebGateway({ log: () => undefined, auth: a, accessLog, loadWs: async (): Promise<WsModule> => wsModule })
+  const gw = new WebGateway({ log: () => undefined, auth: a, accessLog, loadWs: async (): Promise<WsModule> => wsModule, shellDir: writeFakeShellDir(join(dir, 'shell')) })
   gateway = gw
   expect((await gw.apply(webAccessOf({ enabled: true, port, ...settings }))).state).toBe('listening')
   const host = `127.0.0.1:${port}`
@@ -482,8 +483,11 @@ describe('gateway: sign-in over HTTP', () => {
     expect(await upgrade(port, { Host: host, Origin: origin })).toBe(401)
     expect(await upgrade(port, { Host: host, Origin: origin, Cookie: `${DEVICE_COOKIE}=forged.value` })).toBe(401)
     expect((await http(port, { path: '/anything', headers: { Host: host } })).status).toBe(401)
-    // The page itself is open: it is where the browser signs in.
+    // The page itself and its files are open: it is where the browser signs in.
     expect((await http(port, { path: '/', headers: { Host: host } })).status).toBe(200)
+    expect((await http(port, { path: '/assets/web-abc123.js', headers: { Host: host } })).status).toBe(200)
+    // The project list is not.
+    expect((await http(port, { path: '/api/projects', headers: { Host: host } })).status).toBe(401)
   })
 
   it('None on loopback: the upgrade needs no sign-in, Host and Origin still apply', async () => {

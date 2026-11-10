@@ -33,3 +33,73 @@
   color: var(--cc-fg-muted, var(--cc-fg));
   font: var(--cc-text-md) var(--cc-font-ui);
 }
+.web-state-box {
+  max-width: 34rem;
+  padding: 0 16px;
+  text-align: center;
+}
+.web-state-box button,
+.web-picker-refresh {
+  font: inherit;
+  padding: 4px 12px;
+  border: 1px solid var(--cc-border, currentColor);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-fg);
+  cursor: pointer;
+}
+.web-state-link {
+  color: var(--cc-accent, var(--cc-fg));
+}
+
+/* The project picker (picker.tsx): the projects open on the desktop, one link each. */
+.web-picker {
+  box-sizing: border-box;
+  max-width: 40rem;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 32px 16px;
+  color: var(--cc-fg);
+  font: var(--cc-text-md) var(--cc-font-ui);
+}
+.web-picker h1 {
+  margin: 0 0 16px;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.web-picker-note {
+  color: var(--cc-fg-muted, var(--cc-fg));
+}
+.web-picker-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-surface-1, transparent);
+}
+.web-picker-list li + li {
+  border-top: 1px solid var(--cc-border);
+}
+.web-picker-list a {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  color: inherit;
+  text-decoration: none;
+}
+.web-picker-list a:hover,
+.web-picker-list a:focus-visible {
+  background: var(--cc-bg-hover, color-mix(in srgb, var(--cc-fg) 8%, transparent));
+}
+.web-picker-name {
+  font-weight: 600;
+}
+.web-picker-path {
+  overflow: hidden;
+  color: var(--cc-fg-muted, var(--cc-fg));
+  font-size: var(--cc-text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

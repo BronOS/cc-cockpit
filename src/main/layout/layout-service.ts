@@ -31,11 +31,13 @@ import {
 } from '../../shared/slots'
 import {
   ZONE_IDS,
+  geometryOf,
   isZoneId,
   movePanel,
   normalizeLayout,
   reconcile,
   showPanel,
+  withGeometry,
   zoneOf,
   type AvailablePanel,
   type LayoutState,
@@ -144,8 +146,11 @@ export class LayoutService {
   /**
    * Store a layout the renderer sent. Whatever it holds is normalized and reconciled first;
    * unusable parts fall back to defaults rather than throwing. Answers with what was stored.
+   * `keepGeometry` (a remote view's edit, design-web.md §5.1): zone sizes, collapsed zones and
+   * panel sizes stay the stored ones (the desktop's), whatever the layout sent says; the remote
+   * view keeps its own in the browser. Only the shared part (placement, order, open, hidden) is taken.
    */
-  set(projectId: string, raw: unknown): LayoutView | undefined {
+  set(projectId: string, raw: unknown, opts: { keepGeometry?: boolean } = {}): LayoutView | undefined {
     const stored = this.deps.getLayout(projectId)
     if (!stored) return undefined
     // A user edit (a toggle, a splitter) can arrive before the plugin host has declared its
@@ -154,7 +159,8 @@ export class LayoutService {
     // `remembered`, from where they return at the END of their zone and the user's order is lost,
     // the same trap view() avoids. They keep their stored place instead, until declared.
     const pending = this.pendingPanels(projectId, stored)
-    const next = keepPlaces(normalizeLayout(raw), stored, pending)
+    const sent = normalizeLayout(raw)
+    const next = keepPlaces(opts.keepGeometry === true ? withGeometry(sent, geometryOf(stored)) : sent, stored, pending)
     const pendingAvailable = pending.map((panelKey) => ({ panelKey, defaultZone: zoneOf(stored, panelKey) ?? 'left' }))
     const layout = reconcile(next, [...this.available(projectId), ...pendingAvailable])
     this.deps.setLayout(projectId, layout)

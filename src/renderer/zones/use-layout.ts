@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { PanelInfo, SlotFrameInfo } from '../../shared/ipc'
 import type { LayoutState } from '../../shared/layout'
+import { isWebShell } from '../shell-kind'
 import { LayoutSync } from './layout-sync'
+import { browserGeometryStore, type StorageLike } from './view-geometry'
 
 export interface LayoutController {
   layout: LayoutState
@@ -21,9 +23,12 @@ export interface LayoutController {
  * keeping local edits and main's copy in step). One sync per window, made by TabsPane, which hands
  * it to Zones and the app's slots to the top bar; it unsubscribes from `layout.updated` on unmount.
  */
-export function useLayout(): LayoutController {
+export function useLayout(projectId?: string): LayoutController {
   // The constructor has no side effects, so StrictMode's discarded second instance costs nothing.
-  const [sync] = useState(() => new LayoutSync(window.cockpit))
+  // The web shell keeps its zone sizes and collapsed zones in the browser (view-geometry.ts).
+  const [sync] = useState(
+    () => new LayoutSync(window.cockpit, isWebShell() ? browserGeometryStore(browserStorage, projectId) : undefined)
+  )
   useEffect(() => sync.start(), [sync])
   const { layout, panels, appSlots } = useSyncExternalStore(
     (listener) => sync.subscribe(listener),
@@ -40,4 +45,13 @@ export function useLayout(): LayoutController {
     }),
     [sync, layout, panels, appSlots]
   )
+}
+
+/** `window.localStorage`, or undefined where reading it throws (blocked site data). */
+function browserStorage(): StorageLike | undefined {
+  try {
+    return window.localStorage
+  } catch {
+    return undefined
+  }
 }

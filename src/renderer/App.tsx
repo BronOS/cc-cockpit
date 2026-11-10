@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { WindowInfo } from '../shared/ipc'
 import { ProjectPicker } from './picker/ProjectPicker'
+import { currentShellChrome } from './shell-kind'
 import { startSeeThrough } from './theme/apply-see-through'
 import { TabsPane } from './tabs/TabsPane'
 
@@ -22,7 +23,8 @@ export function App(): React.JSX.Element {
       .invoke('window.info')
       .then((next) => {
         // Before the shell renders: its tab terminals pick their palette when they are made.
-        if (next.kind === 'project' && next.transparent === true) startSeeThrough()
+        // Never in the web shell: the glass is the desktop window's (shell-kind.ts).
+        if (next.kind === 'project' && next.transparent === true && currentShellChrome().seeThrough) startSeeThrough()
         setInfo(next)
       })
       .catch((err: unknown) => setError(String(err)))

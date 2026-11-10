@@ -231,14 +231,17 @@ remote client, a phone layout, headless server mode (design §9, §10).
   the zone layout code (per-view sizes)
 - Create: tests next to them
 
-- [ ] the gateway serves the web build and the sign-in page (reads `#t=`, posts it, clears the URL); a project picker
+- [x] the gateway serves the web build and the sign-in page (reads `#t=`, posts it, clears the URL); a project picker
       lists open project windows
-- [ ] hide window chrome, drag regions and full screen in the web build
-- [ ] zone sizes and collapsed zones are per view: a remote view keeps its own in the browser; the desktop's stay in
+- [x] hide window chrome, drag regions and full screen in the web build
+- [x] zone sizes and collapsed zones are per view: a remote view keeps its own in the browser; the desktop's stay in
       main as today (design open question 1)
-- [ ] write tests: sign-in page flow, picker lists only open windows, chrome hidden in the web build, per-view zone sizes
+- [x] write tests: sign-in page flow, picker lists only open windows, chrome hidden in the web build, per-view zone sizes
       never reach main's layout
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+- ➕ `layout.set` from one view is not published (`layout.updated`) to the window's other views: today only main-side
+  changes (`move`, `show`, plugin panels) publish. With a remote view, a panel moved or opened in one view shows in the
+  other only at its next view from main. Pick it up with the mirror work (Task 12 or 17).
 
 ### Task 9: Web access settings and the desktop indicator [model: sonnet]
 

@@ -20,6 +20,7 @@ import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
+import { currentShellChrome, isWebShell } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
@@ -64,9 +65,10 @@ const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta'])
 
 /**
  * macOS project windows draw their own title bar (main hides the native one there:
- * main/windows/window-chrome.ts keys off the same platform). Read once: the platform does not change.
+ * main/windows/window-chrome.ts keys off the same platform); the web shell draws no window chrome
+ * at all (shell-kind.ts). Read at render, not at module load: the web entry marks the shell after
+ * its imports (this module among them) have run. Neither changes for the page's life.
  */
-const inPageTitleBar = navigator.platform.toLowerCase().includes('mac')
 
 /** The dialog went: answer the plugin close waiting on it (`confirmDone`), if one is, once. */
 function settleClose(confirmDone: { current: ((closed: boolean) => void) | null }, closed: boolean): void {
@@ -77,14 +79,20 @@ function settleClose(confirmDone: { current: ((closed: boolean) => void) | null 
 
 /** The project window's terminal tabs: tab bar plus one mounted terminal per tab. */
 export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean }): React.JSX.Element {
+  const [chrome] = useState(currentShellChrome)
+  const inPageTitleBar = chrome.titleBar
   // macOS hides the traffic lights in full screen; main tells the page when that changes (the
-  // initial value comes with window.info, for a window restored in full screen).
-  const [fullScreen, setFullScreen] = useState(props.fullScreen === true)
-  useEffect(() => window.cockpit.on('window.state', (s) => setFullScreen(s.fullScreen)), [])
+  // initial value comes with window.info, for a window restored in full screen). Both are the
+  // desktop window's, so the web shell ignores them (its `window.state` never fires anyway).
+  const [fullScreen, setFullScreen] = useState(chrome.fullScreen && props.fullScreen === true)
+  useEffect(() => {
+    if (!chrome.fullScreen) return undefined
+    return window.cockpit.on('window.state', (s) => setFullScreen(s.fullScreen))
+  }, [chrome])
   const [state, dispatch] = useReducer(tabsReducer, initialTabsState)
   // The window's zone layout, here rather than in Zones: the top bar draws the app's slot frames
   // (`appSlots`) that come with the same view.
-  const layout = useLayout()
+  const layout = useLayout(props.project?.id)
   // A see-through window's tab terminals let its glass through; overlays keep their own registry,
   // opaque (OverlayStack).
   const [sessions] = useState(() => new SessionRegistry(tabIo, { seeThrough: isSeeThrough() }))
@@ -280,7 +288,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     run(window.cockpit.invoke('sessions.cancelQueued', { tabId, itemId }))
 
   // The strip's "+": main shows the project picker, or focuses the one already open.
-  const openProject = (): void => run(window.cockpit.invoke('projects.showPicker'))
+  // The web shell has no host picker to show (`projects.showPicker` is `no`-class): its "+" goes to
+  // the web picker, the list of the project windows open on the desktop (web/picker.tsx).
+  const openProject = (): void => {
+    if (isWebShell()) location.assign('/')
+    else run(window.cockpit.invoke('projects.showPicker'))
+  }
 
   // A drag on the strip, or the tab menu's Move left / right. The local order changes only once
   // main accepted it, so the strip never shows an order main doesn't have.
@@ -748,7 +761,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         fullScreen={fullScreen}
         slots={layout.appSlots}
         onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
-      <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />}
       <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
         <TabBar
           tabs={state.tabs}

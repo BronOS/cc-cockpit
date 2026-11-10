@@ -1,6 +1,6 @@
 // Web access gateway skeleton (main/web/gateway.ts, plan Task 4): off costs nothing, loopback only,
 // and the always-on Host / Origin checks, CSP and no-store on every request and upgrade.
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -13,6 +13,7 @@ import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
+import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
 
 /** A port nothing listens on right now (the OS's pick, always above 1024). */
 async function freePort(): Promise<number> {
@@ -86,7 +87,7 @@ function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: Return
   const accessLog = new AccessLog()
   const devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog })
   const auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog })
-  const gw = new WebGateway({ log: (m) => logs.push(m), loadWs, auth, accessLog, ...over })
+  const gw = new WebGateway({ log: (m) => logs.push(m), loadWs, auth, accessLog, shellDir: writeFakeShellDir(join(dir, 'shell')), ...over })
   gateway = gw
   return { gw, loadWs, logs }
 }
@@ -341,5 +342,145 @@ describe('Origin check (upgrade and state-changing requests)', () => {
     await gw.stop()
     await closed
     expect(gw.status()).toEqual({ state: 'off' })
+  })
+})
+
+describe('the web shell (plan Task 8)', () => {
+  it('serves the page at / and its assets, with the shell CSP; the page is never cached, hashed assets are', async () => {
+    const { port } = await listening()
+    const host = `127.0.0.1:${port}`
+    const page = await http(port, { headers: { Host: host } })
+    expect(page.status).toBe(200)
+    expect(page.body).toBe(FAKE_SHELL_HTML)
+    expect(page.headers['content-type']).toBe('text/html; charset=utf-8')
+    expect(page.headers['cache-control']).toBe('no-store')
+    expect(String(page.headers['content-security-policy'])).toContain("frame-ancestors 'none'")
+    const js = await http(port, { path: '/assets/web-abc123.js', headers: { Host: host } })
+    expect(js.status).toBe(200)
+    expect(js.body).toBe(FAKE_SHELL_JS)
+    expect(js.headers['content-type']).toBe('text/javascript; charset=utf-8')
+    expect(js.headers['cache-control']).toBe('max-age=31536000, immutable')
+    expect(js.headers['x-content-type-options']).toBe('nosniff')
+    expect(String(js.headers['content-security-policy'])).toContain("default-src 'self'")
+    expect((await http(port, { path: '/assets/styles-def456.css', headers: { Host: host } })).headers['content-type']).toBe('text/css; charset=utf-8')
+    expect((await http(port, { path: '/assets/Font-Regular-789.woff2', headers: { Host: host } })).headers['content-type']).toBe('font/woff2')
+    // A query string does not change which file.
+    expect((await http(port, { path: '/?project=abc', headers: { Host: host } })).body).toBe(FAKE_SHELL_HTML)
+    const head = await http(port, { method: 'HEAD', path: '/assets/web-abc123.js', headers: { Host: host } })
+    expect(head.status).toBe(200)
+    expect(head.body).toBe('')
+  })
+
+  it('serves nothing else from the build folder, whatever the path says', async () => {
+    const { port } = await listening()
+    const host = `127.0.0.1:${port}`
+    for (const path of [
+      '/index.html',
+      '/web/index.html',
+      '/assets/',
+      '/assets/../index.html',
+      '/assets/..%2Findex.html',
+      '/assets/%2e%2e%2findex.html',
+      '/assets/..%5Cindex.html',
+      '/assets/sub/web-abc123.js',
+      '/assets/.hidden.js',
+      '/assets/missing.js',
+      '/assets/page.html',
+      '/assets/web-abc123.js.map',
+      '/assets/web-abc123.js%00.png',
+      '/assets/%E0%A4%A'
+    ]) {
+      const res = await http(port, { path, headers: { Host: host } })
+      expect(res.status, path).toBe(404)
+      expect(res.body, path).not.toContain('desktop')
+    }
+  })
+
+  it('refuses an asset that is a symlink out of the assets folder, and a folder named like one', async () => {
+    const port = await freePort()
+    const dir = mkdtempSync(join(tmpdir(), 'ccc-gw-shell-'))
+    dirs.push(dir)
+    const shell = writeFakeShellDir(join(dir, 'shell'))
+    writeFileSync(join(dir, 'secret.js'), 'secret')
+    symlinkSync(join(dir, 'secret.js'), join(shell, 'assets', 'link-1.js'))
+    symlinkSync(join(shell, 'index.html'), join(shell, 'assets', 'link-2.css'))
+    mkdirSync(join(shell, 'assets', 'folder.js'))
+    const { gw } = make({ shellDir: shell })
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'none' }))
+    const host = `127.0.0.1:${port}`
+    for (const path of ['/assets/link-1.js', '/assets/link-2.css', '/assets/folder.js']) {
+      const res = await http(port, { path, headers: { Host: host } })
+      expect(res.status, path).toBe(404)
+      expect(res.body, path).not.toContain('secret')
+    }
+  })
+
+  it('the shell still passes the Host check first', async () => {
+    const { port } = await listening()
+    for (const path of ['/', '/assets/web-abc123.js']) {
+      const res = await http(port, { path, headers: { Host: `evil.example:${port}` } })
+      expect(res.status, path).toBe(403)
+      expect(res.body).not.toContain('web shell')
+    }
+  })
+
+  it('without a build, / says so (503) and assets are 404', async () => {
+    for (const shellDir of [undefined, '/nonexistent/cc-cockpit-out/renderer']) {
+      const port = await freePort()
+      const { gw } = make({ shellDir })
+      await gw.apply(webAccessOf({ enabled: true, port, mode: 'none' }))
+      const host = `127.0.0.1:${port}`
+      const page = await http(port, { headers: { Host: host } })
+      expect(page.status).toBe(503)
+      expect(page.body).toContain('npm run build')
+      expect((await http(port, { path: '/assets/web-abc123.js', headers: { Host: host } })).status).toBe(404)
+      await gw.stop()
+    }
+  })
+})
+
+describe('the open projects (the web picker)', () => {
+  it('lists the open project windows as id, name and path only', async () => {
+    const openProjects = vi.fn(() => [
+      { id: 'p1', name: 'one', path: '/work/one' },
+      { id: 'p2', name: 'two', path: '/work/two', secret: 'x' } as unknown as { id: string; name: string; path: string }
+    ])
+    const { port } = await listening({}, { openProjects })
+    const res = await http(port, { path: '/api/projects', headers: { Host: `127.0.0.1:${port}` } })
+    expect(res.status).toBe(200)
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(JSON.parse(res.body)).toEqual({
+      projects: [
+        { id: 'p1', name: 'one', path: '/work/one' },
+        { id: 'p2', name: 'two', path: '/work/two' }
+      ]
+    })
+  })
+
+  it('is read afresh on every request, empty when nothing is open, and a failing source is an empty list', async () => {
+    let open: Array<{ id: string; name: string; path: string }> = []
+    let fail = false
+    const { port, logs } = await listening({}, {
+      openProjects: () => {
+        if (fail) throw new Error('window table gone')
+        return open
+      }
+    })
+    const host = `127.0.0.1:${port}`
+    expect(JSON.parse((await http(port, { path: '/api/projects', headers: { Host: host } })).body)).toEqual({ projects: [] })
+    open = [{ id: 'p1', name: 'one', path: '/work/one' }]
+    expect(JSON.parse((await http(port, { path: '/api/projects', headers: { Host: host } })).body).projects).toHaveLength(1)
+    fail = true
+    const res = await http(port, { path: '/api/projects', headers: { Host: host } })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ projects: [] })
+    expect(res.body).not.toContain('window table')
+    expect(logs.some((l) => l.includes('window table gone'))).toBe(true)
+  })
+
+  it('a POST to it is refused without the page\'s Origin', async () => {
+    const { port } = await listening({}, { openProjects: () => [] })
+    const res = await http(port, { method: 'POST', path: '/api/projects', headers: { Host: `127.0.0.1:${port}`, Origin: 'http://evil.example' } })
+    expect(res.status).toBe(403)
   })
 })
