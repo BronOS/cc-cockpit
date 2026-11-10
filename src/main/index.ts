@@ -1401,7 +1401,10 @@ function start(): void {
   const router = new IpcRouter(
     ipcMain,
     (senderId) => windows.resolveSender(senderId),
-    isAppPage
+    isAppPage,
+    undefined,
+    // A remote view's bound window must still be open on its project (re-checked per call).
+    (windowId, projectId) => windows.windowIdOf(projectId) === windowId
   )
 
   registerCoreHandlers(router, {

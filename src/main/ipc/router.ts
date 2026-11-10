@@ -176,6 +176,7 @@ export class IpcRouter {
   private readonly resolveSender: (senderId: number) => SenderContext | undefined
   private readonly isAppPage: (url: string) => boolean
   private readonly log: (message: string) => void
+  private readonly isOpenProjectWindow: (windowId: number, projectId: string) => boolean
   /**
    * Every handler, by channel, so a web frame reaches the very function an Electron invoke does
    * (`dispatch`). A Map, not an object: a channel name from a frame is untrusted, and `__proto__`
@@ -183,17 +184,24 @@ export class IpcRouter {
    */
   private readonly routes = new Map<string, Route>()
 
-  /** `isAppPage` is normally `appPageMatcher(<where the shell UI is loaded from>)`. */
+  /**
+   * `isAppPage` is normally `appPageMatcher(<where the shell UI is loaded from>)`.
+   * `isOpenProjectWindow` says whether that window is open now and still holds that project; a web
+   * call is checked against it every time, as an Electron call re-resolves its sender. The default
+   * answers no, so a router nobody told about windows refuses every web call (fail closed).
+   */
   constructor(
     ipc: IpcMainLike,
     resolveSender: (senderId: number) => SenderContext | undefined,
     isAppPage: (url: string) => boolean,
-    log: (message: string) => void = (m) => console.warn(m)
+    log: (message: string) => void = (m) => console.warn(m),
+    isOpenProjectWindow: (windowId: number, projectId: string) => boolean = () => false
   ) {
     this.ipc = ipc
     this.resolveSender = resolveSender
     this.isAppPage = isAppPage
     this.log = log
+    this.isOpenProjectWindow = isOpenProjectWindow
   }
 
   /** A handler any window main opened may call (the picker included). */
@@ -257,6 +265,16 @@ export class IpcRouter {
       // remote view.
       if (!remoteAllowed(channel)) {
         this.log(`ipc ${channel}: refused for remote view ${caller.viewId}`)
+        throw new Error(`${channel}: refused`)
+      }
+      // The context was bound at handshake and the gateway closes the socket when its window
+      // closes, but a frame can still arrive in between (the close and the socket drop race), and
+      // the router is the one place for the authority check: a window that is gone, or now holds
+      // another project, is refused here, so `tabs.open` can never spawn for a project no window
+      // holds any more.
+      const { windowId, projectId } = caller.context
+      if (!this.isOpenProjectWindow(windowId, projectId)) {
+        this.log(`ipc ${channel}: refused, window ${windowId} of remote view ${caller.viewId} is closed`)
         throw new Error(`${channel}: refused`)
       }
       return {

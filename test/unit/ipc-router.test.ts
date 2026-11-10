@@ -70,16 +70,22 @@ const senders = new Map<number, SenderContext>([
   [13, { kind: 'picker', windowId: 3 }]
 ])
 
-function setup(): { ipc: FakeIpcMain; router: IpcRouter; logs: string[] } {
+function setup(): { ipc: FakeIpcMain; router: IpcRouter; logs: string[]; open: Map<number, string> } {
   const ipc = new FakeIpcMain()
   const logs: string[] = []
+  // Which project each open project window holds; a test deletes or rebinds an entry to close a window.
+  const open = new Map<number, string>([
+    [1, PROJECT_A],
+    [2, PROJECT_B]
+  ])
   const router = new IpcRouter(
     ipc,
     (id) => senders.get(id),
     appPageMatcher({ kind: 'file', path: APP_FILE }),
-    (m) => logs.push(m)
+    (m) => logs.push(m),
+    (windowId, projectId) => open.get(windowId) === projectId
   )
-  return { ipc, router, logs }
+  return { ipc, router, logs, open }
 }
 
 function view(id: string, name: string): ProjectView {
@@ -261,6 +267,38 @@ describe('IpcRouter callers and views', () => {
     }
     // A `yes` channel with no handler registered is an error, not a crash.
     await expect(router.dispatch(caller, 'tabs.list', undefined)).rejects.toThrow(/no handler/)
+  })
+
+  it('refuses a web caller whose window closed or now holds another project', async () => {
+    const { router, logs, open } = setup()
+    let calls = 0
+    router.handleProject('tabs.list', () => {
+      calls++
+      return []
+    })
+    router.handleWindow('window.info', () => {
+      calls++
+      return { kind: 'picker', home: '/h' }
+    })
+    const caller = webCaller(A_CTX, 'web:1')
+    await expect(router.dispatch(caller, 'tabs.list', undefined)).resolves.toEqual([])
+    expect(calls).toBe(1)
+    // The socket outlived its window: every later frame is refused, not run with the stale binding.
+    open.delete(1)
+    await expect(router.dispatch(caller, 'tabs.list', undefined)).rejects.toThrow(/refused/)
+    await expect(router.dispatch(caller, 'window.info', undefined)).rejects.toThrow(/refused/)
+    // The same window id now holding another project does not revive the binding.
+    open.set(1, PROJECT_B)
+    await expect(router.dispatch(caller, 'tabs.list', undefined)).rejects.toThrow(/refused/)
+    expect(calls).toBe(1)
+    expect(logs.join('\n')).toMatch(/window 1 of remote view web:1 is closed/)
+  })
+
+  it('refuses every web call when no window check was given', async () => {
+    const isApp = appPageMatcher({ kind: 'file', path: APP_FILE })
+    const router = new IpcRouter(new FakeIpcMain(), (id) => senders.get(id), isApp, () => {})
+    router.handleProject('tabs.list', () => [])
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'tabs.list', undefined)).rejects.toThrow(/refused/)
   })
 
   it('rejects a throwing handler as a promise, as ipcMain does', async () => {
