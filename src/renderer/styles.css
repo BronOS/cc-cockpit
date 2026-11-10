@@ -297,6 +297,56 @@ iframe:focus-visible {
   gap: 2px;
   padding: 0 8px;
 }
+/* The web access chip (WebAccessChip.tsx): connected devices, or a warning while a risky choice is on. */
+.web-access-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--cc-fg-muted);
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  cursor: pointer;
+}
+.web-access-chip:hover {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+.web-access-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cc-status-waiting);
+}
+.web-access-chip.warn {
+  border-color: color-mix(in srgb, var(--cc-status-needs-permission) 55%, transparent);
+  color: var(--cc-status-needs-permission);
+}
+.web-access-chip.warn .web-access-chip-dot {
+  background: var(--cc-status-needs-permission);
+}
+/* Settings › General › Web access: the link and its QR code. The QR sits on white whatever the theme
+   (a scanner needs dark on light), with the quiet zone drawn into the viewBox. */
+.web-access-link {
+  gap: 16px;
+}
+.web-access-qr {
+  flex: none;
+  width: 148px;
+  height: 148px;
+  border-radius: var(--cc-radius-md);
+}
+.web-access-link-text {
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 
 /* Project colour (Settings › This Project; shared/project-color.ts). TopStrip sets
    `data-project-color` and `--cc-project-color` (a palette token or the custom hex) on the bar only

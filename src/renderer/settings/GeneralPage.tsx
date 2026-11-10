@@ -2,9 +2,11 @@ import { useEffect, useId } from 'react'
 import type { AppearanceView, CccCommandView, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
 import type { TabExitBehavior } from '../../shared/types'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
+import { isWebShell } from '../shell-kind'
 import { DiscussPromptField } from './DiscussPromptField'
 import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
+import { WebAccessSection } from './WebAccessSection'
 import { NumberField } from './TerminalFontSettings'
 import { Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
@@ -301,6 +303,9 @@ export function GeneralPage(): React.JSX.Element {
               </div>
             )}
           </Group>
+
+          {/* Desktop only: a browser view can reach none of web access's channels (`no`-class). */}
+          {!isWebShell() && <WebAccessSection />}
 
           {updates.data && (
             <Group title="Updates">

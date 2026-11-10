@@ -12,6 +12,7 @@
 import { isIP } from 'node:net'
 import { isPlainObject } from '../../shared/guards'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
+import { WEB_MODE_AVAILABLE } from '../../shared/web-access'
 
 /** Unprivileged ports only: below 1024 needs root on Linux, and port 80 would drop out of Host headers. */
 export const WEB_PORT_RANGE = { min: 1024, max: 65535 } as const
@@ -149,4 +150,89 @@ export function listenPlanOf(settings: WebAccessSettings): ListenPlan {
   const plan: ListenPlan = { ok: true, bind: settings.bind, port: settings.port, hosts: settings.hosts }
   if (settings.externalOrigin !== undefined) plan.externalOrigin = settings.externalOrigin
   return plan
+}
+
+export type PatchResult = { ok: true; value: WebAccessSettings } | { ok: false; error: string }
+
+const PATCH_KEYS = ['enabled', 'port', 'externalOrigin', 'hosts', 'mode'] as const
+
+/** A host entry as the error message shows it: the person's text, cut short and on one line. */
+function shown(raw: unknown): string {
+  return JSON.stringify(String(raw).slice(0, 80))
+}
+
+/**
+ * The settings after a change from the Settings page (`settings.webAccessSet`). Unlike `webAccessOf`
+ * (tolerant of a hand-edited file) this is strict: a wrong value is refused with the reason, and
+ * nothing changes, so the page can say what to fix instead of quietly saving a default. Only the
+ * fields in the patch change; the bind and TLS paths are not editable here (plan Task 28), and the
+ * hosts follow the port: an entry that named the old port moves to the new one.
+ */
+export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown): PatchResult {
+  if (!isPlainObject(patch)) return { ok: false, error: 'the change must be an object' }
+  for (const key of Object.keys(patch)) {
+    if (!(PATCH_KEYS as readonly string[]).includes(key)) return { ok: false, error: `unknown field ${shown(key)}` }
+  }
+  const next: WebAccessSettings = { ...current, hosts: [...current.hosts] }
+  if ('enabled' in patch) {
+    if (typeof patch['enabled'] !== 'boolean') return { ok: false, error: 'enabled must be true or false' }
+    next.enabled = patch['enabled']
+  }
+  if ('port' in patch) {
+    if (!isWebPort(patch['port'])) return { ok: false, error: `the port must be a whole number from ${WEB_PORT_RANGE.min} to ${WEB_PORT_RANGE.max}` }
+    if (patch['port'] !== current.port) {
+      const old = `:${current.port}`
+      next.hosts = next.hosts.map((h) => (h.endsWith(old) ? `${h.slice(0, -old.length)}:${patch['port']}` : h))
+    }
+    next.port = patch['port']
+  }
+  if ('externalOrigin' in patch) {
+    const raw = patch['externalOrigin']
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      delete next.externalOrigin
+    } else {
+      const origin = externalOriginOf(raw)
+      if (origin === undefined) return { ok: false, error: `${shown(raw)} is not an origin; use http(s)://name[:port] with no path` }
+      next.externalOrigin = origin
+    }
+  }
+  if ('hosts' in patch) {
+    const raw = patch['hosts']
+    if (!Array.isArray(raw)) return { ok: false, error: 'hosts must be a list' }
+    if (raw.length > MAX_WEB_HOSTS) return { ok: false, error: `at most ${MAX_WEB_HOSTS} hosts` }
+    const hosts: string[] = []
+    for (const entry of raw) {
+      const host = hostEntryOf(entry, next.port)
+      if (host === undefined) return { ok: false, error: `${shown(entry)} is not a host name; use name or name:port` }
+      if (!hosts.includes(host)) hosts.push(host)
+    }
+    next.hosts = hosts
+  }
+  if ('mode' in patch) {
+    const mode = MODES.find((m) => m === patch['mode'])
+    if (mode === undefined) return { ok: false, error: `${shown(patch['mode'])} is not a sign-in mode` }
+    // A mode that is not built yet would leave nobody able to sign in (fails closed, but confusing).
+    if (!WEB_MODE_AVAILABLE[mode] && mode !== current.mode) return { ok: false, error: `the ${mode} mode is not available yet` }
+    next.mode = mode
+  }
+  return { ok: true, value: next }
+}
+
+/**
+ * Plain-words risks of these settings (design-web.md §4.3), for the desktop's warning badge: None on
+ * an address other than loopback, and any mode over plain http on one. Both are refused by
+ * `listenPlanOf` until plan Task 28 lifts the refusal with the confirm, so while that holds this is
+ * empty for every setting that listens; it is kept as the one rule for the badge, never a copy.
+ */
+export function webAccessRisks(settings: WebAccessSettings): string[] {
+  const risks: string[] = []
+  const network = !isLoopbackBind(settings.bind)
+  if (settings.mode === 'none' && network) {
+    risks.push('Sign-in is off on a network address: anyone who can reach it controls this computer.')
+  }
+  const proxyHttp = settings.externalOrigin !== undefined && new URL(settings.externalOrigin).protocol === 'http:' && !isLoopbackHost(new URL(settings.externalOrigin).hostname)
+  if ((network && settings.tls === undefined) || proxyHttp) {
+    risks.push('Plain http on a network: the access link, passwords and everything you type can be read by others on it.')
+  }
+  return risks
 }

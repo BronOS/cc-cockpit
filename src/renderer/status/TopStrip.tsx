@@ -6,6 +6,7 @@ import { FolderGlyph, GearGlyph, PlusGlyph } from '../window-icons'
 import { SlotFrame } from '../zones/SlotFrame'
 import { ProjectDot } from './ProjectDot'
 import { topStripClass } from './strip-order'
+import { WebAccessChip } from './WebAccessChip'
 
 /**
  * The bar across the top of every project window (variant A, "unified bar"): the project's name
@@ -32,7 +33,9 @@ import { topStripClass } from './strip-order'
  * strip (collapsed until connected, nothing without a provider or with the pick "None").
  *
  * The "+" asks main to show the project picker (recent projects + Open Folder), so another project
- * is one click away from any window; it is always there, so the bar is always shown. The gear
+ * is one click away from any window; it is always there, so the bar is always shown.
+ * The web access chip (WebAccessChip) sits before the gear while a browser is connected or a risky
+ * choice is on, and is not drawn otherwise. The gear
  * opens settings; it sits outside the slot's space so a wide strip never pushes it out of view.
  *
  * A project with a colour (Settings › This Project) marks its bar three ways: a 3px line along
@@ -95,6 +98,7 @@ export function TopStrip(props: {
       </nav>
       <div className={meter ? 'titlebar-end has-slot' : 'titlebar-end'}>
         {meter && <SlotFrame key={meter.id} frame={meter} collapseUntilConnected />}
+        <WebAccessChip onOpen={props.onOpenSettings} />
         <button
           type="button"
           className="strip-settings icon-button"

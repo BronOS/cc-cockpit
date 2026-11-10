@@ -38,13 +38,34 @@ describe('REMOTE_CLASS drift', () => {
     'webviews.step',
     'webviews.current',
     'webviews.navigated',
-    'overlays.bounds'
+    'overlays.bounds',
+    // Web access settings and the indicator: a browser must never read the link or widen its access.
+    'settings.webAccess',
+    'settings.webAccessSet',
+    'settings.webAccessLink',
+    'settings.webAccessRegenerate',
+    'settings.webAccessAddDevice',
+    'settings.webDeviceDisconnect',
+    'settings.webDeviceRevoke',
+    'settings.webDevicesRevokeAll',
+    'webAccess.state',
+    'webAccess.changed'
   ])('%s is no', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('no')
   })
 
   it.each(['app.openExternal', 'updates.openRelease', 'notify.soundData'])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
+  })
+})
+
+// Every channel whose name says it manages web access is `no`: a channel added later under these names
+// (`settings.web*`, `webAccess.*`) without thought cannot reach a browser by being classified `yes`.
+describe('web access channels', () => {
+  it('every settings.web* and webAccess.* channel is no', () => {
+    const names = [...INVOKE_CHANNELS, ...EVENT_CHANNELS].filter((c) => c.startsWith('settings.web') || c.startsWith('webAccess.'))
+    expect(names.length).toBeGreaterThanOrEqual(10)
+    for (const name of names) expect(REMOTE_CLASS[name as keyof typeof REMOTE_CLASS], name).toBe('no')
   })
 })
 

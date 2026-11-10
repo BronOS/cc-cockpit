@@ -250,14 +250,15 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `src/shared/ipc.ts` (new `no`-class channels), `package.json` (a pinned QR library)
 - Create: tests next to the components
 
-- [ ] Settings > General > Web access: enable, port, external origin, host list, mode; modes built later (password,
+- [x] Settings > General > Web access: enable, port, external origin, host list, mode; modes built later (password,
       desktop confirm, None or TLS on a network address) shown disabled until Tasks 27–28
-- [ ] the access link behind a Show button (text and QR) and the one-time "add a device" QR; devices list with
+- [x] the access link behind a Show button (text and QR) and the one-time "add a device" QR; devices list with
       Disconnect, Revoke, Revoke all
-- [ ] top-bar indicator of connected devices; a warning badge while a §4.3 risky choice is on
-- [ ] every channel added here is `no` class (remote views cannot change access)
-- [ ] write tests: settings validation, Show hides the token by default, revoke from the list, `no` class drift
-- [ ] run tests - must pass before next task
+- [x] top-bar indicator of connected devices; a warning badge while a §4.3 risky choice is on
+- [x] every channel added here is `no` class (remote views cannot change access)
+- [x] write tests: settings validation, Show hides the token by default, revoke from the list, `no` class drift
+- [x] run tests - must pass before next task
+- ➕ Also created `src/main/web/access-service.ts` (stores, validates, applies), `src/shared/web-access.ts`, `src/renderer/settings/web-access-model.ts` and `qr.ts`, `src/renderer/status/WebAccessChip.tsx`; QR library `qrcode-generator@2.0.4` (no dependencies, drawn as SVG path by React); e2e `test/e2e/web-access-settings.spec.ts`.
 
 ### Task 10: Headless terminals in a worker, packaged [model: opus]
 

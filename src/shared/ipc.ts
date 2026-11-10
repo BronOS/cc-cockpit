@@ -20,6 +20,7 @@ import type { FlagPatch, TabFlag } from './tab-flag'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
+import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -1095,6 +1096,26 @@ export interface IpcInvokeMap {
   'settings.cccInstall': { req: void; res: CccCommandView }
   /** Turn the start-up offer to install `ccc` on or off (Settings and the offer's "Don't ask again"). */
   'settings.cccOfferSet': { req: { value: boolean }; res: void }
+  // Settings › General › Web access (design-web.md §4). Desktop only: every one is `no`-class, so a
+  // remote view can never read the access link or the device list, or widen its own access.
+  /** The web access settings, the gateway's state, the devices and the risks of the current choices. */
+  'settings.webAccess': { req: void; res: WebAccessView }
+  /** Change the fields present in the patch; refused as a whole (an Error with the reason) when one is invalid. */
+  'settings.webAccessSet': { req: { value: WebAccessPatch }; res: WebAccessView }
+  /** The access link (made on first use); only while the gateway listens in the link mode. */
+  'settings.webAccessLink': { req: void; res: WebLinkReply }
+  /** A new access link: the old one and every device that signed in with it stop working. */
+  'settings.webAccessRegenerate': { req: void; res: WebLinkReply }
+  /** A one-time "add a device" link, valid 10 minutes. */
+  'settings.webAccessAddDevice': { req: void; res: WebLinkReply }
+  /** Close a device's sockets; it stays signed in and the page reconnects. False when there is no such device. */
+  'settings.webDeviceDisconnect': { req: { id: string }; res: boolean }
+  /** Sign a device out for good and close its sockets. False when there is no such device. */
+  'settings.webDeviceRevoke': { req: { id: string }; res: boolean }
+  /** Revoke every device; how many were revoked. */
+  'settings.webDevicesRevokeAll': { req: void; res: number }
+  /** The top bar's indicator now; changes arrive as `webAccess.changed`. */
+  'webAccess.state': { req: void; res: WebAccessIndicator }
   /**
    * The start-up question: the link's view when this window should ask whether to install `ccc`,
    * else null. Main decides once per app launch, so only the first window to ask can get an answer.
@@ -1232,6 +1253,8 @@ export interface IpcEventMap {
   'tabs.removed': { tabId: string; gen: number }
   /** The update notice's state changed (a check found a release, a dismissal, the setting). Every window. */
   'updates.changed': UpdateState
+  /** Connected devices or a risky choice changed (desktop windows only; never sent to a remote view). */
+  'webAccess.changed': WebAccessIndicator
   /** The active theme changed (a pick, the OS appearance, a plugin theme added or removed). */
   'theme.changed': Theme
   /** An app setting the shell page applies itself changed (Settings › General or Appearance). */
@@ -1401,6 +1424,15 @@ export const INVOKE_CHANNELS = [
   'settings.cccStatus',
   'settings.cccInstall',
   'settings.cccOfferSet',
+  'settings.webAccess',
+  'settings.webAccessSet',
+  'settings.webAccessLink',
+  'settings.webAccessRegenerate',
+  'settings.webAccessAddDevice',
+  'settings.webDeviceDisconnect',
+  'settings.webDeviceRevoke',
+  'settings.webDevicesRevokeAll',
+  'webAccess.state',
   'ccc.offer',
   'overlays.list',
   'overlays.close',
@@ -1439,6 +1471,7 @@ export const EVENT_CHANNELS = [
   'tabs.removed',
   'theme.changed',
   'updates.changed',
+  'webAccess.changed',
   'prefs.changed',
   'notify.chime',
   'sessions.snapshot',
@@ -1624,6 +1657,18 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settings.cccStatus': 'yes',
   'settings.cccInstall': 'no',
   'settings.cccOfferSet': 'no',
+  // Web access: the whole of it is the desktop's. A remote view that could read the access link, list
+  // or revoke devices, or change the mode, bind or host list would widen its own access (§4.1).
+  'settings.webAccess': 'no',
+  'settings.webAccessSet': 'no',
+  'settings.webAccessLink': 'no',
+  'settings.webAccessRegenerate': 'no',
+  'settings.webAccessAddDevice': 'no',
+  'settings.webDeviceDisconnect': 'no',
+  'settings.webDeviceRevoke': 'no',
+  'settings.webDevicesRevokeAll': 'no',
+  'webAccess.state': 'no',
+  'webAccess.changed': 'no',
   'ccc.offer': 'no',
 
   // Overlays. URL overlays are a WebContentsView on the host's window (a placeholder remotely, §6.1),

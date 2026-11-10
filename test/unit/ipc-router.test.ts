@@ -9,6 +9,7 @@ import {
   registerSlotHandlers,
   registerSettingsPageHandlers,
   registerCccCommandHandlers,
+  registerWebAccessHandlers,
   registerUpdateHandlers,
   registerProjectSettingsHandlers,
   registerSessionHandlers,
@@ -1522,6 +1523,59 @@ describe('registerCccCommandHandlers', () => {
     expect(await ipc.invoke('settings.cccStatus', 11)).toEqual(view)
     expect(await ipc.invoke('settings.cccInstall', 11, [{ path: '/etc/passwd' }])).toMatchObject({ state: 'installed' })
     expect(calls).toEqual(['status', 'install'])
+  })
+})
+
+describe('registerWebAccessHandlers', () => {
+  const WEB_CHANNELS = [
+    'settings.webAccess',
+    'settings.webAccessSet',
+    'settings.webAccessLink',
+    'settings.webAccessRegenerate',
+    'settings.webAccessAddDevice',
+    'settings.webDeviceDisconnect',
+    'settings.webDeviceRevoke',
+    'settings.webDevicesRevokeAll',
+    'webAccess.state'
+  ] as const
+
+  function webAccessSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    const view = { form: { enabled: false, port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const }, bind: '127.0.0.1', gateway: { state: 'off' as const }, devices: [], risks: [] }
+    registerWebAccessHandlers(router, {
+      view: () => (calls.push(['view']), view),
+      set: async (patch) => (calls.push(['set', patch]), view),
+      link: async () => (calls.push(['link']), { ok: true, link: 'http://127.0.0.1:7330/#t=x' }),
+      regenerate: async () => (calls.push(['regenerate']), { ok: false, reason: 'no' }),
+      addDevice: () => (calls.push(['addDevice']), { ok: false, reason: 'no' }),
+      disconnect: (id) => (calls.push(['disconnect', id]), true),
+      revoke: (id) => (calls.push(['revoke', id]), true),
+      revokeAll: () => (calls.push(['revokeAll']), 2),
+      indicator: () => (calls.push(['indicator']), { connected: 1 })
+    })
+    return { ipc, router, calls }
+  }
+
+  it('is for project windows only and hands the handler the payload fields', async () => {
+    const { ipc, calls } = webAccessSetup()
+    await expect(ipc.invoke('settings.webAccess', 13)).rejects.toThrow(/not a project window/)
+    expect(calls).toEqual([])
+    await ipc.invoke('settings.webAccessSet', 11, [{ value: { port: 8000 } }])
+    await ipc.invoke('settings.webDeviceRevoke', 11, [{ id: 'abc' }])
+    await ipc.invoke('settings.webDeviceDisconnect', 11, [{ id: 7 }])
+    expect(await ipc.invoke('settings.webDevicesRevokeAll', 11)).toBe(2)
+    expect(await ipc.invoke('webAccess.state', 11)).toEqual({ connected: 1 })
+    expect(calls).toEqual([['set', { port: 8000 }], ['revoke', 'abc'], ['disconnect', 7], ['revokeAll'], ['indicator']])
+  })
+
+  // Design-web §4.1: a remote view cannot widen its own access. The class is checked before any handler
+  // runs, so even a handler that forgot to look at the caller is unreachable from a browser.
+  it.each(WEB_CHANNELS)('refuses %s from a web caller before the handler', async (channel) => {
+    const { router, calls } = webAccessSetup()
+    const ctx = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+    await expect(router.dispatch(webCaller(ctx, 'web:1'), channel, undefined)).rejects.toThrow(/refused/)
+    expect(calls).toEqual([])
   })
 })
 

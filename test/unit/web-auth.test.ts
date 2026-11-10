@@ -530,6 +530,32 @@ describe('gateway: sockets by device', () => {
     expect(accessLog.recent().filter((e) => e.event === 'connect').map((e) => e.name)).toEqual(['one', 'two'])
   })
 
+  // The desktop's indicator and Disconnect button (plan Task 9): the gateway counts sockets by device,
+  // closes a device's sockets without revoking it, and says when the set changes.
+  it('counts open sockets by device, closes one device\'s sockets on disconnect and keeps it signed in', async () => {
+    const { a, gw, host, origin } = await served()
+    gw.setSocketHandler(() => undefined)
+    const changes: number[] = []
+    const off = gw.onConnectionsChanged(() => changes.push(gw.connections().size))
+    const one = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'one' })
+    const two = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'two' })
+    if (!one.ok || !two.ok) throw new Error('setup')
+    const s1 = await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
+    await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
+    await openSocket(host, origin, `${DEVICE_COOKIE}=${two.cookie}`)
+    expect(gw.connections()).toEqual(new Map([[one.device.id, 2], [two.device.id, 1]]))
+    expect(gw.disconnectDevice('nobody')).toBe(0)
+    expect(gw.disconnectDevice(one.device.id)).toBe(2)
+    await s1.closed
+    await vi.waitFor(() => expect(gw.connections()).toEqual(new Map([[two.device.id, 1]])))
+    // Still signed in: the cookie opens a socket again.
+    expect(devices.list().map((d) => d.name).sort()).toEqual(['one', 'two'])
+    await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
+    expect(gw.connections().size).toBe(2)
+    expect(changes.length).toBeGreaterThanOrEqual(5)
+    off()
+  })
+
   it('leaving None closes the sockets that came in without signing in', async () => {
     const { gw, port, host, origin } = await served({ mode: 'none' })
     gw.setSocketHandler(() => undefined)

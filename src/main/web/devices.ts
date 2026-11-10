@@ -159,6 +159,7 @@ export class DeviceStore {
   private readonly notify: (text: string) => void
   private readonly now: () => number
   private readonly listeners = new Set<RevokedListener>()
+  private readonly changeListeners = new Set<() => void>()
   /** Open sockets per device id (the gateway's reports). In memory only: none survive a restart. */
   private readonly open = new Map<string, number>()
 
@@ -189,6 +190,22 @@ export class DeviceStore {
     return () => this.listeners.delete(listener)
   }
 
+  /** Called after a device is added, revoked or expired (the desktop's list and indicator re-read). */
+  onChanged(listener: () => void): () => void {
+    this.changeListeners.add(listener)
+    return () => this.changeListeners.delete(listener)
+  }
+
+  private changed(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener()
+      } catch {
+        // A listener's failure must not undo the change it hears about.
+      }
+    }
+  }
+
   /** Every live device, newest first. Expired ones are dropped on the way. */
   list(): WebDevice[] {
     this.expire()
@@ -217,6 +234,7 @@ export class DeviceStore {
     this.commit()
     this.accessLog.write({ event: 'sign-in', device: record.id, name: record.name, detail: mode })
     this.notify(`A new device signed in to web access: ${record.name}`)
+    this.changed()
     return { device: publicOf(record), cookie: `${record.id}.${secret}` }
   }
 
@@ -337,6 +355,7 @@ export class DeviceStore {
         // A listener's failure must not keep the others from closing their sockets.
       }
     }
+    this.changed()
     return gone.length
   }
 

@@ -42,6 +42,7 @@ import type { PluginServicesView } from '../../shared/services'
 import type { TabFlag } from '../../shared/tab-flag'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
+import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebLinkReply } from '../../shared/web-access'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
@@ -858,6 +859,36 @@ export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHa
     deps.setOffer(value)
   })
   router.handleProject('ccc.offer', () => deps.offer())
+}
+
+/**
+ * What the web access handlers need (WebAccessService, main/web/access-service.ts). Every channel
+ * here is `no`-class: the router refuses a remote caller before a handler runs, so these are the
+ * desktop's alone and need no check of their own for that.
+ */
+export interface WebAccessHandlerDeps {
+  view(): WebAccessView
+  set(patch: WebAccessPatch): Promise<WebAccessView>
+  link(): Promise<WebLinkReply>
+  regenerate(): Promise<WebLinkReply>
+  addDevice(): WebLinkReply
+  /** `id` is whatever the renderer sent: the service checks the type. */
+  disconnect(id: unknown): boolean
+  revoke(id: unknown): boolean
+  revokeAll(): number
+  indicator(): WebAccessIndicator
+}
+
+export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHandlerDeps): void {
+  router.handleProject('settings.webAccess', () => deps.view())
+  router.handleProject('settings.webAccessSet', (_ctx, payload) => deps.set((payload as { value?: WebAccessPatch } | undefined)?.value as WebAccessPatch))
+  router.handleProject('settings.webAccessLink', () => deps.link())
+  router.handleProject('settings.webAccessRegenerate', () => deps.regenerate())
+  router.handleProject('settings.webAccessAddDevice', () => deps.addDevice())
+  router.handleProject('settings.webDeviceDisconnect', (_ctx, payload) => deps.disconnect((payload as { id?: unknown } | undefined)?.id))
+  router.handleProject('settings.webDeviceRevoke', (_ctx, payload) => deps.revoke((payload as { id?: unknown } | undefined)?.id))
+  router.handleProject('settings.webDevicesRevokeAll', () => deps.revokeAll())
+  router.handleProject('webAccess.state', () => deps.indicator())
 }
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */

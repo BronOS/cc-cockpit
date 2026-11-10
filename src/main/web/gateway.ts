@@ -143,12 +143,49 @@ export class WebGateway {
   private ws: WsModule | undefined
   /** Every handed-out socket and the device it belongs to. */
   private readonly sockets = new Map<WebSocket, WebDevice>()
+  /** Told after a socket is handed out or closes (the desktop's connected-devices indicator). */
+  private readonly connectionListeners = new Set<() => void>()
 
   constructor(private readonly deps: GatewayDeps) {
     deps.auth.devices.onRevoked((ids) => {
       const gone = new Set(ids)
       for (const [ws, device] of this.sockets) if (gone.has(device.id)) ws.terminate()
     })
+  }
+
+  /** The ids of the devices with an open socket, each with its socket count (None's anonymous caller is `none`). */
+  connections(): Map<string, number> {
+    const out = new Map<string, number>()
+    for (const device of this.sockets.values()) out.set(device.id, (out.get(device.id) ?? 0) + 1)
+    return out
+  }
+
+  /** Closes every socket of a device without revoking it (the page reconnects); how many were closed. */
+  disconnectDevice(id: string): number {
+    let closed = 0
+    for (const [ws, device] of this.sockets) {
+      if (device.id !== id) continue
+      ws.terminate()
+      closed++
+    }
+    return closed
+  }
+
+  /** Calls `listener` whenever the set of open sockets changes; returns the unsubscribe. */
+  onConnectionsChanged(listener: () => void): () => void {
+    this.connectionListeners.add(listener)
+    return () => this.connectionListeners.delete(listener)
+  }
+
+  private connectionsChanged(): void {
+    for (const listener of this.connectionListeners) {
+      try {
+        listener()
+      } catch (err) {
+        // The indicator failing must not take a socket down with it.
+        this.deps.log(`web access: connection listener failed: ${errorText(err)}`)
+      }
+    }
   }
 
   /** What the gateway is doing now (for the log, the settings page and tests). */
@@ -466,10 +503,12 @@ export class WebGateway {
       const tracked = device.mode !== 'none'
       if (tracked) this.deps.auth.devices.socketOpened(device.id)
       this.deps.accessLog.write({ event: 'connect', device: device.id, name: device.name })
+      this.connectionsChanged()
       ws.on('close', () => {
         this.sockets.delete(ws)
         if (tracked) this.deps.auth.devices.socketClosed(device.id)
         this.deps.accessLog.write({ event: 'disconnect', device: device.id, name: device.name })
+        this.connectionsChanged()
       })
       // `ws` reports an oversize or malformed frame as an 'error' on the socket (after sending the
       // close code to the client): unheard, it would be an uncaught exception in main.

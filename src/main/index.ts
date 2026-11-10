@@ -53,6 +53,7 @@ import {
   registerSettingsPageHandlers,
   registerSessionHandlers,
   registerCccCommandHandlers,
+  registerWebAccessHandlers,
   registerProjectSettingsHandlers,
   registerUpdateHandlers,
   registerSettingsHandlers,
@@ -148,8 +149,8 @@ import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
 import { openProjectEntries, WebConnections, windowSnapshot } from './web/connection'
+import { WebAccessService } from './web/access-service'
 import { WebGateway } from './web/gateway'
-import { webAccessOf } from './web/settings'
 import { desktopViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
@@ -1237,6 +1238,23 @@ function start(): void {
     // The web picker lists what a remote view can bind to: projects with a window open now.
     openProjects: () => openProjectEntries(windows, (projectId) => registry.get(projectId))
   })
+  // Settings › General › Web access and the top bar's indicator (every channel `no`-class: desktop
+  // windows only, so toAll reaches the picker and project windows and never a browser).
+  const webAccess = new WebAccessService({
+    gateway: webGateway,
+    auth: webAuth,
+    read: () => registry.app.data.webAccess,
+    write: (next) => {
+      registry.app.update((a) => {
+        // Only the editable fields; the stored bind and TLS paths stay as the file has them.
+        const stored: NonNullable<typeof a.webAccess> = { ...a.webAccess, enabled: next.enabled, port: next.port, hosts: next.hosts, mode: next.mode }
+        if (next.externalOrigin !== undefined) stored.externalOrigin = next.externalOrigin
+        else delete stored.externalOrigin
+        a.webAccess = stored
+      })
+    },
+    emit: (indicator) => views.toAll('webAccess.changed', indicator)
+  })
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
@@ -1813,6 +1831,7 @@ function start(): void {
       return cccCommand.view()
     }
   })
+  registerWebAccessHandlers(router, webAccess)
   registerUpdateHandlers(router, {
     state: updateState,
     setEnabled: (value) => {
@@ -2258,6 +2277,7 @@ function start(): void {
     devWatch.dispose()
     hosts.disposeAll()
     void socket.stop()
+    webAccess.dispose()
     void webGateway.stop()
     sessionGist.dispose()
     rateLimits.dispose()
@@ -2291,7 +2311,7 @@ function start(): void {
       await socket.start()
       updateChecker.start()
       // Not awaited: a port in use only logs, and no window waits for the gateway.
-      void webGateway.apply(webAccessOf(registry.app.data.webAccess))
+      void webAccess.apply()
       // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
       // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
       // build/ sits two levels above out/main. A missing file only leaves the default icon.
