@@ -119,6 +119,15 @@ describe('off', () => {
 })
 
 describe('start and stop with the setting', () => {
+  it('binds the literal loopback address for localhost and accepts a bracketed ::1 bind as ::1', async () => {
+    const port = await freePort()
+    const { gw } = make()
+    expect(await gw.apply(webAccessOf({ enabled: true, port, bind: 'localhost' }))).toEqual({ state: 'listening', bind: 'localhost', port })
+    expect(gw.address()?.address).toBe('127.0.0.1')
+    expect(webAccessOf({ bind: '[::1]' }).bind).toBe('::1')
+    await gw.stop()
+  })
+
   it('starts on, stops off, loads ws once', async () => {
     const port = await freePort()
     const { gw, loadWs } = make()

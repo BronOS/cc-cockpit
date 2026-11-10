@@ -105,7 +105,7 @@ export function externalOriginOf(raw: unknown): string | undefined {
 export function webAccessOf(stored: unknown): WebAccessSettings {
   const s = isPlainObject(stored) ? stored : {}
   const port = isWebPort(s['port']) ? s['port'] : DEFAULT_WEB_PORT
-  const bind = typeof s['bind'] === 'string' && s['bind'].trim() !== '' ? s['bind'].trim().toLowerCase() : DEFAULT_WEB_BIND
+  const bind = typeof s['bind'] === 'string' && s['bind'].trim() !== '' ? s['bind'].trim().toLowerCase().replace(/^\[(.*)\]$/, '$1') : DEFAULT_WEB_BIND
   const hosts: string[] = []
   if (Array.isArray(s['hosts'])) {
     for (const raw of s['hosts'].slice(0, MAX_WEB_HOSTS)) {

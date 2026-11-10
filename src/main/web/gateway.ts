@@ -129,7 +129,14 @@ export class WebGateway {
       return this.current
     }
     if (this.server && this.plan && this.plan.bind === plan.bind && this.plan.port === plan.port) {
+      const before = this.plan
       this.use(plan)
+      // Sockets were accepted under the old Host list and origin rule and are not tagged with them;
+      // when the rules change, drop them all so a removed name or origin cannot stay connected.
+      // The page reconnects, and is checked again.
+      if (before && (before.externalOrigin !== plan.externalOrigin || before.hosts.join('\n') !== plan.hosts.join('\n'))) {
+        for (const client of this.wss?.clients ?? []) client.terminate()
+      }
       return this.current
     }
     await this.close()
@@ -169,7 +176,9 @@ export class WebGateway {
     this.server = server
     return new Promise((resolve, reject) => {
       server.once('error', reject)
-      server.listen(plan.port, plan.bind, () => {
+      // `localhost` resolves through the resolver (often ::1 only, or something else on an odd host);
+      // bind the literal loopback address so the listener is what the log and allow-list say.
+      server.listen(plan.port, plan.bind === 'localhost' ? '127.0.0.1' : plan.bind, () => {
         server.off('error', reject)
         server.on('error', (err) => this.deps.log(`web access: server error: ${errorText(err)}`))
         resolve()
