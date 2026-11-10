@@ -104,8 +104,31 @@ export const CLOSE = Object.freeze({
   /** Web access was turned off on the host (or set to something it refuses): retrying cannot help. */
   turnedOff: 4503,
   /** The snapshot could not be built (the project record went away mid-handshake). */
-  failed: 4500
+  failed: 4500,
+  /**
+   * This device already has MAX_VIEWS_PER_DEVICE_WINDOW views of the window (browser tabs left
+   * open): one more is refused rather than retried, the person closes one and reloads.
+   */
+  tooManyViews: 4429
 })
+
+/**
+ * Live remote views one device may have of one window (connection.ts, at `hello`). Every view
+ * holds its own port per panel and per slot frame in the plugin host (design-web.md §5.3), so the
+ * views, not the panels, are what bound those; a person with a few browser tabs open is far below it.
+ */
+export const MAX_VIEWS_PER_DEVICE_WINDOW = 8
+
+/** Longest port key (`<pluginId>/<panelId>`, `@slot/<id>`, `@settings/<pluginId>`) a port frame may name. */
+export const MAX_PORT_KEY_LENGTH = 200
+
+/**
+ * Longest panel message a port frame carries, in UTF-16 units: the panel SDK's own cap
+ * (src/sdk/panel-core.ts MAX_PANEL_MESSAGE_LENGTH, and the host's in host/ctx/ui.ts; a unit test
+ * keeps the three equal). Its own constant here because main must not import panel-core (a module
+ * main and the SDK share becomes a chunk the classic-script SDK cannot load, CLAUDE.md).
+ */
+export const MAX_PORT_MESSAGE_LENGTH = 1024 * 1024
 
 /**
  * What a joining view gets in `ready` (design-web.md §5.1): enough to draw the window without a
@@ -126,7 +149,21 @@ export interface WebSnapshot {
 
 export type HelloFrame = { t: 'hello'; v: number; project: string }
 export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
-export type ClientFrame = HelloFrame | InvokeFrame
+
+/**
+ * Panel ports of a remote view (design-web.md §5.3; main/web/port-relay.ts, renderer/web/port-relay.ts).
+ * The shell asks for a port as the desktop does (`panels.connect`, `slots.connect`,
+ * `settingsPage.connect` with a nonce); main keeps the page end of the channel it made and says
+ * `port.open` with the key and the nonce the shell asked with, and from then on both sides relay
+ * that port's messages as `port.msg` and its end as `port.close`. `nonce` tells one load's port from
+ * the next one's of the same key: a late frame of an old load never reaches or closes the new port.
+ * `m` is the panel SDK's JSON text, at most MAX_PORT_MESSAGE_LENGTH.
+ */
+export type PortOpenFrame = { t: 'port.open'; key: string; nonce: number }
+export type PortMsgFrame = { t: 'port.msg'; key: string; nonce: number; m: string }
+export type PortCloseFrame = { t: 'port.close'; key: string; nonce: number }
+
+export type ClientFrame = HelloFrame | InvokeFrame | PortMsgFrame | PortCloseFrame
 
 /** `paths`: where this view loads plugin files and inline overlays (WebPagePaths). */
 export type ReadyFrame = { t: 'ready'; v: number; view: ViewId; snapshot: WebSnapshot; paths: WebPagePaths }
@@ -163,4 +200,13 @@ export type TermDataFrame =
   | { t: 'term.data'; tabId: string; seq: number; data: string }
   | { t: 'term.data'; tabId: string; seq: number; cols: number; rows: number }
 
-export type ServerFrame = ReadyFrame | PathsFrame | ResultFrame | EventFrame | TermSnapshotFrame | TermDataFrame
+export type ServerFrame =
+  | ReadyFrame
+  | PathsFrame
+  | ResultFrame
+  | EventFrame
+  | TermSnapshotFrame
+  | TermDataFrame
+  | PortOpenFrame
+  | PortMsgFrame
+  | PortCloseFrame

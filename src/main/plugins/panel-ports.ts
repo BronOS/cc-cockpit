@@ -346,10 +346,10 @@ export class PanelPortHub<P> {
    * A view is gone (a browser left, or its window closed): its slot instances end and the settings
    * page it held ends, so the providers do not keep serving a page nobody shows. Its panel ports
    * are not tracked here: a desktop page's ends die with its window and the host hears it on each
-   * port, but a remote view's renderer end is held by the gateway relay (Task 22), which must close
-   * it (both sides) when the view leaves, or the host's per-view port stays attached until the
-   * plugin goes. The gateway must also cap live views per window and device (Tasks 20-22): the
-   * per-view keying here removes the per-panel global bound the connect cap used to give.
+   * port; a remote view's page ends are held by its connection's relay (main/web/port-relay.ts),
+   * which closes them all when the view leaves, so each host detaches that view's ports. The
+   * per-view keying here removes the per-panel global bound the connect cap used to give: the
+   * connection caps live views per window and device instead (MAX_VIEWS_PER_DEVICE_WINDOW).
    */
   viewGone(viewId: ViewId): void {
     for (const [key, open] of [...this.openSlots]) {

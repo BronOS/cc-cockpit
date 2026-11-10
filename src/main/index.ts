@@ -1090,8 +1090,8 @@ function start(): void {
     },
     runningPanels: (projectId, pluginId) => hosts.runningPanels(projectId, pluginId),
     toHost: (projectId, pluginId, panelId, port, view) => hosts.sendPanelPort(projectId, pluginId, panelId, port, view),
-    // The view that asked (design-web.md §5.3). A remote view cannot take a port until the gateway
-    // relays them (Task 22): postPort throws and the hub closes both ends.
+    // The view that asked (design-web.md §5.3): a desktop page gets it posted into its webContents,
+    // a remote view's connection keeps it and relays it over the socket (main/web/port-relay.ts).
     toRenderer: (viewId, payload, port) => views.postPort(viewId, PANEL_PORT_CHANNEL, payload, port),
     reload: (projectId, pluginIds) => sendToProject(projectId, 'panels.reload', { pluginIds }),
     close: (port) => port.close(),

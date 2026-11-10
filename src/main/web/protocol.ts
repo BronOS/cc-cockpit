@@ -3,15 +3,20 @@
 // the gateway, the connection and the tests share one definition and the browser bridge (plan
 // Task 7) mirrors it.
 //
-// Frames (later tasks add `port.*` and `settled`):
+// Frames (a later task adds `settled`):
 //   client -> main  { t: 'hello', v, project }        once, first; binds the view to that window
 //                   { t: 'invoke', id, ch, p }        an IPC invoke, answered by a `result`
+//                   { t: 'port.msg', key, nonce, m }  a panel page's message, for its port's host end
+//                   { t: 'port.close', key, nonce }   the page's port ended (its frame unloaded)
 //   main -> client  { t: 'ready', v, view, snapshot } once, after a good hello
 //                   { t: 'result', id, ok: true, v } | { t: 'result', id, ok: false, err }
 //                   { t: 'event', ch, p }             an IPC event (ViewRegistry, view-registry.ts)
 //                   { t: 'term.snapshot', tabId, seq, cols, rows, part, parts, data }
 //                   { t: 'term.data', tabId, seq, data } | { ..., cols, rows }
 //                                                     a tab's terminal stream (view-terminals.ts)
+//                   { t: 'port.open', key, nonce }    the port asked for with `nonce` (panels.connect, ...)
+//                   { t: 'port.msg', key, nonce, m } | { t: 'port.close', key, nonce }
+//                                                     a relayed panel port (port-relay.ts)
 //
 // `Uint8Array` values travel as `{ $bytes: <base64> }` both ways (JSON has no bytes). Everything a
 // client frame holds is untrusted text: the shape is checked here, the channel against the
@@ -20,7 +25,7 @@
 import type { InvokeChannel } from '../../shared/ipc'
 import { EVENT_CHANNELS, INVOKE_CHANNELS, remoteAllowed } from '../../shared/ipc'
 import type { ClientFrame, ServerFrame, TermDataFrame, TermSnapshotFrame } from '../../shared/web-protocol'
-import { MAX_FRAME_BYTES } from '../../shared/web-protocol'
+import { MAX_FRAME_BYTES, MAX_PORT_KEY_LENGTH } from '../../shared/web-protocol'
 import type { MirrorItem, MirrorSnapshot } from '../terminals/mirror-protocol'
 
 // The constants and frame types live in src/shared/web-protocol.ts, which the browser bridge
@@ -31,6 +36,9 @@ export type {
   EventFrame,
   HelloFrame,
   InvokeFrame,
+  PortCloseFrame,
+  PortMsgFrame,
+  PortOpenFrame,
   ReadyFrame,
   ResultFrame,
   ServerFrame,
@@ -116,6 +124,15 @@ export function parseClientFrame(text: string): ClientFrame | { error: string } 
     if (typeof f.ch !== 'string' || f.ch.length === 0 || f.ch.length > MAX_CHANNEL) return { error: 'bad invoke channel' }
     // Only the payload is passed on, never the frame: nothing else in it reaches a handler.
     return { t: 'invoke', id: f.id, ch: f.ch, p: f.p }
+  }
+  if (f.t === 'port.msg' || f.t === 'port.close') {
+    // Shape only: whether the view holds a port of that key and nonce is the relay's look-up, and
+    // the message's length its check (a frame is already capped at MAX_FRAME_BYTES by `ws`).
+    if (typeof f.key !== 'string' || f.key === '' || f.key.length > MAX_PORT_KEY_LENGTH) return { error: 'bad port key' }
+    if (typeof f.nonce !== 'number' || !Number.isSafeInteger(f.nonce)) return { error: 'bad port nonce' }
+    if (f.t === 'port.close') return { t: 'port.close', key: f.key, nonce: f.nonce }
+    if (typeof f.m !== 'string') return { error: 'bad port message' }
+    return { t: 'port.msg', key: f.key, nonce: f.nonce, m: f.m }
   }
   return { error: 'unknown frame' }
 }

@@ -108,6 +108,7 @@ describe('frames', () => {
 /** A socket as the connection sees it: frames it sent, how it was closed, frames to feed in. */
 class FakeWs implements WsLike {
   readyState = 1
+  bufferedAmount = 0
   readonly sent: Array<Record<string, unknown>> = []
   closedWith: { code: number; reason: string } | undefined
   private onMessage: ((data: unknown, isBinary: boolean) => void) | undefined

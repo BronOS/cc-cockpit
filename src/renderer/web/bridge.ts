@@ -22,6 +22,9 @@
 //   shell does not ack it), so TerminalSession is the same in both shells. Size items go to the
 //   same listeners as `tabs.data` with `cols`/`rows` and an empty `data` (in stream order), and a
 //   snapshot carries its size: the page draws at the pty's size (per-view sizes, plan Task 15).
+// - Panel ports (design §5.3): main's `port.open` / `port.msg` / `port.close` go to this socket's
+//   PortRelay (port-relay.ts), which hands each port to the panel that asked (`onPort`, the panel
+//   port bus) and relays its messages; a drop closes every port of the old socket.
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -39,6 +42,7 @@ import {
   type WebSnapshot
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
+import { PortRelay, type ChannelLike } from './port-relay'
 
 /** The parts of a browser WebSocket the bridge uses (`WebSocket` itself fits). */
 export interface SocketLike {
@@ -100,6 +104,14 @@ export interface WebBridgeOptions {
    * `paths` frame (a plugin installed or removed). Malformed paths are passed as none.
    */
   onPagePaths?(paths: WebPagePaths): void
+  /**
+   * A panel, slot or settings page port main opened for this view (`port.open`): hand it to the
+   * request that asked with `key` and `nonce` (panel-port-bus.ts deliverPanelPort); false when none
+   * waits. Absent: every port is refused (closed at once).
+   */
+  onPort?(key: string, nonce: number, port: MessagePort): boolean
+  /** The channel factory for relayed ports (tests); `new MessageChannel()` by default. */
+  createChannel?(): ChannelLike
 }
 
 /** Main's paths, checked: string prefixes under the gateway's own paths only, else none. */
@@ -156,7 +168,8 @@ const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
   [CLOSE.noProject, 'This project is not open on the host.'],
   [CLOSE.windowClosed, 'The project window was closed on the host.'],
   [CLOSE.version, 'The cockpit on the host was updated. Reload the page.'],
-  [CLOSE.turnedOff, 'Web access was turned off on the host.']
+  [CLOSE.turnedOff, 'Web access was turned off on the host.'],
+  [CLOSE.tooManyViews, 'This browser has too many views of this project open. Close one, then reload this page.']
 ])
 
 /** The socket URL for a page loaded from `location` (same host, ws or wss to match http or https). */
@@ -274,6 +287,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   let epoch = 0
   // Snapshot parts received so far per tab (the current socket's; a new socket starts empty).
   let snapParts = new Map<string, { seq: number; parts: number; cols: number; rows: number; data: string[] }>()
+  // The current socket's relayed panel ports (a new socket starts with none).
+  let ports: PortRelay | undefined
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -313,6 +328,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     socket = undefined
     clearReadyTimer()
     rejectAll()
+    ports?.closeAll()
+    ports = undefined
     epoch += 1
     if (readyAt !== undefined && timers.now() - readyAt >= stableMs) attempt = 0
     readyAt = undefined
@@ -432,6 +449,25 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     }
     if (f.t === 'term.snapshot' || f.t === 'term.data') {
       if (status.state === 'ready') onTerminalFrame(f)
+      return
+    }
+    if (status.state !== 'ready' || !ports) return
+    if (f.t === 'port.open') ports.open(f.key, f.nonce)
+    else if (f.t === 'port.msg') ports.message(f.key, f.nonce, f.m)
+    else if (f.t === 'port.close') ports.remoteClosed(f.key, f.nonce)
+  }
+
+  /** A port frame on socket `s`; false when it did not go out (the socket is not this one or not open, or over the cap). */
+  const sendPortFrame = (s: SocketLike, frame: ClientFrame): boolean => {
+    if (s !== socket || s.readyState !== OPEN) return false
+    const text = encodeClientFrame(frame)
+    // Main would close the socket (1009) on a frame this big; only this message is lost.
+    if (utf8Length(text) > MAX_FRAME_BYTES) return false
+    try {
+      s.send(text)
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -449,6 +485,12 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     socket = s
     epoch += 1
     snapParts = new Map()
+    ports?.closeAll()
+    ports = new PortRelay({
+      send: (frame) => sendPortFrame(s, frame),
+      deliver: (key, nonce, port) => options.onPort?.(key, nonce, port) ?? false,
+      ...(options.createChannel ? { createChannel: options.createChannel } : {})
+    })
     readyTimer = timers.setTimeout(() => {
       readyTimer = undefined
       if (s === socket) s.close()
@@ -547,6 +589,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       const s = socket
       socket = undefined
       rejectAll()
+      ports?.closeAll()
+      ports = undefined
       s?.close()
     }
   }

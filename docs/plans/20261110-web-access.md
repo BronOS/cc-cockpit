@@ -489,14 +489,20 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/web/connection.ts` (`port.*` frames)
 - Create: `test/unit/web-port-relay.test.ts`
 
-- [ ] main keeps the page end of the `MessageChannelMain` for a remote view and relays `port.open`/`port.msg`/
+- [x] main keeps the page end of the `MessageChannelMain` for a remote view and relays `port.open`/`port.msg`/
       `port.close`; refused connects answered with `port.close`; per-panel queue limit
-- [ ] the browser shell creates a `MessageChannel` per panel load it started and hands one end in with the SDK's
+- [x] the browser shell creates a `MessageChannel` per panel load it started and hands one end in with the SDK's
       `cc-plugin.port` message; the panel SDK is unchanged
-- [ ] any frame load the shell did not start resets `src` to the canonical path before a port (cap: 5 resets in 10 s)
-- [ ] on a view leaving (`viewGone`) the relay closes its page ends (both sides) so the host's per-view port detaches; cap live remote views per window and device (`PanelPorts` no longer bounds panel instances globally)
-- [ ] write tests: relay round trip, refused connect, a navigated frame gets no port, the reset cap, theme delivery, close on view gone
-- [ ] run tests - must pass before next task
+- [x] any frame load the shell did not start resets `src` to the canonical path before a port (cap: 5 resets in 10 s)
+- [x] on a view leaving (`viewGone`) the relay closes its page ends (both sides) so the host's per-view port detaches; cap live remote views per window and device (`PanelPorts` no longer bounds panel instances globally)
+- [x] write tests: relay round trip, refused connect, a navigated frame gets no port, the reset cap, theme delivery, close on view gone
+- [x] run tests - must pass before next task
+
+      Note: the shell keeps asking with the desktop's connect calls (`panels.connect` etc. with a nonce); a refused one
+      answers false as on the desktop (no port follows), and a `port.open` nobody waits for any more is answered with
+      `port.close`. Port frames carry the connect's `nonce`. Relay files: `src/main/web/port-relay.ts` (main) and
+      `src/renderer/web/port-relay.ts` (PortRelay, FrameLoads); the inline overlay frame uses FrameLoads too. A
+      device may hold 8 views of one window (`MAX_VIEWS_PER_DEVICE_WINDOW`, close `tooManyViews`, final in the bridge).
 
 ### Task 23: Shared asks first-answer-wins [model: opus]
 

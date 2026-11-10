@@ -23,6 +23,7 @@ import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { loadTerminalFont } from '../tabs/terminal-font'
 import { createWebBridge, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
+import { deliverPanelPort } from '../plugins/panel-port-bus'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
 import { linkTokenOf, signIn, signedOutText } from './sign-in'
@@ -145,6 +146,8 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     createSocket: (url) => new WebSocket(url) as unknown as SocketLike,
     // Plugin files and inline overlays: the shell maps main's cc-plugin:// URLs through these.
     onPagePaths: setPagePaths,
+    // Panel ports main opens for this view go to the panel that asked, as the preload's do.
+    onPort: deliverPanelPort,
     // Only a definite "device: null" counts as signed out; a failed request means the host is away.
     checkSession: async () => {
       const res = await fetch(SESSION_PATH, { credentials: 'same-origin', cache: 'no-store' })

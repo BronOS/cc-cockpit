@@ -2,7 +2,8 @@
 // `{ type: PANEL_PORT_MESSAGE, panelKey, nonce }` with the port transferred (src/preload/index.ts);
 // this module takes them off the window and hands each to the panel that asked for it with that
 // nonce (PluginPanel; a slot frame, SlotFrame, under its `@slot/<id>` key). A port nobody waits for (the panel reloaded or went away meanwhile) is
-// closed, so the host's end hears the close.
+// closed, so the host's end hears the close. The web shell has no preload: its ports come from the
+// socket relay (web/port-relay.ts) through `deliverPanelPort`, under the same keys and nonces.
 import { PANEL_PORT_MESSAGE } from '../../shared/ipc'
 import type { SettingsPageScope } from '../../shared/manifest'
 import { settingsPagePortKey } from '../../shared/settings-page'
@@ -22,13 +23,20 @@ function onMessage(event: MessageEvent): void {
   if (data?.type !== PANEL_PORT_MESSAGE) return
   const [port] = event.ports
   if (!port) return
-  const waiter = typeof data.panelKey === 'string' ? waiting.get(data.panelKey) : undefined
-  if (!waiter || waiter.nonce !== data.nonce) {
-    port.close()
-    return
-  }
-  waiting.delete(data.panelKey as string)
+  if (!deliverPanelPort(data.panelKey, data.nonce, port)) port.close()
+}
+
+/**
+ * Hand `port` to the request waiting for `panelKey` with `nonce`; false (the caller closes it) when
+ * none does. The preload's posts come through `onMessage`; the web shell's socket relay
+ * (web/port-relay.ts, main's `port.open`) calls this directly.
+ */
+export function deliverPanelPort(panelKey: unknown, nonce: unknown, port: MessagePort): boolean {
+  const waiter = typeof panelKey === 'string' ? waiting.get(panelKey) : undefined
+  if (!waiter || waiter.nonce !== nonce) return false
+  waiting.delete(panelKey as string)
   waiter.take(port)
+  return true
 }
 
 /**

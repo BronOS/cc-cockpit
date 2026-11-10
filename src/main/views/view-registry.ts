@@ -23,8 +23,9 @@ export interface ViewSink<P = unknown> {
   /** Deliver an event (`webContents.send`, or an `event` frame on the socket). */
   send(channel: EventChannel, payload: unknown): void
   /**
-   * Transfer a MessagePort with a message (`webContents.postMessage`). Absent: the view cannot take
-   * a port (a remote view until the gateway relays ports, design-web.md §5.4), and a post throws.
+   * Transfer a MessagePort with a message (`webContents.postMessage`; a remote view's connection
+   * keeps it and relays it, main/web/port-relay.ts). Absent: the view cannot take a port, and a post
+   * throws. Throwing itself (a socket that cannot carry it) is a refusal too.
    */
   postPort?(channel: string, payload: unknown, port: P): void
   /** Gone for good (the webContents destroyed, the socket closed): skipped from then on. */

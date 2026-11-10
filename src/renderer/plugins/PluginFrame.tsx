@@ -1,5 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
+import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
+import { shellPageUrl } from '../web/page-paths'
+import { FrameLoads, type FrameTarget } from '../web/port-relay'
 import { portMessage, themeMessage } from './frame-messages'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -20,6 +23,12 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  * posts to its parent (`ccPanel.slot.setHeight`, `setWidth`). Only messages whose source is this
  * frame's own window reach it, so another frame cannot speak for this one.
  *
+ * In the web shell (design-web.md §5.3, §5.5) the page loads from its HTTP path (page-paths.ts), its
+ * port from main comes through the socket relay (web/port-relay.ts), and only the loads this
+ * component started are served: a page that navigated itself is put back on its own path first
+ * (FrameLoads). A relayed port is released when its page goes, since a browser port has no close
+ * event of its own.
+ *
  * `allowPopups` (plugin overlays only, HtmlOverlay) adds `allow-popups`, and nothing else: sandbox
  * flags only add up down the frame tree, so without it on this frame the reviewer's mail frame inside
  * it (`sandbox="allow-popups"`, no script) could not even ask for the popup that main turns into a
@@ -37,8 +46,11 @@ export function PluginFrame(props: {
   onPageMessage?: (data: unknown) => void
   allowPopups?: boolean
 }): React.JSX.Element {
+  // The web shell loads the page over HTTP (page-paths.ts); undefined there: no path, an empty frame.
+  const url = isWebShell() ? shellPageUrl(props.src) : props.src
   const frame = useRef<HTMLIFrameElement>(null)
-  const cleanup = useRef<(() => void) | undefined>(undefined)
+  /** Which loads get the theme and a port (web/port-relay.ts), made before the first load can fire. */
+  const loads = useRef<FrameLoads | null>(null)
   const connect = useRef(props.connect)
   const intro = useRef(props.intro)
   const onPageMessage = useRef(props.onPageMessage)
@@ -47,6 +59,35 @@ export function PluginFrame(props: {
     intro.current = props.intro
     onPageMessage.current = props.onPageMessage
   })
+
+  // Every load on the desktop, where main blocks a frame navigating; in the web shell only the loads
+  // this component started. A layout effect: it runs in the commit that put the frame in the
+  // document, before any load event of it can fire.
+  useLayoutEffect(() => {
+    const current = new FrameLoads({
+      guard: isWebShell(),
+      portMessage,
+      target: frameTarget(frame),
+      theme: () => {
+        const theme = currentTheme()
+        return theme ? themeMessage(theme, isMac) : undefined
+      },
+      intro: () => intro.current,
+      connect: (deliver) => connect.current(deliver),
+      log: (m) => console.warn(m)
+    })
+    loads.current = current
+    return () => {
+      current.dispose()
+      if (loads.current === current) loads.current = null
+    }
+  }, [])
+
+  // React sets `src` in the commit, before any load event can fire; this runs in the same commit,
+  // so the load it starts counts as the shell's own.
+  useLayoutEffect(() => {
+    loads.current?.started(url)
+  }, [url])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
@@ -58,34 +99,7 @@ export function PluginFrame(props: {
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
-  useEffect(() => {
-    // '*': a sandboxed frame's origin is opaque, there is no origin to name; only this frame's
-    // window receives it.
-    const offTheme = onTheme((theme) => frame.current?.contentWindow?.postMessage(themeMessage(theme, isMac), '*'))
-    return () => {
-      offTheme()
-      cleanup.current?.()
-      cleanup.current = undefined
-    }
-  }, [])
-
-  const onLoad = (): void => {
-    const target = frame.current?.contentWindow
-    if (!target) return
-    const theme = currentTheme()
-    if (theme) target.postMessage(themeMessage(theme, isMac), '*')
-    // A page that navigated itself (allowed in its sandbox) is a new page: it gets a new port.
-    cleanup.current?.()
-    cleanup.current = connect.current((port) => {
-      // The frame may have loaded yet another page meanwhile; the port is for whatever is there.
-      const now = frame.current?.contentWindow
-      if (now) {
-        if (intro.current) now.postMessage(intro.current, '*')
-        now.postMessage(portMessage, '*', [port])
-      }
-      else port.close()
-    })
-  }
+  useEffect(() => onTheme((theme) => loads.current?.themeChanged(themeMessage(theme, isMac))), [])
 
   return (
     <iframe
@@ -93,8 +107,25 @@ export function PluginFrame(props: {
       className={props.className}
       title={props.title}
       sandbox={props.allowPopups === true ? 'allow-scripts allow-popups' : 'allow-scripts'}
-      src={props.src}
-      onLoad={onLoad}
+      src={url}
+      onLoad={() => loads.current?.loaded()}
     />
   )
+}
+
+/** A frame element as FrameLoads drives it. */
+export function frameTarget(frame: { readonly current: HTMLIFrameElement | null }): FrameTarget {
+  return {
+    load: (to) => {
+      if (frame.current) frame.current.src = to
+    },
+    post: (message, transfer) => {
+      const target = frame.current?.contentWindow
+      // '*': a sandboxed frame's origin is opaque, there is no origin to name; only this frame's
+      // window receives it.
+      if (!target) return false
+      target.postMessage(message, '*', transfer ?? [])
+      return true
+    }
+  }
 }

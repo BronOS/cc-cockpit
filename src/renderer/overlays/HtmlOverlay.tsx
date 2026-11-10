@@ -1,8 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { MAX_QUEUED_MESSAGES, READY_MESSAGE } from '../../sdk/panel-core'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
-import { PluginFrame } from '../plugins/PluginFrame'
+import { frameTarget, PluginFrame } from '../plugins/PluginFrame'
+import { isWebShell } from '../shell-kind'
+import { shellPageUrl } from '../web/page-paths'
+import { FrameLoads } from '../web/port-relay'
+
+/** Hands an inline page its MessagePort (transferred alongside); it has no SDK. */
+const INLINE_PORT_MESSAGE = Object.freeze({ type: 'cc-overlay.port' })
 
 /** What the page posts on its port to answer: `port.postMessage({ type: 'result', value })`. */
 interface ResultMessage {
@@ -147,38 +153,62 @@ function PluginOverlay(props: { overlayId: string; title: string; src: string })
 
 function InlineOverlay(props: { overlayId: string; title: string; src: string }): React.JSX.Element {
   const { overlayId } = props
+  // The web shell loads it from the device's overlay path (page-paths.ts); none: an empty frame.
+  const url = isWebShell() ? shellPageUrl(props.src) : props.src
   const frame = useRef<HTMLIFrameElement>(null)
   const channel = useRef<MessageChannel | null>(null)
+  const loads = useRef<FrameLoads | null>(null)
+  // Read when the page talks, so the loads below are made once per mount.
+  const id = useRef(overlayId)
+  useEffect(() => {
+    id.current = overlayId
+  })
+
+  // Loads judged as a plugin frame's (web/port-relay.ts): in the web shell a page that navigated
+  // itself is put back on its path, and only a load the shell started is served.
+  useLayoutEffect(() => {
+    const current = new FrameLoads({
+      guard: isWebShell(),
+      portMessage: INLINE_PORT_MESSAGE,
+      target: frameTarget(frame),
+      connect: (deliver) => {
+        // One port per overlay: a page that loads again (it navigated itself, allowed inside its
+        // sandbox) does not get a second one.
+        if (channel.current) return () => {}
+        const ch = new MessageChannel()
+        channel.current = ch
+        let answered = false
+        ch.port1.onmessage = (event: MessageEvent<unknown>) => {
+          // An inline page has no SDK: it says it has drawn with `{ type: 'ready' }` on its port.
+          if (typeOf(event.data) === 'ready') {
+            pageDrawn(id.current)
+            return
+          }
+          if (answered || !isResult(event.data)) return
+          answered = true
+          sendResult(id.current, event.data.value, () => {
+            answered = false
+          })
+        }
+        // The port is the only thing sent, and only this frame's window receives it.
+        deliver(ch.port2)
+        // The page has loaded: main takes the loader away (a `ready: 'load'` overlay, the default).
+        window.cockpit.invoke('overlays.ready', { overlayId: id.current }).catch(() => {})
+        return () => {}
+      }
+    })
+    loads.current = current
+    return () => {
+      current.dispose()
+      if (loads.current === current) loads.current = null
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    loads.current?.started(url)
+  }, [url])
 
   useEffect(() => () => channel.current?.port1.close(), [])
-
-  const onLoad = (): void => {
-    // One port per overlay: a page that navigates itself (allowed inside its sandbox) and loads
-    // again does not get a second one.
-    if (channel.current) return
-    const target = frame.current?.contentWindow
-    if (!target) return
-    const ch = new MessageChannel()
-    channel.current = ch
-    let answered = false
-    ch.port1.onmessage = (event: MessageEvent<unknown>) => {
-      // An inline page has no SDK: it says it has drawn with `{ type: 'ready' }` on its port.
-      if (typeOf(event.data) === 'ready') {
-        pageDrawn(overlayId)
-        return
-      }
-      if (answered || !isResult(event.data)) return
-      answered = true
-      sendResult(overlayId, event.data.value, () => {
-        answered = false
-      })
-    }
-    // '*': a sandboxed frame's origin is opaque, so there is no origin to name. The port is the
-    // only thing sent, and only this frame's window receives it.
-    target.postMessage({ type: 'cc-overlay.port' }, '*', [ch.port2])
-    // The page has loaded: main takes the loader away (a `ready: 'load'` overlay, the default).
-    window.cockpit.invoke('overlays.ready', { overlayId }).catch(() => {})
-  }
 
   return (
     <iframe
@@ -186,8 +216,8 @@ function InlineOverlay(props: { overlayId: string; title: string; src: string })
       className="overlay-html"
       title={props.title}
       sandbox="allow-scripts"
-      src={props.src}
-      onLoad={onLoad}
+      src={url}
+      onLoad={() => loads.current?.loaded()}
     />
   )
 }

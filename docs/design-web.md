@@ -112,7 +112,7 @@ fit); a terminal snapshot larger than that is sent in numbered parts.
 | `hello` / `ready` | both | protocol version; on `ready`, the view id and the window's snapshot (§5.1) |
 | `invoke` / `result` | client → main / back | `id`, `ch`, `p` / `id`, `ok`, `v` or `err` |
 | `event` | main → client | `ch`, `p` |
-| `port.open` / `port.msg` / `port.close` | both | `key` (panel key, `@slot/…`, `@settings/…`), `m` |
+| `port.open` / `port.msg` / `port.close` | main → client / both / both | `key` (panel key, `@slot/…`, `@settings/…`), `nonce` (the connect's), `m` |
 | `term.snapshot` | main → client | `tabId`, `seq` (the last chunk it contains), serialized state, part n of m |
 | `term.data` | main → client | `tabId`, `seq`, data (replaces `tabs.data` for remote views) |
 
@@ -258,6 +258,11 @@ CLI dialogs, panel headers and badges, slot frames.
   shell does (`panel-port-bus.ts`), and pipes the other end over the socket. The panel SDK does not change.
 - **Main side.** For a remote view, the page end of the `MessageChannelMain` stays in main and is relayed to `port.*`
   frames; size cap, JSON only, and a per-panel queue limit.
+- **As built** (plan Task 22): the shell asks with the desktop's own connect calls (`panels.connect`, `slots.connect`,
+  `settingsPage.connect`, each with a nonce); a refused one answers false as on the desktop and no port follows, and
+  an accepted one comes back as `port.open` with that nonce (`main/web/port-relay.ts`, `renderer/web/port-relay.ts`).
+  The shell says `port.close` when a frame's page goes (a browser port has no close event to rely on); main closes
+  every end a view held when it leaves, and a device may hold at most 8 views of one window.
 
 ### 5.4 Overlays and settings pages
 

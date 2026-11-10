@@ -20,16 +20,23 @@
 // and a `paths` frame replaces them when the installed plugins change (`pathsChanged`). The
 // gateway serves a path only while its device has a view bound here (`deviceViews`).
 //
+// Panel ports (Task 22, design-web.md §5.3): the view's sink takes the page end of each panel,
+// slot and settings page channel main makes for it (`postPort`), and port-relay.ts relays it as
+// `port.*` frames; the view leaving closes every end it held. A device may hold at most
+// MAX_VIEWS_PER_DEVICE_WINDOW views of one window: each view adds a host port per panel and slot,
+// so the views are what bound them (a `hello` past the cap is closed `tooManyViews`).
+//
 // No `ws` import: the gateway hands in its socket as `WsLike`, tests pass a fake.
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
 import { remoteViewId, type ViewId } from '../../shared/views'
-import type { WebPagePaths, WebProjectEntry } from '../../shared/web-protocol'
+import { MAX_VIEWS_PER_DEVICE_WINDOW, type WebPagePaths, type WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
 import type { ViewSink } from '../views/view-registry'
 import type { WebDevice } from './devices'
+import { PortRelay } from './port-relay'
 import { type TerminalSource, ViewTerminals } from './view-terminals'
 import {
   CLOSE,
@@ -40,6 +47,9 @@ import {
   MAX_FRAME_BYTES,
   parseClientFrame,
   PROTOCOL_VERSION,
+  type PortCloseFrame,
+  type PortMsgFrame,
+  type PortOpenFrame,
   type ServerFrame,
   type WebSnapshot
 } from './protocol'
@@ -47,6 +57,8 @@ import {
 /** The parts of a `ws` WebSocket a connection uses. */
 export interface WsLike {
   readonly readyState: number
+  /** Bytes queued and not sent yet (port-relay.ts drops a panel's port past its high water). */
+  readonly bufferedAmount: number
   send(data: string): void
   close(code?: number, reason?: string): void
   on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): unknown
@@ -138,7 +150,9 @@ export class WebConnections {
 
   accept(ws: WsLike, device: WebDevice): WebConnection {
     const viewId = remoteViewId(this.nextView++)
-    const conn = new WebConnection(ws, device, viewId, this.deps, () => this.open.delete(viewId))
+    const conn = new WebConnection(ws, device, viewId, this.deps, () => this.open.delete(viewId), (deviceId, windowId) =>
+      this.boundViews(deviceId, windowId)
+    )
     this.open.set(viewId, conn)
     return conn
   }
@@ -154,6 +168,13 @@ export class WebConnections {
       if (bound) out.push(bound)
     }
     return out
+  }
+
+  /** How many open views `deviceId` has bound to `windowId` (the cap at `hello`). */
+  private boundViews(deviceId: string, windowId: number): number {
+    let n = 0
+    for (const conn of this.open.values()) if (conn.deviceId === deviceId && conn.binding()?.windowId === windowId) n++
+    return n
   }
 
   /** The installed plugins changed: every bound view whose paths differ now gets a `paths` frame. */
@@ -194,6 +215,8 @@ export class WebConnection {
   private pending = 0
   private removeView: (() => void) | undefined
   private terminals: ViewTerminals | undefined
+  /** The page ends of this view's panel ports (made at `hello`; every end closes when the view goes). */
+  private ports: PortRelay | undefined
   /**
    * Tabs whose terminal frames failed and have not been resynced since: a second failure before the
    * resync's snapshot goes out closes the view. A snapshot sent whole clears the tab (`synced`), so
@@ -209,7 +232,8 @@ export class WebConnection {
     private readonly device: WebDevice,
     readonly viewId: ViewId,
     private readonly deps: WebConnectionDeps,
-    private readonly onGone: () => void
+    private readonly onGone: () => void,
+    private readonly boundViews: (deviceId: string, windowId: number) => number = () => 0
   ) {
     this.helloTimer = setTimeout(() => this.close(CLOSE.noHello, 'no hello'), deps.helloTimeoutMs ?? HELLO_TIMEOUT_MS)
     ws.on('message', (data, isBinary) => this.message(data, isBinary))
@@ -254,6 +278,8 @@ export class WebConnection {
       return this.hello(frame.v, frame.project)
     }
     if (!this.caller) return this.close(CLOSE.badFrame, 'hello first')
+    if (frame.t === 'port.msg') return this.ports?.fromPage(frame.key, frame.nonce, frame.m)
+    if (frame.t === 'port.close') return this.ports?.closeFromPage(frame.key, frame.nonce)
     this.invoke(this.caller, frame.id, frame.ch, frame.p)
   }
 
@@ -263,6 +289,12 @@ export class WebConnection {
     const windowId = this.deps.windowIdOf(projectId)
     // Not logged with the id itself: it is whatever the page sent.
     if (windowId === undefined) return this.close(CLOSE.noProject, 'project not open')
+    // Counted before this view is bound (it is not one of them yet). A device past the cap is told
+    // so, and the page stops instead of retrying (bridge.ts FINAL_CLOSES).
+    if (this.boundViews(this.device.id, windowId) >= MAX_VIEWS_PER_DEVICE_WINDOW) {
+      this.deps.log(`web access: view ${this.viewId} refused: device ${this.device.id} has ${MAX_VIEWS_PER_DEVICE_WINDOW} views of window ${windowId}`)
+      return this.close(CLOSE.tooManyViews, 'too many views')
+    }
     const caller = webCaller({ kind: 'project', windowId, projectId }, this.viewId)
     let snapshot: WebSnapshot
     try {
@@ -276,9 +308,16 @@ export class WebConnection {
     // the snapshot: this runs in `ws`'s message listener, so a throw here (addRemote refuses a
     // duplicate view id, which monotonic ids rule out today) must close the socket, not escape
     // into the receiver as an uncaught exception in main.
+    const ports = new PortRelay({
+      send: (frame) => this.sendPort(frame),
+      buffered: () => this.ws.bufferedAmount,
+      log: (m) => this.deps.log(m)
+    })
     try {
       this.removeView = this.deps.addView(windowId, this.viewId, {
         send: (channel, payload) => this.event(channel, payload),
+        // The page end of a panel, slot or settings page port main made for this view (panel-ports.ts).
+        postPort: (channel, payload, port) => ports.take(channel, payload, port),
         isClosed: () => this.closed,
         windowClosed: () => this.close(CLOSE.windowClosed, 'window closed')
       })
@@ -287,6 +326,7 @@ export class WebConnection {
       return this.close(CLOSE.failed, 'bind failed')
     }
     this.caller = caller
+    this.ports = ports
     // Joined tab by tab as the view selects them; nothing is sent before `ready` (a select is an invoke).
     this.terminals = new ViewTerminals({
       mirror: this.deps.mirror,
@@ -402,6 +442,21 @@ export class WebConnection {
     this.ws.send(text)
   }
 
+  /**
+   * A port frame: false when it did not go out (closing socket, or over MAX_FRAME_BYTES). Unlike an
+   * event, an oversize panel message costs only its port (port-relay.ts closes it), never the view.
+   */
+  private sendPort(frame: PortOpenFrame | PortMsgFrame | PortCloseFrame): boolean {
+    if (this.closed || this.ws.readyState !== OPEN) return false
+    const text = encodeFrame(frame)
+    if (frameBytes(text) > MAX_FRAME_BYTES) {
+      this.deps.log(`web access: view ${this.viewId}: panel ${frame.key} message over ${MAX_FRAME_BYTES} bytes, its port closed`)
+      return false
+    }
+    this.ws.send(text)
+    return true
+  }
+
   private close(code: number, reason: string): void {
     if (this.closed) return
     this.gone()
@@ -415,6 +470,10 @@ export class WebConnection {
     clearTimeout(this.helloTimer)
     this.terminals?.dispose()
     this.terminals = undefined
+    // Every page end this view held closes, so each plugin host detaches this view's ports (the
+    // socket is gone: nothing is sent). Before viewGone, which ends the view's slot instances.
+    this.ports?.closeAll()
+    this.ports = undefined
     this.removeView?.()
     this.removeView = undefined
     if (this.caller) {
