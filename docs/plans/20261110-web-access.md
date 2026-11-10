@@ -489,7 +489,8 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - [ ] the browser shell creates a `MessageChannel` per panel load it started and hands one end in with the SDK's
       `cc-plugin.port` message; the panel SDK is unchanged
 - [ ] any frame load the shell did not start resets `src` to the canonical path before a port (cap: 5 resets in 10 s)
-- [ ] write tests: relay round trip, refused connect, a navigated frame gets no port, the reset cap, theme delivery
+- [ ] on a view leaving (`viewGone`) the relay closes its page ends (both sides) so the host's per-view port detaches; cap live remote views per window and device (`PanelPorts` no longer bounds panel instances globally)
+- [ ] write tests: relay round trip, refused connect, a navigated frame gets no port, the reset cap, theme delivery, close on view gone
 - [ ] run tests - must pass before next task
 
 ### Task 23: Shared asks first-answer-wins [model: opus]
