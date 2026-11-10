@@ -186,6 +186,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const size = typeof cols === 'number' && typeof rows === 'number' ? { cols, rows } : undefined
       sessions.write(tabId, data, reset === true, size, local === true)
     })
+    // Who typed last (TerminalView shows it when that was another view).
+    const offTyped = window.cockpit.on('tabs.typed', ({ tabId, viewId, device }) => {
+      dispatch({ type: 'typed', tabId, typedBy: { viewId, device } })
+    })
     const offExit = window.cockpit.on('tabs.exit', ({ tabId, code, signal, gen }) => {
       dispatch({ type: 'exited', tabId, exit: { code, signal }, gen })
     })
@@ -218,6 +222,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
     return () => {
       offData()
+      offTyped()
       offExit()
       offRemoved()
       offSelect()

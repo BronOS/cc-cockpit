@@ -150,6 +150,14 @@ export class WebConnections {
   select(viewId: ViewId, tabId: string): void {
     this.open.get(viewId)?.terminalSelect(tabId)
   }
+
+  /**
+   * The name of the device behind an open view (TabInfo.typedBy), as it was when the view
+   * connected; undefined for a view that is gone. The requester's own text, plain (devices.ts).
+   */
+  deviceName(viewId: ViewId): string | undefined {
+    return this.open.get(viewId)?.deviceName
+  }
 }
 
 export class WebConnection {
@@ -176,6 +184,11 @@ export class WebConnection {
     this.helloTimer = setTimeout(() => this.close(CLOSE.noHello, 'no hello'), deps.helloTimeoutMs ?? HELLO_TIMEOUT_MS)
     ws.on('message', (data, isBinary) => this.message(data, isBinary))
     ws.on('close', () => this.gone())
+  }
+
+  /** The signed-in device's name (TabInfo.typedBy). */
+  get deviceName(): string {
+    return this.device.name
   }
 
   /** The window and project this view is bound to, once `hello` bound it. */

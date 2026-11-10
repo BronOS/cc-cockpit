@@ -19,7 +19,7 @@ import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService, validSize } from '../pty/pty-service'
-import { stripQueryReplies } from '../sessions/terminal-reports'
+import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import { DesktopFlow, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
@@ -102,6 +102,11 @@ export interface TabManagerOptions {
   now?: () => number
   /** Overrides TAKE_DEBOUNCE_MS (terminal-sizes.ts) for tests. */
   sizeDebounceMs?: number
+  /**
+   * The name of the device behind a view, for TabInfo.typedBy: a browser's device name (the
+   * requester's own text, web/devices.ts), the desktop's. Default: "Desktop" or "a browser".
+   */
+  deviceOf?: (viewId: ViewId) => string
   /** Overrides SHELL_MIN_LIFE_MS; main sets it only under CC_COCKPIT_TEST so e2e can exit fast. */
   shellMinLifeMs?: number
   log?: (message: string) => void
@@ -287,6 +292,8 @@ interface Tab {
   name?: string
   /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
   flag?: TabFlag
+  /** Any kind: the view the person last typed in (TabInfo.typedBy); not saved, the views are gone after a restart. */
+  typedBy?: { viewId: ViewId; device: string }
   /**
    * This tab's socket token, regenerated on every (re)start and gone with the tab. A Claude tab's
    * is a session token (hooks, `session note`, everything); a shell or command tab's is a window
@@ -714,7 +721,22 @@ export class TabManager {
     })
     const rest = answers ? stripQueryReplies(data) : data
     if (rest.length > 0) this.pty.write(tab.id, rest)
+    // The same rule as SessionInfo.typed (terminal-reports.ts): a focus or mouse report, which a
+    // view sends just by being clicked into, is not the person typing there.
+    if (isPersonInput(rest)) this.typedIn(tab, viewId)
     return rest
+  }
+
+  /**
+   * The person typed in `viewId` (design-web.md §5.2 "Input from any view": each view shows which
+   * device typed last in a tab). Told to every view of the project (`tabs.typed`) only when the
+   * view changes, never per key; each page decides whether that is itself (renderer shell-kind.ts).
+   */
+  private typedIn(tab: Tab, viewId: ViewId): void {
+    if (tab.typedBy?.viewId === viewId) return
+    const device = this.options.deviceOf?.(viewId) ?? (isRemoteViewId(viewId) ? 'a browser' : 'Desktop')
+    tab.typedBy = { viewId, device }
+    this.options.emit(tab.projectId, 'tabs.typed', { tabId: tab.id, viewId, device })
   }
 
   /**
@@ -1107,6 +1129,7 @@ function info(tab: Tab): TabInfo {
   if (tab.gen === 0) out.notStarted = true
   if (tab.name !== undefined) out.name = tab.name
   if (tab.flag !== undefined) out.flag = { ...tab.flag }
+  if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }
   if (tab.command) {
     out.label = tab.command.label
     if (isPluginCommand(tab.command)) {

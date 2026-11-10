@@ -18,7 +18,7 @@ import type { WebAccessMode } from '../../shared/types'
 import { SESSION_PATH, WS_PATH } from '../../shared/web-protocol'
 import { App } from '../App'
 import { setPrefs, startPrefs } from '../prefs/prefs-store'
-import { markWebShell } from '../shell-kind'
+import { markWebShell, setOwnView } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { loadTerminalFont } from '../tabs/terminal-font'
@@ -99,6 +99,8 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
 
   useEffect(() => {
     if (status.state !== 'ready') return
+    // Before the shell mounts: "typed last on <device>" is hidden for this view's own typing.
+    setOwnView(status.view)
     const generation = status.generation
     let live = true
     // The first ready subscribes and reads (startTheme/startPrefs); a later one only reads again.

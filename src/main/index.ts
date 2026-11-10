@@ -134,6 +134,7 @@ import { FirstTab } from './tabs/first-tab'
 import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
 import { TabManager } from './tabs/tab-manager'
+import { viewInputHandler } from './tabs/view-input'
 import { isTestRun } from './test-run'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -152,7 +153,7 @@ import { openProjectEntries, WebConnections, windowSnapshot } from './web/connec
 import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
 import { WebGateway } from './web/gateway'
-import { desktopViewId } from '../shared/views'
+import { desktopViewId, isRemoteViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
   asSecondInstanceData,
@@ -1165,6 +1166,8 @@ function start(): void {
       ? { shellMinLifeMs: Number(process.env.CC_COCKPIT_SHELL_MIN_LIFE_MS) || 0 }
       : {}),
     closeOnCleanExit: () => !quitting && tabExitOf(registry.app.data.tabExit) === 'close-clean',
+    // TabInfo.typedBy: a browser by its device's name (webConnections exists by the time anyone types).
+    deviceOf: (viewId): string => (isRemoteViewId(viewId) ? (webConnections.deviceName(viewId) ?? 'a browser') : 'Desktop'),
     emit: sendToProject
   })
   // Saved tabs follow the live ones (restore.ts); the saves go through the record's debounced
@@ -1962,11 +1965,12 @@ function start(): void {
     // the person's first real input sets SessionInfo.typed. The ONLY caller of userInput: the flag
     // means "the person typed" because nothing main or a plugin types ever comes through here.
     // With web access on, the view's own query replies are stripped (main's copy answers them,
-    // TabManager.viewInput); the registry sees what reached the pty.
-    input: (projectId, tabId, data, viewId) => {
-      const sent = tabs.viewInput(projectId, tabId, data, viewId)
-      sessions.userInput(projectId, tabId, sent)
-    },
+    // TabManager.viewInput); the registry sees what reached the pty. A browser's keys take this
+    // same path (tabs/view-input.ts): `typed` and the send gate apply unchanged.
+    input: viewInputHandler({
+      viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
+      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data)
+    }),
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
     fit: (projectId, tabId, viewId) => tabs.fit(projectId, tabId, viewId),

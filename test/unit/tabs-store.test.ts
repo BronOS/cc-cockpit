@@ -331,3 +331,17 @@ describe('tabsReducer', () => {
     })
   })
 })
+
+describe('tabsReducer: who typed last (Task 16)', () => {
+  it('sets typedBy on its tab only, ignores an unknown tab, and a later list carries it as main has it', () => {
+    let s = run([
+      { type: 'added', tab: tab('a') },
+      { type: 'added', tab: tab('b') },
+      { type: 'typed', tabId: 'a', typedBy: { viewId: 'web:2', device: 'Pixel' } },
+      { type: 'typed', tabId: 'gone', typedBy: { viewId: 'web:2', device: 'Pixel' } }
+    ])
+    expect(s.tabs.map((t) => t.typedBy)).toEqual([{ viewId: 'web:2', device: 'Pixel' }, undefined])
+    s = tabsReducer(s, { type: 'typed', tabId: 'a', typedBy: { viewId: 'desktop:1', device: 'Desktop' } })
+    expect(s.tabs[0]!.typedBy).toEqual({ viewId: 'desktop:1', device: 'Desktop' })
+  })
+})

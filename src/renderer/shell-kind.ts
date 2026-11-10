@@ -9,7 +9,11 @@
 //  - the update notice (the host's app updates on the host, `updates.dismiss` is `no`-class).
 // DOM-free (the root element is passed in) so unit tests run it in plain Node.
 
+import { isRemoteViewId } from '../shared/views'
+
 let webShell = false
+/** The web shell's own view id, from main's `ready` (a fresh one per connection). */
+let ownView: string | undefined
 
 /** The part of the root element this sets; structural so tests can pass a fake. */
 export interface ShellRoot {
@@ -30,9 +34,24 @@ export function isWebShell(): boolean {
   return webShell
 }
 
+/** The web shell's view id, told by main in `ready` (web/main.tsx sets it before mounting the shell). */
+export function setOwnView(viewId: string): void {
+  ownView = viewId
+}
+
+/**
+ * Whether `viewId` (TabInfo.typedBy) is this page's own view. The desktop page is its window's only
+ * desktop view, and a tab belongs to one window, so any desktop id there is this page; a web page is
+ * the one view main named in `ready` (two browser tabs on one device are two views).
+ */
+export function isOwnView(viewId: string): boolean {
+  return webShell ? viewId === ownView : !isRemoteViewId(viewId)
+}
+
 /** Test hook: back to the Electron shell. */
 export function resetShellKindForTest(): void {
   webShell = false
+  ownView = undefined
 }
 
 export interface ShellChrome {

@@ -137,6 +137,12 @@ export interface TabInfo {
    * would be a nasty surprise), so it waits, stopped, with "not started: Restart · Close".
    */
   notStarted?: true
+  /**
+   * The view the person last typed in, and its device's name (design-web.md §5.2 "Input from any
+   * view"): the desktop window's or a browser's (`tabs.typed` keeps it current). A page shows the
+   * device when the view is not itself. Absent until the person types; not kept across an app restart.
+   */
+  typedBy?: { viewId: string; device: string }
   /** A command tab's title (its menu entry's label, or a plugin's title, copied when the tab was opened). */
   label?: string
   /** A command tab's command line (copied when opened; Restart runs this copy). Absent on a plugin's command tab. */
@@ -1265,6 +1271,11 @@ export interface IpcEventMap {
    */
   'tabs.data': { tabId: string; data: string; reset?: true; cols?: number; rows?: number; local?: true }
   /**
+   * The person typed in another view of the tab than before (TabInfo.typedBy): sent when the view
+   * changes, not per key. `device` is the requester's own text for a browser: plain text only.
+   */
+  'tabs.typed': { tabId: string; viewId: string; device: string }
+  /**
    * The tab's process ended (`signal` is the terminating signal number, else null). `gen` is that
    * process's TabInfo.gen, so an exit is never applied to a later process of the same tab.
    */
@@ -1492,6 +1503,7 @@ export const INVOKE_CHANNELS = [
 /** Every main -> renderer event channel, for the preload's allow-list (see INVOKE_CHANNELS). */
 export const EVENT_CHANNELS = [
   'tabs.data',
+  'tabs.typed',
   'tabs.exit',
   'tabs.removed',
   'theme.changed',
@@ -1742,6 +1754,8 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.ack': 'adapted',
   'tabs.selected': 'adapted',
   'tabs.data': 'adapted',
+  // Who typed last, for every view of the window (each tells whether that was itself).
+  'tabs.typed': 'yes',
   'tabs.exit': 'yes',
   'tabs.removed': 'yes',
   'tabs.select': 'yes',

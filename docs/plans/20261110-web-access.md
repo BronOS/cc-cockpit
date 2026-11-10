@@ -378,13 +378,20 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Modify: the input path (`tabs.input`), the session registry (last-typed view per tab), web shell key handling
 - Modify: their tests; a note on remapped chords in the guide or features doc
+- ➕ Last-typed view kept in `src/main/tabs/tab-manager.ts` (TabInfo.typedBy, any tab kind) rather than the session
+  registry (Claude tabs only); new event `tabs.typed` (`src/shared/ipc.ts`); created `src/main/tabs/view-input.ts`
+  (the `tabs.input` wiring index.ts uses), `src/renderer/commands/web-keys.ts`, `test/unit/view-input.test.ts`,
+  `test/unit/web-keys.test.ts`; modified `src/main/web/connection.ts` (`deviceName`), `src/main/index.ts`,
+  `src/renderer/shell-kind.ts` (`isOwnView`), `src/renderer/web/main.tsx`, `src/renderer/state/tabs-store.ts`,
+  `src/renderer/tabs/{TabsPane,TerminalView}.tsx`, `src/renderer/commands/keybindings.ts`, `src/renderer/styles.css`,
+  `docs/features.md`
 
-- [ ] input from a remote view goes through the desktop's typing path: `typed` and the send gate apply unchanged
-- [ ] each view shows which device typed last in a tab
-- [ ] the web shell maps chords the browser keeps (Ctrl/Cmd+W, T, N, Tab) to alternatives, documented
-- [ ] write tests: remote input sets `typed`, a plugin send to that tab is then refused and its queue dropped, last-typed
+- [x] input from a remote view goes through the desktop's typing path: `typed` and the send gate apply unchanged
+- [x] each view shows which device typed last in a tab
+- [x] the web shell maps chords the browser keeps (Ctrl/Cmd+W, T, N, Tab) to alternatives, documented
+- [x] write tests: remote input sets `typed`, a plugin send to that tab is then refused and its queue dropped, last-typed
       device per tab
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 17: Ports per view for panels; slots and settings pages by view [model: opus]
 

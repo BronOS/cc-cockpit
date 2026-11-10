@@ -942,6 +942,25 @@ iframe:focus-visible {
 .terminal-fit:hover {
   background: var(--cc-accent-soft);
 }
+/* "Typed last on <device>" (TerminalView): a quiet note in the corner, never in the way of a click. */
+.terminal-typed {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  z-index: 5;
+  max-width: 40%;
+  overflow: hidden;
+  padding: 1px 8px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--cc-bg-banner);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  opacity: 0.85;
+  pointer-events: none;
+}
 .exited-banner {
   flex: none;
   display: flex;

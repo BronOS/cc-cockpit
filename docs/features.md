@@ -445,6 +445,21 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   half a second without the other typing) or that pressed "Fit to this screen". The others draw it at that size, scaled
   down (a smaller font) when it is larger than their pane, with empty space when it is smaller. A
   minimized window or a browser tab in the background never sizes a terminal while another place shows it.
+- Keys typed in a browser are the person's, as on the desktop: they mark the tab as typed in (plugins can no longer
+  send to it) and answer Claude's dialogs. Keys from the desktop and browsers typing at once interleave, as two
+  keyboards on one machine would; there is no turn-taking. When the last keys in a tab came from another place, its
+  terminal shows "Typed last on <device>" (the browser's device name, or "Desktop"); never for your own typing, so
+  never with web access off.
+- A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),
+  with or without Shift, and Ctrl+Tab / Ctrl+Shift+Tab. In a browser the cockpit's commands bound to one of them use
+  the same chord with Alt (Option) added: New Claude Tab Ctrl+Alt+T (⌥⌘T on a Mac), New Shell Tab Ctrl+Alt+Shift+T,
+  Close Tab Ctrl+Alt+W, Close Top Overlay Ctrl+Alt+Shift+W, the tab switcher Ctrl+Alt+Tab. The menus and the palette
+  show the chord that works there; Settings > Keys shows and edits the desktop's. A command whose Alt chord belongs to
+  another command has no chord in the browser (the palette still runs it), and a chord rebound to one the browser
+  leaves alone works as it is. Which chords count follows the browser's system while the table is the host's: a Mac
+  host's Cmd chords are Meta (Windows or Super key) chords in a Linux or Windows browser, which the system often takes,
+  and some Linux desktops take Ctrl+Alt+T for themselves. Ctrl+W typed in a browser terminal (a shell's "delete word")
+  closes the browser tab.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name
   (and no gist) until Claude sets the title again.

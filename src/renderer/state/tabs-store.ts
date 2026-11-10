@@ -77,6 +77,11 @@ export type TabsAction =
    * generation: a flag belongs to the tab, not to a process, and only this page sets it.
    */
   | { type: 'flagged'; tabId: string; flag: TabFlag | null }
+  /**
+   * The person typed in another view of the tab (`tabs.typed`, TabInfo.typedBy). Not by generation
+   * either: it is about the tab, and main sends it only when the view changes.
+   */
+  | { type: 'typed'; tabId: string; typedBy: { viewId: string; device: string } }
 
 export const initialTabsState: TabsState = {
   tabs: [],
@@ -185,6 +190,11 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
         else next.flag = { ...action.flag }
         return next
       })
+      return { ...state, tabs }
+    }
+    case 'typed': {
+      if (!state.tabs.some((t) => t.id === action.tabId)) return state
+      const tabs = state.tabs.map((t) => (t.id === action.tabId ? { ...t, typedBy: { ...action.typedBy } } : t))
       return { ...state, tabs }
     }
     case 'exited': {

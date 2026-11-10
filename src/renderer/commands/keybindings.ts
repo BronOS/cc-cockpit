@@ -7,6 +7,8 @@
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { chordFromEvent, splitChord, type KeyEventLike } from '../../shared/keys'
 import { parseTabCommandId } from '../../shared/tab-commands'
+import { isWebShell } from '../shell-kind'
+import { webKeyTable } from './web-keys'
 
 export type CommandHandler = () => void
 
@@ -32,8 +34,13 @@ export function captureKeys(): () => void {
   }
 }
 
-/** Replace the table with main's resolved one (`commands.list`). */
+/**
+ * Replace the table with main's resolved one (`commands.list`). In the web shell, chords the
+ * browser keeps for itself (Ctrl/Cmd+W, T, N, Ctrl+Tab) move to their Alt alternative first
+ * (web-keys.ts), so the menus and the palette show the chord that works in this browser.
+ */
 export function setCommands(view: CommandsView): void {
+  if (isWebShell()) view = webKeyTable(view, typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'))
   commands = view.commands
   chords = new Map()
   for (const c of view.commands) if (c.key) chords.set(c.key, c.id)
