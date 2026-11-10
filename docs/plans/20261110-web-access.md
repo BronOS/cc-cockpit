@@ -342,13 +342,16 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Modify: `src/main/sessions/terminal-reports.ts`, `src/main/terminals/mirror.ts`, the input path in `tab-manager.ts`
 - Modify: their tests
+- ➕ Also modified `src/main/terminals/mirror-worker.ts` + `mirror-protocol.ts` (`reply`, `color` messages),
+  `src/main/index.ts` (input through `TabManager.viewInput`, theme colours), `docs/features.md`; created
+  `test/unit/terminal-queries.test.ts`
 
-- [ ] with web access on, the mirror's DSR/DA replies go to the pty; OSC 10/11 answered from the theme
-- [ ] strip query replies from every view's input (mixed chunks too); mouse and focus reports pass from any view
-- [ ] web access off: the desktop answers as today
-- [ ] write tests: Claude-style startup queries answered with no view awake, replies from two views never reach the pty,
+- [x] with web access on, the mirror's DSR/DA replies go to the pty; OSC 10/11 answered from the theme
+- [x] strip query replies from every view's input (mixed chunks too); mouse and focus reports pass from any view
+- [x] web access off: the desktop answers as today
+- [x] write tests: Claude-style startup queries answered with no view awake, replies from two views never reach the pty,
       a report glued to a key keeps the key, mouse reports from the second view pass
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 15: Terminal size per view [model: opus]
 

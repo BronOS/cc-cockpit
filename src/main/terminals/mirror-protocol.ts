@@ -40,6 +40,9 @@ export interface MirrorSnapshot extends MirrorState {
   seq: number
 }
 
+/** The colour queries main answers: OSC 10 (foreground), 11 (background), 12 (cursor). */
+export type OscColorIdent = 10 | 11 | 12
+
 export type ToWorker =
   | { t: 'item'; tabId: string; item: MirrorItem }
   /** After a worker restart: a blank terminal at this size, whose stream continues after `seq`. */
@@ -55,6 +58,17 @@ export type FromWorker =
   | { t: 'inspected'; id: number; state: MirrorState | null }
   /** The answer to every `snapshot` request in `ids`; null for a tab the worker does not hold (closed). */
   | { t: 'snapshot'; ids: number[]; tabId: string; snapshot: MirrorSnapshot | null }
+  /**
+   * The tab's headless terminal answered a query of the program (DSR, DA, DECRQM, XTWINOPS 18 and
+   * the like): main writes it to the pty (Task 14, design-web.md §5.2 "Main answers terminal
+   * queries"). Posted in stream order with `color`, so a reply never overtakes an earlier one.
+   */
+  | { t: 'reply'; tabId: string; data: string }
+  /**
+   * The program asked for a colour (OSC 10 foreground, 11 background, 12 cursor, `?`): the headless
+   * terminal has no theme, so main answers it from the app's (mirror.ts `oscColorReply`).
+   */
+  | { t: 'color'; tabId: string; ident: OscColorIdent }
   | { t: 'log'; message: string }
   /** The worker loaded xterm and listens (logged once per start: a packaged build's proof it runs). */
   | { t: 'ready' }

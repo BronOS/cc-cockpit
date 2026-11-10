@@ -19,6 +19,7 @@ import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
+import { stripQueryReplies } from '../sessions/terminal-reports'
 import { DesktopFlow, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
@@ -120,6 +121,11 @@ export interface TerminalTap {
   join?(tabId: string, view: MirrorView): (() => void) | undefined
   /** The newest item numbered for the tab. */
   seq?(tabId: string): number | undefined
+  /**
+   * Whether the tap answers the tab's terminal queries (mirror.ts `answers`, design-web.md §5.2):
+   * then the views' own replies are stripped from their input (`viewInput`).
+   */
+  answers?(tabId: string): boolean
 }
 
 /**
@@ -139,6 +145,11 @@ export interface TerminalFlow {
   running?(): Array<{ tabId: string; cols: number; rows: number }>
   /** Whether the desktop was sent all of the tab's output (DesktopFlow.settled): safe to release. */
   settled?(tabId: string): boolean
+  /**
+   * The tap's answer to a terminal query of the tab's program (mirror.ts, Task 14): written to the
+   * pty as it is, like a terminal's own reply. Not input: it never reaches `typed` or the send gate.
+   */
+  reply?(tabId: string, data: string): void
 }
 
 /**
@@ -374,7 +385,9 @@ export class TabManager {
         }
         return out
       },
-      settled: (id) => this.desktop.settled(id)
+      settled: (id) => this.desktop.settled(id),
+      // An exited tab has no pty: PtyService.write ignores it (the query died with the process).
+      reply: (id, data) => this.pty.write(id, data)
     })
   }
 
@@ -648,10 +661,31 @@ export class TabManager {
     return info(tab)
   }
 
-  /** Renderer keystrokes (the user typing): straight to the PTY. Unknown tabs are ignored. */
+  /** Text for the PTY as it is (the send gate's paste goes here). Unknown tabs are ignored. */
   input(projectId: string, tabId: string, data: string): void {
     const tab = this.find(projectId, tabId)
     if (tab) this.pty.write(tab.id, data)
+  }
+
+  /**
+   * A view's terminal input (the desktop's or a remote view's xterm `onData`: keys, a paste, and
+   * the reports xterm writes by itself). While the terminal tap answers the tab's queries (web
+   * access on, design-web.md §5.2 "Main answers terminal queries"), every view's own query replies
+   * are stripped first (terminal-reports.ts stripQueryReplies): with two views awake the program
+   * would otherwise get two answers to one query and read the second as typed text. Focus and
+   * mouse reports pass from any view, and a reply glued to a key keeps the key. Off, the chunk goes
+   * as it is: the desktop answers as before. Returns what reached the pty ('' for an unknown tab).
+   */
+  viewInput(projectId: string, tabId: string, data: string): string {
+    const tab = this.find(projectId, tabId)
+    if (!tab) return ''
+    let answers = false
+    this.tap((t) => {
+      answers = t.answers?.(tab.id) ?? false
+    })
+    const rest = answers ? stripQueryReplies(data) : data
+    if (rest.length > 0) this.pty.write(tab.id, rest)
+    return rest
   }
 
   resize(projectId: string, tabId: string, cols: number, rows: number): void {

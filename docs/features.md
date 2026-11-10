@@ -432,6 +432,11 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   (Claude on its next update, a shell when it prints again). A desktop tab still catching up on output at that moment
   stays paced by the desktop until it has caught up, so it is not resynced from that blank copy. Turning it off closes the browsers with a notice and waits
   up to 5 seconds for a desktop tab that fell behind to be resynced before it ends the copies.
+- While web access is on, the app itself answers a program's terminal queries (cursor position, device attributes,
+  modes, the foreground, background and cursor colours from the app theme) and the terminals' own answers are dropped.
+  Palette colour queries (OSC 4) go unanswered then, a see-through window reports the theme's background rather than
+  the transparent one, and Shift+F3 / Ctrl+F3 (the same bytes as a cursor position reply) do not reach the program.
+  A query the program sends in the moment web access is switched on or off can go unanswered.
 - A session's name comes from Claude Code's terminal title: with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` set it stays
   "Claude N", and after `/clear` it keeps the old topic until Claude generates a new one. A restart starts with no name
   (and no gist) until Claude sets the title again.

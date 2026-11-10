@@ -1126,6 +1126,8 @@ function start(): void {
   // The worker is the build's out/main/mirror-worker.js, next to this file (electron.vite.config.ts).
   const terminalMirror = new TerminalMirror({
     createWorker: nodeMirrorWorker(join(__dirname, 'mirror-worker.js')),
+    // OSC 10/11/12 colour queries are answered from the app theme's terminal palette.
+    colors: () => themes.current().xterm,
     log: (m) => console.warn(m)
   })
   const tabs = new TabManager({
@@ -1957,9 +1959,11 @@ function start(): void {
     // answers a permission dialog also clears the tab's needs-permission (status-reducer.ts), and
     // the person's first real input sets SessionInfo.typed. The ONLY caller of userInput: the flag
     // means "the person typed" because nothing main or a plugin types ever comes through here.
+    // With web access on, the view's own query replies are stripped (main's copy answers them,
+    // TabManager.viewInput); the registry sees what reached the pty.
     input: (projectId, tabId, data) => {
-      tabs.input(projectId, tabId, data)
-      sessions.userInput(projectId, tabId, data)
+      const sent = tabs.viewInput(projectId, tabId, data)
+      sessions.userInput(projectId, tabId, sent)
     },
     resize: (projectId, tabId, cols, rows) => tabs.resize(projectId, tabId, cols, rows),
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),

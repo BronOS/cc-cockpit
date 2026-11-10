@@ -58,6 +58,16 @@
 // a separate backstop for a worker that falls that far behind while still answering, which only a
 // broken flow binding allows.
 //
+// Terminal queries (Task 14, design-web.md §5.2 "Main answers terminal queries"): the copy of every
+// tab the mirror holds answers the program's queries itself (DSR, DA, DECRQM and the like; the
+// colours OSC 10/11/12 from the app theme, `colors`), and the answers go to the pty through
+// TerminalFlow.reply, in the order the program asked. TabManager strips the views' own replies
+// from their input meanwhile (`answers`, terminal-reports.ts stripQueryReplies), so a query is
+// answered once, with no view awake. A tab not held (web access off, the mirror gave up, a tab
+// released by a drain) is answered by the desktop's xterm as before. Replies to queries a worker
+// had not parsed when it crashed, or when a drain released the tab, are lost (the program's own
+// timeout applies, as with a desktop page that is not loaded).
+//
 // A worker that dies (a crash, out of memory) is started again with a blank terminal per tab at
 // main's current seq ("reset"): the content before is lost with it, the numbering goes on, and the
 // restart listeners are told. Views that are live keep their stream and their screen: they hold the
@@ -71,11 +81,13 @@
 // `nodeMirrorWorker` (worker_threads, which Electron's main process supports as Node does).
 import { Worker } from 'node:worker_threads'
 import type { TerminalFlow, TerminalTap } from '../tabs/tab-manager'
+import type { XtermTheme } from '../../shared/theme'
 import {
   type FromWorker,
   type MirrorItem,
   type MirrorSnapshot,
   type MirrorState,
+  type OscColorIdent,
   type ToWorker,
   WORKER_MARK
 } from './mirror-protocol'
@@ -170,6 +182,74 @@ export interface TerminalMirrorOptions {
   stallMs?: number
   drainMs?: number
   drainPollMs?: number
+  /**
+   * The terminal palette of the app theme now (ThemeService.current().xterm): what an OSC 10/11/12
+   * colour query is answered from, read at each query so a theme change applies at once.
+   */
+  colors?: () => XtermTheme | undefined
+}
+
+/** xterm's own colours where a theme sets none (the desktop's xterm answers with these then). */
+const DEFAULT_COLORS: Record<OscColorIdent, [number, number, number]> = {
+  10: [0xff, 0xff, 0xff],
+  11: [0, 0, 0],
+  12: [0xff, 0xff, 0xff]
+}
+
+const THEME_KEY: Record<OscColorIdent, 'foreground' | 'background' | 'cursor'> = {
+  10: 'foreground',
+  11: 'background',
+  12: 'cursor'
+}
+
+/**
+ * The answer to an OSC `ident` colour query, as xterm.js writes it (`OSC ident ; rgb:rrrr/gggg/bbbb
+ * ST`, 16 bits per channel): from `css` (a theme colour, shared/theme.ts isColor: hex, rgb(a),
+ * hsl(a)), or xterm's default when the theme has none or it does not parse. Alpha is ignored, as
+ * xterm does. The cursor falls back to the foreground, as in xterm.
+ */
+export function oscColorReply(ident: OscColorIdent, theme: XtermTheme | undefined): string {
+  const css = theme?.[THEME_KEY[ident]] ?? (ident === 12 ? theme?.foreground : undefined)
+  const [r, g, b] = (css !== undefined ? parseCssColor(css) : null) ?? DEFAULT_COLORS[ident]
+  const hex = (n: number): string => {
+    const h = n.toString(16).padStart(2, '0')
+    return h + h
+  }
+  return `\x1b]${ident};rgb:${hex(r)}/${hex(g)}/${hex(b)}\x1b\\`
+}
+
+/** 0..255 per channel, or null. Only the forms a theme may hold (shared/theme.ts isColor). */
+export function parseCssColor(css: string): [number, number, number] | null {
+  const value = css.trim().toLowerCase()
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(value)
+  if (hex) {
+    const h = hex[1]!
+    const short = h.length <= 4
+    const at = (i: number): number =>
+      short ? parseInt(h[i]! + h[i]!, 16) : parseInt(h.slice(i * 2, i * 2 + 2), 16)
+    return [at(0), at(1), at(2)]
+  }
+  const fn = /^(rgba?|hsla?)\((.*)\)$/.exec(value)
+  if (!fn) return null
+  const args = fn[2]!.split(/[\s,/]+/).filter((a) => a.length > 0)
+  if (args.length < 3) return null
+  const num = (a: string): number => parseFloat(a)
+  if (args.slice(0, 3).some((a) => !Number.isFinite(num(a)))) return null
+  const clamp = (n: number): number => Math.max(0, Math.min(255, Math.round(n)))
+  if (fn[1]!.startsWith('rgb')) {
+    const channel = (a: string): number => clamp(a.endsWith('%') ? (num(a) * 255) / 100 : num(a))
+    return [channel(args[0]!), channel(args[1]!), channel(args[2]!)]
+  }
+  // hsl: hue in degrees, saturation and lightness in percent (CSS Color 4's formula).
+  const h = (((num(args[0]!) % 360) + 360) % 360) / 360
+  const sat = Math.max(0, Math.min(1, num(args[1]!) / 100))
+  const light = Math.max(0, Math.min(1, num(args[2]!) / 100))
+  const f = (n: number): number => {
+    const k = (n + h * 12) % 12
+    const a = sat * Math.min(light, 1 - light)
+    return light - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))
+  }
+  return [clamp(f(0) * 255), clamp(f(8) * 255), clamp(f(4) * 255)]
 }
 
 interface Drain {
@@ -504,6 +584,14 @@ export class TerminalMirror implements TerminalTap {
     return this.tabs.get(tabId)?.seq
   }
 
+  /**
+   * Whether main answers the tab's terminal queries (see the header): the mirror holds it with a
+   * worker up. TabManager strips the views' replies from their input while this is true.
+   */
+  answers(tabId: string): boolean {
+    return this.worker !== null && this.tabs.has(tabId)
+  }
+
   /** Last item the worker applied. */
   parsed(tabId: string): number | undefined {
     return this.tabs.get(tabId)?.parsed
@@ -709,6 +797,25 @@ export class TerminalMirror implements TerminalTap {
       case 'snapshot':
         this.snapshotReady(message.tabId, message.ids, message.snapshot)
         return
+      case 'reply':
+        // Only for a tab held now: a released one is the desktop's to answer again, and a reply
+        // from both would reach the program twice.
+        if (this.tabs.has(message.tabId) && message.data.length > 0) {
+          this.flowCall('reply', () => this.flow?.reply?.(message.tabId, message.data))
+        }
+        return
+      case 'color': {
+        if (!this.tabs.has(message.tabId) || !THEME_KEY[message.ident]) return
+        let theme: XtermTheme | undefined
+        try {
+          theme = this.options.colors?.()
+        } catch (err) {
+          this.log(`terminal mirror: theme colours failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        const reply = oscColorReply(message.ident, theme)
+        this.flowCall('reply', () => this.flow?.reply?.(message.tabId, reply))
+        return
+      }
       case 'log':
         this.log(message.message)
         return

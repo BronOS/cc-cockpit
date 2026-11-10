@@ -15,7 +15,14 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { Terminal } from '@xterm/headless'
-import { type FromWorker, type MirrorItem, type MirrorSnapshot, type ToWorker, WORKER_MARK } from './mirror-protocol'
+import {
+  type FromWorker,
+  type MirrorItem,
+  type MirrorSnapshot,
+  type OscColorIdent,
+  type ToWorker,
+  WORKER_MARK
+} from './mirror-protocol'
 
 /** Scrollback of a headless copy. The desktop keeps 10,000; the spike measured about 9 MiB per tab at 5,000. */
 export const MIRROR_SCROLLBACK = 5000
@@ -196,7 +203,7 @@ export class HeadlessTerms {
         if (!existing) {
           // A tab's first process: a new terminal, at the size the pty was spawned with.
           if (!validSize(item.cols, item.rows)) return
-          this.tabs.set(tabId, this.create(item.cols, item.rows, item.seq))
+          this.tabs.set(tabId, this.create(tabId, item.cols, item.rows, item.seq))
           this.post({ t: 'parsed', tabId, seq: item.seq })
           return
         }
@@ -240,7 +247,7 @@ export class HeadlessTerms {
     }
     this.tabs.delete(tabId)
     if (!validSize(cols, rows)) return
-    this.tabs.set(tabId, this.create(cols, rows, seq))
+    this.tabs.set(tabId, this.create(tabId, cols, rows, seq))
     this.post({ t: 'parsed', tabId, seq })
   }
 
@@ -336,7 +343,7 @@ export class HeadlessTerms {
     if (t.snaps.length > 0 && atGround(t.term)) this.takeSnapshot(tabId, t)
   }
 
-  private create(cols: number, rows: number, seq: number): TabTerm {
+  private create(tabId: string, cols: number, rows: number, seq: number): TabTerm {
     // logLevel off: xterm logs a malformed sequence with console.error, and a worker's console
     // goes to main's stdout; a program printing binary junk must not flood the app's log.
     const term = new Terminal({ cols, rows, scrollback: this.scrollback, allowProposedApi: true, logLevel: 'off' })
@@ -346,7 +353,38 @@ export class HeadlessTerms {
     // wide characters (emoji in Claude's UI) in other cells.
     term.loadAddon(new Unicode11Addon())
     term.unicode.activeVersion = '11'
-    return { term, serializer, disposed: false, received: seq, parsed: seq, snaps: [], groundTimer: null }
+    const t: TabTerm = { term, serializer, disposed: false, received: seq, parsed: seq, snaps: [], groundTimer: null }
+    this.answerQueries(tabId, t)
+    return t
+  }
+
+  /**
+   * The copy answers the program's terminal queries (design-web.md §5.2 "Main answers terminal
+   * queries"): xterm's own replies (DSR, DA, DECRQM, XTWINOPS 18; everything its common core
+   * answers) come out of `onData`, written during the parse of the chunk that asked, and go to main
+   * for the pty. So a query is answered with no view awake (Claude's startup queries no longer wait
+   * on a desktop page), and once (the views' own replies are stripped, terminal-reports.ts).
+   * Colours are the browser terminal's part in xterm (its theme), absent here: OSC 10/11/12 `?` are
+   * passed to main, which answers from the app theme. Both are posted from inside the parse, so they
+   * reach main in the order the program asked (a program sending OSC 11 then DA1 as a sentinel
+   * gets the colour first). The handlers return false: xterm's own handling (a no-op here) runs too.
+   * OSC 4 (palette) queries go unanswered while web access is on (docs/features.md).
+   */
+  private answerQueries(tabId: string, t: TabTerm): void {
+    t.term.onData((data) => {
+      if (!t.disposed) this.post({ t: 'reply', tabId, data })
+    })
+    for (const ident of [10, 11, 12] as const) {
+      t.term.parser.registerOscHandler(ident, (data) => {
+        if (t.disposed) return false
+        // `OSC 10 ; ? ; ? ST` asks for 10 and then 11: each further `;` field is the next ident.
+        const fields = data.split(';')
+        for (let i = 0; i < fields.length && ident + i <= 12; i++) {
+          if (fields[i] === '?') this.post({ t: 'color', tabId, ident: (ident + i) as OscColorIdent })
+        }
+        return false
+      })
+    }
   }
 
   private disposeTab(t: TabTerm): void {
