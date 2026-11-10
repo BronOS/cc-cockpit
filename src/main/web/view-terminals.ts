@@ -30,6 +30,8 @@ export interface ViewTerminalsDeps {
   send(frame: TermSnapshotFrame | TermDataFrame): void
   /** The frame cap; tests pass a small one to see a snapshot split. */
   maxFrameBytes?: number
+  /** A send failed for this tab; the view already left it, so the page must resync (select again). */
+  failed?(tabId: string, err: unknown): void
 }
 
 export class ViewTerminals {
@@ -73,18 +75,36 @@ export class ViewTerminals {
     for (const tabId of [...this.joined.keys()]) this.leave(tabId)
   }
 
+  /**
+   * A failed send (socket closing, a part over the cap) may leave the page with a partial snapshot
+   * or a gap in the stream; the mirror would keep the view live and the screen would diverge. So
+   * the tab is left and the connection told: it resyncs by selecting the tab again.
+   */
+  private guarded(tabId: string, fn: () => void): void {
+    try {
+      fn()
+    } catch (err) {
+      this.leave(tabId)
+      this.deps.failed?.(tabId, err)
+    }
+  }
+
   private viewOf(tabId: string): MirrorView {
     const maxBytes = this.deps.maxFrameBytes ?? MAX_FRAME_BYTES
     return {
       // The parts go out back to back, in one call: nothing of this tab can come between them.
       snapshot: (snapshot) => {
         if (this.disposed) return
-        for (const frame of termSnapshotFrames(tabId, snapshot, maxBytes)) this.deps.send(frame)
+        this.guarded(tabId, () => {
+          for (const frame of termSnapshotFrames(tabId, snapshot, maxBytes)) this.deps.send(frame)
+        })
       },
       item: (item) => {
         if (this.disposed) return
-        const frame = termDataFrame(tabId, item)
-        if (frame) this.deps.send(frame)
+        this.guarded(tabId, () => {
+          const frame = termDataFrame(tabId, item)
+          if (frame) this.deps.send(frame)
+        })
       },
       // The mirror already dropped this view; only the bookkeeping is left.
       closed: () => {

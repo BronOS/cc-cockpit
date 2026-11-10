@@ -276,9 +276,12 @@ export class TerminalMirror implements TerminalTap {
   join(tabId: string, view: MirrorView): (() => void) | undefined {
     const tab = this.tabs.get(tabId)
     if (!this.worker || !tab || tab.views.has(view)) return undefined
-    tab.views.set(view, { live: false, held: [...tab.inflight] })
+    const state: ViewState = { live: false, held: [...tab.inflight] }
+    tab.views.set(view, state)
     if (!tab.request) this.requestSnapshot(tabId, tab)
     return () => {
+      // A stale leave (the view was ended, then joined again) must not drop the newer registration.
+      if (tab.views.get(view) !== state) return
       tab.views.delete(view)
       if (tab.request && !this.hasWaiting(tab)) this.cancelRequest(tab)
     }

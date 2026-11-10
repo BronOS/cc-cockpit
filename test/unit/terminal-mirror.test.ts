@@ -1290,6 +1290,36 @@ describe('ViewTerminals', () => {
     expect(vt.select('b')).toBe(false)
   })
 
+  it('a failed send leaves the tab and tells the connection, which can rejoin with a fresh snapshot', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    m.data('t', 'hello\r\n')
+    const sent: Array<TermSnapshotFrame | TermDataFrame> = []
+    const failures: string[] = []
+    let broken = true
+    const vt = new ViewTerminals({
+      mirror: m,
+      canFollow: () => true,
+      send: (f) => {
+        if (broken) throw new Error('socket closing')
+        sent.push(f)
+      },
+      failed: (tabId) => failures.push(tabId)
+    })
+    expect(vt.select('t')).toBe(true)
+    await settle(m, 't')
+    expect(failures).toEqual(['t'])
+    expect(vt.following()).toEqual([])
+    m.data('t', 'more\r\n')
+    await settle(m, 't')
+    expect(sent).toEqual([])
+    broken = false
+    expect(vt.select('t')).toBe(true)
+    await settle(m, 't')
+    expect(sent[0]?.t).toBe('term.snapshot')
+  })
+
   it('a snapshot above the frame cap arrives in parts and is reassembled identical to the mirror', async () => {
     m = mirror()
     m.start()
