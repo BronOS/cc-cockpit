@@ -1239,8 +1239,12 @@ export interface IpcInvokeMap {
 
 /** main -> renderer events for `cockpit.on(channel, cb)`; later tasks add status, theme, ... */
 export interface IpcEventMap {
-  /** Batched PTY output for one of the window's tabs. Ack it with `tabs.ack`. */
-  'tabs.data': { tabId: string; data: string }
+  /**
+   * Batched PTY output for one of the window's tabs. Ack it with `tabs.ack`. `reset`: `data` is the
+   * whole screen (a resync after the view fell behind, or a re-attach, while web access is on,
+   * design-web.md §5.2): the terminal starts over with it, and it is not acked.
+   */
+  'tabs.data': { tabId: string; data: string; reset?: true }
   /**
    * The tab's process ended (`signal` is the terminating signal number, else null). `gen` is that
    * process's TabInfo.gen, so an exit is never applied to a later process of the same tab.
@@ -1696,7 +1700,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
 
   // Tabs and terminals. Input from a remote view is the person typing (`typed` and the send gate
   // apply unchanged, Task 16); the flag is the person's, and a remote view is the person.
-  'tabs.list': 'yes',
+  // A remote view's terminal stream is its own (design-web.md §5.2, web/view-terminals.ts): its
+  // `tabs.list` is the plain list (never the desktop's re-attach), its ack counts for that view only,
+  // its selection joins the tab's stream, and its output comes as term.* frames (the bridge hands
+  // them to the shell as `tabs.data`), so the `tabs.data` event itself is not sent to it.
+  'tabs.list': 'adapted',
   'tabs.create': 'yes',
   'tabs.commands': 'yes',
   'tabs.close': 'yes',
@@ -1707,9 +1715,9 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.restart': 'yes',
   'tabs.input': 'yes',
   'tabs.resize': 'yes',
-  'tabs.ack': 'yes',
-  'tabs.selected': 'yes',
-  'tabs.data': 'yes',
+  'tabs.ack': 'adapted',
+  'tabs.selected': 'adapted',
+  'tabs.data': 'adapted',
   'tabs.exit': 'yes',
   'tabs.removed': 'yes',
   'tabs.select': 'yes',

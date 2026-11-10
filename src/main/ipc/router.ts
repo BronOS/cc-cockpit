@@ -909,6 +909,8 @@ export interface TabHandlerDeps {
    * already closed must not spend the arm of the window opened after it.
    */
   attach(projectId: string, windowId: number): TabInfo[] | Promise<TabInfo[]>
+  /** The plain list (TabManager.list): what a remote view gets for `tabs.list`, with no re-attach. */
+  list(projectId: string): TabInfo[]
   /**
    * `windowId` is the asking window (main's, from the sender): create and restart wait for the
    * login env first and must refuse when that window closed meanwhile. null: a command entry
@@ -929,6 +931,13 @@ export interface TabHandlerDeps {
   ack(projectId: string, tabId: string, count: number): void
   /** The window shows this tab now (SessionRegistry.setActive after a check that it is the project's). */
   select(projectId: string, tabId: string): void
+  /**
+   * A remote view's terminal flow (web/view-terminals.ts, design-web.md §5.2): its ack counts for
+   * that view alone, and its selection joins the tab's terminal stream for it. Keyed by the view id
+   * main bound to the socket; the tab is checked against the view's own window there.
+   */
+  viewAck(viewId: ViewId, tabId: string, count: number): void
+  viewSelect(viewId: ViewId, tabId: string): void
 }
 
 /**
@@ -940,7 +949,12 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   // Attaching resets flow control (TabManager.attach), so call this once per page load only,
   // never to refresh the list after create/exit/reorder: with xterm saturated that would wipe
   // the unacked count and resume a paused PTY. Task 8 should take refreshes from tab events.
-  router.handleProject('tabs.list', (ctx) => tabs.attach(ctx.projectId, ctx.windowId))
+  // `adapted`: a remote view gets the plain list. Attaching is the desktop page's: it resets (or
+  // resyncs) the DESKTOP's terminals and runs the window's restore, and a browser joining or
+  // reconnecting must leave the desktop exactly as it was; its own terminals start at its select.
+  router.handleProject('tabs.list', (ctx, _payload, view) =>
+    view.remote ? tabs.list(ctx.projectId) : tabs.attach(ctx.projectId, ctx.windowId)
+  )
 
   router.handleProject('tabs.commands', (ctx) => tabs.commands(ctx.projectId))
 
@@ -1012,15 +1026,23 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     tabs.resize(ctx.projectId, tabIdOf('tabs.resize', payload), cols, rows)
   })
 
-  router.handleProject('tabs.ack', (ctx, payload) => {
+  // `adapted`: a remote view's ack is its own flow (it never reaches the pty, which main consumes
+  // while web access is on); the desktop's goes to TabManager as before.
+  router.handleProject('tabs.ack', (ctx, payload, view) => {
     const count = fields('tabs.ack', payload).count
     if (typeof count !== 'number') throw new Error('tabs.ack: count must be a number')
-    tabs.ack(ctx.projectId, tabIdOf('tabs.ack', payload), count)
+    const tabId = tabIdOf('tabs.ack', payload)
+    if (view.remote) tabs.viewAck(view.viewId, tabId, count)
+    else tabs.ack(ctx.projectId, tabId, count)
   })
 
   // Only the id travels; whether it is one of the sender's project's tabs is main's check (select).
-  router.handleProject('tabs.selected', (ctx, payload) => {
-    tabs.select(ctx.projectId, tabIdOf('tabs.selected', payload))
+  // `adapted`: a remote view's selection also joins that tab's terminal stream for the view (a
+  // snapshot, then live output); the desktop parses every tab's output all along.
+  router.handleProject('tabs.selected', (ctx, payload, view) => {
+    const tabId = tabIdOf('tabs.selected', payload)
+    tabs.select(ctx.projectId, tabId)
+    if (view.remote) tabs.viewSelect(view.viewId, tabId)
   })
 }
 

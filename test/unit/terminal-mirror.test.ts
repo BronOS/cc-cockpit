@@ -18,63 +18,17 @@ import {
   TerminalMirror,
   type MirrorSnapshot,
   type MirrorState,
-  type MirrorView,
-  type MirrorWorkerLike
+  type MirrorView
 } from '../../src/main/terminals/mirror'
-import type { FromWorker, MirrorItem, ToWorker } from '../../src/main/terminals/mirror-protocol'
+import type { FromWorker, MirrorItem } from '../../src/main/terminals/mirror-protocol'
 import { HeadlessTerms, type HeadlessTermsOptions } from '../../src/main/terminals/mirror-worker'
+import { FakeWorker } from '../fakes/fake-mirror-worker'
 import { TabManager, type TerminalTap } from '../../src/main/tabs/tab-manager'
 import { encodeFrame, frameBytes, termDataFrame, termSnapshotFrames } from '../../src/main/web/protocol'
 import { ViewTerminals } from '../../src/main/web/view-terminals'
 import type { EventChannel, IpcEventMap } from '../../src/shared/ipc'
 import type { TermDataFrame, TermSnapshotFrame } from '../../src/shared/web-protocol'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
-
-/** HeadlessTerms behind the worker interface; both directions are delivered on a later turn. */
-class FakeWorker implements MirrorWorkerLike {
-  readonly received: ToWorker[] = []
-  readonly terms: HeadlessTerms
-  terminated = false
-  private readonly listeners: Array<(m: FromWorker) => void> = []
-  private readonly exitListeners: Array<(reason: string) => void> = []
-
-  constructor(options: HeadlessTermsOptions = {}) {
-    this.terms = new HeadlessTerms((m) => setImmediate(() => this.listeners.forEach((l) => l(m))), options)
-  }
-
-  post(message: ToWorker): void {
-    // Structured clone, as postMessage does: the worker never shares main's objects.
-    const copy = structuredClone(message)
-    this.received.push(copy)
-    setImmediate(() => {
-      if (!this.terminated) this.terms.handle(copy)
-    })
-  }
-
-  onMessage(listener: (m: FromWorker) => void): void {
-    this.listeners.push(listener)
-  }
-
-  onExit(listener: (reason: string) => void): void {
-    this.exitListeners.push(listener)
-  }
-
-  terminate(): void {
-    this.terminated = true
-    this.terms.dispose()
-  }
-
-  /** The thread died on its own. */
-  crash(reason = 'exit code 1'): void {
-    this.terminated = true
-    this.terms.dispose()
-    for (const l of this.exitListeners) l(reason)
-  }
-
-  items(tabId?: string): MirrorItem[] {
-    return this.received.flatMap((m) => (m.t === 'item' && (tabId === undefined || m.tabId === tabId) ? [m.item] : []))
-  }
-}
 
 let workers: FakeWorker[]
 let logs: string[]

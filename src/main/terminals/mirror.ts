@@ -22,16 +22,28 @@
 // worker is started by `start()` (WebAccessService, when the settings mean the gateway listens) and
 // ended by `stop()`.
 //
+// Flow (Task 12, design-web.md §5.2): the mirror is the pty's one flow consumer for every tab it
+// holds. TabManager binds a TerminalFlow; the mirror `take`s each tab at its spawn, acks the
+// characters the worker reports parsed, and `release`s the tabs (back to the desktop's acks) when it
+// stops or gives up. So the pty pauses when the worker is HIGH_WATER behind (pty-service.ts), and
+// that is what bounds main's buffers here: `inflight` is at most the unparsed backlog, and a waiting
+// view's `held` is pruned to the items after the parsed seq, a subset of `inflight`. A view never
+// pauses the pty; each one is flow-controlled on its own and resynced when it falls behind
+// (desktop-flow.ts, web/view-terminals.ts). MAX_BACKLOG_CHARS is a backstop for a worker that falls
+// that far behind anyway (flow control not bound, a bug): it is treated as a crash.
+//
 // A worker that dies (a crash, out of memory) is started again with a blank terminal per tab at
 // main's current seq ("reset"): the content before is lost with it, the numbering goes on, and the
-// restart listeners are told so the views resync (Task 12). Restarts are bounded: past
+// restart listeners are told. Views that are live keep their stream and their screen: they hold the
+// real content, which a resync from the blank copy would wipe (Claude redraws its screen soon, and
+// the copy catches up then). Restarts are bounded: past
 // MAX_RESTARTS within RESTART_WINDOW_MS the mirror gives up (logs, mirrors nothing) rather than
 // loop on a crash it keeps hitting; the tabs themselves never depend on it.
 //
 // No Electron here: vitest drives it with an in-process fake worker; the real one is
 // `nodeMirrorWorker` (worker_threads, which Electron's main process supports as Node does).
 import { Worker } from 'node:worker_threads'
-import type { TerminalTap } from '../tabs/tab-manager'
+import type { TerminalFlow, TerminalTap } from '../tabs/tab-manager'
 import {
   type FromWorker,
   type MirrorItem,
@@ -53,6 +65,13 @@ export const INSPECT_TIMEOUT_MS = 10_000
  * hung or drowning worker gets here.
  */
 export const SNAPSHOT_TIMEOUT_MS = 10_000
+/**
+ * Output characters of one tab posted to the worker and not parsed, past which the worker counts as
+ * drowned and is restarted like a crashed one. Flow control pauses the pty at a eighth of this
+ * (pty-service.ts HIGH_WATER, 1 MiB), so only a broken flow binding ever reaches it; it keeps
+ * `inflight` (and the `held` lists, a subset) bounded even then.
+ */
+export const MAX_BACKLOG_CHARS = 8 * 1024 * 1024
 
 /** Same bounds as PtyService (validSize). */
 const MAX_DIM = 1000
@@ -143,7 +162,7 @@ interface TabStream {
   rows: number
   /**
    * Posted items the worker has not reported parsed, oldest first: what a joining view may need
-   * after its snapshot. Bounded by the worker's backlog (Task 12 keeps that bounded).
+   * after its snapshot. Bounded by the worker's backlog, which flow control bounds (see the header).
    */
   inflight: MirrorItem[]
   /** Characters of the data items in `inflight`. */
@@ -174,6 +193,7 @@ export class TerminalMirror implements TerminalTap {
   private restarts: number[] = []
   private failed = false
   private readonly restartListeners = new Set<() => void>()
+  private flow: TerminalFlow | null = null
   private readonly log: (message: string) => void
   private readonly now: () => number
 
@@ -205,6 +225,7 @@ export class TerminalMirror implements TerminalTap {
     this.failed = false
     this.drop(new Error('terminal mirror stopped'))
     this.endAllViews()
+    this.releaseAll()
     this.tabs.clear()
     worker?.terminate()
   }
@@ -216,6 +237,11 @@ export class TerminalMirror implements TerminalTap {
   }
 
   // --- the tap (TabManager, synchronous) ------------------------------------------------------------
+
+  /** TabManager's way to the ptys' flow control (see the header); bound once, at its construction. */
+  bindFlow(flow: TerminalFlow): void {
+    this.flow = flow
+  }
 
   spawned(tabId: string, cols: number, rows: number): void {
     if (!this.worker || !validSize(cols, rows)) return
@@ -237,6 +263,9 @@ export class TerminalMirror implements TerminalTap {
     tab.cols = cols
     tab.rows = rows
     this.send(tabId, tab, { seq: ++tab.seq, kind: 'spawn', cols, rows })
+    // Every spawn, a restart too: the restarted process is a new pty, whose flow starts as the
+    // desktop's. Before any output (node-pty reads on a later tick).
+    this.flowCall('take', () => this.flow?.take(tabId))
   }
 
   data(tabId: string, chunk: string): void {
@@ -245,6 +274,7 @@ export class TerminalMirror implements TerminalTap {
     if (!this.worker || !tab || chunk.length === 0) return
     tab.unparsedChars += chunk.length
     this.send(tabId, tab, { seq: ++tab.seq, kind: 'data', data: chunk })
+    if (tab.unparsedChars > MAX_BACKLOG_CHARS && this.worker) this.drowned(tabId)
   }
 
   resized(tabId: string, cols: number, rows: number): void {
@@ -263,6 +293,8 @@ export class TerminalMirror implements TerminalTap {
     this.worker.post({ t: 'item', tabId, item: { seq: ++tab.seq, kind: 'close' } })
     for (const w of tab.waiters.splice(0)) w.resolve()
     this.endViews(tab)
+    // A pty still paused for the copy would hold back the exit's last output: it is the desktop's again.
+    this.flowCall('release', () => this.flow?.release(tabId))
   }
 
   // --- views ------------------------------------------------------------------------------------------
@@ -291,6 +323,19 @@ export class TerminalMirror implements TerminalTap {
   waitingViews(tabId: string): number {
     const tab = this.tabs.get(tabId)
     return tab ? [...tab.views.values()].filter((v) => !v.live).length : 0
+  }
+
+  /** Items held for the tab's waiting views, all of them together (tests, diagnostics: the held bound). */
+  heldItems(tabId: string): number {
+    const tab = this.tabs.get(tabId)
+    let n = 0
+    if (tab) for (const state of tab.views.values()) if (!state.live) n += state.held.length
+    return n
+  }
+
+  /** Items posted and not parsed yet (tests, diagnostics: the inflight bound). */
+  inflightItems(tabId: string): number {
+    return this.tabs.get(tabId)?.inflight.length ?? 0
   }
 
   // --- reads ------------------------------------------------------------------------------------------
@@ -348,7 +393,10 @@ export class TerminalMirror implements TerminalTap {
   private send(tabId: string, tab: TabStream, item: MirrorItem): void {
     tab.inflight.push(item)
     this.worker?.post({ t: 'item', tabId, item })
-    for (const [view, state] of tab.views) {
+    // Over a copy: a view's callback may leave, or a view may join (its held list, copied from
+    // `inflight`, already has this item) while the others are served.
+    for (const [view, state] of [...tab.views]) {
+      if (tab.views.get(view) !== state) continue
       if (state.live) this.call('item', () => view.item(item))
       else state.held.push(item)
     }
@@ -403,8 +451,8 @@ export class TerminalMirror implements TerminalTap {
       state.live = true
       this.call('snapshot', () => view.snapshot(snapshot))
       for (const item of after) {
-        // A view may leave from inside its own callback.
-        if (!tab.views.has(view)) break
+        // A view may leave from inside its own callback (and even join again, afresh).
+        if (tab.views.get(view) !== state) break
         this.call('item', () => view.item(item))
       }
     }
@@ -464,12 +512,16 @@ export class TerminalMirror implements TerminalTap {
         if (!tab || message.seq <= tab.parsed) return
         tab.parsed = message.seq
         let drop = 0
+        let chars = 0
         while (drop < tab.inflight.length && tab.inflight[drop]!.seq <= message.seq) {
           const item = tab.inflight[drop++]!
-          if (item.kind === 'data') tab.unparsedChars -= item.data.length
+          if (item.kind === 'data') chars += item.data.length
         }
         // One splice per message, not a shift per item: a flood parses many items between messages.
         if (drop > 0) tab.inflight.splice(0, drop)
+        tab.unparsedChars -= chars
+        this.pruneHeld(tab)
+        if (chars > 0) this.flowCall('ack', () => this.flow?.ack(message.tabId, chars))
         if (tab.waiters.length > 0) {
           const done = tab.waiters.filter((w) => w.seq <= tab.parsed)
           tab.waiters = tab.waiters.filter((w) => w.seq > tab.parsed)
@@ -508,6 +560,7 @@ export class TerminalMirror implements TerminalTap {
       this.worker = null
       this.failed = true
       this.endAllViews()
+      this.releaseAll()
       this.tabs.clear()
       return
     }
@@ -515,10 +568,14 @@ export class TerminalMirror implements TerminalTap {
     const worker = this.spawnWorker()
     this.worker = worker
     for (const [tabId, tab] of this.tabs) {
-      // Nothing posted to the old worker will be parsed now: the copy starts at the current seq.
+      // Nothing posted to the old worker will be parsed now: the copy starts at the current seq,
+      // and what the pty was waiting on counts as consumed.
+      const unparsed = tab.unparsedChars
       tab.parsed = tab.seq
       tab.inflight = []
       tab.unparsedChars = 0
+      this.pruneHeld(tab)
+      if (unparsed > 0) this.flowCall('ack', () => this.flow?.ack(tabId, unparsed))
       worker.post({ t: 'reset', tabId, seq: tab.seq, cols: tab.cols, rows: tab.rows })
       // The old worker's snapshot is not coming: views still waiting are asked for again, and start
       // from the blank copy at the current seq (their held items after it follow). Live views keep
@@ -532,6 +589,47 @@ export class TerminalMirror implements TerminalTap {
       } catch (err) {
         this.log(`terminal mirror restart listener failed: ${err instanceof Error ? err.message : String(err)}`)
       }
+    }
+  }
+
+  /**
+   * A tab's backlog passed MAX_BACKLOG_CHARS: the worker is not keeping up even though the pty
+   * should be paused. Ended and handled as a crash (a fresh worker, the copies reset at the current
+   * seq, the restart budget spent), which empties every `inflight` and acks the backlog.
+   */
+  private drowned(tabId: string): void {
+    const worker = this.worker
+    if (!worker) return
+    worker.terminate()
+    this.crashed(`tab ${tabId} over ${MAX_BACKLOG_CHARS} characters behind`)
+  }
+
+  /**
+   * Waiting views need only the items after the snapshot they will get, which is taken no earlier
+   * than any parsed seq the worker reported before it (its messages arrive in order, and a snapshot
+   * is tagged with the worker's parsed seq when taken). So held items up to `parsed` can go, and a
+   * held list is never more than `inflight`.
+   */
+  private pruneHeld(tab: TabStream): void {
+    for (const state of tab.views.values()) {
+      if (state.live || state.held.length === 0) continue
+      let drop = 0
+      while (drop < state.held.length && state.held[drop]!.seq <= tab.parsed) drop++
+      if (drop > 0) state.held.splice(0, drop)
+    }
+  }
+
+  /** Hand every tab's pty back to the desktop's acks (the mirror stops or gave up). */
+  private releaseAll(): void {
+    for (const tabId of this.tabs.keys()) this.flowCall('release', () => this.flow?.release(tabId))
+  }
+
+  /** A flow call into TabManager: one tab's throw must not cost the others (or the tap) theirs. */
+  private flowCall(what: string, fn: () => void): void {
+    try {
+      fn()
+    } catch (err) {
+      this.log(`terminal mirror flow ${what} failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

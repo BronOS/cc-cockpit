@@ -9,6 +9,12 @@
 // `hello` closes the socket. The router re-checks the window on every call, and the registry tells
 // the connection when its window closes (`windowClosed`), which closes the socket.
 //
+// Terminals (Task 12, design-web.md §5.2): a remote view gets its tabs' output as `term.snapshot` /
+// `term.data` frames from the headless mirror (view-terminals.ts), joined when the view selects a
+// tab (`tabs.selected`, the router's `viewSelect`) and flow-controlled by its own acks (`viewAck`),
+// never as `tabs.data` events: those are the desktop's, numbered nowhere, and the pty no longer
+// waits for any view's ack.
+//
 // No `ws` import: the gateway hands in its socket as `WsLike`, tests pass a fake.
 
 import { errorText } from '../../shared/error-text'
@@ -19,6 +25,7 @@ import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
 import type { ViewSink } from '../views/view-registry'
 import type { WebDevice } from './devices'
+import { type TerminalSource, ViewTerminals } from './view-terminals'
 import {
   CLOSE,
   encodeFrame,
@@ -66,6 +73,10 @@ export interface WebConnectionDeps {
    * is registered, so no event falls between the snapshot and the first event frame.
    */
   snapshot(ctx: ProjectContext): WebSnapshot
+  /** The headless terminals (TerminalMirror) a view's tabs are joined in. */
+  mirror: TerminalSource
+  /** Whether `tabId` is one of the project's tabs now (TabManager's own table). */
+  hasTab(projectId: string, tabId: string): boolean
   log(message: string): void
   helloTimeoutMs?: number
 }
@@ -109,19 +120,33 @@ export function openProjectEntries(
 /** Accepts gateway sockets (`WebGateway.setSocketHandler`) and mints a view id for each. */
 export class WebConnections {
   private nextView = 1
-  private readonly open = new Set<WebConnection>()
+  private readonly open = new Map<ViewId, WebConnection>()
 
   constructor(private readonly deps: WebConnectionDeps) {}
 
   accept(ws: WsLike, device: WebDevice): WebConnection {
-    const conn = new WebConnection(ws, device, remoteViewId(this.nextView++), this.deps, () => this.open.delete(conn))
-    this.open.add(conn)
+    const viewId = remoteViewId(this.nextView++)
+    const conn = new WebConnection(ws, device, viewId, this.deps, () => this.open.delete(viewId))
+    this.open.set(viewId, conn)
     return conn
   }
 
   /** Connections whose socket is still open (bound or still waiting for hello). */
   size(): number {
     return this.open.size
+  }
+
+  /**
+   * A view's ack of a tab's output (router `viewAck`). The view id is the one main bound to the
+   * socket the call came on, never the page's; a view that is gone is ignored.
+   */
+  ack(viewId: ViewId, tabId: string, count: number): void {
+    this.open.get(viewId)?.terminalAck(tabId, count)
+  }
+
+  /** A view shows this tab now (router `viewSelect`): join its terminal stream. */
+  select(viewId: ViewId, tabId: string): void {
+    this.open.get(viewId)?.terminalSelect(tabId)
   }
 }
 
@@ -130,6 +155,9 @@ export class WebConnection {
   private closed = false
   private pending = 0
   private removeView: (() => void) | undefined
+  private terminals: ViewTerminals | undefined
+  /** Tabs whose terminal frames failed once already: a second failure closes the view. */
+  private readonly failedTabs = new Set<string>()
   private readonly helloTimer: ReturnType<typeof setTimeout>
 
   constructor(
@@ -197,6 +225,13 @@ export class WebConnection {
       return this.close(CLOSE.failed, 'bind failed')
     }
     this.caller = caller
+    // Joined tab by tab as the view selects them; nothing is sent before `ready` (a select is an invoke).
+    this.terminals = new ViewTerminals({
+      mirror: this.deps.mirror,
+      canFollow: (tabId) => this.deps.hasTab(caller.context.projectId, tabId),
+      send: (frame) => this.send(frame),
+      failed: (tabId, err) => this.terminalFailed(tabId, err)
+    })
     this.deps.log(`web access: view ${this.viewId} (device ${this.device.id}) joined window ${windowId}`)
     this.send({ t: 'ready', v: PROTOCOL_VERSION, view: this.viewId, snapshot })
   }
@@ -219,10 +254,38 @@ export class WebConnection {
     )
   }
 
+  /** The page acked a tab's output (router `viewAck`). */
+  terminalAck(tabId: string, count: number): void {
+    if (!this.closed) this.terminals?.ack(tabId, count)
+  }
+
+  /** The page shows this tab now (router `viewSelect`); a tab not of this window is refused there. */
+  terminalSelect(tabId: string): void {
+    if (!this.closed) this.terminals?.select(tabId)
+  }
+
+  /**
+   * A tab's terminal frames could not be sent (view-terminals.ts left the tab): the page may hold a
+   * partial snapshot or a gap. Resync by joining the tab again, on a later turn (not inside the
+   * mirror's callback); a second failure on the same tab closes the view, which reconnects to a
+   * fresh `ready`, rather than loop on a send that keeps failing.
+   */
+  private terminalFailed(tabId: string, err: unknown): void {
+    if (this.closed) return
+    this.deps.log(`web access: view ${this.viewId}: terminal frames failed: ${errorText(err)}`)
+    if (this.failedTabs.has(tabId)) return this.close(CLOSE.failed, 'terminal stream failed')
+    this.failedTabs.add(tabId)
+    setTimeout(() => {
+      if (!this.closed) this.terminals?.select(tabId)
+    }, 0)
+  }
+
   private event(channel: EventChannel, payload: unknown): void {
     // The registry sends every event of the window; a `no`-class one (or a name that is not an
     // event channel) never leaves main for a remote view.
     if (!eventAllowed(channel)) return
+    // The desktop's terminal output: this view gets its own, numbered, as term.* frames (header).
+    if (channel === 'tabs.data') return
     this.send({ t: 'event', ch: channel, p: payload })
   }
 
@@ -259,6 +322,8 @@ export class WebConnection {
     if (this.closed) return
     this.closed = true
     clearTimeout(this.helloTimer)
+    this.terminals?.dispose()
+    this.terminals = undefined
     this.removeView?.()
     this.removeView = undefined
     this.onGone()

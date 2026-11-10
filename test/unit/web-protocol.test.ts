@@ -17,6 +17,9 @@ import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
 import { MAX_PENDING_INVOKES, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
 import { DeviceStore, type WebDevice } from '../../src/main/web/devices'
+import type { TerminalSource } from '../../src/main/web/view-terminals'
+import type { MirrorView } from '../../src/main/terminals/mirror'
+import { VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../../src/main/terminals/desktop-flow'
 import { WebGateway, type WsModule } from '../../src/main/web/gateway'
 import {
   CLOSE,
@@ -140,7 +143,9 @@ class FakeWs implements WsLike {
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
 /** Two project windows (1: p1, 2: p2), a real router and registry, and a connection factory. */
-function setup(over: { snapshot?: (ctx: ProjectContext) => never } = {}) {
+function setup(
+  over: { snapshot?: (ctx: ProjectContext) => never; mirror?: TerminalSource; hasTab?: (projectId: string, tabId: string) => boolean } = {}
+) {
   const windows = new Map<string, number>([
     ['p1', 1],
     ['p2', 2]
@@ -167,6 +172,9 @@ function setup(over: { snapshot?: (ctx: ProjectContext) => never } = {}) {
         layout: LAYOUT,
         overlays: [{ id: `o${windowId}` } as never]
       })),
+    // No tab is held: these tests are about frames and events (the terminal stream has its own below).
+    mirror: over.mirror ?? { join: () => undefined },
+    hasTab: over.hasTab ?? (() => false),
     log: (m) => logs.push(m),
     helloTimeoutMs: 50
   })
@@ -442,9 +450,9 @@ describe('events and window lifetime', () => {
     const a = connect('p1')
     const b = connect('p2')
     views.toProject('p1', 'layout.updated', { which: 'p1' })
-    views.toProject('p2', 'tabs.data', { tabId: 't', data: 'hi' })
+    views.toProject('p2', 'tabs.exit', { tabId: 't', code: 0, signal: null, gen: 1 })
     expect(a.frames('event')).toEqual([{ t: 'event', ch: 'layout.updated', p: { which: 'p1' } }])
-    expect(b.frames('event')).toEqual([{ t: 'event', ch: 'tabs.data', p: { tabId: 't', data: 'hi' } }])
+    expect(b.frames('event')).toEqual([{ t: 'event', ch: 'tabs.exit', p: { tabId: 't', code: 0, signal: null, gen: 1 } }])
     expect(desktop.send).toHaveBeenCalledWith('layout.updated', { which: 'p1' })
     // App-wide events reach every view.
     views.toAll('theme.changed', { kind: 'dark' })
@@ -464,7 +472,7 @@ describe('events and window lifetime', () => {
   it('an event over the frame cap closes the view (it reconnects to a fresh snapshot)', () => {
     const { connect, views } = setup()
     const ws = connect('p1')
-    views.toProject('p1', 'tabs.data', { tabId: 't', data: 'x'.repeat(MAX_FRAME_BYTES) })
+    views.toProject('p1', 'layout.updated', { big: 'x'.repeat(MAX_FRAME_BYTES) } as never)
     expect(ws.closedWith?.code).toBe(CLOSE.tooLarge)
     expect(views.viewsOf(1)).toEqual(['desktop:1'])
   })
@@ -577,5 +585,97 @@ describe('through the gateway', () => {
     client.send('x'.repeat(MAX_FRAME_BYTES + 1))
     expect(await closed).toBe(1009)
     await until(() => ctx.views.viewsOf(1).length === 1)
+  })
+})
+
+/** A mirror the test drives: every join is recorded with its view, and its leave counted. */
+class FakeMirror implements TerminalSource {
+  readonly joins: Array<{ tabId: string; view: MirrorView; left: boolean }> = []
+  join(tabId: string, view: MirrorView): () => void {
+    const entry = { tabId, view, left: false }
+    this.joins.push(entry)
+    return () => {
+      entry.left = true
+    }
+  }
+}
+
+describe('terminal streams (term.* frames instead of tabs.data)', () => {
+  function terminals() {
+    const mirror = new FakeMirror()
+    const s = setup({ mirror, hasTab: (projectId, tabId) => projectId === 'p1' && tabId.startsWith('p1-') })
+    const ws = s.connect('p1')
+    return { ...s, mirror, ws }
+  }
+
+  it("a view's selection joins the tab (its own window's only), and the stream goes out as term frames", () => {
+    const { conns, mirror, ws, views } = terminals()
+    conns.select('web:1', 'p2-t1')
+    conns.select('web:1', 'p1-t1')
+    // The same tab again: already followed.
+    conns.select('web:1', 'p1-t1')
+    // A view id that is not open: ignored.
+    conns.select('web:9', 'p1-t1')
+    expect(mirror.joins.map((j) => j.tabId)).toEqual(['p1-t1'])
+    const view = mirror.joins[0]!.view
+    view.snapshot({ seq: 4, cols: 80, rows: 24, data: 'screen' })
+    view.item({ seq: 5, kind: 'data', data: 'out' })
+    view.item({ seq: 6, kind: 'resize', cols: 100, rows: 30 })
+    // The desktop's output event is never framed for a remote view.
+    views.toProject('p1', 'tabs.data', { tabId: 'p1-t1', data: 'desktop copy' })
+    expect(ws.sent.slice(1)).toEqual([
+      { t: 'term.snapshot', tabId: 'p1-t1', seq: 4, cols: 80, rows: 24, part: 1, parts: 1, data: 'screen' },
+      { t: 'term.data', tabId: 'p1-t1', seq: 5, data: 'out' },
+      { t: 'term.data', tabId: 'p1-t1', seq: 6, cols: 100, rows: 30 }
+    ])
+  })
+
+  it("the view's acks are its own flow: past the limit it stops getting data, acked down it joins again", () => {
+    const { conns, mirror, ws } = terminals()
+    conns.select('web:1', 'p1-t1')
+    const first = mirror.joins[0]!
+    first.view.snapshot({ seq: 1, cols: 80, rows: 24, data: '' })
+    const big = 'x'.repeat(VIEW_HIGH_WATER)
+    first.view.item({ seq: 2, kind: 'data', data: big })
+    first.view.item({ seq: 3, kind: 'data', data: 'over' })
+    expect(first.left).toBe(true)
+    expect(ws.frames('term.data')).toHaveLength(1)
+    conns.ack('web:1', 'p1-t1', VIEW_HIGH_WATER - VIEW_LOW_WATER - 1)
+    expect(mirror.joins).toHaveLength(1)
+    conns.ack('web:1', 'p1-t1', 1)
+    expect(mirror.joins).toHaveLength(2)
+    expect(mirror.joins[1]!.tabId).toBe('p1-t1')
+  })
+
+  it('a failed send is resynced once on a later turn; a second failure closes the view', async () => {
+    const { conns, mirror, ws, logs } = terminals()
+    conns.select('web:1', 'p1-t1')
+    // The socket throws while the frames go out (closing under the send).
+    const snap = { seq: 1, cols: 80, rows: 24, data: 'a' }
+    const failing = mirror.joins[0]!
+    const realSend = ws.send.bind(ws)
+    ws.send = () => {
+      throw new Error('socket closing')
+    }
+    failing.view.snapshot(snap)
+    expect(failing.left).toBe(true)
+    expect(mirror.joins).toHaveLength(1)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(mirror.joins).toHaveLength(2)
+    mirror.joins[1]!.view.snapshot(snap)
+    expect(ws.closedWith?.code).toBe(CLOSE.failed)
+    expect(logs.some((l) => l.includes('terminal frames failed'))).toBe(true)
+    ws.send = realSend
+  })
+
+  it('the socket closing leaves every followed tab', () => {
+    const { conns, mirror, ws } = terminals()
+    conns.select('web:1', 'p1-t1')
+    conns.select('web:1', 'p1-t2')
+    ws.drop()
+    expect(mirror.joins.map((j) => j.left)).toEqual([true, true])
+    conns.select('web:1', 'p1-t3')
+    conns.ack('web:1', 'p1-t1', 10)
+    expect(mirror.joins).toHaveLength(2)
   })
 })

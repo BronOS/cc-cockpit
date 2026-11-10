@@ -305,14 +305,19 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `src/main/pty/pty-service.ts`, `src/main/tabs/tab-manager.ts`, `src/renderer/tabs/terminal-session.ts`,
   `src/main/web/connection.ts`
 - Modify: their tests
+- ➕ Also created `src/main/terminals/desktop-flow.ts` (the desktop view's per-tab flow: live, behind, joining) and
+  `test/unit/terminal-flow.test.ts`, `test/fakes/fake-mirror-worker.ts` (moved out of terminal-mirror.test.ts); modified
+  `src/main/terminals/mirror.ts` (flow binding, held pruning, backlog backstop), `src/main/web/view-terminals.ts` (a
+  remote view's own flow), `src/main/ipc/router.ts` + `src/shared/ipc.ts` (`tabs.list`/`ack`/`selected`/`data`
+  `adapted`), `src/renderer/web/bridge.ts` (term frames to `tabs.data`), `src/renderer/tabs/TabsPane.tsx`
 
-- [ ] while web access is on, the pty is acked by main's mirror consumer, never paused by a view
-- [ ] every view (desktop included) gets output from main's stream; a view over its buffer limit stops getting live data
+- [x] while web access is on, the pty is acked by main's mirror consumer, never paused by a view
+- [x] every view (desktop included) gets output from main's stream; a view over its buffer limit stops getting live data
       and is resynced with a snapshot; `TabManager.attach` → snapshot instead of `resetFlow`
-- [ ] web access off: today's ack flow, unchanged
-- [ ] write tests: a slow view does not pause the pty, a resynced view matches the mirror, off behaves as today,
+- [x] web access off: today's ack flow, unchanged
+- [x] write tests: a slow view does not pause the pty, a resynced view matches the mirror, off behaves as today,
       `cat`-sized floods do not grow main's buffers unbounded
-- [ ] run tests and `npm run test:e2e` - must pass before next task
+- [x] run tests and `npm run test:e2e` - must pass before next task
 
 ### Task 13: Turning web access on and off at runtime [model: opus]
 

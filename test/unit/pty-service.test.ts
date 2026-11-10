@@ -186,6 +186,64 @@ describe('PtyService flow control', () => {
   })
 })
 
+describe('PtyService flow consumer (web access: main acks, design-web.md §5.2)', () => {
+  function produce(total: number): void {
+    for (let sent = 0; sent < total; sent += FLUSH_BYTES) backend.last.emit('z'.repeat(FLUSH_BYTES))
+  }
+
+  it("counts only the consumer's acks: with main consuming, the renderer cannot pause or resume the pty", () => {
+    svc.spawn('t1', ['sh'], OPTS)
+    expect(svc.flowOf('t1')).toBe('view')
+    expect(svc.setFlow('t1', 'main')).toBe(true)
+    expect(svc.flowOf('t1')).toBe('main')
+    produce(HIGH_WATER + FLUSH_BYTES)
+    expect(backend.last.paused).toBe(true)
+    // The desktop's acks are its own business now.
+    svc.ack('t1', HIGH_WATER + FLUSH_BYTES)
+    svc.ack('t1', HIGH_WATER + FLUSH_BYTES, 'view')
+    expect(backend.last.paused).toBe(true)
+    // Neither is a page re-attaching (resetFlow is the renderer's).
+    svc.resetFlow('t1')
+    expect(backend.last.paused).toBe(true)
+    svc.ack('t1', HIGH_WATER + FLUSH_BYTES, 'main')
+    expect(backend.last.paused).toBe(false)
+  })
+
+  it('a switch starts the count over and resumes a paused pty; the old side is ignored after it', () => {
+    svc.spawn('t1', ['sh'], OPTS)
+    produce(HIGH_WATER + FLUSH_BYTES)
+    expect(backend.last.paused).toBe(true)
+    // Main takes over: what the renderer never acked will never be acked by main.
+    svc.setFlow('t1', 'main')
+    expect(backend.last.paused).toBe(false)
+    produce(HIGH_WATER)
+    expect(backend.last.paused).toBe(false)
+    svc.ack('t1', HIGH_WATER, 'view')
+    produce(FLUSH_BYTES)
+    expect(backend.last.paused).toBe(true)
+    // And back (the mirror stopped): the renderer's acks count again.
+    svc.setFlow('t1', 'view')
+    expect(backend.last.paused).toBe(false)
+    produce(HIGH_WATER + FLUSH_BYTES)
+    expect(backend.last.paused).toBe(true)
+    svc.ack('t1', HIGH_WATER + FLUSH_BYTES)
+    expect(backend.last.paused).toBe(false)
+    // Same side again: nothing changes, the count is kept.
+    produce(HIGH_WATER)
+    svc.setFlow('t1', 'view')
+    produce(FLUSH_BYTES)
+    expect(backend.last.paused).toBe(true)
+  })
+
+  it('an unknown or exited pty has no flow', () => {
+    expect(svc.setFlow('nope', 'main')).toBe(false)
+    expect(svc.flowOf('nope')).toBeUndefined()
+    svc.spawn('t1', ['sh'], OPTS)
+    backend.last.exit(0)
+    expect(svc.setFlow('t1', 'main')).toBe(false)
+  })
+})
+
 describe('PtyService exit', () => {
   it('flushes pending output first, then reports the exit code', () => {
     svc.spawn('t1', ['sh'], OPTS)

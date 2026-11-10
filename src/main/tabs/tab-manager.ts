@@ -19,6 +19,8 @@ import type { Env } from '../env/login-env'
 import { buildPtyEnv } from '../env/pty-env'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { PtyService } from '../pty/pty-service'
+import { DesktopFlow } from '../terminals/desktop-flow'
+import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
 
@@ -103,12 +105,32 @@ export interface TabManagerOptions {
  * pty's spawn size (a new tab and a restart), the SAME flushed chunks the renderer gets in
  * `tabs.data` (same strings, same order), every size the pty took, and the tab going away.
  * A throwing tap is logged like a lifecycle listener and never undoes the tab operation.
+ *
+ * The optional members make the tap the ptys' flow consumer (design-web.md §5.2, mirror.ts): it
+ * gets a TerminalFlow at TabManager's construction, and the desktop resyncs a tab through `join`
+ * when it falls behind (terminals/desktop-flow.ts).
  */
 export interface TerminalTap {
   spawned(tabId: string, cols: number, rows: number): void
   data(tabId: string, chunk: string): void
   resized(tabId: string, cols: number, rows: number): void
   closed(tabId: string): void
+  bindFlow?(flow: TerminalFlow): void
+  /** A snapshot of the tab, then every item after it (mirror.ts `join`); undefined when not held. */
+  join?(tabId: string, view: MirrorView): (() => void) | undefined
+  /** The newest item numbered for the tab. */
+  seq?(tabId: string): number | undefined
+}
+
+/**
+ * TabManager's flow control as the tap drives it. While the tap `take`s a tab, its pty is acked by
+ * the tap (`ack`, characters it consumed), never by the renderer, and the desktop's output for it
+ * is flow-controlled on its own (DesktopFlow). `release` hands it back to the renderer's acks.
+ */
+export interface TerminalFlow {
+  take(tabId: string): void
+  ack(tabId: string, count: number): void
+  release(tabId: string): void
 }
 
 /**
@@ -284,6 +306,8 @@ export class TabManager {
    * at quit costs one pick, while saving it would be one more app setting nobody edits.
    */
   private lastFlagColor: FlagColor = DEFAULT_FLAG_COLOR
+  /** The desktop's output of the tabs the terminal tap consumes (terminals/desktop-flow.ts). */
+  private readonly desktop: DesktopFlow
 
   constructor(options: TabManagerOptions) {
     this.options = options
@@ -295,6 +319,27 @@ export class TabManager {
         exit: (id, code, signal) => this.onExit(id, code, signal)
       }
     })
+    const tap = options.terminalTap
+    this.desktop = new DesktopFlow({
+      emit: (tabId, data, reset) => {
+        const tab = this.byId.get(tabId)
+        if (tab) this.options.emit(tab.projectId, 'tabs.data', reset ? { tabId, data, reset: true } : { tabId, data })
+      },
+      join: (tabId, view) => tap?.join?.(tabId, view),
+      seq: (tabId) => tap?.seq?.(tabId),
+      log: this.log
+    })
+    tap?.bindFlow?.({
+      take: (id) => {
+        // Only a live pty (the tap calls this right after a spawn); a tab without one stays as it is.
+        if (this.pty.setFlow(id, 'main')) this.desktop.take(id)
+      },
+      ack: (id, count) => this.pty.ack(id, count, 'main'),
+      release: (id) => {
+        this.pty.setFlow(id, 'view')
+        this.desktop.release(id)
+      }
+    })
   }
 
   list(projectId: string): TabInfo[] {
@@ -302,11 +347,16 @@ export class TabManager {
   }
 
   /**
-   * A renderer (re)attached and asked for its tabs. Output sent to the previous page was never
-   * acknowledged, so forget it or a paused PTY would stay paused (see PtyService.resetFlow).
+   * The desktop renderer (re)attached and asked for its tabs. Output sent to the previous page was
+   * never acknowledged, so forget it or a paused PTY would stay paused (see PtyService.resetFlow).
+   * A tab main consumes (web access on) is resynced instead: the page gets a snapshot of it, its
+   * screen back after a reload (DesktopFlow.resync). Never for a remote view (router.ts `tabs.list`).
    */
   attach(projectId: string): TabInfo[] {
-    for (const tab of this.order.get(projectId) ?? []) this.pty.resetFlow(tab.id)
+    for (const tab of this.order.get(projectId) ?? []) {
+      if (this.desktop.holds(tab.id)) this.desktop.resync(tab.id)
+      else this.pty.resetFlow(tab.id)
+    }
     return this.list(projectId)
   }
 
@@ -554,9 +604,12 @@ export class TabManager {
     if (tab && this.pty.resize(tab.id, cols, rows)) this.tap((t) => t.resized(tab.id, cols, rows))
   }
 
+  /** The desktop renderer's ack: the pty's flow, or the desktop's own while main consumes the pty. */
   ack(projectId: string, tabId: string, count: number): void {
     const tab = this.find(projectId, tabId)
-    if (tab) this.pty.ack(tab.id, count)
+    if (!tab) return
+    if (this.desktop.holds(tab.id)) this.desktop.ack(tab.id, count)
+    else this.pty.ack(tab.id, count)
   }
 
   /**
@@ -716,6 +769,7 @@ export class TabManager {
   private remove(tab: Tab): void {
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
     this.tap((t) => t.closed(tab.id))
+    this.desktop.closed(tab.id)
     this.notify((l) => l.closed?.(tab.id))
     this.byId.delete(tab.id)
     const tabs = this.order.get(tab.projectId)
@@ -747,7 +801,8 @@ export class TabManager {
   private onData(id: string, data: string): void {
     const tab = this.byId.get(id)
     if (!tab) return
-    this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data })
+    // While main consumes the pty, the desktop gets it only when it is keeping up (DesktopFlow).
+    if (this.desktop.data(id, data)) this.options.emit(tab.projectId, 'tabs.data', { tabId: id, data })
     // Terminal tap: the same chunk, right after the renderer's, so both see one order.
     this.tap((t) => t.data(id, data))
     if (tab.kind === 'claude') this.notify((l) => l.output?.(id, data))

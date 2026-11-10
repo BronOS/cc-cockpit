@@ -54,7 +54,7 @@ describe('REMOTE_CLASS drift', () => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('no')
   })
 
-  it.each(['app.openExternal', 'updates.openRelease', 'notify.soundData'])('%s is adapted', (channel) => {
+  it.each(['app.openExternal', 'updates.openRelease', 'notify.soundData', 'tabs.list', 'tabs.ack', 'tabs.selected', 'tabs.data'])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })
 })

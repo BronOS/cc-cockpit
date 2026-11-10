@@ -612,7 +612,7 @@ describe('core handlers', () => {
 
 describe('registerTabHandlers', () => {
   /** Records each call with the project the router resolved. */
-  function tabsSetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
+  function tabsSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     const rec =
@@ -635,10 +635,34 @@ describe('registerTabHandlers', () => {
       input: rec('input') as TabHandlerDeps['input'],
       resize: rec('resize') as TabHandlerDeps['resize'],
       ack: rec('ack') as TabHandlerDeps['ack'],
-      select: rec('select') as TabHandlerDeps['select']
+      select: rec('select') as TabHandlerDeps['select'],
+      list: rec('list', [info]) as TabHandlerDeps['list'],
+      viewAck: rec('viewAck') as TabHandlerDeps['viewAck'],
+      viewSelect: rec('viewSelect') as TabHandlerDeps['viewSelect']
     })
-    return { ipc, calls }
+    return { ipc, router, calls }
   }
+
+  it('answers a remote view with the plain list, its own ack and a terminal join; the desktop as before', async () => {
+    const { ipc, router, calls } = tabsSetup()
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    // Never the desktop's re-attach (it resets or resyncs the desktop's terminals and runs the restore).
+    await expect(router.dispatch(web, 'tabs.list', undefined)).resolves.toEqual([{ id: 't1', kind: 'shell', cwd: '/work/a' }])
+    await router.dispatch(web, 'tabs.ack', { tabId: 't1', count: 7 })
+    await router.dispatch(web, 'tabs.selected', { tabId: 't1' })
+    await ipc.invoke('tabs.ack', 11, [{ tabId: 't1', count: 5 }])
+    await ipc.invoke('tabs.selected', 11, [{ tabId: 't1' }])
+    expect(calls).toEqual([
+      ['list', PROJECT_A],
+      // The remote ack never reaches TabManager (the pty's or the desktop's flow).
+      ['viewAck', 'web:3', 't1', 7],
+      ['select', PROJECT_A, 't1'],
+      ['viewSelect', 'web:3', 't1'],
+      ['ack', PROJECT_A, 't1', 5],
+      ['select', PROJECT_A, 't1']
+    ])
+    await expect(router.dispatch(web, 'tabs.ack', { tabId: 't1', count: 'x' })).rejects.toThrow(/count/)
+  })
 
   it("acts on the sender's project, ignoring any project named in the payload; attach, create and restart get the sender's window", async () => {
     const { ipc, calls } = tabsSetup()

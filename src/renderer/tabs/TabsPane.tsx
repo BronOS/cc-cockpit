@@ -49,13 +49,19 @@ import { SessionRegistry, tabIo } from './terminal-session'
 import { TerminalView } from './TerminalView'
 
 /**
- * `tabs.list` is the re-attach point after a page load and resets PTY flow control in main, so it
- * must run once per page load and never to refresh the list (with xterm saturated that would
- * resume a paused PTY). The promise is kept at module level so a React StrictMode remount in dev
- * reuses the one answer instead of asking twice.
+ * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
+ * main (or resyncs every terminal with a snapshot while web access is on), so it must run once per
+ * page load and never to refresh the list (with xterm saturated that would resume a paused PTY).
+ * The promise is kept at module level so a React StrictMode remount in dev reuses the one answer
+ * instead of asking twice.
+ *
+ * The web shell asks on every mount: main answers a remote view with the plain list and touches no
+ * terminal (router.ts `tabs.list`; the view's terminals come as term.* frames once it selects a
+ * tab), and a reconnect remounts the shell, which must not be drawn from the first socket's list.
  */
 let attached: Promise<TabInfo[]> | undefined
 function attachTabs(): Promise<TabInfo[]> {
+  if (isWebShell()) return window.cockpit.invoke('tabs.list')
   attached ??= window.cockpit.invoke('tabs.list')
   return attached
 }
@@ -174,8 +180,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     // Subscribe before asking for the list so no output or exit falls between the two. Output of
     // a tab whose view is not mounted yet is parsed by its session all the same.
-    const offData = window.cockpit.on('tabs.data', ({ tabId, data }) => {
-      sessions.write(tabId, data)
+    const offData = window.cockpit.on('tabs.data', ({ tabId, data, reset }) => {
+      sessions.write(tabId, data, reset === true)
     })
     const offExit = window.cockpit.on('tabs.exit', ({ tabId, code, signal, gen }) => {
       dispatch({ type: 'exited', tabId, exit: { code, signal }, gen })

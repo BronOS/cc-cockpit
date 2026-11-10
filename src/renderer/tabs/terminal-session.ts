@@ -44,6 +44,9 @@ export function tabIo(tabId: string): TerminalIo {
   }
 }
 
+/** ESC c: full reset (screen, scrollback, modes), parsed in order with the writes before it. */
+const RIS = '\x1bc'
+
 /** How a terminal is drawn, beyond the theme and the font. */
 export interface TerminalLook {
   /**
@@ -115,11 +118,18 @@ export class TerminalSession {
 
   /**
    * Write PTY output and acknowledge it once xterm has parsed it. The ack unit is the string
-   * length (UTF-16 units) of what was written, which is what the PTY service counts (task 6).
+   * length (UTF-16 units) of what was written, which is what main counts (pty-service.ts, or the
+   * view's own count while web access is on, desktop-flow.ts).
+   *
+   * `reset`: `data` is a whole screen from main (a resync after this view fell behind, or a page
+   * re-attaching, design-web.md §5.2). The terminal starts over with it: a full reset (RIS) goes in
+   * the same write, so output queued before it is still parsed first, then wiped, never drawn over
+   * the snapshot. Not acked: main never counts a snapshot.
    */
-  write(data: string): void {
+  write(data: string, reset = false): void {
     if (this.disposed) return
-    this.term.write(data, () => this.io.ack(data.length))
+    if (reset) this.term.write(`${RIS}${data}`)
+    else this.term.write(data, () => this.io.ack(data.length))
   }
 
   /** Show the terminal in `container`; safe to call again with a new container (a remount). */
@@ -221,10 +231,10 @@ export class SessionRegistry {
   /** Closed tabs: late output for them must not resurrect a session that nobody disposes. */
   private readonly closed = new Set<string>()
 
-  /** Output for a tab; dropped when the tab is closed. */
-  write(tabId: string, data: string): void {
+  /** Output for a tab (`reset`: a whole screen, TerminalSession.write); dropped when the tab is closed. */
+  write(tabId: string, data: string, reset = false): void {
     if (this.closed.has(tabId)) return
-    this.get(tabId).write(data)
+    this.get(tabId).write(data, reset)
   }
 
   get(tabId: string): TerminalSession {

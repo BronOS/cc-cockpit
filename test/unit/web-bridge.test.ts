@@ -401,6 +401,67 @@ describe('events', () => {
   })
 })
 
+describe('terminal frames', () => {
+  const part = (tabId: string, seq: number, n: number, of: number, data: string) =>
+    ({ t: 'term.snapshot', tabId, seq, cols: 80, rows: 24, part: n, parts: of, data }) as const
+
+  it('hands term.data to the tabs.data listeners and a whole snapshot, its parts joined, with reset', () => {
+    const r = rig()
+    const s = connect(r)
+    const seen = vi.fn()
+    r.api.on('tabs.data', seen)
+    s.serverSend(part('t1', 4, 1, 3, 'ab'))
+    s.serverSend(part('t1', 4, 2, 3, 'cd'))
+    // Another tab's snapshot may interleave; each tab is joined on its own.
+    s.serverSend(part('t2', 9, 1, 1, 'other'))
+    expect(seen.mock.calls).toEqual([[{ tabId: 't2', data: 'other', reset: true }]])
+    s.serverSend(part('t1', 4, 3, 3, 'ef'))
+    s.serverSend({ t: 'term.data', tabId: 't1', seq: 5, data: 'live' })
+    // A size item is not passed on yet (per-view sizes, plan Task 15).
+    s.serverSend({ t: 'term.data', tabId: 't1', seq: 6, cols: 100, rows: 30 })
+    expect(seen.mock.calls.slice(1)).toEqual([[{ tabId: 't1', data: 'abcdef', reset: true }], [{ tabId: 't1', data: 'live' }]])
+  })
+
+  it('drops a snapshot whose parts come out of order, and junk terminal frames', () => {
+    const r = rig()
+    const s = connect(r)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const seen = vi.fn()
+    r.api.on('tabs.data', seen)
+    s.serverSend(part('t1', 4, 2, 2, 'no first part'))
+    s.serverSend(part('t1', 4, 1, 2, 'a'))
+    s.serverSend(part('t1', 5, 2, 2, 'another seq'))
+    s.serverSend(part('t1', 4, 2, 2, 'too late'))
+    for (const junk of [
+      { t: 'term.data', tabId: 7, seq: 1, data: 'x' },
+      { t: 'term.data', tabId: 't1', seq: 1.5, data: 'x' },
+      part('t1', 1, 0, 1, 'x'),
+      part('t1', 1, 2, 1, 'x'),
+      { t: 'term.snapshot', tabId: 't1', seq: 1, part: 1, parts: 1, data: 5 }
+    ]) {
+      s.serverSend(junk)
+    }
+    expect(seen).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('forgets the parts of a dropped socket', () => {
+    const r = rig()
+    connect(r)
+    const seen = vi.fn()
+    r.api.on('tabs.data', seen)
+    r.last().serverSend(part('t1', 4, 1, 2, 'old socket'))
+    r.last().serverClose(1006)
+    r.timers.advance(reconnectDelay(1))
+    const s2 = connect(r, 'web:2')
+    s2.serverSend(part('t1', 4, 2, 2, 'new socket'))
+    expect(seen).not.toHaveBeenCalled()
+    s2.serverSend(part('t1', 8, 1, 1, 'fresh'))
+    expect(seen).toHaveBeenCalledWith({ tabId: 't1', data: 'fresh', reset: true })
+  })
+})
+
 describe('drops and reconnect', () => {
   it('rejects calls in flight on a drop, goes away, and reconnects with backoff', async () => {
     const r = rig()

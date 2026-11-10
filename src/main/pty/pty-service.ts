@@ -13,6 +13,13 @@
 // with the `length` of the string it wrote to xterm, so the two sides never disagree about bytes
 // vs characters.
 //
+// Who acks (design-web.md §5.2 "Main holds the terminal"): by default the renderer (`'view'`, the
+// desktop's xterm through `tabs.ack`). While web access is on, the headless terminal in main is the
+// pty's one flow consumer (`'main'`, terminals/mirror.ts acks what its worker parsed), so no view,
+// the desktop included, can pause Claude; each view is then flow-controlled on its own and resynced
+// with a snapshot when it falls behind (terminals/desktop-flow.ts, web/view-terminals.ts). An ack
+// from the side that is not the consumer is ignored, and switching sides starts the count over.
+//
 // Pausing is a socket-level pause in the node-pty backend. A child that exits while the PTY is
 // paused would have its last output dropped by node-pty (it destroys the unread socket 200 ms
 // after the exit); the backend resumes a paused PTY whose child is gone so that tail is read
@@ -78,6 +85,9 @@ export interface PtySink {
   exit(id: string, code: number, signal: number | null): void
 }
 
+/** Who acknowledges a PTY's output (see the header): the renderer's xterm, or main's headless copy. */
+export type FlowSource = 'view' | 'main'
+
 export interface PtyServiceOptions {
   backend: PtyBackend
   sink: PtySink
@@ -92,6 +102,8 @@ interface Entry {
   /** Sent to the sink and not yet acknowledged by the renderer. */
   unacked: number
   paused: boolean
+  /** Whose acks count (see the header). */
+  flow: FlowSource
 }
 
 export class PtyService {
@@ -114,7 +126,8 @@ export class PtyService {
       pendingBytes: 0,
       timer: null,
       unacked: 0,
-      paused: false
+      paused: false,
+      flow: 'view'
     }
     this.ptys.set(id, entry)
     handle.onData((data) => {
@@ -156,10 +169,14 @@ export class PtyService {
     return true
   }
 
-  /** The renderer wrote `count` characters of this PTY's output into xterm. */
-  ack(id: string, count: number): void {
+  /**
+   * `count` characters of this PTY's output were consumed: written into the renderer's xterm
+   * (`'view'`) or parsed by main's headless copy (`'main'`). Only the current consumer's acks count:
+   * with web access on, a desktop that stops acking must not be able to pause Claude.
+   */
+  ack(id: string, count: number, source: FlowSource = 'view'): void {
     const entry = this.ptys.get(id)
-    if (!entry || !(count > 0)) return
+    if (!entry || !(count > 0) || entry.flow !== source) return
     // Clamp at zero: a buggy or hostile renderer acking more than it received must not drive the
     // counter negative and so disable flow control for later output.
     entry.unacked = Math.max(0, entry.unacked - count)
@@ -171,16 +188,42 @@ export class PtyService {
 
   /**
    * Forget unacknowledged output and resume if paused. For a renderer that went away (reload,
-   * crash) and so will never ack what it was sent; call when it re-attaches.
+   * crash) and so will never ack what it was sent; call when it re-attaches. Only while the renderer
+   * is the consumer: main's own count is never the renderer's to wipe.
    */
   resetFlow(id: string): void {
     const entry = this.ptys.get(id)
-    if (!entry) return
+    if (!entry || entry.flow !== 'view') return
     entry.unacked = 0
     if (entry.paused) {
       entry.paused = false
       entry.handle.resume()
     }
+  }
+
+  /**
+   * Hand the PTY's flow control to `source` (the terminal mirror takes a tab it holds, and gives it
+   * back when it stops). The count starts over and a paused PTY resumes: what the old consumer was
+   * sent and never acked will never be acked by the new one. Its late acks are ignored (wrong
+   * source) or, after a switch back, land on the fresh count and are clamped at zero, so at worst
+   * the next pause comes a little later. False for an unknown or exited PTY.
+   */
+  setFlow(id: string, source: FlowSource): boolean {
+    const entry = this.ptys.get(id)
+    if (!entry) return false
+    if (entry.flow === source) return true
+    entry.flow = source
+    entry.unacked = 0
+    if (entry.paused) {
+      entry.paused = false
+      entry.handle.resume()
+    }
+    return true
+  }
+
+  /** Whose acks count for this PTY; undefined for an unknown or exited one. */
+  flowOf(id: string): FlowSource | undefined {
+    return this.ptys.get(id)?.flow
   }
 
   /**

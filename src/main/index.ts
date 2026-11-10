@@ -1963,6 +1963,11 @@ function start(): void {
     },
     resize: (projectId, tabId, cols, rows) => tabs.resize(projectId, tabId, cols, rows),
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),
+    // A remote view: the plain list (never the desktop's re-attach), and its own terminal flow and
+    // joins (web/connection.ts). Only reached by a web caller, which exists once webConnections does.
+    list: (projectId) => tabs.list(projectId),
+    viewAck: (viewId, tabId, count) => webConnections.ack(viewId, tabId, count),
+    viewSelect: (viewId, tabId) => webConnections.select(viewId, tabId),
     // The tab pane's selection, for SessionInfo.active. Only a tab of the sender's project counts:
     // anything else (a tab closed while the message travelled, a foreign id) leaves it as it was.
     select: (projectId, tabId) => {
@@ -2031,6 +2036,8 @@ function start(): void {
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays }, ctx),
+    mirror: terminalMirror,
+    hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     log: (m) => console.warn(m)
   })
   webGateway.setSocketHandler((ws, _req, device) => {

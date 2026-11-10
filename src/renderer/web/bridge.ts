@@ -16,6 +16,11 @@
 //   on a tab that is gone (and typing must never land late in a Claude session).
 // - Events keep their listeners across reconnects: the page subscribes once, the bridge routes
 //   every `event` frame of the current socket to the listeners of its channel.
+// - Terminals (design §5.2): a remote view's tab output comes as `term.snapshot` (in parts, joined
+//   here) and `term.data` frames, never as `tabs.data` events; the bridge hands them to the shell's
+//   `tabs.data` listeners, a whole snapshot with `reset` (the terminal starts over with it, and the
+//   shell does not ack it), so TerminalSession is the same in both shells. Size items are not
+//   passed on yet (per-view sizes, plan Task 15).
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -229,6 +234,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   let readyAt: number | undefined
   // Bumped on every drop and connect, so a late session answer never acts on a newer state.
   let epoch = 0
+  // Snapshot parts received so far per tab (the current socket's; a new socket starts empty).
+  let snapParts = new Map<string, { seq: number; parts: number; data: string[] }>()
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -296,6 +303,43 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     )
   }
 
+  const emit = (channel: string, payload: unknown): void => {
+    const set = listeners.get(channel)
+    if (!set) return
+    for (const listener of [...set]) {
+      try {
+        listener(payload)
+      } catch (err) {
+        console.error(`web bridge: listener of ${channel} failed`, err)
+      }
+    }
+  }
+
+  /** A `term.snapshot` part or a `term.data` item, as the shell's `tabs.data` (see the header). */
+  const onTerminalFrame = (f: Record<string, unknown>): void => {
+    const tabId = f.tabId
+    if (typeof tabId !== 'string' || typeof f.seq !== 'number' || !Number.isSafeInteger(f.seq)) return
+    if (f.t === 'term.data') {
+      if (typeof f.data === 'string') emit('tabs.data', { tabId, data: f.data })
+      return
+    }
+    const { part, parts, data } = f
+    if (typeof part !== 'number' || typeof parts !== 'number' || typeof data !== 'string') return
+    if (!Number.isSafeInteger(parts) || parts < 1 || !Number.isSafeInteger(part) || part < 1 || part > parts) return
+    let got = snapParts.get(tabId)
+    if (part === 1) snapParts.set(tabId, (got = { seq: f.seq, parts, data: [] }))
+    // Main sends the parts back to back; anything else is a broken stream, dropped whole.
+    if (!got || got.seq !== f.seq || got.parts !== parts || got.data.length !== part - 1) {
+      snapParts.delete(tabId)
+      console.warn('web bridge: terminal snapshot out of order')
+      return
+    }
+    got.data.push(data)
+    if (part < parts) return
+    snapParts.delete(tabId)
+    emit('tabs.data', { tabId, data: got.data.join(''), reset: true })
+  }
+
   const onFrame = (s: SocketLike, data: unknown): void => {
     if (s !== socket) return
     if (typeof data !== 'string') return
@@ -332,15 +376,11 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       // Main sends only allowed events (protocol.ts eventAllowed); the page checks again, as the
       // preload's `on` refuses a channel outside the shared list.
       if (status.state !== 'ready' || typeof f.ch !== 'string' || !eventChannels.has(f.ch) || !remoteAllowed(f.ch)) return
-      const set = listeners.get(f.ch)
-      if (!set) return
-      for (const listener of [...set]) {
-        try {
-          listener(f.p)
-        } catch (err) {
-          console.error(`web bridge: listener of ${f.ch} failed`, err)
-        }
-      }
+      emit(f.ch, f.p)
+      return
+    }
+    if (f.t === 'term.snapshot' || f.t === 'term.data') {
+      if (status.state === 'ready') onTerminalFrame(f)
     }
   }
 
@@ -357,6 +397,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     }
     socket = s
     epoch += 1
+    snapParts = new Map()
     readyTimer = timers.setTimeout(() => {
       readyTimer = undefined
       if (s === socket) s.close()
