@@ -25,6 +25,12 @@
 // - Panel ports (design §5.3): main's `port.open` / `port.msg` / `port.close` go to this socket's
 //   PortRelay (port-relay.ts), which hands each port to the panel that asked (`onPort`, the panel
 //   port bus) and relays its messages; a drop closes every port of the old socket.
+// - Shared asks (design §5.1, main/sessions/close-asks.ts): plugin close asks pending when the view
+//   joined come in `ready` (`closeAsks`); the bridge keeps the pending set (adding each
+//   `sessions.closeAsk`, dropping each `sessions.closeSettled`) and hands it to every new
+//   `sessions.closeAsk` listener as if the asks had just arrived. The shell subscribes when it
+//   mounts, which is after `ready` (and again after each reconnect's remount), so without this a
+//   view joining mid-ask would never show the dialog.
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -112,6 +118,13 @@ export interface WebBridgeOptions {
   onPort?(key: string, nonce: number, port: MessagePort): boolean
   /** The channel factory for relayed ports (tests); `new MessageChannel()` by default. */
   createChannel?(): ChannelLike
+}
+
+/** A close ask from main (an event or `ready`'s list), checked; undefined when malformed. */
+function closeAskOf(value: unknown): { requestId: string; tabId: string } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const { requestId, tabId } = value as Record<string, unknown>
+  return typeof requestId === 'string' && typeof tabId === 'string' ? { requestId, tabId } : undefined
 }
 
 /** Main's paths, checked: string prefixes under the gateway's own paths only, else none. */
@@ -289,6 +302,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   let snapParts = new Map<string, { seq: number; parts: number; cols: number; rows: number; data: string[] }>()
   // The current socket's relayed panel ports (a new socket starts with none).
   let ports: PortRelay | undefined
+  // Plugin close asks of this window still waiting, by request id (see the top of the file).
+  let closeAsks = new Map<string, { requestId: string; tabId: string }>()
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -358,6 +373,17 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     )
   }
 
+  /** Follow the window's pending close asks from the events, before the listeners hear them. */
+  const trackAsk = (channel: string, payload: unknown): void => {
+    if (channel === 'sessions.closeAsk') {
+      const ask = closeAskOf(payload)
+      if (ask) closeAsks.set(ask.requestId, ask)
+    } else if (channel === 'sessions.closeSettled') {
+      const id = (payload as { requestId?: unknown } | null)?.requestId
+      if (typeof id === 'string') closeAsks.delete(id)
+    }
+  }
+
   const emit = (channel: string, payload: unknown): void => {
     const set = listeners.get(channel)
     if (!set) return
@@ -419,6 +445,14 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       clearReadyTimer()
       const ready = f as unknown as ReadyFrame
       snapshot = ready.snapshot
+      // The snapshot's list replaces the old socket's: asks settled while away are not in it.
+      closeAsks = new Map()
+      if (Array.isArray(ready.snapshot?.closeAsks)) {
+        for (const item of ready.snapshot.closeAsks as unknown[]) {
+          const ask = closeAskOf(item)
+          if (ask) closeAsks.set(ask.requestId, ask)
+        }
+      }
       // Before the status change: the shell mounts on `ready` and draws plugin images at once.
       options.onPagePaths?.(pagePathsOf(ready.paths))
       readyAt = timers.now()
@@ -444,6 +478,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       // Main sends only allowed events (protocol.ts eventAllowed); the page checks again, as the
       // preload's `on` refuses a channel outside the shared list.
       if (status.state !== 'ready' || typeof f.ch !== 'string' || !eventChannels.has(f.ch) || !remoteAllowed(f.ch)) return
+      trackAsk(f.ch, f.p)
       emit(f.ch, f.p)
       return
     }
@@ -544,6 +579,24 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       let set = listeners.get(channel)
       if (!set) listeners.set(channel, (set = new Set()))
       set.add(fn)
+      if (channel === 'sessions.closeAsk' && closeAsks.size > 0) {
+        // A turn later, as an event would come: the subscriber's own setup has finished. Only to a
+        // listener still subscribed then (StrictMode subscribes, drops and subscribes again), and
+        // only asks still pending then (a settle may have come in between).
+        const asks = [...closeAsks.keys()]
+        queueMicrotask(() => {
+          if (!set.has(fn)) return
+          for (const id of asks) {
+            const ask = closeAsks.get(id)
+            if (!ask) continue
+            try {
+              fn({ ...ask })
+            } catch (err) {
+              console.error('web bridge: listener of sessions.closeAsk failed', err)
+            }
+          }
+        })
+      }
       return () => {
         set.delete(fn)
       }

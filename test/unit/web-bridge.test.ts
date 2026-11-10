@@ -93,7 +93,8 @@ class FakeTimers implements Timers {
 const SNAPSHOT: WebSnapshot = {
   tabs: [],
   layout: {} as WebSnapshot['layout'],
-  overlays: []
+  overlays: [],
+  closeAsks: []
 }
 
 interface Rig {
@@ -749,5 +750,71 @@ describe('plugin paths (Task 20)', () => {
     s.open()
     s.serverSend({ t: 'paths', paths: PATHS })
     expect(got).toEqual([])
+  })
+})
+
+// Shared asks (plan Task 23): close asks pending at `ready`, and ones that arrived before the shell
+// subscribed, are handed to each new `sessions.closeAsk` listener; a settled one is not.
+describe('pending close asks', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
+
+  it('hands the ready list to a listener that subscribes after it, minus what settled since', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    const asks = [
+      { requestId: 'close-1', tabId: 't1' },
+      { requestId: 'close-2', tabId: 't2' },
+      { requestId: 5, tabId: 't3' }
+    ]
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, closeAsks: asks } })
+    s.serverSend({ t: 'event', ch: 'sessions.closeSettled', p: { requestId: 'close-2' } })
+    // An ask that came as an event before the shell subscribed counts too.
+    s.serverSend({ t: 'event', ch: 'sessions.closeAsk', p: { requestId: 'close-3', tabId: 't4' } })
+    const got: unknown[] = []
+    anyApi(r.api).on('sessions.closeAsk', (p) => got.push(p))
+    // Not synchronously: as an event would come, after the subscriber's own setup.
+    expect(got).toEqual([])
+    await tick()
+    expect(got).toEqual([
+      { requestId: 'close-1', tabId: 't1' },
+      { requestId: 'close-3', tabId: 't4' }
+    ])
+  })
+
+  it('skips a listener gone before the turn (StrictMode), and asks settled in between', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, closeAsks: [{ requestId: 'close-1', tabId: 't1' }] } })
+    const first: unknown[] = []
+    const second: unknown[] = []
+    const off = anyApi(r.api).on('sessions.closeAsk', (p) => first.push(p))
+    off()
+    anyApi(r.api).on('sessions.closeAsk', (p) => second.push(p))
+    await tick()
+    expect(first).toEqual([])
+    expect(second).toEqual([{ requestId: 'close-1', tabId: 't1' }])
+    const third: unknown[] = []
+    anyApi(r.api).on('sessions.closeAsk', (p) => third.push(p))
+    s.serverSend({ t: 'event', ch: 'sessions.closeSettled', p: { requestId: 'close-1' } })
+    await tick()
+    expect(third).toEqual([])
+  })
+
+  it('a reconnect’s ready replaces the list: an ask settled while away is not handed out', async () => {
+    const r = rig()
+    const s = connect(r)
+    s.serverSend({ t: 'event', ch: 'sessions.closeAsk', p: { requestId: 'close-1', tabId: 't1' } })
+    s.serverClose(1006)
+    r.timers.advance(reconnectDelay(1))
+    const next = r.last()
+    expect(next).not.toBe(s)
+    next.open()
+    next.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:2', snapshot: { ...SNAPSHOT, closeAsks: [{ requestId: 'close-2', tabId: 't2' }] } })
+    const got: unknown[] = []
+    anyApi(r.api).on('sessions.closeAsk', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([{ requestId: 'close-2', tabId: 't2' }])
   })
 })

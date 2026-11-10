@@ -116,13 +116,20 @@ export interface SnapshotSources {
   tabs: { list(projectId: string): TabInfo[] }
   layouts: { view(projectId: string): LayoutView | undefined }
   overlays: { infos(windowId: number): OverlayInfo[] }
+  /** A plain read of the window's pending plugin close asks (CloseAsks.pendingFor). */
+  closeAsks: { pendingFor(windowId: number): Array<{ requestId: string; tabId: string }> }
 }
 
 /** The window's state for `ready` (`WebConnectionDeps.snapshot`); throws when the project is gone. */
 export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }: ProjectContext): WebSnapshot {
   const layout = sources.layouts.view(projectId)
   if (!layout) throw new Error('project record is gone')
-  return { tabs: sources.tabs.list(projectId), layout, overlays: sources.overlays.infos(windowId) }
+  return {
+    tabs: sources.tabs.list(projectId),
+    layout,
+    overlays: sources.overlays.infos(windowId),
+    closeAsks: sources.closeAsks.pendingFor(windowId)
+  }
 }
 
 /**

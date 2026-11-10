@@ -568,10 +568,15 @@ function start(): void {
   const sendToWindow = (windowId: number, channel: EventChannel, payload: unknown): void => {
     views.toWindow(windowId, channel, payload)
   }
-  // ctx.sessions.close's asks to a window's tab pane (close-asks.ts): settled by that window's
-  // `sessions.closeAnswer`, or false when it closes or the wait runs out. False at once when no
+  // ctx.sessions.close's asks to a window's tab pane (close-asks.ts): shown on every view of the
+  // window, settled by the first `sessions.closeAnswer` from any of them (then every view hears
+  // `sessions.closeSettled`), or false when it closes or the wait runs out. False at once when no
   // view of the window took the ask (nobody could answer it).
-  const closeAsks = new CloseAsks((windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask))
+  const closeAsks = new CloseAsks({
+    send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
+    settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
+    viewsOf: (windowId) => views.viewsOf(windowId)
+  })
   // ctx.sessions.close's body (HostApi checked the tab is the project's); a function so the test
   // hook `pluginCloseTab` runs the very same path.
   const closeTabForPlugin = (windowId: number, projectId: string, tabId: string): Promise<boolean> => {
@@ -2101,7 +2106,7 @@ function start(): void {
     addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
-    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays }, ctx),
+    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),
@@ -2112,6 +2117,8 @@ function start(): void {
       tabs.viewGone(viewId)
       panelPorts.viewGone(viewId)
       selections.viewGone(viewId)
+      // A plugin close every remaining view declined ends now (close-asks.ts).
+      closeAsks.viewGone()
     },
     log: (m) => console.warn(m)
   })
@@ -2169,7 +2176,7 @@ function start(): void {
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
-    closeAnswer: (windowId, requestId, closed) => closeAsks.answer(windowId, requestId, closed)
+    closeAnswer: (windowId, viewId, requestId, answer) => closeAsks.answer(windowId, viewId, requestId, answer)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

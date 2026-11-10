@@ -862,9 +862,12 @@ export interface IpcInvokeMap {
   'sessions.cancelQueued': { req: { tabId: string; itemId: string }; res: boolean }
   /**
    * The answer to a `sessions.closeAsk` (a plugin's ctx.sessions.close): whether the tab closed.
-   * Settles only an ask main sent to the sender's own window; false for any other id.
+   * Settles only an ask main sent to the sender's own window (any view of it: the first answer
+   * wins, design-web.md §5.1); false for any other id. `declined`: this view could not ask (another
+   * dialog, a screen or an overlay was over it, or its close failed): it counts only once every
+   * view of the window declined, so a covered browser cannot cancel the dialog the desktop shows.
    */
-  'sessions.closeAnswer': { req: { requestId: string; closed: boolean }; res: boolean }
+  'sessions.closeAnswer': { req: { requestId: string; closed: boolean; declined?: boolean }; res: boolean }
 
   // Zones.
   /** The sender's project layout, reconciled with the panels that exist. Plain query. */
@@ -1311,6 +1314,11 @@ export interface IpcEventMap {
    */
   'sessions.closeAsk': { requestId: string; tabId: string }
   /**
+   * A `sessions.closeAsk` of this window is over (answered in some view, or dropped): a view still
+   * showing its dialog takes it down without answering. Sent to every view of the window.
+   */
+  'sessions.closeSettled': { requestId: string }
+  /**
    * This window's project changed on main's side (its colour was set, from this window's settings
    * or any other way): what `window.info` would now say about it. Project windows only.
    */
@@ -1515,6 +1523,7 @@ export const EVENT_CHANNELS = [
   'notify.chime',
   'sessions.snapshot',
   'sessions.closeAsk',
+  'sessions.closeSettled',
   'project.updated',
   'projects.changed',
   'tabs.select',
@@ -1604,6 +1613,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'sessions.snapshot': 'yes',
   'sessions.cancelQueued': 'yes',
   'sessions.closeAsk': 'yes',
+  'sessions.closeSettled': 'yes',
   'sessions.closeAnswer': 'yes',
   'project.updated': 'yes',
 

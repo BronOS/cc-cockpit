@@ -3,7 +3,7 @@
 // the gateway, the connection and the tests share one definition and the browser bridge (plan
 // Task 7) mirrors it.
 //
-// Frames (a later task adds `settled`):
+// Frames (shared asks settle through an ordinary event, `sessions.closeSettled`):
 //   client -> main  { t: 'hello', v, project }        once, first; binds the view to that window
 //                   { t: 'invoke', id, ch, p }        an IPC invoke, answered by a `result`
 //                   { t: 'port.msg', key, nonce, m }  a panel page's message, for its port's host end

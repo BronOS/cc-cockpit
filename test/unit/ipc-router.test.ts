@@ -827,22 +827,29 @@ describe('registerSessionHandlers', () => {
         calls.push(['cancelQueued', projectId, tabId, itemId])
         return true
       },
-      closeAnswer: (windowId, requestId, closed) => {
-        calls.push(['closeAnswer', windowId, requestId, closed])
+      closeAnswer: (windowId, viewId, requestId, answer) => {
+        calls.push(['closeAnswer', windowId, viewId, requestId, answer])
         return true
       }
     })
     return { ipc, calls }
   }
 
-  it('sessions.closeAnswer passes the sender’s window, never one from the payload', async () => {
+  it('sessions.closeAnswer passes the sender’s window and view, never ones from the payload', async () => {
     const { ipc, calls } = sessionsSetup()
-    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: true, windowId: 1 }])).resolves.toBe(true)
-    expect(calls).toEqual([['closeAnswer', 2, 'close-1', true]])
+    await expect(
+      ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: true, windowId: 1, viewId: 'web:9' }])
+    ).resolves.toBe(true)
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-2', closed: false, declined: true }])).resolves.toBe(true)
+    expect(calls).toEqual([
+      ['closeAnswer', 2, 'desktop:2', 'close-1', { closed: true, declined: false }],
+      ['closeAnswer', 2, 'desktop:2', 'close-2', { closed: false, declined: true }]
+    ])
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 5, closed: true }])).rejects.toThrow()
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: 'yes' }])).rejects.toThrow()
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: false, declined: 'yes' }])).rejects.toThrow()
     await expect(ipc.invoke('sessions.closeAnswer', 13, [{ requestId: 'close-1', closed: false }])).rejects.toThrow()
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
   })
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {

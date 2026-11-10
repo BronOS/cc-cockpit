@@ -511,12 +511,17 @@ remote client, a phone layout, headless server mode (design §9, §10).
   `src/main/overlays/overlay-manager.ts`, `src/shared/ipc.ts` (`settled` event), `src/main/web/protocol.ts` (`ready`)
 - Modify: their tests
 
-- [ ] close asks, CLI dialogs and terminal overlays are shown on every view of the window; the first answer wins
-- [ ] a `settled` event closes them on the other views; a view joining mid-ask gets them in `ready`
-- [ ] answers accepted from any view of the window, never from another window
-- [ ] write tests: two views, one answers, the other gets `settled`; a late join sees the pending ask; another window's
+- [x] close asks, CLI dialogs and terminal overlays are shown on every view of the window; the first answer wins
+- [x] a `settled` event closes them on the other views; a view joining mid-ask gets them in `ready`
+- [x] answers accepted from any view of the window, never from another window
+- [x] write tests: two views, one answers, the other gets `settled`; a late join sees the pending ask; another window's
       answer refused
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+
+      Note: the `settled` event is `sessions.closeSettled` (close asks); terminal overlays already settle through main's
+      stack (`overlays.updated`). A view that could not ask answers `declined`, counted only once every live view of
+      the window declined. `ready.snapshot.closeAsks` is replayed by the bridge to each new `sessions.closeAsk`
+      listener. The only `ccc` CLI dialog is the native link confirm, which has no in-page form until Task 25.
 
 ### Task 24: HTML overlays and settings pages held by one view [model: opus]
 
@@ -541,6 +546,8 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: their tests
 
 - [ ] `openExternal` and link clicks from a remote view: a clickable notice in that view
+- ➕ the in-page link confirm is a shared ask (Task 23): shown on every view of the window, first answer wins, a
+      settle event for the others and the pending ones in `ready` (follow `CloseAsks` / `sessions.closeSettled`)
 - [ ] the link confirm as an in-page dialog for remote views; `reveal`/`openWithSystem` refused with a message; `trash`
       unchanged; OAuth sign-in says "sign in on the desktop"; notifications stay on the host
 - [ ] Browser panel and URL overlays: an "available on the desktop" placeholder in remote views

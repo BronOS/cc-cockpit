@@ -76,11 +76,18 @@ const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta'])
  * its imports (this module among them) have run. Neither changes for the page's life.
  */
 
+/**
+ * A plugin close waiting for the outcome (`sessions.closeAsk`). `declined`: this view could not ask
+ * (another dialog, a screen or an overlay over it, or its close failed), which main counts only once
+ * every view of the window declined (close-asks.ts): a person's Cancel is not a decline.
+ */
+type CloseDone = (closed: boolean, declined?: boolean) => void
+
 /** The dialog went: answer the plugin close waiting on it (`confirmDone`), if one is, once. */
-function settleClose(confirmDone: { current: ((closed: boolean) => void) | null }, closed: boolean): void {
+function settleClose(confirmDone: { current: CloseDone | null }, closed: boolean, declined = false): void {
   const done = confirmDone.current
   confirmDone.current = null
-  done?.(closed)
+  done?.(closed, declined)
 }
 
 /** The project window's terminal tabs: tab bar plus one mounted terminal per tab. */
@@ -153,7 +160,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const confirmFor = useRef<string | null>(null)
   // A plugin's ctx.sessions.close waiting on the dialog that is up (`sessions.closeAsk`): told
   // whether the tab closed once the dialog goes, however it goes. Null for the person's own close.
-  const confirmDone = useRef<((closed: boolean) => void) | null>(null)
+  const confirmDone = useRef<CloseDone | null>(null)
+  // The plugin close ask (request id) the dialog that is up answers, with confirmDone; null for the
+  // person's own close. `sessions.closeSettled` for it (another view answered first) takes it down.
+  const confirmAsk = useRef<string | null>(null)
+  // Plugin close asks this view has not answered yet and main has not settled (shared asks: every
+  // view of the window is asked, the first answer wins). A repeat of one (the web bridge hands a
+  // late subscriber the asks still pending) is ignored, and one settled meanwhile is not acted on.
+  const liveAsks = useRef(new Set<string>())
   // The window's own Claude statuses, for the dialog's "Claude is working" (read when it opens).
   const ownRef = useRef(own)
   // The Ctrl+Tab switcher (tab-switcher.ts): open while non-null, mirrored in a ref for the window
@@ -287,7 +301,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   // The close itself, with no question: what a confirmed or unguarded close ends in. `done` is a
   // plugin's close waiting for the outcome.
-  const close = (tabId: string, done?: (closed: boolean) => void): void =>
+  // A plugin's close that fails is told so (declined: with several views of the window, another
+  // view closing the tab first is the usual reason) and shows no error: the person did not ask.
+  const close = (tabId: string, done?: CloseDone): void =>
     run(
       window.cockpit.invoke('tabs.close', { tabId }).then(
         () => {
@@ -296,8 +312,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           done?.(true)
         },
         (err: unknown) => {
-          done?.(false)
-          throw err
+          if (!done) throw err
+          console.warn('a plugin close failed', err)
+          done(false, true)
         }
       )
     )
@@ -366,9 +383,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // A plugin's ctx.sessions.close comes here too (`sessions.closeAsk`), so it can never close a
   // running tab the person would have been asked about: `done` hears whether the tab closed, false
   // for every way the request is dropped or cancelled.
-  const requestClose = (tabId: string, done?: (closed: boolean) => void): void => {
+  //
+  // `askId`: the plugin close ask this answers (shared with the window's other views); dropped
+  // without an answer once main settled it, since another view answered first.
+  const requestClose = (tabId: string, done?: CloseDone, askId?: string): void => {
     if (confirmFor.current !== null) {
-      done?.(false)
+      done?.(false, true)
       return
     }
     const tab = stateRef.current.tabs.find((t) => t.id === tabId)
@@ -380,11 +400,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       .invoke('settings.confirmTabClose')
       .catch(() => true)
       .then((enabled) => {
+        // Another view answered the ask during the round trip: nothing is left to do here.
+        if (askId !== undefined && !liveAsks.current.has(askId)) return
         // What changed during the round trip: a screen or overlay opened over the window (the
         // request is dropped rather than asked under it), another dialog opened, the tab went or
         // its process ended (read again: an exited tab no longer asks).
         if (confirmFor.current !== null || settingsShown.current || overlayOpen.current) {
-          done?.(false)
+          done?.(false, true)
           return
         }
         const now = stateRef.current.tabs.find((t) => t.id === tabId)
@@ -401,10 +423,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         // closing as it runs Close Tab) must find the dialog up and leave the terminal alone.
         confirmFor.current = tabId
         confirmDone.current = done ?? null
+        confirmAsk.current = askId ?? null
         setConfirm(question)
       })
       .catch((err: unknown) => {
-        done?.(false)
+        done?.(false, true)
         setError(ipcErrorMessage(err))
       })
   }
@@ -420,17 +443,40 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   })
   // A plugin's ctx.sessions.close (main's `sessions.closeAsk`): the person's own close path, the
   // dialog included, and main hears the outcome. A failed answer only logs: main's wait ends anyway.
-  useEffect(
-    () =>
-      window.cockpit.on('sessions.closeAsk', ({ requestId, tabId }) => {
-        actions.current.close(tabId, (closed) => {
-          window.cockpit.invoke('sessions.closeAnswer', { requestId, closed }).catch((err: unknown) => {
+  // Every view of the window is asked and the first answer wins (close-asks.ts); main's
+  // `sessions.closeSettled` then takes this view's dialog down, unanswered, if it is still up.
+  useEffect(() => {
+    const live = liveAsks.current
+    const offAsk = window.cockpit.on('sessions.closeAsk', ({ requestId, tabId }) => {
+      if (live.has(requestId)) return
+      live.add(requestId)
+      actions.current.close(
+        tabId,
+        (closed, declined) => {
+          // Settled meanwhile (another view answered): main would ignore this answer anyway.
+          if (!live.delete(requestId)) return
+          const answer = declined === true ? { requestId, closed, declined: true } : { requestId, closed }
+          window.cockpit.invoke('sessions.closeAnswer', answer).catch((err: unknown) => {
             console.warn('answering a plugin close failed', err)
           })
-        })
-      }),
-    []
-  )
+        },
+        requestId
+      )
+    })
+    const offSettled = window.cockpit.on('sessions.closeSettled', ({ requestId }) => {
+      live.delete(requestId)
+      if (confirmAsk.current !== requestId || confirmDone.current === null) return
+      confirmAsk.current = null
+      confirmDone.current = null
+      confirmFor.current = null
+      setConfirm(null)
+    })
+    return () => {
+      offAsk()
+      offSettled()
+      live.clear()
+    }
+  }, [])
   /**
    * Give the keyboard back to what the user was in once a palette or overlay goes: the settings
    * screen while it is shown, else the active terminal. Decided when the frame fires, never when
@@ -561,11 +607,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (count > 0) setPaletteCommands(null)
     // And the tab switcher, which would otherwise pick a tab under the overlay on release.
     if (count > 0) endSwitcher(undefined)
-    // Likewise the close dialog: dismissed as a Cancel (the tab stays), never answered blind.
+    // Likewise the close dialog: dismissed as a Cancel (the tab stays), never answered blind. For
+    // a plugin's close it is a decline, not the person's Cancel (close-asks.ts).
     if (count > 0) {
       confirmFor.current = null
       setConfirm(null)
-      settleClose(confirmDone, false)
+      settleClose(confirmDone, false, true)
     }
     setCovered(count > 0)
   }, [endSwitcher])

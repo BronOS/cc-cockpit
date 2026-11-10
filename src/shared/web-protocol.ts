@@ -4,7 +4,7 @@
 // a frame or a close code cannot drift between the two. Types and plain values only: this file is
 // bundled into the web shell, so no Node (`Buffer`) and no Electron.
 
-import type { LayoutView, OverlayInfo, TabInfo } from './ipc'
+import type { IpcEventMap, LayoutView, OverlayInfo, TabInfo } from './ipc'
 import type { WebAccessMode } from './types'
 import type { ViewId } from './views'
 
@@ -132,8 +132,7 @@ export const MAX_PORT_MESSAGE_LENGTH = 1024 * 1024
 
 /**
  * What a joining view gets in `ready` (design-web.md §5.1): enough to draw the window without a
- * round trip. Tasks 23 and 24 extend it (pending asks, held pages), each with its own snapshot
- * test. `tabs` is the plain list, not `tabs.list`: that call resets terminal flow
+ * round trip. Task 24 extends it (held pages) with its own snapshot test. `tabs` is the plain list, not `tabs.list`: that call resets terminal flow
  * (TabManager.attach), which a remote view must never do to the desktop.
  *
  * `layout` is main's LayoutService view, so it already carries every panel's header, badge and
@@ -144,7 +143,18 @@ export const MAX_PORT_MESSAGE_LENGTH = 1024 * 1024
 export interface WebSnapshot {
   tabs: TabInfo[]
   layout: LayoutView
+  /**
+   * The window's overlay stack. Terminal overlays are shared asks too (first answer wins): the
+   * program's exit or the first ✕ from any view ends one for all, and `overlays.updated` drops it
+   * on every view.
+   */
   overlays: OverlayInfo[]
+  /**
+   * Plugin close asks still waiting for an answer (shared asks, close-asks.ts), oldest first: the
+   * bridge hands them to the shell's `sessions.closeAsk` listener as if they had just arrived, so a
+   * view joining mid-ask shows the dialog too; `sessions.closeSettled` takes them down.
+   */
+  closeAsks: Array<IpcEventMap['sessions.closeAsk']>
 }
 
 export type HelloFrame = { t: 'hello'; v: number; project: string }

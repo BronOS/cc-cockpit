@@ -9,7 +9,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
 import type { EventChannel, LayoutView } from '../../src/shared/ipc'
-import { IpcRouter, type ProjectContext } from '../../src/main/ipc/router'
+import { IpcRouter, registerSessionHandlers, type ProjectContext } from '../../src/main/ipc/router'
+import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { OverlayManager } from '../../src/main/overlays/overlay-manager'
 import { LayoutService } from '../../src/main/layout/layout-service'
 import { defaultLayout, type LayoutState } from '../../src/shared/layout'
@@ -180,7 +181,8 @@ function setup(
       (({ windowId, projectId }) => ({
         tabs: [{ id: `${projectId}-t1` } as never],
         layout: LAYOUT,
-        overlays: [{ id: `o${windowId}` } as never]
+        overlays: [{ id: `o${windowId}` } as never],
+        closeAsks: []
       })),
     // No tab is held: these tests are about frames and events (the terminal stream has its own below).
     mirror: over.mirror ?? { join: () => undefined },
@@ -208,7 +210,7 @@ describe('handshake', () => {
         t: 'ready',
         v: PROTOCOL_VERSION,
         view: 'web:1',
-        snapshot: { tabs: [{ id: 'p1-t1' }], layout: LAYOUT, overlays: [{ id: 'o1' }] },
+        snapshot: { tabs: [{ id: 'p1-t1' }], layout: LAYOUT, overlays: [{ id: 'o1' }], closeAsks: [] },
         // No pagePaths source: no paths (plugin frames stay empty), never a failed handshake.
         paths: { plugins: {}, overlays: '' }
       }
@@ -404,7 +406,10 @@ describe('windowSnapshot leaves the desktop as it was', () => {
       pty.emit('y'.repeat(2 * 1024 * 1024))
       expect(pty.paused).toBe(true)
       const tabs = { list: vi.fn(() => []), attach: vi.fn() }
-      const snap = windowSnapshot({ tabs, layouts: { view: () => LAYOUT }, overlays }, { windowId: 1, projectId: 'p1' })
+      const snap = windowSnapshot(
+        { tabs, layouts: { view: () => LAYOUT }, overlays, closeAsks: { pendingFor: () => [] } },
+        { windowId: 1, projectId: 'p1' }
+      )
       expect(snap.overlays.map((o) => o.id)).toEqual(overlays.infos(1).map((o) => o.id))
       expect(snap.overlays.some((o) => o.loading === true)).toBe(false)
       expect(tabs.list).toHaveBeenCalledWith('p1')
@@ -441,7 +446,7 @@ describe('windowSnapshot leaves the desktop as it was', () => {
     layouts.setHeader('p1', 'a.inbox/main', header)
     layouts.setSlots('p1', 'a.inbox/main', [{ type: 'agenda', position: 'top', height: 100, params: { day: 1 } }])
     const snap = windowSnapshot(
-      { tabs: { list: () => [] }, layouts, overlays: { infos: () => [] } },
+      { tabs: { list: () => [] }, layouts, overlays: { infos: () => [] }, closeAsks: { pendingFor: () => [] } },
       { windowId: 1, projectId: 'p1' }
     )
     const panel = snap.layout.panels.find((p) => p.panelKey === 'a.inbox/main')
@@ -455,7 +460,12 @@ describe('windowSnapshot leaves the desktop as it was', () => {
   })
 
   it('a project with no layout record throws (the connection closes with `failed`)', () => {
-    const sources = { tabs: { list: () => [] }, layouts: { view: () => undefined }, overlays: { infos: () => [] } }
+    const sources = {
+      tabs: { list: () => [] },
+      layouts: { view: () => undefined },
+      overlays: { infos: () => [] },
+      closeAsks: { pendingFor: () => [] }
+    }
     expect(() => windowSnapshot(sources, { windowId: 1, projectId: 'p1' })).toThrow('project record is gone')
   })
 })
@@ -891,5 +901,125 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
     conns.select('web:1', 'p1-t3')
     conns.ack('web:1', 'p1-t1', 10)
     expect(mirror.joins).toHaveLength(2)
+  })
+})
+
+// Shared asks (design-web.md §5.1, plan Task 23): a plugin close ask and a terminal overlay are
+// shown on every view of the window, the first answer from any of them wins, the others are told
+// (`sessions.closeSettled`, `overlays.updated`), a view joining mid-ask finds them in `ready`, and
+// a view of another window cannot answer.
+describe('shared asks', () => {
+  function sharedSetup() {
+    // Filled in below: `snapshot` reads them lazily, at each hello.
+    const late = {} as { asks: CloseAsks; overlays: OverlayManager }
+    const ctx = setup({
+      snapshot: ((c: ProjectContext) =>
+        windowSnapshot(
+          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: late.asks },
+          c
+        )) as never,
+      viewGone: () => late.asks.viewGone()
+    })
+    const { views, router } = ctx
+    views.addDesktop(2, { send: () => {}, isClosed: () => false })
+    const asks = (late.asks = new CloseAsks({
+      send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
+      settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
+      viewsOf: (windowId) => views.viewsOf(windowId)
+    }))
+    registerSessionHandlers(router, {
+      snapshotFor: () => ({ own: [] }) as never,
+      cancelQueued: () => false,
+      closeAnswer: (windowId, viewId, requestId, answer) => asks.answer(windowId, viewId, requestId, answer)
+    })
+    const backend = new FakePtyBackend()
+    const overlays = (late.overlays = new OverlayManager({
+      backend,
+      views: {
+        create: () => {
+          throw new Error('no url views here')
+        },
+        focusWindow: () => {}
+      },
+      isWindowOpen: () => true,
+      env: () => ({ PATH: '/usr/bin', TERM: 'xterm-256color' }),
+      emit: (windowId, channel, payload) => void views.toWindow(windowId, channel, payload),
+      commandForChord: () => undefined,
+      log: () => {}
+    }))
+    router.handleProject('overlays.close', (c, payload) => overlays.close(c.windowId, (payload as { overlayId: string }).overlayId))
+    return { ...ctx, asks, overlays, backend }
+  }
+
+  const answers = (ws: FakeWs): unknown[] => ws.frames('result').map((f) => (f.ok === true ? f.v : f.err))
+  const events = (ws: FakeWs, ch: string): unknown[] => ws.frames('event').filter((f) => f.ch === ch).map((f) => f.p)
+
+  it('close ask: both views asked, a late join sees it in ready, another window is refused, first answer settles all', async () => {
+    const { connect, desktop, asks } = sharedSetup()
+    const early = connect('p1')
+    const result = asks.ask(1, 't1')
+    const ask = { requestId: 'close-1', tabId: 't1' }
+    expect(desktop.send).toHaveBeenCalledWith('sessions.closeAsk', ask)
+    expect(events(early, 'sessions.closeAsk')).toEqual([ask])
+    // A view joining mid-ask gets it in its snapshot.
+    const late = connect('p1')
+    expect((late.frames('ready')[0]!.snapshot as { closeAsks: unknown }).closeAsks).toEqual([ask])
+    // A view of another window names the id: refused, the ask still waits, nothing settles.
+    const foreign = connect('p2')
+    foreign.feed({ t: 'invoke', id: 1, ch: 'sessions.closeAnswer', p: { requestId: 'close-1', closed: true } })
+    await flush()
+    expect(answers(foreign)).toEqual([false])
+    expect(asks.size).toBe(1)
+    // The early browser was covered: its decline leaves the ask to the others.
+    early.feed({ t: 'invoke', id: 1, ch: 'sessions.closeAnswer', p: { requestId: 'close-1', closed: false, declined: true } })
+    await flush()
+    expect(asks.size).toBe(1)
+    // The late view answers first: the plugin hears it, every view of window 1 is told.
+    late.feed({ t: 'invoke', id: 1, ch: 'sessions.closeAnswer', p: { requestId: 'close-1', closed: true } })
+    await flush()
+    await expect(result).resolves.toBe(true)
+    expect(answers(late)).toEqual([true])
+    expect(desktop.send).toHaveBeenCalledWith('sessions.closeSettled', { requestId: 'close-1' })
+    expect(events(early, 'sessions.closeSettled')).toEqual([{ requestId: 'close-1' }])
+    expect(events(late, 'sessions.closeSettled')).toEqual([{ requestId: 'close-1' }])
+    expect(events(foreign, 'sessions.closeSettled')).toEqual([])
+    // Settled: a later join no longer sees it.
+    expect((connect('p1').frames('ready')[0]!.snapshot as { closeAsks: unknown }).closeAsks).toEqual([])
+  })
+
+  it('close ask: a browser that leaves after every other view declined ends the ask', async () => {
+    const { connect, asks } = sharedSetup()
+    const web = connect('p1')
+    const result = asks.ask(1, 't1')
+    asks.answer(1, 'desktop:1', 'close-1', { closed: false, declined: true })
+    expect(asks.size).toBe(1)
+    web.drop()
+    await expect(result).resolves.toBe(false)
+  })
+
+  it('terminal overlay: on every view and in a late ready, the first ✕ wins, another window cannot close it', async () => {
+    const { connect, desktop, overlays } = sharedSetup()
+    const early = connect('p1')
+    const opened = overlays.open(1, { kind: 'terminal', argv: ['lazygit'], cwd: '/' }, 'test')
+    const [info] = overlays.infos(1)
+    expect(events(early, 'overlays.updated').at(-1)).toEqual([expect.objectContaining({ id: info!.id, kind: 'terminal' })])
+    const late = connect('p1')
+    expect((late.frames('ready')[0]!.snapshot as { overlays: unknown }).overlays).toEqual([expect.objectContaining({ id: info!.id })])
+    const foreign = connect('p2')
+    foreign.feed({ t: 'invoke', id: 1, ch: 'overlays.close', p: { overlayId: info!.id } })
+    await flush()
+    expect(answers(foreign)).toEqual([false])
+    expect(overlays.infos(1)).toHaveLength(1)
+    late.feed({ t: 'invoke', id: 1, ch: 'overlays.close', p: { overlayId: info!.id } })
+    early.feed({ t: 'invoke', id: 1, ch: 'overlays.close', p: { overlayId: info!.id } })
+    await flush()
+    expect(answers(late)).toEqual([true])
+    expect(answers(early)).toEqual([false])
+    await expect(opened).resolves.toEqual({ kind: 'dismissed' })
+    // Every view of the window drops it; the other window heard nothing of it.
+    expect(events(early, 'overlays.updated').at(-1)).toEqual([])
+    expect(events(late, 'overlays.updated').at(-1)).toEqual([])
+    expect(desktop.send).toHaveBeenLastCalledWith('overlays.updated', [])
+    expect(events(foreign, 'overlays.updated')).toEqual([])
   })
 })

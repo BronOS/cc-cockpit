@@ -202,12 +202,14 @@ held by one view at a time, with "take over" on the others: an HTML overlay's pa
 | Layout: which panels in which zones | shared (main, as today per project) |
 | Zone sizes, collapsed zones | per view (a phone and a desktop differ); main keeps the desktop's as today |
 | Selected tab | per view. The project's `activeTab` (plugins, Discuss) is the selection of the view that acted last. A plugin acting on a click (`ctx.sessions.focus` from the Sessions panel, `panels.show` from the usage meter) acts in the view the click came from (§5.3) |
-| Terminal overlays, close asks, `ccc` CLI dialogs | shared: shown on every view, the first answer wins, and main tells the others it is settled (a `settled` event; `CloseAsks` today accepts one window and has none, `close-asks.ts:66`) |
+| Terminal overlays, close asks, `ccc` CLI dialogs | shared: shown on every view, the first answer wins, and main tells the others it is settled. Close asks: `CloseAsks` takes the answer from any view of the window, then sends `sessions.closeSettled` to every view; a view that could not ask (a dialog, screen or overlay over it) answers `declined`, which counts only once every live view declined. Terminal overlays: main's stack, ended by the program's exit or the first ✕, and `overlays.updated` drops it everywhere. The link confirm becomes an in-page dialog for remote views (§6.1) and follows the same rule |
 | HTML overlays, settings pages | held by one view (§5.4) |
 | Scroll position in a terminal | per view |
 
 The `ready` snapshot a joining view gets carries all of it: tabs, layout, the overlay stack, pending close asks and
-CLI dialogs, panel headers and badges, slot frames.
+CLI dialogs, panel headers and badges, slot frames. The browser bridge hands the pending close asks to the shell's
+`sessions.closeAsk` listener when it subscribes (after `ready`), as if they had just arrived. A terminal overlay
+joined mid-run shows only output from the join on (it redraws on the view's resize); its scrollback is not mirrored.
 
 ### 5.2 Terminals
 

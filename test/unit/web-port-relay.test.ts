@@ -177,7 +177,7 @@ function setup() {
     dispatch: (caller, ch, payload) => router.dispatch(caller, ch, payload),
     addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
     windowIdOf: (projectId) => windows.get(projectId),
-    snapshot: () => ({ tabs: [], layout: LAYOUT, overlays: [] }),
+    snapshot: () => ({ tabs: [], layout: LAYOUT, overlays: [], closeAsks: [] }),
     mirror: { join: () => undefined },
     hasTab: () => false,
     viewGone: (viewId) => {

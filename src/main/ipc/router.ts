@@ -1073,8 +1073,11 @@ export interface SessionHandlerDeps {
   snapshotFor(projectId: string): SessionsSnapshot
   /** Scoped to `projectId`: false for a tab of another project, an unknown tab or a gone item. */
   cancelQueued(projectId: string, tabId: string, itemId: string): boolean
-  /** A window's answer to a plugin's close ask (CloseAsks.answer); false for an ask it was not sent. */
-  closeAnswer(windowId: number, requestId: string, closed: boolean): boolean
+  /**
+   * A view's answer to a plugin's close ask (CloseAsks.answer): the first from any view of the
+   * window wins, a decline waits for the others; false for an ask its window was not sent.
+   */
+  closeAnswer(windowId: number, viewId: ViewId, requestId: string, answer: { closed: boolean; declined: boolean }): boolean
 }
 
 /**
@@ -1091,13 +1094,14 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     return deps.cancelQueued(ctx.projectId, tabIdOf('sessions.cancelQueued', payload), itemId)
   })
 
-  // The window is the sender's (ctx), never a value in the payload: only the window an ask went to
-  // can settle it.
-  router.handleProject('sessions.closeAnswer', (ctx, payload) => {
-    const { requestId, closed } = fields('sessions.closeAnswer', payload)
+  // The window and the view are the sender's (ctx, view), never values in the payload: only a view
+  // of the window an ask went to can settle it (shared ask: any of its views, first answer wins).
+  router.handleProject('sessions.closeAnswer', (ctx, payload, view) => {
+    const { requestId, closed, declined } = fields('sessions.closeAnswer', payload)
     if (typeof requestId !== 'string') throw new Error('sessions.closeAnswer: requestId must be a string')
     if (typeof closed !== 'boolean') throw new Error('sessions.closeAnswer: closed must be a boolean')
-    return deps.closeAnswer(ctx.windowId, requestId, closed)
+    if (declined !== undefined && typeof declined !== 'boolean') throw new Error('sessions.closeAnswer: declined must be a boolean')
+    return deps.closeAnswer(ctx.windowId, view.viewId, requestId, { closed, declined: declined === true })
   })
 }
 

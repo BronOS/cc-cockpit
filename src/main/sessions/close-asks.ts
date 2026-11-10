@@ -6,7 +6,19 @@
 // by the window it went to, settled `false` when that window closes or the wait runs out, so the
 // plugin's call always ends.
 //
-// No Electron import: `send` is a function (index.ts posts to the window), so vitest drives it.
+// Shared ask (design-web.md §5.1, plan Task 23): a window can have several live views (the desktop
+// page and browser views), and every one of them shows the ask. The first answer from any view of
+// that window wins; main then tells every view (`settled`, the `sessions.closeSettled` event) so the
+// others take their dialog down, and a view joining mid-ask finds it in its `ready` snapshot
+// (`pending`). One exception to "first answer": a view that could not ask at all (another dialog, a
+// screen or an overlay over it) says `declined`, which only counts once every live view of the
+// window declined. Otherwise a browser left on the settings screen would cancel, unseen, the dialog
+// the person is looking at on the desktop.
+//
+// No Electron import: the hooks are functions (index.ts posts through the ViewRegistry), so vitest
+// drives it.
+
+import type { ViewId } from '../../shared/views'
 
 /**
  * How long a close waits for the window's answer. The dialog waits for the person; a plugin call must
@@ -24,10 +36,38 @@ export function closeWillAsk(tab: { exit?: unknown }, confirmTabClose: boolean):
   return tab.exit === undefined && confirmTabClose
 }
 
+/** How main reaches a window's views for its asks (index.ts: the ViewRegistry). */
+export interface CloseAskHooks {
+  /** Post the ask to every view of the window; false when no view took it (nothing will answer). */
+  send(windowId: number, ask: CloseAskInfo): boolean
+  /** The ask is over: tell every view of the window, so the ones still asking stop. */
+  settled?(windowId: number, requestId: string): void
+  /**
+   * The window's live views now (ViewRegistry.viewsOf). Absent: a decline settles at once, as a
+   * window with one view would.
+   */
+  viewsOf?(windowId: number): readonly ViewId[]
+}
+
+/** One pending ask as the views get it (the `sessions.closeAsk` payload, and `ready`'s list). */
+export interface CloseAskInfo {
+  requestId: string
+  tabId: string
+}
+
+/** A view's answer: `declined` when it could not ask (see the top of the file). */
+export interface CloseAskAnswer {
+  closed: boolean
+  declined?: boolean
+}
+
 interface PendingAsk {
   windowId: number
+  tabId: string
   resolve: (closed: boolean) => void
   timer: ReturnType<typeof setTimeout>
+  /** Views of the window that said they could not ask. */
+  declined: Set<ViewId>
 }
 
 export class CloseAsks {
@@ -35,8 +75,7 @@ export class CloseAsks {
   private readonly pending = new Map<string, PendingAsk>()
 
   constructor(
-    /** Post the ask to the window; false when the window is gone (nothing will answer). */
-    private readonly send: (windowId: number, ask: { requestId: string; tabId: string }) => boolean,
+    private readonly hooks: CloseAskHooks,
     private readonly timeoutMs = CLOSE_ASK_MS
   ) {}
 
@@ -47,10 +86,10 @@ export class CloseAsks {
       const timer = setTimeout(() => this.settle(requestId, false), this.timeoutMs)
       // A pending ask must not keep main alive at quit.
       timer.unref?.()
-      this.pending.set(requestId, { windowId, resolve, timer })
+      this.pending.set(requestId, { windowId, tabId, resolve, timer, declined: new Set() })
       let sent: boolean
       try {
-        sent = this.send(windowId, { requestId, tabId })
+        sent = this.hooks.send(windowId, { requestId, tabId })
       } catch {
         sent = false
       }
@@ -59,14 +98,39 @@ export class CloseAsks {
   }
 
   /**
-   * The window's answer. Only the window the ask went to settles it (the router took the window from
-   * the sender): another window naming the id is ignored. False for an unknown or settled id.
+   * A view's answer. Only a view of the window the ask went to settles it (the router took the
+   * window and the view from the sender, never from the payload): another window naming the id is
+   * ignored. The first answer wins; a decline waits for the others (see the top of the file). False
+   * for an unknown or settled id, and for another window's view.
    */
-  answer(windowId: number, requestId: string, closed: boolean): boolean {
+  answer(windowId: number, viewId: ViewId, requestId: string, answer: CloseAskAnswer): boolean {
     const ask = this.pending.get(requestId)
     if (!ask || ask.windowId !== windowId) return false
-    this.settle(requestId, closed === true)
+    if (answer.declined === true) {
+      ask.declined.add(viewId)
+      this.settleIfAllDeclined(requestId, ask)
+      return true
+    }
+    this.settle(requestId, answer.closed === true)
     return true
+  }
+
+  /**
+   * The asks still waiting in `windowId`, oldest first: a view joining mid-ask gets them in its
+   * `ready` snapshot and shows them as the others do.
+   */
+  pendingFor(windowId: number): CloseAskInfo[] {
+    const out: CloseAskInfo[] = []
+    for (const [requestId, ask] of this.pending) if (ask.windowId === windowId) out.push({ requestId, tabId: ask.tabId })
+    return out
+  }
+
+  /**
+   * A view left (a browser closed its socket). An ask every remaining view declined will never be
+   * answered: it ends now rather than at the timeout.
+   */
+  viewGone(): void {
+    for (const [id, ask] of [...this.pending]) if (ask.declined.size > 0) this.settleIfAllDeclined(id, ask)
   }
 
   /** The window closed: its asks will never be answered. Its tabs are gone with it, but the plugin did not close them. */
@@ -79,11 +143,23 @@ export class CloseAsks {
     return this.pending.size
   }
 
+  private settleIfAllDeclined(requestId: string, ask: PendingAsk): void {
+    // Without a view list a decline is the window's answer (one view). A view that joined after the
+    // ask went out has not declined: it got the ask in `ready` and may still show it.
+    const views = this.hooks.viewsOf?.(ask.windowId)
+    if (views === undefined || views.every((v) => ask.declined.has(v))) this.settle(requestId, false)
+  }
+
   private settle(requestId: string, closed: boolean): void {
     const ask = this.pending.get(requestId)
     if (!ask) return
     this.pending.delete(requestId)
     clearTimeout(ask.timer)
     ask.resolve(closed)
+    try {
+      this.hooks.settled?.(ask.windowId, requestId)
+    } catch {
+      // Best effort: a view that missed it still has its dialog, whose late answer finds nothing.
+    }
   }
 }
