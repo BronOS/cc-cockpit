@@ -592,14 +592,19 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `src/main/web/auth.ts`, the settings UI from Task 9 (enable the modes)
 - Modify: `test/unit/web-auth.test.ts`
 
-- [ ] password: scrypt hash in the secret store, computed off the main thread with a concurrency cap; sign-in page; the
+- [x] password: scrypt hash in the secret store, computed off the main thread with a concurrency cap; sign-in page; the
       token bucket from Task 5
-- [ ] desktop confirm: the browser shows a short code; the desktop shows a non-modal request with no default button;
+- [x] desktop confirm: the browser shows a short code; the desktop shows a non-modal request with no default button;
       the person types the browser's code to allow; one pending request, rate limited; the device name shown as the
       requester's own text
-- [ ] write tests: password success/failure/slowdown, scrypt off-thread, confirm with the right code, wrong code, a
+- [x] write tests: password success/failure/slowdown, scrypt off-thread, confirm with the right code, wrong code, a
       second request while one is pending, Enter never accepts
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+- ➕ Also created `src/main/web/password.ts` (scrypt on the libuv pool, `PasswordHasher` with a concurrency cap),
+  `src/renderer/status/WebConfirmCard.tsx` (the non-modal request, carried by `webAccess.changed` on the indicator),
+  `src/renderer/web/sign-in-forms.tsx` (the browser's password and confirm forms); new `no`-class channels
+  `settings.webAccessSetPassword` and `webAccess.confirmAnswer`; routes `/auth/password`, `/auth/confirm`,
+  `/auth/confirm/poll`; e2e in `test/e2e/web-access-settings.spec.ts`. `WEB_MODE_AVAILABLE` removed.
 
 ### Task 28: Network binds: TLS, None and plain-http confirms [model: opus]
 

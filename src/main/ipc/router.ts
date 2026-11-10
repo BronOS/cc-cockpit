@@ -42,7 +42,7 @@ import type { PluginServicesView } from '../../shared/services'
 import type { TabFlag } from '../../shared/tab-flag'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
-import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebLinkReply } from '../../shared/web-access'
+import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebActionReply, WebLinkReply } from '../../shared/web-access'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
@@ -889,7 +889,11 @@ export interface WebAccessHandlerDeps {
   disconnect(id: unknown): boolean
   revoke(id: unknown): boolean
   revokeAll(): number
+  /** `password` is whatever the renderer sent: the service checks it. */
+  setPassword(password: unknown): Promise<WebActionReply>
   indicator(): WebAccessIndicator
+  /** `{ id, allow, code }` as the renderer sent it: the service checks every field. */
+  answerConfirm(payload: unknown): WebActionReply
 }
 
 export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHandlerDeps): void {
@@ -901,7 +905,9 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
   router.handleProject('settings.webDeviceDisconnect', (_ctx, payload) => deps.disconnect((payload as { id?: unknown } | undefined)?.id))
   router.handleProject('settings.webDeviceRevoke', (_ctx, payload) => deps.revoke((payload as { id?: unknown } | undefined)?.id))
   router.handleProject('settings.webDevicesRevokeAll', () => deps.revokeAll())
+  router.handleProject('settings.webAccessSetPassword', (_ctx, payload) => deps.setPassword((payload as { password?: unknown } | undefined)?.password))
   router.handleProject('webAccess.state', () => deps.indicator())
+  router.handleProject('webAccess.confirmAnswer', (_ctx, payload) => deps.answerConfirm(payload))
 }
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */

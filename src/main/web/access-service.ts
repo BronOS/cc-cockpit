@@ -7,6 +7,7 @@
 import type { WebAccessSettings } from '../../shared/types'
 import type {
   WebAccessIndicator,
+  WebActionReply,
   WebAccessPatch,
   WebAccessView,
   WebDeviceView,
@@ -56,6 +57,8 @@ export class WebAccessService {
     // indicator and the list; one event per cause, the renderer re-reads what it shows.
     this.unsubscribe.push(deps.gateway.onConnectionsChanged(() => this.changed()))
     this.unsubscribe.push(deps.auth.devices.onChanged(() => this.changed()))
+    // A browser asking for a desktop confirm, and its answer or lapse: every desktop window's card.
+    this.unsubscribe.push(deps.auth.onChanged(() => this.changed()))
   }
 
   dispose(): void {
@@ -99,7 +102,8 @@ export class WebAccessService {
       gateway,
       devices,
       // A risky choice that is refused (nothing listens) is no risk: the badge is for what is live.
-      risks: gateway.state === 'listening' ? webAccessRisks(settings) : []
+      risks: gateway.state === 'listening' ? webAccessRisks(settings) : [],
+      passwordSet: this.deps.auth.hasPassword()
     }
   }
 
@@ -113,6 +117,8 @@ export class WebAccessService {
     for (const [id, sockets] of this.deps.gateway.connections()) connected += id === NONE_DEVICE.id ? sockets : 1
     const out: WebAccessIndicator = { connected }
     if (risks.length > 0) out.warning = risks.join(' ')
+    const confirm = this.deps.auth.confirmAsk()
+    if (confirm) out.confirm = confirm
     return out
   }
 
@@ -122,8 +128,13 @@ export class WebAccessService {
    * port is taken) is stored all the same and shows as the gateway's `failed` state in the view.
    */
   async set(patch: WebAccessPatch): Promise<WebAccessView> {
-    const result = applyWebAccessPatch(this.settings(), patch)
+    const current = this.settings()
+    const result = applyWebAccessPatch(current, patch)
     if (!result.ok) throw new Error(result.error)
+    // With no password, the password mode lets nobody in: the page sets one first (setPassword).
+    if (result.value.mode === 'password' && current.mode !== 'password' && !this.deps.auth.hasPassword()) {
+      throw new Error('set a password first')
+    }
     this.deps.write(result.value)
     // The settings are saved first: a refused or failed start must not lose what the person typed.
     const settings = webAccessOf(this.deps.read())
@@ -177,6 +188,19 @@ export class WebAccessService {
     if (typeof origin !== 'string') return origin
     const { link, expiresAt } = this.deps.auth.addDeviceLink(origin)
     return { ok: true, link, expiresAt }
+  }
+
+  /** Sets or changes the password (WebAuth.setPassword: hashed off the main thread, devices of the old one signed out). */
+  async setPassword(password: unknown): Promise<WebActionReply> {
+    const reply = await this.deps.auth.setPassword(password)
+    if (reply.ok) this.changed()
+    return reply
+  }
+
+  /** The desktop's answer to a browser waiting for a desktop confirm: deny, or allow with its code. */
+  answerConfirm(payload: unknown): WebActionReply {
+    const p = payload !== null && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    return this.deps.auth.answerConfirm(p['id'], p['allow'], p['code'])
   }
 
   disconnect(id: unknown): boolean {

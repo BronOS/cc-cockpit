@@ -4,18 +4,6 @@
 // these is `no`-class, ipc.ts: a browser must never widen its own access).
 import type { WebAccessMode } from './types'
 
-/**
- * Which auth modes can be picked now. Password and desktop confirm come with plan Task 27, so main
- * refuses them (a hand-edited app.json that names one still reads as that mode, and the gateway
- * then accepts no sign-in at all: nothing signs in, which fails closed).
- */
-export const WEB_MODE_AVAILABLE: Readonly<Record<WebAccessMode, boolean>> = Object.freeze({
-  link: true,
-  none: true,
-  password: false,
-  confirm: false
-})
-
 /** The settings as the page edits them (the bind and TLS are not editable yet, plan Task 28). */
 export interface WebAccessForm {
   enabled: boolean
@@ -64,13 +52,30 @@ export interface WebAccessView {
   devices: WebDeviceView[]
   /** Plain-words risks of the current choices (§4.3); empty when none. */
   risks: string[]
+  /** A password is set (the password mode can be picked only then). */
+  passwordSet: boolean
 }
+
+/**
+ * A browser waiting for a desktop confirm (§4.2), as the desktop shows it. Never the code: the
+ * person types the one the browser shows. `name` is the requester's own text, shown as such.
+ */
+export interface WebConfirmAsk {
+  id: string
+  name: string
+  expiresAt: number
+}
+
+/** The answer to a desktop action that can be refused (set the password, answer a confirm). */
+export type WebActionReply = { ok: true } | { ok: false; reason: string }
 
 /** The top bar's view: how many devices are connected, and a warning while a §4.3 choice is on. */
 export interface WebAccessIndicator {
   connected: number
   /** Present while a risky choice is on and the gateway is listening. */
   warning?: string
+  /** Present while a browser waits for a desktop confirm: every desktop window shows the request. */
+  confirm?: WebConfirmAsk
 }
 
 /** An access link (or a one-time one, which expires), or why there is none. */

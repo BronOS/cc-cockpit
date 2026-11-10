@@ -103,3 +103,26 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The signed-out page's password and desktop-confirm forms (sign-in-forms.tsx). */
+.web-sign-in-form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.web-sign-in-form input {
+  font: inherit;
+  width: min(20rem, 80vw);
+  padding: 4px 8px;
+  border: 1px solid var(--cc-border, currentColor);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-fg);
+}
+.web-confirm-shown-code {
+  margin: 4px 0;
+  font-family: var(--cc-font-mono, monospace);
+  font-size: 2rem;
+  letter-spacing: 0.2em;
+}

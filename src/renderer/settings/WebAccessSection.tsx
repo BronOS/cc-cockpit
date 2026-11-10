@@ -14,7 +14,9 @@ import {
   hiddenReveal,
   isDirty,
   modeHelp,
+  modeNeedsPassword,
   modeOptions,
+  passwordDraftProblem,
   patchOf,
   qrText,
   revealFrom,
@@ -72,9 +74,21 @@ function WebAccessCard(props: {
   const id = useId()
   const { form, gateway } = data
   const listening = gateway.state === 'listening'
+  // Picked the password mode with no password set: main refuses the switch, so the password rows ask
+  // for one first and switch after it is saved. Cleared by any other pick.
+  const [pendingPassword, setPendingPassword] = useState(false)
   const save = (value: WebAccessPatch): void => {
     void run('web-access', () => window.cockpit.invoke('settings.webAccessSet', { value })).then(reload)
   }
+  const pickMode = (mode: WebAccessMode): void => {
+    if (modeNeedsPassword(mode, data.passwordSet)) {
+      setPendingPassword(true)
+      return
+    }
+    setPendingPassword(false)
+    if (mode !== form.mode) save({ mode })
+  }
+  const shownMode = pendingPassword ? 'password' : form.mode
   return (
     <>
       {data.risks.length > 0 && (
@@ -112,23 +126,40 @@ function WebAccessCard(props: {
           />
         </Row>
         <AddressForm data={data} busy={busy} onSave={save} />
-        <Row label="Sign-in" htmlFor={`${id}-mode`} help={modeHelp(form.mode)}>
+        <Row label="Sign-in" htmlFor={`${id}-mode`} help={modeHelp(shownMode)}>
           <Select
             id={`${id}-mode`}
             aria-label="Sign-in"
-            value={form.mode}
+            value={shownMode}
             disabled={busy !== null}
-            onChange={(e) => save({ mode: e.target.value as WebAccessMode })}
+            onChange={(e) => pickMode(e.target.value as WebAccessMode)}
           >
             {modeOptions().map((o) => (
-              <option key={o.value} value={o.value} disabled={o.unavailable !== undefined}>
-                {o.unavailable !== undefined ? `${o.label} (${o.unavailable})` : o.label}
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </Select>
         </Row>
-        {form.mode === 'link' && <LinkRows key={listening ? 'listening' : 'off'} listening={listening} busy={busy} run={run} reload={reload} />}
-        {form.mode === 'none' && (
+        {form.mode === 'link' && !pendingPassword && (
+          <LinkRows key={listening ? 'listening' : 'off'} listening={listening} busy={busy} run={run} reload={reload} />
+        )}
+        {shownMode === 'password' && (
+          <PasswordRows
+            passwordSet={data.passwordSet}
+            busy={busy}
+            run={run}
+            onSaved={() => {
+              // The switch the person asked for, now that main will take it.
+              if (pendingPassword) {
+                setPendingPassword(false)
+                save({ mode: 'password' })
+              } else reload()
+            }}
+            onCancel={pendingPassword ? () => setPendingPassword(false) : undefined}
+          />
+        )}
+        {form.mode === 'none' && !pendingPassword && (
           <Row
             label="No sign-in"
             help="Anyone who can reach the address controls this computer. Host and Origin checks still apply. Use it only behind a proxy that signs people in."
@@ -233,6 +264,84 @@ function AddressForm(props: {
           </button>
         </Row>
       )}
+    </>
+  )
+}
+
+/**
+ * Set or change the password: typed twice, never shown, cleared once saved. Main hashes it (scrypt,
+ * off its main thread) and keeps only the keychain's ciphertext of the hash; a change signs out every
+ * device that signed in with the old one, which the help says before the person presses Save.
+ */
+function PasswordRows(props: {
+  passwordSet: boolean
+  busy: string | null
+  run: Action['run']
+  onSaved: () => void
+  onCancel: (() => void) | undefined
+}): React.JSX.Element {
+  const id = useId()
+  const [password, setPassword] = useState('')
+  const [repeat, setRepeat] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+  const submit = (): void => {
+    const local = passwordDraftProblem(password, repeat)
+    if (local !== undefined) {
+      setProblem(local)
+      return
+    }
+    setProblem(null)
+    void props.run('web-password', () => window.cockpit.invoke('settings.webAccessSetPassword', { password })).then((reply) => {
+      if (!reply) return
+      if (!reply.ok) {
+        setProblem(reply.reason)
+        return
+      }
+      setPassword('')
+      setRepeat('')
+      props.onSaved()
+    })
+  }
+  return (
+    <>
+      <Row
+        label={props.passwordSet ? 'New password' : 'Password'}
+        htmlFor={`${id}-password`}
+        help={
+          props.passwordSet
+            ? 'A password is set. Saving a new one signs out every browser that signed in with the old one.'
+            : `Set a password to sign in with (at least 8 characters). Browsers ask for it on their sign-in page.`
+        }
+      >
+        <input
+          id={`${id}-password`}
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          disabled={props.busy !== null}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </Row>
+      <Row label="Repeat it" htmlFor={`${id}-repeat`}>
+        <input
+          id={`${id}-repeat`}
+          type="password"
+          autoComplete="new-password"
+          value={repeat}
+          disabled={props.busy !== null}
+          onChange={(e) => setRepeat(e.target.value)}
+        />
+      </Row>
+      <Row className="settings-form-foot" label={problem !== null ? <span className="settings-error">{problem}</span> : ''}>
+        {props.onCancel && (
+          <button type="button" className="quiet" disabled={props.busy !== null} onClick={props.onCancel}>
+            Cancel
+          </button>
+        )}
+        <button type="button" className="primary" disabled={props.busy !== null || password === ''} onClick={submit}>
+          {props.passwordSet ? 'Change password' : 'Set password'}
+        </button>
+      </Row>
     </>
   )
 }

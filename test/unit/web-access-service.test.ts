@@ -10,6 +10,7 @@ import { AccessLog } from '../../src/main/web/access-log'
 import { WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
+import { PasswordHasher } from '../../src/main/web/password'
 import type { GatewayStatus } from '../../src/main/web/gateway'
 import { applyWebAccessPatch, DEFAULT_WEB_ACCESS, webAccessOf, webAccessRisks } from '../../src/main/web/settings'
 import type { WebAccessSettings } from '../../src/shared/types'
@@ -64,13 +65,9 @@ describe('applyWebAccessPatch (settings validation)', () => {
     }
   })
 
-  it('refuses a mode that is not built yet, and one that does not exist', () => {
-    expect(patched({ mode: 'none' }).mode).toBe('none')
-    expect(refused({ mode: 'password' })).toMatch(/not available yet/)
-    expect(refused({ mode: 'confirm' })).toMatch(/not available yet/)
+  it('takes every sign-in mode (plan Task 27), and refuses one that does not exist', () => {
+    for (const mode of ['link', 'password', 'confirm', 'none'] as const) expect(patched({ mode }).mode).toBe(mode)
     expect(refused({ mode: 'root' })).toMatch(/not a sign-in mode/)
-    // Staying on a mode a hand-edited file already holds is not a change to refuse.
-    expect(patched({ mode: 'password' }, { ...base, mode: 'password' }).mode).toBe('password')
   })
 
   it('refuses unknown fields and a non-object, and a wrong type for enabled', () => {
@@ -160,7 +157,9 @@ describe('WebAccessService', () => {
     gateway = makeGateway()
     const accessLog = new AccessLog({ filePath: join(dir, 'logs', 'web-access.log'), now: () => clock })
     devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog, now: () => clock })
-    auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog, now: () => clock, log: () => undefined })
+    // A cheap scrypt (N=2^10): the cost is password.ts's business, its tests use the real one.
+    const hasher = new PasswordHasher({ params: { N: 1024, r: 8, p: 1 } })
+    auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog, hasher, now: () => clock, log: () => undefined })
     auth.setMode('link')
     service = new WebAccessService({
       gateway,
@@ -260,7 +259,8 @@ describe('WebAccessService', () => {
 
   it('refuses an invalid change with its reason, stores nothing and does not touch the gateway', async () => {
     await expect(service.set({ port: 80 })).rejects.toThrow(/port must be a whole number/)
-    await expect(service.set({ mode: 'password' })).rejects.toThrow(/not available yet/)
+    // The password mode with no password set would let nobody in: the page sets one first.
+    await expect(service.set({ mode: 'password' })).rejects.toThrow(/set a password first/)
     expect(stored).toBeUndefined()
     expect(applied).toEqual([])
   })
@@ -325,6 +325,38 @@ describe('WebAccessService', () => {
       const r = service.addDevice()
       expect(r.ok && r.expiresAt).toBe(clock + 10 * 60 * 1000)
       expect(r.ok && r.link).toMatch(/#t=/)
+    })
+  })
+
+  describe('password and desktop confirm (plan Task 27)', () => {
+    it('sets a password, then the password mode can be picked; the view says whether one is set', async () => {
+      expect(service.view().passwordSet).toBe(false)
+      expect(await service.setPassword('short')).toEqual({ ok: false, reason: expect.stringMatching(/at least 8/) })
+      expect(await service.setPassword(42)).toEqual({ ok: false, reason: expect.stringMatching(/must be text/) })
+      indicators.length = 0
+      expect(await service.setPassword('correct horse')).toEqual({ ok: true })
+      expect(indicators.length).toBeGreaterThan(0)
+      expect(service.view().passwordSet).toBe(true)
+      // Nothing of the password or its hash reaches the view.
+      expect(JSON.stringify(service.view())).not.toMatch(/correct horse|scrypt/)
+      const v = await service.set({ enabled: true, mode: 'password' })
+      expect(v.form.mode).toBe('password')
+    })
+
+    it('shows a browser waiting for a confirm in the indicator (never its code), and takes the answer', async () => {
+      await service.set({ enabled: true, mode: 'confirm' })
+      auth.setMode('confirm')
+      indicators.length = 0
+      const asked = await auth.requestConfirm({ name: 'Phone' })
+      if (!asked.ok) throw new Error(asked.error)
+      const shown = indicators.at(-1)?.confirm
+      expect(shown).toEqual({ id: expect.any(String), name: 'Phone', expiresAt: asked.expiresAt })
+      expect(JSON.stringify(indicators)).not.toContain(asked.code)
+      expect(JSON.stringify(indicators)).not.toContain(asked.ticket)
+      expect(service.answerConfirm({ id: shown?.id, allow: true, code: '' })).toEqual({ ok: false, reason: expect.stringMatching(/not the code/) })
+      expect(service.answerConfirm('junk')).toEqual({ ok: false, reason: expect.stringMatching(/no longer waiting/) })
+      expect(service.answerConfirm({ id: shown?.id, allow: true, code: asked.code })).toEqual({ ok: true })
+      expect(service.indicator().confirm).toBeUndefined()
     })
   })
 

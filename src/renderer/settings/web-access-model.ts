@@ -1,13 +1,13 @@
 // The logic of Settings › General › Web access and the top bar's indicator, apart from the React that
 // draws them (the unit tests run in plain Node, so what is worth testing lives here). DOM-free.
 import type { WebAccessMode } from '../../shared/types'
-import {
-  WEB_MODE_AVAILABLE,
-  type WebAccessForm,
-  type WebAccessIndicator,
-  type WebAccessPatch,
-  type WebDeviceView,
-  type WebLinkReply
+import type {
+  WebAccessForm,
+  WebAccessIndicator,
+  WebAccessPatch,
+  WebConfirmAsk,
+  WebDeviceView,
+  WebLinkReply
 } from '../../shared/web-access'
 
 /** How long a revealed link stays on screen before it hides again (a forgotten screen share must not keep it). */
@@ -125,28 +125,63 @@ export function isDirty(form: WebAccessForm, draft: WebAccessDraft): boolean {
 export interface ModeOption {
   value: WebAccessMode
   label: string
-  /** Why it cannot be picked yet; absent when it can. */
-  unavailable?: string
   help: string
 }
 
 const MODE_TEXT: Record<WebAccessMode, { label: string; help: string }> = {
   link: { label: 'Access link', help: 'A secret link opens the cockpit once on each device; the browser is then remembered.' },
-  password: { label: 'Password', help: 'A password you set on this computer.' },
-  confirm: { label: 'Confirm on this computer', help: 'Each new browser asks, and you allow it here.' },
+  password: {
+    label: 'Password',
+    help: 'A password you set on this computer; works with nobody at this desk. Wrong guesses are slowed down, never locked out.'
+  },
+  confirm: {
+    label: 'Confirm on this computer',
+    help: 'Each new browser shows a code and asks; a request appears at the top of the cockpit window here, and you type that code to allow it. Needs someone at this desk.'
+  },
   none: {
     label: 'No sign-in',
     help: 'Whoever reaches the address is in. Meant for a proxy that already signs people in (Tailscale, Cloudflare Access, oauth2-proxy); keep cc-cockpit on this computer behind it.'
   }
 }
 
-/** The mode dropdown's entries, in the design's order; the ones built later are listed but cannot be picked. */
+/** The mode dropdown's entries, in the design's order. */
 export function modeOptions(): ModeOption[] {
-  return (['link', 'password', 'confirm', 'none'] as const).map((value) => {
-    const option: ModeOption = { value, label: MODE_TEXT[value].label, help: MODE_TEXT[value].help }
-    if (!WEB_MODE_AVAILABLE[value]) option.unavailable = 'coming later'
-    return option
-  })
+  return (['link', 'password', 'confirm', 'none'] as const).map((value) => ({ value, label: MODE_TEXT[value].label, help: MODE_TEXT[value].help }))
+}
+
+/** Same as main's minimum (main/web/password.ts), checked here only to say so before a round trip. */
+export const MIN_PASSWORD_LENGTH = 8
+
+/** Why the two password fields cannot be saved, or undefined when they can (main checks again). */
+export function passwordDraftProblem(password: string, repeat: string): string | undefined {
+  if ([...password.normalize('NFC')].length < MIN_PASSWORD_LENGTH) return `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+  if (password !== repeat) return 'The two passwords differ.'
+  return undefined
+}
+
+/**
+ * Whether the mode select's choice is saved at once, or first needs a password (the password mode
+ * with none set): main refuses that switch, so the page asks for the password and switches after.
+ */
+export function modeNeedsPassword(mode: WebAccessMode, passwordSet: boolean): boolean {
+  return mode === 'password' && !passwordSet
+}
+
+/** The desktop-confirm card's countdown: `m:ss` left, '' once lapsed (the card then hides). */
+export function confirmLeft(ask: WebConfirmAsk, now: number): string {
+  const left = Math.max(0, Math.ceil((ask.expiresAt - now) / 1000))
+  if (left === 0) return ''
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`
+}
+
+/** Allow is enabled once something that could be the code is typed; main does the real compare. */
+export function confirmCodeReady(code: string): boolean {
+  let digits = 0
+  for (const ch of code) {
+    if (ch >= '0' && ch <= '9') digits++
+    else if (ch !== ' ' && ch !== '-') return false
+  }
+  return digits === 6
 }
 
 export function modeHelp(mode: WebAccessMode): string {

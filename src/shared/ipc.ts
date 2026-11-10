@@ -20,7 +20,7 @@ import type { FlagPatch, TabFlag } from './tab-flag'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
-import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebLinkReply } from './web-access'
+import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -1152,8 +1152,15 @@ export interface IpcInvokeMap {
   'settings.webDeviceRevoke': { req: { id: string }; res: boolean }
   /** Revoke every device; how many were revoked. */
   'settings.webDevicesRevokeAll': { req: void; res: number }
+  /** Set or change the password (hashed off the main thread); a change signs out the devices of the old one. */
+  'settings.webAccessSetPassword': { req: { password: string }; res: WebActionReply }
   /** The top bar's indicator now; changes arrive as `webAccess.changed`. */
   'webAccess.state': { req: void; res: WebAccessIndicator }
+  /**
+   * Answer a browser waiting for a desktop confirm (`WebAccessIndicator.confirm`): deny, or allow with
+   * the code the person read off that browser. A wrong code is refused with the reason.
+   */
+  'webAccess.confirmAnswer': { req: { id: string; allow: boolean; code?: string }; res: WebActionReply }
   /**
    * The start-up question: the link's view when this window should ask whether to install `ccc`,
    * else null. Main decides once per app launch, so only the first window to ask can get an answer.
@@ -1533,7 +1540,9 @@ export const INVOKE_CHANNELS = [
   'settings.webDeviceDisconnect',
   'settings.webDeviceRevoke',
   'settings.webDevicesRevokeAll',
+  'settings.webAccessSetPassword',
   'webAccess.state',
+  'webAccess.confirmAnswer',
   'ccc.offer',
   'overlays.list',
   'overlays.close',
@@ -1785,7 +1794,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settings.webDeviceDisconnect': 'no',
   'settings.webDeviceRevoke': 'no',
   'settings.webDevicesRevokeAll': 'no',
+  'settings.webAccessSetPassword': 'no',
   'webAccess.state': 'no',
+  // A browser answering its own sign-in request would let itself in.
+  'webAccess.confirmAnswer': 'no',
   'webAccess.changed': 'no',
   'ccc.offer': 'no',
 

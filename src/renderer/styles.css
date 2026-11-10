@@ -330,6 +330,60 @@ iframe:focus-visible {
 .web-access-chip.warn .web-access-chip-dot {
   background: var(--cc-status-needs-permission);
 }
+/* A browser asking for a desktop confirm (WebConfirmCard): a card, not a dialog. No backdrop and
+   nothing inert behind it, so the window keeps working while it waits; it sits under the top bar,
+   centred, above the zones and below the palette and dialogs. */
+.web-confirm-card {
+  position: fixed;
+  top: calc(var(--cc-titlebar-h) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 95;
+  width: min(440px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--cc-status-needs-permission) 55%, var(--cc-border-strong));
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.4);
+  font-size: var(--cc-text-sm);
+}
+.web-confirm-title {
+  margin: 0;
+  font-size: var(--cc-text-md, 14px);
+  font-weight: 600;
+}
+.web-confirm-text {
+  margin: 0;
+  color: var(--cc-fg-muted);
+}
+.web-confirm-name {
+  color: var(--cc-fg);
+  overflow-wrap: anywhere;
+}
+.web-confirm-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.web-confirm-code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--cc-font-mono);
+  letter-spacing: 0.15em;
+}
+.web-confirm-problem {
+  margin: 0;
+  color: var(--cc-status-needs-permission);
+}
+.web-confirm-meta {
+  margin: 0;
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-xs);
+}
 /* Settings › General › Web access: the link and its QR code. The QR sits on white whatever the theme
    (a scanner needs dark on light), with the quiet zone drawn into the viewBox. */
 .web-access-link {

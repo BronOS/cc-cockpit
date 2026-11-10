@@ -428,6 +428,13 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   `ccc open`, the dock, or starting the app again) shows it; a plugin or a click in a browser never does. On Linux there
   is no dock: a window kept running there comes back through the picker of another window, `ccc open` or starting the
   app again. Quitting closes the browsers with a notice ("quit on the host"); they do not reconnect on their own.
+- Web access signs a browser in with the access link, a password or a desktop confirm (or not at all, None). A wrong
+  password is slowed down (one shared limit for every sign-in, about one try a second once a burst is used up), never
+  locked out; under a sustained flood of tries a new sign-in, the person's own too, is answered "busy" until it stops.
+  Changing the password signs out every browser that signed in with the old one. With no working keychain no password
+  can be set. Desktop confirm: one browser can wait at a time (another is told to try again; anyone who can reach the
+  address can keep that one place taken, each time showing as a request to deny), and a request is gone after 2
+  minutes or three wrong codes. The request card shows in every project window, not in the project picker window.
 - Web access keeps a headless copy of each terminal in a worker. If that worker crashes or hangs, it is restarted with
   blank copies: a terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind)
   shows a blank screen until Claude redraws, and a shell tab until it prints again. After three restarts within a

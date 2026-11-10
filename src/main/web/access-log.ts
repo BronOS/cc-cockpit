@@ -1,6 +1,6 @@
 // The web access log (design-web.md §4.1 "Log"): who signed in, connected, disconnected or was
-// revoked, and when the auth mode changed. `<data>/logs/web-access.log`, one JSON object per line,
-// rotated at 1 MiB (`.1` keeps the previous file). Plugin logs share the folder, but a plugin id
+// revoked, when the auth mode changed, the password was set, and desktop-confirm requests.
+// `<data>/logs/web-access.log`, one JSON object per line, rotated at 1 MiB (`.1` keeps the previous file). Plugin logs share the folder, but a plugin id
 // always has a dot, so `web-access.log` can never be one of theirs.
 //
 // What it never holds: terminal text, prompts, panel messages, and secrets (an access token, a
@@ -39,6 +39,10 @@ export type AccessEvent =
   | 'expired'
   | 'regenerate'
   | 'mode'
+  /** The password was set or changed on the desktop (never the password or its hash). */
+  | 'password'
+  /** A desktop-confirm request: asked (by a browser), denied or expired. Its code is never logged. */
+  | 'confirm'
 
 export interface AccessEntry {
   event: AccessEvent

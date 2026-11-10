@@ -11,9 +11,10 @@
 //    SameSite, is what keeps another localhost page out (checks.ts says why).
 //  - The web shell's CSP and `Cache-Control: no-store` on every answer.
 //  - Loopback binds only (settings.ts listenPlanOf) until TLS and the §4.3 confirms (Task 28).
-// Behind those, sign-in (auth.ts, plan Task 5): the web shell (`/` and `/assets/…`, shell-files.ts,
-// plan Task 8) and the sign-in routes are open, everything else (the upgrade first, the project
-// list) needs a device (`WebAuth.authorize`: the device cookie, or None mode).
+// Behind those, sign-in (auth.ts, plan Tasks 5 and 27): the web shell (`/` and `/assets/…`,
+// shell-files.ts, plan Task 8) and the sign-in routes (link, password, desktop confirm) are open,
+// everything else (the upgrade first, the project list) needs a device (`WebAuth.authorize`: the
+// device cookie, or None mode).
 // An upgrade that passes goes to the socket handler main installs (the wire protocol,
 // connection.ts); with none installed it is refused, so the gateway never hands out a socket
 // nobody speaks the protocol on.
@@ -32,10 +33,21 @@ import type { Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 // Types only: erased at build time, so this file does not load `ws` (see loadWs below).
 import type { WebSocket, WebSocketServer } from 'ws'
-import { CLOSE, PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, type WebProjectEntry, type WebSessionReply } from '../../shared/web-protocol'
+import {
+  CLOSE,
+  CONFIRM_ASK_PATH,
+  CONFIRM_POLL_PATH,
+  PROJECTS_PATH,
+  SESSION_PATH,
+  SIGN_IN_LINK_PATH,
+  SIGN_IN_PASSWORD_PATH,
+  type WebConfirmTicket,
+  type WebProjectEntry,
+  type WebSessionReply
+} from '../../shared/web-protocol'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
-import { deviceCookie, type WebAuth } from './auth'
+import { deviceCookie, type SignInResult, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
 import type { WebDevice } from './devices'
 import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
@@ -54,13 +66,13 @@ export { MAX_FRAME_BYTES }
 
 /** Where the browser opens its one WebSocket per view (shared with the bridge, web-protocol.ts). */
 export { WS_PATH }
-/** The page posts the access link's token here (auth.ts). */
-export { SIGN_IN_LINK_PATH }
+/** The page posts the access link's token, the password, or a desktop-confirm ask and its polls here (auth.ts). */
+export { CONFIRM_ASK_PATH, CONFIRM_POLL_PATH, SIGN_IN_LINK_PATH, SIGN_IN_PASSWORD_PATH }
 /** What the page asks first: the mode, and whether this browser is signed in. */
 export { SESSION_PATH }
 /** The open project windows, for the web project picker; needs a device. */
 export { PROJECTS_PATH }
-/** A sign-in body is a token and a device name; anything bigger is not one. */
+/** A sign-in body is a token (or a password, or a ticket) and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
 
 export interface GatewayDeps {
@@ -106,6 +118,13 @@ const IMMUTABLE = 'max-age=31536000, immutable'
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** What a sign-in route answers: a status, a JSON body, and the device cookie's value when one was made. */
+interface SignInAnswer {
+  status: number
+  body: unknown
+  cookie?: string
 }
 
 /** The body as text, or undefined once it passes `max` bytes (the rest is not read). */
@@ -230,6 +249,7 @@ export class WebGateway {
 
   /** Stops listening and closes every socket. */
   stop(): Promise<void> {
+    this.deps.auth.dropPending()
     const run = this.queue.then(() => this.close())
     this.queue = run.catch(() => undefined)
     return run.then(() => {
@@ -243,6 +263,8 @@ export class WebGateway {
     // ones too, rather than a plain terminate (1006) the page would retry against a closed server.
     this.setMode(settings.mode, plan.ok)
     if (!plan.ok) {
+      // A browser waiting for a desktop confirm can no longer collect it.
+      this.deps.auth.dropPending()
       // Turned off (or to a setting refused): the views are told so, and stop retrying (bridge.ts).
       await this.close(CLOSE.turnedOff)
       this.current = settings.enabled ? { state: 'refused', reason: plan.reason } : { state: 'off' }
@@ -426,9 +448,10 @@ export class WebGateway {
       })
     }
     if (method === 'GET' && path === SESSION_PATH) return this.session(req, res, host)
-    if (method === 'POST' && path === SIGN_IN_LINK_PATH) {
+    const route = method === 'POST' ? this.signInRoute(path) : undefined
+    if (route) {
       // Never an unhandled rejection in main: a failure answers 500 when the request is still there.
-      return void this.signIn(req, res, host).catch((err: unknown) => {
+      return void this.signIn(req, res, host, route).catch((err: unknown) => {
         this.deps.log(`web access: sign-in failed: ${errorText(err)}`)
         if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'sign-in failed' })
       })
@@ -524,7 +547,46 @@ export class WebGateway {
     this.json(res, host, 200, reply)
   }
 
-  private async signIn(req: IncomingMessage, res: ServerResponse, host: string): Promise<void> {
+  /**
+   * The sign-in routes (auth.ts does the checking): the access link, the password, a desktop-confirm
+   * ask and its polls. Each is an Origin-checked POST of a small JSON body (request above); each one
+   * that makes a device answers with its cookie. `cancelled` says the client hung up: an attempt
+   * waiting in the limiter then never runs, so it gets no device (its cookie would be lost) and does
+   * not use up a one-time token.
+   */
+  private signInRoute(path: string): ((body: unknown, cancelled: () => boolean) => Promise<SignInAnswer>) | undefined {
+    const auth = this.deps.auth
+    const device = (result: SignInResult): SignInAnswer =>
+      result.ok ? { status: 200, body: { device: { id: result.device.id, name: result.device.name } }, cookie: result.cookie } : { status: result.status, body: { error: result.error } }
+    switch (path) {
+      case SIGN_IN_LINK_PATH:
+        return async (body, cancelled) => device(await auth.signInWithToken(body, cancelled))
+      case SIGN_IN_PASSWORD_PATH:
+        return async (body, cancelled) => device(await auth.signInWithPassword(body, cancelled))
+      case CONFIRM_ASK_PATH:
+        return async (body, cancelled) => {
+          const result = await auth.requestConfirm(body, cancelled)
+          if (!result.ok) return { status: result.status, body: { error: result.error } }
+          const ticket: WebConfirmTicket = { code: result.code, ticket: result.ticket, expiresAt: result.expiresAt }
+          return { status: 200, body: ticket }
+        }
+      case CONFIRM_POLL_PATH:
+        return async (body) => {
+          const result = auth.pollConfirm(body)
+          if (!result.ok) return { status: result.status, body: { error: result.error } }
+          return result.cookie === undefined ? { status: 200, body: result.poll } : { status: 200, body: result.poll, cookie: result.cookie }
+        }
+      default:
+        return undefined
+    }
+  }
+
+  private async signIn(
+    req: IncomingMessage,
+    res: ServerResponse,
+    host: string,
+    route: (body: unknown, cancelled: () => boolean) => Promise<SignInAnswer>
+  ): Promise<void> {
     // The Origin was checked before the route (request above); the cookie's flags follow it.
     const origin = String(req.headers.origin)
     if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
@@ -539,12 +601,9 @@ export class WebGateway {
     } catch {
       return this.json(res, host, 400, { error: 'expected JSON' })
     }
-    // A client that hung up while its attempt waited in the limiter gets no device (its cookie
-    // would be lost) and does not use up a one-time token.
-    const result = await this.deps.auth.signInWithToken(body, () => res.destroyed)
+    const answer = await route(body, () => res.destroyed)
     if (res.destroyed) return
-    if (!result.ok) return this.json(res, host, result.status, { error: result.error })
-    this.json(res, host, 200, { device: { id: result.device.id, name: result.device.name } }, { 'Set-Cookie': deviceCookie(result.cookie, origin) })
+    this.json(res, host, answer.status, answer.body, answer.cookie === undefined ? {} : { 'Set-Cookie': deviceCookie(answer.cookie, origin) })
   }
 
   private originRule(): { scheme: 'http'; externalOrigin?: string } {

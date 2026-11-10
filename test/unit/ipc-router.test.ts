@@ -1656,13 +1656,15 @@ describe('registerWebAccessHandlers', () => {
     'settings.webDeviceDisconnect',
     'settings.webDeviceRevoke',
     'settings.webDevicesRevokeAll',
-    'webAccess.state'
+    'settings.webAccessSetPassword',
+    'webAccess.state',
+    'webAccess.confirmAnswer'
   ] as const
 
   function webAccessSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
-    const view = { form: { enabled: false, port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const }, bind: '127.0.0.1', gateway: { state: 'off' as const }, devices: [], risks: [] }
+    const view = { form: { enabled: false, port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const }, bind: '127.0.0.1', gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false }
     registerWebAccessHandlers(router, {
       view: () => (calls.push(['view']), view),
       set: async (patch) => (calls.push(['set', patch]), view),
@@ -1672,7 +1674,9 @@ describe('registerWebAccessHandlers', () => {
       disconnect: (id) => (calls.push(['disconnect', id]), true),
       revoke: (id) => (calls.push(['revoke', id]), true),
       revokeAll: () => (calls.push(['revokeAll']), 2),
-      indicator: () => (calls.push(['indicator']), { connected: 1 })
+      indicator: () => (calls.push(['indicator']), { connected: 1 }),
+      setPassword: async (password) => (calls.push(['setPassword', password]), { ok: true }),
+      answerConfirm: (payload) => (calls.push(['answerConfirm', payload]), { ok: false, reason: 'no' })
     })
     return { ipc, router, calls }
   }
@@ -1686,7 +1690,17 @@ describe('registerWebAccessHandlers', () => {
     await ipc.invoke('settings.webDeviceDisconnect', 11, [{ id: 7 }])
     expect(await ipc.invoke('settings.webDevicesRevokeAll', 11)).toBe(2)
     expect(await ipc.invoke('webAccess.state', 11)).toEqual({ connected: 1 })
-    expect(calls).toEqual([['set', { port: 8000 }], ['revoke', 'abc'], ['disconnect', 7], ['revokeAll'], ['indicator']])
+    await ipc.invoke('settings.webAccessSetPassword', 11, [{ password: 'correct horse' }])
+    await ipc.invoke('webAccess.confirmAnswer', 11, [{ id: 'a', allow: true, code: '123456' }])
+    expect(calls).toEqual([
+      ['set', { port: 8000 }],
+      ['revoke', 'abc'],
+      ['disconnect', 7],
+      ['revokeAll'],
+      ['indicator'],
+      ['setPassword', 'correct horse'],
+      ['answerConfirm', { id: 'a', allow: true, code: '123456' }]
+    ])
   })
 
   // Design-web §4.1: a remote view cannot widen its own access. The class is checked before any handler

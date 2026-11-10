@@ -9,8 +9,20 @@ import { shellFileOf } from '../../src/main/web/shell-files'
 import { currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, shellChrome } from '../../src/renderer/shell-kind'
 import { topStripClass } from '../../src/renderer/status/strip-order'
 import { loadOpenProjects, projectHref } from '../../src/renderer/web/picker-model'
-import { deviceName, linkTokenOf, sessionReplyOf, signedOutText, signIn, type SignInEnv } from '../../src/renderer/web/sign-in'
-import { PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
+import {
+  askConfirm,
+  confirmPollOf,
+  deviceName,
+  linkTokenOf,
+  pollConfirm,
+  sessionReplyOf,
+  shownCode,
+  signedOutText,
+  signIn,
+  signInWithPassword,
+  type SignInEnv
+} from '../../src/renderer/web/sign-in'
+import { CONFIRM_ASK_PATH, CONFIRM_POLL_PATH, PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, SIGN_IN_PASSWORD_PATH } from '../../src/shared/web-protocol'
 
 describe('shellFileOf', () => {
   const root = '/app/out/renderer'
@@ -185,7 +197,73 @@ describe('the sign-in step', () => {
 
   it('says what to do when signed out, per mode', () => {
     expect(signedOutText('link')).toMatch(/access link/)
-    for (const mode of ['password', 'confirm', 'none'] as const) expect(signedOutText(mode)).toMatch(/not signed in|Sign-in is off/)
+    expect(signedOutText('password')).toMatch(/password/)
+    expect(signedOutText('confirm')).toMatch(/code/)
+    for (const mode of ['password', 'confirm', 'none'] as const) expect(signedOutText(mode)).not.toMatch(/not available/)
+  })
+})
+
+describe('password and desktop-confirm sign-in (plan Task 27)', () => {
+  const UA = 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36'
+  function fetcher(answers: Record<string, { status: number; body: unknown } | 'throw'>): {
+    env: Pick<SignInEnv, 'fetch' | 'userAgent'>
+    calls: Array<{ url: string; body: unknown }>
+  } {
+    const calls: Array<{ url: string; body: unknown }> = []
+    return {
+      calls,
+      env: {
+        userAgent: UA,
+        fetch: async (url, init) => {
+          calls.push({ url, body: init?.body === undefined ? undefined : JSON.parse(init.body) })
+          const a = answers[url]
+          if (a === undefined || a === 'throw') throw new Error('offline')
+          return { ok: a.status >= 200 && a.status < 300, status: a.status, json: async () => a.body }
+        }
+      }
+    }
+  }
+
+  it('posts the password with the device name; the gateway\'s reason on a refusal', async () => {
+    const ok = fetcher({ [SIGN_IN_PASSWORD_PATH]: { status: 200, body: { device: { id: 'd', name: 'x' } } } })
+    expect(await signInWithPassword(ok.env, 'hunter22hunter')).toBeUndefined()
+    expect(ok.calls).toEqual([{ url: SIGN_IN_PASSWORD_PATH, body: { password: 'hunter22hunter', name: 'Chrome on Android' } }])
+    expect(await signInWithPassword(fetcher({ [SIGN_IN_PASSWORD_PATH]: { status: 401, body: { error: 'wrong password' } } }).env, 'x')).toBe('wrong password')
+    expect(await signInWithPassword(fetcher({}).env, 'x')).toBe('the host did not answer the sign-in')
+  })
+
+  it('asks for a confirm: the code and ticket, or why not', async () => {
+    const ticket = { code: '012345', ticket: 'T'.repeat(43), expiresAt: 5 }
+    const ok = fetcher({ [CONFIRM_ASK_PATH]: { status: 200, body: ticket } })
+    expect(await askConfirm(ok.env)).toEqual({ ok: true, ticket })
+    expect(ok.calls[0]).toEqual({ url: CONFIRM_ASK_PATH, body: { name: 'Chrome on Android' } })
+    expect(await askConfirm(fetcher({ [CONFIRM_ASK_PATH]: { status: 409, body: { error: 'another browser is waiting' } } }).env)).toEqual({
+      ok: false,
+      error: 'another browser is waiting'
+    })
+    expect(await askConfirm(fetcher({ [CONFIRM_ASK_PATH]: { status: 200, body: { code: 5 } } }).env)).toEqual({ ok: false, error: 'the host answered something else' })
+  })
+
+  it('polls with the ticket and reads every answer; a failed poll is an error to retry', async () => {
+    const pending = fetcher({ [CONFIRM_POLL_PATH]: { status: 200, body: { state: 'pending', code: '012345', expiresAt: 9 } } })
+    expect(await pollConfirm(pending.env, 'tick')).toEqual({ state: 'pending', code: '012345', expiresAt: 9 })
+    expect(pending.calls[0]).toEqual({ url: CONFIRM_POLL_PATH, body: { ticket: 'tick' } })
+    expect(await pollConfirm(fetcher({ [CONFIRM_POLL_PATH]: { status: 200, body: { state: 'denied' } } }).env, 't')).toEqual({ state: 'denied' })
+    expect(await pollConfirm(fetcher({ [CONFIRM_POLL_PATH]: { status: 503, body: { error: 'too many devices' } } }).env, 't')).toEqual({
+      state: 'error',
+      error: 'too many devices'
+    })
+    expect(await pollConfirm(fetcher({}).env, 't')).toEqual({ state: 'error', error: 'the host did not answer' })
+    expect(confirmPollOf({ state: 'allowed', device: { id: 'd', name: 'n' } })).toEqual({ state: 'allowed', device: { id: 'd', name: 'n' } })
+    expect(confirmPollOf({ state: 'gone' })).toEqual({ state: 'gone' })
+    expect(confirmPollOf({ state: 'allowed' })).toBeUndefined()
+    expect(confirmPollOf({ state: 'pending' })).toBeUndefined()
+    expect(confirmPollOf('x')).toBeUndefined()
+  })
+
+  it('shows the code in two halves', () => {
+    expect(shownCode('012345')).toBe('012 345')
+    expect(shownCode('12')).toBe('12')
   })
 })
 

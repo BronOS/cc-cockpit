@@ -1345,7 +1345,13 @@ function start(): void {
     accessLog: webAccessLog,
     notify: (text) => showNotification(text, 'cc-cockpit web access')
   })
-  const webAuth = new WebAuth({ devices: webDevices, secrets: secretStore, accessLog: webAccessLog })
+  const webAuth = new WebAuth({
+    devices: webDevices,
+    secrets: secretStore,
+    accessLog: webAccessLog,
+    // A browser asking for a desktop confirm: the person may be in another app.
+    notify: (text) => showNotification(text, 'cc-cockpit web access')
+  })
   // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
   // plugin), served only while the device has a view bound to a project the plugin is enabled in
   // (the same folder rule as `cc-plugin:`, servedPluginDir below, narrowed to that project) and an

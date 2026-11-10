@@ -12,7 +12,6 @@
 import { isIP } from 'node:net'
 import { isPlainObject } from '../../shared/guards'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
-import { WEB_MODE_AVAILABLE } from '../../shared/web-access'
 
 /** Unprivileged ports only: below 1024 needs root on Linux, and port 80 would drop out of Host headers. */
 export const WEB_PORT_RANGE = { min: 1024, max: 65535 } as const
@@ -211,8 +210,7 @@ export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown):
   if ('mode' in patch) {
     const mode = MODES.find((m) => m === patch['mode'])
     if (mode === undefined) return { ok: false, error: `${shown(patch['mode'])} is not a sign-in mode` }
-    // A mode that is not built yet would leave nobody able to sign in (fails closed, but confusing).
-    if (!WEB_MODE_AVAILABLE[mode] && mode !== current.mode) return { ok: false, error: `the ${mode} mode is not available yet` }
+    // Password needs a password set first: access-service.ts checks that (it has the credentials).
     next.mode = mode
   }
   return { ok: true, value: next }

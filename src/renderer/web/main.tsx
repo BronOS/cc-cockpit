@@ -1,7 +1,7 @@
 // The web shell's entry (design-web.md §2): the Electron shell's React tree, with `window.cockpit`
 // from the socket bridge (bridge.ts) instead of the preload. Differences from ../main.tsx:
 // - first the sign-in step (sign-in.ts: an access link in the URL, then "is this browser signed
-//   in"), then the project picker (picker.tsx) when no `?project=` names one;
+//   in"; signed out, the password or desktop-confirm form of sign-in-forms.tsx), then the project picker (picker.tsx) when no `?project=` names one;
 // - no window chrome: title bar, drag regions, full screen, see-through, update notice
 //   (shell-kind.ts, marked below before anything renders);
 // - zone sizes and collapsed zones are this browser's own (zones/view-geometry.ts);
@@ -26,6 +26,7 @@ import { createWebBridge, socketUrl, type BridgeStatus, type SocketLike, type We
 import { deliverPanelPort } from '../plugins/panel-port-bus'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
+import { ConfirmSignIn, PasswordSignIn } from './sign-in-forms'
 import { linkTokenOf, signIn, signedOutText } from './sign-in'
 import '../assets/fonts/fonts.css'
 import '../styles.css'
@@ -60,6 +61,8 @@ function SignedOut({ mode, error }: { mode: WebAccessMode; error?: string }): Re
       <div className="web-state-box">
         {error !== undefined && <p>The link did not work: {error}.</p>}
         <p>{signedOutText(mode)}</p>
+        {mode === 'password' && <PasswordSignIn />}
+        {mode === 'confirm' && <ConfirmSignIn />}
       </div>
     </main>
   )

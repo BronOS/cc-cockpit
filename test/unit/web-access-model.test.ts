@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { qrOf } from '../../src/renderer/settings/qr'
 import {
   agoText,
+  confirmCodeReady,
+  confirmLeft,
   deviceDetail,
   displayedLink,
   draftOf,
@@ -16,7 +18,9 @@ import {
   indicatorText,
   indicatorTitle,
   isDirty,
+  modeNeedsPassword,
   modeOptions,
+  passwordDraftProblem,
   patchOf,
   qrText,
   revealFrom
@@ -102,10 +106,40 @@ describe('the address form', () => {
 })
 
 describe('the sign-in modes', () => {
-  it('lists all four in the design order and disables the ones built later', () => {
+  it('lists all four in the design order, every one can be picked (plan Task 27)', () => {
     const options = modeOptions()
     expect(options.map((o) => o.value)).toEqual(['link', 'password', 'confirm', 'none'])
-    expect(options.filter((o) => o.unavailable !== undefined).map((o) => o.value)).toEqual(['password', 'confirm'])
+    expect(options.every((o) => !('unavailable' in o))).toBe(true)
+  })
+
+  it('the password mode asks for a password first when none is set', () => {
+    expect(modeNeedsPassword('password', false)).toBe(true)
+    expect(modeNeedsPassword('password', true)).toBe(false)
+    expect(modeNeedsPassword('confirm', false)).toBe(false)
+  })
+
+  it('checks the two password fields before a round trip', () => {
+    expect(passwordDraftProblem('short', 'short')).toMatch(/at least 8/)
+    expect(passwordDraftProblem('long enough', 'long enougH')).toMatch(/differ/)
+    expect(passwordDraftProblem('long enough', 'long enough')).toBeUndefined()
+  })
+})
+
+describe('the desktop-confirm card', () => {
+  it('counts down, and is empty once lapsed', () => {
+    const ask = { id: 'a', name: 'Phone', expiresAt: NOW + 95_000 }
+    expect(confirmLeft(ask, NOW)).toBe('1:35')
+    expect(confirmLeft(ask, NOW + 95_000)).toBe('')
+  })
+
+  it('enables Allow only for something shaped like the six-digit code', () => {
+    expect(confirmCodeReady('123456')).toBe(true)
+    expect(confirmCodeReady('123 456')).toBe(true)
+    expect(confirmCodeReady('123-456')).toBe(true)
+    expect(confirmCodeReady('12345')).toBe(false)
+    expect(confirmCodeReady('1234567')).toBe(false)
+    expect(confirmCodeReady('12345a')).toBe(false)
+    expect(confirmCodeReady('')).toBe(false)
   })
 })
 

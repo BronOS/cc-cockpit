@@ -20,6 +20,8 @@
 //  - A new device raises a desktop notification (through the notifier adapter main passes in).
 //  - The access token's record (auth.ts) lives here too, so web access has one credentials file:
 //    its hash for sign-in checks and its secret-store ciphertext for the desktop's Show button.
+//  - So does the password's (plan Task 27): its scrypt hash (password.ts), stored only as the secret
+//    store's ciphertext, so a copy of this file alone cannot be used to guess the password offline.
 //
 // Device names are the requester's own text (access-log.ts plainText): shown as plain text,
 // never as markup. No `electron` import; the file goes through JsonFile like every state file.
@@ -66,10 +68,17 @@ export interface AccessTokenRecord {
   createdAt: number
 }
 
+/** The password (auth.ts): the secret store's ciphertext of its scrypt hash (password.ts). */
+export interface PasswordRecord {
+  stored: string
+  createdAt: number
+}
+
 interface WebAccessFileData {
   schemaVersion: number
   devices: DeviceRecord[]
   accessToken?: AccessTokenRecord
+  password?: PasswordRecord
 }
 
 const SIGN_INS: readonly DeviceSignIn[] = ['link', 'add', 'password', 'confirm']
@@ -181,6 +190,10 @@ export class DeviceStore {
     const token = data.accessToken
     if (token !== undefined && !(isPlainObject(token) && isHex64(token.hash) && typeof token.stored === 'string' && typeof token.createdAt === 'number')) {
       delete data.accessToken
+    }
+    const password = data.password
+    if (password !== undefined && !(isPlainObject(password) && typeof password.stored === 'string' && typeof password.createdAt === 'number')) {
+      delete data.password
     }
   }
 
@@ -310,6 +323,18 @@ export class DeviceStore {
   setAccessToken(record: AccessTokenRecord | undefined): void {
     if (record) this.file.data.accessToken = { ...record }
     else delete this.file.data.accessToken
+    this.commit()
+  }
+
+  password(): PasswordRecord | undefined {
+    const p = this.file.data.password
+    return p ? { ...p } : undefined
+  }
+
+  /** Replaces (or, undefined, removes) the password's record; on disk before it returns. */
+  setPassword(record: PasswordRecord | undefined): void {
+    if (record) this.file.data.password = { ...record }
+    else delete this.file.data.password
     this.commit()
   }
 

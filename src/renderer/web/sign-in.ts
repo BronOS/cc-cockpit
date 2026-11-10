@@ -10,9 +10,24 @@
 // The page asks the gateway whether this browser is signed in (SESSION_PATH) before it posts a
 // link, and posts only when it is not: a device means go on (the picker, or the project in
 // `?project=`), none means the link is posted, or the signed-out page for the mode without one.
+//
+// Password and desktop confirm (plan Task 27) have a page of their own on the signed-out screen
+// (main.tsx): the password is posted once per press, and the confirm asks for a code, shows it, and
+// polls with its ticket until the desktop answers. The ticket is kept in sessionStorage by the
+// page, so a reload while waiting goes on with the same request (one waits at a time) instead of
+// asking again. Both end in the same device cookie and a fresh page load.
 // DOM-free (the location, history and fetch are passed in) so unit tests run it in plain Node.
 import type { WebAccessMode } from '../../shared/types'
-import { SESSION_PATH, SIGN_IN_LINK_PATH, type WebSessionReply } from '../../shared/web-protocol'
+import {
+  CONFIRM_ASK_PATH,
+  CONFIRM_POLL_PATH,
+  SESSION_PATH,
+  SIGN_IN_LINK_PATH,
+  SIGN_IN_PASSWORD_PATH,
+  type WebConfirmPoll,
+  type WebConfirmTicket,
+  type WebSessionReply
+} from '../../shared/web-protocol'
 
 /** The longest token the page will post (the gateway refuses longer ones anyway). */
 const MAX_TOKEN_LENGTH = 512
@@ -107,21 +122,103 @@ export function sessionReplyOf(body: unknown): WebSessionReply | undefined {
   return { mode, device: { id, name } }
 }
 
-/** Posts an access link's token; the error text when it did not let this browser in. */
-async function postLink(env: SignInEnv, token: string): Promise<string | undefined> {
+/** A JSON post to a sign-in route, with this page's cookies (the answer may set the device's). */
+function postJson(env: Pick<SignInEnv, 'fetch'>, path: string, body: unknown): ReturnType<SignInEnv['fetch']> {
+  return env.fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'same-origin',
+    cache: 'no-store'
+  })
+}
+
+/** Posts a sign-in; the error text when it did not let this browser in. */
+async function postSignIn(env: Pick<SignInEnv, 'fetch'>, path: string, body: unknown): Promise<string | undefined> {
   try {
-    const res = await env.fetch(SIGN_IN_LINK_PATH, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, name: deviceName(env.userAgent) }),
-      credentials: 'same-origin',
-      cache: 'no-store'
-    })
+    const res = await postJson(env, path, body)
     if (res.ok) return undefined
     return errorOf(await res.json().catch(() => undefined)) ?? `sign-in failed (${res.status})`
   } catch {
     return 'the host did not answer the sign-in'
   }
+}
+
+/** Posts an access link's token; the error text when it did not let this browser in. */
+function postLink(env: SignInEnv, token: string): Promise<string | undefined> {
+  return postSignIn(env, SIGN_IN_LINK_PATH, { token, name: deviceName(env.userAgent) })
+}
+
+/**
+ * Signs in with the password; the error text when it did not let this browser in. A wrong one can
+ * take a moment to answer (the host slows guesses down), which the page says while it waits.
+ */
+export function signInWithPassword(env: Pick<SignInEnv, 'fetch' | 'userAgent'>, password: string): Promise<string | undefined> {
+  return postSignIn(env, SIGN_IN_PASSWORD_PATH, { password, name: deviceName(env.userAgent) })
+}
+
+/** The CONFIRM_ASK_PATH answer, checked. */
+export function confirmTicketOf(body: unknown): WebConfirmTicket | undefined {
+  if (body === null || typeof body !== 'object') return undefined
+  const { code, ticket, expiresAt } = body as Record<string, unknown>
+  if (typeof code !== 'string' || code.length === 0 || code.length > 16) return undefined
+  if (typeof ticket !== 'string' || ticket.length === 0 || ticket.length > MAX_TOKEN_LENGTH) return undefined
+  if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) return undefined
+  return { code, ticket, expiresAt }
+}
+
+/** The CONFIRM_POLL_PATH answer, checked. */
+export function confirmPollOf(body: unknown): WebConfirmPoll | undefined {
+  if (body === null || typeof body !== 'object') return undefined
+  const b = body as Record<string, unknown>
+  switch (b['state']) {
+    case 'pending':
+      return typeof b['code'] === 'string' && typeof b['expiresAt'] === 'number' ? { state: 'pending', code: b['code'], expiresAt: b['expiresAt'] } : undefined
+    case 'allowed': {
+      const device = b['device'] as Record<string, unknown> | null | undefined
+      if (!device || typeof device !== 'object' || typeof device['id'] !== 'string' || typeof device['name'] !== 'string') return undefined
+      return { state: 'allowed', device: { id: device['id'], name: device['name'] } }
+    }
+    case 'denied':
+      return { state: 'denied' }
+    case 'gone':
+      return { state: 'gone' }
+    default:
+      return undefined
+  }
+}
+
+/** Asks the desktop to let this browser in: the code to show and the ticket to poll with, or why not. */
+export async function askConfirm(env: Pick<SignInEnv, 'fetch' | 'userAgent'>): Promise<{ ok: true; ticket: WebConfirmTicket } | { ok: false; error: string }> {
+  try {
+    const res = await postJson(env, CONFIRM_ASK_PATH, { name: deviceName(env.userAgent) })
+    const body: unknown = await res.json().catch(() => undefined)
+    if (!res.ok) return { ok: false, error: errorOf(body) ?? `the request failed (${res.status})` }
+    const ticket = confirmTicketOf(body)
+    return ticket ? { ok: true, ticket } : { ok: false, error: 'the host answered something else' }
+  } catch {
+    return { ok: false, error: 'the host did not answer' }
+  }
+}
+
+/**
+ * Where this browser's request stands. `allowed` means the answer carried the device cookie (the
+ * page then loads again, signed in); `error` is a failed poll, which the page retries.
+ */
+export async function pollConfirm(env: Pick<SignInEnv, 'fetch'>, ticket: string): Promise<WebConfirmPoll | { state: 'error'; error: string }> {
+  try {
+    const res = await postJson(env, CONFIRM_POLL_PATH, { ticket })
+    const body: unknown = await res.json().catch(() => undefined)
+    if (!res.ok) return { state: 'error', error: errorOf(body) ?? `the host answered ${res.status}` }
+    return confirmPollOf(body) ?? { state: 'error', error: 'the host answered something else' }
+  } catch {
+    return { state: 'error', error: 'the host did not answer' }
+  }
+}
+
+/** The code as the page shows it: `123 456`, easier to read off and type on the desktop. */
+export function shownCode(code: string): string {
+  return code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code
 }
 
 /** Asks the gateway whether this browser is signed in; an `unreachable` state when it cannot tell. */
@@ -169,9 +266,9 @@ export function signedOutText(mode: WebAccessMode): string {
     case 'link':
       return 'This browser is not signed in. On the desktop, open Settings › General › Web access and open the access link (or scan its QR code) on this device.'
     case 'password':
-      return 'This browser is not signed in. Signing in with a password is not available in this version yet.'
+      return 'This browser is not signed in. Enter the web access password set on the desktop.'
     case 'confirm':
-      return 'This browser is not signed in. Signing in with a desktop confirm is not available in this version yet.'
+      return 'This browser is not signed in. Ask the desktop: this page shows a code, and whoever is at the desktop types it there to let this browser in.'
     case 'none':
       return 'Sign-in is off, but the host did not let this browser in. Reload the page.'
   }

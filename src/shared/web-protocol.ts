@@ -17,6 +17,12 @@ export const WS_PATH = '/ws'
 export const SESSION_PATH = '/auth/session'
 /** The page posts the access link's token here (`{ token, name }`, JSON), and gets the device cookie. */
 export const SIGN_IN_LINK_PATH = '/auth/link'
+/** The page posts the password here (`{ password, name }`, JSON), and gets the device cookie. */
+export const SIGN_IN_PASSWORD_PATH = '/auth/password'
+/** The page asks for a desktop confirm here (`{ name }`, JSON); the answer is a `WebConfirmTicket`. */
+export const CONFIRM_ASK_PATH = '/auth/confirm'
+/** The page polls its ask here (`{ ticket }`, JSON); the answer is a `WebConfirmPoll`, with the cookie once allowed. */
+export const CONFIRM_POLL_PATH = '/auth/confirm/poll'
 /** The open project windows a signed-in browser may join (the web project picker, picker.tsx). */
 export const PROJECTS_PATH = '/api/projects'
 
@@ -62,6 +68,23 @@ export function webPageUrl(src: string, paths: WebPagePaths | undefined): string
   if (overlay && OVERLAY_HOST.test(overlay[1] ?? '') && paths.overlays !== '') return `${paths.overlays}${overlay[1]}/`
   return undefined
 }
+
+/** The CONFIRM_ASK_PATH answer: the code the page shows, the ticket it polls with, when the ask lapses. */
+export interface WebConfirmTicket {
+  code: string
+  ticket: string
+  expiresAt: number
+}
+
+/**
+ * The CONFIRM_POLL_PATH answer. `gone`: no ask holds this ticket any more (it lapsed, the mode
+ * changed, another ask replaced a denied one). `allowed` comes with the device cookie.
+ */
+export type WebConfirmPoll =
+  | { state: 'pending'; code: string; expiresAt: number }
+  | { state: 'allowed'; device: { id: string; name: string } }
+  | { state: 'denied' }
+  | { state: 'gone' }
 
 /** The SESSION_PATH answer: the auth mode, and this browser's device (null: not signed in). */
 export interface WebSessionReply {

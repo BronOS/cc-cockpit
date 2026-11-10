@@ -13,6 +13,8 @@ import { AccessLog, FAILED_SIGN_IN_WINDOW_MS } from '../../src/main/web/access-l
 import {
   ADD_DEVICE_TTL_MS,
   AttemptLimiter,
+  CONFIRM_MAX_WRONG,
+  CONFIRM_TTL_MS,
   cookieValues,
   DEVICE_COOKIE,
   deviceCookie,
@@ -21,9 +23,13 @@ import {
   WebAuth
 } from '../../src/main/web/auth'
 import { DeviceStore, MAX_DEVICES } from '../../src/main/web/devices'
+import { nodeScrypt, parsePasswordHash, PasswordHasher, SCRYPT_DEFAULTS, type ScryptFn } from '../../src/main/web/password'
 import { WebGateway, type SocketHandler, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
 import { writeFakeShellDir } from '../fakes/fake-shell-dir'
+import { createElement, type FunctionComponent } from 'react'
+import type { WebConfirmAsk } from '../../src/shared/web-access'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 const ORIGIN = 'http://127.0.0.1:7330'
 
@@ -45,14 +51,21 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-function auth(over: { secrets?: SecretStore; limiter?: AttemptLimiter } = {}): WebAuth {
+/** scrypt at N=2^10: the same code path at a fraction of the cost (the real cost has its own test). */
+function cheapHasher(over: { scrypt?: ScryptFn; maxConcurrent?: number } = {}): PasswordHasher {
+  return new PasswordHasher({ params: { N: 1024, r: 8, p: 1 }, ...over })
+}
+
+function auth(over: { secrets?: SecretStore; limiter?: AttemptLimiter; hasher?: PasswordHasher; notify?: (text: string) => void } = {}): WebAuth {
   const a = new WebAuth({
     devices,
     secrets: over.secrets ?? fakeSecretStore(),
     accessLog,
+    hasher: over.hasher ?? cheapHasher(),
     now: () => clock,
     log: () => undefined,
-    ...(over.limiter ? { limiter: over.limiter } : {})
+    ...(over.limiter ? { limiter: over.limiter } : {}),
+    ...(over.notify ? { notify: over.notify } : {})
   })
   a.setMode('link')
   return a
@@ -635,5 +648,356 @@ describe('the access log', () => {
     log.flush()
     expect(lines().slice(4).map((l) => l['count'])).toEqual([undefined, 1, undefined])
     expect(log.recent().map((e) => e.count ?? 1).reduce((x, y) => x + y, 0)).toBe(1 + 500 + 1 + 3)
+  })
+})
+
+// --- plan Task 27: password and desktop confirm ---------------------------------------------------
+
+/** A scrypt that waits for `release` (one per call, the newest first), counting how many run at once. */
+function gatedScrypt(): { scrypt: ScryptFn; calls: number; peak: number; release(): void } {
+  const waiting: Array<() => void> = []
+  const state = {
+    calls: 0,
+    peak: 0,
+    running: 0,
+    release: () => waiting.pop()?.(),
+    scrypt: (async (password, salt, keylen, options) => {
+      state.calls++
+      state.running++
+      state.peak = Math.max(state.peak, state.running)
+      await new Promise<void>((resolve) => waiting.push(resolve))
+      state.running--
+      return nodeScrypt(password, salt, keylen, options)
+    }) as ScryptFn
+  }
+  return state
+}
+
+async function until(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 2))
+  expect(check()).toBe(true)
+}
+
+describe('PasswordHasher (scrypt)', () => {
+  it('hashes with a fresh salt and checks in constant time; a wrong password is false', async () => {
+    const h = cheapHasher()
+    const a = await h.hash('correct horse')
+    const b = await h.hash('correct horse')
+    expect(a).not.toBe(b)
+    expect(a.startsWith('scrypt$1024$8$1$')).toBe(true)
+    expect(await h.verify('correct horse', a)).toBe(true)
+    expect(await h.verify('correct horsE', a)).toBe(false)
+    // NFC: the same password typed with a combining accent matches.
+    expect(await h.verify('café latte!', await h.hash('café latte!'))).toBe(true)
+  })
+
+  it('a damaged or missing hash is false after a full hash all the same (no timing tell)', async () => {
+    let calls = 0
+    const h = cheapHasher({ scrypt: (...args) => (calls++, nodeScrypt(...args)) })
+    expect(await h.verify('x', undefined)).toBe(false)
+    expect(await h.verify('x', 'scrypt$1024$8$1$AAAA')).toBe(false)
+    expect(calls).toBe(2)
+    // A hand-edited hash cannot ask for gigabytes.
+    expect(parsePasswordHash(`scrypt$${2 ** 22}$8$1$${'A'.repeat(22)}$${'A'.repeat(43)}`)).toBeUndefined()
+    expect(parsePasswordHash(`scrypt$1000$8$1$${'A'.repeat(22)}$${'A'.repeat(43)}`)).toBeUndefined()
+    expect(parsePasswordHash(`scrypt$1024$8$1$${'A'.repeat(22)}$${'A'.repeat(43)}`)).toBeDefined()
+  })
+
+  it('runs off the main thread: the event loop keeps turning while the real-cost hash computes', async () => {
+    expect(SCRYPT_DEFAULTS.N).toBeGreaterThanOrEqual(2 ** 15)
+    let ticks = 0
+    let done = false
+    const tick = (): void => {
+      if (done) return
+      ticks++
+      setImmediate(tick)
+    }
+    setImmediate(tick)
+    const hash = await new PasswordHasher().hash('correct horse')
+    done = true
+    // A synchronous scrypt would block the loop for the whole hash: no tick could run before it ended.
+    expect(ticks).toBeGreaterThan(0)
+    expect(hash.startsWith(`scrypt$${SCRYPT_DEFAULTS.N}$`)).toBe(true)
+  })
+
+  it('computes at most a few at a time; the rest wait their turn', async () => {
+    const gate = gatedScrypt()
+    const h = cheapHasher({ scrypt: gate.scrypt, maxConcurrent: 2 })
+    const all = Promise.all(Array.from({ length: 5 }, () => h.verify('x', undefined)))
+    await until(() => gate.calls === 2)
+    expect(h.active).toBe(2)
+    for (let i = 0; i < 5; i++) {
+      await until(() => gate.calls > i)
+      gate.release()
+    }
+    expect(await all).toEqual([false, false, false, false, false])
+    expect(gate.peak).toBe(2)
+    expect(h.active).toBe(0)
+  })
+})
+
+describe('password sign-in', () => {
+  function passwordAuth(over: Parameters<typeof auth>[0] = {}): WebAuth {
+    const a = auth(over)
+    a.setMode('password')
+    return a
+  }
+
+  it('stores only the keychain ciphertext of the scrypt hash, and signs a device in with the password', async () => {
+    const a = passwordAuth()
+    expect(a.hasPassword()).toBe(false)
+    expect(await a.setPassword('correct horse')).toEqual({ ok: true })
+    expect(a.hasPassword()).toBe(true)
+    devices.flush()
+    const file = readFileSync(join(dir, 'web-access.json'), 'utf8')
+    expect(file).not.toContain('correct horse')
+    expect(file).not.toContain('scrypt$')
+    const res = await a.signInWithPassword({ password: 'correct horse', name: 'Phone' })
+    expect(res).toMatchObject({ ok: true, device: { name: 'Phone', mode: 'password' } })
+    expect(res.ok && a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)?.name).toBe('Phone')
+    expect(accessLog.recent().map((e) => [e.event, e.detail])).toContainEqual(['password', 'set'])
+  })
+
+  it('a wrong password, no password, a malformed body, or another mode is refused', async () => {
+    const a = passwordAuth()
+    expect(await a.signInWithPassword({ password: 'anything' })).toMatchObject({ ok: false, status: 401, error: 'no password is set on the desktop' })
+    await a.setPassword('correct horse')
+    expect(await a.signInWithPassword({ password: 'wrong horse' })).toMatchObject({ ok: false, status: 401, error: 'wrong password' })
+    expect(await a.signInWithPassword({})).toMatchObject({ ok: false, status: 400 })
+    expect(await a.signInWithPassword({ password: 'x'.repeat(2000) })).toMatchObject({ ok: false, status: 400 })
+    expect(await a.signInWithPassword('nope')).toMatchObject({ ok: false, status: 400 })
+    a.setMode('link')
+    expect(await a.signInWithPassword({ password: 'correct horse' })).toMatchObject({ ok: false, status: 409 })
+    expect(devices.list()).toEqual([])
+    expect(accessLog.recent().some((e) => e.event === 'sign-in-failed' && e.detail === 'password')).toBe(true)
+  })
+
+  it('refuses a short password, and without a keychain stores none', async () => {
+    expect(await passwordAuth().setPassword('short')).toEqual({ ok: false, reason: expect.stringMatching(/at least 8/) })
+    const a = passwordAuth({ secrets: unavailable })
+    expect(await a.setPassword('correct horse')).toEqual({ ok: false, reason: expect.stringMatching(/cannot store the password: no keyring/) })
+    expect(a.hasPassword()).toBe(false)
+  })
+
+  it('changing it signs out the devices of the old one (not the others), and the old one stops working', async () => {
+    const a = passwordAuth()
+    await a.setPassword('correct horse')
+    const viaLink = devices.add('Laptop', 'link')
+    expect((await a.signInWithPassword({ password: 'correct horse', name: 'Phone' })).ok).toBe(true)
+    expect(await a.setPassword('battery staple')).toEqual({ ok: true })
+    expect(devices.list().map((d) => d.id)).toEqual([viaLink?.device.id])
+    expect(await a.signInWithPassword({ password: 'correct horse' })).toMatchObject({ ok: false, status: 401 })
+    expect((await a.signInWithPassword({ password: 'battery staple' })).ok).toBe(true)
+  })
+
+  it('an attempt that was hashing while the password changed does not sign in', async () => {
+    const gate = gatedScrypt()
+    const a = passwordAuth({ hasher: cheapHasher({ scrypt: gate.scrypt, maxConcurrent: 4 }) })
+    const set = a.setPassword('correct horse')
+    await until(() => gate.calls === 1)
+    gate.release()
+    await set
+    const attempt = a.signInWithPassword({ password: 'correct horse' })
+    await until(() => gate.calls === 2)
+    const change = a.setPassword('battery staple')
+    await until(() => gate.calls === 3)
+    gate.release() // the new password's hash (the newest)
+    await change
+    gate.release() // then the attempt's
+    expect(await attempt).toMatchObject({ ok: false, status: 401 })
+  })
+
+  it('a burst of guesses is slowed by the shared bucket, never locked out', async () => {
+    const slept: number[] = []
+    const limiter = new AttemptLimiter({ capacity: 2, refillMs: 60_000, delayMs: 1000, sleep: async (ms) => void slept.push(ms) })
+    const a = passwordAuth({ limiter })
+    await a.setPassword('correct horse')
+    const guesses = await Promise.all(Array.from({ length: 5 }, (_, i) => a.signInWithPassword({ password: `guess ${i}!!` })))
+    expect(guesses.every((g) => !g.ok && g.status === 401)).toBe(true)
+    expect(slept).toEqual([1000, 1000, 1000])
+    // The person's own attempt still gets in, after its turn.
+    expect((await a.signInWithPassword({ password: 'correct horse' })).ok).toBe(true)
+    expect(slept).toHaveLength(4)
+  })
+})
+
+describe('desktop confirm', () => {
+  function confirmAuth(over: Parameters<typeof auth>[0] = {}): WebAuth {
+    const a = auth(over)
+    a.setMode('confirm')
+    return a
+  }
+
+  async function ask(a: WebAuth, name: unknown = 'Phone'): Promise<{ code: string; ticket: string; id: string }> {
+    const r = await a.requestConfirm({ name })
+    if (!r.ok) throw new Error(r.error)
+    const shown = a.confirmAsk()
+    if (!shown) throw new Error('no ask shown')
+    return { code: r.code, ticket: r.ticket, id: shown.id }
+  }
+
+  it('the right code allows it: the browser collects a cookie with its ticket, once', async () => {
+    const notified: string[] = []
+    const a = confirmAuth({ notify: (t) => notified.push(t) })
+    let changes = 0
+    a.onChanged(() => changes++)
+    const r = await ask(a, 'Pixel <b>9</b>')
+    expect(r.code).toHaveLength(6)
+    expect(notified).toHaveLength(1)
+    // The desktop sees the requester's own name and never the code.
+    const shown = a.confirmAsk()
+    expect(shown).toMatchObject({ name: 'Pixel <b>9</b>' })
+    expect(JSON.stringify(shown)).not.toContain(r.code)
+    expect(a.pollConfirm({ ticket: r.ticket })).toMatchObject({ ok: true, poll: { state: 'pending', code: r.code } })
+    // Spaces as the browser shows it (`123 456`) are fine.
+    expect(a.answerConfirm(r.id, true, `${r.code.slice(0, 3)} ${r.code.slice(3)}`)).toEqual({ ok: true })
+    expect(a.confirmAsk()).toBeUndefined()
+    // Someone else's ticket learns nothing.
+    expect(a.pollConfirm({ ticket: 'x'.repeat(43) })).toEqual({ ok: true, poll: { state: 'gone' } })
+    const collected = a.pollConfirm({ ticket: r.ticket })
+    expect(collected).toMatchObject({ ok: true, poll: { state: 'allowed', device: { name: 'Pixel <b>9</b>' } } })
+    expect(collected.ok && collected.cookie && a.authorize(`${DEVICE_COOKIE}=${collected.cookie}`)?.mode).toBe('confirm')
+    expect(a.pollConfirm({ ticket: r.ticket })).toEqual({ ok: true, poll: { state: 'gone' } })
+    expect(changes).toBeGreaterThanOrEqual(2)
+    // The log has the ask and the answer, never the code or the ticket.
+    const log = readFileSync(join(dir, 'logs', 'web-access.log'), 'utf8')
+    expect(log).toContain('"event":"confirm"')
+    expect(log).not.toContain(r.code)
+    expect(log).not.toContain(r.ticket)
+  })
+
+  it('a wrong code leaves it waiting; a few wrong codes deny it, and the browser is told', async () => {
+    const a = confirmAuth()
+    const r = await ask(a)
+    const wrong = r.code === '000000' ? '111111' : '000000'
+    for (let i = 1; i < CONFIRM_MAX_WRONG; i++) {
+      expect(a.answerConfirm(r.id, true, wrong)).toEqual({ ok: false, reason: 'That is not the code the browser shows.' })
+      expect(a.confirmAsk()?.id).toBe(r.id)
+    }
+    expect(a.answerConfirm(r.id, true, undefined)).toEqual({ ok: false, reason: expect.stringMatching(/was denied/) })
+    expect(a.confirmAsk()).toBeUndefined()
+    // Too late for the right one now.
+    expect(a.answerConfirm(r.id, true, r.code)).toEqual({ ok: false, reason: 'This request is no longer waiting.' })
+    expect(a.pollConfirm({ ticket: r.ticket })).toEqual({ ok: true, poll: { state: 'denied' } })
+    expect(devices.list()).toEqual([])
+  })
+
+  it('Deny, and allow without a strict `true`, never let it in', async () => {
+    const a = confirmAuth()
+    const r = await ask(a)
+    expect(a.answerConfirm(r.id, 'yes', r.code)).toEqual({ ok: true })
+    expect(a.pollConfirm({ ticket: r.ticket })).toEqual({ ok: true, poll: { state: 'denied' } })
+    expect(a.answerConfirm(r.id, false, r.code)).toEqual({ ok: false, reason: 'This request is no longer waiting.' })
+  })
+
+  it('one request at a time: a second is refused while one waits, and can ask once it is answered', async () => {
+    const a = confirmAuth()
+    const first = await ask(a)
+    expect(await a.requestConfirm({ name: 'Attacker' })).toMatchObject({ ok: false, status: 409 })
+    expect(a.confirmAsk()?.name).toBe('Phone')
+    a.answerConfirm(first.id, false, undefined)
+    const second = await ask(a, 'Laptop')
+    expect(second.id).not.toBe(first.id)
+    // The first browser's request is gone (its denial replaced by the next ask).
+    expect(a.pollConfirm({ ticket: first.ticket })).toEqual({ ok: true, poll: { state: 'gone' } })
+  })
+
+  it('lapses after its time; leaving the mode or turning off drops it', async () => {
+    const a = confirmAuth()
+    const r = await ask(a)
+    clock += CONFIRM_TTL_MS
+    expect(a.confirmAsk()).toBeUndefined()
+    expect(a.answerConfirm(r.id, true, r.code)).toEqual({ ok: false, reason: 'This request is no longer waiting.' })
+    expect(a.pollConfirm({ ticket: r.ticket })).toEqual({ ok: true, poll: { state: 'gone' } })
+    const again = await ask(a)
+    a.dropPending()
+    expect(a.pollConfirm({ ticket: again.ticket })).toEqual({ ok: true, poll: { state: 'gone' } })
+    const third = await ask(a)
+    a.setMode('link')
+    expect(a.confirmAsk()).toBeUndefined()
+    expect(a.answerConfirm(third.id, true, third.code)).toMatchObject({ ok: false })
+    expect(await a.requestConfirm({ name: 'x' })).toMatchObject({ ok: false, status: 409 })
+  })
+
+  it('asks are rate limited by the shared bucket and never give their token back', async () => {
+    const slept: number[] = []
+    const limiter = new AttemptLimiter({ capacity: 1, refillMs: 60_000, delayMs: 1000, sleep: async (ms) => void slept.push(ms) })
+    const a = confirmAuth({ limiter })
+    const first = await ask(a)
+    expect(slept).toEqual([])
+    a.answerConfirm(first.id, false, undefined)
+    // Answered, but the ask's token stays spent: the next ask waits its turn.
+    await ask(a)
+    expect(slept).toEqual([1000])
+  })
+})
+
+describe('the desktop-confirm card', () => {
+  it('has no form, no default button and no autofocus, so no key alone answers it; the name is plain text', async () => {
+    // A .tsx module, loaded by a path the node typecheck does not follow (it has no JSX or DOM
+    // lib); vitest transforms it like any other.
+    const file = '../../src/renderer/status/WebConfirmCard.tsx'
+    const { WebConfirmPanel } = (await import(file)) as { WebConfirmPanel: FunctionComponent<{ ask: WebConfirmAsk }> }
+    const html = renderToStaticMarkup(createElement(WebConfirmPanel, { ask: { id: 'a', name: 'Phone <img src=x>', expiresAt: Date.now() + 60_000 } }))
+    expect(html).not.toContain('<form')
+    expect(html.toLowerCase()).not.toContain('autofocus')
+    const buttons = html.match(/<button[^>]*>/g) ?? []
+    expect(buttons).toHaveLength(2)
+    for (const b of buttons) expect(b).toContain('type="button"')
+    expect(html).toContain('Phone &lt;img src=x&gt;')
+    expect(html).not.toContain('<img')
+    // Allow starts disabled: nothing is typed yet.
+    expect(html).toMatch(/<button type="button" disabled="">Allow<\/button>/)
+  })
+})
+
+describe('gateway: password and desktop-confirm routes', () => {
+  function post(port: number, host: string, origin: string, path: string, body: unknown, cookie?: string): Promise<Answer> {
+    return http(port, {
+      method: 'POST',
+      path,
+      headers: { Host: host, Origin: origin, 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+      body: JSON.stringify(body)
+    })
+  }
+
+  it('the password route gives the device cookie for the right password only', async () => {
+    const { a, port, host, origin } = await served({ mode: 'password' })
+    await a.setPassword('correct horse')
+    expect((await post(port, host, origin, '/auth/password', { password: 'wrong horse' })).status).toBe(401)
+    expect((await post(port, host, 'http://evil.example', '/auth/password', { password: 'correct horse' })).status).toBe(403)
+    const res = await post(port, host, origin, '/auth/password', { password: 'correct horse', name: 'Phone' })
+    expect(res.status).toBe(200)
+    const cookie = cookieFrom(res)
+    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie })).toBe(401) // no socket handler installed
+    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie } })
+    expect(JSON.parse(session.body)).toMatchObject({ mode: 'password', device: { name: 'Phone' } })
+  })
+
+  it('the confirm routes: ask, poll pending, the desktop allows, the poll carries the cookie', async () => {
+    const { a, port, host, origin } = await served({ mode: 'confirm' })
+    const asked = await post(port, host, origin, '/auth/confirm', { name: 'Phone' })
+    expect(asked.status).toBe(200)
+    const { code, ticket } = JSON.parse(asked.body) as { code: string; ticket: string }
+    expect(asked.headers['set-cookie']).toBeUndefined()
+    expect((await post(port, host, origin, '/auth/confirm', { name: 'Other' })).status).toBe(409)
+    const pending = await post(port, host, origin, '/auth/confirm/poll', { ticket })
+    expect(JSON.parse(pending.body)).toMatchObject({ state: 'pending', code })
+    // A foreign page cannot poll (and so cannot collect) even with the ticket.
+    expect((await post(port, host, 'http://evil.example', '/auth/confirm/poll', { ticket })).status).toBe(403)
+    expect(a.answerConfirm(a.confirmAsk()?.id, true, code)).toEqual({ ok: true })
+    const allowed = await post(port, host, origin, '/auth/confirm/poll', { ticket })
+    expect(JSON.parse(allowed.body)).toMatchObject({ state: 'allowed', device: { name: 'Phone' } })
+    const cookie = cookieFrom(allowed)
+    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie } })
+    expect(JSON.parse(session.body)).toMatchObject({ mode: 'confirm', device: { name: 'Phone' } })
+  })
+
+  it('turning web access off drops a waiting request', async () => {
+    const { a, gw, port, host, origin } = await served({ mode: 'confirm' })
+    expect((await post(port, host, origin, '/auth/confirm', {})).status).toBe(200)
+    expect(a.confirmAsk()).toBeDefined()
+    await gw.apply(webAccessOf({ enabled: false, mode: 'confirm' }))
+    expect(a.confirmAsk()).toBeUndefined()
   })
 })
