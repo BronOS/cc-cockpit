@@ -302,7 +302,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The close itself, with no question: what a confirmed or unguarded close ends in. `done` is a
   // plugin's close waiting for the outcome.
   // A plugin's close that fails is told so (declined: with several views of the window, another
-  // view closing the tab first is the usual reason) and shows no error: the person did not ask.
+  // view closing the tab first is the usual reason) and shows the error too, as the confirm path does.
   const close = (tabId: string, done?: CloseDone): void =>
     run(
       window.cockpit.invoke('tabs.close', { tabId }).then(
@@ -315,6 +315,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           if (!done) throw err
           console.warn('a plugin close failed', err)
           done(false, true)
+          setError(ipcErrorMessage(err))
         }
       )
     )
@@ -411,7 +412,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         }
         const now = stateRef.current.tabs.find((t) => t.id === tabId)
         if (!now) {
-          done?.(false)
+          // Declined, not answered: with several views another one may be about to confirm.
+          done?.(false, true)
           return
         }
         const question = closeQuestion(now, ownRef.current.get(tabId)?.status, enabled)

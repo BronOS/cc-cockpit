@@ -345,6 +345,9 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     rejectAll()
     ports?.closeAll()
     ports = undefined
+    // Asks held for a late subscriber: the next `ready` carries the live set again, and until then
+    // a remount would be shown a dialog main may already have settled.
+    closeAsks = new Map()
     epoch += 1
     if (readyAt !== undefined && timers.now() - readyAt >= stableMs) attempt = 0
     readyAt = undefined
