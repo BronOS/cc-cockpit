@@ -5,7 +5,7 @@
 // its own files, so it is a copy): measure an element laid out at its own `max-content` width, never
 // the frame, which would only echo its width back; an empty one is 0. Split out of the page with the
 // observer and the slot passed in, so node:test runs it with fakes. A classic
-// <script src="/dist/lib/meter-width.js"> sets the global `ccMeterWidth`.
+// <script src="../dist/lib/meter-width.js"> sets the global `ccMeterWidth`.
 ;(function (root, factory) {
   const api = factory()
   if (typeof module === 'object' && module.exports) module.exports = api

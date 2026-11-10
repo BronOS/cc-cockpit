@@ -469,6 +469,8 @@ export async function runCommand(
     }
     const text = formatResult(command, trip.reply.result)
     if (text !== '') out.stdout(text)
+    const warnings = resultWarnings(command, trip.reply.result)
+    if (warnings !== '') out.stderr(warnings)
     return 0
   } finally {
     socket.destroy()
@@ -696,13 +698,23 @@ export async function pluginHelp(env: Env): Promise<string> {
   }
 }
 
+/**
+ * Warnings a successful command prints on stderr, like the CLI's other warnings, so a caller that
+ * parses the stdout line (`linked ...`) gets only that (review finding). Only `plugin link` has any:
+ * root-absolute URLs in the linked folder.
+ */
+function resultWarnings(command: UserCommand, result: unknown): string {
+  if (command.kind !== 'plugin-link') return ''
+  const warnings = ((result ?? {}) as { warnings?: unknown }).warnings
+  return Array.isArray(warnings) ? warnings.map((w) => `ccc: warning: ${plainLine(w)}\n`).join('') : ''
+}
+
 /** What a command prints on success. Only `overlay` and `sessions` have a result worth showing. */
 function formatResult(command: UserCommand, result: unknown): string {
   if (command.kind === 'overlay') return `${JSON.stringify(result)}\n`
   if (command.kind === 'plugin-link') {
-    const r = (result ?? {}) as { id?: unknown; name?: unknown; warnings?: unknown }
-    const warnings = Array.isArray(r.warnings) ? r.warnings.map((w) => `warning: ${plainLine(w)}\n`).join('') : ''
-    return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n${warnings}`
+    const r = (result ?? {}) as { id?: unknown; name?: unknown }
+    return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
   }
   if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
   if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`

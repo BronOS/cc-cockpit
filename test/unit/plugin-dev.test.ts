@@ -121,7 +121,7 @@ describe('plugin dev handlers', () => {
         const o = options({ inspectLink: vi.fn(async () => ({ ...INFO, dir })) })
         const result = (await pluginLinkHandler(o, new LinkRequestGate())({ path: '/some/todo' }, tab, undefined)) as { warnings?: string[] }
         expect(result.warnings).toHaveLength(1)
-        expect(result.warnings?.[0]).toMatch(/^panels\/a\.html: root-absolute URL "\/dist\/x\.js" \(src\)/)
+        expect(result.warnings?.[0]).toMatch(/^"panels\/a\.html": root-absolute URL "\/dist\/x\.js" \(src\)/)
         writeFileSync(join(dir, 'panels/a.html'), '<script src="../dist/x.js"></script>')
         expect(await pluginLinkHandler(o, new LinkRequestGate())({ path: '/some/todo' }, tab, undefined)).toEqual({ id: 'acme.todo', name: 'Todo' })
       } finally {
@@ -322,7 +322,9 @@ describe('the client against a fake app', () => {
     answer = () => ({ ok: true, result: { id: 'acme.todo', name: 'Todo', warnings: ['panels/a.html: root-absolute URL "/x.js" (src)'] } })
     const w = io()
     expect(await run(['plugin', 'link', 'plugins/todo'], env(), Readable.from([]), w.io, '/work')).toBe(0)
-    expect(w.o).toBe('linked acme.todo (Todo) and enabled it in this project\nwarning: panels/a.html: root-absolute URL "/x.js" (src)\n')
+    // Warnings on stderr, like the CLI's others: stdout keeps only the line a caller parses.
+    expect(w.o).toBe('linked acme.todo (Todo) and enabled it in this project\n')
+    expect(w.e).toBe('ccc: warning: panels/a.html: root-absolute URL "/x.js" (src)\n')
 
     answer = () => ({ ok: false, error: 'declined: the plugin was not linked' })
     const d = io()

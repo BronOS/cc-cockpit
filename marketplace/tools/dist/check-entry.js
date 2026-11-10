@@ -306,11 +306,12 @@ var import_node_fs = require("node:fs");
 var import_node_path = __toESM(require("node:path"));
 var SLASH = String.raw`(?:\/|&#0*47;?|&#x0*2f;?|&sol;)`;
 var NOT_SECOND = String.raw`(?![\/\\]|&#0*47;?|&#x0*2f;?|&sol;|&bsol;|&#0*92;?)`;
+var ATTR_START = String.raw`(?<=[\s/"'])`;
 var ATTR_RE = new RegExp(
-  String.raw`\b(src|href|poster|action|formaction|data|manifest|ping|data-src)\s*=\s*(?:"\s*|'\s*|(?=[^\s"'>]))(${SLASH})${NOT_SECOND}([^"'\s>]*)`,
+  String.raw`${ATTR_START}(src|href|poster|action|formaction|data|manifest|ping|data-src)\s*=\s*(?:"\s*|'\s*|(?=[^\s"'>]))(${SLASH})${NOT_SECOND}([^"'\s>]*)`,
   "gi"
 );
-var SRCSET_RE = /\b(?:srcset|imagesrcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+var SRCSET_RE = new RegExp(String.raw`${ATTR_START}(?:srcset|imagesrcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`, "gi");
 var SRCSET_ROOT_RE = new RegExp(String.raw`(?:^|,)\s*(${SLASH})${NOT_SECOND}(\S*)`, "gi");
 var CSS_URL_RE = /\burl\(\s*["']?(\/(?![/\\])[^"')\s]*)/gi;
 var CSS_IMPORT_RE = /@import\s+["'](\/(?![/\\])[^"']*)/gi;
@@ -321,7 +322,32 @@ var JS_STRING_RE = new RegExp(
 );
 var MAX_PER_FILE = 5;
 function first(value) {
-  return value.length > 60 ? `${value.slice(0, 57)}...` : value;
+  const plain = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  return plain.length > 60 ? `${plain.slice(0, 57)}...` : plain;
+}
+var SCRIPT_OPEN_RE = /<script/gi;
+var SCRIPT_CLOSE_RE = /<\/script/gi;
+function inlineScripts(text) {
+  const parts = [];
+  let from = 0;
+  for (; ; ) {
+    SCRIPT_OPEN_RE.lastIndex = from;
+    const open = SCRIPT_OPEN_RE.exec(text);
+    if (open === null) break;
+    const after = open.index + open[0].length;
+    if (after < text.length && /\w/.test(text[after] ?? "")) {
+      from = after;
+      continue;
+    }
+    const gt = text.indexOf(">", after);
+    if (gt < 0) break;
+    SCRIPT_CLOSE_RE.lastIndex = gt + 1;
+    const close = SCRIPT_CLOSE_RE.exec(text);
+    if (close === null) break;
+    parts.push(text.slice(gt + 1, close.index));
+    from = close.index + close[0].length;
+  }
+  return parts.join("\n");
 }
 function rootAbsoluteUrls(kind, text) {
   const found = [];
@@ -340,12 +366,14 @@ function rootAbsoluteUrls(kind, text) {
     for (const m of text.matchAll(CSS_URL_RE)) add(m[1] ?? "", "css url()");
     for (const m of text.matchAll(CSS_IMPORT_RE)) add(m[1] ?? "", "css @import");
   }
-  const script = kind === "html" ? [...text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script/gi)].map((m) => m[1] ?? "").join("\n") : kind === "js" ? text : "";
+  const script = kind === "html" ? inlineScripts(text) : kind === "js" ? text : "";
   for (const m of script.matchAll(JS_STRING_RE)) add(m[2] ?? "", "script string");
   return found;
 }
 var MAX_FILES = 2e3;
+var MAX_ENTRIES = 1e4;
 var MAX_FILE_BYTES = 2 * 1024 * 1024;
+var MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 var MAX_WARNINGS = 20;
 var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git"]);
 function kindOf(file) {
@@ -365,7 +393,7 @@ async function mainOf(dir) {
     return [];
   }
 }
-async function walk(root, dir, out) {
+async function walk(root, dir, out, seen) {
   let entries;
   try {
     entries = await import_node_fs.promises.readdir(dir, { withFileTypes: true });
@@ -373,35 +401,43 @@ async function walk(root, dir, out) {
     return;
   }
   for (const e of entries) {
-    if (out.length >= MAX_FILES) return;
+    if (out.length >= MAX_FILES || seen.entries >= MAX_ENTRIES) return;
+    seen.entries += 1;
     if (e.isDirectory()) {
-      if (!SKIP_DIRS.has(e.name)) await walk(root, import_node_path.default.join(dir, e.name), out);
+      if (!SKIP_DIRS.has(e.name)) await walk(root, import_node_path.default.join(dir, e.name), out, seen);
     } else if (e.isFile()) out.push(import_node_path.default.relative(root, import_node_path.default.join(dir, e.name)).split(import_node_path.default.sep).join("/"));
   }
 }
 async function rootAbsoluteUrlWarnings(dir) {
   const skip = await mainOf(dir);
   const files = [];
-  await walk(dir, dir, files);
-  const pageDirs = files.filter((f) => kindOf(f) === "html").map((f) => import_node_path.default.posix.dirname(f));
+  await walk(dir, dir, files, { entries: 0 });
+  const pageDirs = new Set(files.filter((f) => kindOf(f) === "html").map((f) => import_node_path.default.posix.dirname(f)));
+  const underPage = (folder) => {
+    if (pageDirs.has(folder)) return true;
+    for (let d = import_node_path.default.posix.dirname(folder); d !== "."; d = import_node_path.default.posix.dirname(d)) if (pageDirs.has(d)) return true;
+    return false;
+  };
   const warnings = [];
+  let total = 0;
   for (const file of files) {
     const kind = kindOf(file);
     if (kind === void 0 || skip.includes(file)) continue;
-    const folder = import_node_path.default.posix.dirname(file);
-    if (kind !== "html" && !pageDirs.some((d) => d === "." || folder === d || folder.startsWith(`${d}/`))) continue;
+    if (kind !== "html" && !underPage(import_node_path.default.posix.dirname(file))) continue;
     let text;
     try {
       const full = import_node_path.default.join(dir, file);
       const st = await import_node_fs.promises.lstat(full);
       if (!st.isFile() || st.size > MAX_FILE_BYTES) continue;
+      if (total + st.size > MAX_TOTAL_BYTES) break;
+      total += st.size;
       text = await import_node_fs.promises.readFile(full, "latin1");
     } catch {
       continue;
     }
     const urls = rootAbsoluteUrls(kind, text);
     if (urls.length > 0) {
-      warnings.push(`${file}: root-absolute URL ${urls.join(", ")}; use a URL relative to the page (../dist/x.js), it breaks over web access`);
+      warnings.push(`${JSON.stringify(file)}: root-absolute URL ${urls.join(", ")}; use a URL relative to the page (../dist/x.js), it breaks over web access`);
     }
     if (warnings.length >= MAX_WARNINGS) break;
   }
@@ -549,6 +585,9 @@ var MAX_QUOTED = 200;
 function quoted(value) {
   const text = JSON.stringify(value) ?? "undefined";
   return text.length > MAX_QUOTED ? `${text.slice(0, MAX_QUOTED)}\u2026` : text;
+}
+function workflowCommandData(text) {
+  return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 }
 function parseSourceEntry(text, indexUrl) {
   if (text.length > MAX_ENTRY_BYTES) return { ok: false, problem: "the file is too large" };
@@ -841,7 +880,7 @@ async function main(argv, opts = {}) {
       "usage: check-entry --entry <file> | --base <dir> --head <dir> [--preview-required-from <YYYY-MM-DD|none>] | --fetch-previews <dir> --out <dir> [--index-url <url>]"
     );
   }
-  for (const warning of warnings) console.log(`::warning::check-entry: ${warning}`);
+  for (const warning of warnings) console.log(`::warning::check-entry: ${workflowCommandData(warning)}`);
   if (problems.length > 0) throw new ToolError(problems.join("\n"));
   console.log("check-entry: ok");
 }

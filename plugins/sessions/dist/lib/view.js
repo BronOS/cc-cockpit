@@ -1,7 +1,7 @@
 'use strict'
 // The pure part of the Sessions plugin: what a card and the strip show, from the rows ctx.sessions
 // gives. No DOM and no ctx here, so every rule runs under node:test. Shared by the host (require) and
-// both pages (a classic <script src="/dist/lib/view.js">, which sets the global `ccSessionsView`):
+// both pages (a classic <script src="../dist/lib/view.js">, which sets the global `ccSessionsView`):
 // one copy of the order, the labels and the file cap, never a page's own idea of them.
 //
 // Everything here is text from hooks, Claude's terminal title or another window's project: the pages

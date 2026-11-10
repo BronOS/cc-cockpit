@@ -41,6 +41,7 @@ import {
   parseFlags,
   parseSourceEntry,
   quoted,
+  workflowCommandData,
   readRegularFile,
   sameEntryFile
 } from './common'
@@ -366,9 +367,11 @@ export async function main(argv: string[], opts: CheckOptions = {}): Promise<voi
       'usage: check-entry --entry <file> | --base <dir> --head <dir> [--preview-required-from <YYYY-MM-DD|none>] | --fetch-previews <dir> --out <dir> [--index-url <url>]'
     )
   }
-  // A workflow command on purpose, so the warning shows on the PR; the text after it is ours, with
-  // the file name quoted.
-  for (const warning of warnings) console.log(`::warning::check-entry: ${warning}`)
+  // A workflow command on purpose, so the warning shows on the PR. Its text can quote the entry's
+  // repo (a file name, a URL in a page), so it is escaped as the runner expects (`%`, CR and LF, as
+  // @actions/core's escapeData): a raw newline would start a command of its own (`::stop-commands::`,
+  // a forged `::error::`), in check.yml and in auto-merge's trusted re-check (review finding).
+  for (const warning of warnings) console.log(`::warning::check-entry: ${workflowCommandData(warning)}`)
   if (problems.length > 0) throw new ToolError(problems.join('\n'))
   console.log('check-entry: ok')
 }

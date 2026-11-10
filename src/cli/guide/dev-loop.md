@@ -26,7 +26,7 @@ edit; `plugins/hello` shows the setup (`scripts/build-hello.mjs`).
 confirm dialog in this window (name, id and the real folder path): a linked plugin persists and
 runs with full Node access, so **a person must click Allow, a session cannot do it alone**. Tell
 the person to look at the app window. The command waits for the answer (no timeout) and prints
-`linked ...`; Deny exits 1 with `declined`. Limits: one open dialog per window and at most 3 link
+`linked ...` (warnings about root-absolute URLs in pages go to stderr); Deny exits 1 with `declined`. Limits: one open dialog per window and at most 3 link
 requests a minute. A manifest problem, a command name another plugin owns or a plugin id that is
 already installed is refused before any dialog, with the reason. Outside the app's tabs (a
 terminal of your own) add `--project <path>` after `link`.

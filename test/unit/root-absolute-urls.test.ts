@@ -48,6 +48,29 @@ describe('rootAbsoluteUrls', () => {
     expect(rootAbsoluteUrls('html', `<script>import('/dist/x.js')</script><p title="/dist/y.js"></p>`)).toEqual(['"/dist/x.js" (script string)'])
   })
 
+  it('anchors an attribute at its start: data-href and data-srcset are not URLs the page loads', () => {
+    expect(rootAbsoluteUrls('html', `<a data-href="/x" data-srcset="/y.png 1x" title="z"href="/ok"><img/src="/i.png"><b data-src="/d.png">`)).toEqual([
+      '"/ok" (href)',
+      '"/i.png" (src)',
+      '"/d.png" (data-src)'
+    ])
+  })
+
+  it('drops control characters from a reported URL (it reaches a workflow command)', () => {
+    const found = rootAbsoluteUrls('js', `const u = '/x.js?\n::stop-commands::abc\r\n'`)
+    expect(found).toEqual(['"/x.js?::stop-commands::abc" (script string)'])
+  })
+
+  it('finds inline scripts in linear time, with many openings and no closer', () => {
+    // The old regex took about a minute on 2 MB of `<script>` (review finding).
+    const started = Date.now()
+    expect(rootAbsoluteUrls('html', '<script>'.repeat(256 * 1024))).toEqual([])
+    expect(rootAbsoluteUrls('html', '<script '.repeat(256 * 1024))).toEqual([])
+    expect(rootAbsoluteUrls('html', '<scripts>'.repeat(64 * 1024) + '<script>"/a.js"</script>')).toEqual(['"/a.js" (script string)'])
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(rootAbsoluteUrls('html', `<SCRIPT type="module">import '/m.js'</Script><script>'/n.js'`)).toEqual(['"/m.js" (script string)'])
+  })
+
   it('reports at most five per file', () => {
     expect(rootAbsoluteUrls('html', Array.from({ length: 9 }, (_, i) => `<img src="/i${i}.png">`).join(''))).toHaveLength(5)
   })
@@ -77,8 +100,8 @@ describe('rootAbsoluteUrlWarnings', () => {
     })
     const warnings = await rootAbsoluteUrlWarnings(dir)
     expect(warnings).toHaveLength(2)
-    expect(warnings[0]).toMatch(/^panels\/a\.html: root-absolute URL "\/dist\/x\.js" \(src\)/)
-    expect(warnings[1]).toMatch(/^panels\/a\.js: .*"\/dist\/y\.js" \(script string\)/)
+    expect(warnings[0]).toMatch(/^"panels\/a\.html": root-absolute URL "\/dist\/x\.js" \(src\)/)
+    expect(warnings[1]).toMatch(/^"panels\/a\.js": .*"\/dist\/y\.js" \(script string\)/)
   })
 
   it('passes relative URLs, skips backend files, node_modules and symlinks', async () => {
@@ -92,6 +115,31 @@ describe('rootAbsoluteUrlWarnings', () => {
     })
     symlinkSync('/etc/hosts', join(dir, 'panels', 'link.js'))
     expect(await rootAbsoluteUrlWarnings(dir)).toEqual([])
+  })
+
+  it('a page at the plugin root counts only the root files, not every folder under it', async () => {
+    const dir = plugin({
+      'plugin.json': '{"main":"dist/host.js"}',
+      'index.html': '<p></p>',
+      'page.js': `load('/dist/y.js')`,
+      'lib/backend.js': `read('/usr/lib/x.json')`,
+      'test/a.test.js': `read('/fixtures/x.json')`
+    })
+    expect(await rootAbsoluteUrlWarnings(dir)).toEqual([expect.stringMatching(/^"page\.js": .*"\/dist\/y\.js"/)])
+  })
+
+  it('quotes the file name as JSON, a newline in it included', async () => {
+    const dir = plugin({ 'panels/a\nb.html': '<img src="/i.png">' })
+    expect(await rootAbsoluteUrlWarnings(dir)).toEqual([expect.stringMatching(/^"panels\/a\\nb\.html": root-absolute URL "\/i\.png" \(src\)/)])
+  })
+
+  it('walks a bounded number of folders, files counted or not', async () => {
+    const dir = plugin({})
+    for (let i = 0; i < 10_050; i++) mkdirSync(join(dir, `d${i}`))
+    writeFileSync(join(dir, 'zz.html'), '<img src="/i.png">')
+    // Stops before it reaches every entry; what it saw it still reports, and it never throws.
+    const warnings = await rootAbsoluteUrlWarnings(dir)
+    expect(warnings.length).toBeLessThanOrEqual(1)
   })
 
   it('never throws on a missing folder', async () => {

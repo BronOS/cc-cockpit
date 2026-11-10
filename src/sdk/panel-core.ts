@@ -1,6 +1,7 @@
 // The panel SDK's logic (design §5 › Panel side: `post`, `onMessage`, `theme`), DOM-free so unit
 // tests run it in plain Node with fakes. src/sdk/panel.ts wires it to the page's window and is
-// what plugins load, as `<script src="/__sdk/panel.js">` (served inside every plugin's origin).
+// what plugins load, as `<script src="../__sdk/panel.js">` (served at every plugin's root, a URL relative
+// to the page).
 //
 // What reaches a panel page, all from its parent (the shell renderer), checked by the bootstrap to
 // come from `window.parent`:

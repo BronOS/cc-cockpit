@@ -1,5 +1,6 @@
-// The panel SDK as plugins load it: `<script src="/__sdk/panel.js"></script>` in a panel page or
-// a plugin's html overlay page, then `window.ccPanel`:
+// The panel SDK as plugins load it: `<script src="../__sdk/panel.js"></script>` (relative to the page,
+// one folder deep; it is served at the plugin's root) in a panel page or a plugin's html overlay page,
+// then `window.ccPanel`:
 //
 //   ccPanel.post(message)                send JSON to the plugin's host (`ctx.panels.onMessage`);
 //                                        in an html overlay, `post({ result: value })` closes the

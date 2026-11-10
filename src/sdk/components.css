@@ -1,7 +1,7 @@
 /* The app's component stylesheet (design-next §1; `ccc guide style` documents every class).
 
    One copy, two readers: the panel SDK adopts this text as the first constructable sheet of every
-   plugin page that loads /__sdk/panel.js (src/sdk/panel.ts, a `?raw` import), and the shell's
+   plugin page that loads ../__sdk/panel.js (src/sdk/panel.ts, a `?raw` import), and the shell's
    styles.css imports it, so a plugin page and a shell form are the same controls.
 
    Every rule is inside `@layer cc`. Unlayered CSS beats any layer whatever its specificity, so a

@@ -22,7 +22,7 @@ import {
   manifestProblems,
   parseRequiredFrom
 } from '../../marketplace/tools/src/check-entry'
-import { MAX_ENTRY_BYTES, listEntryFiles, parseSourceEntry, quoted } from '../../marketplace/tools/src/common'
+import { MAX_ENTRY_BYTES, listEntryFiles, parseSourceEntry, quoted, workflowCommandData } from '../../marketplace/tools/src/common'
 import { createHash } from 'node:crypto'
 import { DEFAULT_MARKETPLACE_URL as SERVICE_URL, parseMarketplaceIndex, previewPath, type MarketplaceEntry } from '../../src/shared/marketplace'
 import { fakePng } from '../fakes/png'
@@ -430,11 +430,16 @@ describe('check-entry', () => {
     expect((await check(entryAt(tag))).join('\n')).toMatch(pattern)
   })
 
+  it('escapes the data of a workflow command, so a quoted newline cannot start a command of its own', () => {
+    expect(workflowCommandData('a\n::stop-commands::x\r\n::error::y 100%')).toBe('a%0A::stop-commands::x%0D%0A::error::y 100%25')
+    expect(workflowCommandData('"panels/a.html": ok')).toBe('"panels/a.html": ok')
+  })
+
   it('warns, never refuses, about a root-absolute URL in a page, and passes relative ones', async () => {
     const opts = { env: GIT_ENV, previewRequiredFrom: null }
     const bad = await inspectEntry(entryAt('root-absolute'), opts)
     expect(bad.problems).toEqual([])
-    expect(bad.warnings.some((w) => /^panels\/a\.html: root-absolute URL "\/dist\/x\.js" \(src\)/.test(w))).toBe(true)
+    expect(bad.warnings.some((w) => /^"panels\/a\.html": root-absolute URL "\/dist\/x\.js" \(src\)/.test(w))).toBe(true)
     const good = await inspectEntry(entryAt('relative-urls'), opts)
     expect(good.warnings.filter((w) => w.includes('root-absolute'))).toEqual([])
   })

@@ -37,6 +37,15 @@ export function quoted(value: unknown): string {
   return text.length > MAX_QUOTED ? `${text.slice(0, MAX_QUOTED)}…` : text
 }
 
+/**
+ * Text for the data part of a workflow command (`::warning::<data>`), escaped as the runner reads it
+ * (@actions/core's escapeData): `%`, CR and LF become `%25`, `%0D`, `%0A`, so the whole text stays one
+ * command whatever it quotes.
+ */
+export function workflowCommandData(text: string): string {
+  return text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+}
+
 export interface SourceEntry {
   /** The validated fields, exactly what goes into `index.json`. */
   entry: MarketplaceEntry

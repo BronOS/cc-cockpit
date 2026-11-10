@@ -14,12 +14,18 @@ import path from 'node:path'
 const SLASH = String.raw`(?:\/|&#0*47;?|&#x0*2f;?|&sol;)`
 /** What may follow that first slash for it to be root-absolute: not `//` (protocol-relative) or `/\`. */
 const NOT_SECOND = String.raw`(?![\/\\]|&#0*47;?|&#x0*2f;?|&sol;|&bsol;|&#0*92;?)`
+/**
+ * Where an attribute name may start: after whitespace, the `/` of `<img/src=...>` or a quote that
+ * ended the previous value. Not `\b`, which also matched the `href` inside `data-href="/x"`, a value
+ * the page never loads (review finding).
+ */
+const ATTR_START = String.raw`(?<=[\s/"'])`
 /** URL attributes. `srcset` and `imagesrcset` hold a list, handled apart. */
 const ATTR_RE = new RegExp(
-  String.raw`\b(src|href|poster|action|formaction|data|manifest|ping|data-src)\s*=\s*(?:"\s*|'\s*|(?=[^\s"'>]))(${SLASH})${NOT_SECOND}([^"'\s>]*)`,
+  String.raw`${ATTR_START}(src|href|poster|action|formaction|data|manifest|ping|data-src)\s*=\s*(?:"\s*|'\s*|(?=[^\s"'>]))(${SLASH})${NOT_SECOND}([^"'\s>]*)`,
   'gi'
 )
-const SRCSET_RE = /\b(?:srcset|imagesrcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+const SRCSET_RE = new RegExp(String.raw`${ATTR_START}(?:srcset|imagesrcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`, 'gi')
 const SRCSET_ROOT_RE = new RegExp(String.raw`(?:^|,)\s*(${SLASH})${NOT_SECOND}(\S*)`, 'gi')
 /** `url(/x)`, `url("/x")` and `@import "/x"` in CSS (also inside an HTML style element or attribute). */
 const CSS_URL_RE = /\burl\(\s*["']?(\/(?![/\\])[^"')\s]*)/gi
@@ -33,8 +39,49 @@ const JS_STRING_RE = new RegExp(
 
 const MAX_PER_FILE = 5
 
+/**
+ * A URL as shown in a warning: control characters dropped, cut to 60. The text comes from a repo
+ * somebody else controls and ends up in a GitHub workflow command (marketplace check-entry), where a
+ * newline starts a command of its own (`::stop-commands::`); JS_STRING_RE's query part can span lines.
+ */
 function first(value: string): string {
-  return value.length > 60 ? `${value.slice(0, 57)}...` : value
+  // eslint-disable-next-line no-control-regex
+  const plain = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+  return plain.length > 60 ? `${plain.slice(0, 57)}...` : plain
+}
+
+const SCRIPT_OPEN_RE = /<script/gi
+const SCRIPT_CLOSE_RE = /<\/script/gi
+
+/**
+ * The text of the inline script elements of a page, joined. A loop over literal searches, each one
+ * starting where the last ended, so it is linear: the regex `<script\b[^>]*>([\s\S]*?)<\/script` it
+ * replaces scanned to the end of the text from every `<script` with no closer (2 MB of `<script>`
+ * took a minute, synchronously in main during `ccc plugin link`; review finding).
+ */
+function inlineScripts(text: string): string {
+  const parts: string[] = []
+  let from = 0
+  for (;;) {
+    SCRIPT_OPEN_RE.lastIndex = from
+    const open = SCRIPT_OPEN_RE.exec(text)
+    if (open === null) break
+    const after = open.index + open[0].length
+    // `\b`: `<scripts>` or `<script-x>` is another element.
+    if (after < text.length && /\w/.test(text[after] ?? '')) {
+      from = after
+      continue
+    }
+    const gt = text.indexOf('>', after)
+    if (gt < 0) break
+    SCRIPT_CLOSE_RE.lastIndex = gt + 1
+    const close = SCRIPT_CLOSE_RE.exec(text)
+    // No closer after this opening means none after any later one either.
+    if (close === null) break
+    parts.push(text.slice(gt + 1, close.index))
+    from = close.index + close[0].length
+  }
+  return parts.join('\n')
 }
 
 /**
@@ -60,13 +107,17 @@ export function rootAbsoluteUrls(kind: 'html' | 'css' | 'js', text: string): str
     for (const m of text.matchAll(CSS_IMPORT_RE)) add(m[1] ?? '', 'css @import')
   }
   // In HTML only the inline script elements: an attribute value in quotes would match too.
-  const script = kind === 'html' ? [...text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script/gi)].map((m) => m[1] ?? '').join('\n') : kind === 'js' ? text : ''
+  const script = kind === 'html' ? inlineScripts(text) : kind === 'js' ? text : ''
   for (const m of script.matchAll(JS_STRING_RE)) add(m[2] ?? '', 'script string')
   return found
 }
 
 const MAX_FILES = 2000
+/** Folders count too: a tree of empty folders would otherwise be walked with no limit (review finding). */
+const MAX_ENTRIES = 10_000
 const MAX_FILE_BYTES = 2 * 1024 * 1024
+/** All files read, together: 2000 files of 2 MB each would be 4 GB read and scanned in main. */
+const MAX_TOTAL_BYTES = 32 * 1024 * 1024
 const MAX_WARNINGS = 20
 const SKIP_DIRS = new Set(['node_modules', '.git'])
 
@@ -90,7 +141,8 @@ async function mainOf(dir: string): Promise<string[]> {
   }
 }
 
-async function walk(root: string, dir: string, out: string[]): Promise<void> {
+/** Files of the folder, plugin-relative with `/`; `seen` counts every entry (file or folder) visited. */
+async function walk(root: string, dir: string, out: string[], seen: { entries: number }): Promise<void> {
   let entries
   try {
     entries = await fs.readdir(dir, { withFileTypes: true })
@@ -98,10 +150,11 @@ async function walk(root: string, dir: string, out: string[]): Promise<void> {
     return
   }
   for (const e of entries) {
-    if (out.length >= MAX_FILES) return
+    if (out.length >= MAX_FILES || seen.entries >= MAX_ENTRIES) return
+    seen.entries += 1
     // Only regular files and folders: a symlink could point out of the plugin (the scan reads, never follows).
     if (e.isDirectory()) {
-      if (!SKIP_DIRS.has(e.name)) await walk(root, path.join(dir, e.name), out)
+      if (!SKIP_DIRS.has(e.name)) await walk(root, path.join(dir, e.name), out, seen)
     } else if (e.isFile()) out.push(path.relative(root, path.join(dir, e.name)).split(path.sep).join('/'))
   }
 }
@@ -109,32 +162,42 @@ async function walk(root: string, dir: string, out: string[]): Promise<void> {
 /**
  * Warnings for a plugin folder: root-absolute URLs in its page files. Pages are the `.html` files; a
  * `.js` or `.css` file counts only when it sits in (or under) a folder that holds a page, so the host
- * bundle (`main`, `lib/` of the backend) and its `/proc/x.json`-like strings are never looked at.
- * The manifest's `main` is left out as well. Never throws.
+ * bundle (`main`, `lib/` of the backend) and its `/proc/x.json`-like strings are never looked at. A
+ * page at the plugin root makes only the root's own files count, not every folder under it (that would
+ * be the whole plugin, backend and tests too). The manifest's `main` is left out as well. Each warning
+ * starts with the file name as a JSON string (a name may hold a newline, and the marketplace check puts
+ * the warning in a workflow command). Never throws.
  */
 export async function rootAbsoluteUrlWarnings(dir: string): Promise<string[]> {
   const skip = await mainOf(dir)
   const files: string[] = []
-  await walk(dir, dir, files)
-  const pageDirs = files.filter((f) => kindOf(f) === 'html').map((f) => path.posix.dirname(f))
+  await walk(dir, dir, files, { entries: 0 })
+  const pageDirs = new Set(files.filter((f) => kindOf(f) === 'html').map((f) => path.posix.dirname(f)))
+  const underPage = (folder: string): boolean => {
+    if (pageDirs.has(folder)) return true
+    for (let d = path.posix.dirname(folder); d !== '.'; d = path.posix.dirname(d)) if (pageDirs.has(d)) return true
+    return false
+  }
   const warnings: string[] = []
+  let total = 0
   for (const file of files) {
     const kind = kindOf(file)
     if (kind === undefined || skip.includes(file)) continue
-    const folder = path.posix.dirname(file)
-    if (kind !== 'html' && !pageDirs.some((d) => d === '.' || folder === d || folder.startsWith(`${d}/`))) continue
+    if (kind !== 'html' && !underPage(path.posix.dirname(file))) continue
     let text: string
     try {
       const full = path.join(dir, file)
       const st = await fs.lstat(full)
       if (!st.isFile() || st.size > MAX_FILE_BYTES) continue
+      if (total + st.size > MAX_TOTAL_BYTES) break
+      total += st.size
       text = await fs.readFile(full, 'latin1')
     } catch {
       continue
     }
     const urls = rootAbsoluteUrls(kind, text)
     if (urls.length > 0) {
-      warnings.push(`${file}: root-absolute URL ${urls.join(', ')}; use a URL relative to the page (../dist/x.js), it breaks over web access`)
+      warnings.push(`${JSON.stringify(file)}: root-absolute URL ${urls.join(', ')}; use a URL relative to the page (../dist/x.js), it breaks over web access`)
     }
     if (warnings.length >= MAX_WARNINGS) break
   }
