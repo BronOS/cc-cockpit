@@ -192,15 +192,33 @@ describe('LayoutService.set before the plugins declared their panels', () => {
   })
 })
 
+describe('LayoutService.set publishing', () => {
+  // Every view of the window must get a view's edit: a stale working copy sends its old placement
+  // back with its next edit (LayoutSync sends the whole layout) and undoes this one.
+  it('publishes the stored view once, the same view it answers with', () => {
+    const { service, stored, published } = setup()
+    const view = service.set(P, movePanel(service.view(P)!.layout, 'base/sessions', 'bottom'))!
+    expect(published).toEqual([view])
+    expect(published[0]!.layout).toEqual(stored.get(P))
+  })
+
+  it('publishes nothing for an unknown project', () => {
+    const { service, published } = setup()
+    service.set('ffffffffffffffff', {})
+    expect(published).toHaveLength(0)
+  })
+})
+
 describe('LayoutService.move', () => {
   it('moves a panel to the end of another zone, stores it and publishes', () => {
     const { service, stored, published } = setup()
     service.setPluginPanels(P, 'jira', [notes])
+    published.length = 0
     const view = service.move(P, 'base/sessions', 'bottom')!
     expect(zoneOf(view.layout, 'base/sessions')).toBe('bottom')
     expect(zoneOf(view.layout, 'jira/notes')).toBe('right')
     expect(stored.get(P)).toEqual(view.layout)
-    expect(published.at(-1)).toEqual(view)
+    expect(published).toEqual([view])
   })
 
   it('does not store or publish when the panel is already in that zone', () => {

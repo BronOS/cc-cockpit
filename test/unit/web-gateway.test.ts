@@ -371,6 +371,41 @@ describe('the web shell (plan Task 8)', () => {
     expect(head.body).toBe('')
   })
 
+  it('streams a large asset whole with its length, HEAD gives the length only, and a client gone mid-download is no error', async () => {
+    const port = await freePort()
+    const dir = mkdtempSync(join(tmpdir(), 'ccc-gw-shell-'))
+    dirs.push(dir)
+    const shell = writeFakeShellDir(join(dir, 'shell'))
+    // Bigger than any stream buffer, like the fonts and the shared chunk (1-2 MB each).
+    const big = 'x'.repeat(3 * 1024 * 1024)
+    writeFileSync(join(shell, 'assets', 'chunk-big.js'), big)
+    const { gw, logs } = make({ shellDir: shell })
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'none' }))
+    const host = `127.0.0.1:${port}`
+    const got = await http(port, { path: '/assets/chunk-big.js', headers: { Host: host } })
+    expect(got.status).toBe(200)
+    expect(got.headers['content-length']).toBe(String(big.length))
+    expect(got.body.length).toBe(big.length)
+    expect(got.body === big).toBe(true)
+    const head = await http(port, { method: 'HEAD', path: '/assets/chunk-big.js', headers: { Host: host } })
+    expect(head.headers['content-length']).toBe(String(big.length))
+    expect(head.body).toBe('')
+    expect((await http(port, { headers: { Host: host } })).headers['content-length']).toBe(String(Buffer.byteLength(FAKE_SHELL_HTML)))
+    // A browser that leaves after the first bytes.
+    await new Promise<void>((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, path: '/assets/chunk-big.js', headers: { Host: host } }, (res) => {
+        res.once('data', () => {
+          req.destroy()
+          resolve()
+        })
+      })
+      req.on('error', (err) => (req.destroyed ? undefined : reject(err)))
+      req.end()
+    })
+    expect((await http(port, { path: '/assets/web-abc123.js', headers: { Host: host } })).body).toBe(FAKE_SHELL_JS)
+    expect(logs.filter((l) => l.includes('serving'))).toEqual([])
+  })
+
   it('serves nothing else from the build folder, whatever the path says', async () => {
     const { port } = await listening()
     const host = `127.0.0.1:${port}`

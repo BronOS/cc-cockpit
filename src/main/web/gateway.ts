@@ -19,11 +19,12 @@
 // nobody speaks the protocol on.
 // Sockets are tracked by device: a revoke closes that device's sockets at once, and leaving None
 // mode closes the anonymous ones. Connects and disconnects go to the access log.
-import { readFile } from 'node:fs/promises'
+import { open, type FileHandle } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { hostname, networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 // Types only: erased at build time, so this file does not load `ws` (see loadWs below).
 import type { WebSocket, WebSocketServer } from 'ws'
 import { PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, type WebProjectEntry, type WebSessionReply } from '../../shared/web-protocol'
@@ -295,6 +296,12 @@ export class WebGateway {
     body: string | Buffer,
     extra: Record<string, string> = {}
   ): void {
+    this.writeHead(res, host, status, type, extra)
+    res.end(body)
+  }
+
+  /** The headers every answer carries (see `send`); a streamed answer writes its body after. */
+  private writeHead(res: ServerResponse, host: string | undefined, status: number, type: string, extra: Record<string, string> = {}): void {
     res.writeHead(status, {
       // Only the hashed assets override it (`IMMUTABLE`); the page, its answers and errors never.
       'Cache-Control': 'no-store',
@@ -305,7 +312,6 @@ export class WebGateway {
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY'
     })
-    res.end(body)
   }
 
   private request(req: IncomingMessage, res: ServerResponse): void {
@@ -343,26 +349,54 @@ export class WebGateway {
     this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
   }
 
-  /** The web shell's page or one of its assets (shell-files.ts); 404 for anything else. */
+  /**
+   * The web shell's page or one of its assets (shell-files.ts); 404 for anything else. Streamed
+   * from an open handle, never read whole: these answers need no sign-in, the fonts and the shared
+   * chunk are megabytes each, and once a network bind is on any client past the Host check could
+   * otherwise make main buffer that much per request. The handle's own stat gives the length, so
+   * what is measured is what is sent, even when a rebuild replaces the file meanwhile.
+   */
   private async shellFile(path: string, head: boolean, res: ServerResponse, host: string): Promise<void> {
     const dir = this.deps.shellDir
     const file = dir === undefined ? undefined : shellFileOf(dir, path)
     const real = file ? await realShellFile(file) : undefined
-    let body: Buffer | undefined
+    let handle: FileHandle | undefined
+    let size: number | undefined
     if (real !== undefined) {
       try {
-        body = await readFile(real)
+        handle = await open(real, 'r')
+        const stat = await handle.stat()
+        // A folder named like an asset opens on some systems: not a file, not found.
+        if (stat.isFile()) size = stat.size
       } catch {
-        // A folder named like an asset, or the file went away in a rebuild: not found.
-        body = undefined
+        // The file went away in a rebuild: not found.
       }
     }
-    if (res.destroyed) return
-    if (!file || body === undefined) {
+    if (res.destroyed || !file || handle === undefined || size === undefined) {
+      await handle?.close().catch(() => undefined)
+      if (res.destroyed) return
       if (path === '/') return this.send(res, host, 503, 'text/plain; charset=utf-8', NOT_BUILT_TEXT)
       return this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
     }
-    this.send(res, host, 200, file.type, head ? '' : body, file.immutable ? { 'Cache-Control': IMMUTABLE } : {})
+    const extra: Record<string, string> = { 'Content-Length': String(size), ...(file.immutable ? { 'Cache-Control': IMMUTABLE } : {}) }
+    if (head) {
+      await handle.close().catch(() => undefined)
+      this.writeHead(res, host, 200, file.type, extra)
+      res.end()
+      return
+    }
+    this.writeHead(res, host, 200, file.type, extra)
+    try {
+      // The read stream closes the handle when it ends or is destroyed; pipeline destroys both
+      // sides when either fails, so a browser gone mid-download leaves nothing open.
+      await pipeline(handle.createReadStream(), res)
+    } catch (err) {
+      // The headers are out, so a failure can only cut the answer short. A client that went
+      // away is not worth a line; a read error is.
+      if ((err as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        this.deps.log(`web access: serving ${path.slice(0, 100)} failed: ${errorText(err)}`)
+      }
+    }
   }
 
   /** The open project windows, plain data only; a failing source is an empty list, never a 500 with its text. */

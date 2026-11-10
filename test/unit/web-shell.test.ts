@@ -47,16 +47,20 @@ describe('shellFileOf', () => {
   })
 })
 
+type SessionAnswer = { status: number; body: unknown } | 'throw'
+
 /** A scripted gateway for the sign-in step; records what the page asked and where the URL went. */
 function env(opts: {
   hash?: string
   search?: string
   link?: { status: number; body: unknown } | 'throw'
-  session?: { status: number; body: unknown } | 'throw'
+  /** The SESSION_PATH answer; a list answers in turn (the last one repeats). */
+  session?: SessionAnswer | SessionAnswer[]
 }): { env: SignInEnv; calls: Array<{ url: string; init?: unknown }>; urls: string[]; order: string[] } {
   const calls: Array<{ url: string; init?: unknown }> = []
   const urls: string[] = []
   const order: string[] = []
+  const sessions = Array.isArray(opts.session) ? [...opts.session] : [opts.session]
   const answer = (a: { status: number; body: unknown } | 'throw' | undefined) => {
     if (a === 'throw' || a === undefined) throw new TypeError('Failed to fetch')
     return { ok: a.status >= 200 && a.status < 300, status: a.status, json: async () => a.body }
@@ -74,7 +78,8 @@ function env(opts: {
       fetch: async (url, init) => {
         calls.push({ url, ...(init ? { init } : {}) })
         order.push(url)
-        return answer(url === SIGN_IN_LINK_PATH ? opts.link : opts.session)
+        if (url === SIGN_IN_LINK_PATH) return answer(opts.link)
+        return answer(sessions.length > 1 ? sessions.shift() : sessions[0])
       },
       userAgent: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36'
     }
@@ -85,14 +90,14 @@ const signedIn = { status: 200, body: { mode: 'link', device: { id: 'd1', name: 
 const signedOut = { status: 200, body: { mode: 'link', device: null } }
 
 describe('the sign-in step', () => {
-  it('reads #t=, clears the URL before posting it once, and is signed in', async () => {
-    const s = env({ hash: '#t=tok_123', search: '?project=abc', link: { status: 200, body: {} }, session: signedIn })
+  it('reads #t=, clears the URL, checks it is signed out, posts the link once, and is signed in', async () => {
+    const s = env({ hash: '#t=tok_123', search: '?project=abc', link: { status: 200, body: {} }, session: [signedOut, signedIn] })
     const state = await signIn(s.env)
     expect(state).toEqual({ state: 'signed-in', device: { id: 'd1', name: 'Chrome on Android' } })
     // The token leaves the address bar (and history) first; the project stays.
     expect(s.urls).toEqual(['/?project=abc'])
-    expect(s.order).toEqual(['replace', SIGN_IN_LINK_PATH, SESSION_PATH])
-    const post = s.calls[0]!
+    expect(s.order).toEqual(['replace', SESSION_PATH, SIGN_IN_LINK_PATH, SESSION_PATH])
+    const post = s.calls[1]!
     expect(post.init).toMatchObject({ method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' })
     expect(JSON.parse((post.init as { body: string }).body)).toEqual({ token: 'tok_123', name: 'Chrome on Android' })
     expect(s.calls.filter((c) => c.url === SIGN_IN_LINK_PATH)).toHaveLength(1)
@@ -124,9 +129,20 @@ describe('the sign-in step', () => {
     })
   })
 
-  it('an old link opened on a browser that is already signed in goes on', async () => {
-    const s = env({ hash: '#t=old', link: { status: 401, body: { error: 'this link does not work any more' } }, session: signedIn })
+  it('a link opened on a browser that is already signed in is cleared and never posted', async () => {
+    // Posting it would add a second device (a "new device" notice, a place under the cap) every
+    // time the QR is scanned again, and use up a one-time "add a device" token for nothing.
+    const s = env({ hash: '#t=again', link: { status: 200, body: {} }, session: signedIn })
     expect((await signIn(s.env)).state).toBe('signed-in')
+    expect(s.urls).toEqual(['/'])
+    expect(s.order).toEqual(['replace', SESSION_PATH])
+  })
+
+  it('a link with the host unreachable is cleared and not posted', async () => {
+    const s = env({ hash: '#t=tok', link: { status: 200, body: {} }, session: 'throw' })
+    expect((await signIn(s.env)).state).toBe('unreachable')
+    expect(s.urls).toEqual(['/'])
+    expect(s.calls.map((c) => c.url)).toEqual([SESSION_PATH])
   })
 
   it('any other fragment is cleared and not posted', async () => {

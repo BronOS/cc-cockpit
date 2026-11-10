@@ -149,8 +149,20 @@ export class LayoutService {
    * `keepGeometry` (a remote view's edit, design-web.md §5.1): zone sizes, collapsed zones and
    * panel sizes stay the stored ones (the desktop's), whatever the layout sent says; the remote
    * view keeps its own in the browser. Only the shared part (placement, order, open, hidden) is taken.
+   *
+   * Published to every view of the window, the sender's included (its LayoutSync ignores a view
+   * while its own edit is unanswered, and the answer is the same view). Without it another view
+   * kept its old working copy and, since LayoutSync sends its whole layout, its next edit (even a
+   * splitter drag) wrote its old placement back and undid this one (design-web.md §5).
    */
   set(projectId: string, raw: unknown, opts: { keepGeometry?: boolean } = {}): LayoutView | undefined {
+    const view = this.store(projectId, raw, opts)
+    if (view) this.send(projectId, view)
+    return view
+  }
+
+  /** `set` without the publish: `move` and `show` send their own view (`show` with `reveal`). */
+  private store(projectId: string, raw: unknown, opts: { keepGeometry?: boolean } = {}): LayoutView | undefined {
     const stored = this.deps.getLayout(projectId)
     if (!stored) return undefined
     // A user edit (a toggle, a splitter) can arrive before the plugin host has declared its
@@ -197,7 +209,7 @@ export class LayoutService {
     const next = movePanel(current, panelKey, zone)
     // movePanel leaves a layout alone when the panel is neither placed nor hidden.
     if (next === current) throw new Error('unknown panel')
-    const view = this.set(projectId, next)
+    const view = this.store(projectId, next)
     if (view) this.send(projectId, view)
     return view
   }
@@ -216,7 +228,7 @@ export class LayoutService {
     const current = reconcile(stored, this.available(projectId))
     const fallback = this.available(projectId).find((p) => p.panelKey === panelKey)?.defaultZone ?? 'left'
     const next = showPanel(current, panelKey, fallback)
-    const view = next === current ? this.view(projectId) : this.set(projectId, next)
+    const view = next === current ? this.view(projectId) : this.store(projectId, next)
     if (view) this.send(projectId, { ...view, reveal: panelKey })
     return true
   }

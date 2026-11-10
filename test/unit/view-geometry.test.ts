@@ -314,3 +314,80 @@ describe('LayoutService.set keepGeometry (main\'s side)', () => {
     expect(stored.get(P)!.zones.left.size).toBe(100)
   })
 })
+
+describe('a layout edit in one view reaches the window\'s other views (design-web.md §5)', () => {
+  const P = 'aaaaaaaaaaaaaaaa'
+
+  /**
+   * One window, two views over a real LayoutService: the desktop (no geometry store) and a remote
+   * view (geometry mode, its layout.set with keepGeometry as the router does). An event goes to
+   * every view, as sendToProject does, the sender's included.
+   */
+  async function mirror(): Promise<{ desktop: LayoutSync; remote: LayoutSync; stored: Map<string, LayoutState> }> {
+    const stored = new Map<string, LayoutState>([[P, desktopLayout()]])
+    const listeners = new Set<(view: LayoutView) => void>()
+    const svc = new LayoutService({
+      getLayout: (id) => stored.get(id),
+      setLayout: (id, l) => stored.set(id, l),
+      publish: (_id, view) => {
+        for (const l of [...listeners]) l(view)
+      }
+    })
+    svc.setPluginPanels(P, 'p', [
+      { id: 'sessions', title: 'Sessions', defaultZone: 'left' },
+      { id: 'notes', title: 'Notes', defaultZone: 'right' }
+    ])
+    const bridge = (remote: boolean): LayoutBridge =>
+      ({
+        invoke: async (channel: string, payload?: { layout: LayoutState }) => {
+          if (channel === 'layout.get') return svc.view(P)
+          if (channel === 'layout.set') return remote ? svc.set(P, payload!.layout, { keepGeometry: true }) : svc.set(P, payload!.layout)
+          throw new Error(`unexpected ${channel}`)
+        },
+        on: (_channel: string, listener: (view: LayoutView) => void) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        }
+      }) as unknown as LayoutBridge
+    const desktop = new LayoutSync(bridge(false))
+    const remote = new LayoutSync(bridge(true), browserGeometryStore(() => fakeStorage(), P))
+    desktop.start()
+    remote.start()
+    await settle()
+    return { desktop, remote, stored }
+  }
+
+  const leftKeys = (l: LayoutState): string[] => l.zones.left.panels.map((p) => p.panelKey)
+
+  it('a panel the remote view moves shows on the desktop, and a desktop splitter drag after it keeps it', async () => {
+    const { desktop, remote, stored } = await mirror()
+    remote.commit((l) => movePanel(togglePanel(l, 'p/notes'), 'p/notes', 'left'))
+    await settle()
+    expect(leftKeys(desktop.get().layout)).toEqual(['p/sessions', 'p/notes'])
+    expect(desktop.get().layout.zones.left.panels[1]?.open).toBe(true)
+    // The desktop's next edit is only a splitter; it must not write Notes back to the right.
+    desktop.preview((l) => resizeZone(l, 'left', 250))
+    desktop.flush()
+    await settle()
+    expect(leftKeys(stored.get(P)!)).toEqual(['p/sessions', 'p/notes'])
+    expect(stored.get(P)!.zones.left.size).toBe(250)
+    expect(leftKeys(remote.get().layout)).toEqual(['p/sessions', 'p/notes'])
+  })
+
+  it('a panel the desktop opens shows in the remote view, and the remote view\'s next shared edit keeps it', async () => {
+    const { desktop, remote, stored } = await mirror()
+    remote.commit((l) => resizeZone(l, 'left', 150))
+    desktop.commit((l) => togglePanel(l, 'p/notes'))
+    await settle()
+    expect(remote.get().layout.zones.right.panels[0]?.open).toBe(true)
+    // The remote view's own sizes stay its own.
+    expect(remote.get().layout.zones.left.size).toBe(150)
+    remote.commit((l) => hidePanel(l, 'p/sessions'))
+    await settle()
+    expect(stored.get(P)!.zones.right.panels[0]).toMatchObject({ panelKey: 'p/notes', open: true })
+    expect(stored.get(P)!.hidden).toEqual(['p/sessions'])
+    expect(stored.get(P)!.zones.left.size).toBe(400)
+    expect(desktop.get().layout.hidden).toEqual(['p/sessions'])
+    expect(desktop.get().layout.zones.right.panels[0]?.open).toBe(true)
+  })
+})

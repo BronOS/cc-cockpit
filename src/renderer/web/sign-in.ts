@@ -3,12 +3,13 @@
 //
 // Access link: the desktop shows `<origin>/#t=<token>`. The fragment never reaches the server, a
 // proxy's log or a Referer; the page reads it, takes it out of the address bar and history (so a
-// reload, a bookmark or a shoulder does not keep it), then posts it once and gets the device
-// cookie (HttpOnly: the page never sees it). The URL is cleared before the post, not after: a
-// failed or hung post must not leave the token in the address bar either.
+// reload, a bookmark or a shoulder does not keep it), then, when this browser has no device yet,
+// posts it once and gets the device cookie (HttpOnly: the page never sees it). The URL is cleared
+// before the post, not after: a failed or hung post must not leave the token in the address bar.
 //
-// Then the page asks the gateway whether this browser is signed in (SESSION_PATH): a device means
-// go on (the picker, or the project in `?project=`), none means the signed-out page for the mode.
+// The page asks the gateway whether this browser is signed in (SESSION_PATH) before it posts a
+// link, and posts only when it is not: a device means go on (the picker, or the project in
+// `?project=`), none means the link is posted, or the signed-out page for the mode without one.
 // DOM-free (the location, history and fetch are passed in) so unit tests run it in plain Node.
 import type { WebAccessMode } from '../../shared/types'
 import { SESSION_PATH, SIGN_IN_LINK_PATH, type WebSessionReply } from '../../shared/web-protocol'
@@ -123,18 +124,8 @@ async function postLink(env: SignInEnv, token: string): Promise<string | undefin
   }
 }
 
-/**
- * The sign-in step: an access link in the URL is used (and cleared) first, then the gateway says
- * whether this browser is signed in. Never throws.
- */
-export async function signIn(env: SignInEnv): Promise<SignInState> {
-  const token = linkTokenOf(env.location.hash)
-  let linkError: string | undefined
-  if (env.location.hash !== '') {
-    // Any fragment goes, a token or not: nothing else the page uses lives there.
-    env.replaceUrl(env.location.pathname + env.location.search)
-  }
-  if (token !== undefined) linkError = await postLink(env, token)
+/** Asks the gateway whether this browser is signed in; an `unreachable` state when it cannot tell. */
+async function sessionOf(env: SignInEnv): Promise<WebSessionReply | Extract<SignInState, { state: 'unreachable' }>> {
   let reply: WebSessionReply | undefined
   try {
     const res = await env.fetch(SESSION_PATH, { credentials: 'same-origin', cache: 'no-store' })
@@ -143,9 +134,31 @@ export async function signIn(env: SignInEnv): Promise<SignInState> {
   } catch {
     return { state: 'unreachable', error: 'the host did not answer' }
   }
-  if (!reply) return { state: 'unreachable', error: 'the host answered something else' }
-  // A link that failed while the browser was already signed in (an old link opened again) is no
-  // reason to stop: the device it has still works.
+  return reply ?? { state: 'unreachable', error: 'the host answered something else' }
+}
+
+/**
+ * The sign-in step: an access link in the URL is cleared first, then the gateway says whether this
+ * browser is signed in, and the link is posted only when it is not. Never throws.
+ *
+ * Signed in already (the QR scanned again, an old tab with the link): the link is not posted.
+ * Posting it would add a second device record each time, each one a "new device" notice on the
+ * desktop and a place under the device cap until it expires, and would use up a one-time "add a
+ * device" token for nothing. The device the browser has goes on.
+ */
+export async function signIn(env: SignInEnv): Promise<SignInState> {
+  const token = linkTokenOf(env.location.hash)
+  if (env.location.hash !== '') {
+    // Any fragment goes, a token or not: nothing else the page uses lives there.
+    env.replaceUrl(env.location.pathname + env.location.search)
+  }
+  let reply = await sessionOf(env)
+  if ('state' in reply) return reply
+  if (reply.device) return { state: 'signed-in', device: reply.device }
+  if (token === undefined) return { state: 'signed-out', mode: reply.mode }
+  const linkError = await postLink(env, token)
+  reply = await sessionOf(env)
+  if ('state' in reply) return reply
   if (reply.device) return { state: 'signed-in', device: reply.device }
   return linkError === undefined ? { state: 'signed-out', mode: reply.mode } : { state: 'signed-out', mode: reply.mode, error: linkError }
 }

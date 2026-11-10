@@ -239,9 +239,8 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - [x] write tests: sign-in page flow, picker lists only open windows, chrome hidden in the web build, per-view zone sizes
       never reach main's layout
 - [x] run tests - must pass before next task
-- ➕ `layout.set` from one view is not published (`layout.updated`) to the window's other views: today only main-side
-  changes (`move`, `show`, plugin panels) publish. With a remote view, a panel moved or opened in one view shows in the
-  other only at its next view from main. Pick it up with the mirror work (Task 12 or 17).
+- ➕ `layout.set` from one view is published (`layout.updated`) to the window's other views (`LayoutService.set`): a
+  stale view would otherwise write its old placement back on its next edit (fixed in the Task 8 review).
 
 ### Task 9: Web access settings and the desktop indicator [model: sonnet]
 
