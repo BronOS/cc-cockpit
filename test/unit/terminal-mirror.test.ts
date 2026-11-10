@@ -6,6 +6,8 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SerializeAddon } from '@xterm/addon-serialize'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { Terminal } from '@xterm/headless'
 import { build } from 'esbuild'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -14,13 +16,18 @@ import {
   nodeMirrorWorker,
   RESTART_WINDOW_MS,
   TerminalMirror,
+  type MirrorSnapshot,
   type MirrorState,
+  type MirrorView,
   type MirrorWorkerLike
 } from '../../src/main/terminals/mirror'
 import type { FromWorker, MirrorItem, ToWorker } from '../../src/main/terminals/mirror-protocol'
-import { HeadlessTerms } from '../../src/main/terminals/mirror-worker'
+import { HeadlessTerms, type HeadlessTermsOptions } from '../../src/main/terminals/mirror-worker'
 import { TabManager, type TerminalTap } from '../../src/main/tabs/tab-manager'
+import { encodeFrame, frameBytes, termDataFrame, termSnapshotFrames } from '../../src/main/web/protocol'
+import { ViewTerminals } from '../../src/main/web/view-terminals'
 import type { EventChannel, IpcEventMap } from '../../src/shared/ipc'
+import type { TermDataFrame, TermSnapshotFrame } from '../../src/shared/web-protocol'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 /** HeadlessTerms behind the worker interface; both directions are delivered on a later turn. */
@@ -31,8 +38,8 @@ class FakeWorker implements MirrorWorkerLike {
   private readonly listeners: Array<(m: FromWorker) => void> = []
   private readonly exitListeners: Array<(reason: string) => void> = []
 
-  constructor(scrollback?: number) {
-    this.terms = new HeadlessTerms((m) => setImmediate(() => this.listeners.forEach((l) => l(m))), scrollback)
+  constructor(options: HeadlessTermsOptions = {}) {
+    this.terms = new HeadlessTerms((m) => setImmediate(() => this.listeners.forEach((l) => l(m))), options)
   }
 
   post(message: ToWorker): void {
@@ -73,15 +80,16 @@ let workers: FakeWorker[]
 let logs: string[]
 let clock: number
 
-function mirror(): TerminalMirror {
+function mirror(options: HeadlessTermsOptions & { snapshotTimeoutMs?: number } = {}): TerminalMirror {
   return new TerminalMirror({
     createWorker: () => {
-      const w = new FakeWorker()
+      const w = new FakeWorker(options)
       workers.push(w)
       return w
     },
     log: (m) => logs.push(m),
-    now: () => clock
+    now: () => clock,
+    snapshotTimeoutMs: options.snapshotTimeoutMs
   })
 }
 
@@ -397,7 +405,7 @@ describe('the worker side', () => {
   it('keeps the configured scrollback and no more', async () => {
     const m = new TerminalMirror({
       createWorker: () => {
-        const w = new FakeWorker(10)
+        const w = new FakeWorker({ scrollback: 10 })
         workers.push(w)
         return w
       }
@@ -564,6 +572,40 @@ describe('the real worker thread', () => {
     expect(logs).toEqual(['terminal mirror: worker ready'])
   }, 20_000)
 
+  it('answers a join with a snapshot across the thread, the xterm internals it reads included', async () => {
+    const out = await build({
+      entryPoints: [join(__dirname, '..', '..', 'src', 'main', 'terminals', 'mirror-worker.ts')],
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      write: false,
+      external: ['@xterm/*'],
+      logLevel: 'silent'
+    })
+    const entry = join(dir, 'mirror-worker.js')
+    writeFileSync(entry, out.outputFiles[0]!.text)
+    const m = new TerminalMirror({ createWorker: nodeMirrorWorker(entry), log: (l) => logs.push(l) })
+    m.start()
+    try {
+      m.spawned('a', 30, 3)
+      m.data('a', `hidden cursor${ESC}[?25l${ESC}[`)
+      const view = new ReplayView()
+      m.join('a', view)
+      await m.whenParsed('a')
+      await wait(50)
+      // Mid-CSI in the real worker too: the ground check reads xterm's parser there.
+      expect(view.snap).toBeNull()
+      m.data('a', '0m')
+      await m.whenParsed('a')
+      await wait(50)
+      expect(view.snap).toMatchObject({ seq: 3, cols: 30, rows: 3 })
+      expect(view.snap!.data).toContain(`${ESC}[?25l`)
+      expect((await view.text()).split('\n')[1]).toBe('hidden cursor')
+    } finally {
+      m.stop()
+    }
+  }, 20_000)
+
   it('reports a worker that exits on its own', async () => {
     const entry = join(dir, 'dies.js')
     writeFileSync(entry, 'process.exit(3)\n')
@@ -588,5 +630,681 @@ describe('the real worker thread', () => {
     w.terminate()
     await new Promise((r) => setTimeout(r, 200))
     expect(reasons).toEqual([])
+  })
+})
+
+// --- Task 11: gap-free snapshots and joins ----------------------------------------------------------
+
+const ESC = '\x1b'
+
+/** xterm internals the mode test reads, the same ones extraModes reads. */
+interface XtermInternals {
+  coreService: { isCursorHidden: boolean; decPrivateModes: { cursorStyle?: string } }
+  coreMouseService: { activeEncoding: string }
+  buffer: { scrollTop: number; scrollBottom: number }
+}
+
+function viewTerminal(cols: number, rows: number): Terminal {
+  const term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true })
+  term.loadAddon(new Unicode11Addon())
+  term.unicode.activeVersion = '11'
+  return term
+}
+
+const written = (term: Terminal, data = ''): Promise<void> => new Promise((resolve) => term.write(data, resolve))
+
+/** Every line of the active buffer (scrollback included) plus the cursor, as plain text. */
+function screenText(term: Terminal): string {
+  const buf = term.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? '')
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return `${buf.type} ${term.cols}x${term.rows} cursor ${buf.cursorX},${buf.cursorY}\n${lines.join('\n')}`
+}
+
+/** The mirror's own copy, read through serialize into a fresh terminal, once everything is parsed. */
+async function mirrorText(m: TerminalMirror, tabId: string): Promise<string> {
+  const state = (await m.inspect(tabId))!
+  const term = viewTerminal(state.cols, state.rows)
+  await written(term, state.data)
+  return screenText(term)
+}
+
+/** A view the way a page is one: a terminal rebuilt from the snapshot, then the live items. */
+class ReplayView implements MirrorView {
+  term: Terminal | null = null
+  snap: MirrorSnapshot | null = null
+  seqs: number[] = []
+  data = ''
+  isClosed = false
+
+  snapshot(s: MirrorSnapshot): void {
+    expect(this.snap).toBeNull()
+    this.snap = s
+    this.term = viewTerminal(s.cols, s.rows)
+    this.term.write(s.data)
+  }
+
+  item(item: MirrorItem): void {
+    // Never before the snapshot, never a gap, never a double.
+    expect(this.snap).not.toBeNull()
+    const last = this.seqs.at(-1) ?? this.snap!.seq
+    expect(item.seq).toBe(last + 1)
+    this.seqs.push(item.seq)
+    const term = this.term!
+    if (item.kind === 'data') {
+      this.data += item.data
+      term.write(item.data)
+    } else if (item.kind === 'resize' || item.kind === 'spawn') {
+      term.write('', () => term.resize(item.cols, item.rows))
+    } else {
+      throw new Error('a close item reached a view')
+    }
+  }
+
+  closed(): void {
+    this.isClosed = true
+  }
+
+  async text(): Promise<string> {
+    await written(this.term!)
+    return screenText(this.term!)
+  }
+}
+
+/** Deterministic PRNG so a failure reproduces. */
+function rng(seed: number): () => number {
+  let s = seed >>> 0
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0
+    return s / 2 ** 32
+  }
+}
+
+/** Claude-like output: colored lines, cursor moves and erases inside synchronized output, wide chars. */
+function tuiStream(rand: () => number, frames: number): string {
+  let out = `${ESC}[?2004h${ESC}[?1004h${ESC}[?25l`
+  for (let f = 0; f < frames; f++) {
+    out += `${ESC}[?2026h`
+    const lines = 1 + Math.floor(rand() * 4)
+    for (let i = 0; i < lines; i++) {
+      out += `${ESC}[38;5;${Math.floor(rand() * 255)}m● line ${f}.${i} ${'x'.repeat(Math.floor(rand() * 90))}${ESC}[0m 漢字🙂\r\n`
+    }
+    out += `${ESC}[2A${ESC}[2K> prompt ${f}${ESC}[1B${ESC}[2K${ESC}]0;title ${f}\x07`
+    out += `${ESC}[?2026l`
+  }
+  return out
+}
+
+/** Cut `text` into chunks at random places: inside escape sequences and surrogate pairs too. */
+function chunks(text: string, rand: () => number): string[] {
+  const out: string[] = []
+  let at = 0
+  while (at < text.length) {
+    const n = 1 + Math.floor(rand() * 300)
+    out.push(text.slice(at, at + n))
+    at += n
+  }
+  return out
+}
+
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Everything numbered so far is parsed, and the answers the worker posted with it arrived. */
+async function settle(m: TerminalMirror, tabId: string): Promise<void> {
+  await m.whenParsed(tabId)
+  await wait(5)
+}
+
+describe('snapshots and joins', () => {
+  let m: TerminalMirror | undefined
+  afterEach(() => m?.stop())
+
+  it('views joining at random moments under heavy output end identical, with no gap or double', async () => {
+    const rand = rng(42)
+    m = mirror({ groundWaitMs: 20 })
+    m.start()
+    m.spawned('t1', 100, 30)
+    const all = chunks(tuiStream(rand, 400), rand)
+    const views: ReplayView[] = []
+    for (let i = 0; i < all.length; i++) {
+      m.data('t1', all[i]!)
+      // A resize now and then, as the desktop pane changes size.
+      if (i === 150) m.resized('t1', 80, 24)
+      if (i === 300) m.resized('t1', 120, 40)
+      if (i % 37 === 0) {
+        const view = new ReplayView()
+        views.push(view)
+        m.join('t1', view)
+      }
+      // Sometimes let the worker parse (callbacks run), sometimes pile items up in flight.
+      if (rand() < 0.3) await tick()
+    }
+    await settle(m, 't1')
+    await wait(50)
+    const expected = await mirrorText(m, 't1')
+    expect(views.length).toBeGreaterThan(10)
+    expect(m.waitingViews('t1')).toBe(0)
+    const seqs = new Set<number>()
+    for (const view of views) {
+      expect(view.snap).not.toBeNull()
+      seqs.add(view.snap!.seq)
+      // Every item after the snapshot's seq, up to the last one numbered: nothing lost or doubled.
+      expect(view.seqs.at(-1) ?? view.snap!.seq).toBe(m.seq('t1'))
+      expect(view.seqs.length).toBe(m.seq('t1')! - view.snap!.seq)
+      expect(await view.text()).toBe(expected)
+    }
+    // The joins really landed at different points of the stream.
+    expect(seqs.size).toBeGreaterThan(5)
+  })
+
+  it('a join while items are in flight gets them after the snapshot, not before', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 40, 5)
+    m.data('t', 'one\r\n')
+    m.data('t', 'two\r\n')
+    // Neither is parsed yet: main holds both for the view.
+    const view = new ReplayView()
+    m.join('t', view)
+    m.data('t', 'three\r\n')
+    expect(view.snap).toBeNull()
+    await settle(m, 't')
+    expect(view.snap).not.toBeNull()
+    // Taken inside a write callback the worker reached after the request: what the snapshot does
+    // not hold came live, in order, and nothing it holds came twice.
+    expect(view.snap!.seq).toBeGreaterThanOrEqual(2)
+    expect(['one\r\ntwo\r\nthree\r\n', 'two\r\nthree\r\n', 'three\r\n', '']).toContain(view.data)
+    expect(view.snap!.data.length > 0 || view.data.length > 0).toBe(true)
+    expect(view.seqs).toEqual(Array.from({ length: 4 - view.snap!.seq }, (_, i) => view.snap!.seq + 1 + i))
+    expect(await view.text()).toBe(await mirrorText(m, 't'))
+  })
+
+  it('waits for the parser ground state when a chunk ends inside a CSI', async () => {
+    m = mirror({ groundWaitMs: 1000 })
+    m.start()
+    m.spawned('t', 40, 5)
+    m.data('t', `plain ${ESC}[3`)
+    await settle(m, 't')
+    const view = new ReplayView()
+    m.join('t', view)
+    await wait(20)
+    // Mid-CSI: no snapshot yet; it would make the view print "1mred" as text.
+    expect(view.snap).toBeNull()
+    expect(m.waitingViews('t')).toBe(1)
+    m.data('t', `1mred${ESC}[0m`)
+    await settle(m, 't')
+    expect(view.snap?.seq).toBe(3)
+    expect(view.seqs).toEqual([])
+    expect(await view.text()).toBe(await mirrorText(m, 't'))
+    expect(await view.text()).toContain('plain red')
+  })
+
+  it('waits across an OSC split in two and a surrogate pair split in two', async () => {
+    m = mirror({ groundWaitMs: 1000 })
+    m.start()
+    m.spawned('t', 40, 5)
+    const view = new ReplayView()
+    m.data('t', `${ESC}]0;a ti`)
+    await settle(m, 't')
+    m.join('t', view)
+    m.data('t', `tle\x07ok \ud83d`)
+    await settle(m, 't')
+    // Inside the OSC at the join, then half a surrogate pair waiting in the decoder.
+    expect(view.snap).toBeNull()
+    m.data('t', '\ude42!')
+    await settle(m, 't')
+    expect(view.snap?.seq).toBe(4)
+    expect(await view.text()).toContain('ok 🙂!')
+  })
+
+  it('takes the snapshot after the ground wait when the stream stops mid-sequence', async () => {
+    m = mirror({ groundWaitMs: 20 })
+    m.start()
+    m.spawned('t', 40, 5)
+    m.data('t', `x${ESC}[`)
+    await settle(m, 't')
+    const view = new ReplayView()
+    m.join('t', view)
+    await wait(5)
+    expect(view.snap).toBeNull()
+    await wait(60)
+    expect(view.snap?.seq).toBe(2)
+  })
+
+  it('keeps the modes Claude Code sets through the snapshot', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 60, 10)
+    m.data(
+      't',
+      `main screen${ESC}[?2004h${ESC}[?1004h${ESC}[?1h${ESC}[?1000h${ESC}[?1006h${ESC}[?25l${ESC}[5 q` +
+        `${ESC}[?1049h${ESC}[Halt screen${ESC}[2;8r${ESC}[?2026h${ESC}[3;4Hcursor`
+    )
+    await settle(m, 't')
+    const view = new ReplayView()
+    m.join('t', view)
+    await wait(10)
+    const term = view.term!
+    await written(term)
+    expect(term.modes).toMatchObject({
+      bracketedPasteMode: true,
+      sendFocusMode: true,
+      applicationCursorKeysMode: true,
+      mouseTrackingMode: 'vt200',
+      synchronizedOutputMode: true
+    })
+    const core = (term as unknown as { _core: XtermInternals })._core
+    expect(core.coreService.isCursorHidden).toBe(true)
+    expect(core.coreMouseService.activeEncoding).toBe('SGR')
+    expect(core.coreService.decPrivateModes.cursorStyle).toBe('bar')
+    expect(core.buffer.scrollTop).toBe(1)
+    expect(core.buffer.scrollBottom).toBe(7)
+    expect(term.buffer.active.type).toBe('alternate')
+    // The scroll region fix restores the cursor where the program left it.
+    expect([term.buffer.active.cursorX, term.buffer.active.cursorY]).toEqual([9, 2])
+    expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe('alt screen')
+    // The serialize addon alone drops cursor visibility, 2026, SGR mouse and the scroll region:
+    // what extraModes is for (a new addon version that keeps them would show here).
+    const plain = new SerializeAddon()
+    const probe = new Terminal({ cols: 60, rows: 10, allowProposedApi: true })
+    probe.loadAddon(plain)
+    await written(probe, `${ESC}[?25l${ESC}[?2026h${ESC}[?1006h${ESC}[2;8r`)
+    expect(plain.serialize()).not.toMatch(/\?25l|\?2026h|\?1006h|2;8r/)
+    probe.dispose()
+  })
+
+  it('re-emits SGR-pixels mouse encoding and a blinking block cursor', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    m.data('t', `${ESC}[?1003h${ESC}[?1016h${ESC}[1 q`)
+    await settle(m, 't')
+    const view = new ReplayView()
+    m.join('t', view)
+    await wait(10)
+    expect(view.snap!.data).toContain(`${ESC}[?1016h`)
+    expect(view.snap!.data).toContain(`${ESC}[1 q`)
+    // Nothing set, nothing re-emitted: a plain shell's snapshot carries no extra modes.
+    m.spawned('plain', 20, 5)
+    m.data('plain', 'hi')
+    await settle(m, 'plain')
+    const other = new ReplayView()
+    m.join('plain', other)
+    await wait(10)
+    expect(other.snap!.data).not.toMatch(/\?25l|\?1006h|\?1016h| q|\?2026h/)
+    expect(other.snap!.data).not.toContain(`${ESC}7`)
+  })
+
+  it('numbers resizes in the stream and a view applies them after the chunks before them', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    const view = new ReplayView()
+    m.join('t', view)
+    await wait(10)
+    expect(view.snap?.seq).toBe(1)
+    m.data('t', 'a'.repeat(30))
+    m.resized('t', 40, 5)
+    m.data('t', '\r\nb')
+    m.spawned('t', 30, 5) // a restart: a size item for the view
+    await settle(m, 't')
+    expect(view.seqs).toEqual([2, 3, 4, 5])
+    expect(await view.text()).toBe(await mirrorText(m, 't'))
+  })
+
+  it('views joining together share one request; a later join asks again', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    m.data('t', 'x')
+    const a = new ReplayView()
+    const b = new ReplayView()
+    m.join('t', a)
+    m.data('t', 'y')
+    m.join('t', b)
+    await settle(m, 't')
+    const requests = (): number => workers[0]!.received.filter((r) => r.t === 'snapshot').length
+    expect(requests()).toBe(1)
+    expect(a.snap).toEqual(b.snap)
+    expect(a.seqs.at(-1) ?? a.snap!.seq).toBe(3)
+    expect(b.seqs.at(-1) ?? b.snap!.seq).toBe(3)
+    const c = new ReplayView()
+    m.join('t', c)
+    await settle(m, 't')
+    expect(requests()).toBe(2)
+    expect(c.snap?.seq).toBe(3)
+    // The same view twice is refused: it already follows the tab.
+    expect(m.join('t', c)).toBeUndefined()
+  })
+
+  it('tells views when the tab closes, and refuses unknown tabs and a stopped mirror', async () => {
+    m = mirror()
+    expect(m.join('t', new ReplayView())).toBeUndefined()
+    m.start()
+    m.spawned('t', 20, 5)
+    const live = new ReplayView()
+    m.join('t', live)
+    await wait(10)
+    const waiting = new ReplayView()
+    m.join('t', waiting)
+    m.closed('t')
+    expect(live.isClosed).toBe(true)
+    expect(waiting.isClosed).toBe(true)
+    await wait(10)
+    expect(waiting.snap).toBeNull()
+    expect(m.join('t', new ReplayView())).toBeUndefined()
+    expect(m.join('never', new ReplayView())).toBeUndefined()
+  })
+
+  it('a view that left gets nothing more, and a request nobody waits for is dropped', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    const view = new ReplayView()
+    const leave = m.join('t', view)!
+    await wait(10)
+    m.data('t', 'a')
+    leave()
+    m.data('t', 'b')
+    await settle(m, 't')
+    expect(view.data).toBe('a')
+    // Left before its snapshot came: the answer finds nobody, and nothing is delivered.
+    const early = new ReplayView()
+    m.join('t', early)!()
+    await settle(m, 't')
+    expect(early.snap).toBeNull()
+    expect(m.waitingViews('t')).toBe(0)
+  })
+
+  it('ends the waiting views when the worker never answers', async () => {
+    m = mirror({ snapshotTimeoutMs: 20 })
+    m.start()
+    m.spawned('t', 20, 5)
+    // The worker hangs on snapshots only.
+    const w = workers[0]!
+    const handle = w.terms.handle.bind(w.terms)
+    w.terms.handle = (message) => (message.t === 'snapshot' ? undefined : handle(message))
+    const view = new ReplayView()
+    m.join('t', view)
+    await wait(60)
+    expect(view.isClosed).toBe(true)
+    expect(m.waitingViews('t')).toBe(0)
+    expect(logs.some((l) => l.includes('no snapshot of tab t'))).toBe(true)
+    // The stream goes on for others; a late answer is ignored.
+    m.data('t', 'later')
+    await settle(m, 't')
+  })
+
+  it('a worker restart asks the new worker for the waiting views; they start from the blank copy', async () => {
+    m = mirror({ groundWaitMs: 1000 })
+    m.start()
+    m.spawned('t', 20, 5)
+    m.data('t', `lost${ESC}[3`)
+    await settle(m, 't')
+    const live = new ReplayView()
+    // Mid-CSI: this view waits.
+    const waiting = new ReplayView()
+    m.join('t', waiting)
+    await wait(10)
+    expect(waiting.snap).toBeNull()
+    workers[0]!.crash()
+    await settle(m, 't')
+    expect(waiting.snap).toMatchObject({ seq: 2, cols: 20, rows: 5 })
+    m.join('t', live)
+    m.data('t', 'after')
+    await settle(m, 't')
+    expect(waiting.seqs).toEqual([3])
+    expect(await waiting.text()).toBe(await mirrorText(m, 't'))
+    expect(await waiting.text()).toContain('after')
+    expect(await waiting.text()).not.toContain('lost')
+  })
+
+  it('stop and a given-up mirror end every view', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    const view = new ReplayView()
+    m.join('t', view)
+    m.stop()
+    expect(view.isClosed).toBe(true)
+    m.start()
+    m.spawned('u', 20, 5)
+    const other = new ReplayView()
+    m.join('u', other)
+    for (let i = 0; i <= MAX_RESTARTS; i++) workers.at(-1)!.crash()
+    expect(m.gaveUp).toBe(true)
+    expect(other.isClosed).toBe(true)
+  })
+
+  it('a view that throws is logged and the others still get every item', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 20, 5)
+    const good = new ReplayView()
+    const bad: MirrorView = {
+      snapshot: () => undefined,
+      item: () => {
+        throw new Error('view broke')
+      },
+      closed: () => undefined
+    }
+    m.join('t', bad)
+    m.join('t', good)
+    await wait(10)
+    m.data('t', 'a')
+    m.data('t', 'b')
+    await settle(m, 't')
+    expect(good.data).toBe('ab')
+    expect(logs.filter((l) => l === 'terminal mirror view item failed: view broke')).toHaveLength(2)
+  })
+
+  it('the worker answers null for a tab it does not hold, and for one that closes while it waits', async () => {
+    const out: FromWorker[] = []
+    const terms = new HeadlessTerms((msg) => out.push(msg), { groundWaitMs: 1000 })
+    terms.handle({ t: 'snapshot', id: 1, tabId: 'nope' })
+    terms.handle({ t: 'item', tabId: 'a', item: { seq: 1, kind: 'spawn', cols: 10, rows: 2 } })
+    terms.handle({ t: 'item', tabId: 'a', item: { seq: 2, kind: 'data', data: `${ESC}[` } })
+    terms.handle({ t: 'snapshot', id: 2, tabId: 'a' })
+    terms.handle({ t: 'snapshot', id: 3, tabId: 'a' })
+    await wait(20)
+    terms.handle({ t: 'item', tabId: 'a', item: { seq: 3, kind: 'close' } })
+    expect(out.filter((msg) => msg.t === 'snapshot')).toEqual([
+      { t: 'snapshot', ids: [1], tabId: 'nope', snapshot: null },
+      { t: 'snapshot', ids: [2, 3], tabId: 'a', snapshot: null }
+    ])
+    terms.dispose()
+  })
+})
+
+describe('term frames', () => {
+  const snap = (data: string): MirrorSnapshot => ({ seq: 7, cols: 80, rows: 24, data })
+
+  it('one part when it fits, an empty screen too', () => {
+    expect(termSnapshotFrames('t', snap(''))).toEqual([
+      { t: 'term.snapshot', tabId: 't', seq: 7, cols: 80, rows: 24, part: 1, parts: 1, data: '' }
+    ])
+    expect(termSnapshotFrames('t', snap('hello'))).toHaveLength(1)
+  })
+
+  it('splits above the cap by the exact encoded size, never a surrogate pair, and joins back', () => {
+    const rand = rng(7)
+    // Escapes (6 bytes in JSON), quotes and backslashes (2), CJK (3), emoji pairs (4), lone surrogates (6).
+    const data = tuiStream(rand, 300) + '"\\\t\ud800x\udc00' + '🙂'.repeat(500)
+    const cap = 4096
+    const frames = termSnapshotFrames('tab', snap(data), cap)
+    expect(frames.length).toBeGreaterThan(10)
+    frames.forEach((f, i) => {
+      expect(f).toMatchObject({ t: 'term.snapshot', tabId: 'tab', seq: 7, cols: 80, rows: 24, part: i + 1, parts: frames.length })
+      const bytes = frameBytes(encodeFrame(f))
+      expect(bytes).toBeLessThanOrEqual(cap)
+      // Full but for the last character that did not fit (at most 6 bytes) and the part digits.
+      if (i < frames.length - 1) expect(bytes).toBeGreaterThan(cap - 6 - 40)
+      const last = f.data.charCodeAt(f.data.length - 1)
+      const next = frames[i + 1]?.data.charCodeAt(0)
+      if (next !== undefined && next >= 0xdc00 && next <= 0xdfff) expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+    })
+    expect(frames.map((f) => f.data).join('')).toBe(data)
+    expect(() => termSnapshotFrames('t', snap('x'), 10)).toThrow('too small')
+  })
+
+  it('maps stream items to term.data frames; close is not sent', () => {
+    expect(termDataFrame('t', { seq: 2, kind: 'data', data: 'x' })).toEqual({ t: 'term.data', tabId: 't', seq: 2, data: 'x' })
+    expect(termDataFrame('t', { seq: 3, kind: 'resize', cols: 9, rows: 4 })).toEqual({
+      t: 'term.data',
+      tabId: 't',
+      seq: 3,
+      cols: 9,
+      rows: 4
+    })
+    expect(termDataFrame('t', { seq: 4, kind: 'spawn', cols: 80, rows: 24 })).toMatchObject({ cols: 80, rows: 24 })
+    expect(termDataFrame('t', { seq: 5, kind: 'close' })).toBeNull()
+  })
+})
+
+/**
+ * The page's side of the frames: joins a snapshot's parts in order, then applies every term.data
+ * of the tab after it, checking the numbering as it goes.
+ */
+class PageTerminal {
+  term: Terminal | null = null
+  parts: TermSnapshotFrame[] = []
+  snapshots = 0
+  seq = 0
+
+  frame(f: TermSnapshotFrame | TermDataFrame): void {
+    if (f.t === 'term.snapshot') {
+      expect(f.part).toBe(this.parts.length + 1)
+      this.parts.push(f)
+      if (f.part < f.parts) return
+      this.term?.dispose()
+      this.term = viewTerminal(f.cols, f.rows)
+      this.term.write(this.parts.map((p) => p.data).join(''))
+      this.seq = f.seq
+      this.parts = []
+      this.snapshots++
+      return
+    }
+    // A live item only once a whole snapshot is in, and exactly the next one.
+    expect(this.parts).toEqual([])
+    expect(this.term).not.toBeNull()
+    expect(f.seq).toBe(this.seq + 1)
+    this.seq = f.seq
+    const term = this.term!
+    if ('data' in f) term.write(f.data)
+    else term.write('', () => term.resize(f.cols, f.rows))
+  }
+
+  async text(): Promise<string> {
+    await written(this.term!)
+    return screenText(this.term!)
+  }
+}
+
+describe('ViewTerminals', () => {
+  let m: TerminalMirror | undefined
+  afterEach(() => m?.stop())
+
+  function view(allowed = (tabId: string) => tabId !== 'foreign', maxFrameBytes?: number) {
+    const sent: Array<TermSnapshotFrame | TermDataFrame> = []
+    const pages = new Map<string, PageTerminal>()
+    const vt = new ViewTerminals({
+      mirror: m!,
+      canFollow: allowed,
+      maxFrameBytes,
+      send: (f) => {
+        expect(frameBytes(encodeFrame(f))).toBeLessThanOrEqual(maxFrameBytes ?? Infinity)
+        sent.push(f)
+        let page = pages.get(f.tabId)
+        if (!page) pages.set(f.tabId, (page = new PageTerminal()))
+        page.frame(f)
+      }
+    })
+    return { vt, sent, pages }
+  }
+
+  it('snapshots only the visible tab; another when selected; joined tabs stay live', async () => {
+    m = mirror()
+    m.start()
+    for (const id of ['a', 'b', 'c']) {
+      m.spawned(id, 20, 5)
+      m.data(id, `tab ${id}\r\n`)
+    }
+    const { vt, sent, pages } = view()
+    expect(vt.select('a')).toBe(true)
+    await settle(m, 'a')
+    expect(new Set(sent.map((f) => f.tabId))).toEqual(new Set(['a']))
+    m.data('b', 'b while hidden\r\n')
+    await settle(m, 'b')
+    expect(sent.some((f) => f.tabId === 'b')).toBe(false)
+    expect(vt.select('b')).toBe(true)
+    await settle(m, 'b')
+    expect(pages.get('b')!.snapshots).toBe(1)
+    // Back to a: still followed, no new snapshot; its output kept coming while b showed.
+    m.data('a', 'a while hidden\r\n')
+    expect(vt.select('a')).toBe(true)
+    await settle(m, 'a')
+    expect(pages.get('a')!.snapshots).toBe(1)
+    expect(sent.filter((f) => f.t === 'term.snapshot').map((f) => f.tabId)).toEqual(['a', 'b'])
+    expect(vt.following().sort()).toEqual(['a', 'b'])
+    expect(await pages.get('a')!.text()).toBe(await mirrorText(m, 'a'))
+    expect(await pages.get('b')!.text()).toBe(await mirrorText(m, 'b'))
+    expect(pages.has('c')).toBe(false)
+  })
+
+  it('refuses a tab the view may not follow and one the mirror does not hold', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('foreign', 20, 5)
+    const { vt, sent } = view()
+    expect(vt.select('foreign')).toBe(false)
+    expect(vt.select('missing')).toBe(false)
+    await wait(10)
+    expect(sent).toEqual([])
+    expect(vt.following()).toEqual([])
+  })
+
+  it('forgets a closed tab, leaves and rejoins, and sends nothing once disposed', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('a', 20, 5)
+    m.spawned('b', 20, 5)
+    const { vt, sent, pages } = view()
+    vt.select('a')
+    vt.select('b')
+    await settle(m, 'b')
+    m.closed('a')
+    expect(vt.following()).toEqual(['b'])
+    // A resync: leave and join again, a fresh snapshot.
+    vt.leave('b')
+    pages.delete('b')
+    expect(vt.select('b')).toBe(true)
+    await settle(m, 'b')
+    expect(pages.get('b')!.snapshots).toBe(1)
+    vt.dispose()
+    const count = sent.length
+    m.data('b', 'after dispose')
+    await settle(m, 'b')
+    expect(sent).toHaveLength(count)
+    expect(vt.select('b')).toBe(false)
+  })
+
+  it('a snapshot above the frame cap arrives in parts and is reassembled identical to the mirror', async () => {
+    m = mirror()
+    m.start()
+    m.spawned('t', 80, 24)
+    const rand = rng(3)
+    for (const chunk of chunks(tuiStream(rand, 200), rand)) m.data('t', chunk)
+    await settle(m, 't')
+    const { vt, sent, pages } = view(undefined, 4096)
+    vt.select('t')
+    m.data('t', 'live after the join\r\n')
+    await settle(m, 't')
+    const parts = sent.filter((f): f is TermSnapshotFrame => f.t === 'term.snapshot')
+    expect(parts.length).toBeGreaterThan(5)
+    expect(parts.every((p) => p.parts === parts.length)).toBe(true)
+    expect(pages.get('t')!.seq).toBe(m.seq('t'))
+    expect(await pages.get('t')!.text()).toBe(await mirrorText(m, 't'))
   })
 })

@@ -29,17 +29,32 @@ export interface MirrorState {
   data: string
 }
 
+/**
+ * What a view joining a tab starts from (Task 11): the headless terminal serialized inside the
+ * write callback of item `seq`, at the parser's ground state (or after the ground wait), with the
+ * modes the serialize addon drops re-emitted (mirror-worker.ts `extraModes`). The view's live
+ * stream starts at `seq + 1`.
+ */
+export interface MirrorSnapshot extends MirrorState {
+  /** The last item the snapshot contains. */
+  seq: number
+}
+
 export type ToWorker =
   | { t: 'item'; tabId: string; item: MirrorItem }
   /** After a worker restart: a blank terminal at this size, whose stream continues after `seq`. */
   | { t: 'reset'; tabId: string; seq: number; cols: number; rows: number }
   /** Answered with `inspected` once everything posted before it is parsed. */
   | { t: 'inspect'; id: number; tabId: string }
+  /** Answered with `snapshot` at the first write callback at ground state, or after the ground wait. */
+  | { t: 'snapshot'; id: number; tabId: string }
 
 export type FromWorker =
   /** Every item up to `seq` of the tab is applied to its terminal. */
   | { t: 'parsed'; tabId: string; seq: number }
   | { t: 'inspected'; id: number; state: MirrorState | null }
+  /** The answer to every `snapshot` request in `ids`; null for a tab the worker does not hold (closed). */
+  | { t: 'snapshot'; ids: number[]; tabId: string; snapshot: MirrorSnapshot | null }
   | { t: 'log'; message: string }
   /** The worker loaded xterm and listens (logged once per start: a packaged build's proof it runs). */
   | { t: 'ready' }

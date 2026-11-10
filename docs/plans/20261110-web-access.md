@@ -287,15 +287,17 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Modify: `src/main/terminals/mirror.ts`, `mirror-worker.ts`, `src/main/web/protocol.ts`
 - Modify: `test/unit/terminal-mirror.test.ts`
+- ➕ Also created `src/main/web/view-terminals.ts` (`ViewTerminals`: the tabs one view follows and the `term.*` frames
+  it gets; Task 12 wires it into the connection); frame types in `src/shared/web-protocol.ts`
 
-- [ ] `term.snapshot` taken inside the write callback of item N at parser ground state (300 ms fallback), tagged `seq`;
+- [x] `term.snapshot` taken inside the write callback of item N at parser ground state (300 ms fallback), tagged `seq`;
       live `term.data` from N+1 with items held meanwhile; split into parts above the frame cap
-- [ ] re-emit what the serialize addon drops: cursor visibility (25), 2026, SGR mouse encoding (1006/1016), scroll
+- [x] re-emit what the serialize addon drops: cursor visibility (25), 2026, SGR mouse encoding (1006/1016), scroll
       region, cursor style
-- [ ] snapshot only the visible tab; others when selected
-- [ ] write tests: the randomized no-loss/no-double test from the spike, split CSI/OSC/surrogate, mode survival, a
+- [x] snapshot only the visible tab; others when selected
+- [x] write tests: the randomized no-loss/no-double test from the spike, split CSI/OSC/surrogate, mode survival, a
       multi-part snapshot reassembled
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 12: Main as the flow consumer; every view resyncs [model: opus]
 

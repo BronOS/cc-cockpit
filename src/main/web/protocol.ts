@@ -3,12 +3,15 @@
 // the gateway, the connection and the tests share one definition and the browser bridge (plan
 // Task 7) mirrors it.
 //
-// Frames of plan Task 6 (later tasks add `port.*`, `term.*` and `settled`):
+// Frames (later tasks add `port.*` and `settled`):
 //   client -> main  { t: 'hello', v, project }        once, first; binds the view to that window
 //                   { t: 'invoke', id, ch, p }        an IPC invoke, answered by a `result`
 //   main -> client  { t: 'ready', v, view, snapshot } once, after a good hello
 //                   { t: 'result', id, ok: true, v } | { t: 'result', id, ok: false, err }
 //                   { t: 'event', ch, p }             an IPC event (ViewRegistry, view-registry.ts)
+//                   { t: 'term.snapshot', tabId, seq, cols, rows, part, parts, data }
+//                   { t: 'term.data', tabId, seq, data } | { ..., cols, rows }
+//                                                     a tab's terminal stream (view-terminals.ts)
 //
 // `Uint8Array` values travel as `{ $bytes: <base64> }` both ways (JSON has no bytes). Everything a
 // client frame holds is untrusted text: the shape is checked here, the channel against the
@@ -16,7 +19,9 @@
 
 import type { InvokeChannel } from '../../shared/ipc'
 import { EVENT_CHANNELS, INVOKE_CHANNELS, remoteAllowed } from '../../shared/ipc'
-import type { ClientFrame, ServerFrame } from '../../shared/web-protocol'
+import type { ClientFrame, ServerFrame, TermDataFrame, TermSnapshotFrame } from '../../shared/web-protocol'
+import { MAX_FRAME_BYTES } from '../../shared/web-protocol'
+import type { MirrorItem, MirrorSnapshot } from '../terminals/mirror-protocol'
 
 // The constants and frame types live in src/shared/web-protocol.ts, which the browser bridge
 // (src/renderer/web/bridge.ts) imports too; re-exported so main's side has one import point.
@@ -29,6 +34,8 @@ export type {
   ReadyFrame,
   ResultFrame,
   ServerFrame,
+  TermDataFrame,
+  TermSnapshotFrame,
   WebSnapshot
 } from '../../shared/web-protocol'
 
@@ -111,4 +118,74 @@ export function parseClientFrame(text: string): ClientFrame | { error: string } 
     return { t: 'invoke', id: f.id, ch: f.ch, p: f.p }
   }
   return { error: 'unknown frame' }
+}
+
+/**
+ * UTF-8 bytes JSON.stringify writes for one UTF-16 code unit inside a string (a surrogate pair is
+ * handled by the caller): `"` and `\` and the five short escapes take 2, other control characters
+ * `\u00XX` 6, a lone surrogate `\uDXXX` 6 (well-formed JSON.stringify), the rest their UTF-8 size.
+ */
+function jsonUnitBytes(c: number): number {
+  if (c === 0x22 || c === 0x5c) return 2
+  if (c < 0x20) return c === 0x08 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d ? 2 : 6
+  if (c < 0x80) return 1
+  if (c < 0x800) return 2
+  if (c >= 0xd800 && c <= 0xdfff) return 6
+  return 3
+}
+
+/**
+ * A snapshot as the `term.snapshot` frames a view gets, each at most `maxBytes` encoded. Split by
+ * the exact JSON size of each character, not a worst case: terminal output is mostly escapes
+ * (`\u001b`, 6 bytes for one character) and plain ASCII, so a fixed ratio would either waste most
+ * of a frame or overrun one. Never splits a surrogate pair (only the joined string matters to the
+ * page, but a part that stands alone as valid text is easier to debug). An empty screen is one part.
+ */
+export function termSnapshotFrames(tabId: string, snapshot: MirrorSnapshot, maxBytes = MAX_FRAME_BYTES): TermSnapshotFrame[] {
+  const { seq, cols, rows, data } = snapshot
+  // The frame around the data, with the widest part numbers it could carry.
+  const shell = frameBytes(
+    encodeFrame({ t: 'term.snapshot', tabId, seq, cols, rows, part: Number.MAX_SAFE_INTEGER, parts: Number.MAX_SAFE_INTEGER, data: '' })
+  )
+  const budget = maxBytes - shell
+  // Room for at least one character of any kind (a pair is 4, an escape 6).
+  if (budget < 6) throw new Error('frame cap too small for a terminal snapshot')
+  const pieces: string[] = []
+  let start = 0
+  let used = 0
+  for (let i = 0; i < data.length; ) {
+    const c = data.charCodeAt(i)
+    let units = 1
+    let bytes: number
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < data.length) {
+      const next = data.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        units = 2
+        bytes = 4
+      } else bytes = 6
+    } else bytes = jsonUnitBytes(c)
+    if (used + bytes > budget) {
+      pieces.push(data.slice(start, i))
+      start = i
+      used = 0
+    }
+    used += bytes
+    i += units
+  }
+  pieces.push(data.slice(start))
+  return pieces.map((piece, n) => ({ t: 'term.snapshot', tabId, seq, cols, rows, part: n + 1, parts: pieces.length, data: piece }))
+}
+
+/** A stream item as its `term.data` frame; null for `close` (the view is told with `tabs.removed`). */
+export function termDataFrame(tabId: string, item: MirrorItem): TermDataFrame | null {
+  switch (item.kind) {
+    case 'data':
+      return { t: 'term.data', tabId, seq: item.seq, data: item.data }
+    // A restart's spawn keeps the content (mirror-protocol.ts): for a view it is a size change.
+    case 'spawn':
+    case 'resize':
+      return { t: 'term.data', tabId, seq: item.seq, cols: item.cols, rows: item.rows }
+    case 'close':
+      return null
+  }
 }
