@@ -355,8 +355,27 @@ What changes in this design:
 - **Ground state** needs xterm's private parser fields; if they move, the check degrades to "always ready".
 - Over plain http on an IP nothing the page needs is missing (copy and paste go through xterm's own textarea).
 
-Not proved yet: main answering terminal queries, main as the flow consumer, a plugin panel over HTTP, cookies and
-devices, access through a proxy.
+**Spike 2** (branch `spike/web-plugin-panel`, on top of spike 1, not merged): the bundled Sessions panel, unchanged,
+live in the browser and on the desktop at once; a card click in the browser switched the browser's terminal only.
+Chromium (sandboxed iframe, opaque origin) enforced CSP path sources for `script-src`, `img-src` and
+`connect-src` (another plugin's path, the server root and the WebSocket all blocked); the page fetched its own files
+with `Access-Control-Allow-Origin: null`; storage, cookies and the parent's location stayed unreachable; a
+`MessagePort` handed into the sandboxed frame worked both ways; a self-navigated page got no port.
+
+What changes in this design:
+- **Root-absolute URLs break under `/p/<token>/`.** Pages load `/__sdk/panel.js` and `/dist/…`; under a prefix they
+  hit the server root and the CSP blocks them. The spike rewrites `src`/`href` in HTML; URLs built in JS or CSS still
+  fail. To decide in the plan: rewriting, a relative-URLs rule with a lint (and the guide changed), or a host name
+  per plugin (impossible on a bare IP or behind `tailscale serve`).
+- **The origin view leaks** through timers and promises started inside a listener (`AsyncLocalStorage`), so main
+  treats it as a hint and checks it against the asking host's project; the plan bounds it.
+- Plugin pages need `frame-ancestors <shell origin>` and the shell `frame-src 'self'`, built from the external origin
+  (https behind a proxy while main sees http).
+- `port.open` is started by the page on every load it began; main answers a refused connect with `port.close`.
+
+Not proved yet: overlays (the reviewer opens on the desktop only), slots (the sessions strip), settings pages,
+per-page replies, main answering terminal queries, main as the flow consumer, cookies and devices, access through a
+proxy.
 
 ## 8. Testing
 
