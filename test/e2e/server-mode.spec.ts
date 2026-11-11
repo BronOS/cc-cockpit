@@ -8,7 +8,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
-import { expectMainAlive, launchServer, type Server } from './server-fixtures'
+import type { WebCliStatus } from '../../src/shared/web-access'
+import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
@@ -200,6 +201,68 @@ test('server mode: a tab no browser sized is 120x40; a browser that attaches siz
     const rows = await page.locator('.terminal-view:not([hidden]) .xterm-rows > div').count()
     expect(Number(size![1])).toBe(rows)
     expect(`${size![1]} ${size![2]}`).not.toBe('40 120')
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+test('server mode: ccc web add-device signs a browser in once; stop and start brings the open page back by itself', async () => {
+  test.setTimeout(150_000)
+  // Link mode, the way a server runs: nobody is in until the person on the server mints a link.
+  server = await launchServer({ mode: 'link' })
+  const { port, origin } = server
+  // No link, no way in: the project list answers a stranger with 401 and nothing else.
+  const stranger = await fetch(`${origin}/api/projects`)
+  expect(stranger.status).toBe(401)
+  await stranger.body?.cancel()
+
+  const link = await addDeviceLink(server)
+  const browser = await openBrowser(link)
+  try {
+    const { page } = browser
+    // The link signed this browser in and left the address bar; the picker lists the open project.
+    await expect(page.getByRole('list', { name: 'Open projects' }).getByRole('link')).toHaveCount(1)
+    expect(page.url()).toBe(`${origin}/`)
+    // The shell's `ccc web status` lists the device the link made.
+    const status = JSON.parse((await ccc(server, ['web', 'status', '--json'])).stdout) as WebCliStatus
+    expect(status.devices.map((d) => d.mode)).toEqual(['add'])
+    // ...and the link is spent: a second use is refused.
+    const token = link.split('#t=')[1] ?? ''
+    const again = await fetch(`${origin}/auth/link`, {
+      method: 'POST',
+      headers: { Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, name: 'again' })
+    })
+    expect(again.status).toBe(401)
+    await again.body?.cancel()
+
+    await openProjectInBrowser(browser, origin, server.projectId)
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Shell' }).click()
+    await browser.waitForTerminalText('FAKE-SHELL ready')
+
+    // A server stop (`ccc web stop`: main sends itself SIGTERM, as systemd's stop does) ends the
+    // browsers' sockets with the retried close code: the page shows the host as away.
+    const exited = new Promise<void>((resolve) => server!.cockpit.app.process().once('exit', () => resolve()))
+    const stop = await ccc(server, ['web', 'stop'])
+    expect(stop.code, stop.stderr).toBe(0)
+    await exited
+    await expect(page.getByText('Host unreachable.')).toBeVisible({ timeout: 30_000 })
+    await server.close({ keepFiles: true })
+
+    // Start again on the same data dir and port: the device's cookie is still good, nobody asks for
+    // a link, and the open page comes back by itself (no reload, no click).
+    const root = server.cockpit.root
+    server = await launchServer({ mode: 'link', root, port })
+    await expect(page.getByText('Host unreachable.')).toBeHidden({ timeout: 60_000 })
+    await expect(page).toHaveURL(`${origin}/?project=${encodeURIComponent(server.projectId)}`)
+    // The page is live again: the project's tab (restored with the project) takes the browser's typing.
+    await browser.waitForTerminalText('FAKE-SHELL ready')
+    await page.locator('.terminal-view:not([hidden]) .xterm').click()
+    await page.keyboard.type('echo back-$((30+3))')
+    await page.keyboard.press('Enter')
+    await browser.waitForTerminalText('back-33', 20_000)
     await expectMainAlive(server)
   } finally {
     await browser.close()

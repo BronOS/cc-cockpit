@@ -662,18 +662,25 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Create: `test/e2e/server-secrets.spec.ts`
 - Modify: `test/e2e/server-fixtures.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] sign in through `ccc web add-device` (the data dir's wrapper, no tab token in its env) with the browser fixture;
+- [x] sign in through `ccc web add-device` (the data dir's wrapper, no tab token in its env) with the browser fixture;
       Task 2's mode None sign-in stays for the specs that do not test sign-in
-- [ ] a server stop and start on the same data dir: the open browser page comes back by itself (Task 8's close code)
-- [ ] `server-secrets.spec.ts`, with no session bus (the dead `DBUS_SESSION_BUS_ADDRESS` and the temp
+- [x] a server stop and start on the same data dir: the open browser page comes back by itself (Task 8's close code)
+- [x] `server-secrets.spec.ts`, with no session bus (the dead `DBUS_SESSION_BUS_ADDRESS` and the temp
       `XDG_RUNTIME_DIR`) and no fake secret store: `ccc web password`, sign in, restart, sign in again; `secret.key`
       exists with mode 0600
-- [ ] **plan-time check, `shell.trashItem` with no session bus** (the spike did not run it): one call through the real
+- [x] **plan-time check, `shell.trashItem` with no session bus** (the spike did not run it): one call through the real
       `shell` in the harness; record whether the file reaches the trash or the call fails cleanly. It records what this
       machine does, where `gio` is installed: a stock server may lack it, which Task 16's unit test and the
       Post-Completion list cover. Task 16's e2e expects whichever it is here; a crash or a hang is a ⚠️ for the owner
-- [ ] existing e2e specs still pass
-- [ ] run `npm run test:e2e` - must pass before next task
+      **Result (2026-11-11, Electron 45.1.0, `gio` installed, dead bus, temp `XDG_RUNTIME_DIR` and `HOME`): the call
+      fails cleanly.** `shell.trashItem` rejects with "Failed to move item to trash" within a few ms, the file stays
+      where it was, main lives (no crash, no hang). `gio trash` run by hand in the same environment succeeds, so
+      Electron 45 does not reach the trash through `gio` here (most likely D-Bus); the cause was not traced. So in
+      server mode on this machine a trash from `ctx.files.trash` ends in the rejection path: Task 16's e2e expects an
+      error reply and the file left in place, not a trashed file. The spec accepts either clean end
+      (`server-secrets.spec.ts`)
+- [x] existing e2e specs still pass (240 passed; the two known window-bounds specs fail on base too)
+- [x] run `npm run test:e2e` - must pass before next task
 
 ### Task 14: A desktop launch meets a server [model: opus]
 

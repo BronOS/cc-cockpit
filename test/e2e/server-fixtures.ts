@@ -13,9 +13,11 @@
 // and no session bus: a dead DBUS_SESSION_BUS_ADDRESS and a temp XDG_RUNTIME_DIR (unsetting the
 // address alone is not enough on a systemd desktop: libdbus then finds $XDG_RUNTIME_DIR/bus).
 //
-// Sign-in: `app.json` is pre-written with web access on, a random loopback port and mode None, as
-// the smoke script does (server mode does not turn web access on by itself yet, and `ccc web
-// add-device` does not exist yet), so any browser on this machine is in with no link.
+// Sign-in: `app.json` is pre-written with web access on, a random loopback port and mode None by
+// default, as the smoke script does, so any browser on this machine is in with no link: the specs
+// that do not test sign-in use it. A spec that does passes `mode: 'link'` (or 'password') and signs
+// in the way a person on the server does, through `ccc web add-device` / `ccc web password` run
+// from the data dir's wrapper (`ccc`, below).
 //
 // Linux only: server mode refuses to start anywhere else. Specs call `test.skip` on other platforms.
 //
@@ -23,6 +25,7 @@
 // headless process, `firstWindow()` resolves to the hidden page (the project shell, `.tabs-pane`)
 // and the hooks on `__ccTest` answer (`serverMode()` is true), so server specs may use `cockpit.hook`.
 import { expect } from '@playwright/test'
+import { execFile } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +34,21 @@ import { launchCockpit, type Cockpit, type LaunchOptions } from './fixtures'
 
 /** The switches the re-exec appends (server-mode.ts), with `--server` in front. */
 export const SERVER_SWITCHES = ['--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic']
+
+export interface ServerOptions extends Pick<LaunchOptions, 'env' | 'root'> {
+  /** The sign-in mode written to a fresh `app.json`. Default 'none' (any browser on this machine is in). */
+  mode?: 'none' | 'link' | 'password'
+  /**
+   * The gateway's port. Default: a random one (a taken one is retried). Pass it with `root` to start
+   * again on the data dir of an earlier run, whose `app.json` already holds it.
+   */
+  port?: number
+  /**
+   * Keep CC_COCKPIT_FAKE_SECRETS=1 (the default, as every launch). False removes it from the app's
+   * env, so the real server-mode store runs: the key file (server-secrets.spec.ts).
+   */
+  fakeSecrets?: boolean
+}
 
 export interface Server {
   /** The app as launchCockpit returns it: `page` is the hidden page, `hook` reaches main. */
@@ -50,18 +68,20 @@ export interface Server {
  * mode None on a random loopback port. A port that is taken (the gateway's state `failed`) is tried
  * again with another in a fresh launch, so a busy port on the machine cannot fail the spec.
  */
-export async function launchServer(options: Pick<LaunchOptions, 'env'> = {}): Promise<Server> {
+export async function launchServer(options: ServerOptions = {}): Promise<Server> {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const port = 20000 + Math.floor(Math.random() * 20000)
+    const port = options.port ?? 20000 + Math.floor(Math.random() * 20000)
     // mkdtemp makes it 0700, as an XDG_RUNTIME_DIR must be.
     const runtime = mkdtempSync(join(tmpdir(), 'ccc-e2e-run-'))
     const { cockpit, close } = await launchCockpit({
       args: SERVER_SWITCHES,
+      ...(options.root !== undefined ? { root: options.root } : {}),
       settings: {
         updateCheck: false,
-        webAccess: { enabled: true, bind: '127.0.0.1', port, mode: 'none', hosts: [] }
+        webAccess: { enabled: true, bind: '127.0.0.1', port, mode: options.mode ?? 'none', hosts: [] }
       },
       env: {
+        ...(options.fakeSecrets === false ? { CC_COCKPIT_FAKE_SECRETS: undefined } : {}),
         DISPLAY: undefined,
         WAYLAND_DISPLAY: undefined,
         DBUS_SESSION_BUS_ADDRESS: 'unix:path=/nonexistent/bus',
@@ -85,7 +105,9 @@ export async function launchServer(options: Pick<LaunchOptions, 'env'> = {}): Pr
         })
         .toBe(true)
       if (state === 'failed') {
-        await closeAll()
+        await closeAll(options.root !== undefined ? { keepFiles: true } : undefined)
+        // A port the caller named is not ours to change.
+        if (options.port !== undefined) throw new Error(`the gateway cannot listen on port ${options.port}`)
         continue
       }
       expect(state).toBe('listening')
@@ -125,4 +147,41 @@ export async function expectMainAlive(server: Server): Promise<void> {
   const res = await fetch(`${server.origin}/`)
   expect(res.status).toBe(200)
   await res.body?.cancel()
+}
+
+export interface CccResult {
+  code: number
+  stdout: string
+  stderr: string
+}
+
+/**
+ * `ccc` as a person on the server runs it: the data dir's own wrapper (`<data>/bin/ccc`, written at
+ * start) from a shell with no tab in its env, which is the only caller `ccc web` serves. The env is
+ * built from nothing (no CC_COCKPIT_SOCK, APP_TAB_*, CLAUDE_CODE_* of the shell running the suite);
+ * the wrapper names the data dir itself. `input` is stdin (a password), then closed. Bounded: the
+ * CLI's own deadlines are 40 s.
+ */
+export function ccc(server: Server, args: string[], input?: string): Promise<CccResult> {
+  const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: join(server.cockpit.root, 'home'), LANG: 'C.UTF-8' }
+  return new Promise((resolve) => {
+    const child = execFile(
+      join(server.cockpit.dataDir, 'bin', 'ccc'),
+      args,
+      { env, timeout: 45_000 },
+      (err, stdout, stderr) => {
+        resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, stdout, stderr })
+      }
+    )
+    child.stdin?.end(input ?? '')
+  })
+}
+
+/** The one link `ccc web add-device` prints on stdout (what it is goes to stderr). */
+export async function addDeviceLink(server: Server): Promise<string> {
+  const res = await ccc(server, ['web', 'add-device'])
+  const link = res.stdout.trim()
+  expect(res.code, `ccc web add-device failed: ${res.stderr}`).toBe(0)
+  expect(link.startsWith(`${server.origin}/#t=`), `unexpected link ${link}`).toBe(true)
+  return link
 }
