@@ -24,6 +24,7 @@ export class ApprovalArm {
   private timer: unknown
   private armedNow = false
   private disposed = false
+  private lastVisible: boolean | undefined
 
   constructor(
     private readonly onChange: (armed: boolean) => void,
@@ -37,6 +38,12 @@ export class ApprovalArm {
 
   visible(on: boolean): void {
     if (this.disposed) return
+    // The same state again changes nothing. A window `focus` event also fires when the focus moves
+    // from a plugin's frame inside the page to the page itself (the press on Allow after a right
+    // click in the Files panel): the window had the focus all along, and restarting the second there
+    // would disable Allow under the very press that was meant for it (plan Task 16).
+    if (on === this.lastVisible) return
+    this.lastVisible = on
     this.stop()
     if (!on) {
       this.set(false)

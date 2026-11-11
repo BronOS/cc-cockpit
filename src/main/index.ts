@@ -91,6 +91,7 @@ import { chooseLinkConfirm, LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
+import { chooseTrashConfirm, TrashAsks } from './files/trash-asks'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
@@ -588,21 +589,34 @@ function start(server: boolean): void {
   let quitting = false
   // Set when server mode's start order failed (server-start.ts): will-quit ends the run with status 1.
   let startFailed = false
-  // ctx.files.reveal / openWithSystem / trash (files/system-files.ts): `shell` through its adapter,
-  // and the Move to Trash confirm as a sheet on the project's window; in a test run the dialog is
-  // QueuedTrashConfirm, driven by the `answerTrash` and `trashDialogs` hooks, and the e2e replaces
-  // the three `shell` calls with recorders. Lambdas: `windows` is defined just below.
+  // ctx.files.reveal / openWithSystem / trash (files/system-files.ts): `shell` through its adapter.
+  // The Move to Trash confirm (files/trash-asks.ts chooseTrashConfirm): in server mode, or on the
+  // desktop while a browser view is attached, an in-page shared ask on every view of the window
+  // (first answer wins, `trash.settled` to the others, 5 min then not moved); otherwise the native
+  // box as a sheet on the project's window, which in a test run is QueuedTrashConfirm, driven by the
+  // `answerTrash` and `trashDialogs` hooks (never in server mode: the queued fake would answer what
+  // the browser should). The e2e replaces the three `shell` calls with recorders. Lambdas: `windows`
+  // is defined just below.
   const testTrashConfirm = testRun ? new QueuedTrashConfirm() : undefined
+  const trashAsks = new TrashAsks({
+    send: (windowId, ask) => views.toWindow(windowId, 'trash.ask', ask),
+    settled: (windowId, requestId) => views.toWindow(windowId, 'trash.settled', { requestId })
+  })
   const systemFiles = new SystemFiles({
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     shell: electronSystemShell,
-    confirmTrash:
-      testTrashConfirm?.confirm ??
-      electronConfirmTrash({
-        windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
-        showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
-      })
+    confirmTrash: chooseTrashConfirm({
+      server,
+      hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+      shared: trashAsks.ask,
+      native:
+        testTrashConfirm?.confirm ??
+        electronConfirmTrash({
+          windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
+          showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
+        })
+    })
   })
   // Closing a window that browsers have open asks first (design-web.md §5.6, windows/close-dialog.ts):
   // close for everyone, or keep it running hidden for them. In a test run the dialog is
@@ -712,6 +726,7 @@ function start(server: boolean): void {
       // A plugin's close waiting on this window's dialog is answered: not closed by it.
       closeAsks.windowClosed(windowId)
       linkAsks.windowClosed(windowId)
+      trashAsks.windowClosed(windowId)
     },
     // The folder went missing between the close and the new window (WindowManager logs it): the
     // project is closed after all. Its queued plan goes, as when a launch cannot open a window;
@@ -2422,7 +2437,7 @@ function start(server: boolean): void {
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
-    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks, server }, ctx),
+    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, server }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),
@@ -2495,7 +2510,8 @@ function start(server: boolean): void {
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
     closeAnswer: (windowId, viewId, requestId, answer) => closeAsks.answer(windowId, viewId, requestId, answer),
-    linkAnswer: (windowId, requestId, allow, remote) => linkAsks.answer(windowId, requestId, allow, { remote })
+    linkAnswer: (windowId, requestId, allow, remote) => linkAsks.answer(windowId, requestId, allow, { remote }),
+    trashAnswer: (windowId, requestId, move) => trashAsks.answer(windowId, requestId, move)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

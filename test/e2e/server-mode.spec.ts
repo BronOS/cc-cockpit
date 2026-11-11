@@ -5,7 +5,7 @@
 //
 // Markers are printed by shell arithmetic (`echo srv-$((40+2))` prints srv-42), so the command line
 // echoed back never contains the text a step waits for: only the shell's output does.
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -326,6 +326,58 @@ test('server mode: ccc plugin link from a tab is Allowed in the browser; the plu
         timeout: 20_000
       })
       .toBe('active')
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+// plan Task 16: ctx.files.trash in server mode is a shared ask the browser answers (never a native
+// box, which aborts main under Ozone headless, nor the test run's queued fake), through the real
+// `shell` with no session bus. Task 13 recorded that `shell.trashItem` rejects cleanly here ("Failed to
+// move item to trash", the file stays): the Files panel then shows "not moved" with the reason. A
+// machine where the call succeeds trashes the file; either clean end passes, and main lives.
+test('server mode: Move to Trash from Files is confirmed in the browser; the result reaches the panel, main lives', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  const { cockpit } = server
+  const file = join(cockpit.projectDir, 'to-trash.txt')
+  writeFileSync(file, 'x')
+  await expect
+    .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.files')?.state, {
+      timeout: 20_000
+    })
+    .toBe('active')
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const section = page.locator('section.panel[aria-label="Files"]')
+    if (!(await section.isVisible())) await page.locator('.zone-left').getByRole('button', { name: /^Files/ }).click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    const tree = page.frameLocator('section.panel[aria-label="Files"] iframe')
+    const row = tree.locator('.row', { has: tree.locator('.name', { hasText: /^to-trash\.txt$/ }) })
+    await expect(row).toBeVisible()
+    await row.click({ button: 'right' })
+    await tree.getByRole('menu').getByRole('menuitem', { name: 'Move to Trash' }).click()
+
+    // The guarded dialog in the browser, the file name as plain text; Move armed after a second.
+    const dialog = page.getByRole('alertdialog', { name: /Move the file to-trash\.txt to the Trash/ })
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('cockpit.files')
+    const move = dialog.getByRole('button', { name: 'Move to Trash' })
+    await expect(move).toBeEnabled({ timeout: 5_000 })
+    // The queued fake was not asked: the browser is.
+    expect(await cockpit.hook<unknown[]>('trashDialogs')).toEqual([])
+    await move.click()
+    await expect(dialog).toHaveCount(0)
+
+    const error = tree.locator('#error')
+    await expect.poll(async () => (existsSync(file) ? ((await error.textContent()) ?? '') : 'trashed'), { timeout: 20_000 }).toMatch(/trashed|not moved to the Trash: /)
+    if (existsSync(file)) {
+      await expect(error).toContainText('to-trash.txt was not moved to the Trash: Failed to move item to trash')
+      console.log(`Move to Trash in server mode: ${await error.textContent()}`)
+    }
     await expectMainAlive(server)
   } finally {
     await browser.close()

@@ -2,7 +2,7 @@
 // dialog (files/trash-dialog.ts) and the runnable list (shared/runnable-files.ts): real temp
 // folders and symlinks, a recording SystemShell in place of Electron's, and a queued confirm. The
 // HostApi half (budgets, one dialog at a time, the caller from the host's scope) is at the end.
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -273,6 +273,20 @@ describe('SystemFiles', () => {
     })
     await expect(linking.trash(callerA, 'src', 'p')).rejects.toThrow(/outside the project|changed/)
     expect(calls).toEqual([])
+  })
+
+  it('trash: a trashItem that rejects (no gio, no session bus, no Trash on the volume) answers "not moved" with the reason', async () => {
+    // Electron 45's text on a server with no session bus (plan Task 13), with a control character
+    // the reason must not carry into the plugin's error line.
+    const rejecting: SystemShell = { ...shell, trashItem: async () => Promise.reject(new Error('Failed to move item\u0007 to trash')) }
+    const sf = new SystemFiles({ projectPath: () => projA, windowOf: () => WIN_A, shell: rejecting, confirmTrash: async () => true })
+    await expect(sf.trash(callerA, 'notes.txt', 'cockpit.files')).rejects.toThrow('notes.txt was not moved to the Trash: Failed to move item to trash')
+    // A rejection with no message still says why.
+    const bare: SystemShell = { ...shell, trashItem: () => Promise.reject(new Error('')) }
+    const sf2 = new SystemFiles({ projectPath: () => projA, windowOf: () => WIN_A, shell: bare, confirmTrash: async () => true })
+    await expect(sf2.trash(callerA, 'notes.txt', 'cockpit.files')).rejects.toThrow('not moved to the Trash: the system could not move it')
+    // The file stays where it was.
+    expect(readFileSync(join(projA, 'notes.txt'), 'utf8')).toBe('x')
   })
 
   it('trash dialog text is display-safe: control and bidi characters in a name are dropped', async () => {

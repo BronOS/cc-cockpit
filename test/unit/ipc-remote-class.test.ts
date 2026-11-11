@@ -61,6 +61,11 @@ describe('REMOTE_CLASS drift', () => {
   it.each(['app.openExternal', 'updates.openRelease', 'notify.soundData', 'tabs.list', 'tabs.ack', 'tabs.selected', 'tabs.data', 'links.answer'])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })
+
+  // The Move to Trash confirm (files/trash-asks.ts): a trash started from a browser is answered there.
+  it.each(['trash.ask', 'trash.settled', 'trash.answer'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
 })
 
 // Every channel whose name says it manages web access is `no`: a channel added later under these names

@@ -2,19 +2,20 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
-import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeAction, type LinkAsk } from './notice-state'
+import { addLinkAsk, addSharedAsk, canAllowLink, dropLinkAsk, dropSharedAsk, linkNoticeAction, type LinkAsk, type TrashAsk } from './notice-state'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
  * (design-web.md §6.1): a clickable notice for a link the host would have opened in its browser,
- * and the in-page confirm of `ccc plugin link`. Both come from main as events, so they work the
- * same in the Electron window and in the web shell.
+ * the in-page confirm of `ccc plugin link` and the in-page Move to Trash confirm. All come from main
+ * as events, so they work the same in the Electron window and in the web shell.
  */
 export function ShellNotices(): React.JSX.Element {
   return (
     <>
       <LinkNotice />
       <LinkConfirm />
+      <TrashConfirm />
     </>
   )
 }
@@ -94,6 +95,61 @@ function LinkConfirm(): React.JSX.Element | null {
     )
   }
   return <LinkDialog key={ask.requestId} ask={ask} canAllow={canAllowLink(isWebShell())} onAnswer={onAnswer} />
+}
+
+/**
+ * `trash.ask`: ctx.files.trash's confirm (main/files/trash-asks.ts) in server mode, or on the desktop
+ * while a browser view is attached. Every view of the window shows it, the first answer wins and
+ * `trash.settled` takes it down in the others; any view may answer. The guarded ApprovalDialog
+ * everywhere: it takes no focus from a terminal and arms Move a second after it is seen, so neither a
+ * key typed for Claude nor a click on its way moves anything. The path and the plugin id are plain
+ * text (React escapes them; main made them display-safe).
+ */
+function TrashConfirm(): React.JSX.Element | null {
+  const [asks, setAsks] = useState<readonly TrashAsk[]>([])
+  useEffect(() => {
+    const offAsk = window.cockpit.on('trash.ask', (ask) => setAsks((prev) => addSharedAsk(prev, ask)))
+    const offSettled = window.cockpit.on('trash.settled', ({ requestId }) => setAsks((prev) => dropSharedAsk(prev, requestId)))
+    return () => {
+      offAsk()
+      offSettled()
+    }
+  }, [])
+  const ask = asks[0]
+  if (!ask) return null
+  const onAnswer = (move: boolean): void => {
+    setAsks((prev) => dropSharedAsk(prev, ask.requestId))
+    window.cockpit.invoke('trash.answer', { requestId: ask.requestId, move }).catch(() => {})
+  }
+  return (
+    <ApprovalDialog
+      key={ask.requestId}
+      title={<TrashAskTitle ask={ask} />}
+      canAllow
+      allowLabel="Move to Trash"
+      denyLabel="Cancel"
+      onAnswer={onAnswer}
+    >
+      <TrashAskText ask={ask} />
+    </ApprovalDialog>
+  )
+}
+
+export function TrashAskTitle({ ask }: { ask: TrashAsk }): React.JSX.Element {
+  return (
+    <>
+      Move the {ask.kind === 'folder' ? 'folder' : 'file'} <code>{ask.path}</code> to the Trash?
+    </>
+  )
+}
+
+export function TrashAskText({ ask }: { ask: TrashAsk }): React.JSX.Element {
+  return (
+    <p>
+      The plugin <code>{ask.pluginId}</code> asked to move it{ask.kind === 'folder' ? ', with everything in it' : ''}. It can be restored
+      from the Trash on the host.
+    </p>
+  )
 }
 
 /** The id first: the name is the plugin's own text and could imitate a second parenthesis. */

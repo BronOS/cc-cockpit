@@ -376,6 +376,65 @@ test('the Files menu in the browser has no Reveal nor Open with default app; the
   }
 })
 
+// 2d. Move to Trash from a browser view (plan Task 16): with a browser attached the confirm is a
+// shared ask on every view, not the desktop's native box (here the test run's queued fake, which must
+// not be asked). The browser that asked answers it; the desktop's copy goes down unanswered.
+
+test('Move to Trash from the browser is confirmed in the browser; the desktop’s copy goes down, no native box', async () => {
+  test.setTimeout(120_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  let browser: WebBrowser | undefined
+  try {
+    writeFileSync(join(c.projectDir, 'gone.md'), 'g\n')
+    // shell.trashItem replaced with a recorder that removes the file, as files-menu.spec does:
+    // nothing from a test run reaches the real Trash.
+    await c.app.evaluate(({ shell }) => {
+      const g = globalThis as { __trashed?: string[] }
+      g.__trashed = []
+      const fs = process.getBuiltinModule('node:fs') as typeof import('node:fs')
+      shell.trashItem = (p: string) => {
+        g.__trashed!.push(p)
+        fs.rmSync(p, { recursive: true, force: true })
+        return Promise.resolve()
+      }
+    })
+    await expect
+      .poll(async () => (await c.hook<HostStatus>('hostStatus', c.projectDir)).plugins.find((p) => p.id === 'cockpit.files')?.state, {
+        timeout: 15_000
+      })
+      .toBe('active')
+    const web = await enableWebAccess(c)
+    browser = await joinProject(web)
+    const page = browser.page
+    const section = page.locator('section.panel[aria-label="Files"]')
+    if (!(await section.isVisible())) await page.locator('.zone-left').getByRole('button', { name: /^Files/ }).click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    const tree = page.frameLocator('section.panel[aria-label="Files"] iframe')
+    const row = tree.locator('.row', { has: tree.locator('.name', { hasText: /^gone\.md$/ }) })
+    await expect(row).toBeVisible()
+    await row.click({ button: 'right' })
+    await tree.getByRole('menu').getByRole('menuitem', { name: 'Move to Trash' }).click()
+
+    const name = /Move the file gone\.md to the Trash/
+    const webDialog = page.getByRole('alertdialog', { name })
+    const deskDialog = c.page.getByRole('alertdialog', { name })
+    await expect(webDialog).toBeVisible()
+    await expect(deskDialog).toBeVisible()
+    const move = webDialog.getByRole('button', { name: 'Move to Trash' })
+    await expect(move).toBeEnabled({ timeout: 5_000 })
+    await move.click()
+    await expect(webDialog).toHaveCount(0)
+    await expect(deskDialog).toHaveCount(0)
+    await expect.poll(() => c.app.evaluate(() => (globalThis as { __trashed?: string[] }).__trashed)).toEqual([join(c.projectDir, 'gone.md')])
+    // The desktop's native box (the queued fake in a test run) was never asked.
+    expect(await c.hook<unknown[]>('trashDialogs')).toEqual([])
+    await expect(row).toHaveCount(0)
+  } finally {
+    await browser?.close()
+    await close()
+  }
+})
+
 // ---------------------------------------------------------------------------------------------
 // 3. Security end to end
 

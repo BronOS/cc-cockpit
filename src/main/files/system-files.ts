@@ -23,7 +23,7 @@ import { lstat, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { runnableByName } from '../../shared/runnable-files'
 import { within } from '../path-within'
-import { displayPath } from '../plugins/link-request'
+import { displayPath, displayText } from '../plugins/link-request'
 import { checkRelativePath } from '../sessions/open-file'
 
 /** The three `shell` calls, as Electron types them (Electron 45 `shell`). */
@@ -180,7 +180,15 @@ export class SystemFiles {
     if (again.target !== first.target || !after || after.ino !== before.ino || after.dev !== before.dev) {
       throw new Error(`${first.rel} changed while the confirmation was open; nothing was moved`)
     }
-    await this.deps.shell.trashItem(again.target)
+    // A system that cannot move it (no `gio` or no session bus on a stock server, a volume with no
+    // Trash) rejects: the plugin gets "not moved" with the system's reason, which it shows in the view
+    // that asked, and the file stays where it was. The reason is display-safe like the dialog's text.
+    try {
+      await this.deps.shell.trashItem(again.target)
+    } catch (err) {
+      const reason = displayText(err instanceof Error ? err.message : String(err)) || 'the system could not move it'
+      throw new Error(`${first.rel} was not moved to the Trash: ${reason}`, { cause: err })
+    }
     return true
   }
 }

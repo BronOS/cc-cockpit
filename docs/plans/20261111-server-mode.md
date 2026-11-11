@@ -745,23 +745,23 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/system-files.test.ts`, `ipc-remote-class.test.ts`, `test/e2e/server-mode.spec.ts`,
   `test/e2e/web-access-plugins.spec.ts`
 
-- [ ] `TrashAsks` on the shared-ask core: first answer wins, 5 min then "not moved", pending ones in `ready`; the file
+- [x] `TrashAsks` on the shared-ask core: first answer wins, 5 min then "not moved", pending ones in `ready`; the file
       name shown as plain text in an `ApprovalDialog`
-- [ ] chosen as `chooseLinkConfirm` chooses: always in server mode (never the queued fake); on the desktop while a
+- [x] chosen as `chooseLinkConfirm` chooses: always in server mode (never the queued fake); on the desktop while a
       browser is attached, on every view, so a trash started from a browser no longer waits on a native box nobody
       there can see; with no browser, the native confirm as before. The ask goes out through `ViewRegistry` to the
       window's views (Task 4's method for the browser views in server mode)
-- [ ] the three channels with their `REMOTE_CLASS` in the same change; an answer is taken from any view of the window
+- [x] the three channels with their `REMOTE_CLASS` in the same change; an answer is taken from any view of the window
       main bound, for an ask that is pending there
-- [ ] a `trashItem` that rejects (no `gio` on a stock server, no trash on the volume) answers "not moved" with the
+- [x] a `trashItem` that rejects (no `gio` on a stock server, no trash on the volume) answers "not moved" with the
       reason, shown in the asking view, and main lives
-- [ ] write tests: first answer wins, the timeout denies, a joining view gets the pending ask, the desktop takes it with
+- [x] write tests: first answer wins, the timeout denies, a joining view gets the pending ask, the desktop takes it with
       a browser attached and keeps the native box without one, an answer for another window's ask refused, an answer
       for an unknown or settled ask refused; a recorder `SystemShell` whose `trashItem` rejects gives "not moved" with
       the reason
-- [ ] e2e, server mode (bundled plugins on, the real `shell`, no session bus): trash a file from Files, confirm in the
+- [x] e2e, server mode (bundled plugins on, the real `shell`, no session bus): trash a file from Files, confirm in the
       browser, the result Task 13 recorded, main alive; desktop with a browser: a trash from the browser answered there
-- [ ] run tests, `npm run test:plugins` and `npm run test:e2e` (`server-mode`, `files-menu`, `web-access-plugins`) -
+- [x] run tests, `npm run test:plugins` and `npm run test:e2e` (`server-mode`, `files-menu`, `web-access-plugins`) -
       must pass before next task
 
 ### Task 17: Projects from the browser: open and reopen [model: opus]

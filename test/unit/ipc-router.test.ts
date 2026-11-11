@@ -892,6 +892,10 @@ describe('registerSessionHandlers', () => {
         calls.push(['linkAnswer', windowId, requestId, allow, remote])
         return true
       },
+      trashAnswer: (windowId, requestId, move) => {
+        calls.push(['trashAnswer', windowId, requestId, move])
+        return true
+      },
       snapshotFor: (projectId) => {
         calls.push(['snapshotFor', projectId])
         return { own: [] }
@@ -944,6 +948,21 @@ describe('registerSessionHandlers', () => {
       ['linkAnswer', 1, 'link-1', true, true],
       ['linkAnswer', 1, 'link-1', false, true]
     ])
+  })
+
+  it('trash.answer passes the sender’s window, never one from the payload, from any view, and checks the shape', async () => {
+    const { ipc, router, calls } = sessionsSetup()
+    await expect(ipc.invoke('trash.answer', 12, [{ requestId: 'trash-1', move: true, windowId: 1 }])).resolves.toBe(true)
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'trash.answer', { requestId: 'trash-2', move: false, windowId: 2 })
+    expect(calls).toEqual([
+      ['trashAnswer', 2, 'trash-1', true],
+      ['trashAnswer', 1, 'trash-2', false]
+    ])
+    await expect(ipc.invoke('trash.answer', 12, [{ requestId: 'trash-1', move: 'yes' }])).rejects.toThrow()
+    await expect(ipc.invoke('trash.answer', 12, [{ requestId: 3, move: true }])).rejects.toThrow()
+    await expect(ipc.invoke('trash.answer', 13, [{ requestId: 'trash-1', move: true }])).rejects.toThrow()
+    expect(calls).toHaveLength(2)
   })
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {

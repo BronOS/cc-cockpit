@@ -130,6 +130,8 @@ export interface SnapshotSources {
   closeAsks: { pendingFor(windowId: number): Array<{ requestId: string; tabId: string }> }
   /** A plain read of the window's pending `ccc plugin link` confirms (LinkAsks.pendingFor). */
   linkAsks: { pendingFor(windowId: number): WebSnapshot['linkAsks'] }
+  /** A plain read of the window's pending Move to Trash confirms (TrashAsks.pendingFor). Absent: none. */
+  trashAsks?: { pendingFor(windowId: number): NonNullable<WebSnapshot['trashAsks']> }
   /** Main's server-mode flag, passed on as `WebSnapshot.server` (a UI hint). Absent: false. */
   server?: boolean
 }
@@ -144,6 +146,7 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
     overlays: sources.overlays.infos(windowId),
     closeAsks: sources.closeAsks.pendingFor(windowId),
     linkAsks: sources.linkAsks.pendingFor(windowId),
+    trashAsks: sources.trashAsks?.pendingFor(windowId) ?? [],
     server: sources.server === true
   }
 }

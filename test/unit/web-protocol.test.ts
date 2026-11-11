@@ -12,6 +12,7 @@ import type { EventChannel, LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { LinkAsks } from '../../src/main/plugins/link-asks'
+import { TrashAsks } from '../../src/main/files/trash-asks'
 import { OverlayManager } from '../../src/main/overlays/overlay-manager'
 import { LayoutService } from '../../src/main/layout/layout-service'
 import { defaultLayout, type LayoutState } from '../../src/shared/layout'
@@ -978,7 +979,7 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
 describe('shared asks', () => {
   function sharedSetup(opts: { server?: boolean } = {}) {
     // Filled in below: `snapshot` reads them lazily, at each hello.
-    const late = {} as { asks: CloseAsks; links: LinkAsks; overlays: OverlayManager }
+    const late = {} as { asks: CloseAsks; links: LinkAsks; trash: TrashAsks; overlays: OverlayManager }
     const ctx = setup({
       snapshot: ((c: ProjectContext) =>
         windowSnapshot(
@@ -988,6 +989,7 @@ describe('shared asks', () => {
             overlays: late.overlays,
             closeAsks: late.asks,
             linkAsks: late.links,
+            trashAsks: late.trash,
             ...(opts.server !== undefined ? { server: opts.server } : {})
           },
           c
@@ -1010,8 +1012,13 @@ describe('shared asks', () => {
       undefined,
       { server: opts.server === true }
     ))
+    const trash = (late.trash = new TrashAsks({
+      send: (windowId, ask) => views.toWindow(windowId, 'trash.ask', ask),
+      settled: (windowId, requestId) => views.toWindow(windowId, 'trash.settled', { requestId })
+    }))
     registerSessionHandlers(router, {
       linkAnswer: (windowId, requestId, allow, remote) => links.answer(windowId, requestId, allow, { remote }),
+      trashAnswer: (windowId, requestId, move) => trash.answer(windowId, requestId, move),
       snapshotFor: () => ({ own: [] }) as never,
       cancelQueued: () => false,
       closeAnswer: (windowId, viewId, requestId, answer) => asks.answer(windowId, viewId, requestId, answer)
@@ -1032,7 +1039,7 @@ describe('shared asks', () => {
       log: () => {}
     }))
     router.handleProject('overlays.close', (c, payload) => overlays.close(c.windowId, (payload as { overlayId: string }).overlayId))
-    return { ...ctx, asks, links, overlays, backend }
+    return { ...ctx, asks, links, trash, overlays, backend }
   }
 
   const answers = (ws: FakeWs): unknown[] => ws.frames('result').map((f) => (f.ok === true ? f.v : f.err))
@@ -1117,6 +1124,41 @@ describe('shared asks', () => {
     await expect(result).resolves.toBe(false)
     expect(desktop.send).toHaveBeenCalledWith('links.settled', { requestId: 'link-1' })
     expect(events(web, 'links.settled')).toEqual([{ requestId: 'link-1' }])
+  })
+
+  // plan Task 16: the Move to Trash confirm, a shared ask any view of the window may answer.
+  it('trash confirm: every view is asked, a late join sees it in ready, another window is refused, a browser’s Move settles all', async () => {
+    const { connect, desktop, trash } = sharedSetup()
+    const early = connect('p1')
+    const info = { path: 'src/a.ts', kind: 'file' as const, pluginId: 'cockpit.files' }
+    const result = trash.ask(1, info)
+    const ask = { requestId: 'trash-1', ...info }
+    expect(desktop.send).toHaveBeenCalledWith('trash.ask', ask)
+    expect(events(early, 'trash.ask')).toEqual([ask])
+    const late = connect('p1')
+    expect((late.frames('ready')[0]!.snapshot as { trashAsks: unknown }).trashAsks).toEqual([ask])
+    const foreign = connect('p2')
+    foreign.feed({ t: 'invoke', id: 1, ch: 'trash.answer', p: { requestId: 'trash-1', move: true } })
+    await flush()
+    expect(answers(foreign)).toEqual([false])
+    expect(trash.size).toBe(1)
+    // A malformed answer is an error, never a move.
+    early.feed({ t: 'invoke', id: 1, ch: 'trash.answer', p: { requestId: 'trash-1', move: 'yes' } })
+    await flush()
+    expect(trash.size).toBe(1)
+    // The browser that joined late answers Move: taken (any view of the window may), all are told.
+    late.feed({ t: 'invoke', id: 1, ch: 'trash.answer', p: { requestId: 'trash-1', move: true } })
+    await flush()
+    expect(answers(late)).toEqual([true])
+    await expect(result).resolves.toBe(true)
+    expect(desktop.send).toHaveBeenCalledWith('trash.settled', { requestId: 'trash-1' })
+    expect(events(early, 'trash.settled')).toEqual([{ requestId: 'trash-1' }])
+    expect(events(foreign, 'trash.settled')).toEqual([])
+    // Settled: a second answer finds nothing, and a later join no longer sees it.
+    early.feed({ t: 'invoke', id: 2, ch: 'trash.answer', p: { requestId: 'trash-1', move: false } })
+    await flush()
+    expect(answers(early).at(-1)).toBe(false)
+    expect((connect('p1').frames('ready')[0]!.snapshot as { trashAsks: unknown }).trashAsks).toEqual([])
   })
 
   // design-web.md §9.6: in server mode every signed-in view is the owner. The router binds the view;

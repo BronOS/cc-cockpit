@@ -1,9 +1,11 @@
 // The state behind ShellNotices.tsx, DOM-free so unit tests run it in plain Node (the renderer has no
-// component harness): which link a notice may show, and the queue of pending `ccc plugin link` asks.
+// component harness): which link a notice may show, and the queues of pending `ccc plugin link` and
+// Move to Trash asks.
 
 import type { IpcEventMap } from '../../shared/ipc'
 
 export type LinkAsk = IpcEventMap['links.ask']
+export type TrashAsk = IpcEventMap['trash.ask']
 
 /**
  * The address an `app.linkNotice` may show, or undefined. Only an http(s) address becomes a link:
@@ -37,11 +39,21 @@ export function linkNoticeAction(payload: unknown, env: { webShell: boolean; act
  * same array when it is already there, so React skips the render.
  */
 export function addLinkAsk(asks: readonly LinkAsk[], ask: LinkAsk): readonly LinkAsk[] {
-  return asks.some((a) => a.requestId === ask.requestId) ? asks : [...asks, ask]
+  return addSharedAsk(asks, ask)
 }
 
 /** An ask answered here, or settled in another view (`links.settled`), leaves the queue. */
 export function dropLinkAsk(asks: readonly LinkAsk[], requestId: string): readonly LinkAsk[] {
+  return dropSharedAsk(asks, requestId)
+}
+
+/** Any shared ask's queue (links, trash): joins once, by request id; the same array when already there. */
+export function addSharedAsk<A extends { requestId: string }>(asks: readonly A[], ask: A): readonly A[] {
+  return asks.some((a) => a.requestId === ask.requestId) ? asks : [...asks, ask]
+}
+
+/** Any shared ask answered here or settled elsewhere leaves its queue. */
+export function dropSharedAsk<A extends { requestId: string }>(asks: readonly A[], requestId: string): readonly A[] {
   return asks.filter((a) => a.requestId !== requestId)
 }
 

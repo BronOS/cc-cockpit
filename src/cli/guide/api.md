@@ -359,8 +359,10 @@ with full Node access.
   Windows); recoverable, and there is no permanent delete. The app asks the person first, in this
   window, naming the path relative to the project; a plugin cannot skip the question. It resolves
   once moved and rejects with an Error whose `name` is `AbortError` when they say no (nothing moved:
-  show nothing). A symlink goes to the Trash as the link, never its target. One question at a time
-  per window: a second call while one is open rejects.
+  show nothing), or when nobody answers within 5 minutes. When the system cannot move it (no Trash on
+  the volume, a server with no desktop session) it rejects with an Error saying "was not moved to the
+  Trash" and why: show that message. A symlink goes to the Trash as the link, never its target. One
+  question at a time per window: a second call while one is open rejects.
 - For all three: `path` is relative to the project folder (`/` separators). Main rejects an absolute
   path, a `..` segment, a missing path, and one whose real path (symlinks resolved), or whose folder's
   real path, is outside the project; `openWithSystem` and `trash` also reject the project folder
@@ -372,7 +374,8 @@ with full Node access.
   act on the host's screen. A panel, slot, overlay or settings page reads `ccPanel.view.remote`
   (`true` in a browser view, set by the app's shell, `ccc guide panels`) to leave such items out of
   its menus there. A UI hint only: do not rely on it for security; main refuses the call either way.
-  `trash` works from a browser view.
+  `trash` works from a browser view: while one is attached (and always in server mode) the question
+  is asked on every view of the window, and the first answer counts.
 
 ## Commands and misc
 

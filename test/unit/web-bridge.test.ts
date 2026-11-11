@@ -824,6 +824,26 @@ describe('pending link asks', () => {
   })
 })
 
+// plan Task 16: the Move to Trash confirm, the same way.
+describe('pending trash asks', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
+  const ask = (n: number): Record<string, unknown> => ({ requestId: `trash-${n}`, path: 'src/a.ts', kind: 'file', pluginId: 'cockpit.files' })
+
+  it('hands ready’s list and early events to a late trash.ask listener, minus settled and malformed ones', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    const bad = [{ requestId: 'trash-8', path: 'x', kind: 'link', pluginId: 'p' }, { requestId: 'trash-9' }]
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, trashAsks: [ask(1), ask(2), ...bad] } })
+    s.serverSend({ t: 'event', ch: 'trash.settled', p: { requestId: 'trash-2' } })
+    s.serverSend({ t: 'event', ch: 'trash.ask', p: ask(3) })
+    const got: unknown[] = []
+    anyApi(r.api).on('trash.ask', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([ask(1), ask(3)])
+  })
+})
+
 describe('pending close asks', () => {
   const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
 

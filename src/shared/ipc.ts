@@ -916,6 +916,13 @@ export interface IpcInvokeMap {
    * keeps waiting for the desktop), since a linked plugin runs with full access to the host (§6.1).
    */
   'links.answer': { req: { requestId: string; allow: boolean }; res: boolean }
+  /**
+   * The answer to a `trash.ask` (the in-page Move to Trash confirm of ctx.files.trash): `move` true
+   * moves it. Settles only an ask main sent to the sender's own window; the first answer from any view
+   * wins (design-web.md §5.1, §9.6); false for an unknown, settled or another window's id. Any view may
+   * answer either way: the Trash is recoverable and the person in the browser may be the one who asked.
+   */
+  'trash.answer': { req: { requestId: string; move: boolean }; res: boolean }
 
   // Zones.
   /** The sender's project layout, reconciled with the panels that exist. Plain query. */
@@ -1413,6 +1420,15 @@ export interface IpcEventMap {
   /** A `links.ask` is over (answered in some view, or dropped): a view still showing it takes it down. */
   'links.settled': { requestId: string }
   /**
+   * ctx.files.trash asks to move a project entry to the Trash (files/trash-asks.ts): shown as an
+   * in-page dialog on every view of the window in server mode, or on the desktop while a browser view
+   * is attached; first answer wins. `path` (relative to the project) and `pluginId` are display-safe
+   * plain text. With no browser view on the desktop the native box is used and this is not sent.
+   */
+  'trash.ask': { requestId: string; path: string; kind: 'file' | 'folder'; pluginId: string }
+  /** A `trash.ask` is over (answered in some view, timed out or dropped): a view still showing it takes it down. */
+  'trash.settled': { requestId: string }
+  /**
    * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
    * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
    * Sent only to the view that asked; `url` is http(s), checked by main.
@@ -1514,6 +1530,7 @@ export const INVOKE_CHANNELS = [
   'sessions.cancelQueued',
   'sessions.closeAnswer',
   'links.answer',
+  'trash.answer',
   'layout.get',
   'layout.set',
   'commands.list',
@@ -1641,6 +1658,8 @@ export const EVENT_CHANNELS = [
   'sessions.closeSettled',
   'links.ask',
   'links.settled',
+  'trash.ask',
+  'trash.settled',
   'app.linkNotice',
   'settingsPage.held',
   'project.updated',
@@ -1739,6 +1758,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'links.answer': 'adapted',
   'links.ask': 'yes',
   'links.settled': 'yes',
+  // The Move to Trash confirm is a shared ask too, and any view of the window may answer it (the
+  // router passes the sender's window): a trash started from a browser is answered there.
+  'trash.answer': 'yes',
+  'trash.ask': 'yes',
+  'trash.settled': 'yes',
   'app.linkNotice': 'yes',
   'project.updated': 'yes',
 

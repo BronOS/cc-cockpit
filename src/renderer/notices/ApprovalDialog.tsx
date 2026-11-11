@@ -27,6 +27,8 @@ export interface ApprovalDialogProps {
   canAllow: boolean
   note?: string
   allowLabel?: string
+  /** The other button's label; default Deny. */
+  denyLabel?: string
   onAnswer(allow: boolean): void
   /** Starts armed (unit tests of the markup only). */
   initiallyArmed?: boolean
@@ -51,14 +53,22 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
     // Visible and focused: a visible but unfocused window (behind another one) would otherwise arm,
     // and the click that focuses it could land on Allow.
     const onVisibility = (): void => arm.visible(document.visibilityState === 'visible' && document.hasFocus())
+    // A `blur` is read after the focus has settled: one that only moves the focus into a frame of the
+    // page (a plugin panel) leaves `hasFocus()` true, and the arm ignores an unchanged state.
+    let blurCheck: ReturnType<typeof setTimeout> | undefined
+    const onBlur = (): void => {
+      clearTimeout(blurCheck)
+      blurCheck = setTimeout(onVisibility, 0)
+    }
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('focus', onVisibility)
-    window.addEventListener('blur', onVisibility)
+    window.addEventListener('blur', onBlur)
     onVisibility()
     return () => {
+      clearTimeout(blurCheck)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('focus', onVisibility)
-      window.removeEventListener('blur', onVisibility)
+      window.removeEventListener('blur', onBlur)
       arm.dispose()
     }
   }, [])
@@ -97,7 +107,7 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
         <div className="confirm-buttons">
           {canAllow ? null : props.note !== undefined ? <span className="confirm-note">{props.note}</span> : null}
           <button type="button" onClick={() => answer(false)}>
-            Deny
+            {props.denyLabel ?? 'Deny'}
           </button>
           {canAllow ? (
             <button

@@ -72,6 +72,21 @@ describe('ApprovalArm', () => {
     expect(arm.armed).toBe(true)
   })
 
+  it('the same state again changes nothing: focus moving from a frame of the page to the page keeps it armed', () => {
+    const timers = fakeTimers()
+    const seen: boolean[] = []
+    const arm = new ApprovalArm((a) => seen.push(a), timers)
+    arm.visible(true)
+    timers.advance(APPROVAL_ARM_MS / 2)
+    // A second `true` does not restart the second either.
+    arm.visible(true)
+    timers.advance(APPROVAL_ARM_MS / 2)
+    expect(arm.armed).toBe(true)
+    arm.visible(true)
+    expect(arm.armed).toBe(true)
+    expect(seen).toEqual([true])
+  })
+
   it('dispose stops the timer: a dialog taken down never arms', () => {
     const timers = fakeTimers()
     const seen: boolean[] = []
@@ -136,6 +151,41 @@ describe('ApprovalBox markup', () => {
     const denied = await render({ canAllow: false, note: 'Approve on the desktop' })
     expect(denied).not.toContain('Allow</button>')
     expect(denied).toContain('Approve on the desktop')
+  })
+})
+
+// plan Task 16: the Move to Trash confirm uses the same dialog; the file name and the plugin id are
+// plain text, never markup.
+describe('trash confirm markup', () => {
+  type Ask = { requestId: string; path: string; kind: 'file' | 'folder'; pluginId: string }
+  async function parts(): Promise<{ Title: FunctionComponent<{ ask: Ask }>; Text: FunctionComponent<{ ask: Ask }>; Box: FunctionComponent<Record<string, unknown>> }> {
+    const notices = '../../src/renderer/notices/ShellNotices.tsx'
+    const dialog = '../../src/renderer/notices/ApprovalDialog.tsx'
+    const n = (await import(notices)) as { TrashAskTitle: FunctionComponent<{ ask: Ask }>; TrashAskText: FunctionComponent<{ ask: Ask }> }
+    const d = (await import(dialog)) as { ApprovalBox: FunctionComponent<Record<string, unknown>> }
+    return { Title: n.TrashAskTitle, Text: n.TrashAskText, Box: d.ApprovalBox }
+  }
+
+  it('shows the path and the plugin as plain text, with Cancel and a guarded Move to Trash', async () => {
+    const { Title, Text, Box } = await parts()
+    const ask: Ask = { requestId: 'trash-1', path: '<img src=x onerror=alert(1)>.txt', kind: 'folder', pluginId: 'cockpit.files' }
+    const html = renderToStaticMarkup(
+      createElement(Box, {
+        title: createElement(Title, { ask }),
+        children: createElement(Text, { ask }),
+        canAllow: true,
+        allowLabel: 'Move to Trash',
+        denyLabel: 'Cancel',
+        onAnswer: () => {}
+      })
+    )
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;.txt')
+    expect(html).toContain('Move the folder')
+    expect(html).toContain('with everything in it')
+    expect(html).toContain('cockpit.files')
+    expect(html).toMatch(/<button type="button">Cancel<\/button>/)
+    expect(html).toMatch(/<button type="button" class="confirm-danger" disabled="">Move to Trash<\/button>/)
   })
 })
 

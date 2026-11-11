@@ -1196,6 +1196,11 @@ export interface SessionHandlerDeps {
    * the window wins, but a remote view's Allow is refused (only the desktop approves a plugin link).
    */
   linkAnswer(windowId: number, requestId: string, allow: boolean, remote: boolean): boolean
+  /**
+   * A view's Move or Cancel of a ctx.files.trash confirm (TrashAsks.answer): the first from any view
+   * of the window wins; false for an ask of another window, an unknown or a settled one.
+   */
+  trashAnswer(windowId: number, requestId: string, move: boolean): boolean
 }
 
 /**
@@ -1220,6 +1225,16 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     if (typeof requestId !== 'string') throw new Error('links.answer: requestId must be a string')
     if (typeof allow !== 'boolean') throw new Error('links.answer: allow must be a boolean')
     return deps.linkAnswer(ctx.windowId, requestId, allow, view.remote)
+  })
+
+  // `yes`: any view of the window may answer a Move to Trash confirm, either way (trash-asks.ts says
+  // why). The window is the sender's (ctx), never one in the payload, so an answer only reaches an ask
+  // main sent to this window.
+  router.handleProject('trash.answer', (ctx, payload) => {
+    const { requestId, move } = fields('trash.answer', payload)
+    if (typeof requestId !== 'string') throw new Error('trash.answer: requestId must be a string')
+    if (typeof move !== 'boolean') throw new Error('trash.answer: move must be a boolean')
+    return deps.trashAnswer(ctx.windowId, requestId, move)
   })
 
   // The window and the view are the sender's (ctx, view), never values in the payload: only a view
