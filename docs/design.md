@@ -1601,7 +1601,7 @@ All decided in phase 1:
   (`PtyService.terminate`), as a dismissed terminal overlay does. A child that exits while its PTY
   is paused for flow control still delivers its tail: the node-pty backend polls the paused
   child and resumes once it is gone (`src/main/pty/exit-drain.ts`).
-- Web access (remote views) has its own document, [design-web.md](design-web.md); v1 is implemented. In short: a project
+- Web access (remote views) has its own document, [design-web.md](design-web.md); v1 is implemented, and so is server mode (§9 there: the app on a machine with no display, used only from browsers). In short: a project
   window has several live views (the desktop's `webContents` and, with web access on, browser views over one WebSocket
   each); every event and port reaches them through `ViewRegistry` (`src/main/views/`), every IPC channel has a remote
   class (`REMOTE_CLASS`, `src/shared/ipc.ts`), the gateway lives in `src/main/web/` and the browser bridge in

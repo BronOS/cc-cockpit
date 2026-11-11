@@ -993,28 +993,28 @@ task only takes the hidden page out of the set of views that may own a size or a
 **Files:**
 - Modify: `docs/features.md`, `README.md`, `CLAUDE.md`, `docs/design-web.md`, `docs/design.md`, `src/cli/guide/*.md`
 
-- [ ] `docs/features.md`, a "Server mode" section: `--server` and the detection, the systemd user unit of §9.1 with
+- [x] `docs/features.md`, a "Server mode" section: `--server` and the detection, the systemd user unit of §9.1 with
       `loginctl enable-linger`, the first link and `ccc web`, the key file and what it protects, the Claude login and
       `CLAUDE_CODE_OAUTH_TOKEN`, reaching it (SSH tunnel, `tailscale serve`), never root and never `--no-sandbox`
-- [ ] the installs, each marked as run or not run until the manual check has been done: the unpacked build (run by the
+- [x] the installs, each marked as run or not run until the manual check has been done: the unpacked build (run by the
       smoke script), the deb (built and unpacked, never launched, `electron-builder.yml:39-42`), the AUR package
       (unpublished), the AppImage (its limits inferred). No install is called supported beyond what was run
-- [ ] the same section says what differs from a desktop: a desktop launch that meets a server, a later desktop start on
+- [x] the same section says what differs from a desktop: a desktop launch that meets a server, a later desktop start on
       the same data dir finds web access on and its secrets asked for again, loopback is every local user, a notice
       does not reach a phone in a pocket, a revoke does not undo what an unlocked lost device already did from its
       shell, a start link read by someone else shows as an unknown device; and Known limitations
-- [ ] `README.md`: server mode in the overview and the feature list
-- [ ] `CLAUDE.md`: State and Commands (the smoke script), and the patterns: `server` as the one flag, the re-exec and
+- [x] `README.md`: server mode in the overview and the feature list
+- [x] `CLAUDE.md`: State and Commands (the smoke script), and the patterns: `server` as the one flag, the re-exec and
       its run-time fallback (never a `try` / `catch` around `execve`), the dialog and `openExternal` adapters in the
       adapter rule, the browser-views method of `ViewRegistry`, the key file store, `HOST_ONLY_COMMANDS`, the hidden
       page's rules, owner approvals; reword the web access rule from "cannot change the auth mode, bind, secrets, hosts
       or devices" to "cannot add or widen access" with the server-mode revoke
-- [ ] `src/cli/guide`: check `ccc web` in `cli.md` and the server-mode notes in `api.md` and `webview.md` against what
+- [x] `src/cli/guide`: check `ccc web` in `cli.md` and the server-mode notes in `api.md` and `webview.md` against what
       was built, with the drift tests (`cli-guide.test.ts`, `claude-plugins.test.ts`)
-- [ ] `docs/design-web.md`: mark §9 implemented and add Task 1's real-app numbers to §9.1 (its re-exec text was
+- [x] `docs/design-web.md`: mark §9 implemented and add Task 1's real-app numbers to §9.1 (its re-exec text was
       committed with this plan); `docs/design.md` points at it. `examples/plugin/sdk/types.ts` was copied by the tasks
       that changed `src/sdk/types.ts`; only the push to the public repo is left (Post-Completion)
-- [ ] run tests (guide drift, the workflow and packaging tests) - must pass
+- [x] run tests (guide drift, the workflow and packaging tests) - must pass
 - [ ] move this plan to `docs/plans/completed/` (left to the orchestrator)
 
 ## Post-Completion

@@ -334,7 +334,7 @@ Host and Origin checks, the device cookie and the log (sign-ins and revokes, nev
 **What a browser does differently** (the table is design-web.md §6.1): a link opens as a notice you click, not in a new
 tab by itself; notifications and sounds stay on the host; "Reveal in the file manager" and "Open with the system" are
 refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; the Browser panel and URL overlays
-show "available on the desktop"; window controls, full screen and the update notice are not shown. A terminal has one
+show "available on the desktop"; window controls, full screen and the update notice are not shown. On a computer with no display (server mode) the approvals move to the browser: see Server mode below. A terminal has one
 size for all places (the one that typed, clicked, selected its tab or was brought to the front last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
 open in one place at a time, with Take over on the others.
 
@@ -345,6 +345,133 @@ panel at once, one per view: `ctx.panels.post(id, msg)` goes to all of them, `ct
 the `view` the listener was given answers only the page that asked, and your calls made from a listener act in that view.
 Do not depend on `WebContentsView`s (`ctx.webview`, URL overlays), on file-manager calls or on native dialogs working
 for a person in a browser. `ccc guide panels` and `ccc guide api` carry the same text.
+
+## Server mode
+
+Run cc-cockpit on a machine with no display (a home server, a VM) and use it only from browsers, over web access. The
+model is web access's: one person, several devices, every signed-in device is that person. What changes is that no
+desktop exists, so what web access keeps on the desktop moves: who gets in is set from a shell on the server (`ccc web`),
+who is in is shown by the log, `ccc web status` and the browsers' card, and approving what runs as code is done in the
+browser. Linux only; on macOS and Windows `--server` prints "server mode runs on Linux only" and exits 1. Design and
+reasons: [design-web.md](design-web.md) §9.
+
+**Start:** `cc-cockpit --server`, or just `cc-cockpit` on Linux when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set
+(it then prints one line saying it detected that). `ssh -X` sets `DISPLAY`, so such a session gets the desktop; use
+`--server` to force server mode. The app re-executes itself in place with the headless switches (same pid, stdout and
+exit status kept), so a manual run stays in the terminal, Ctrl-C quits, and a unit's main process is the app. Where the
+runtime cannot re-execute in place it starts a child and watches its parent instead, chosen at start with no change for
+you. It starts the web gateway and the CLI socket before any project opens; if either fails (the port is taken) it
+prints the reason and exits 1. Web access is turned on and said once ("turned web access on"); turning it off, and
+Desktop confirm, are refused (nobody could answer it). A stored risky setting with no confirm (a network bind with no
+sign-in or plain http) is refused, never made safer: nothing listens, start prints the exact `ccc web set ... --confirm`
+line, and the app keeps running so you can run it.
+
+**systemd** (a user unit, not shipped):
+
+```ini
+# ~/.config/systemd/user/cc-cockpit.service
+[Unit]
+Description=cc-cockpit (server mode)
+
+[Service]
+ExecStart=/usr/bin/cc-cockpit --server
+# Optional, mode 0600: CLAUDE_CODE_OAUTH_TOKEN=... (see Claude login)
+EnvironmentFile=-%h/.config/cc-cockpit-server.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+`loginctl enable-linger <user>` starts the user manager at boot and `systemctl --user enable --now cc-cockpit` starts
+the app. `systemctl --user stop` ends it in under a second; tabs are saved and Claude tabs resume on the next start, and
+open browser tabs reconnect by themselves. Output goes to `journalctl --user -u cc-cockpit`, which never holds a link.
+Never run it as root: Chromium's sandbox refuses, and the app never passes `--no-sandbox`.
+
+**The first link:** with stdout a terminal and the mode access link, start prints the address and a one-time link
+(works once, expires in 10 minutes). Under systemd or in a pipe it prints the address and a hint instead, so no live
+link reaches the journal: run `ccc web add-device` in a shell on the server for one. The link is never written to
+`web-access.log`, which records that a start link was issued and the sign-in that used it. If someone else opens it
+first, that shows as an unknown device (Revoke it) and your own copy says "already used".
+
+**`ccc web`** is run from a shell on the server, outside cc-cockpit (a Claude, shell or command tab is refused): `status
+[--json]`, `revoke <id>|--all`, `link [--regenerate]`, `add-device`, `password` (from stdin, or asked twice with no
+echo on a terminal, never an argument), `mode link|password|none`, `set` (bind, port, origin, hosts, TLS, `--confirm`)
+and `stop`. A network bind with plain http, or with no sign-in, applies only with its `--confirm`, as the Settings
+confirm does on the desktop. On a desktop `ccc web` answers only `status` and `revoke`. `ccc guide cli` has the
+details. The wrapper is `<data>/bin/ccc` (`~/.config/cc-cockpit/bin/ccc` on Linux); the app offers no install in server
+mode, so start prints that path.
+
+**Secrets without a keyring:** server mode keeps secrets (the access link, the password, plugin secrets, OAuth tokens)
+in `<data>/secret.key`, made on first start with mode 0600: AES-256-GCM, so each stored value is useless without the
+key. It is no more protected than `~/.claude/.credentials.json`: whoever reads the data folder as you, or root, reads
+the secrets, and a backup of the data folder carries its key. Disk encryption is the server's job. A key file that is a
+symlink, not yours, readable by others or not 32 bytes is refused with the reason and is never replaced; delete it by
+hand and enter the secrets again. The desktop always uses the keychain and never the key file.
+
+**Claude login:** `claude` in a browser terminal tab prints its sign-in URL and waits for a pasted code; the credentials
+go to `~/.claude/.credentials.json` and stay. For a box that must never need that, run `claude setup-token` and put
+`CLAUDE_CODE_OAUTH_TOKEN` in the unit's environment file; Claude tabs get that one variable (every other
+`CLAUDE_CODE_*` is still dropped).
+
+**Reaching it:** keep it on loopback and use an SSH tunnel (`ssh -L 7330:127.0.0.1:7330 <host>`) or `tailscale serve`,
+both as under Web access above. A LAN bind works with the same confirms.
+
+**What differs from a desktop**
+- Approvals are in the browser, by any signed-in device. A plugin link (`ccc plugin link`, code that runs as you) and
+  the Trash confirm ask in an in-page dialog: Allow is never the default, Enter does nothing, the dialog takes no
+  keyboard focus from a terminal, and Allow works only after the dialog has been visible for about a second. A browser
+  can also open a project by its server path (or from Recent), close a project for everyone, revoke and disconnect
+  devices, read the web access card and finish a plugin's OAuth sign-in. It cannot add or widen access (mode, bind,
+  secrets, new devices): those are `ccc web`.
+- Nothing is shown on the server's screen. A link opens as a notice you click; a folder dialog, "Reveal in the file
+  manager", "Open with the system", the Browser panel and URL overlays are refused ("not available in server mode").
+  A plugin OAuth sign-in redirects to a loopback address on the server, so its page fails in your browser: paste that
+  failed address into the box the notice shows.
+- Notices (`ctx.notify`, `ccc notify`) are in-page notices in the browsers of the project, with the tab title marked
+  while one is unseen in a background tab. They do not reach a phone in a pocket: with no browser open a notice waits (up
+  to its time-out) and a plugin that needs to reach you elsewhere has to do that itself. The app's own notices (a new
+  device, a revoked plugin, a newer release) are one stdout line each and are listed by `ccc web status`.
+- A new device is seen in the card of every open browser, in `web-access.log` and in `ccc web status`, not in a desktop
+  notification.
+- Loopback is every local user. On a shared server anyone with a shell reaches 127.0.0.1, so mode None there (or the
+  local end of an SSH tunnel on a shared client) hands the account to all of them.
+- A revoke does not undo what an unlocked lost device already did from its shell (a started program, a changed file,
+  a plugin linked). Revoke ends the device's access; treat what it could reach as exposed. The boundary is sign-in and the
+  server's OS account.
+- A desktop launch that meets a server: with a display, `cc-cockpit <folder>` on the server's own desktop does not
+  open the folder in the server (it logs a line); the second launch asks the running one and shows a box "cc-cockpit
+  runs in server mode on this machine (web access at ...)" with Stop and Cancel. Stop ends the server.
+- A later desktop start on the same data folder finds web access on, and its stored secrets belong to the other store: the
+  desktop asks for them again (a secret field shows "stored in the other mode", the access link cannot be shown until it
+  is regenerated, the password must be set again; signed-in devices stay signed in), and the same in the other
+  direction. Nothing moves between the keychain and the key file.
+- The window is never seen. Its page is kept hidden and never sizes a terminal: a terminal keeps the size the last
+  browser gave it, and a new tab no browser has sized starts at 120x40. A crash of the hidden page reloads it with a
+  log line. With no project open the app stays up with the gateway; it never shows a picker or quits on its own.
+
+**Installs** (what was run, not what is expected to work):
+- Unpacked build (`npm run package:dir`): run. The smoke script (`node scripts/server-mode-smoke.mjs <executable>`)
+  starts it with no display and no session bus, checks the pid, `ccc web status`, a sign-in, SIGTERM and that nothing is
+  left, and passed with the network off too.
+- `.deb`: built and unpacked, never launched. It ships `chrome-sandbox`, so it is the install expected to work.
+- AUR package (`packaging/aur`): unpublished and not run.
+- AppImage: not run in server mode. It needs FUSE, and with no setuid sandbox helper it is inferred to abort where
+  unprivileged user namespaces are restricted (Ubuntu 23.10 and later, most containers), because the app never passes
+  `--no-sandbox`. Whether the in-place re-exec keeps its single mount is also unchecked.
+- A stock Ubuntu Server, the systemd unit above with linger across a reboot, and `tailscale serve`: not run.
+No install is called supported beyond what was run.
+
+**Known limitations (server mode)**
+- Linux only; the packaged installs above are unverified except the unpacked build.
+- A notice that needs a person reaches only open browsers.
+- A first start killed between creating `secret.key` and writing it leaves a file the app refuses (wrong length): delete
+  it and enter the secrets again.
+- Relink and forget of a project, and a Files "Download", are not available from the browser; open the folder by its new
+  path instead.
+- A start link read by someone else, a lost device that was unlocked, and a shared server's other users are exposures
+  Revoke does not undo (above).
 
 ## Updates and versions
 

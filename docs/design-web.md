@@ -484,8 +484,11 @@ proxy.
 
 ## 9. Server mode
 
-Status: designed 2026-11-11 from a spike (Electron 45.1, Linux, no keyring), revised after review the same day; not
-built, ships with web access. Linux only in this phase.
+Status: implemented 2026-11-11 (plan `docs/plans/20261111-server-mode.md`), from a spike (Electron 45.1, Linux, no
+keyring) and revised after review. Linux only in this phase. Run so far: the unpacked build, headless, by
+`scripts/server-mode-smoke.mjs` (also with the network off), and the e2e suite with the harness's direct switches. Not
+run: the AppImage on a stock Ubuntu Server, the deb and the systemd unit on a real server, Tailscale (§9.1 "Installs",
+`docs/features.md` "Server mode"). Where the build differs from the text below, a "Built:" note says so.
 
 **Goal.** Someone installs cc-cockpit on a server with no display (a home server, a VM) and uses it only through web
 access, from browsers. The model is v1's: one person with several devices, every signed-in device is that person (§4).
@@ -540,7 +543,16 @@ hang, so it needs the same work.
 
   Measured in a minimal app, and repeated in the real app before anything is built on it (plan Task 1, which writes
   its numbers here): same pid, stdout kept, the lock taken again, SIGTERM and Ctrl-C quit with status 0; the first
-  image's two zygote processes stay as zombies of that pid for the run (accepted: they are gone with it). The decision
+  image's two zygote processes stay as zombies of that pid for the run (accepted: they are gone with it).
+  Built, and measured in the real app (Electron 45.1.0, no display, no session bus, plan Task 1): `execve` stays the
+  path. The pid is the same (`/proc/<pid>/cmdline` carries `--ozone-platform=headless` after the re-exec); fd 1 and 2
+  point at the same target before and after (`pipe:[...]` with a pipe, `/dev/pts/N` under a pty); the re-executed image
+  holds the lock (the CLI socket comes up), and a second no-display launch with a folder hands over and exits 0 in 0.17 s
+  with nothing re-executed; SIGTERM exits 0 in 40 ms (pipe) or 51 ms (pty), SIGINT in 35 ms, Ctrl-C typed into the pty in
+  32 ms; the exit status is the app's own (a start that fails exits 1, not a signal status); the detected-start line
+  prints once; the first image leaves 2 `<defunct>` children of the pid during the run and nothing of the run's session
+  is alive after it. A launch that loses the lock to a planned re-exec ends with `process.exit(0)`, not `app.quit()`:
+  with no display a quit returns to Electron, which fails platform init with status 1. The decision
   is a pure function (`src/main/server-mode.ts`: platform, env, argv in; `{ server, exec: { exe, args } }` or a refusal
   out) at the top of `index.ts`; main keeps `server` for the run. `projectPathFromArgv` skips the flag, the switches
   and the fallback's marker. `--disable-gpu` only spares the GPU process failing EGL twice before Chromium's software

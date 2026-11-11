@@ -26,6 +26,10 @@ tested).
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
 - **Web access.** Open a project in a browser on your phone or another computer, live on both screens: the same tabs,
   terminals and panels. Off by default; sign in by link, password or a desktop confirm (Settings > General).
+- **Server mode (Linux).** Run it on a machine with no display (`cc-cockpit --server`, or just start it with no
+  `DISPLAY`) and use it only from browsers: sign-in is managed from a shell with `ccc web`, secrets live in a key file,
+  and approvals happen in the browser. Not tested beyond the unpacked build; see
+  [docs/features.md](docs/features.md#server-mode).
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
 - **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with
@@ -95,6 +99,7 @@ running app's.
 | --- | --- |
 | macOS, arm64 | v0.1.0 installed with `brew` on a Mac and ran: first launch needed allowing the app once. Upgrading over a running app is untested |
 | Linux x64 | Runs from source, tried on Hyprland/Wayland; restoring window size and position may not work there. The packaged AppImage launched only via `--appimage-extract-and-run --no-sandbox` (no libfuse2 here); a plain double-click run (FUSE, Chromium sandbox) and Ubuntu are untested; the `.deb` was built and unpacked but not launched |
+| Linux x64, server mode | The unpacked build (`npm run package:dir`) ran headless with no display and no network, checked by `scripts/server-mode-smoke.mjs`. The AppImage on a stock Ubuntu Server, the systemd unit on a real server and Tailscale were not run |
 | macOS x64 | Not supported yet |
 | Windows | Not supported |
 
@@ -178,6 +183,8 @@ Full reference and exit codes: [docs/features.md](docs/features.md#the-ccc-comma
 - **Web access exposes your computer to whoever signs in:** a signed-in browser is you at the keyboard. It listens on
   127.0.0.1 unless you change it, and asks before a network address without https or without a sign-in. See
   [docs/features.md](docs/features.md#web-access).
+- **Server mode is new:** run it only as a normal user, never root and never with `--no-sandbox`, and read the Server mode
+  section of [docs/features.md](docs/features.md#server-mode) first.
 - **Closing a window doesn't ask:** closing a project window or quitting stops running tabs without a question.
 - **Sending text isn't perfectly safe:** the Enter that submits text is a real key, and in rare cases a permission dialog
   raised without a hook can receive it.

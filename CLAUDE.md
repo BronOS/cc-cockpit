@@ -15,6 +15,9 @@ previews, Inbox v2 with inbox-feed v2) is designed in `docs/design-next.md` and 
 is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checked against `ccc guide style` (`src/cli/guide/style.md`).
 Web access v1 (the app in a plain browser: live mirror views over one WebSocket each, sign-in modes, devices) is implemented;
 design in `docs/design-web.md`, plan in `docs/plans/20261110-web-access.md`, user docs in `docs/features.md` ("Web access").
+Server mode (Linux, no display, browsers only: `--server`, the key file, `ccc web`, approvals in the browser) is implemented
+on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/20261111-server-mode.md`, user docs in `docs/features.md`
+("Server mode"). Only the unpacked build was run; the AppImage, the deb on a real server and the systemd unit were not.
 
 ## Commands
 
@@ -31,6 +34,10 @@ design in `docs/design-web.md`, plan in `docs/plans/20261110-web-access.md`, use
   `marketplace/tools/dist` is committed because the index repo's CI runs it with plain node and no install, and a unit
   test compares the bytes), `npm run package` (unsigned mac build),
   `npm run package:dir` (unpacked app in `release/`, for a smoke launch).
+- `node scripts/server-mode-smoke.mjs [executable]`: server mode's start end to end (no display, no switches, pid kept,
+  `ccc web`, SIGTERM, nothing left; the fallback and a taken port too); with no argument it runs `out/` (build first), with
+  a packaged executable it ignores the test env and needs no network. Run it after changing `main/server-mode.ts`,
+  `server-start.ts` or the start in `main/index.ts`: the re-exec drops Playwright's inspector, so no e2e covers it.
 - `node --expose-gc scripts/web-terminal-bench.mjs [tabs] [seconds] [p99ms]`: the headless terminals' cost to main's event
   loop; exits 1 when parsing lands back on main. Run it after changing `main/terminals/mirror.ts` or `mirror-worker.ts`.
 
@@ -51,7 +58,11 @@ design in `docs/design-web.md`, plan in `docs/plans/20261110-web-access.md`, use
   `main/webview/electron-webview.ts` (fake in `test/unit/webview-manager.test.ts`); `Notification` only in
   `main/notifications/electron-notification.ts` (logic and test backend in `notifier.ts`); `shell`'s file calls
   (`showItemInFolder`, `openPath`, `trashItem`, behind `ctx.files.reveal` / `openWithSystem` / `trash`) only in
-  `main/files/electron-shell.ts` (logic in `main/files/system-files.ts`, a recorder `SystemShell` in tests; the e2e replaces the
+  `main/dialogs/electron-dialog.ts` (`dialog`: under Ozone headless a message box aborts main with SIGTRAP, so
+  server mode gets `serverDialogs`, where a box rejects, an open dialog is canceled and an error box is a log line;
+  logic in `dialogs.ts`) and `main/external/electron-open-external.ts` (`shell.openExternal`, behind
+  `createOpenExternal`: in server mode a link goes to browser views as a notice, never to the server's own browser), each
+  with a grep test (`no-direct-dialog.test.ts`, `no-direct-open-external.test.ts`), `shell`'s file calls (logic in `main/files/system-files.ts`, a recorder `SystemShell` in tests; the e2e replaces the
   three `shell` members, as it does `shell.openExternal`); `safeStorage` is imported only by
   `main/index.ts` and reached through `main/secrets/secret-store.ts`. Do not import them elsewhere
   (rule stated in `main/index.ts`).
@@ -103,12 +114,45 @@ design in `docs/design-web.md`, plan in `docs/plans/20261110-web-access.md`, use
   `BrowserWindow.getAllWindows()` outside the adapters (`no-direct-webcontents-send.test.ts`). A new channel in
   `src/shared/ipc.ts` needs its `REMOTE_CLASS` (`yes`, `no`, `adapted`) in the same change: classify conservatively, `no` for what
   needs the host's screen or widens a view's own access; an `adapted` handler decides by the caller main bound (`view.remote`),
-  never by the payload.
+  never by the payload. `ViewRegistry.toBrowserViews(window | 'all')` is the one way to reach browsers only (a link notice,
+  an in-page notice, the chime), never the desktop page or the hidden page.
 - The gateway (`main/web/gateway.ts`) listens on loopback by default and runs the Host check, the Origin check (upgrade and every
   state-changing POST) and the secret compare in every mode, None included; a non-loopback bind over http or with no sign-in
   listens only with the confirm recorded by `applyWebAccessPatch`; secrets are hashed (scrypt off-thread) and failures are slowed
   by one global bucket, never locked out and never keyed by peer address (behind a proxy every peer is 127.0.0.1). No regexes in
-  the settings or path parsing there. A remote view cannot change the auth mode, bind, secrets, hosts or devices (`no` channels).
+  the settings or path parsing there. A remote view cannot add or widen access (mode, bind, secrets, hosts, new devices: `no` channels); in server mode it may narrow it
+  (revoke, disconnect: `adapted`, by `server && view.remote`, the acting device logged from the view main bound).
+- Server mode (`main/server-mode.ts`, design-web.md §9): `server` is the one flag, decided before `ready` by
+  `decideServerMode` (platform, env, argv) and passed into `start()` and every service that differs; never re-derive it from
+  `DISPLAY`, and never from a payload. Start re-executes the image in place (`process.execve` with the headless switches: same
+  pid and stdio, so a unit's main pid is the app); the path is chosen at run time by `typeof process.execve` and
+  `accessSync(exe, X_OK)` and the fallback is `spawnSync` plus the `--server-parent` watch, never a `try` / `catch` around
+  `execve` (a failed `execve` aborts the process, nothing to catch). Unit tests inject `lock`, `execve`, `spawnSync`. The
+  lock-losing re-exec exits with `process.exit(0)`, not `app.quit()` (with no display a quit returns to Electron, which fails
+  platform init). `runStartOrder` (`server-start.ts`) awaits the CLI socket and the gateway before any window opens; either
+  failing exits 1 after the mirror worker is awaited (exiting while it bootstraps segfaults) and `app.exit(1)` at the end of
+  `will-quit` (`process.exitCode` is ignored).
+- Server mode secrets: `main/secrets/key-file-store.ts` is one more `SecretStore`, chosen by `selectSecretStore` from `server`
+  (server mode always the key file with `--password-store=basic`, the desktop always the keychain, never by keychain state).
+  `<data>/secret.key` is made `O_EXCL` 0600, read `O_NOFOLLOW` and checked by `fstat` on that descriptor, never made again over
+  an existing file; values are `KEYFILE-V1:` AES-256-GCM, and each store refuses the other's values with its own text
+  (`storedValueState`: readable, other-mode, replaced), so a view never shows "set" for a value it cannot read.
+- `ccc web` writes are shell-only: `HOST_ONLY_COMMANDS` (`shared/protocol.ts`) are refused for any caller with a token before
+  lookup, and `SocketServer.handle` throws for a `web.*` name not on the list (a registered handler cannot skip it); each
+  handler refuses non-anonymous callers again and the writes refuse outside server mode. Not a boundary (a tab's process is the
+  same OS user); it keeps a prompt-injected Claude from reconfiguring access. `web` is in `CORE_CLI_COMMANDS`.
+- Approvals in server mode are the browsers': `SharedAsks` (`main/asks/shared-asks.ts`) is the one core of `LinkAsks` and
+  `TrashAsks` (first answer wins, replayed in `ready`, timeout denies), and an Allow counts from a view when
+  `!view.remote || server`, decided by main. The page is `ApprovalDialog`: no default Allow, Enter and Space blocked inside, no
+  focus taken from a terminal, Allow armed after about a second of visibility (`ApprovalArm`); a backdrop click answers nothing.
+  Close project, device revoke and disconnect, `oauth.paste` and notice clicks use `adapted` channels the same way. A new
+  approval a browser may give needs an `ApprovalDialog`, never a plain `confirm`.
+- The hidden page (the project's `BrowserWindow` in server mode, never shown): `WindowManager {server}` never calls `focus`,
+  `show`, `hide` or `showPicker`, never writes bounds, and reloads a crashed or failed page with a backoff (never closes the
+  window); `ViewSizes` never measures it, so a tab keeps the last browser's size and a new unsized one gets 120x40; an overlay
+  with no origin view is held by a browser, never by it. A new window or layout call must keep these under `server`.
+- Core notices in server mode (`notifications/core-notices.ts`, in-page `PageNoticeBackend` for plugins): a stdout line each, last
+  50 kept for `ccc web status`, plain text with no link and no plugin text, never logged with a mail subject.
 - Web e2e specs drive Electron's own Chromium as the "plain browser" (`test/fixtures/web-browser/main.cjs`, helpers in
   `test/e2e/web-fixtures.ts`: `enableWebAccess` on a random loopback port, retried on `failed`, and `openBrowser`); a spec that
   needs plugin panels launches with `env: { CC_COCKPIT_NO_BUNDLED: '' }`.
