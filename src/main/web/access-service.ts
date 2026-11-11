@@ -18,7 +18,7 @@ import type {
   WebLinkReply,
   WebSecretsStatus
 } from '../../shared/web-access'
-import { SERVER_NONE_WARNING } from '../../shared/web-access'
+import { SERVER_NONE_WARNING, type WebCliNotice } from '../../shared/web-access'
 import type { AccessActor, AccessEntry } from './access-log'
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
@@ -163,10 +163,11 @@ export class WebAccessService {
   /**
    * `ccc web status` (design-web.md §9.4), in both modes: the stored settings, the gateway's state,
    * the secret store (`secrets`, which main reads from the store and the data dir), the states of
-   * the access link and the password, and the devices. Built only from views that hold no secret:
-   * never a link, a token, a hash or a stored value.
+   * the access link and the password, the devices, and the core notices of this run (server mode's
+   * stdout lines, core-notices.ts). Built only from views that hold no secret: never a link, a token,
+   * a hash or a stored value.
    */
-  cliStatus(secrets: WebSecretsStatus): WebCliStatus {
+  cliStatus(secrets: WebSecretsStatus, notices: WebCliNotice[] = []): WebCliStatus {
     const settings = this.settings()
     const credentials = this.deps.auth.credentialStates()
     return {
@@ -180,7 +181,8 @@ export class WebAccessService {
       secrets: { store: secrets.store, unavailable: secrets.unavailable, otherMode: secrets.otherMode, replaced: secrets.replaced },
       accessLink: credentials.accessLink,
       password: credentials.password,
-      devices: this.devicesView()
+      devices: this.devicesView(),
+      notices
     }
   }
 

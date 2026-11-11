@@ -9,12 +9,14 @@
 // Same git isolation as settings-plugin-install.spec.ts: a bare repo over file:///, no developer config.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
+import type { WebCliStatus } from '../../src/shared/web-access'
 import { expect, launchCockpit, test } from './fixtures'
+import { ccc, launchServer } from './server-fixtures'
 
 const FIXTURES = join(__dirname, '..', 'fixtures', 'plugins')
 const PLUGIN_ID = 'test.good'
@@ -31,6 +33,7 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 test('a revocation in the cache keeps a plugin from activating at startup, with the fetch failing', async () => {
+  test.setTimeout(90_000)
   const temp = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-e2e-revoked-')))
   const work = join(temp, 'work')
   const bare = join(temp, 'good.git')
@@ -77,6 +80,7 @@ test('a revocation in the cache keeps a plugin from activating at startup, with 
     expect(commit).toMatch(/^[0-9a-f]{40}$/)
     record.marketplace = indexUrl
     writeFileSync(pluginsJson, JSON.stringify(stored))
+    const seeded = readFileSync(pluginsJson, 'utf8')
     const text = JSON.stringify({ schema: 1, plugins: [], revoked: [{ id: PLUGIN_ID, commit, reason: 'steals tokens' }] })
     mkdirSync(join(dataDir, 'marketplaces'), { recursive: true })
     writeFileSync(
@@ -109,7 +113,35 @@ test('a revocation in the cache keeps a plugin from activating at startup, with 
       await expect(row.locator('.settings-badge')).toContainText('revoked')
       await expect(row).toContainText('steals tokens')
     } finally {
-      await second.close()
+      await second.close({ keepFiles: true })
+    }
+
+    // The same cached revocation in server mode (design-web.md §9.9): the notice is a stdout line with
+    // the plugin id only, none of the index's text, and `ccc web status` lists it; no OS notification
+    // (nothing is recorded) and the plugin is stopped all the same. The line itself is printed at
+    // start, before a spec can listen, so the status is what is checked here (core-notices.test.ts has
+    // the line). app.json gets web access on a random loopback port, as launchServer writes it.
+    // The desktop run above recorded the plugin as revoked, and only a plugin that just became revoked is
+    // announced: put the seeded record back.
+    writeFileSync(pluginsJson, seeded)
+    const port = 20000 + Math.floor(Math.random() * 20000)
+    const appJson = join(dataDir, 'app.json')
+    const app = existsSync(appJson) ? (JSON.parse(readFileSync(appJson, 'utf8')) as Record<string, unknown>) : { schemaVersion: 1 }
+    writeFileSync(appJson, JSON.stringify({ ...app, updateCheck: false, webAccess: { enabled: true, bind: '127.0.0.1', port, mode: 'none', hosts: [] } }))
+    const server = await launchServer({ root, port, env: { ...gitEnv, CC_COCKPIT_MARKETPLACE_URLS: indexUrl } })
+    try {
+      await expect
+        .poll(async () => ((JSON.parse((await ccc(server, ['web', 'status', '--json'])).stdout) as WebCliStatus).notices))
+        .toEqual([
+          { kind: 'revoked', text: `Plugin ${PLUGIN_ID} was stopped: the marketplace index revoked it (the reason is on the Plugins page)`, at: expect.any(Number) }
+        ])
+      const text = (await ccc(server, ['web', 'status'])).stdout
+      expect(text).toContain('plugin revoked')
+      expect(text).not.toContain('steals tokens')
+      expect(text).not.toContain(indexUrl)
+      expect(await server.cockpit.hook<string[]>('notifications')).toEqual([])
+    } finally {
+      await server.close({ keepFiles: true })
     }
   } finally {
     rmSync(temp, { recursive: true, force: true })

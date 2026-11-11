@@ -510,8 +510,10 @@ export class WindowManager {
     let handle: WindowHandle | undefined = undefined
     handle = this.options.factory.createProjectWindow(
       view,
-      // The record is user-writable: a damaged `bounds` reads as none (today's default size).
-      fitBounds(sanitizeBounds(view.bounds), this.options.factory.workAreas()),
+      // The record is user-writable: a damaged `bounds` reads as none (today's default size). Server mode
+      // never uses them: its one screen is headless 1x1, so a record a desktop run saved (the person's
+      // own, kept for their next desktop start) would be fitted down to a 1x1 hidden page.
+      this.options.server ? undefined : fitBounds(sanitizeBounds(view.bounds), this.options.factory.workAreas()),
       {
         onBoundsChanged: () => {
           // JsonFile debounces (one write per window of time however many events arrive), so

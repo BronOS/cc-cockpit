@@ -80,6 +80,11 @@ stderr).
   whether the gateway listens (or why not), the secret store and how many stored values it cannot
   read, whether the access link and the password are set, whether this is server mode, and the
   signed-in devices (id, name, how each signed in, last seen); never a link, a token or a hash.
+  In server mode the app's own notices (a new device signed in, a plugin the marketplace revoked, a
+  newer release) are one stdout line each, in the terminal or journal that runs the app, with no
+  OS notification; `status` lists this run's as `notices` (also in `--json`), a new device with its
+  id, which names its `sign-in` entry in `web-access.log`. A line holds no link, token or plugin
+  text. The desktop keeps its OS notifications and lists none.
   `revoke` signs out one device by the id `status` shows, or all of them. `stop` quits a
   server-mode app as SIGTERM does (open browser tabs reconnect when it is back). On the desktop only
   `status` and `revoke` are answered; the rest says "use Settings › Web access". When the app is

@@ -37,7 +37,7 @@ import { launchCockpit, type Cockpit, type LaunchOptions } from './fixtures'
 /** The switches the re-exec appends (server-mode.ts), with `--server` in front. */
 export const SERVER_SWITCHES = ['--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic']
 
-export interface ServerOptions extends Pick<LaunchOptions, 'env' | 'root'> {
+export interface ServerOptions extends Pick<LaunchOptions, 'env' | 'root' | 'settings'> {
   /** The sign-in mode written to a fresh `app.json`. Default 'none' (any browser on this machine is in). */
   mode?: 'none' | 'link' | 'password'
   /**
@@ -80,7 +80,8 @@ export async function launchServer(options: ServerOptions = {}): Promise<Server>
       ...(options.root !== undefined ? { root: options.root } : {}),
       settings: {
         updateCheck: false,
-        webAccess: { enabled: true, bind: '127.0.0.1', port, mode: options.mode ?? 'none', hosts: [] }
+        webAccess: { enabled: true, bind: '127.0.0.1', port, mode: options.mode ?? 'none', hosts: [] },
+        ...options.settings
       },
       env: {
         ...(options.fakeSecrets === false ? { CC_COCKPIT_FAKE_SECRETS: undefined } : {}),

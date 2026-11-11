@@ -67,6 +67,7 @@ import {
 import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
 import { AppMenu, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'
+import { CoreNotices } from './notifications/core-notices'
 import { ChimeGate, chimeRinger, Notifier, NotifySounds, PageNoticeBackend, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
 import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
@@ -177,7 +178,7 @@ import { selectOpenFile } from '../shared/services'
 import { settingsGearOf } from '../shared/settings-gear'
 import { createIndexFetcher, createPreviewFetcher, type IndexFetcher, type PreviewFetcher } from './marketplace/fetch-index'
 import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-service'
-import { revocationNotice } from './marketplace/marketplace-view'
+import { revocationNotice, revocationNoticeLines } from './marketplace/marketplace-view'
 import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
@@ -524,8 +525,13 @@ function start(server: boolean): void {
     secrets: pluginSecrets,
     revocation: (plugin) => marketplace.revocationFor(plugin),
     // A plugin revoked at load is seen before `ready`, when a Notification cannot be shown yet.
+    // `coreNotices` is declared further down: this only runs after load() has started, i.e. after it exists.
     onRevoked: (revoked) =>
-      void app.whenReady().then(() => showNotification(revocationNotice(revoked))),
+      void app.whenReady().then(() => {
+        if (!server) return coreNotices.show({ kind: 'revoked', text: revocationNotice(revoked) })
+        // One line per plugin, with no index text (the reason stays on the Plugins page).
+        for (const line of revocationNoticeLines(revoked)) coreNotices.show({ kind: 'revoked', text: line })
+      }),
     // The linked folders to watch follow the plugin set (`devWatch` is defined below; the
     // installer calls this only after load() has started, i.e. after start() has run through).
     // The generated Claude plugin tree too: an installed or linked plugin's skills are copied, an
@@ -1182,6 +1188,14 @@ function start(server: boolean): void {
   /** A core or `ccc notify` notice; `windowId` places an in-page one (server mode), the OS ignores it. */
   const showNotification = (text: string, title = 'cc-cockpit', windowId?: number): void =>
     notifier.show({ title, body: text, ...(windowId !== undefined ? { windowId } : {}) })
+  // The app's own notices (a new device, a revoked plugin, a newer release): the OS's on the desktop,
+  // one stdout line each in server mode, kept for `ccc web status` (notifications/core-notices.ts,
+  // design-web.md §9.9). Never an in-page notice: those are the plugins' and `ccc notify`'s.
+  const coreNotices = new CoreNotices({
+    server,
+    desktop: (text, title) => showNotification(text, title),
+    out: (line) => console.log(line)
+  })
   /** Windows a chime was sent to and the sound id it rang, oldest first, in a test run only. */
   const chimesRung: { windowId: number; sound: string }[] = []
   // The OS sound folders the "Sound" setting can pick from (system-sounds.ts): fixed per platform,
@@ -1527,6 +1541,8 @@ function start(server: boolean): void {
   // `ccc` would warn. A checkout has no upgrade to warn about, so it reports what it was built from.
   const appVersion = app.isPackaged ? app.getVersion() : BUILD_VERSION
   let fakeReleaseTag: string | undefined
+  /** The release a server mode run last printed a line for. */
+  let announcedUpdate: string | undefined
   // Reads `updateChecker` (declared below): only ever called after it exists (a window event or an IPC call).
   const updateState = (): UpdateState => {
     const release = updateChecker.available()
@@ -1555,7 +1571,15 @@ function start(server: boolean): void {
         a.updateDismissed = version
       })
     },
-    onChange: broadcastUpdateState,
+    onChange: (update) => {
+      broadcastUpdateState()
+      // A server has no bar anyone looks at: one stdout line the first time a version is offered
+      // (a dismissal hides it again, a newer one is announced as it comes).
+      if (server && update !== undefined && update.version !== announcedUpdate) {
+        announcedUpdate = update.version
+        coreNotices.show({ kind: 'update', text: `A new cc-cockpit version is available: ${update.version} (running ${appVersion})` })
+      }
+    },
     log: (message) => console.warn(message)
   })
   // The CLI socket. Identity comes from main's own tables: a token through the tab manager (a
@@ -1571,7 +1595,9 @@ function start(server: boolean): void {
   const webDevices = new DeviceStore({
     filePath: paths.webAccessJson,
     accessLog: webAccessLog,
-    notify: (text) => showNotification(text, 'cc-cockpit web access')
+    // A new device: an OS notification on the desktop, a stdout line and a `ccc web status` entry in
+    // server mode, beside the sign-in `web-access.log` has just got.
+    notify: (text, device) => coreNotices.show({ kind: 'new-device', text, title: 'cc-cockpit web access', device })
   })
   const webAuth = new WebAuth({
     devices: webDevices,
@@ -1745,7 +1771,7 @@ function start(server: boolean): void {
   // socket's connections, and the shell would otherwise see a dropped one instead of the answer.
   registerWebHandlers(socket, {
     server,
-    status: async () => webAccess.cliStatus(await webSecretsStatus()),
+    status: async () => webAccess.cliStatus(await webSecretsStatus(), coreNotices.list()),
     revoke: (id) => webAccess.revoke(id, { reason: SHELL_REVOKE_REASON }),
     revokeAll: () => webAccess.revokeAll({ reason: SHELL_REVOKE_REASON }),
     stop: () => {

@@ -153,8 +153,8 @@ export interface DeviceStoreOptions {
   /** `<data>/web-access.json`. */
   filePath: string
   accessLog: AccessLog
-  /** Shows a desktop notification (main: the notifier adapter). */
-  notify?: (text: string) => void
+  /** Tells of a new device (main: core notices); `device` is its id, the one its `web-access.log` sign-in carries. */
+  notify?: (text: string, device: string) => void
   now?: () => number
   fs?: FsOps
   log?: (message: string) => void
@@ -165,7 +165,7 @@ export type RevokedListener = (ids: readonly string[]) => void
 export class DeviceStore {
   private readonly file: JsonFile<WebAccessFileData>
   private readonly accessLog: AccessLog
-  private readonly notify: (text: string) => void
+  private readonly notify: (text: string, device: string) => void
   private readonly now: () => number
   private readonly listeners = new Set<RevokedListener>()
   private readonly changeListeners = new Set<() => void>()
@@ -246,7 +246,7 @@ export class DeviceStore {
     this.file.data.devices.push(record)
     this.commit()
     this.accessLog.write({ event: 'sign-in', device: record.id, name: record.name, detail: mode })
-    this.notify(`A new device signed in to web access: ${record.name}`)
+    this.notify(`A new device signed in to web access: ${record.name}`, record.id)
     this.changed()
     return { device: publicOf(record), cookie: `${record.id}.${secret}` }
   }

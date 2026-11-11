@@ -22,6 +22,15 @@ export function revocationNotice(plugins: { id: string; revoked: PluginRevocatio
     .join('\n')
 }
 
+/**
+ * The same notice for a server's stdout, one line per plugin and with none of the index's text: a
+ * stdout line is read in a journal, and the reason an index gave (and the URL it came from) is
+ * untrusted text the Plugins page shows instead. The id is a checked value.
+ */
+export function revocationNoticeLines(plugins: { id: string; revoked: PluginRevocation }[]): string[] {
+  return plugins.map((p) => `Plugin ${p.id} was stopped: the marketplace index revoked it (the reason is on the Plugins page)`)
+}
+
 /** A listing together with what the view says about it; `entry` is the validated index data install uses. */
 export interface ResolvedEntry {
   view: MarketplaceEntryView

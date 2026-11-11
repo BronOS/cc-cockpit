@@ -143,6 +143,13 @@ describe('guide drift guards', () => {
     for (const sub of subs) expect(topic('cli'), `ccc web ${sub}`).toContain(`ccc web ${sub}`)
   })
 
+  it('says in the cli topic where a server-mode core notice goes and that status lists it', () => {
+    const cli = topic('cli')
+    expect(cli).toContain('one stdout line each')
+    expect(cli).toContain('`status` lists this run')
+    expect(cli).toContain('web-access.log')
+  })
+
   it('names every ctx member of src/sdk/types.ts in the api topic', () => {
     const src = readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8')
     const body = /export interface PluginContext \{([\s\S]*?)\n\}/.exec(src)?.[1] ?? ''

@@ -784,6 +784,11 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   mail subjects).
 - **Core notices** (a new device, the marketplace revocation notice, `index.ts:381`, the update notice) carry no plugin
   text: a stdout line each, listed in `ccc web status`, and the new device beside its `web-access.log` entry.
+  Built as `notifications/core-notices.ts`: the desktop keeps its OS notification, server mode prints
+  `cc-cockpit: <line>` and keeps the run's last 50 for `status` (`notices`, also in `--json`; a new device carries its
+  id, which names its `sign-in` entry in the log). A line is plain text with no link and no index or plugin text: the
+  revocation line names the plugin id only (the index's reason stays on the Plugins page), the update line the new and
+  running versions, announced once per version.
 - **`shell.openExternal`.** One adapter, as for `dialog`, with the same grep test, for every call: `ctx.openExternal`,
   `app.openExternal`, the update notice, plugin OAuth (`index.ts:239`), the webview manager (`index.ts:831`) and the
   window-open handler (`windows/create-window.ts:75`). In server mode never on the server: a link notice (§6.1) to the

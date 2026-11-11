@@ -39,7 +39,7 @@
 //     /ccc <args...>      run `ccc <args>` the way Claude would from its Bash tool: found on PATH
 //                         (main prepends <data>/bin), with the tab's env (APP_TAB_TOKEN,
 //                         CC_COCKPIT_SOCK); args split on whitespace, no shell. Prints
-//                         `FAKE-CLAUDE ccc exit=<code> out=<json stdout> err=<json stderr>`.
+//                         `FAKE-CLAUDE ccc exit=<code> out=<json stdout> err=<json stderr, cut at 300 characters>`.
 // Each prints `FAKE-CLAUDE hook <Event>` once the hook command has returned.
 //
 // Bracketed paste (Task 15). Input from `ESC[200~` up to `ESC[201~` is one paste, even across
@@ -139,6 +139,9 @@ function fireHook(event, fields) {
   console.log(`FAKE-CLAUDE hook ${event}`)
 }
 
+/** The longest stderr the `/ccc` echo prints; longer is cut with `...`. */
+const MAX_ECHOED_ERR = 300
+
 // Input line -> hook event, for the scripted lines described at the top.
 function scripted(line) {
   const later = /^\/later\s+(\d+)\s+(.*)$/.exec(line)
@@ -150,7 +153,11 @@ function scripted(line) {
   if (c) {
     const args = (c[1] || '').split(/\s+/).filter(Boolean)
     const r = spawnSync('ccc', args, { encoding: 'utf8', timeout: 15000 })
-    console.log(`FAKE-CLAUDE ccc exit=${r.status} out=${JSON.stringify(r.stdout)} err=${JSON.stringify(r.stderr)}`)
+    // stderr is cut: a usage error prints the whole USAGE text (about 60 terminal rows once `ccc web` was in
+    // it), and a line that tall scrolls `exit=<code>`, its first words, out of the visible terminal the
+    // specs read (cli.spec 'session note and steps' waited for 'exit=2').
+    const err = r.stderr.length > MAX_ECHOED_ERR ? `${r.stderr.slice(0, MAX_ECHOED_ERR)}...` : r.stderr
+    console.log(`FAKE-CLAUDE ccc exit=${r.status} out=${JSON.stringify(r.stdout)} err=${JSON.stringify(err)}`)
     return true
   }
   const m = /^\/(prompt|tool|done|edit|notebook|permission|idle|stop|end)(?:\s+(.*))?$/.exec(line)

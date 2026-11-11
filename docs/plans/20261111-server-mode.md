@@ -886,14 +886,21 @@ task only takes the hidden page out of the set of views that may own a size or a
   `src/main/socket/web-handlers.ts` (`status`), `src/main/web/access-log.ts`, `src/cli/guide/cli.md`
 - Modify: `test/unit/cli-web.test.ts`, `web-access-service.test.ts`, `cli-guide.test.ts`
 
-- [ ] in server mode the core notices (a new device, the marketplace revocation notice, the update notice) carry no
+- [x] in server mode the core notices (a new device, the marketplace revocation notice, the update notice) carry no
       plugin text and go to stdout, one line each, instead of an OS notification
-- [ ] `ccc web status` lists them (`--json` too), the new device beside its `web-access.log` entry; `cli.md` says so
-- [ ] the desktop is unchanged
-- [ ] write tests: each of the three on stdout and in `status` in server mode, none of them an OS notification there;
+- [x] `ccc web status` lists them (`--json` too), the new device beside its `web-access.log` entry; `cli.md` says so
+- [x] the desktop is unchanged
+- [x] write tests: each of the three on stdout and in `status` in server mode, none of them an OS notification there;
       no link, token or plugin text in a line; the desktop path as before
-- [ ] run tests and `npm run test:e2e` (`update-notice`, `marketplace-revoked`, `web-access-settings`) - must pass
+- [x] run tests and `npm run test:e2e` (`update-notice`, `marketplace-revoked`, `web-access-settings`) - must pass
       before next task
+- [x] ➕ `test/e2e/cli.spec.ts` "session note and steps…" failed from Task 12 (30b2f83): its `ccc web` usage lines grew the USAGE
+      text from about 44 to 59 terminal rows (3398 to 4541 characters), and the fake `claude`'s `/ccc` echo prints the whole stderr on one
+      line, so `exit=2` (its first words) scrolled out of the visible terminal. The fake now cuts the echoed stderr at 300
+      characters (`test/fixtures/bin/claude`); the assertion stays
+- [x] ➕ a project record a desktop run saved bounds for opened a 1x1 hidden page in server mode (the headless screen's work area
+      shrinks them; found by the revoked-plugin e2e relaunching a desktop data dir as a server). Server mode now ignores saved bounds
+      when it creates the window (`window-manager.ts`; the record keeps them for a desktop start); unit test added
 
 ### Task 23: Desktop-only calls refused, and the Claude token [model: opus]
 

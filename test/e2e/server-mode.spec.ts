@@ -794,6 +794,62 @@ test('server mode: the web access card in the browser lists a second device, rev
   }
 })
 
+// design-web.md §9.9: the app's own notices (a new device, a newer release) are one stdout line each in
+// server mode, listed by `ccc web status`, never an OS notification and never an in-page notice. A
+// revoked plugin's line is checked in marketplace-revoked.spec.ts (it is printed at start, before a
+// spec can listen).
+test('server mode: a new device and a newer release are stdout lines, listed in ccc web status', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer({ mode: 'link', settings: { updateCheck: true } })
+  const { cockpit } = server
+  const lines: string[] = []
+  let partial = ''
+  cockpit.app.process().stdout?.on('data', (chunk: Buffer) => {
+    const parts = (partial + chunk.toString()).split('\n')
+    partial = parts.pop() ?? ''
+    lines.push(...parts)
+  })
+  const statusOf = async (): Promise<WebCliStatus> => JSON.parse((await ccc(server!, ['web', 'status', '--json'])).stdout) as WebCliStatus
+
+  await cockpit.hook('fakeRelease', 'v99.0.0')
+  const updateLine = /^cc-cockpit: A new cc-cockpit version is available: 99\.0\.0 \(running .+\)$/
+  await expect.poll(() => lines.filter((l) => updateLine.test(l)).length).toBe(1)
+  // Asked again: the same version is not announced twice.
+  await cockpit.hook('fakeRelease', 'v99.0.0')
+
+  const link = await addDeviceLink(server)
+  const browser = await openBrowser(link)
+  try {
+    const { page } = browser
+    await expect(page.getByRole('list', { name: 'Open projects' }).getByRole('link')).toHaveCount(1)
+    await expect.poll(() => lines.filter((l) => l.startsWith('cc-cockpit: A new device signed in to web access: ')).length).toBe(1)
+    const status = await statusOf()
+    const device = status.devices[0]
+    expect(device).toBeDefined()
+    expect(status.notices.map((n) => n.kind)).toEqual(['update', 'new-device'])
+    expect(status.notices[1]).toMatchObject({ text: `A new device signed in to web access: ${device!.name}`, device: device!.id })
+    expect(status.notices[0]?.text).toMatch(/^A new cc-cockpit version is available: 99\.0\.0 \(running /)
+    // Beside its web-access.log entry: the sign-in with that device id.
+    const log = readFileSync(join(cockpit.dataDir, 'logs', 'web-access.log'), 'utf8')
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => JSON.parse(l) as { event: string; device?: string })
+    expect(log.some((e) => e.event === 'sign-in' && e.device === device!.id)).toBe(true)
+    // The text form lists them too, and neither carries a link or a token.
+    const text = (await ccc(server, ['web', 'status'])).stdout
+    expect(text).toContain('notices: 2')
+    expect(text).toContain(`device ${device!.id} (sign-in in web-access.log)`)
+    expect(`${text}\n${lines.join('\n')}`).not.toMatch(/#t=|[?&]token=/)
+    // Neither is an OS notification (none exists in server mode) or an in-page notice, here or in the browser.
+    expect(await cockpit.hook<unknown[]>('notifications')).toEqual([])
+    await expect(cockpit.page.getByTestId('page-notice')).toHaveCount(0)
+    await expect(page.getByTestId('page-notice')).toHaveCount(0)
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
 test('server mode: a second launch from a desktop is ignored by the server; its box answered Stop ends the server cleanly', async () => {
   test.setTimeout(90_000)
   server = await launchServer()

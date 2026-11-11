@@ -1580,6 +1580,20 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     expect(winB!.closed).toBe(false)
   })
 
+  it('a project a desktop run saved bounds for opens at the default size: the headless screen would fit them to 1x1', () => {
+    const s = server()
+    const a = folder('a')
+    const view = s.wm.openPath(a)
+    registry.update(view.id, (r) => {
+      r.bounds = { x: 100, y: 100, width: 900, height: 650 }
+    })
+    factory.open('project')[0]!.userClose()
+    s.wm.openPath(a)
+    expect(factory.open('project')[0]!.createdWith).toBeUndefined()
+    // The record keeps the person's own bounds for a later desktop start.
+    expect(registry.get(view.id)?.bounds).toEqual({ x: 100, y: 100, width: 900, height: 650 })
+  })
+
   it('a crash reloads the page after a pause, with a log line, and the window stays', () => {
     const s = server()
     s.wm.openPath(folder('a'))

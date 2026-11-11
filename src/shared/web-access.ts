@@ -207,6 +207,18 @@ export interface WebCliStatus {
   accessLink: WebCredentialState
   password: WebCredentialState
   devices: WebDeviceView[]
+  /** The core notices of this run (a new device, a revoked plugin, a newer release); server mode only, else empty. */
+  notices: WebCliNotice[]
+}
+
+/** A core notice as `ccc web status` lists it (main/notifications/core-notices.ts): one plain line, no link or plugin text. */
+export interface WebCliNotice {
+  kind: 'new-device' | 'revoked' | 'update'
+  text: string
+  /** Epoch ms. */
+  at: number
+  /** A new-device notice: the device's id, which names its `sign-in` entry in `web-access.log`. */
+  device?: string
 }
 
 /** `ccc web revoke`: how many devices were signed out. */

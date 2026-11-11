@@ -22,6 +22,7 @@ let dir: string
 let file: string
 let clock: number
 let notices: string[]
+let noticeDevices: string[]
 let log: AccessLog
 
 beforeEach(() => {
@@ -29,12 +30,16 @@ beforeEach(() => {
   file = join(dir, 'web-access.json')
   clock = 1_700_000_000_000
   notices = []
+  noticeDevices = []
   log = new AccessLog({ now: () => clock })
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 function store(): DeviceStore {
-  return new DeviceStore({ filePath: file, accessLog: log, notify: (t) => notices.push(t), now: () => clock })
+  return new DeviceStore({ filePath: file, accessLog: log, notify: (t, device) => {
+      notices.push(t)
+      noticeDevices.push(device)
+    }, now: () => clock })
 }
 
 function onDisk(): { devices: Array<Record<string, unknown>>; accessToken?: unknown } {
@@ -69,8 +74,10 @@ describe('add and check', () => {
 
   it('notifies the desktop and logs the sign-in, with the name as plain text', () => {
     const s = store()
-    s.add('Evil‮\u0007Phone\n', 'add')
+    const added = s.add('Evil‮\u0007Phone\n', 'add')
     expect(notices).toEqual(['A new device signed in to web access: EvilPhone'])
+    // The device's id rides along: `ccc web status` lists the notice beside that sign-in's log entry.
+    expect(noticeDevices).toEqual([added?.device.id])
     expect(log.recent()).toMatchObject([{ event: 'sign-in', name: 'EvilPhone', detail: 'add' }])
   })
 

@@ -1,7 +1,7 @@
 // What `ccc web` prints (design-web.md §9.4). The reply comes from whatever owns the socket, so every
 // field is checked for its type and text goes through the caller's `plain` (control characters out)
 // before it reaches a terminal: a device name is the browser's own text.
-import type { WebCliStatus, WebCredentialState, WebDeviceView, WebGatewayView } from '../shared/web-access'
+import type { WebCliNotice, WebCliStatus, WebCredentialState, WebDeviceView, WebGatewayView } from '../shared/web-access'
 
 type Plain = (text: unknown) => string
 
@@ -63,6 +63,18 @@ function deviceLine(d: Partial<WebDeviceView>, plain: Plain): string {
   return `  ${plain(d.id)}\t${plain(d.name)}\tsigned in with ${plain(d.mode)}\tlast seen ${time(d.lastSeenAt)}${connected}`
 }
 
+const NOTICE_KINDS: Record<string, string> = {
+  'new-device': 'new device',
+  revoked: 'plugin revoked',
+  update: 'update'
+}
+
+/** A core notice: when, what it is, its line; a new device also says whose sign-in `web-access.log` has. */
+function noticeLine(n: Partial<WebCliNotice>, plain: Plain): string {
+  const device = typeof n.device === 'string' && n.device !== '' ? `\tdevice ${plain(n.device)} (sign-in in web-access.log)` : ''
+  return `  ${time(n.at)}\t${NOTICE_KINDS[String(n.kind)] ?? plain(n.kind)}\t${plain(n.text)}${device}`
+}
+
 /** `ccc web status` without `--json`: one fact per line, the devices last. */
 export function formatWebStatus(result: unknown, plain: Plain): string {
   const s = (result ?? {}) as Partial<WebCliStatus>
@@ -88,6 +100,12 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
   const devices = Array.isArray(s.devices) ? (s.devices as Array<Partial<WebDeviceView>>) : []
   lines.push(devices.length === 0 ? 'devices: none signed in' : `devices: ${devices.length}`)
   for (const d of devices) lines.push(deviceLine(d, plain))
+  // Server mode's core notices (stdout lines of this run); the desktop has none to list.
+  const notices = Array.isArray(s.notices) ? (s.notices as Array<Partial<WebCliNotice>>) : []
+  if (notices.length > 0) {
+    lines.push(`notices: ${notices.length}`)
+    for (const n of notices) lines.push(noticeLine(n, plain))
+  }
   return `${lines.join('\n')}\n`
 }
 

@@ -61,7 +61,8 @@ const STATUS: WebCliStatus = {
   secrets: { store: 'keyfile', unavailable: null, otherMode: 0, replaced: 0 },
   accessLink: 'set',
   password: 'unset',
-  devices: []
+  devices: [],
+  notices: []
 }
 
 /** Deps that record what the handlers did. */
@@ -352,7 +353,8 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
       secrets,
       accessLink: 'set',
       password: 'set',
-      devices: [expect.objectContaining({ id: signedIn.device.id, name: 'Phone', mode: 'link', connected: true })]
+      devices: [expect.objectContaining({ id: signedIn.device.id, name: 'Phone', mode: 'link', connected: true })],
+      notices: []
     })
 
     const file = JSON.parse(readFileSync(join(dir, 'web-access.json'), 'utf8')) as Record<string, unknown>
@@ -378,6 +380,10 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
     // Refused and failed: the reason, and the stored desktop off.
     status = { state: 'failed', reason: 'port 7330 is in use' }
     expect(service.cliStatus(secrets).gateway).toEqual({ state: 'failed', reason: 'port 7330 is in use' })
+    // The core notices main kept ride along as given (none by default).
+    const notice = { kind: 'update' as const, text: 'A new cc-cockpit version is available: 1.2.3 (running 1.0.0)', at: 5 }
+    expect(service.cliStatus(secrets, [notice]).notices).toEqual([notice])
+    expect(service.cliStatus(secrets).notices).toEqual([])
     service.dispose()
   })
 
@@ -496,6 +502,25 @@ describe('ccc web: the CLI', () => {
     expect(await run(['web', 'revoke', '--all'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
     expect(await run(['web', 'stop'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
     expect(out).toBe('revoked 2 device(s)\ncc-cockpit is stopping\n')
+  })
+
+  it('lists the core notices in status lines and --json, a new device beside its log entry, never in a desktop status', async () => {
+    const notices: WebCliStatus['notices'] = [
+      { kind: 'new-device', text: 'A new device signed in to web access: Phone\u001b[2J', at: 0, device: 'dev-1' },
+      { kind: 'revoked', text: 'Plugin a.b was stopped: the marketplace index revoked it (the reason is on the Plugins page)', at: 1000 },
+      { kind: 'update', text: 'A new cc-cockpit version is available: 1.2.3 (running 1.0.0)', at: 2000 }
+    ]
+    const text = formatWebStatus({ ...STATUS, notices }, (t) => String(t).split('\u001b').join(' '))
+    expect(text).toContain('notices: 3\n')
+    expect(text).toContain('  1970-01-01T00:00:00.000Z\tnew device\tA new device signed in to web access: Phone [2J\tdevice dev-1 (sign-in in web-access.log)')
+    expect(text).toContain('  1970-01-01T00:00:01.000Z\tplugin revoked\tPlugin a.b was stopped:')
+    expect(text).toContain('  1970-01-01T00:00:02.000Z\tupdate\tA new cc-cockpit version is available: 1.2.3 (running 1.0.0)')
+    expect(text).not.toMatch(/https?:\/\/[^\s]*(#t=|token)/)
+    expect(formatWebStatus(STATUS, String)).not.toContain('notices')
+
+    await fakeApp(() => ({ ok: true, result: { ...STATUS, notices } }))
+    expect(await runCommand({ kind: 'web-status', json: true }, { CC_COCKPIT_SOCK: sock }, CWD, io)).toBe(0)
+    expect(JSON.parse(out)).toMatchObject({ notices })
   })
 
   it('prints the other-mode and replaced counts, and the credentials that cannot be read', () => {
