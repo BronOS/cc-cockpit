@@ -1,7 +1,8 @@
 # Web access (remote cockpit) — design draft
 
 Status: v1 implemented (2026-11-10, branch `feat/web-access`; plan `docs/plans/20261110-web-access.md`, phases 1 to 5 of §7).
-Revised after two architecture reviews. Sections 9 and 10 and the phone layout stay later. The code's own comments
+Revised after two architecture reviews. Server mode (§9, Linux, no display) is designed and ships with web access,
+not built yet; section 10 and the phone layout stay later. The code's own comments
 carry the finer points (`src/main/web/`, `src/main/views/`, `src/renderer/web/`); this document keeps the reasons.
 
 **What v1 implements:** the gateway (http + one WebSocket per view), the Host and Origin checks, the four sign-in modes
@@ -11,9 +12,9 @@ every view, ports and slots per view, plugin pages under path tokens, shared lin
 take-over, window lifetime (§5.6), the native mapping of §6.1, and the settings page, top-bar chip and devices list.
 How to use it: `docs/features.md` "Web access".
 
-**Later, not in v1:** the desktop as a remote client (§10), more than one person (§10), a phone layout, headless mode
-(§9), Web Notifications and `ctx.notify` to a browser, a remote Allow of a plugin link, the browser panel and URL
-overlays in a browser, sign-in of a plugin's OAuth from a browser.
+**Later, not in v1:** the desktop as a remote client (§10), more than one person (§10), a phone layout, Web
+Notifications, and on the desktop: `ctx.notify` to a browser, a remote Allow of a plugin link and a plugin's OAuth
+sign-in from a browser (server mode has all three, §9.6, §9.9); the browser panel and URL overlays in a browser.
 
 ## 0. Goal, direction, non-goals
 
@@ -38,7 +39,7 @@ Plugins do not change.
   close the door on it: every view carries an identity).
 - A cloud relay run by us. Reaching the machine from outside is the person's network (Tailscale, SSH tunnel, their
   own reverse proxy).
-- A headless server with no desktop app (§9).
+- A server with no display in v1 itself; server mode is designed in §9 (Linux only) and ships with the same feature.
 - Windows hosts. A phone-first layout (later phase).
 
 ## 1. What the survey and review found
@@ -160,9 +161,10 @@ their own browser. They apply in every auth mode, None included:
   server keeps a sliding expiry instead (30 days of no use).
 - **Visible on the desktop**: the top bar shows connected devices; one click lists them with Disconnect, Revoke and
   Revoke all. Revoking closes their sockets and kills their plugin-page tokens (§5.5) at once. Every new device
-  raises a desktop notification.
-- **Remote views cannot widen their own access**: the auth mode, bind, secrets, host list and device list are
-  `no`-class channels (§2.3), changed only on the desktop.
+  raises a desktop notification (server mode: a stdout line, §9.9).
+- **Remote views cannot add or widen access**: the auth mode, bind, secrets, host list and device list are
+  `no`-class channels (§2.3), changed only on the desktop (server mode: from a shell on the server, §9.4, where a
+  browser may also revoke and disconnect devices, which only narrows, §9.6).
 - **Web shell CSP**: `default-src 'self'`, `connect-src 'self'`, `frame-src` the plugin paths only,
   `frame-ancestors 'none'`; `Cache-Control: no-store` on the shell.
 - **Log**: sign-in, connect, disconnect, revoke, mode changes. Never terminal text or prompts.
@@ -377,10 +379,16 @@ show "host unreachable" and reconnect.
   browser sizes the tabs. `openView` (picker, `ccc open`), `activate` (the dock) and `focusAny` (a relaunch) show it;
   `focusProject` (plugins, chips, a plugin's tab close) leaves it hidden. Quit: `before-quit` closes every view with
   `CLOSE.appQuit` (4504), final in the bridge, before the windows close (each would otherwise send `windowClosed`).
+- Server mode (§9) never shows, hides or focuses its window (§9.8), and its stop closes views with a code the bridge
+  retries (§9.1).
 
 ## 6. Native features
 
 ### 6.1 Remote view behaviour (v1)
+
+Server mode (§9) changes these rows: a browser may Allow a plugin link (§9.6), the trash confirm is in-page (§9.6),
+`ctx.notify` is an in-page notice, OAuth signs in by pasting the failed redirect (§9.9), and there is no desktop to
+defer to (§9.7, §9.9).
 
 | Feature | Desktop view | Remote view |
 |---|---|---|
@@ -415,7 +423,10 @@ show "host unreachable" and reconnect.
 4. **Native mapping** (§6.1) and window lifetime (§5.6).
 5. **Remote reach**: password and desktop-confirm modes, external origin and TLS settings, the confirms of §4.3,
    Tailscale and SSH docs.
-6. Later: the desktop as a remote client, multi-user (§10), a phone layout, headless mode (§9).
+6. **Server mode** (§9, Linux): the spawned start, the hidden page's own state, the dialog and `openExternal` adapters,
+   the key file, `ccc web` and the start link, owner approvals, opening projects from the browser, in-page notices and
+   the OAuth paste box.
+7. Later: the desktop as a remote client, multi-user (§10), a phone layout.
 
 ## 7a. Spike results (2026-11-10, branch `spike/web-terminal-mirror`, not merged)
 
@@ -469,12 +480,410 @@ proxy.
 - Security: wrong Host, wrong Origin, no cookie, expired or revoked device, a used or regenerated access token,
   wrong passwords past the limit, a confirm code without desktop Allow, None on a network address without the confirm, a plugin token for another plugin, a navigated frame, a path outside the plugin folder, frames
   naming another window or project, `no`-class channels from a remote view, oversize frames.
+- Server mode: §9.13.
 
-## 9. Headless server mode (later)
+## 9. Server mode
 
-The app with no desktop window (a home server, a VM). Electron runs without windows, but on Linux it still wants a
-display unless started with Chromium's headless Ozone platform; plugin hosts and node-pty need none. Out of v1: the
-window lifetime rules and the desktop-confirm mode assume a desktop (the link and password modes do not).
+Status: designed 2026-11-11 from a spike (Electron 45.1, Linux, no keyring), revised after review the same day; not
+built, ships with web access. Linux only in this phase.
+
+**Goal.** Someone installs cc-cockpit on a server with no display (a home server, a VM) and uses it only through web
+access, from browsers. The model is v1's: one person with several devices, every signed-in device is that person (§4).
+What changes is that no desktop exists. v1 keeps three things on the desktop: who gets in (the auth settings), seeing
+who is in, and approving what runs as code. Server mode moves the first to a shell on the server (§9.4), the second to
+the log, the CLI and the browsers' card (§9.12), and the third to the browsers (§9.6).
+
+**Mechanism.** Electron runs with `--ozone-platform=headless --disable-gpu`: Chromium's headless platform needs no X or
+Wayland, and plugin hosts and node-pty never needed one. The project's `BrowserWindow` is kept and never seen: its page
+stays the window's desktop view inside main, so the mirror's screen seed (`tabs.screenAsk`, §5.2), the restore of tabs
+on attach, panels and the window's lifetime keep one code path, under rules of its own (§9.8). Idle cost: about 250 MB,
+under 1 % of a core. Xvfb was dropped: a system package, and it turns each native-dialog crash below into an invisible
+hang, so it needs the same work.
+
+### 9.1 Start
+
+- **When.** `cc-cockpit --server`, or on its own on Linux when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set (without
+  the Ozone switch Electron exits at once, "The platform failed to initialize"). `ssh -X` sets `DISPLAY`, so a
+  forwarded session gets the desktop; `--server` forces server mode. Not `--headless`: Chromium reads that switch itself
+  (measured: `app.commandLine.hasSwitch('headless')` is true with it on argv).
+- **Linux only.** On macOS and Windows `--server` prints "server mode runs on Linux only" and exits 1, and nothing is
+  detected. macOS would need another mechanism (never-shown windows, throttling, the dock, a GUI login session, a
+  keychain that prompts on screen) and has no spike.
+- **Spawn.** The Ozone switch must be on argv: `app.commandLine.appendSwitch` from main is too late and
+  `ELECTRON_OZONE_PLATFORM_HINT=headless` is not read (spike). `app.relaunch` loses stdout: measured, the relaunched
+  process has fd 1 and 2 on `/dev/null` and is detached, so a manual run would daemonize silently. So when server mode
+  applies and argv lacks `--ozone-platform=headless`, main, before `ready`:
+  1. checks the single-instance lock: when another instance holds it, argv goes to that one as any second launch does
+     and this process exits 0, with no second Electron spawned. Else it releases the lock (a launch in the gap meets the
+     child as a second instance);
+  2. without `--server` (detected), prints one line: "no display: starting cc-cockpit in server mode, web access on;
+     stop with Ctrl-C";
+  3. runs `spawnSync(exe, [...argv, '--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic'],
+     { stdio: 'inherit' })` and exits with the child's status (128 + n for a signal). `exe` is `process.env.APPIMAGE`
+     when set (`process.execPath` sits in the image's mount), else `process.execPath`.
+
+  Measured in a minimal app: stdout is kept, the run stays in the foreground, Ctrl-C reaches both (one process group),
+  and the status passes through. Not measured: a SIGTERM sent to the parent alone; if the child outlives it, the plan
+  switches to an async `spawn` that forwards SIGTERM and SIGINT. The decision is a pure function (`src/main/server-mode.ts`:
+  platform, env, argv in; `{ server, spawnArgs }` or a refusal out) at the top of `index.ts`; main keeps `server` for
+  the run. `projectPathFromArgv` skips the flag and the switches. `--disable-gpu` only spares the GPU process failing EGL
+  twice before Chromium's software fallback; `--password-store=basic` is §9.5's, and `choosePasswordStore` already
+  leaves an explicit one alone.
+- **A desktop launch meets a server.** `SecondInstanceData` carries whether the second launch has a display. A server
+  primary ignores the argv of one that has (it opens nothing there, logs a line); the second launch asks the socket
+  (`ccc web status`, 2 s deadline), and when the answer says server mode shows a native box, as it has a screen:
+  "cc-cockpit runs in server mode on this machine (web access at <address>)", with Stop (`ccc web stop`) or Cancel.
+  Without it, typing `cc-cockpit` on one's own desktop while a server run holds the data dir would seem to do nothing.
+  `docs/features.md` says so.
+- **Start order.** In server mode main awaits the gateway and the CLI socket before any window opens or tab restores
+  (today `void webAccess.apply()` is not awaited and a socket that cannot start only logs, `index.ts:2569-2572`). Either
+  failing (the port is taken) logs the reason and exits 1, so systemd shows the failure and retries without Claude
+  tabs resuming and being killed on each try. A stored setting the gateway refuses is not a failure (§9.2).
+- **systemd.** The first process stays in the foreground and passes the status through, so a `Type=simple` unit needs
+  no switches. Example user unit (in `docs/features.md`, not shipped):
+
+  ```ini
+  # ~/.config/systemd/user/cc-cockpit.service
+  [Unit]
+  Description=cc-cockpit (server mode)
+
+  [Service]
+  ExecStart=/usr/bin/cc-cockpit --server
+  # Optional, mode 0600: CLAUDE_CODE_OAUTH_TOKEN=... (§9.10)
+  EnvironmentFile=-%h/.config/cc-cockpit-server.env
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=default.target
+  ```
+
+  `loginctl enable-linger <user>` starts the user manager at boot, `systemctl --user enable --now cc-cockpit` starts it.
+  SIGTERM quits in under a second (spike): tabs are saved and Claude tabs resume on the next start. Views are closed
+  with a new non-final code the bridge retries with backoff, not `CLOSE.appQuit` (final, "Reload this page",
+  `renderer/web/bridge.ts:211`), so the open browser tabs come back after a restart, an update or a reboot. stdout goes
+  to the user's journal. Never as root: Chromium's sandbox refuses it, and the app never passes `--no-sandbox`.
+- **Installs.** The deb and AUR packages, which ship `chrome-sandbox`. The AppImage needs FUSE and has no setuid
+  sandbox helper, so it aborts where unprivileged user namespaces are restricted (Ubuntu 23.10 and later, most
+  containers; inferred): with no `--no-sandbox`, it does not start there. `docs/features.md` names the supported
+  installs; the plan checks a stock Ubuntu Server.
+
+### 9.2 Web access is on
+
+- **Server mode writes what it runs.** At start, a stored `enabled: false` is written `true` and a stored `confirm`
+  mode is written `link`, and stdout says so once ("server mode: turned web access on in app.json"). `ccc web set` and
+  `applyWebAccessPatch` then work on the stored record as on the desktop, with no overlay to reconcile. A desktop start
+  on the same data dir finds web access on: the rare case, accepted. Turning it off is refused ("server mode: web
+  access is the only way in").
+- Modes: access link (the default), password, None. None is allowed on loopback with no confirm; the §4.3 confirms
+  apply to network binds as on the desktop (given with `--confirm`, §9.4).
+- **Desktop confirm is refused**: nobody can answer the request card, so every browser waits 2 min and fails (spike).
+  `applyWebAccessPatch` (`main/web/settings.ts`) refuses it in server mode, with the reason.
+- **A stored risky setting without its confirm** (a network bind with None or plain http) is refused as v1 does, never
+  rewritten to something safer (`web/settings.ts:5-8`): nothing listens, start prints the reason and the exact line
+  to apply it (`ccc web set --bind 0.0.0.0 --confirm plain-http`), and the app keeps running so `ccc web` can fix it.
+
+### 9.3 The first link
+
+- When stdout is a TTY and the mode is access link, start prints a one-time add-device link (`addDeviceLink`,
+  `main/web/auth.ts`), as Jupyter prints its token:
+
+  ```
+  cc-cockpit server mode: web access on http://127.0.0.1:7330
+  Add a device (works once, expires in 10 minutes): http://127.0.0.1:7330/#t=...
+  ```
+
+  Otherwise (systemd, a pipe) it prints the address and "add a device: `ccc web add-device`", so no live link reaches
+  the journal, its readers or a log shipper. Password mode prints the address; None the address and the warning of
+  §9.12. The origin is the external origin when one is set, else the listen address (an SSH tunnel or `tailscale
+  serve` maps it, `docs/features.md` "Reaching it").
+- Protected as the desktop's "Add a device": 256 random bits, only the hash in memory, used once, gone after 10 minutes
+  or when the next one is made, never on disk. Not in `web-access.log` either (that log holds no secrets,
+  `access-log.ts`); it records that a start link was issued and the sign-in that used it.
+
+### 9.4 `ccc web`: settings from a server shell
+
+v1 changes the auth mode, bind and secrets only on the desktop (`no`-class channels, §2.3). Server mode has no
+desktop, so they move to the CLI socket, used from a shell on the server:
+
+| Command | Does | Outside server mode |
+|---|---|---|
+| `ccc web status [--json]` | mode, listen address and external origin, listening or the error, the secret store and how many values it cannot read (§9.5), server mode or not, the devices (name, signed in with, last seen), core notices (§9.9) | answered |
+| `ccc web revoke <device>\|--all` | revokes devices (a lost phone) | answered |
+| `ccc web link [--regenerate]` | prints the access link, made on first use; `--regenerate` kills it and its devices (§4.2) | refused |
+| `ccc web add-device` | prints a one-time link, 10 minutes | refused |
+| `ccc web password` | sets the password from stdin (a no-echo prompt on a TTY), never argv: argv shows in `ps` | refused |
+| `ccc web mode link\|password\|none` | switches the mode; `confirm` is refused | refused |
+| `ccc web set [--bind <addr>] [--port <n>] [--origin <url>] [--host <name>]... [--tls-cert <pem> --tls-key <pem> \| --no-tls] [--confirm none-network\|plain-http]` | bind, port, origin, hosts, TLS, through the same `applyWebAccessPatch` as the settings page: a §4.3 risk is refused with its confirm text printed, and applies only with its `--confirm` | refused |
+| `ccc web stop` | quits as SIGTERM does (§9.1's box uses it) | refused |
+
+- **Desktop: narrowing only.** Outside server mode `ccc web` answers `status` and `revoke` and refuses the rest with
+  "use Settings › Web access". Otherwise any process of the user (a plugin with exec, a remote view's shell, Claude
+  after a prompt injection) could print the link or turn on None on the network with nobody asked, where today that
+  takes a click on the person's screen. CLAUDE.md's "changed only on the desktop" stays true for the desktop.
+- **Host-only.** `web` is answered only for a tokenless caller (`socket-server.ts`: a process outside the app's tabs),
+  through a new fixed list `HOST_ONLY_COMMANDS` in `shared/protocol.ts`, projectless and kept out of
+  `WINDOW_TOKEN_COMMANDS`. A shell, command or Claude tab gets "run `ccc web` from a shell on the server, outside
+  cc-cockpit". Not a boundary (a tab's process is the same OS user and can drop its token or edit `app.json`, §9.12):
+  it stops a Claude session reconfiguring access as a side effect of a prompt, and keeps v1's "a view does not widen
+  its own access" visible. Never through a remote view's IPC: the `settings.webAccess*` writes stay `no`.
+- **CLI details.** `web` joins `CORE_CLI_COMMANDS` (`shared/manifest.ts:82`), so a plugin contributing a `web` command
+  becomes invalid, and `build:marketplace-tools` runs if the tools import that list. With the app not running `ccc web`
+  prints "cc-cockpit is not running" and exits 1, unlike a plugin command's silent 0 (`cli/client.ts:415`, kept for
+  hooks), so a script sees it. The no-echo password prompt is read before the 40 s deadline starts (`cli/client.ts`).
+  Its guide text lands in `src/cli/guide/cli.md` in the same change (`cli-guide.test.ts`) and says it is for a shell
+  on the server, not for Claude.
+- The socket is found as today (`<data>/app.sock`, `CC_COCKPIT_DATA_DIR` for another data dir). The ccc offer is skipped
+  in server mode (§9.9), so start prints the wrapper's path (`<data>/bin/ccc`, `~/.config/cc-cockpit/bin/ccc` on Linux).
+- **Settings card in browsers.** `settings.webAccess` (the read), `webAccess.state` and `webAccess.changed` become
+  `adapted`, open to a remote view only in server mode, so the browser's card follows changes live: mode, address,
+  devices with Revoke and Disconnect (§9.6), the secret store, Desktop confirm disabled with its reason, and "change
+  these with `ccc web` on the server".
+
+### 9.5 Secrets without a keyring
+
+A server rarely has a Secret Service, so safeStorage falls back to `basic_text` (a key built into Chromium), which
+`secret-store.ts` refuses. With no store, the access link, the password and every plugin secret (`ctx.secrets`, secret
+settings fields, OAuth tokens) are off (spike).
+
+- **The mode decides the store.** Server mode always uses the key file and runs Chromium with `--password-store=basic`
+  (§9.1's spawn), so the keyring is never asked and a locked Secret Service cannot leave a probe waiting on an unlock
+  prompt nobody sees. The desktop always uses the keychain and keeps refusing `basic_text`: a desktop has a keychain to
+  fix, and a silent key file would weaken it. No selection by keychain state, no mixed reads.
+- **Key file.** `<data>/secret.key`: 256 random bits, made on first start with `O_CREAT | O_EXCL` and mode 0600 at open
+  (never chmod after). Each value is AES-256-GCM with a random 96-bit IV, stored as `KEYFILE-V1:` + base64(iv, tag,
+  ciphertext). Opened with `O_NOFOLLOW` and checked by `fstat` on that descriptor (no check-then-use gap): refused, with
+  the reason, when it is not a regular file, not the user's, readable by group or others, or not 32 bytes. Never made
+  again over an existing file: that would lose every secret silently. When a new key is made while `KEYFILE-V1:`
+  values exist (a restored backup, a deleted key file), start logs it with the count, those values answer "the key
+  file was replaced: enter it again", and `ccc web status` shows the count.
+- **Same protection as `~/.claude/.credentials.json`**: whoever reads the data dir as the user, or root, reads the
+  secrets, and a backup of the data dir carries its key. On a server the keychain protects little more (an unlocked
+  Secret Service hands any process of the user every secret too); what it adds is a disk image or a backup without the
+  key. Disk encryption is the server's job.
+- **Behind the adapter.** `src/main/secrets/key-file-store.ts` (node `crypto` and `fs`, no Electron) is one more
+  `SecretStore`; `selectSecretStore` gets `server` and returns it or the keychain store. `safeStorage` is still
+  imported only by `index.ts` and reached only through `secret-store.ts`.
+- **Desktop and server mode on one data dir.** Secrets do not move between the stores. Each refuses the other's values,
+  as the fake store's are refused today, with "stored by server mode's key file: enter it again here" (or "by the
+  desktop's keychain"):
+  - a secret settings field shows "stored in the other mode: enter it again" instead of "set";
+  - `ctx.secrets.get` rejects with that text, so the plugin shows its own sign-in again;
+  - web access: devices stay signed in (cookies and the access token are checked by hash, `devices.ts`), but the link
+    cannot be shown until regenerated and the password (stored only as ciphertext) must be set again; the card and
+    `ccc web status` say both;
+  - start logs how many stored values belong to the other store.
+
+### 9.6 Approvals: any signed-in device is the owner
+
+In server mode every signed-in browser view may give the answers v1 keeps on the desktop. On the desktop v1's rule
+stays: a remote view may only Deny.
+- **`ccc plugin link`.** `chooseLinkConfirm` (`plugins/link-asks.ts`) always takes the shared ask, and `LinkAsks.answer`
+  accepts an Allow from a view main counts as owner (`!view.remote || server`, never from the payload). With no browser
+  attached the ask waits (the hidden page takes it, so it is not "no view"); a browser that joins finds it in
+  `ready.linkAsks`; 5 min, then Deny, as now. The dialog drops "Approve on the desktop".
+- **Trash confirm** (`ctx.files.trash`). A shared ask like the link's: `TrashAsks` (`main/files/trash-asks.ts`,
+  `trash.ask` / `trash.answer` / `trash.settled`, class `yes`, pending ones in `ready`), first answer wins, 5 min then
+  "not moved". The shared-ask core moves out of `LinkAsks` into one class both use. The desktop takes it too while a
+  browser is attached, as `chooseLinkConfirm` does, so a trash started from a browser no longer waits on a native box
+  nobody there can see; with no browser, its native confirm.
+- **Devices.** A browser may Revoke and Disconnect devices: a signed-in device already has a shell, so neither adds
+  power, and a lost phone is the case where no SSH is at hand. `settings.webDeviceRevoke`, `webDevicesRevokeAll` and
+  `webDeviceDisconnect` become `adapted`, allowed for a remote view only in server mode (main's `server`, never the
+  payload), behind an in-page confirm; `web-access.log` names the acting device. Minting (link, add-device, password,
+  mode, bind) stays on the server shell. §4.1 reads "cannot add or widen", and CLAUDE.md's web access rule gets the
+  same wording in the implementation. `docs/features.md` says a revoke does not undo what an unlocked lost device
+  already did from its shell.
+- **Close project and error notices**: in-page, in the asking view (§9.7, §9.8).
+- An in-page approval never has Allow as the default, Enter does nothing, the dialog never takes keyboard focus from a
+  terminal by itself, and Allow is enabled only after the dialog has been visible for about a second: neither keys typed
+  for Claude nor a click already on its way when an ask appears can approve.
+
+### 9.7 Native dialogs
+
+Under Ozone headless `dialog.showMessageBox` (with a parent or without) and `dialog.showErrorBox` abort main with SIGTRAP,
+a Chromium CHECK (reproduced in a 10-line app). `showOpenDialog` answers `canceled` with no portal. Test runs hid it:
+their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 1516-1528).
+
+- **One adapter.** `src/main/dialogs/electron-dialog.ts` is the only importer of Electron's `dialog` (the rule in
+  `main/index.ts` and CLAUDE.md, and a grep test like `no-direct-webcontents-send.test.ts`); the logic is in
+  `src/main/dialogs/dialogs.ts`. In server mode it never calls `dialog`: a message box rejects (`ServerDialogError`), an
+  open dialog answers canceled, an error box becomes a log line. A call site missed below then fails closed instead of
+  killing main. `link-dialog.ts`, `close-dialog.ts` and `trash-dialog.ts` get it instead of `dialog.showMessageBox`.
+- **Each call site in server mode** (grep of `dialog.` in `src/main`):
+
+| Call | Server mode |
+|---|---|
+| plugin link confirm: `link-asks.ts:130` → index.ts:1525 → `link-dialog.ts:58` | the shared ask, Allow from any view (§9.6) |
+| window close: `window-manager.ts:497` → `close-dialog.ts:68` | no ask (`askClose` absent): nobody can press the window's close button; a close comes from a browser's Close project (§9.8), which is for everyone |
+| trash confirm: index.ts:455 → `trash-dialog.ts:55` | `TrashAsks` (§9.6) |
+| `showErrorBox` after open folder (index.ts:1608) and relink (index.ts:1663) | the browser's open by path (§9.8) answers the asking view with the error; relink is not reached |
+| `showOpenDialog`: open folder (index.ts:1600), relink (1655), `pickFolder` (1686: Settings relink, Settings link a plugin folder) | not reached: these are `no`-class for browsers and nobody drives the hidden page. Projects open by path (§9.8); plugins link with `ccc plugin link` (§9.6) |
+
+### 9.8 Projects and the hidden page
+
+- **Opening.** In server mode the browser picker (`renderer/web/picker.tsx`) lists the recent projects and has "Open
+  folder…" with a server path field. The picker's GET adds recent and missing projects only in server mode
+  (`projects.recent` stays `no`). `POST /api/projects` (server mode only, else 404; device cookie and Origin as every
+  state-changing POST; body capped as the sign-in routes'): `{ open: path }` (absolute, resolved, an existing
+  directory; no create, `mkdir` in a terminal) or `{ reopen: id }`. Main runs `windows.openPath` as the desktop does and
+  answers the project id or the error text; the picker goes on to `/?project=<id>`. Any folder the server user can
+  read can be opened: no more than the shell a device already has. `ccc open <path>` and `cc-cockpit <path>` from a
+  server shell open one too. A project whose folder is gone shows as missing; relink and forget from the browser wait
+  for a later version (open the folder by its new path instead).
+- **Closing.** Close project in the browser shell: an in-page confirm in that view ("Close <name> for every device? Its
+  tabs end."), then `projects.close` (`adapted`: a remote view only in server mode). Main closes the window as "Close
+  for everyone" does; its views go back to the picker.
+- **No desktop picker, no quit.** In server mode `WindowManager` never makes the picker window (it would be invisible,
+  and on Linux its close quits the app); with no project open the app keeps running with the gateway up until SIGTERM.
+- **The hidden page is a state of its own**, not Keep running's (§5.6), whose mark is undone by `remoteViewGone`,
+  `openView`, `focusAny` and `activate` (`window-manager.ts:276,306,320-327,424`), and whose hidden view still sizes a
+  tab it is the only view of (`views/view-sizes.ts:183-185`):
+  - it is never a measured view in `ViewSizes` (tabs and terminal overlays), so it never sizes a pty nor answers their
+    queries; browsers own the size (§5.2). A pty keeps the size the last browser gave it; a tab no browser has sized
+    (new, or restarted overnight with none attached) gets 120x40;
+  - `WindowManager` never calls `focus`, `show`, `hide` or `showPicker` in server mode;
+  - a crash (`render-process-gone`) or a failed load reloads the page with a log line and never closes the window
+    (today a failed load closes it, `electron-window-factory.ts` `finish`, which would end the project's tabs);
+  - the window is clamped to 480x320 by the 1x1 screen (`window-bounds.ts:14`), which never matters; the page reports
+    itself visible under Ozone, so it is not throttled and answers `tabs.screenAsk`. Server mode writes neither the
+    window's bounds nor the page's zone sizes to the project record, so a later desktop start finds the person's own.
+- **Overlays are held by browsers only.** Today an HTML overlay with no origin view (`ccc overlay` from a Claude tab, the
+  reviewer from a plugin command or timer) is held by the desktop view (`overlays/overlay-manager.ts:20-25`, `:697-702`),
+  which in server mode would show "Open on Desktop — Take over" in every browser. In server mode the holder is the
+  window's last-acting browser view, else the first browser to list the overlay, never the hidden page; a holder that
+  leaves passes it to another browser, and with none attached it waits for the first.
+
+### 9.9 Other desktop-only pieces
+
+- **ccc offer** (`ccc.offer`, index.ts:1982): skipped. It opened a modal on the hidden page and left its root inert.
+- **Notifications.** `ctx.notify` and `ccc notify` go to an in-page notice: a `NoticeBackend` in
+  `notifications/notifier.ts`, so `Notifier.wait` and the click action keep working, in server mode only (the desktop
+  keeps §6.1). It reaches every browser view of the plugin's window; the text is plain text, its length and the queue
+  capped; a click goes through main with the view the router bound; the chime reaches browser views (`notify.chime`
+  becomes `adapted`) and never the hidden page; the browser tab's title shows a mark, else a notice in a background
+  tab is missed. New channels get their `REMOTE_CLASS`; `api.md` says what `ctx.notify` does in server mode, and
+  `docs/features.md` that it does not reach a phone in a pocket. Plugin notification text is never logged (it carries
+  mail subjects).
+- **Core notices** (a new device, the marketplace revocation notice, `index.ts:381`, the update notice) carry no plugin
+  text: a stdout line each, listed in `ccc web status`, and the new device beside its `web-access.log` entry.
+- **`shell.openExternal`.** One adapter, as for `dialog`, with the same grep test, for every call: `ctx.openExternal`,
+  `app.openExternal`, the update notice, plugin OAuth (`index.ts:239`), the webview manager (`index.ts:831`) and the
+  window-open handler (`windows/create-window.ts:75`). In server mode never on the server: a link notice (§6.1) to the
+  asking view, or to every browser view of the window when no view asked; with no browser attached, refused with a log
+  line.
+- **`ctx.files.reveal`, `openWithSystem`**: refused by `server` in main, whatever the origin. `desktopOnly`
+  (`plugins/host-api.ts:1543`) refuses only a call with a remote origin view, a hint that lapses after 10 s, so a timer
+  or a plugin command would reach `shell.showItemInFolder` or `shell.openPath` on the server.
+- **Browser panel, URL overlays**: `ctx.webview` and URL overlays are refused at the open call in server mode ("not
+  available in server mode"), so main never makes a `WebContentsView` for the hidden page's layout (inferred: the
+  layout is shared, §5.1, so it otherwise would); browsers show the placeholder.
+- **Plugin OAuth** (`ctx.oauth`): main's `startLoopback` (`oauth/oauth.ts:150`) owns `127.0.0.1:<random>/callback`,
+  one pending sign-in per plugin, on the server, so the redirect fails in the browser. The auth URL goes out as a link
+  notice; the notice has a box where the person pastes the failed URL, and main settles the pending sign-in in-process
+  with the callback handler's own checks (origin equals the pending one, path `/callback`, one `state` compared in
+  constant time, the code's length, the error code's pattern). No request is made, so there is nothing to forge
+  toward. Main picks the pending sign-in from the caller's window, never from the pasted host or port; PKCE keeps a URL
+  read on the wire useless; attempts are limited, and errors never echo the URL.
+
+### 9.10 Claude login
+
+Claude Code with no display prints the sign-in URL and waits for a pasted code, so `claude` in a browser terminal tab
+signs in (tested); the credentials go to `~/.claude/.credentials.json` and survive restarts. For a box run from boot
+that should never need an interactive login: `claude setup-token` makes a long-lived token, set as
+`CLAUDE_CODE_OAUTH_TOKEN` in the unit's environment file (§9.1). `buildPtyEnv` drops every `CLAUDE_CODE_*` variable
+(`env/pty-env.ts:38-40`, `isStrippedVar`, also applied to the login-shell capture), so that one name becomes an
+exact-name exception there, with a comment and a unit test; Claude tabs then get it from main's environment.
+
+### 9.11 Spike breakages and their fixes
+
+| Spike result | Fix | Files |
+|---|---|---|
+| No display: the app exits; `appendSwitch` is too late | spawn with the switches and inherited stdio (§9.1) | `main/server-mode.ts`, `main/index.ts` |
+| The GPU process fails EGL twice | `--disable-gpu` | same |
+| 1x1 screen, 480x320 window; with no browser the desktop view sizes tabs | the hidden page's own state, never measured; 120x40 default; bounds and zone sizes not saved (§9.8) | `index.ts`, `windows/window-manager.ts`, `views/view-sizes.ts`, `tabs/tab-manager.ts` |
+| DBus and libnotify errors per notification | in-page notice backend (§9.9) | `notifications/notifier.ts` |
+| ccc offer modal on the hidden page | skipped | `hooks/ccc-offer.ts`, `index.ts` |
+| No keyring: no access link, no password, no plugin secrets | key file, `--password-store=basic` (§9.5) | `secrets/key-file-store.ts`, `secrets/secret-store.ts` |
+| A link can be made only on the desktop | start link (§9.3), `ccc web` (§9.4) | `web/auth.ts`, `web/access-service.ts`, `web/settings.ts`, `shared/protocol.ts`, `shared/manifest.ts`, `socket/handlers.ts`, `cli/index.ts`, `cli/client.ts`, `cli/guide/cli.md` |
+| `showMessageBox` / `showErrorBox` kill main (link, close, trash, error boxes) | dialog adapter, a server-mode path per call (§9.7) | `dialogs/`, `plugins/link-asks.ts`, `files/trash-asks.ts`, `windows/close-dialog.ts`, `files/trash-dialog.ts`, `index.ts` |
+| A browser can only Deny a link, so it times out | owner Allow (§9.6) | `plugins/link-asks.ts`, the shell's link dialog |
+| Closing with no browser leaves an invisible picker; a browser cannot open a project; Keep running unreachable | no desktop picker or quit; open, reopen and close from the browser; no close ask (§9.8) | `windows/window-manager.ts`, `web/gateway.ts`, `shared/web-protocol.ts`, `shared/ipc.ts`, `renderer/web/picker.tsx` |
+| Desktop confirm lapses after 2 min | refused (§9.2) | `web/settings.ts`, the settings card |
+| SIGTERM | already clean; a non-final close for views; systemd unit (§9.1) | `web/gateway.ts`, `renderer/web/bridge.ts`, `docs/features.md` |
+
+### 9.12 Security
+
+The rule of §4 holds: a signed-in device is the person at the keyboard, with a shell on the host. In server mode a
+browser may also Allow a plugin link (code that runs as the user), open any folder, close a project, answer trash,
+revoke and disconnect devices, settle a plugin's OAuth sign-in, and read the web access card. None of it is more than
+that shell already gives, so the boundary does not move: it is sign-in. What keeps it:
+- §4.1 unchanged: Host check, Origin check on every state-changing POST (`/api/projects` included), the device cookie,
+  `frame-ancestors 'none'` (no other page can frame the shell and steer a click onto Allow).
+- Plugin pages cannot answer: sandboxed opaque-origin frames with only their own port (§5.5); `links.answer`,
+  `trash.answer`, `projects.close`, the device calls and the OAuth paste are shell channels.
+- Allow is never the default, never reached by typing, and not live until the dialog has been seen (§9.6).
+- Sign-in material is made only by a server shell (`ccc web`) or once at start on a TTY; a remote view still cannot add
+  or widen access (mode, bind, secrets, new devices), only narrow it.
+- On the desktop `ccc web` only reads and revokes (§9.4), so v1's desktop boundary does not move either.
+
+What server mode gives up, and what stands in:
+- **Seeing a new device**: no desktop notification. Instead a stdout line, `web-access.log`, `ccc web status`, and the
+  device list on every browser's card, live. A start link used by someone else first shows as an unknown device, and
+  the person's own copy answers "already used"; Revoke on the card or `ccc web revoke` ends it.
+- **The keychain**: the key file (§9.5); the same user and root read the secrets, as they read `~/.claude`.
+- **Loopback is no longer one person.** On a desktop loopback is the person's machine; on a shared server every local
+  user reaches 127.0.0.1, so None on loopback (or the local end of an SSH tunnel on a shared client) hands the account
+  to all of them. `ccc web mode none` and the card say so; no confirm, by the owner's rule.
+- **The start link** goes only to a terminal (§9.3): whoever reads that terminal within 10 minutes can use it; the
+  journal gets none.
+- `ccc web` refused from tabs is no boundary (§9.4): any process of the user can rewrite `app.json` or read the key
+  file. On the server the boundary is the OS account; never root, never `--no-sandbox`.
+
+### 9.13 Testing
+
+- Unit, `server-mode.ts` table: platform, `DISPLAY` / `WAYLAND_DISPLAY`, `--server`, switches already present: server
+  or not, the spawn args (`--password-store=basic` included), `APPIMAGE` as the executable, the refusal off Linux, no
+  spawn when the switches are there; argv parsing skips the flag and the switches.
+- Key file store, in plain Node in a temp dir: made 0600 with `O_EXCL`; opened `O_NOFOLLOW` and refused as a symlink,
+  with a wider mode, another owner (an injected `fstat`) or the wrong length; round trip; one changed byte fails the GCM
+  tag; a new key with tagged values on disk logs the count and answers "replaced"; each store refuses the other's with
+  the "other mode" text; server mode always picks the key file, the desktop never does.
+- Dialog adapter with a recorder `dialog`: server mode never calls it (the box rejects, the open dialog is canceled, the
+  error box is logged); the grep tests that only `electron-dialog.ts` imports `dialog` and only its adapter calls
+  `shell.openExternal`.
+- Hidden page, with the fake window factory: in server mode none of `focus`, `show`, `hide`, `showPicker` happens across
+  `remoteViewGone`, `openView`, `focusAny`, `activate` and a second launch; `ViewSizes` never measures the desktop view;
+  a tab nobody sized gets 120x40; a page crash or failed load reloads and the window stays. Overlay holder: no origin
+  view goes to the last-acting browser, a leaving holder passes it on, never to the desktop view.
+- `LinkAsks`: a remote Allow taken only in server mode, Allow disabled for the first second. `TrashAsks`: first answer
+  wins, the timeout denies, a joining view gets the pending ask, the desktop takes it with a browser attached.
+  `applyWebAccessPatch` in server mode: `confirm` and turning off refused; start writes `enabled: true` and `link` and
+  says so once; a stored unconfirmed risk refused with the exact `ccc web set` line and not rewritten.
+- The socket: `web` refused for a session or window token, answered tokenless; outside server mode only `status` and
+  `revoke`; not running exits non-zero; `web` reserved in `CORE_CLI_COMMANDS`; guide drift. Start order: a gateway or
+  socket that cannot start exits 1 before any window opens.
+- The gateway: `POST /api/projects` 404 off server mode, no Origin, no cookie, a path that is no directory, an oversize
+  body; the GET lists recent projects only in server mode. Device Revoke and Disconnect from a remote view only in
+  server mode, the acting device logged. SIGTERM closes views with the non-final code, and the bridge retries.
+- In-page notice backend: plain text, caps, `Notifier.wait` and the click through the bound view, the chime to browser
+  views and not the hidden page. OAuth paste: wrong origin, path or `state`, an oversize code, the attempt limit, no
+  request made, the pending sign-in taken from the caller's window, no URL in errors. `buildPtyEnv`:
+  `CLAUDE_CODE_OAUTH_TOKEN` passes, every other `CLAUDE_CODE_*` is still stripped.
+- Smoke script, like `scripts/web-terminal-bench.mjs` (Playwright attaches to the first process, so it cannot cover the
+  spawn): no display, no switches, wait for the socket, `ccc web status --json`, SIGTERM, check the exit status.
+- e2e: the harness launches the child directly (`--server --ozone-platform=headless --disable-gpu
+  --password-store=basic`, no `DISPLAY`, Linux), signs in through `ccc web add-device` with the web browser fixture
+  (`test/e2e/web-fixtures.ts`), opens a project by path, runs `ccc plugin link` and Allows it in the browser, opens an
+  HTML overlay with `ccc overlay` from a Claude tab and answers it in the browser, trashes a file from Files with the
+  real `shell`, closes the project, and checks main is alive. One spec runs with no session bus and no fake secret
+  store: `ccc web password`, sign in, restart, sign in again. Server-mode specs do not use the queued test dialogs for
+  these paths: those fakes hid the crash.
+
+### 9.14 Out of scope
+
+macOS and Windows; relink and forget from the browser; `ccc web` writes on the desktop; a Files "Download" item (a
+later idea); more than one person (§10).
 
 ## 10. Toward pair development (after v1)
 
@@ -504,3 +913,9 @@ What v1 keeps open, and what multi-user adds:
 3. ~~The `{ view }` addition to `ctx.panels`~~: settled by review 2, it ships in phase 3 (bundled plugins need
    per-page replies).
 4. Window close with remote views attached (§5.6): is hiding the desktop window the right default?
+5. ~~Notifications in server mode~~: an in-page notice backend (§9.9).
+6. ~~Plugin OAuth in server mode~~: a paste box settled in-process by main, no request made (§9.9).
+7. ~~Device management from a browser in server mode~~: Revoke and Disconnect allowed, minting stays on the server
+   shell (§9.6).
+8. ~~stdout over `app.relaunch`~~: lost and detached (measured in review), so §9.1 spawns with inherited stdio. macOS
+   is not in this phase.
