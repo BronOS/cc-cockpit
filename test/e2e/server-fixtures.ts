@@ -25,11 +25,13 @@
 // headless process, `firstWindow()` resolves to the hidden page (the project shell, `.tabs-pane`)
 // and the hooks on `__ccTest` answer (`serverMode()` is true), so server specs may use `cockpit.hook`.
 import { expect } from '@playwright/test'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { join, resolve } from 'node:path'
 import type { CockpitApi } from '../../src/shared/ipc'
+import { SECOND_LAUNCH_ANSWER_ENV } from '../../src/main/second-launch'
 import { launchCockpit, type Cockpit, type LaunchOptions } from './fixtures'
 
 /** The switches the re-exec appends (server-mode.ts), with `--server` in front. */
@@ -186,4 +188,36 @@ export async function addDeviceLink(server: Server): Promise<string> {
   expect(res.code, `ccc web add-device failed: ${res.stderr}`).toBe(0)
   expect(link.startsWith(`${server.origin}/#t=`), `unexpected link ${link}`).toBe(true)
   return link
+}
+
+/**
+ * A second launch of the app on this machine's desktop (`cc-cockpit <folder>` typed while `holder`
+ * holds the data dir): a desktop Electron process with the suite's display, the holder's data dir,
+ * a test run, so `answer` answers the box it shows when the holder is a server (second-launch.ts).
+ * Resolves with its exit; bounded by the spec's timeout.
+ */
+export function secondLaunch(
+  holder: Cockpit,
+  folder: string,
+  answer: 'stop' | 'cancel'
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  const repo = resolve(__dirname, '../..')
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue
+    // As launchCockpit: nothing that changes what Electron is, and never the suite's own cockpit tab.
+    if (k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_') || k.startsWith('ELECTRON_')) continue
+    if (k.startsWith('CC_COCKPIT_') || k.startsWith('APP_TAB_') || k === 'CLAUDE_CONFIG_DIR') continue
+    env[k] = v
+  }
+  Object.assign(env, {
+    CC_COCKPIT_DATA_DIR: holder.dataDir,
+    CC_COCKPIT_TEST: '1',
+    [SECOND_LAUNCH_ANSWER_ENV]: answer,
+    HOME: join(holder.root, 'home')
+  })
+  // The electron package's main export, in Node, is the binary's path.
+  const electronPath = createRequire(__filename)('electron') as string
+  const child = spawn(electronPath, [join(repo, 'out/main/index.js'), folder], { cwd: repo, env, stdio: 'ignore' })
+  return new Promise((done) => child.once('exit', (code, signal) => done({ code, signal })))
 }

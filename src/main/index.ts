@@ -153,6 +153,18 @@ import { serverDialogs, type Dialogs } from './dialogs/dialogs'
 import { systemOpenExternal } from './external/electron-open-external'
 import { createOpenExternal, type OpenExternal, type OpenTarget } from './external/open-external'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
+import {
+  boxAnswerOf,
+  handleSecondInstance,
+  launchHasDisplay,
+  launchSocketPath,
+  losingLaunchAsks,
+  runSecondLaunch,
+  SECOND_LAUNCH_ASK_MS,
+  serverBoxOptions,
+  socketAsk,
+  testBoxAnswer
+} from './second-launch'
 import { runStartOrder } from './server-start'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -207,17 +219,31 @@ if (dataDir !== userData) {
 // (or `--server`) and no headless switch on argv, this process checks the lock, releases it and
 // re-executes itself in place with the switches, so nothing below runs in this image. `server` is
 // kept for the run and handed to start(); later modules take it as an option.
-const launch: SecondInstanceData = { argv: process.argv, cwd: process.cwd() }
+//
+// A desktop launch meets a server (second-launch.ts): the data carries whether this launch has a
+// display. A loser that has one asks the holder's socket whether it is a server before it quits, and
+// if so offers to stop it in a native box; any other answer, or none, quits as before.
+const decision = decideServerMode({
+  platform: process.platform,
+  env: process.env,
+  argv: process.argv,
+  execPath: process.execPath
+})
+const launchDisplay = launchHasDisplay(decision)
+const launch: SecondInstanceData = { argv: process.argv, cwd: process.cwd(), display: launchDisplay }
 const serverRun = serverStart({
-  decision: decideServerMode({
-    platform: process.platform,
-    env: process.env,
-    argv: process.argv,
-    execPath: process.execPath
-  }),
+  decision,
   lock: () => app.requestSingleInstanceLock(launch),
   release: () => app.releaseSingleInstanceLock(),
-  quit: () => app.quit(),
+  quit: () => {
+    if (!losingLaunchAsks({ platform: process.platform, display: launchDisplay })) {
+      app.quit()
+      return
+    }
+    loseToHolder()
+      .catch((err: unknown) => console.error('second launch failed', err))
+      .finally(() => app.quit())
+  },
   print: (line) => console.log(line),
   exit: (code) => process.exit(code),
   executable: (exe) => {
@@ -253,6 +279,26 @@ if (serverRun.run) {
     })
   }
   start(serverRun.server)
+}
+
+/**
+ * The losing launch with a display (design-web.md §9.1, second-launch.ts): ask the holder's socket
+ * for `web.status` (2 s, no token); a server's answer gets a native box with Stop or Cancel, through
+ * the dialog adapter (a desktop process: it has a screen). In a test run the env answers the box.
+ */
+async function loseToHolder(): Promise<void> {
+  const path = launchSocketPath({ dataDir, env: process.env, uid: process.getuid?.(), tmpdir: tmpdir() })
+  if (path === undefined) return
+  await runSecondLaunch({
+    ask: (cmd) => socketAsk(path, cmd, SECOND_LAUNCH_ASK_MS),
+    testAnswer: testBoxAnswer(process.env, isTestRun(process.env, app.isPackaged)),
+    box: async (message) => {
+      await app.whenReady()
+      const { response } = await electronDialogs().showMessageBox(undefined, serverBoxOptions(message))
+      return boxAnswerOf(response)
+    },
+    log: (line) => console.error(line)
+  })
 }
 
 /**
@@ -2660,12 +2706,16 @@ function start(server: boolean): void {
     // Prefer the loser's own process.argv (original order). Fall back to Electron's argv when
     // the data is missing or malformed (another build of the app holding the same lock).
     const data = asSecondInstanceData(additionalData)
-    const opened = data
-      ? openFromArgv(data.argv, data.cwd)
-      : openFromArgv(argv, workingDirectory)
-    // A bare re-launch (no folder) must still surface the app rather than do nothing. Through
-    // the manager: its handle un-minimises a window, BrowserWindow.focus() alone does not.
-    if (!opened) windows.focusAny()
+    // A server ignores a launch from a screen (that launch offers to stop it itself) and opens the
+    // path of one from a server shell, showing and focusing nothing (second-launch.ts). A bare
+    // re-launch on the desktop surfaces the app through the manager: its handle un-minimises a
+    // window, BrowserWindow.focus() alone does not.
+    handleSecondInstance(
+      data
+        ? { server, display: data.display, argv: data.argv, cwd: data.cwd }
+        : { server, display: undefined, argv, cwd: workingDirectory },
+      { open: openFromArgv, focusAny: () => windows.focusAny(), log: (line) => console.log(line) }
+    )
   })
 
   // The window manager decides when to quit (closing the picker with no project open, off

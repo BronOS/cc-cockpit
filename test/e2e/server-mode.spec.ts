@@ -5,11 +5,13 @@
 //
 // Markers are printed by shell arithmetic (`echo srv-$((40+2))` prints srv-42), so the command line
 // echoed back never contains the text a step waits for: only the shell's output does.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import type { WebCliStatus } from '../../src/shared/web-access'
-import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
+import { IGNORED_LINE, SECOND_LAUNCH_ASK_MS } from '../../src/main/second-launch'
+import { launchCockpit } from './fixtures'
+import { addDeviceLink, ccc, expectMainAlive, launchServer, secondLaunch, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
@@ -266,5 +268,50 @@ test('server mode: ccc web add-device signs a browser in once; stop and start br
     await expectMainAlive(server)
   } finally {
     await browser.close()
+  }
+})
+
+test('server mode: a second launch from a desktop is ignored by the server; its box answered Stop ends the server cleanly', async () => {
+  test.setTimeout(90_000)
+  server = await launchServer()
+  const proc = server.cockpit.app.process()
+  let output = ''
+  proc.stdout?.on('data', (d: Buffer) => (output += d.toString()))
+  proc.stderr?.on('data', (d: Buffer) => (output += d.toString()))
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done) =>
+    proc.once('exit', (code, signal) => done({ code, signal }))
+  )
+  // `cc-cockpit <folder>` typed on a desktop of the same machine while the server holds the data dir.
+  // The env answers the launch's box: the box is that desktop process's, never the server's.
+  const other = join(server.cockpit.root, 'other')
+  mkdirSync(other)
+
+  // Cancel: the launch exits, the server lives on and opened nothing for the launch's folder.
+  expect(await secondLaunch(server.cockpit, other, 'cancel')).toEqual({ code: 0, signal: null })
+  await expect.poll(() => output).toContain(IGNORED_LINE)
+  expect(await server.cockpit.hook('windowLook', other)).toBeUndefined()
+  await expectMainAlive(server)
+
+  // Stop (`web.stop`): the server quits as systemd's stop makes it, with status 0.
+  expect(await secondLaunch(server.cockpit, other, 'stop')).toEqual({ code: 0, signal: null })
+  expect(await exited).toEqual({ code: 0, signal: null })
+})
+
+test('desktop meets desktop: a second launch opens its folder at once, with no box and no wait', async () => {
+  test.setTimeout(60_000)
+  const { cockpit, close } = await launchCockpit()
+  try {
+    const other = join(cockpit.root, 'other')
+    mkdirSync(other)
+    const started = Date.now()
+    // A Stop answer in the env would stop a server; a desktop holder answers `web.status` with
+    // `server: false`, so the launch never gets that far.
+    expect(await secondLaunch(cockpit, other, 'stop')).toEqual({ code: 0, signal: null })
+    // Well under the 2 s deadline the launch would wait on a socket that never answers.
+    expect(Date.now() - started).toBeLessThan(SECOND_LAUNCH_ASK_MS)
+    await expect.poll(() => cockpit.hook('windowLook', other)).not.toBeUndefined()
+    expect(await cockpit.hook('serverMode')).toBe(false)
+  } finally {
+    await close()
   }
 })

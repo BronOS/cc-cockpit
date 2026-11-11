@@ -690,25 +690,25 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `src/main/windows/window-manager.ts` (`SecondInstanceData`, `asSecondInstanceData`), `src/main/index.ts`
   (`:189-194`, `:2499-2508`), `test/unit/window-manager.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] `SecondInstanceData` carries whether the second launch has a display; data without it (another build holding the
+- [x] `SecondInstanceData` carries whether the second launch has a display; data without it (another build holding the
       lock) reads as today
-- [ ] a server primary ignores the argv of a launch that has a display (it opens nothing there, logs a line); a launch
+- [x] a server primary ignores the argv of a launch that has a display (it opens nothing there, logs a line); a launch
       with no display (`cc-cockpit <path>` from a server shell) opens the project as any second launch does, with
       nothing shown or focused
-- [ ] a losing launch with a display asks the socket for `web.status` with a 2 s deadline and no token; when the answer
+- [x] a losing launch with a display asks the socket for `web.status` with a 2 s deadline and no token; when the answer
       says server mode it shows a native box through the dialog adapter, "cc-cockpit runs in server mode on this machine
       (web access at <address>)", with Stop (`web.stop`) or Cancel, then exits; any other answer, or none, exits as today
-- [ ] the losing launch is an Electron process speaking the CLI protocol, and main may not import the CLI
+- [x] the losing launch is an Electron process speaking the CLI protocol, and main may not import the CLI
       (`manifest.ts:79-80`): `second-launch.ts` uses the request and reply types of `src/shared/protocol.ts` and
       `socketPath()` of `src/main/paths.ts`, never `src/cli/client.ts`
-- [ ] the box's answer in a test: an env variable read only when `isTestRun` (a queue filled through a hook cannot
+- [x] the box's answer in a test: an env variable read only when `isTestRun` (a queue filled through a hook cannot
       reach a process that shows its box right after start and then exits)
-- [ ] desktop meets desktop is unchanged (`focusAny`, no visible delay)
-- [ ] write tests: the decision table; the ask's deadline; the box only for a server answer; Stop sends `web.stop`;
+- [x] desktop meets desktop is unchanged (`focusAny`, no visible delay)
+- [x] write tests: the decision table; the ask's deadline; the box only for a server answer; Stop sends `web.stop`;
       the env answer ignored outside a test run; a no-display second launch opens its path with none of `show` and
       `focus`; e2e: a second launch with a display against the server process, its box answered Stop by the env
       variable (this box is a desktop process's), the server exits cleanly
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `restore`, `project-picker`, `cli`) - must pass before next task
+- [x] run tests and `npm run test:e2e` (`server-mode`, `restore`, `project-picker`, `cli`) - must pass before next task
 
 ### Task 15: Plugin link asks: any signed-in device may Allow [model: opus]
 

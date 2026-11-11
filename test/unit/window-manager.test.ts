@@ -20,6 +20,7 @@ import {
 import type { ProjectWindowLook } from '../../src/main/windows/window-chrome'
 import type { CloseChoice } from '../../src/main/windows/close-dialog'
 import { ViewRegistry } from '../../src/main/views/view-registry'
+import { handleSecondInstance, IGNORED_LINE } from '../../src/main/second-launch'
 import type { ProjectView, WindowBounds } from '../../src/shared/types'
 
 /** A window the fake factory made; `userClose()` simulates the user (or quit) closing it. */
@@ -1314,6 +1315,16 @@ describe('asSecondInstanceData', () => {
     expect(asSecondInstanceData(data)).toEqual(data)
   })
 
+  it('carries whether the launch has a display; data without it (another build) reads as before', () => {
+    const base = { argv: ['/bin/cc-cockpit', '/work'], cwd: '/home/me' }
+    expect(asSecondInstanceData({ ...base, display: true })).toEqual({ ...base, display: true })
+    expect(asSecondInstanceData({ ...base, display: false })).toEqual({ ...base, display: false })
+    expect(asSecondInstanceData(base)).toEqual(base)
+    expect(asSecondInstanceData(base)?.display).toBeUndefined()
+    // A non-boolean is taken as absent, never as "has a display".
+    expect(asSecondInstanceData({ ...base, display: 'yes' })).toEqual(base)
+  })
+
   it('rejects anything else, so the caller falls back to Electron argv', () => {
     for (const bad of [
       undefined,
@@ -1405,6 +1416,38 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     untouched()
     expect(s.wm.isHidden(win.id)).toBe(false)
     expect(s.wm.pickerOpen).toBe(false)
+  })
+
+  it('a second launch: no display opens its path showing and focusing nothing; a display opens nothing', () => {
+    const s = server()
+    const a = folder('a')
+    const b = folder('b')
+    const second = (display: boolean | undefined, path: string): void =>
+      handleSecondInstance(
+        { server: true, display, argv: ['/bin/cc-cockpit', path], cwd: '/' },
+        {
+          open: (argv, cwd) => {
+            const found = projectPathFromArgv(argv, cwd, false)
+            if (!found) return false
+            s.wm.openPath(found)
+            return true
+          },
+          focusAny: () => s.wm.focusAny(),
+          log: (m) => s.logs.push(m)
+        }
+      )
+    // `cc-cockpit <path>` from a server shell: opened, as any second launch.
+    second(false, a)
+    expect(factory.open('project')).toHaveLength(1)
+    // Again with the same folder, and from another build (no `display`): still nothing shown.
+    second(false, a)
+    second(undefined, b)
+    expect(factory.open('project')).toHaveLength(2)
+    // A launch from a desktop screen: ignored, with a line.
+    second(true, folder('c'))
+    expect(factory.open('project')).toHaveLength(2)
+    expect(s.logs).toContain(IGNORED_LINE)
+    untouched()
   })
 
   it('makes no picker and does not quit when the last project closes; nothing open stays nothing', () => {

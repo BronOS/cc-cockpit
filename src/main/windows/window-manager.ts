@@ -769,6 +769,12 @@ export function projectPathFromArgv(
 export interface SecondInstanceData {
   argv: string[]
   cwd: string
+  /**
+   * The launch has a display: it would run as a desktop (second-launch.ts `launchHasDisplay`). A
+   * server primary ignores such a launch's argv (design-web.md §9.1). Absent in data from another
+   * build holding the same lock: that reads as before, the path is opened.
+   */
+  display?: boolean
 }
 
 /**
@@ -783,7 +789,9 @@ export function asSecondInstanceData(data: unknown): SecondInstanceData | undefi
   if (!Array.isArray(argv) || !argv.every((a): a is string => typeof a === 'string')) {
     return undefined
   }
-  return { argv, cwd }
+  // Anything but a boolean is taken as absent (reads as before), never as "has a display".
+  const { display } = data as Record<string, unknown>
+  return typeof display === 'boolean' ? { argv, cwd, display } : { argv, cwd }
 }
 
 function defaultTimer(fn: () => void, ms: number): () => void {
