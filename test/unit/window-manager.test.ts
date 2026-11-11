@@ -1465,25 +1465,25 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     untouched()
   })
 
-  it('a browser opens a folder by path and reopens a recent one, showing nothing; a missing one is an error', () => {
+  it('a browser opens a folder by path and reopens a recent one, showing nothing; a missing one is an error', async () => {
     const s = server()
     const deps = { openPath: (path: string) => s.wm.openPath(path), openRecent: (id: string) => s.wm.openRecent(id) }
     const a = folder('a')
     const b = folder('b')
-    const opened = openProjectFromWeb({ open: a }, deps)
+    const opened = await openProjectFromWeb({ open: a }, deps)
     expect(opened).toEqual({ id: registry.findByPath(a)?.id })
     // Closed again: it stays in the recent list, from which the browser reopens it by id.
     factory.open('project')[0]!.userClose()
     expect(factory.open('project')).toHaveLength(0)
-    expect(openProjectFromWeb({ reopen: (opened as { id: string }).id }, deps)).toEqual(opened)
+    expect(await openProjectFromWeb({ reopen: (opened as { id: string }).id }, deps)).toEqual(opened)
     expect(factory.open('project')).toHaveLength(1)
     // An id that is not in the recent list opens nothing, whatever record it may name.
-    expect(openProjectFromWeb({ reopen: 'not-a-project' }, deps)).toEqual({ error: 'not a recent project' })
+    expect(await openProjectFromWeb({ reopen: 'not-a-project' }, deps)).toEqual({ error: 'not a recent project' })
     // A recent project whose folder is gone: the error, no window.
-    const gone = openProjectFromWeb({ open: b }, deps) as { id: string }
+    const gone = (await openProjectFromWeb({ open: b }, deps)) as { id: string }
     factory.open('project').at(-1)!.userClose()
     rmSync(b, { recursive: true })
-    expect(openProjectFromWeb({ reopen: gone.id }, deps)).toEqual({ error: `project folder is missing: ${b}` })
+    expect(await openProjectFromWeb({ reopen: gone.id }, deps)).toEqual({ error: `project folder is missing: ${b}` })
     expect(factory.open('project')).toHaveLength(1)
     untouched()
   })

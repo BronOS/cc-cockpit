@@ -7,7 +7,7 @@
 // `mkdir` in a terminal); `reopen` is looked up in main's own recent list (WindowManager.openRecent),
 // never used to address a record directly. Then `windows.openPath` runs as the desktop's Open Folder
 // does. No regexes (CLAUDE.md, the gateway's parsing). Pure Node, for unit tests.
-import { statSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import type { WebOpenProjectReply, WebOpenProjectRequest } from '../../shared/web-protocol'
 
@@ -34,29 +34,41 @@ export interface OpenProjectDeps {
   /** `windows.openRecent`: the id looked up in the registry's recent list; throws when not there. */
   openRecent(id: string): { id: string }
   /** Injected for tests; default a `stat` that follows links (a link to a folder is a folder). */
-  isDirectory?(path: string): boolean
+  isDirectory?(path: string): boolean | Promise<boolean>
+  /** The server's log: where the detail of a failure that is not shown to the device goes. */
+  log?(line: string): void
 }
 
-function isDirectoryNow(path: string): boolean {
+// Async: a path on a hung network mount would block main's event loop in a sync stat, and the path
+// is a remote device's choice.
+async function isDirectoryNow(path: string): Promise<boolean> {
   try {
-    return statSync(path).isDirectory()
+    return (await stat(path)).isDirectory()
   } catch {
     return false
   }
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+/**
+ * The registry's own refusals say what is wrong with the request; any other error (a record write
+ * failing, EACCES/EIO) carries fs messages with data-dir paths a device is not otherwise shown, so
+ * it is logged and answered generically.
+ */
+function errorText(err: unknown, deps: OpenProjectDeps, what: string): string {
+  const text = err instanceof Error ? err.message : String(err)
+  if (text.startsWith('not a directory') || text.startsWith('project folder is missing') || text === 'not a recent project') return text
+  deps.log?.(`web access: ${what} failed: ${text}`)
+  return `${what} failed`
 }
 
 /** Runs a checked request; a refusal or a failed open is its text, never a throw. */
-export function openProjectFromWeb(request: WebOpenProjectRequest, deps: OpenProjectDeps): WebOpenProjectReply {
+export async function openProjectFromWeb(request: WebOpenProjectRequest, deps: OpenProjectDeps): Promise<WebOpenProjectReply> {
   if ('reopen' in request) {
     try {
       return { id: deps.openRecent(request.reopen).id }
     } catch (err) {
       // A missing folder says so (openView's text); an id not in the list says only that.
-      return { error: errorText(err) }
+      return { error: errorText(err, deps, 'reopening the project') }
     }
   }
   // Relative to what? main's cwd means nothing to the browser, so only an absolute path is taken.
@@ -64,10 +76,10 @@ export function openProjectFromWeb(request: WebOpenProjectRequest, deps: OpenPro
   const path = resolve(request.open)
   // Checked here, not left to the registry: a known project whose folder is gone would come back
   // as `missing` and a new record is never made for a non-folder, but the text should say why.
-  if (!(deps.isDirectory ?? isDirectoryNow)(path)) return { error: `not a folder: ${path}` }
+  if (!(await (deps.isDirectory ?? isDirectoryNow)(path))) return { error: `not a folder: ${path}` }
   try {
     return { id: deps.openPath(path).id }
   } catch (err) {
-    return { error: errorText(err) }
+    return { error: errorText(err, deps, 'opening the project') }
   }
 }

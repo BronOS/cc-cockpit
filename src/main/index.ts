@@ -1599,7 +1599,11 @@ function start(server: boolean): void {
                 .filter((p) => windows.windowIdOf(p.id) === undefined)
                 .map((p) => ({ id: p.id, name: p.name, path: p.path, missing: p.missing })),
             open: (request: WebOpenProjectRequest) =>
-              openProjectFromWeb(request, { openPath: (path) => windows.openPath(path), openRecent: (id) => windows.openRecent(id) })
+              openProjectFromWeb(request, {
+                openPath: (path) => windows.openPath(path),
+                openRecent: (id) => windows.openRecent(id),
+                log: (line) => console.error(line)
+              })
           }
         }
       : {})

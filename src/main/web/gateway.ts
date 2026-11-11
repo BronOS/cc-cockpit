@@ -136,7 +136,7 @@ export interface ServerProjects {
   /** The recent projects with no window open, newest first, `missing` when the folder is gone. */
   recent(): WebRecentProject[]
   /** A checked body (parseOpenProjectBody): the project id, or the error text. */
-  open(request: WebOpenProjectRequest): WebOpenProjectReply
+  open(request: WebOpenProjectRequest): WebOpenProjectReply | Promise<WebOpenProjectReply>
 }
 
 export type GatewayStatus =
@@ -669,7 +669,7 @@ export class WebGateway {
     const request = parseOpenProjectBody(read.body)
     if ('error' in request) return this.json(res, host, 400, request)
     if (res.destroyed) return
-    const reply = projects.open(request)
+    const reply = await projects.open(request)
     if ('error' in reply) return this.json(res, host, 400, { error: reply.error })
     // Which device opened which project, for the server's log (no path: the id names it).
     this.deps.log(`web access: device ${device.id} opened project ${reply.id}`)
