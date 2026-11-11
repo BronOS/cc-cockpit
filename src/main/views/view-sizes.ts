@@ -10,7 +10,9 @@
 //   terminal overlays' rule), and the sizing view typing meanwhile cancels the take;
 // - hidden views never take, unless the key has no other view; a hidden or departed sizer hands the
 //   size to the visible view active last (a report or a key), and with none the size stays until a
-//   view shows again.
+//   view shows again;
+// - a view `measured` says no to (server mode's hidden page, design-web.md §9.8) is never one of a
+//   key's views: its reports are dropped, so it never sizes a pty, not even as a key's only view.
 //
 // Kept generic so the two users cannot drift apart (they did: overlays had a copy of this rule).
 // View ids come from main (router CallView, never a payload); keys are checked by the caller before
@@ -28,6 +30,12 @@ export interface ViewSizesDeps<K> {
   clearTimer?: (handle: unknown) => void
   /** The typing take's wait; 0 takes at once, synchronously. Default TAKE_DEBOUNCE_MS. */
   debounceMs?: number
+  /**
+   * Whether the view may be a measured view at all. Absent: every view is. Server mode answers no for
+   * the hidden page (design-web.md §9.8): nobody looks at it, and as a key's only view it would
+   * otherwise size the pty to its 480x320 window whenever no browser is attached.
+   */
+  measured?: (viewId: ViewId) => boolean
 }
 
 interface ViewSize {
@@ -64,6 +72,8 @@ export class ViewSizes<K = string> {
    * the key, or becomes the sizer because nobody does yet.
    */
   report(key: K, viewId: ViewId, cols: number, rows: number): void {
+    // Not even remembered: with no entry it can never take (typed, take and visible find nothing).
+    if (this.deps.measured && !this.deps.measured(viewId)) return
     const t = this.entry(key)
     t.views.set(viewId, { cols, rows, at: ++this.clock })
     if (t.sizer === viewId) {

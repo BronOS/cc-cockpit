@@ -622,3 +622,56 @@ describe('LayoutService.show in one view (design-web.md §5.1)', () => {
     expect(published.map((v) => v.reveal)).toEqual([undefined, 'base/sessions'])
   })
 })
+
+describe('LayoutService in server mode (design-web.md §9.8)', () => {
+  function serverSetup(server: boolean) {
+    const start = defaultLayout()
+    start.zones.right.collapsed = true
+    const stored = new Map<string, LayoutState>([[P, start]])
+    const service = new LayoutService({
+      server,
+      getLayout: (id) => stored.get(id),
+      setLayout: (id, layout) => stored.set(id, layout),
+      publish: () => {}
+    })
+    service.setPluginPanels(P, 'base', [sessionsDef])
+    return { service, stored }
+  }
+
+  /** A page's edit: the panel moved to the bottom, every zone resized and the right one expanded. */
+  function pageEdit(layout: LayoutState): LayoutState {
+    const next = movePanel(layout, 'base/sessions', 'bottom')
+    return {
+      ...next,
+      zones: {
+        left: { ...next.zones.left, size: 111 },
+        right: { ...next.zones.right, size: 122, collapsed: false },
+        bottom: { ...next.zones.bottom, size: 133, panels: next.zones.bottom.panels.map((p) => ({ ...p, size: 144 })) }
+      }
+    }
+  }
+
+  it("a page's edit (the hidden page's included) stores the placement but never the zone sizes", () => {
+    const { service, stored } = serverSetup(true)
+    const before = stored.get(P)!
+    service.set(P, pageEdit(service.view(P)!.layout))
+    const after = stored.get(P)!
+    expect(zoneOf(after, 'base/sessions')).toBe('bottom')
+    expect(after.zones.left.size).toBe(before.zones.left.size)
+    expect(after.zones.right).toMatchObject({ size: before.zones.right.size, collapsed: true })
+    expect(after.zones.bottom.size).toBe(before.zones.bottom.size)
+  })
+
+  it('a plugin showing a panel still expands its collapsed zone (a shared change, not a size)', () => {
+    const { service, stored } = serverSetup(true)
+    expect(service.show(P, 'base/sessions')).toBe(true)
+    expect(stored.get(P)!.zones.right.collapsed).toBe(false)
+  })
+
+  it('the desktop keeps storing its own sizes', () => {
+    const { service, stored } = serverSetup(false)
+    service.set(P, pageEdit(service.view(P)!.layout))
+    expect(stored.get(P)!.zones.left.size).toBe(111)
+    expect(stored.get(P)!.zones.right).toMatchObject({ size: 122, collapsed: false })
+  })
+})

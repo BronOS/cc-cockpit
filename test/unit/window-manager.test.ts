@@ -1421,6 +1421,24 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     expect(quits).toBe(0)
   })
 
+  it("never writes the hidden page's bounds, so a later desktop start finds the person's own", () => {
+    const a = folder('a')
+    const desktop = manager()
+    const view = desktop.openPath(a)
+    const first = factory.open('project')[0]!
+    first.bounds = { x: 50, y: 60, width: 1000, height: 700 }
+    first.callbacks.onBoundsChanged?.()
+    first.close()
+    const s = server()
+    s.wm.openPath(a)
+    const win = factory.open('project').at(-1)!
+    // The 1x1 screen clamps the window (480x320); moves and resizes, and its close.
+    win.bounds = { x: 0, y: 0, width: 480, height: 320 }
+    win.callbacks.onBoundsChanged?.()
+    win.close()
+    expect(registry.get(view.id)?.bounds).toEqual({ x: 50, y: 60, width: 1000, height: 700 })
+  })
+
   it('asks no close, even with browsers attached: the close goes ahead', () => {
     const s = server()
     const view = s.wm.openPath(folder('a'))

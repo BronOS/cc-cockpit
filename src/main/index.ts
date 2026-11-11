@@ -750,6 +750,8 @@ function start(server: boolean): void {
   // overlay's program is not a Claude tab) and the socket while main listens on it.
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
+    // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8).
+    server,
     views: new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId })),
     // main's own table, not BrowserWindow.fromId: the picker is a window too, and a closing
     // project window leaves this table before onProjectClosed runs closeWindow.
@@ -974,6 +976,8 @@ function start(server: boolean): void {
   // Zone layout: the project's stored layout reconciled with the panels that exist (core ones now,
   // plugin ones from Task 25). Changes reach the project's window as `layout.updated`.
   const layouts: LayoutService = new LayoutService({
+    // Server mode: no page edit writes zone sizes, so a later desktop start finds the person's own.
+    server,
     getLayout: (projectId) => registry.get(projectId)?.layout,
     setLayout: (projectId, next) => registry.setLayout(projectId, next),
     publish: (projectId, view) => sendToProject(projectId, 'layout.updated', view),
@@ -1335,6 +1339,8 @@ function start(server: boolean): void {
   })
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
+    // Server mode: only browsers size a pty; a tab nobody sized starts at 120x40 (design-web.md §9.8).
+    server,
     terminalTap: terminalMirror,
     projectPath: (projectId) => registry.get(projectId)?.path,
     loginEnv: () => loginEnv,

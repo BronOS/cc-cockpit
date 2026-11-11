@@ -491,8 +491,10 @@ export class WindowManager {
         onBoundsChanged: () => {
           // JsonFile debounces (one write per window of time however many events arrive), so
           // saving on every move/resize event is cheap. A minimised window keeps what was saved
-          // before: its bounds are the OS's parking spot, not a place to reopen at.
-          if (!handle || handle.isMinimized()) return
+          // before: its bounds are the OS's parking spot, not a place to reopen at. Server mode never
+          // saves: the hidden page's window is clamped to a 1x1 screen (480x320), and a later
+          // desktop start must find the person's own bounds (design-web.md §9.8).
+          if (this.options.server || !handle || handle.isMinimized()) return
           const bounds = handle.getBounds()
           this.options.registry.update(projectId, (r) => {
             r.bounds = bounds

@@ -565,19 +565,20 @@ CLAUDE.md's rule holds here: terminal size has one owner (the last typer or "Fit
 refits in main, and nothing adds a second consumer of pty data or a reply path that bypasses the mirror worker. This
 task only takes the hidden page out of the set of views that may own a size or answer a query.
 
-- [ ] the hidden page is never a measured view in `ViewSizes`, for tabs and terminal overlays, so it never sizes a pty
+- [x] the hidden page is never a measured view in `ViewSizes`, for tabs and terminal overlays, so it never sizes a pty
       nor answers their queries; a pty keeps the size the last browser gave it
-- [ ] a tab no browser has sized (new, or restarted with none attached) gets 120x40
-- [ ] server mode writes neither the window's bounds nor the page's zone sizes to the project record, so a later
+- [x] a tab no browser has sized (new, or restarted with none attached) gets 120x40
+- [x] server mode writes neither the window's bounds nor the page's zone sizes to the project record, so a later
       desktop start finds the person's own
-- [ ] write tests: the desktop view is never measured in server mode, for a tab and for a terminal overlay; the size a
+- [x] write tests: the desktop view is never measured in server mode, for a tab and for a terminal overlay; the size a
       browser gave survives that browser leaving; 120x40 for a tab nobody sized; bounds and zone sizes not written; the
       desktop keeps every one of today's behaviours, the hidden Keep running view included
-- [ ] e2e in the real server process: a tab opened with no browser attached reports 120x40 (it writes `stty size` to a
+- [x] e2e in the real server process: a tab opened with no browser attached reports 120x40 (it writes `stty size` to a
       file: `40 120`); a browser that attaches then sizes it; main alive
-- [ ] run tests, `node --expose-gc scripts/web-terminal-bench.mjs` (only if `mirror.ts` or `mirror-worker.ts` changed)
+- [x] run tests, `node --expose-gc scripts/web-terminal-bench.mjs` (only if `mirror.ts` or `mirror-worker.ts` changed)
       and `npm run test:e2e` (`server-mode`, `window-bounds`, `zones`, `tabs`, `web-access-terminal`,
-      `tab-command-overlays`) - must pass before next task
+      `tab-command-overlays`) - must pass before next task (`window-bounds`' two specs fail on this Hyprland desktop on
+      the base commit too: the tiling WM maximises the window; the rest pass, bench not needed: mirror files unchanged)
 
 ### Task 11: `ccc web` part 1: host-only, `status`, `revoke`, `stop` [model: opus]
 

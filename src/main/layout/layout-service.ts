@@ -110,6 +110,12 @@ export interface LayoutServiceDeps {
   framesChanged?(projectId: string, ids: ReadonlySet<string>): void
   /** A placement of `pluginId`'s panel is not drawn (over the frame cap): a line for that plugin's log. */
   slotLog?(projectId: string, pluginId: string, text: string): void
+  /**
+   * Server mode (design-web.md §9.8): every `set` keeps the stored geometry, the hidden page's as a
+   * browser's. Zone sizes, collapsed zones and panel sizes are the person's desktop ones; the hidden
+   * page's 480x320 window (or its auto-fit) must not overwrite them for a later desktop start.
+   */
+  server?: boolean
 }
 
 const MAX_BADGE_COUNT = 99_999
@@ -167,7 +173,9 @@ export class LayoutService {
    * splitter drag) wrote its old placement back and undid this one (design-web.md §5).
    */
   set(projectId: string, raw: unknown, opts: { keepGeometry?: boolean } = {}): LayoutView | undefined {
-    const view = this.store(projectId, raw, opts)
+    // Server mode: a page's edit never carries geometry, the hidden page's included (deps.server).
+    // Only here: `show` (a plugin's ctx.panels.show) still expands a collapsed zone, a shared change.
+    const view = this.store(projectId, raw, this.deps.server === true ? { keepGeometry: true } : opts)
     // The answer is the very view published (its `seq` included), so the sender can order it.
     return view ? this.send(projectId, view) : undefined
   }

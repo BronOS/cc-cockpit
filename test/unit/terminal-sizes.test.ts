@@ -5,7 +5,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TabManager } from '../../src/main/tabs/tab-manager'
+import { SERVER_INITIAL_COLS, SERVER_INITIAL_ROWS, TabManager } from '../../src/main/tabs/tab-manager'
 import { TAKE_DEBOUNCE_MS, TerminalSizes } from '../../src/main/tabs/terminal-sizes'
 import { DesktopFlow } from '../../src/main/terminals/desktop-flow'
 import type { MirrorView } from '../../src/main/terminals/mirror'
@@ -184,6 +184,45 @@ describe('TerminalSizes', () => {
     sizes.viewGone(W)
     vi.advanceTimersByTime(TAKE_DEBOUNCE_MS * 2)
     expect(applied).toEqual([])
+  })
+})
+
+describe('TerminalSizes: a view that is never measured (server mode, design-web.md §9.8)', () => {
+  function serverPolicy() {
+    const applied: string[] = []
+    const sizes = new TerminalSizes({
+      apply: (tabId, cols, rows) => applied.push(`${tabId} ${cols}x${rows}`),
+      measured: (viewId) => viewId.startsWith('web:'),
+      debounceMs: 0
+    })
+    return { sizes, applied }
+  }
+
+  it("the hidden page's reports are dropped: it never sizes, not as a key's only view, nor hidden, nor by typing or Fit", () => {
+    const { sizes, applied } = serverPolicy()
+    sizes.report('t', D, 60, 20)
+    sizes.visible(D, false)
+    sizes.report('t', D, 61, 20)
+    sizes.visible(D, true)
+    sizes.typed('t', D)
+    expect(sizes.take('t', D)).toBe(false)
+    expect(applied).toEqual([])
+    expect(sizes.sizerOf('t')).toBeUndefined()
+    expect(sizes.sizeOf('t', D)).toBeUndefined()
+  })
+
+  it('a browser sizes; its size stays on the pty after it leaves (nothing to fall back to), and the next browser takes it', () => {
+    const { sizes, applied } = serverPolicy()
+    sizes.report('t', D, 60, 20)
+    sizes.report('t', W, 100, 30)
+    expect(applied).toEqual(['t 100x30'])
+    sizes.viewGone(W)
+    sizes.report('t', D, 62, 21)
+    expect(applied).toEqual(['t 100x30'])
+    expect(sizes.sizerOf('t')).toBeUndefined()
+    sizes.report('t', W2, 90, 25)
+    expect(applied).toEqual(['t 100x30', 't 90x25'])
+    expect(sizes.sizerOf('t')).toBe(W2)
   })
 })
 
@@ -462,5 +501,103 @@ describe('drawAt: the page draws at the pty size', () => {
       cropRows: true
     })
     expect(drawAt({ cols: 10, rows: 5 }, { cols: 100, rows: 40 })).toMatchObject({ cropCols: true, cropRows: true })
+  })
+})
+
+describe('TabManager in server mode: only browsers size a pty (design-web.md §9.8)', () => {
+  const P = 'aaaaaaaaaaaaaaaa'
+  let root: string
+  let backend: FakePtyBackend
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-sizes-')))
+    backend = new FakePtyBackend()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function manager(server: boolean) {
+    const events: Array<IpcEventMap['tabs.data']> = []
+    const tabs = new TabManager({
+      backend,
+      projectPath: (id) => (id === P ? root : undefined),
+      loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+      hooksPath: '/data/hooks.json',
+      binDir: '/data/bin',
+      sock: () => undefined,
+      emit: <C extends EventChannel>(_p: string, channel: C, payload: IpcEventMap[C]) => {
+        if (channel === 'tabs.data') events.push(payload as IpcEventMap['tabs.data'])
+      },
+      log: () => undefined,
+      server
+    })
+    return { tabs, events }
+  }
+
+  it('a tab nobody sized starts at 120x40 and the hidden page is told the size (it follows, never local)', () => {
+    const { tabs, events } = manager(true)
+    const tab = tabs.create(P, { kind: 'shell' })
+    expect(backend.last.options.cols).toBe(SERVER_INITIAL_COLS)
+    expect(backend.last.options.rows).toBe(SERVER_INITIAL_ROWS)
+    expect([SERVER_INITIAL_COLS, SERVER_INITIAL_ROWS]).toEqual([120, 40])
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 120, rows: 40 }])
+  })
+
+  it("the desktop view is never measured: its resize, typing, hiding and Fit never size the pty, even as the only view", async () => {
+    const { tabs, events } = manager(true)
+    const tab = tabs.create(P, { kind: 'shell' })
+    const pty = backend.last
+    events.length = 0
+    tabs.resize(P, tab.id, 58, 18, D)
+    tabs.viewInput(P, tab.id, 'x', D)
+    tabs.viewVisible(D, false)
+    tabs.viewVisible(D, true)
+    expect(tabs.fit(P, tab.id, D)).toBe(false)
+    await vi.advanceTimersByTimeAsync(TAKE_DEBOUNCE_MS * 2)
+    expect(pty.resizes).toEqual([])
+    expect(tabs.sizerOf(tab.id)).toBeUndefined()
+    expect(events).toEqual([])
+  })
+
+  it('a browser sizes the tab; its size survives it leaving, a restart with none attached gets 120x40', () => {
+    const { tabs, events } = manager(true)
+    const tab = tabs.create(P, { kind: 'shell' })
+    const pty = backend.last
+    tabs.resize(P, tab.id, 58, 18, D)
+    tabs.resize(P, tab.id, 100, 30, W)
+    expect(pty.resizes).toEqual([[100, 30]])
+    expect(tabs.sizerOf(tab.id)).toBe(W)
+    // The hidden page follows the browser's size: never `local`.
+    expect(events.every((e) => e.local === undefined)).toBe(true)
+    tabs.viewGone(W)
+    tabs.resize(P, tab.id, 60, 20, D)
+    expect(pty.resizes).toEqual([[100, 30]])
+    // The size a browser gave a running tab stays while it runs; a restart with that browser
+    // still attached spawns at its size.
+    tabs.resize(P, tab.id, 90, 25, W2)
+    pty.exit(0)
+    tabs.restart(P, tab.id)
+    expect(backend.last.options.cols).toBe(90)
+    // Restarted overnight with no browser attached: the server default, not the hidden page's size.
+    tabs.viewGone(W2)
+    backend.last.exit(0)
+    events.length = 0
+    tabs.restart(P, tab.id)
+    expect([backend.last.options.cols, backend.last.options.rows]).toEqual([120, 40])
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 120, rows: 40 }])
+  })
+
+  it('the desktop keeps today\'s behaviour: a new tab is 80x24, untold, and the hidden Keep running view sizes as the only view', () => {
+    const { tabs, events } = manager(false)
+    const tab = tabs.create(P, { kind: 'shell' })
+    expect([backend.last.options.cols, backend.last.options.rows]).toEqual([80, 24])
+    expect(events).toEqual([])
+    tabs.viewVisible(D, false)
+    tabs.resize(P, tab.id, 100, 30, D)
+    expect(backend.last.resizes).toEqual([[100, 30]])
+    expect(tabs.sizerOf(tab.id)).toBe(D)
+    expect(events).toEqual([{ tabId: tab.id, data: '', cols: 100, rows: 30, local: true }])
   })
 })

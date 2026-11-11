@@ -116,8 +116,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-function manager(): OverlayManager {
+function manager(opts: { server?: boolean } = {}): OverlayManager {
   return new OverlayManager({
+    ...opts,
     backend,
     views,
     isWindowOpen: (windowId) => !closedWindows.has(windowId),
@@ -1456,6 +1457,41 @@ describe('exactly one result', () => {
     m.input(W1, id, '\x1b[?62;22c')
     expect(pty.resizes).toEqual([[80, 24], [100, 30]])
     expect(pty.writes).toEqual(['\x1b[?62;22c'])
+  })
+
+  it('server mode: the hidden page never sizes nor answers a terminal overlay, even as its only view', () => {
+    const m = manager({ server: true })
+    void m.open(W1, terminal(['revdiff']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    const da1 = '\x1b[?62;22c'
+    // The only view, visible or hidden, measuring and typing: nothing sizes, its replies are
+    // stripped and its keys pass (nobody types there, but a key is never eaten).
+    m.resize(W1, id, 58, 18)
+    m.input(W1, id, da1 + 'j')
+    m.viewVisible(desktopViewId(W1), false)
+    m.resize(W1, id, 60, 20)
+    m.input(W1, id, da1)
+    expect(pty.resizes).toEqual([])
+    expect(pty.writes).toEqual(['j'])
+    // A browser that measures sizes it at once and answers; the hidden page still does not.
+    m.viewVisible(desktopViewId(W1), true)
+    m.resize(W1, id, 100, 30, 'web:1')
+    m.input(W1, id, da1, 'web:1')
+    m.input(W1, id, da1)
+    m.input(W1, id, 'k')
+    expect(pty.resizes).toEqual([[100, 30]])
+    expect(pty.writes).toEqual(['j', da1, 'k'])
+    // The browser leaves: its size stays on the pty, and nobody answers until the next browser.
+    m.viewGone('web:1')
+    m.resize(W1, id, 62, 21)
+    m.input(W1, id, da1)
+    expect(pty.resizes).toEqual([[100, 30]])
+    expect(pty.writes).toEqual(['j', da1, 'k'])
+    m.resize(W1, id, 90, 25, 'web:2')
+    m.input(W1, id, da1, 'web:2')
+    expect(pty.resizes).toEqual([[100, 30], [90, 25]])
+    expect(pty.writes).toEqual(['j', da1, 'k', da1])
   })
 
   it('a terminal overlay with the desktop as its only view gets its input as it is (web access off)', () => {

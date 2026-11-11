@@ -5,6 +5,8 @@
 //
 // Markers are printed by shell arithmetic (`echo srv-$((40+2))` prints srv-42), so the command line
 // echoed back never contains the text a step waits for: only the shell's output does.
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import { expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
@@ -158,6 +160,46 @@ test('server mode: a crashed hidden page is reloaded; the window, the tab and th
     await page.keyboard.type('echo srv-$((50+5))')
     await page.keyboard.press('Enter')
     await browser.waitForTerminalText('srv-55')
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+test('server mode: a tab no browser sized is 120x40; a browser that attaches sizes it', async () => {
+  test.setTimeout(90_000)
+  server = await launchServer()
+  const { cockpit } = server
+  const first = join(cockpit.projectDir, 'size-first.txt')
+  // A shell tab opened with no browser attached: from the hidden page itself, which measures its
+  // pane (480x320) and must not size the pty with it. The line waits in the tty until sh reads it.
+  const tabId = await cockpit.page.evaluate(async (file) => {
+    const api = (window as unknown as { cockpit: { invoke(c: string, r: unknown): Promise<unknown> } }).cockpit
+    const tab = (await api.invoke('tabs.create', { kind: 'shell' })) as { id: string }
+    await api.invoke('tabs.input', { tabId: tab.id, data: `stty size > '${file}'\r` })
+    return tab.id
+  }, first)
+  expect(tabId).toBeTruthy()
+  await expect.poll(() => (existsSync(first) ? readFileSync(first, 'utf8').trim() : ''), { timeout: 20_000 }).toBe('40 120')
+
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    await browser.waitForTerminalText('FAKE-SHELL ready')
+    // The browser measured the tab, so it sizes it (the first view to report): the pty takes the
+    // browser's pane, whose row count is the browser's own xterm's.
+    const xterm = page.locator('.terminal-view:not([hidden]) .xterm')
+    await xterm.click()
+    await page.keyboard.type('echo sz-$((1+1))-$(stty size | tr " " x)-end')
+    await page.keyboard.press('Enter')
+    await browser.waitForTerminalText(/sz-2-\d+x\d+-end/)
+    const text = (await browser.terminalText()).replaceAll('\n', '')
+    const size = /sz-2-(\d+)x(\d+)-end/.exec(text)
+    expect(size).not.toBeNull()
+    const rows = await page.locator('.terminal-view:not([hidden]) .xterm-rows > div').count()
+    expect(Number(size![1])).toBe(rows)
+    expect(`${size![1]} ${size![2]}`).not.toBe('40 120')
     await expectMainAlive(server)
   } finally {
     await browser.close()

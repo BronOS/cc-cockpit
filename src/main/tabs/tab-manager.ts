@@ -39,6 +39,15 @@ const INITIAL_COLS = 80
 const INITIAL_ROWS = 24
 
 /**
+ * Server mode's start size (design-web.md §9.8): the hidden page never measures a tab, so a tab no
+ * browser has sized (a new one, or restarted overnight with none attached) has nothing to wait for.
+ * 80 x 24 would wrap Claude's first screen narrow for the browser that attaches later and reflow it
+ * on its first fit; 120 x 40 is a laptop-ish pane.
+ */
+export const SERVER_INITIAL_COLS = 120
+export const SERVER_INITIAL_ROWS = 40
+
+/**
  * The view a size or a key is from when the caller names none: the desktop window (tests, and
  * main's own callers). The router passes the CallView's id, `desktop:<windowId>` or `web:<n>`.
  */
@@ -110,6 +119,12 @@ export interface TabManagerOptions {
   now?: () => number
   /** Overrides TAKE_DEBOUNCE_MS (terminal-sizes.ts) for tests. */
   sizeDebounceMs?: number
+  /**
+   * Server mode (design-web.md §9.8): the desktop view is the hidden page, never a measured view, so
+   * only browsers size a pty; a tab nobody sized starts at SERVER_INITIAL_COLS x ROWS, and the page
+   * follows the pty's size like a browser that does not size it.
+   */
+  server?: boolean
   /**
    * The name of the device behind a view, for TabInfo.typedBy: a browser's device name (the
    * requester's own text, web/devices.ts), the desktop's. Default: "Desktop" or "a browser".
@@ -398,6 +413,9 @@ export class TabManager {
     const tap = options.terminalTap
     this.sizes = new TerminalSizes({
       apply: (id, cols, rows) => this.applySize(id, cols, rows),
+      // Server mode: only a browser's report counts. The hidden page's resize observer still runs
+      // (at its 480x320 window), and as a tab's only view it would size the pty to that.
+      ...(options.server === true ? { measured: (viewId: ViewId) => isRemoteViewId(viewId) } : {}),
       ...(options.sizeDebounceMs === undefined ? {} : { debounceMs: options.sizeDebounceMs })
     })
     this.desktop = new DesktopFlow({
@@ -846,6 +864,9 @@ export class TabManager {
    * is the only view and always so: the terminal follows a window drag at once, as before Task 15.
    */
   private desktopSizes(id: string): boolean {
+    // Server mode: never. The hidden page follows the pty's size (it answers `tabs.screenAsk`, whose
+    // screen must wrap as the pty's), and nobody sizing does not make it the sizer.
+    if (this.options.server === true) return false
     const sizer = this.sizes.sizerOf(id)
     return sizer === undefined || !isRemoteViewId(sizer)
   }
@@ -995,14 +1016,19 @@ export class TabManager {
       // window without `--project`. Main refuses a window token for `hook` and `session.*`.
       tab: { tabId: tab.id, token, sock: this.options.sock() }
     })
-    // A restart at the size the sizing view has (a new tab has none yet: the default).
-    const { cols, rows } = this.sizes.sizeOf(tab.id) ?? { cols: INITIAL_COLS, rows: INITIAL_ROWS }
+    // A restart at the size the sizing view has (a new tab has none yet: the default; server mode's
+    // is larger, as no desktop page will measure the tab right after).
+    const { cols, rows } =
+      this.sizes.sizeOf(tab.id) ??
+      (this.options.server === true ? { cols: SERVER_INITIAL_COLS, rows: SERVER_INITIAL_ROWS } : { cols: INITIAL_COLS, rows: INITIAL_ROWS })
     this.pty.spawn(tab.id, argv, { cwd: tab.cwd, env, cols, rows })
     // Terminal tap: after a spawn that worked and before any output (node-pty reads on a later tick).
     this.tap((t) => t.spawned(tab.id, cols, rows))
     // The desktop's copy of a restarted tab is told the size too (a new tab's page has drawn nothing
     // yet and sends its own size first). Ordered before any output: node-pty reads on a later tick.
-    if (tab.gen > 0) this.emitDesktopSize(tab, cols, rows)
+    // Server mode tells a new tab's hidden page too: its own size counts for nothing, so it must draw
+    // at the pty's from the first byte.
+    if (tab.gen > 0 || this.options.server === true) this.emitDesktopSize(tab, cols, rows)
     // After the spawn: a failed one leaves the tab (and the generation its exit reported) as it was.
     tab.gen += 1
     tab.spawnedAt = this.now()

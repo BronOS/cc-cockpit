@@ -181,6 +181,12 @@ export interface OverlayManagerOptions {
   /** Where Discuss with Claude sends (design-next §3.5). Absent: Send always answers an error. */
   discuss?: DiscussSessions
   log?: (message: string) => void
+  /**
+   * Server mode (design-web.md §9.8): the desktop view is the hidden page, never a measured view of a
+   * terminal overlay, so it never sizes the pty nor answers its queries; with no browser sizing the
+   * overlay nobody answers (the program's query times out, as with no terminal at all).
+   */
+  server?: boolean
 }
 
 /** What a type-button provider is told about an overlay (the SDK's OverlayInfo). */
@@ -455,15 +461,17 @@ export class OverlayManager {
    * sizer hands it to the visible view active last: a hidden renderer is throttled, so its xterm
    * answers queries late, and it must not size, and so not answer, while a visible view can.
    */
-  private readonly sizes = new ViewSizes<string>({
-    apply: (overlayId, cols, rows) => this.pty.resize(overlayId, cols, rows),
-    debounceMs: 0
-  })
+  private readonly sizes: ViewSizes<string>
   /** Discuss's New session budget, per window. */
   private readonly discussSessions = new DiscussSessionBudget()
 
   constructor(options: OverlayManagerOptions) {
     this.options = options
+    this.sizes = new ViewSizes<string>({
+      apply: (overlayId, cols, rows) => this.pty.resize(overlayId, cols, rows),
+      debounceMs: 0,
+      ...(options.server === true ? { measured: (viewId: ViewId) => isRemoteViewId(viewId) } : {})
+    })
     this.log = options.log ?? warnLog
     this.pty = new PtyService({
       backend: options.backend,
@@ -836,7 +844,9 @@ export class OverlayManager {
   input(windowId: number, overlayId: string, data: string, viewId: ViewId = desktopViewId(windowId)): void {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind !== 'terminal') return
-    const answerer = this.sizes.sizerOf(overlay.id) ?? desktopViewId(windowId)
+    // Server mode: the hidden page never answers, not even with no sizer (nobody looks at it, and a
+    // browser that sizes later must not find a second answerer racing it).
+    const answerer = this.sizes.sizerOf(overlay.id) ?? (this.options.server === true ? undefined : desktopViewId(windowId))
     const rest = viewId === answerer ? data : stripQueryReplies(data)
     if (rest.length > 0) this.pty.write(overlay.id, rest)
     // A view that measured the overlay and is visible takes the size at once (debounce 0).
