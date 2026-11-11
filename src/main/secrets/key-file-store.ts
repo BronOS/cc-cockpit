@@ -31,13 +31,7 @@
 // Node `crypto` and `fs` only, no `electron`: unit tests run it in plain Node in a temp dir.
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import * as nodeFs from 'node:fs'
-import {
-  FAKE_PREFIX,
-  KEYFILE_PREFIX,
-  SecretStoreError,
-  STORED_BY_KEYCHAIN,
-  type SecretStore
-} from './secret-store'
+import { FAKE_PREFIX, KEYFILE_PREFIX, SecretStoreError, STORED_BY_KEYCHAIN, type SecretStore } from './secret-store'
 
 /** The key's length: AES-256. */
 export const KEY_FILE_BYTES = 32
@@ -113,6 +107,17 @@ function readAll(fs: KeyFileFs, fd: number, size: number): Buffer {
 }
 
 /**
+ * A first start killed between the O_EXCL open and the end of the write leaves a short file; it is
+ * never replaced (a key file is never written over), so the reason says what to do about it.
+ */
+function wrongLength(path: string): string {
+  return (
+    `the key file ${path} is not ${KEY_FILE_BYTES} bytes (a first start cut short, or a damaged file; ` +
+    `delete it and enter the secrets again: nothing was encrypted under a file of the wrong length)`
+  )
+}
+
+/**
  * Opens and checks an existing key file: the key, or why it is refused. `undefined` when there is
  * no file at the path (the caller makes one).
  */
@@ -126,7 +131,9 @@ function readKeyFile(fs: KeyFileFs, path: string, uid: number | undefined): Load
     if (code === 'ENOENT') return undefined
     // O_NOFOLLOW on a symlink: ELOOP on Linux and macOS (EMLINK on FreeBSD).
     if (code === 'ELOOP' || code === 'EMLINK') return { reason: `the key file ${path} is a symbolic link` }
-    return { reason: `the key file ${path} cannot be opened (${code ?? 'error'})` }
+    return {
+      reason: `the key file ${path} cannot be opened (${code ?? 'error'})`
+    }
   }
   try {
     // The checks run on the descriptor just opened: the file checked is the file read.
@@ -135,15 +142,19 @@ function readKeyFile(fs: KeyFileFs, path: string, uid: number | undefined): Load
     if (uid !== undefined && st.uid !== uid) return { reason: `the key file ${path} is not owned by this user` }
     if ((st.mode & 0o077) !== 0) {
       const mode = (st.mode & 0o777).toString(8).padStart(3, '0')
-      return { reason: `the key file ${path} is open to group or others (mode ${mode}); it must be 600` }
+      return {
+        reason: `the key file ${path} is open to group or others (mode ${mode}); it must be 600`
+      }
     }
-    if (st.size !== KEY_FILE_BYTES) return { reason: `the key file ${path} is not ${KEY_FILE_BYTES} bytes` }
+    if (st.size !== KEY_FILE_BYTES) return { reason: wrongLength(path) }
     const key = readAll(fs, fd, KEY_FILE_BYTES)
     // Shorter than fstat said (truncated in between): refused the same way.
-    if (key.length !== KEY_FILE_BYTES) return { reason: `the key file ${path} is not ${KEY_FILE_BYTES} bytes` }
+    if (key.length !== KEY_FILE_BYTES) return { reason: wrongLength(path) }
     return { key, made: false }
   } catch (err) {
-    return { reason: `the key file ${path} cannot be read (${codeOf(err) ?? 'error'})` }
+    return {
+      reason: `the key file ${path} cannot be read (${codeOf(err) ?? 'error'})`
+    }
   } finally {
     try {
       fs.closeSync(fd)
@@ -165,29 +176,43 @@ function makeKeyFile(fs: KeyFileFs, path: string, random: (size: number) => Buff
   } catch (err) {
     const code = codeOf(err)
     if (code === 'EEXIST') return 'exists'
-    return { reason: `the key file ${path} cannot be made (${code ?? 'error'})` }
+    return {
+      reason: `the key file ${path} cannot be made (${code ?? 'error'})`
+    }
   }
-  const key = random(KEY_FILE_BYTES)
+  let key: Buffer
   try {
+    // Inside the try: an entropy failure must not leave the empty file just made.
+    key = random(KEY_FILE_BYTES)
     let done = 0
-    while (done < key.length) done += fs.writeSync(fd, key, done, key.length - done)
+    while (done < key.length) {
+      const n = fs.writeSync(fd, key, done, key.length - done)
+      // A write that returns 0 would spin forever.
+      if (n <= 0)
+        throw Object.assign(new Error('write made no progress'), {
+          code: 'EIO'
+        })
+      done += n
+    }
     fs.fsyncSync(fd)
+    fs.closeSync(fd)
   } catch (err) {
     // A partial key file would be refused at every later start (wrong length) and never replaced;
     // this one is ours, made by the O_EXCL open above, so it goes.
     try {
       fs.closeSync(fd)
     } catch {
-      /* the unlink below matters */
+      /* the unlink below matters (a second close after a failed one in the try is harmless) */
     }
     try {
       fs.unlinkSync(path)
     } catch {
       /* left for the next start to refuse with its reason */
     }
-    return { reason: `the key file ${path} cannot be written (${codeOf(err) ?? 'error'})` }
+    return {
+      reason: `the key file ${path} cannot be written (${codeOf(err) ?? 'error'})`
+    }
   }
-  fs.closeSync(fd)
   return { key, made: true }
 }
 
@@ -207,7 +232,9 @@ function partsOf(stored: string): { iv: Buffer; tag: Buffer; data: Buffer } | un
 /** The plaintext, or undefined when the tag does not authenticate under `key`. */
 function open(key: Buffer, parts: { iv: Buffer; tag: Buffer; data: Buffer }): string | undefined {
   try {
-    const decipher = createDecipheriv('aes-256-gcm', key, parts.iv, { authTagLength: TAG_BYTES })
+    const decipher = createDecipheriv('aes-256-gcm', key, parts.iv, {
+      authTagLength: TAG_BYTES
+    })
     decipher.setAuthTag(parts.tag)
     return Buffer.concat([decipher.update(parts.data), decipher.final()]).toString('utf8')
   } catch {
@@ -245,7 +272,12 @@ export function keyFileSecretStore(options: KeyFileStoreOptions): KeyFileSecretS
     }
     const made = makeKeyFile(fs, path, random)
     // Made by someone else between the two opens: read theirs, never write over it.
-    if (made === 'exists') return readKeyFile(fs, path, uid) ?? { reason: `the key file ${path} cannot be opened` }
+    if (made === 'exists')
+      return (
+        readKeyFile(fs, path, uid) ?? {
+          reason: `the key file ${path} cannot be opened`
+        }
+      )
     if ('key' in made) {
       log(
         earlier > 0
@@ -273,7 +305,8 @@ export function keyFileSecretStore(options: KeyFileStoreOptions): KeyFileSecretS
   // start, not only the one that made the key, as long as such values are left.
   if (key !== undefined && !('made' in loaded && loaded.made)) {
     const count = replacedCount()
-    if (count > 0) log(`secrets: ${count} stored value(s) were made under an earlier key file; they answer "${REPLACED_KEY_TEXT}"`)
+    if (count > 0)
+      log(`secrets: ${count} stored value(s) were made under an earlier key file; they answer "${REPLACED_KEY_TEXT}"`)
   }
 
   return Object.freeze({
@@ -284,7 +317,9 @@ export function keyFileSecretStore(options: KeyFileStoreOptions): KeyFileSecretS
       if (typeof plain !== 'string') throw new SecretStoreError('a secret must be a string')
       if (key === undefined) throw new SecretStoreError(`cannot store secrets: ${reason}`)
       const iv = random(IV_BYTES)
-      const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES })
+      const cipher = createCipheriv('aes-256-gcm', key, iv, {
+        authTagLength: TAG_BYTES
+      })
       const data = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
       return KEYFILE_PREFIX + Buffer.concat([iv, cipher.getAuthTag(), data]).toString('base64')
     },

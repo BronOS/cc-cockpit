@@ -48,13 +48,29 @@ function store(extra: Partial<KeyFileStoreOptions> = {}) {
 
 /** Writes values into secrets.json as PluginSecrets would. */
 function writeSecrets(values: Record<string, string>): void {
-  fs.writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ schemaVersion: 1, plugins: { 'example.plugin': values } }))
+  fs.writeFileSync(
+    join(dir, 'secrets.json'),
+    JSON.stringify({ schemaVersion: 1, plugins: { 'example.plugin': values } })
+  )
 }
 
 /** The state of the path as a test compares it before and after: kind, mode and bytes. */
-function snapshot(path: string): { kind: string; mode: number; bytes?: string; link?: string } {
+function snapshot(path: string): {
+  kind: string
+  mode: number
+  bytes?: string
+  link?: string
+} {
   const st = fs.lstatSync(path)
-  const kind = st.isSymbolicLink() ? 'link' : st.isFIFO() ? 'fifo' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other'
+  const kind = st.isSymbolicLink()
+    ? 'link'
+    : st.isFIFO()
+      ? 'fifo'
+      : st.isDirectory()
+        ? 'dir'
+        : st.isFile()
+          ? 'file'
+          : 'other'
   return {
     kind,
     mode: st.mode & 0o777,
@@ -95,7 +111,10 @@ describe('key file store: the key', () => {
     })
     const { O_CREAT, O_EXCL, O_NOFOLLOW, O_WRONLY } = fs.constants
     const create = opens.find((o) => (o.flags & O_CREAT) !== 0)
-    expect(create).toEqual({ flags: O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode: 0o600 })
+    expect(create).toEqual({
+      flags: O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+      mode: 0o600
+    })
     const st = fs.statSync(keyPath)
     expect(st.mode & 0o777).toBe(0o600)
     expect(st.size).toBe(KEY_FILE_BYTES)
@@ -174,7 +193,12 @@ describe('key file store: the key', () => {
       fs: {
         fstatSync: (fd) => {
           const st = real.fstatSync(fd)
-          return { isFile: () => st.isFile(), uid: st.uid + 1, mode: st.mode, size: st.size }
+          return {
+            isFile: () => st.isFile(),
+            uid: st.uid + 1,
+            mode: st.mode,
+            size: st.size
+          }
         }
       }
     })
@@ -205,6 +229,78 @@ describe('key file store: the key', () => {
       }
     })
     expect(await s.unavailableReason()).toMatch(/cannot be written \(ENOSPC\)/)
+    expect(fs.existsSync(keyPath)).toBe(false)
+  })
+
+  it('names the remedy for a wrong-length file', async () => {
+    writeKey(5)
+    const s = store()
+    expect(await s.unavailableReason()).toMatch(/delete it and enter the secrets again/)
+  })
+
+  it('a failing random, close or zero-length write leaves the store unavailable and no file', async () => {
+    const err = (code: string) => Object.assign(new Error(code), { code })
+    const cases: Array<[Partial<KeyFileFs> | undefined, (() => Buffer) | undefined, RegExp]> = [
+      [
+        undefined,
+        () => {
+          throw err('EIO')
+        },
+        /cannot be written \(EIO\)/
+      ],
+      [
+        {
+          closeSync: () => {
+            throw err('EIO')
+          }
+        },
+        undefined,
+        /cannot be written \(EIO\)/
+      ],
+      [{ writeSync: () => 0 }, undefined, /cannot be written \(EIO\)/]
+    ]
+    for (const [fsOver, random, reason] of cases) {
+      const s = store({
+        ...(fsOver ? { fs: fsOver } : {}),
+        ...(random ? { random } : {})
+      })
+      expect(await s.unavailableReason()).toMatch(reason)
+      expect(fs.existsSync(keyPath)).toBe(false)
+    }
+  })
+
+  it('reads the file another process made between the read and the make', async () => {
+    let n = 0
+    const s = store({
+      fs: {
+        openSync: ((p: string, flags: number, mode?: number) => {
+          // The first open (the read) sees no file; then the other process makes it.
+          if (n++ === 0) {
+            writeKey()
+            const e = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+            throw e
+          }
+          return fs.openSync(p, flags, mode)
+        }) as KeyFileFs['openSync']
+      }
+    })
+    expect(await s.unavailableReason()).toBeNull()
+    expect(fs.readFileSync(keyPath)).toEqual(Buffer.alloc(KEY_FILE_BYTES, 7))
+  })
+
+  it('a file that vanishes again between the make and the read is unavailable, not made over', async () => {
+    let n = 0
+    const s = store({
+      fs: {
+        openSync: ((p: string, flags: number, mode?: number) => {
+          n++
+          if (n === 1 || n === 3) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          if (n === 2) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' })
+          return fs.openSync(p, flags, mode)
+        }) as KeyFileFs['openSync']
+      }
+    })
+    expect(await s.unavailableReason()).toMatch(/cannot be opened/)
     expect(fs.existsSync(keyPath)).toBe(false)
   })
 })
@@ -247,7 +343,11 @@ describe('key file store: values', () => {
 
   it('a new key made while key file values exist: logged with the count, those values answer "replaced"', async () => {
     const old = store()
-    writeSecrets({ a: await old.encrypt('one'), b: await old.encrypt('two'), c: 'b3M=' })
+    writeSecrets({
+      a: await old.encrypt('one'),
+      b: await old.encrypt('two'),
+      c: 'b3M='
+    })
     fs.rmSync(keyPath)
     logs = []
     const fresh = store()
@@ -265,7 +365,9 @@ describe('key file store: values', () => {
     logs = []
     const next = store()
     expect(next.replacedCount()).toBe(1)
-    expect(logs).toEqual([`secrets: 1 stored value(s) were made under an earlier key file; they answer "${REPLACED_KEY_TEXT}"`])
+    expect(logs).toEqual([
+      `secrets: 1 stored value(s) were made under an earlier key file; they answer "${REPLACED_KEY_TEXT}"`
+    ])
   })
 
   it('counts web-access.json values too (the access link token, the password)', async () => {
@@ -275,7 +377,11 @@ describe('key file store: values', () => {
       JSON.stringify({
         schemaVersion: 1,
         devices: [],
-        accessToken: { hash: 'a'.repeat(64), stored: await old.encrypt('token'), createdAt: 1 },
+        accessToken: {
+          hash: 'a'.repeat(64),
+          stored: await old.encrypt('token'),
+          createdAt: 1
+        },
         password: { stored: await old.encrypt('hash'), createdAt: 1 }
       })
     )
@@ -301,7 +407,10 @@ describe('key file store: the other stores', () => {
       {
         isAsyncEncryptionAvailable: async () => true,
         encryptStringAsync: async (p) => Buffer.from(`v11${p}`),
-        decryptStringAsync: async (b) => ({ result: b.toString('utf8').slice(3), shouldReEncrypt: false }),
+        decryptStringAsync: async (b) => ({
+          result: b.toString('utf8').slice(3),
+          shouldReEncrypt: false
+        }),
         getSelectedStorageBackend: () => 'gnome_libsecret'
       },
       'linux'
