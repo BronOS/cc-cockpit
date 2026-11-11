@@ -239,13 +239,13 @@ desktop, a Files "Download" item, more than one person.
 The start path is decided (§9.1, Context): `process.execve`, with the parent-pid watch chosen at run time by two
 checks before the call. A failed `execve` aborts the process (SIGABRT, no exception), so no step below catches it.
 
-- [ ] `server-mode.ts`, the decision: a pure function, `{ platform, env, argv, execPath }` in; out `{ server: false }`,
+- [x] `server-mode.ts`, the decision: a pure function, `{ platform, env, argv, execPath }` in; out `{ server: false }`,
       `{ server: true, detected, exec?: { exe, args } }` or `{ refuse }`. Server mode with `--server`, or on Linux with
       neither `DISPLAY` nor `WAYLAND_DISPLAY`; `exec` only when `--ozone-platform=headless` is not on argv; `exe` is
       `execPath`, with `APPIMAGE` set too; off Linux `--server` refuses and nothing is detected. A second pure function
       picks the start path: `{ hasExecve, executable }` in, `'exec'` only when both hold, else `'watch'`.
       `projectPathFromArgv` skips `--server`, the three switches and `--server-parent=<pid>`
-- [ ] **plan-time check, `process.execve` in the real app, before anything else is built on it.** With the smallest
+- [x] **plan-time check, `process.execve` in the real app, before anything else is built on it.** With the smallest
       change at the top of `index.ts` (release the lock, `process.execve(exe, [exe, ...args], process.env)`), run the
       built app (`out/`) with no display and no session bus, a temp data dir and `HOME`. It passes when every line
       holds, and each result is written here:
@@ -265,20 +265,33 @@ checks before the call. A failed `execve` aborts the process (SIGABRT, no except
       A line that fails is a ⚠️ for the owner (the watch path exists, but making it the only path is the owner's call).
       If only the lock check before `ready` fails: the first image skips it and the re-executed image loses the lock as
       any launch does; record which
-- [ ] `index.ts`, before `ready`, wiring one function of `server-mode.ts` that takes `lock`, `print`, `exit`, `access`,
+      **Result (2026-11-11, real app `out/`, Electron 45.1.0, no display, no session bus, measured with the full
+      wiring of the next items rather than a throwaway change): every line holds, `execve` stays the path.**
+      - pid: the same (`/proc/<pid>/cmdline` of the launched pid carries `--ozone-platform=headless` after the re-exec);
+      - fd 1 and 2: the same target before and after, `pipe:[…]` with a pipe and `/dev/pts/N` under a pty;
+      - lock: the re-executed image holds it (the CLI socket comes up); a second no-display launch with a folder exits
+        0 in 0.17 s, prints nothing (no detected-start line), nothing re-executed. The lock check before `ready` works;
+      - SIGTERM: exit 0 in 40 ms (pipe) / 51 ms (pty); SIGINT: exit 0 in 35 ms; Ctrl-C typed into the pty: exit 0 in
+        32 ms;
+      - exit status is the app's own: a re-executed image that calls `process.exit(1)` (a temporary patch of the built
+        `out/main/index.js`, restored after) exits 1;
+      - the detected-start line is printed once per run;
+      - after exit nothing of the run's session is alive; during the run the first image leaves 2 `<defunct>` children
+        of the pid (as at plan time)
+- [x] `index.ts`, before `ready`, wiring one function of `server-mode.ts` that takes `lock`, `print`, `exit`, `access`,
       `execve` and `spawnSync` as arguments, so unit tests run every branch: `{ refuse }` prints "server mode runs on
       Linux only" and exits 1 before the lock is asked for. With `exec` set: check the lock (held: argv goes to the
       holder as any second launch, exit 0, nothing re-executed); pick the start path with
       `typeof process.execve === 'function'` and `accessSync(exe, X_OK)`; release the lock; print "no display: starting
       cc-cockpit in server mode, web access on; stop with Ctrl-C" (only when detected, not with `--server`); then
       `process.execve`. `server` is kept for the run and passed into `start()`
-- [ ] the `watch` path, taken only when a check fails: `spawnSync(exe, [...args, '--server-parent=<own pid>'],
+- [x] the `watch` path, taken only when a check fails: `spawnSync(exe, [...args, '--server-parent=<own pid>'],
       { stdio: 'inherit' })`, exit with the child's status (128 + n for a signal), or 1 with a line when the spawn
       itself fails. In the second process the watch is armed only when the marker is on argv: a timer compares it with
       `process.ppid` and quits as SIGTERM does when they differ; a marker that already differs at start quits at once.
       No marker (the re-executed image, a unit with the switches, the e2e harness), no watch. `CC_COCKPIT_NO_EXECVE=1`,
       read only in a test run (`isTestRun`), makes the first check fail, so the smoke script can run this path
-- [ ] `scripts/server-mode-smoke.mjs` and **the proof of the full app with `--server` under no display**: the built
+- [x] `scripts/server-mode-smoke.mjs` and **the proof of the full app with `--server` under no display**: the built
       app (`out/`, or an executable given as an argument) with no display, a temp data dir and `HOME`, no session bus
       (a dead `DBUS_SESSION_BUS_ADDRESS` and a temp `XDG_RUNTIME_DIR`; the script prints the two values it used) and
       `app.json` pre-written (web access on, a random loopback port, mode None, the update check off). The `out/` run
@@ -290,14 +303,24 @@ checks before the call. A failed `execve` aborts the process (SIGABRT, no except
       gateway, sends SIGTERM to the first pid only, checks the exit status, and after exit counts the live processes of
       the run, zombies not counted: none; exits 1 on any failure. Record here: the start lines, that `--server` is not
       a switch Chromium reads (`hasSwitch('headless')` false), the time to quit on each path
-- [ ] write tests: the decision table (platform, `DISPLAY`, `WAYLAND_DISPLAY`, `--server`, the switch already present,
+      **Result (2026-11-11, `out/`): all three runs pass.** Start lines: `--server` prints nothing of its own (today's
+      start lines come with Task 7); detected prints "no display: starting cc-cockpit in server mode, web access on;
+      stop with Ctrl-C" once. Socket after about 0.4 s on each path. Quit after SIGTERM: `--server` 28 ms, detected
+      30 ms (both status 0); fallback: the first process, blocked in `spawnSync` before `ready` with no handler,
+      dies by SIGTERM (signal status, 143 from a shell) and the parent watch quits the child within its 1 s tick
+      (the script expects SIGTERM there, not 0). `--server --ozone-platform=headless --disable-gpu
+      --password-store=basic` on a minimal Electron 45.1.0 app: `hasSwitch('headless')` false (`hasSwitch('server')`
+      true, harmless). The run's processes are counted by session id (the app is started as a session leader), not by
+      environment: Chromium's process titles overwrite `/proc/<pid>/environ`. The app.json the script writes carries
+      `schemaVersion: 1`, or the registry sets it aside as unusable
+- [x] write tests: the decision table (platform, `DISPLAY`, `WAYLAND_DISPLAY`, `--server`, the switch already present,
       `execPath` as `exe` with and without `APPIMAGE`, the refusal off Linux, `--password-store=basic` in the args, an
       `ssh -X` environment stays desktop); both pre-checks (`execve` missing, `exe` not executable: `'watch'`, and
       `execve` is never called); the wired function over fakes: the refusal prints and exits 1 before the lock, a held
       lock exits 0 with nothing started, the detected line only when detected, the lock released before the start, the
       watch path's status, signal status and spawn error; the watch armed only by the marker, quitting when the parent
       pid changes, never armed without it; argv parsing skips the flag, the switches and the marker
-- [ ] run tests, the smoke script and `npm run test:e2e` (`restore`, `project-picker`, `cli`, `socket`: the lock, the
+- [x] run tests, the smoke script and `npm run test:e2e` (`restore`, `project-picker`, `cli`, `socket`: the lock, the
       top of `index.ts` and `projectPathFromArgv` are every desktop start's) - must pass before next task
 
 ### Task 2: The server-mode e2e harness: its core [model: opus]

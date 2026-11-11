@@ -23,7 +23,8 @@ import {
   shell,
   type OpenDialogOptions
 } from 'electron'
-import { mkdirSync, realpathSync } from 'node:fs'
+import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BUILD_VERSION } from '../shared/app-version'
@@ -138,6 +139,7 @@ import { TabManager } from './tabs/tab-manager'
 import { viewInputHandler } from './tabs/view-input'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
+import { armParentWatch, decideServerMode, serverStart } from './server-mode'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
 import { settingsGearOf } from '../shared/settings-gear'
@@ -186,11 +188,57 @@ if (dataDir !== userData) {
 // The loser also sends its own argv and cwd as `additionalData`: the argv Electron delivers to
 // `second-instance` may be reordered and extended by Chromium (electron.d.ts), and its order is
 // what tells the app path from a project folder under `electron .`.
+//
+// Server mode (design-web.md §9.1, server-mode.ts) decides here too, before `ready`: with no display
+// (or `--server`) and no headless switch on argv, this process checks the lock, releases it and
+// re-executes itself in place with the switches, so nothing below runs in this image. `server` is
+// kept for the run and handed to start(); later modules take it as an option.
 const launch: SecondInstanceData = { argv: process.argv, cwd: process.cwd() }
-if (!app.requestSingleInstanceLock(launch)) {
-  app.quit()
-} else {
-  start()
+const serverRun = serverStart({
+  decision: decideServerMode({
+    platform: process.platform,
+    env: process.env,
+    argv: process.argv,
+    execPath: process.execPath
+  }),
+  lock: () => app.requestSingleInstanceLock(launch),
+  release: () => app.releaseSingleInstanceLock(),
+  quit: () => app.quit(),
+  print: (line) => console.log(line),
+  exit: (code) => process.exit(code),
+  executable: (exe) => {
+    try {
+      accessSync(exe, fsConstants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  },
+  // CC_COCKPIT_NO_EXECVE=1 forces the fallback, in a test run only (scripts/server-mode-smoke.mjs).
+  hasExecve:
+    typeof process.execve === 'function' &&
+    !(process.env.CC_COCKPIT_NO_EXECVE === '1' && isTestRun(process.env, app.isPackaged)),
+  execve: (exe, argv, env) => process.execve?.(exe, argv, env),
+  spawnSync: (exe, args) => spawnSync(exe, args, { stdio: 'inherit' }),
+  env: process.env,
+  pid: process.pid
+})
+if (serverRun.run) {
+  // The fallback's second process quits with its first one (`--server-parent=<pid>`); never armed
+  // without that marker. "Quit as SIGTERM does": the same signal, so the same shutdown path.
+  if (serverRun.server) {
+    armParentWatch({
+      argv: process.argv,
+      ppid: () => process.ppid,
+      every: (fn, ms) => {
+        const timer = setInterval(fn, ms)
+        timer.unref()
+        return { stop: () => clearInterval(timer) }
+      },
+      quit: () => process.kill(process.pid, 'SIGTERM')
+    })
+  }
+  start(serverRun.server)
 }
 
 /**
@@ -209,7 +257,7 @@ function testPreviewFetcher(inner: PreviewFetcher, testRun: boolean): PreviewFet
   return (url) => (url.startsWith(folder) ? Promise.reject(new Error('not fetched in a test run')) : inner(url))
 }
 
-function start(): void {
+function start(server: boolean): void {
   // Before `ready` (Electron's rule for privileged schemes): html overlay pages (cc-overlay:),
   // plugin panel files (cc-plugin:) and webview panels' local files (cc-preview:), in the one call
   // Electron allows.
@@ -2323,6 +2371,8 @@ function start(): void {
       .then(({ installTestHooks }) =>
         installTestHooks({
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
+          // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
+          serverMode: () => server,
           // What the update check's fake fetcher answers (a tag such as 'v99.0.0'), then one check.
           fakeRelease: async (tag: string) => {
             fakeReleaseTag = tag

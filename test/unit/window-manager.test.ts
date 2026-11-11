@@ -1273,6 +1273,16 @@ describe('projectPathFromArgv', () => {
     )
   })
 
+  it("skips server mode's flag, the switches the re-exec adds and the fallback's marker", () => {
+    // What the re-executed image (and the fallback's child) sees: the person's argv, then the
+    // switches (server-mode.ts). None of them may be taken for a folder, nor shift the app path.
+    const server = ['--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic']
+    expect(projectPathFromArgv(['/bin/cc-cockpit', '/repo', ...server], '/', false, isDir)).toBe('/repo')
+    expect(projectPathFromArgv(['/bin/cc-cockpit', ...server, '--server-parent=4242'], '/', false, isDir)).toBeUndefined()
+    expect(projectPathFromArgv(['/bin/electron', '/app', ...server, '--server-parent=4242'], '/', true, isDir)).toBeUndefined()
+    expect(projectPathFromArgv(['/bin/electron', ...server, '/app', '/repo'], '/', true, isDir)).toBe('/repo')
+  })
+
   it('returns undefined with no folder argument', () => {
     expect(projectPathFromArgv(['/bin/cc-cockpit'], '/', false, isDir)).toBeUndefined()
     expect(projectPathFromArgv(['/bin/cc-cockpit', '--x'], '/', false, isDir)).toBeUndefined()

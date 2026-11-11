@@ -649,7 +649,9 @@ export class WindowManager {
  * puts a switch in front, and Electron documents that the argv `second-instance` delivers may be
  * reordered with switches moved. A fixed index would drop the switch and keep `.`, and a bare
  * relaunch would then open the cc-cockpit source folder as a project. Chromium also appends its
- * own `--switch=value` arguments, so dash-prefixed arguments are skipped everywhere, and relative
+ * own `--switch=value` arguments, so dash-prefixed arguments are skipped everywhere (server mode's
+ * `--server`, the switches its re-exec appends and the fallback's `--server-parent=<pid>` among them,
+ * server-mode.ts: each is one `--name[=value]` word, never a separate value), and relative
  * paths resolve against the invoking shell's cwd (the second instance's, not ours). The last
  * argument that is an existing directory wins.
  */
