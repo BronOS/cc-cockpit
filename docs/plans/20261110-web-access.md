@@ -668,11 +668,11 @@ remote client, a phone layout, headless server mode (design §9, §10).
 - Modify: `docs/design.md` (a section pointing at design-web.md and what v1 implements), `docs/design-web.md` (mark v1
   implemented, what is later), `docs/features.md`, `README.md`, `src/cli/guide/*.md`, `CLAUDE.md`
 
-- [ ] how to turn it on; LAN, Tailscale (`tailscale serve`) and SSH tunnel recipes; the modes and their risks
-- [ ] plugin author notes (views, `{ view }`, relative URLs, what remote views cannot do)
-- [ ] CLAUDE.md implementation patterns: the ViewRegistry rule, remote classes, gateway checks, loopback by default
-- [ ] run tests (guide drift) - must pass
-- [ ] move this plan to `docs/plans/completed/`
+- [x] how to turn it on; LAN, Tailscale (`tailscale serve`) and SSH tunnel recipes; the modes and their risks
+- [x] plugin author notes (views, `{ view }`, relative URLs, what remote views cannot do)
+- [x] CLAUDE.md implementation patterns: the ViewRegistry rule, remote classes, gateway checks, loopback by default
+- [x] run tests (guide drift) - must pass
+- [x] move this plan to `docs/plans/completed/` (left to the orchestrator)
 
 ## Post-Completion
 

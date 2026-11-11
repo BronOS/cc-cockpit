@@ -1,6 +1,19 @@
 # Web access (remote cockpit) — design draft
 
-Status: draft, revised after two architecture reviews (2026-11-10). Not planned yet; nothing here is implemented.
+Status: v1 implemented (2026-11-10, branch `feat/web-access`; plan `docs/plans/20261110-web-access.md`, phases 1 to 5 of §7).
+Revised after two architecture reviews. Sections 9 and 10 and the phone layout stay later. The code's own comments
+carry the finer points (`src/main/web/`, `src/main/views/`, `src/renderer/web/`); this document keeps the reasons.
+
+**What v1 implements:** the gateway (http + one WebSocket per view), the Host and Origin checks, the four sign-in modes
+(access link, password, desktop confirm, None), devices with Disconnect and Revoke, the confirms of §4.3, the view
+registry and the remote class of every IPC channel, a headless terminal per tab with numbered chunks and snapshots for
+every view, ports and slots per view, plugin pages under path tokens, shared link asks, overlay and settings-page
+take-over, window lifetime (§5.6), the native mapping of §6.1, and the settings page, top-bar chip and devices list.
+How to use it: `docs/features.md` "Web access".
+
+**Later, not in v1:** the desktop as a remote client (§10), more than one person (§10), a phone layout, headless mode
+(§9), Web Notifications and `ctx.notify` to a browser, a remote Allow of a plugin link, the browser panel and URL
+overlays in a browser, sign-in of a plugin's OAuth from a browser.
 
 ## 0. Goal, direction, non-goals
 

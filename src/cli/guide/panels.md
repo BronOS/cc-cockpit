@@ -37,6 +37,10 @@ load, the strip shows the title's first letter.
   `src` and `href` in HTML, and a URL in `srcset`, `poster`, `<form action>`, CSS or a script string breaks. `ccc plugin
   link` and the marketplace check warn about root-absolute URLs.
 
+- With web access a panel can be open in a browser as well as the desktop, one page per view. What a browser view cannot
+  do: `WebContentsView` features (`ctx.webview`, url overlays) show "available on the desktop", and `ctx.files.reveal` /
+  `openWithSystem` are refused. See `ccc guide api` (`ctx.panels.post` `{ view }`).
+
 ## `ccPanel`
 
 - `ccPanel.post(message)`: send JSON (at most 1 MiB) to the plugin host, where

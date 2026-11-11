@@ -24,6 +24,8 @@ tested).
 - **Discuss with Claude.** Any overlay a plugin opens (a diff, a mail, a ticket) has a toolbar with Discuss: pick a
   Claude tab or a new session, add a note, and the item goes to Claude as a prompt.
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
+- **Web access.** Open a project in a browser on your phone or another computer, live on both screens: the same tabs,
+  terminals and panels. Off by default; sign in by link, password or a desktop confirm (Settings > General).
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
 - **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with
@@ -173,6 +175,9 @@ Full reference and exit codes: [docs/features.md](docs/features.md#the-ccc-comma
 
 - **Linux shortcuts:** `Cmd` becomes Ctrl, so the default chords take Ctrl+T, Ctrl+W, Ctrl+B, Ctrl+J and Ctrl+O before
   the terminal sees them, and Claude Code and shells use those too. Rebind them in Settings > Keybindings.
+- **Web access exposes your computer to whoever signs in:** a signed-in browser is you at the keyboard. It listens on
+  127.0.0.1 unless you change it, and asks before a network address without https or without a sign-in. See
+  [docs/features.md](docs/features.md#web-access).
 - **Closing a window doesn't ask:** closing a project window or quitting stops running tabs without a question.
 - **Sending text isn't perfectly safe:** the Enter that submits text is a real key, and in rare cases a permission dialog
   raised without a hook can receive it.

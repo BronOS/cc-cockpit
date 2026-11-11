@@ -294,6 +294,58 @@ behind it are in [design.md](design.md).
   a plugin's settings (never a secret field), `ccc panel show <plugin>/<panel>` reveals a panel, and `ccc guide types`
   prints the SDK types.
 
+## Web access
+
+Open the cockpit in a browser on another device (a laptop, a phone): the same project window, tabs, terminals, panels
+and overlays, live on both screens at once, any of them able to act. Claude keeps running on this computer. Design and
+reasons: [design-web.md](design-web.md).
+
+**Turn it on:** Settings > General > Web access. It is off by default and listens on `127.0.0.1:7330` (port 1024 to
+65535). The card shows the access link as text and a QR code (behind Show, so a screenshot does not leak it); open it
+in the browser and the device is signed in. "Add a device" makes a one-time link. The top bar shows a chip while web
+access is on (and a warning while a risky choice is on); it opens the devices list with Disconnect, Revoke and Revoke
+all. Every new device raises a desktop notification. A browser attaches to one project window; closing that window with
+a browser attached asks "Close for everyone" or "Keep running".
+
+**Sign-in modes:**
+- *Access link* (default): a long random link, `<address>/#t=<token>`; the page posts it once, gets a device cookie and
+  clears the URL. Regenerate takes it back.
+- *Password*: set on the desktop (needs a working keychain); works with no one at the desktop. Wrong passwords are
+  slowed, never locked out.
+- *Desktop confirm*: the browser shows a code; type it into the request card on the desktop to allow it.
+- *None*: no sign-in, anyone who reaches the address is in. Only for a proxy that signs people in. Revoke means nothing.
+
+Whoever is signed in is the person at the keyboard: a shell and Claude on this computer, plugin accounts, files. The
+Host and Origin checks, the device cookie and the log (sign-ins and revokes, never terminal text) apply in every mode.
+
+**Reaching it from another device:**
+- *Same network (LAN):* set "Listen on" to `0.0.0.0` (or one address of the computer). A network bind over plain http,
+  or with no sign-in, asks for a confirm first (Cancel keeps the old address). Open `http://<computer's LAN IP>:7330`;
+  add the name you use to "Allowed host names" if it is not the IP. The link, the password and everything typed
+  travel unencrypted: use it only on a network you trust, or add a certificate and key file (https).
+- *Tailscale:* keep it on `127.0.0.1` and run `tailscale serve --bg --https=443 http://127.0.0.1:7330`; set "External
+  address" to `https://<machine>.<tailnet>.ts.net` (the same name goes into the allowed hosts). Every peer then looks
+  like 127.0.0.1, so sign-in does the work, not the address. Tailscale itself can be the sign-in (mode None) because
+  only your tailnet reaches the proxy; the app stays on loopback so nobody goes around it.
+- *SSH tunnel:* keep loopback and run `ssh -L 7330:127.0.0.1:7330 <host>`, then open `http://localhost:7330` on the
+  other computer (the default Host and Origin already fit). Use a different local port with an "External address" for it.
+- Any other reverse proxy: set "External address" to its public origin and keep the bind on loopback.
+
+**What a browser does differently** (the table is design-web.md §6.1): a link opens as a notice you click, not in a new
+tab by itself; notifications and sounds stay on the host; "Reveal in the file manager" and "Open with the system" are
+refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; the Browser panel and URL overlays
+show "available on the desktop"; window controls, full screen and the update notice are not shown. A terminal has one
+size for all places (the one that typed last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
+open in one place at a time, with Take over on the others.
+
+**For plugin authors:** nothing has to change for a panel to work in a browser, with three rules. Load everything by a
+URL relative to the page (`../dist/x.js`), never root-absolute (`/dist/x.js`): the page is served under a path prefix
+(`/p/<token>/`), and `ccc plugin link` and the marketplace check warn about the others. Expect several pages of your
+panel at once, one per view: `ctx.panels.post(id, msg)` goes to all of them, `ctx.panels.post(id, msg, { view })` with
+the `view` the listener was given answers only the page that asked, and your calls made from a listener act in that view.
+Do not depend on `WebContentsView`s (`ctx.webview`, URL overlays), on file-manager calls or on native dialogs working
+for a person in a browser. `ccc guide panels` and `ccc guide api` carry the same text.
+
 ## Updates and versions
 
 - **Update notice.** Once at launch and then every 24 hours the app asks `api.github.com` for the latest release. If it

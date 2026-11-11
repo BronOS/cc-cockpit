@@ -92,6 +92,30 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   are its only writers, reached only from the shell page's `tabs.flag` / `tabs.toggleFlag` (top frame, sender's own tabs);
   the registry mirrors it for `SessionInfo.flag` (summaries get the colour only). Never give host-api or a plugin a way to
   write it, nor read a flag from a hook or plugin payload: a mark a plugin could set would mean nothing.
+- Web access (design-web.md, `src/main/web/`, `src/main/views/`, `src/renderer/web/`): a project window has several live views
+  (the desktop `webContents`, browser views over one WebSocket each). Every event and port post goes through `ViewRegistry`
+  (`toProject`, `toWindow`, `toView`, `toAll`, `postPort`); never `webContents.send`, `webContents.postMessage` or
+  `BrowserWindow.getAllWindows()` outside the adapters (`no-direct-webcontents-send.test.ts`). A new channel in
+  `src/shared/ipc.ts` needs its `REMOTE_CLASS` (`yes`, `no`, `adapted`) in the same change: classify conservatively, `no` for what
+  needs the host's screen or widens a view's own access; an `adapted` handler decides by the caller main bound (`view.remote`),
+  never by the payload.
+- The gateway (`main/web/gateway.ts`) listens on loopback by default and runs the Host check, the Origin check (upgrade and every
+  state-changing POST) and the secret compare in every mode, None included; a non-loopback bind over http or with no sign-in
+  listens only with the confirm recorded by `applyWebAccessPatch`; secrets are hashed (scrypt off-thread) and failures are slowed
+  by one global bucket, never locked out and never keyed by peer address (behind a proxy every peer is 127.0.0.1). No regexes in
+  the settings or path parsing there. A remote view cannot change the auth mode, bind, secrets, hosts or devices (`no` channels).
+- With web access on, a headless terminal mirror worker (`main/terminals/mirror-worker.ts`; `view-terminals.ts` for browser views) owns pty flow control and answers the
+  program's terminal queries; views get numbered chunks and snapshots and resync from them, the desktop included. Do not add a
+  second consumer of pty data or a reply path that bypasses the worker. Terminal size has one owner (last typer or "Fit to this
+  screen"); a pty-less tab refits in main.
+- A plugin host call's *origin view* (`src/host/ctx/origin-view.ts`, `AsyncLocalStorage`, kept until the listener returns, 10 s cap)
+  is a hint for focus-like calls only (a wrong view costs a focus on the wrong screen); main's checks never rest on it. Plugins
+  keep working unchanged; `ctx.panels.post` takes the optional `{ view }`.
+- Plugin pages over HTTP are served by path token (`/p/<token>/`, one per device and plugin, killed on revoke; inline overlays
+  under `/o/<token>/`): the token is the only credential, since a sandboxed page's requests carry no cookie. Responses carry the
+  rewritten plugin CSP, no redirects, `no-store`. Pages must use relative URLs (the server rewrites only root-absolute `src` and
+  `href` in HTML; `ccc plugin link` warns). Link asks (`links.ask`/`answer`/`settled`) are shared by every view and a remote view
+  may only Deny.
 - `CliCall.tabId` is set by main only when the `ccc` caller is a Claude tab (never from anything the caller sends); a plugin
   command may use it to know which tab ran it (`ccc autopilot stop`) and must answer an unknown and a foreign id the same way.
 - Plugin command tabs (`ctx.sessions.openCommand`, design.md §3 "Custom commands"): kind `command` with `argv` and
