@@ -1,6 +1,6 @@
 // One tab strip for every view of a window (design-web.md §5.1; found by the plan Task 30 e2e): a
-// tab one view creates, restarts, flags or closes is told to the window's other views as the
-// `tabs.added` / `tabs.removed` events every page already understands, and never echoed to the
+// tab one view creates, restarts, flags, closes or moves is told to the window's other views as the
+// `tabs.added` / `tabs.removed` / `tabs.moved` events every page understands, and never echoed to the
 // view that acted (it has the change from its own reply).
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -56,6 +56,7 @@ function setup(options: { others?: boolean } = {}) {
       return tabs.create(projectId, { kind: request.kind })
     },
     close: (projectId, tabId) => tabs.close(projectId, tabId),
+    reorder: (projectId, tabId, toIndex) => tabs.reorder(projectId, tabId, toIndex),
     restart: (projectId, tabId) => tabs.restart(projectId, tabId),
     flag: (projectId, tabId, patch) => tabs.setFlag(projectId, tabId, patch),
     toggleFlag: (projectId, tabId) => tabs.toggleFlag(projectId, tabId),
@@ -120,6 +121,22 @@ describe('a tab-list change one view makes reaches the others', () => {
     expect((told[1]!.event.payload as { flag?: unknown }).flag).toBeUndefined()
     // A bad patch is refused before anything is told.
     await expect(desktop('tabs.flag', { tabId: tab.id, flag: { color: 'nope' } })).rejects.toThrow()
+    expect(told).toHaveLength(2)
+  })
+
+  it("a move is told with the index main applied (clamped), not the one asked for", async () => {
+    const { tabs, told, desktop, remote } = setup()
+    const a = tabs.create(P, { kind: 'shell' })
+    const b = tabs.create(P, { kind: 'shell' })
+    const c = tabs.create(P, { kind: 'shell' })
+    await remote('web:1', 'tabs.reorder', { tabId: a.id, toIndex: 99 })
+    expect(tabs.list(P).map((t) => t.id)).toEqual([b.id, c.id, a.id])
+    expect(told).toEqual([{ windowId: 1, except: 'web:1', event: { channel: 'tabs.moved', payload: { tabId: a.id, toIndex: 2 } } }])
+    await desktop('tabs.reorder', { tabId: c.id, toIndex: -5 })
+    expect(told[1]).toEqual({ windowId: 1, except: 'desktop:1', event: { channel: 'tabs.moved', payload: { tabId: c.id, toIndex: 0 } } })
+    // A refused move (unknown tab, bad index) tells nobody.
+    await expect(desktop('tabs.reorder', { tabId: 'nope', toIndex: 0 })).rejects.toThrow()
+    await expect(desktop('tabs.reorder', { tabId: a.id, toIndex: 1.5 })).rejects.toThrow()
     expect(told).toHaveLength(2)
   })
 

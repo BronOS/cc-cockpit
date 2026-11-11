@@ -969,15 +969,19 @@ export interface TabHandlerDeps {
   viewSelect(viewId: ViewId, tabId: string): void
   /**
    * Tell the window's views other than `viewId` (ViewRegistry.toOthers): a tab one view created,
-   * restarted, flagged (`tabs.added`, merged by id and generation) or closed (`tabs.removed`). The
+   * restarted, flagged (`tabs.added`, merged by id and generation), closed (`tabs.removed`) or moved
+   * (`tabs.moved`, at the index main applied). The
    * acting view has it from its reply; without this the desktop and a browser keep different tab
    * strips. Absent (unit tests of other handlers): nobody else is told.
    */
   others?(windowId: number, viewId: ViewId, event: TabListEvent): void
 }
 
-/** What `TabHandlerDeps.others` carries: the two tab-list events every page already understands. */
-export type TabListEvent = { channel: 'tabs.added'; payload: TabInfo } | { channel: 'tabs.removed'; payload: { tabId: string; gen: number } }
+/** What `TabHandlerDeps.others` carries: the tab-list events every page understands. */
+export type TabListEvent =
+  | { channel: 'tabs.added'; payload: TabInfo }
+  | { channel: 'tabs.removed'; payload: { tabId: string; gen: number } }
+  | { channel: 'tabs.moved'; payload: { tabId: string; toIndex: number } }
 
 /**
  * Tab handlers. Every one acts on `ctx.projectId`, the project main resolved from the sender;
@@ -1036,12 +1040,17 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (gen !== undefined) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.removed', payload: { tabId, gen } })
   })
 
-  router.handleProject('tabs.reorder', (ctx, payload) => {
+  router.handleProject('tabs.reorder', (ctx, payload, view) => {
     const toIndex = fields('tabs.reorder', payload).toIndex
     if (typeof toIndex !== 'number' || !Number.isInteger(toIndex)) {
       throw new Error('tabs.reorder: toIndex must be an integer')
     }
-    tabs.reorder(ctx.projectId, tabIdOf('tabs.reorder', payload), toIndex)
+    const tabId = tabIdOf('tabs.reorder', payload)
+    tabs.reorder(ctx.projectId, tabId, toIndex)
+    // The index main applied (TabManager.reorder clamps to the ends), never the requested one: a
+    // view asking for 99 must not leave the others to clamp against a strip of their own length.
+    const applied = tabs.list(ctx.projectId).findIndex((t) => t.id === tabId)
+    if (applied >= 0) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.moved', payload: { tabId, toIndex: applied } })
   })
 
   router.handleProject('tabs.rename', (ctx, payload) => {

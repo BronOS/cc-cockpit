@@ -231,6 +231,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const offAdded = window.cockpit.on('tabs.added', (tab) => {
       dispatch({ type: 'announced', tab })
     })
+    // Another view of the window moved a tab: main's clamped index (the reducer clamps again
+    // against this strip, which may not hold a tab main just started).
+    const offMoved = window.cockpit.on('tabs.moved', ({ tabId, toIndex }) => {
+      dispatch({ type: 'moved', tabId, toIndex })
+    })
     attachTabs()
       .then((tabs) => dispatch({ type: 'loaded', tabs }))
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
@@ -241,6 +246,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offRemoved()
       offSelect()
       offAdded()
+      offMoved()
       sessions.disposeAll()
     }
   }, [sessions])

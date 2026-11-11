@@ -1336,6 +1336,11 @@ export interface IpcEventMap {
    * Also how the window's other views hear of a `tabs.close` one view made (router.ts).
    */
   'tabs.removed': { tabId: string; gen: number }
+  /**
+   * Another view of the window moved a tab (`tabs.reorder`): `toIndex` is the place main gave it in
+   * the project's order, already clamped. The view that moved it has the change from its reply.
+   */
+  'tabs.moved': { tabId: string; toIndex: number }
   /** The update notice's state changed (a check found a release, a dismissal, the setting). Every window. */
   'updates.changed': UpdateState
   /** Connected devices or a risky choice changed (desktop windows only; never sent to a remote view). */
@@ -1589,6 +1594,7 @@ export const EVENT_CHANNELS = [
   'tabs.typed',
   'tabs.exit',
   'tabs.removed',
+  'tabs.moved',
   'theme.changed',
   'updates.changed',
   'webAccess.changed',
@@ -1858,6 +1864,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.typed': 'yes',
   'tabs.exit': 'yes',
   'tabs.removed': 'yes',
+  'tabs.moved': 'yes',
   'tabs.select': 'yes',
   'tabs.added': 'yes'
 })

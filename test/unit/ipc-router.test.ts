@@ -721,6 +721,8 @@ describe('registerTabHandlers', () => {
       ['list', PROJECT_A],
       ['close', PROJECT_A, 't1'],
       ['reorder', PROJECT_A, 't1', 2],
+      // The index main applied, for the other views (`tabs.moved`).
+      ['list', PROJECT_A],
       ['rename', PROJECT_A, 't1', 'Mine'],
       ['rename', PROJECT_A, 't1', null],
       ['restart', PROJECT_B, 't1', 2],

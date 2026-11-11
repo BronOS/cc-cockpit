@@ -652,8 +652,8 @@ remote client, a phone layout, headless server mode (design §9, §10).
   sends `tabs.added` (create, restart, flag, toggleFlag; merged by id and generation) or `tabs.removed` (close) to
   every other view through the new `ViewRegistry.toOthers`; tests `test/unit/tab-list-mirror.test.ts`,
   `view-registry.test.ts`, `ipc-router.test.ts`, and a browser-opens/closes-a-tab step in the e2e.
-  ⚠️ `tabs.reorder` is still not mirrored (no event carries the order; the other views keep their order until they
-  reload): a `tabs.moved` event is a follow-up for Task 31.
+  `tabs.reorder` is mirrored too (task 30 review fix): a `tabs.moved` event (remote class `yes`) carries the index main
+  applied after clamping, and every page applies it with the reducer's `moved` action.
 
 ### Task 31: Verify acceptance criteria (final regression pass) [model: sonnet]
 
