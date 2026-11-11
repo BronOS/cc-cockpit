@@ -101,7 +101,10 @@ with full Node access.
   returns or its returned promise settles (10 s cap): work started fire-and-forget (timers, unreturned promises)
   gets no view, so `return` or `await` your promise. The same holds for the other clicks a browser makes: a
   command run from its palette, a panel header action (`onAction`), an overlay toolbar button (`onButton`, a
-  type button's `run`) and a `ctx.files.onOpen` for a file opened there.
+  type button's `run`) and a `ctx.files.onOpen` for a file opened there. The 10 s cap counts from the click,
+  waits included: a command that first awaits an answer (`await ctx.overlay.open(spec)`) the person gives
+  after 10 s has lost its view by then, and what it opens or focuses afterwards shows on the desktop. Make the
+  view-bound call before the wait, or keep the `view` and pass it where the API takes one (`post`).
 - `ctx.panels.show(panelId)`: bring one of your own panels into sight (either kind): a hidden
   panel comes back, a closed one opens and its zone expands (a side zone the window auto-hid for a
   narrow terminal shows again too). Use it when a command should make

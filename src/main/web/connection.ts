@@ -243,6 +243,11 @@ export class WebConnections {
     for (const conn of this.open.values()) conn.terminalStarted(tabId)
   }
 
+  /** A tab is gone (TabManager's lifecycle `closed`): views stop waiting for its start. */
+  tabClosed(tabId: string): void {
+    for (const conn of this.open.values()) conn.terminalClosed(tabId)
+  }
+
   /**
    * The name of the device behind an open view (TabInfo.typedBy), as it was when the view
    * connected; undefined for a view that is gone. The requester's own text, plain (devices.ts).
@@ -443,6 +448,11 @@ export class WebConnection {
   /** The tab's process started (WebConnections.tabStarted). */
   terminalStarted(tabId: string): void {
     if (!this.closed) this.terminals?.started(tabId)
+  }
+
+  /** The tab is gone (WebConnections.tabClosed). */
+  terminalClosed(tabId: string): void {
+    if (!this.closed) this.terminals?.closed(tabId)
   }
 
   /**

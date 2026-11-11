@@ -30,6 +30,7 @@ import { useLayout } from '../zones/use-layout'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
 import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
+import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
 import { TabBar } from './TabBar'
@@ -171,7 +172,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // Plugin close asks that came before this view's tab list (a view joining mid-ask), asked once it
   // is in; `runAsk` is the closeAsk listener's runner they are handed to.
   const asksBeforeList = useRef<Array<{ requestId: string; tabId: string }>>([])
-  const runAsk = useRef<((requestId: string, tabId: string) => void) | null>(null)
+  const runAsk = useRef<((requestId: string, tabId: string, mayWait: boolean) => void) | null>(null)
+  // Live asks for a tab the strip does not show yet (a plugin's open then close: its `tabs.added`
+  // is not committed yet), asked once it is (close-ask-wait.ts).
+  const unlistedAsks = useRef<UnlistedCloseAsks | null>(null)
   // The window's own Claude statuses, for the dialog's "Claude is working" (read when it opens).
   const ownRef = useRef(own)
   // The Ctrl+Tab switcher (tab-switcher.ts): open while non-null, mirrored in a ref for the window
@@ -409,8 +413,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       else done?.(true)
     }
     const tab = stateRef.current.tabs.find((t) => t.id === tabId)
-    // An ask for a tab this view does not hold (gone, or not listed yet: the asks wait for the list,
-    // see the closeAsk listener) is declined, never answered Close: "not here" is not "not running".
+    // An ask for a tab this view does not hold is declined, never answered Close: "not here" is not
+    // "not running". It comes here only once waiting cannot help: replayed before the list (asked
+    // after it, the tab is gone), or a live ask whose tab never reached the strip (close-ask-wait.ts).
     if (!tab && askId !== undefined) {
       done?.(false, true)
       return
@@ -476,13 +481,21 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // `sessions.closeSettled` then takes this view's dialog down, unanswered, if it is still up.
   //
   // A view that joins or reconnects mid-ask gets the ask replayed before its `tabs.list` reply: the
-  // ask waits for the list (`asksBeforeList`), so it is asked about the tab as it really is.
+  // ask waits for the list (`asksBeforeList`), so it is asked about the tab as it really is. A live
+  // ask (`mayWait`) for a tab not in the strip yet waits for it instead (`unlistedAsks`): a plugin's
+  // close right after its open must close the tab, as it did before the asks were shared.
   useEffect(() => {
     const live = liveAsks.current
     const waiting = asksBeforeList.current
-    const run = (requestId: string, tabId: string): void => {
-      // Settled while it waited for the list.
+    const unlisted = new UnlistedCloseAsks((requestId, tabId) => run(requestId, tabId, false))
+    unlistedAsks.current = unlisted
+    const run = (requestId: string, tabId: string, mayWait: boolean): void => {
+      // Settled while it waited for the list or the tab.
       if (!live.has(requestId)) return
+      if (mayWait && !stateRef.current.tabs.some((t) => t.id === tabId)) {
+        unlisted.park(requestId, tabId)
+        return
+      }
       actions.current.close(
         tabId,
         (closed, declined) => {
@@ -506,7 +519,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const offAsk = window.cockpit.on('sessions.closeAsk', ({ requestId, tabId }) => {
       if (live.has(requestId)) return
       live.add(requestId)
-      if (stateRef.current.listed) run(requestId, tabId)
+      if (stateRef.current.listed) run(requestId, tabId, true)
       else waiting.push({ requestId, tabId })
     })
     const offSettled = window.cockpit.on('sessions.closeSettled', ({ requestId }) => {
@@ -522,6 +535,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offSettled()
       live.clear()
       waiting.length = 0
+      unlisted.clear()
+      unlistedAsks.current = null
       runAsk.current = null
     }
   }, [])
@@ -529,8 +544,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     if (!state.listed) return
     const waiting = asksBeforeList.current.splice(0)
-    for (const { requestId, tabId } of waiting) runAsk.current?.(requestId, tabId)
+    for (const { requestId, tabId } of waiting) runAsk.current?.(requestId, tabId, false)
   }, [state.listed])
+  // A tab reached the strip: the live asks waiting for it are asked now (stateRef is current: its
+  // effect runs first in the same commit).
+  useEffect(() => {
+    unlistedAsks.current?.tabsChanged((tabId) => state.tabs.some((t) => t.id === tabId))
+  }, [state.tabs])
   /**
    * Give the keyboard back to what the user was in once a palette or overlay goes: the settings
    * screen while it is shown, else the active terminal. Decided when the frame fires, never when

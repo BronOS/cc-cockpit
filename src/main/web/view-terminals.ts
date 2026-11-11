@@ -23,7 +23,9 @@
 // A tab the view selected while the mirror did not hold it (a restored command tab waiting for its
 // first Restart has no pty, so nothing to mirror) is remembered and joined when it starts
 // (`started`, from TabManager's lifecycle): a restart keeps the page's selection, so the page never
-// selects it again, and its terminal would stay blank until the person switched tabs.
+// selects it again, and its terminal would stay blank until the person switched tabs. A tab closed
+// before it ever started is forgotten (`closed`, from the lifecycle too): ids are never reused, so it
+// would only sit in the set for the connection's life.
 //
 // The connection wires `select` to the view's own tab selection and `ack` to its acks. Never
 // trusted: the tab must pass `canFollow` (a tab of the view's own window, checked by main), whatever
@@ -111,6 +113,16 @@ export class ViewTerminals {
     if (this.disposed || !this.waiting.has(tabId)) return
     this.waiting.delete(tabId)
     this.select(tabId)
+  }
+
+  /** The tab is gone (TabManager's lifecycle `closed`): one still waiting for its start never will. */
+  closed(tabId: string): void {
+    this.waiting.delete(tabId)
+  }
+
+  /** Tabs selected and waiting for their start (tests, diagnostics). */
+  waitingFor(): string[] {
+    return [...this.waiting]
   }
 
   /** The page wrote `count` characters of the tab's live output into its terminal. */

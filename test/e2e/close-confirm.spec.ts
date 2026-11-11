@@ -171,6 +171,17 @@ test('with the setting off a running tab closes at once', async ({ cockpit }) =>
   await expect(dialog(cockpit.page)).toHaveCount(0)
 })
 
+// A plugin's open then, at once, close of the same tab: the ask reaches the page right behind the
+// tab's `tabs.added`, before the strip has it, and must wait for it rather than fail (close-ask-wait.ts).
+test('a plugin close right after its open closes the tab', async ({ cockpit }) => {
+  // The fixture's default data dir has the setting off: nothing asks, the close goes through.
+  for (let i = 0; i < 3; i++) {
+    expect(await cockpit.hook<boolean>('pluginOpenThenCloseTab', cockpit.projectDir)).toBe(true)
+    expect(await cockpit.hook<unknown[]>('tabs', cockpit.projectDir)).toEqual([])
+  }
+  await expect(cockpit.page.getByRole('tab')).toHaveCount(0)
+})
+
 // A plugin's ctx.sessions.close (main's `sessions.closeAsk`, hook `pluginCloseTab`) goes through the
 // person's close path: every way the dialog is cancelled or dropped answers closed: false, and only
 // the person's Close answers true. The hook resolves when the window answered, so it is not awaited
@@ -216,6 +227,13 @@ test('a plugin close asks like the person’s ×: Cancel and Close answer, a com
     expect(await answer).toBe(true)
     await expect(page.getByRole('tab')).toHaveCount(0)
     expect(await c.hook<unknown[]>('tabs', c.projectDir)).toEqual([])
+
+    // A close right after the plugin's open: the ask waits for the tab, then asks about it as it runs.
+    answer = c.hook<boolean>('pluginOpenThenCloseTab', c.projectDir)
+    await expect(dialog(page)).toBeVisible()
+    await dialog(page).getByRole('button', { name: 'Close', exact: true }).click()
+    expect(await answer).toBe(true)
+    await expect(page.getByRole('tab')).toHaveCount(0)
   } finally {
     await close()
   }

@@ -20,6 +20,7 @@ import {
   NOTIFY_CHIME_INTERVAL_MS
 } from '../../src/shared/notify'
 import { BUILTIN_SOUNDS, MAX_SOUND_ID_LENGTH } from '../../src/shared/notify-sound'
+import { DISPATCH_VIEW_MS } from '../../src/host/ctx/origin-view'
 
 function capture(): { out: { stdout: (t: string) => void; stderr: (t: string) => void }; stdout: string[]; stderr: string[] } {
   const stdout: string[] = []
@@ -200,6 +201,15 @@ describe('guide drift guards', () => {
     expect(MAX_VALUE_LENGTH - MAX_APP_VALUE_LENGTH).toBe(8 * 1024)
     expect(api).toContain('Values at most 1 MiB less 8 KiB as JSON')
     expect(api).toContain(`capped at ${MAX_FILES}`)
+  })
+
+  it('states the origin view cap of origin-view.ts, waits included, in the api topic', () => {
+    const api = topic('api').replace(/\s+/g, ' ')
+    const seconds = DISPATCH_VIEW_MS / 1000
+    expect(api).toContain(`(${seconds} s cap)`)
+    // A command awaiting an overlay past the cap loses its view (review phase 4): the guide says so.
+    expect(api).toContain(`The ${seconds} s cap counts from the click, waits included`)
+    expect(api).toContain('shows on the desktop')
   })
 
   it('states the skill limits of skill-files.ts and manifest.ts in the plugins topic and docs/design.md', () => {

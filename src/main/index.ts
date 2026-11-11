@@ -1274,7 +1274,11 @@ function start(): void {
       },
       // The signal too: a signal death can arrive as code 0 (tabExited maps it to 128 + n).
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
-      closed: (tabId) => sessions.tabClosed(tabId),
+      closed: (tabId) => {
+        sessions.tabClosed(tabId)
+        // A browser that selected the tab before it ever started stops waiting for it.
+        webConnections.tabClosed(tabId)
+      },
       renamed: (tabId, name) => void sessions.setName(tabId, name),
       flagged: (tabId, flag) => void sessions.setFlag(tabId, flag),
       output: (tabId, chunk) => sessions.tabOutput(tabId, chunk)
@@ -2379,6 +2383,15 @@ function start(): void {
             const windowId = project ? windows.windowIdOf(project.id) : undefined
             if (!project || windowId === undefined) return Promise.resolve(false)
             return closeTabForPlugin(windowId, project.id, tabId)
+          },
+          // A plugin's ctx.sessions.openShell then, at once, ctx.sessions.close of the tab it got: the
+          // ask reaches the page right behind the tab's `tabs.added`, before React committed it.
+          pluginOpenThenCloseTab: async (path: string) => {
+            const project = projectAt(path)
+            const windowId = project ? windows.windowIdOf(project.id) : undefined
+            if (!project || windowId === undefined) return false
+            const tab = await openShellTab(project.id, {}, windowId, false)
+            return closeTabForPlugin(windowId, project.id, tab.id)
           },
           // The main-internal send / cancel (no IPC reaches them yet), for a tab id the test read
           // from `sessions` or `tabs`. `core`, like Discuss: a spec drives main's own path, so the

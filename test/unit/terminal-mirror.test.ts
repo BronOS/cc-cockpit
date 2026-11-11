@@ -1285,6 +1285,25 @@ describe('ViewTerminals', () => {
     expect(vt.following()).toEqual([])
   })
 
+  it('a tab closed before it ever started stops waiting: nothing joins it, the set does not keep it', async () => {
+    m = mirror()
+    m.start()
+    const { vt } = view()
+    expect(vt.select('waiting')).toBe(false)
+    expect(vt.select('kept')).toBe(false)
+    expect(vt.waitingFor().sort()).toEqual(['kept', 'waiting'])
+    // The person closes the restored command tab without a Restart.
+    vt.closed('waiting')
+    expect(vt.waitingFor()).toEqual(['kept'])
+    // Even a start reported late for it (ids are never reused) joins nothing.
+    m.spawned('waiting', 20, 5)
+    vt.started('waiting')
+    expect(vt.following()).toEqual([])
+    // A closed id it never waited for is a no-op.
+    vt.closed('other')
+    expect(vt.waitingFor()).toEqual(['kept'])
+  })
+
   it('forgets a closed tab, leaves and rejoins, and sends nothing once disposed', async () => {
     m = mirror()
     m.start()

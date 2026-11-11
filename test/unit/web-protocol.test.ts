@@ -949,6 +949,16 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
     expect(mirror.joins).toHaveLength(1)
   })
 
+  it('a tab closed before it ever started is forgotten: its start reported later joins nothing', () => {
+    const { conns, mirror } = terminals()
+    mirror.notHeld.add('p1-t1')
+    conns.select('web:1', 'p1-t1')
+    conns.tabClosed('p1-t1')
+    mirror.notHeld.delete('p1-t1')
+    conns.tabStarted('p1-t1')
+    expect(mirror.joins).toEqual([])
+  })
+
   it('the socket closing leaves every followed tab', () => {
     const { conns, mirror, ws } = terminals()
     conns.select('web:1', 'p1-t1')
