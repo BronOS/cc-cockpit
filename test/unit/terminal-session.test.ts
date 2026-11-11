@@ -86,6 +86,7 @@ interface Session {
   readonly term: unknown
   write(data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
   attach(container: HTMLElement): void
+  takeOnLoad(): void
 }
 type SessionClass = new (
   tabId: string,
@@ -186,6 +187,31 @@ describe('TerminalSession sizes', () => {
     expect([term.cols, term.rows]).toEqual([130, 42])
     drag(110, 35)
     expect([term.cols, term.rows]).toEqual([110, 35])
+  })
+})
+
+describe('TerminalSession takes the size when the page loads', () => {
+  it('takes at once when another view already sizes the pty, else on the first size item', () => {
+    const a = session()
+    a.s.write('', false, { cols: 50, rows: 30 }, false)
+    a.s.takeOnLoad()
+    expect(a.fits()).toBe(1)
+    const b = session()
+    b.s.takeOnLoad()
+    expect(b.fits()).toBe(0)
+    b.s.write('', false, { cols: 50, rows: 30 }, false)
+    expect(b.fits()).toBe(1)
+    // Only once: a later size item from another view is not a take.
+    b.s.write('', false, { cols: 60, rows: 30 }, false)
+    expect(b.fits()).toBe(1)
+  })
+
+  it('a local size item (this view sizes the pty) drops the wait', () => {
+    const { s, fits } = session()
+    s.takeOnLoad()
+    s.write('', false, { cols: 50, rows: 30 }, true)
+    s.write('', false, { cols: 60, rows: 30 }, false)
+    expect(fits()).toBe(0)
   })
 })
 

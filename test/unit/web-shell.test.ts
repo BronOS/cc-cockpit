@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openProjectEntries } from '../../src/main/web/connection'
 import { shellFileOf } from '../../src/main/web/shell-files'
-import { currentShellChrome, isWebShell, markWebShell, resetShellKindForTest } from '../../src/renderer/shell-kind'
+import { armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, takeLoadTake } from '../../src/renderer/shell-kind'
 import { topStripClass } from '../../src/renderer/status/strip-order'
 import { loadOpenProjects, projectHref } from '../../src/renderer/web/picker-model'
 import {
@@ -351,5 +351,27 @@ describe('window chrome in the web shell', () => {
       expect(topStripClass(chrome.titleBar, chrome.fullScreen)).toBe('top-strip')
     }
     expect(topStripClass(shellChrome(false, true).titleBar, false)).toBe('top-strip title-bar')
+  })
+})
+
+describe('the take of the terminal size on load', () => {
+  afterEach(() => resetShellKindForTest())
+
+  it('the first ready of a page takes, once', () => {
+    markWebShell()
+    armLoadTake(1)
+    expect(takeLoadTake()).toBe(true)
+    expect(takeLoadTake()).toBe(false)
+  })
+
+  it('a reconnect ready does not take', () => {
+    markWebShell()
+    armLoadTake(2)
+    expect(takeLoadTake()).toBe(false)
+  })
+
+  it('the desktop shell never takes', () => {
+    armLoadTake(1)
+    expect(takeLoadTake()).toBe(false)
   })
 })

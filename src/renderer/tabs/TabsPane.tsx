@@ -20,7 +20,7 @@ import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
-import { currentShellChrome, isWebShell } from '../shell-kind'
+import { currentShellChrome, isWebShell, takeLoadTake } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
@@ -265,6 +265,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // is unaffected, and a plugin then sees the previous tab as active until the next change.
   useEffect(() => {
     if (state.activeId === null) return
+    // Browser shell, first load only (armLoadTake): the active terminal takes the size once, as a
+    // click would; a tab without a terminal yet is skipped, never taken later for another tab.
+    if (takeLoadTake()) sessions.takeOnLoad(state.activeId)
     window.cockpit.invoke('tabs.selected', { tabId: state.activeId }).catch((err: unknown) => {
       console.warn('reporting the selected tab failed', err)
     })

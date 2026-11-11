@@ -105,6 +105,8 @@ export class TerminalSession {
   private disposed = false
   /** Set while this.focus() runs: a programmatic focus (tab activation, start, restore) never takes. */
   private focusing = false
+  /** takeOnLoad() is waiting for the first size item. */
+  private pendingLoadTake = false
   /** The window and page listeners of the take on focus, removed on dispose. */
   private readonly offTakeListeners: () => void
   private readonly offTheme: () => void
@@ -196,8 +198,21 @@ export class TerminalSession {
    * off, or while this view sizes it, nothing is sent and the terminal keeps fitting at once.
    */
   private takeSize(): void {
+    this.pendingLoadTake = false
     if (this.disposed || !this.ptySize || !this.io.fit || !this.shown()) return
     this.io.fit()
+  }
+
+  /**
+   * The browser page just loaded and this is the active tab: take as a click would. When the pty's
+   * size item has not reached this view yet it waits for the first one (a size from another view
+   * takes; a `local` one means this view sizes the pty already and drops the wait), so the take
+   * never lands later for another reason.
+   */
+  takeOnLoad(): void {
+    if (this.disposed) return
+    if (this.ptySize) this.takeSize()
+    else this.pendingLoadTake = true
   }
 
   /** Attached to a pane that is laid out (the active tab: an inactive one is display:none). */
@@ -335,7 +350,9 @@ export class TerminalSession {
 
   /** This view sizes the pty again: fit the pane, no more drawing at another view's size. */
   private fitLocally(): void {
-    if (this.disposed || !this.ptySize) return
+    if (this.disposed) return
+    this.pendingLoadTake = false
+    if (!this.ptySize) return
     this.ptySize = undefined
     this.refit()
   }
@@ -346,6 +363,7 @@ export class TerminalSession {
     this.ptySize = size
     if (this.term.cols !== size.cols || this.term.rows !== size.rows) this.term.resize(size.cols, size.rows)
     this.layout()
+    if (this.pendingLoadTake) this.takeSize()
   }
 
   /** Scale or letterbox the pty-sized terminal in the pane, and show "Fit to this screen" when they differ. */
@@ -473,6 +491,11 @@ export class SessionRegistry {
       this.sessions.set(tabId, session)
     }
     return session
+  }
+
+  /** The page loaded with `tabId` active: its terminal takes the size; none yet, nothing (never created for it). */
+  takeOnLoad(tabId: string): void {
+    this.sessions.get(tabId)?.takeOnLoad()
   }
 
   dispose(tabId: string): void {

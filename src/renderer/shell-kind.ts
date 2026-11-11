@@ -57,9 +57,28 @@ export function holdsPage(heldBy: { viewId: string } | undefined): boolean {
   return heldBy === undefined ? !webShell : isOwnView(heldBy.viewId)
 }
 
+let loadTake = false
+
+/**
+ * The web shell's `ready` of generation `generation` (the page's count of them): only the first
+ * one after a page load arms the one-shot take of the active terminal's size (takeLoadTake); a
+ * reconnect's later `ready` never does, and the desktop shell never calls this.
+ */
+export function armLoadTake(generation: number): void {
+  if (webShell && generation === 1) loadTake = true
+}
+
+/** True once after armLoadTake: the shell's active terminal takes the size, as if clicked. */
+export function takeLoadTake(): boolean {
+  const armed = loadTake
+  loadTake = false
+  return armed
+}
+
 /** Test hook: back to the Electron shell. */
 export function resetShellKindForTest(): void {
   webShell = false
+  loadTake = false
   ownView = undefined
 }
 
