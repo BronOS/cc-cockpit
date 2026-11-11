@@ -760,8 +760,8 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
 - **Opening.** In server mode the browser picker (`renderer/web/picker.tsx`) lists the recent projects and has "Open
   folder…" with a server path field. The picker's GET adds recent and missing projects only in server mode
   (`projects.recent` stays `no`). `POST /api/projects` (server mode only, else 404; device cookie and Origin as every
-  state-changing POST, the cookie checked again once the body is read, so a device revoked mid-request opens nothing;
-  body capped as the sign-in routes'): `{ open: path }` (absolute, resolved, an existing
+  state-changing POST, the cookie checked again once the body is read and once more right before the open, after the
+  folder's `stat`, so a device revoked mid-request opens nothing; body capped as the sign-in routes'): `{ open: path }` (absolute, resolved, an existing
   directory; no create, `mkdir` in a terminal) or `{ reopen: id }`. Main runs `windows.openPath` as the desktop does and
   answers the project id or the error text; the picker goes on to `/?project=<id>`. Any folder the server user can
   read can be opened: no more than the shell a device already has. `ccc open <path>` and `cc-cockpit <path>` from a

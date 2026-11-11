@@ -7,11 +7,22 @@
 // `mkdir` in a terminal); `reopen` is looked up in main's own recent list (WindowManager.openRecent),
 // never used to address a record directly. Then `windows.openPath` runs as the desktop's Open Folder
 // does. No regexes (CLAUDE.md, the gateway's parsing). Pure Node, for unit tests.
+//
+// The device is checked again right before the open, with no `await` between that check and the
+// call (`authorized`): the folder check awaits a `stat` (a slow or hung mount can hold it for long),
+// and a device revoked meanwhile must open nothing (external review round 3, after round 2 had
+// moved the gateway's check behind the body read but left this await after it).
 import { stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import type { WebOpenProjectReply, WebOpenProjectRequest } from '../../shared/web-protocol'
 import { ProjectRefusal } from '../projects/registry'
+
+/**
+ * What main answers the gateway: the wire's reply, or `unauthorized` when the device was no longer
+ * signed in at the moment of the open (the gateway answers 401, as for a request with no cookie).
+ */
+export type OpenProjectOutcome = WebOpenProjectReply | { unauthorized: true }
 
 /** Longer than any path the OS takes (PATH_MAX is 4096 on Linux); the body cap bounds it anyway. */
 export const MAX_OPEN_PATH = 4096
@@ -63,9 +74,13 @@ function deviceFacingError(err: unknown, deps: OpenProjectDeps, what: string): s
   return `${what} failed`
 }
 
-/** Runs a checked request; a refusal or a failed open is its text, never a throw. */
-export async function openProjectFromWeb(request: WebOpenProjectRequest, deps: OpenProjectDeps): Promise<WebOpenProjectReply> {
+/**
+ * Runs a checked request; a refusal or a failed open is its text, never a throw. `authorized` is
+ * asked synchronously right before `openPath` / `openRecent`, after every await: false opens nothing.
+ */
+export async function openProjectFromWeb(request: WebOpenProjectRequest, deps: OpenProjectDeps, authorized: () => boolean): Promise<OpenProjectOutcome> {
   if ('reopen' in request) {
+    if (!authorized()) return { unauthorized: true }
     try {
       return { id: deps.openRecent(request.reopen).id }
     } catch (err) {
@@ -79,6 +94,8 @@ export async function openProjectFromWeb(request: WebOpenProjectRequest, deps: O
   // Checked here, not left to the registry: a known project whose folder is gone would come back
   // as `missing` and a new record is never made for a non-folder, but the text should say why.
   if (!(await (deps.isDirectory ?? isDirectoryNow)(path))) return { error: `not a folder: ${path}` }
+  // After the stat's await, before the open, nothing awaited in between: see the header.
+  if (!authorized()) return { unauthorized: true }
   try {
     return { id: deps.openPath(path).id }
   } catch (err) {

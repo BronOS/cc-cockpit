@@ -36,6 +36,9 @@ describe('parseOpenProjectBody', () => {
   })
 })
 
+/** The device is still signed in at the open (the gateway's re-check, open-project.ts `authorized`). */
+const signedIn = (): boolean => true
+
 describe('openProjectFromWeb', () => {
   let root: string
   let calls: string[]
@@ -61,29 +64,29 @@ describe('openProjectFromWeb', () => {
   it('opens an existing folder by its resolved path', async () => {
     const dir = join(root, 'app')
     mkdirSync(dir)
-    expect(await openProjectFromWeb({ open: `${root}/x/../app/` }, deps)).toEqual({ id: 'p-new' })
+    expect(await openProjectFromWeb({ open: `${root}/x/../app/` }, deps, signedIn)).toEqual({ id: 'p-new' })
     expect(calls).toEqual([`open ${dir}`])
   })
 
   it('a link to a folder is a folder', async () => {
     mkdirSync(join(root, 'real'))
     symlinkSync(join(root, 'real'), join(root, 'link'))
-    expect(await openProjectFromWeb({ open: join(root, 'link') }, deps)).toEqual({ id: 'p-new' })
+    expect(await openProjectFromWeb({ open: join(root, 'link') }, deps, signedIn)).toEqual({ id: 'p-new' })
   })
 
   it('refuses a relative path, a file and a path that is not there, creating nothing', async () => {
     writeFileSync(join(root, 'file.txt'), 'x')
-    expect(await openProjectFromWeb({ open: 'app' }, deps)).toEqual({ error: 'not an absolute path: app' })
-    expect(await openProjectFromWeb({ open: '~/app' }, deps)).toHaveProperty('error')
-    expect(await openProjectFromWeb({ open: join(root, 'file.txt') }, deps)).toEqual({ error: `not a folder: ${join(root, 'file.txt')}` })
-    expect(await openProjectFromWeb({ open: join(root, 'nope') }, deps)).toEqual({ error: `not a folder: ${join(root, 'nope')}` })
+    expect(await openProjectFromWeb({ open: 'app' }, deps, signedIn)).toEqual({ error: 'not an absolute path: app' })
+    expect(await openProjectFromWeb({ open: '~/app' }, deps, signedIn)).toHaveProperty('error')
+    expect(await openProjectFromWeb({ open: join(root, 'file.txt') }, deps, signedIn)).toEqual({ error: `not a folder: ${join(root, 'file.txt')}` })
+    expect(await openProjectFromWeb({ open: join(root, 'nope') }, deps, signedIn)).toEqual({ error: `not a folder: ${join(root, 'nope')}` })
     expect(calls).toEqual([])
   })
 
   it('a failing open is a generic text (detail logged), a registry refusal its own text, never a throw', async () => {
     mkdirSync(join(root, 'app'))
     const failing: OpenProjectDeps = { ...deps, openPath: () => { throw new Error('cannot open a window') } }
-    expect(await openProjectFromWeb({ open: join(root, 'app') }, failing)).toEqual({ error: 'opening the project failed' })
+    expect(await openProjectFromWeb({ open: join(root, 'app') }, failing, signedIn)).toEqual({ error: 'opening the project failed' })
     const logged: string[] = []
     const eacces: OpenProjectDeps = {
       ...deps,
@@ -92,7 +95,7 @@ describe('openProjectFromWeb', () => {
         throw new Error("EACCES: open '/data/projects/x.json'")
       }
     }
-    expect(await openProjectFromWeb({ open: join(root, 'app') }, eacces)).toEqual({ error: 'opening the project failed' })
+    expect(await openProjectFromWeb({ open: join(root, 'app') }, eacces, signedIn)).toEqual({ error: 'opening the project failed' })
     expect(logged.join()).toContain('/data/projects/x.json')
     const refused: OpenProjectDeps = {
       ...deps,
@@ -100,7 +103,7 @@ describe('openProjectFromWeb', () => {
         throw new ProjectRefusal('not a directory: /x')
       }
     }
-    expect(await openProjectFromWeb({ open: join(root, 'app') }, refused)).toEqual({ error: 'not a directory: /x' })
+    expect(await openProjectFromWeb({ open: join(root, 'app') }, refused, signedIn)).toEqual({ error: 'not a directory: /x' })
     // Decided by the error's class, never its wording: a plain error with the same text is generic.
     const lookalike: OpenProjectDeps = {
       ...deps,
@@ -108,13 +111,42 @@ describe('openProjectFromWeb', () => {
         throw new Error('not a directory: /data/projects/x.json')
       }
     }
-    expect(await openProjectFromWeb({ open: join(root, 'app') }, lookalike)).toEqual({ error: 'opening the project failed' })
+    expect(await openProjectFromWeb({ open: join(root, 'app') }, lookalike, signedIn)).toEqual({ error: 'opening the project failed' })
   })
 
   it('reopens by id through the recent list only; an unknown id and a missing folder say so', async () => {
-    expect(await openProjectFromWeb({ reopen: 'r1' }, deps)).toEqual({ id: 'r1' })
-    expect(await openProjectFromWeb({ reopen: 'nope' }, deps)).toEqual({ error: 'not a recent project' })
-    expect(await openProjectFromWeb({ reopen: 'gone' }, deps)).toEqual({ error: 'project folder is missing: /old/gone' })
+    expect(await openProjectFromWeb({ reopen: 'r1' }, deps, signedIn)).toEqual({ id: 'r1' })
+    expect(await openProjectFromWeb({ reopen: 'nope' }, deps, signedIn)).toEqual({ error: 'not a recent project' })
+    expect(await openProjectFromWeb({ reopen: 'gone' }, deps, signedIn)).toEqual({ error: 'project folder is missing: /old/gone' })
     expect(calls).toEqual(['reopen r1', 'reopen nope', 'reopen gone'])
+  })
+
+  it('opens and reopens nothing for a device no longer signed in', async () => {
+    mkdirSync(join(root, 'app'))
+    expect(await openProjectFromWeb({ open: join(root, 'app') }, deps, () => false)).toEqual({ unauthorized: true })
+    expect(await openProjectFromWeb({ reopen: 'r1' }, deps, () => false)).toEqual({ unauthorized: true })
+    expect(calls).toEqual([])
+  })
+
+  // External review round 3: the device was checked before the folder's `stat`, never after it, so
+  // one revoked while the stat was pending still had its folder opened.
+  it('asks again after the folder check: a device revoked while it is pending opens nothing', async () => {
+    let finish!: (isDir: boolean) => void
+    let signed = true
+    const asked: boolean[] = []
+    const pending: OpenProjectDeps = {
+      ...deps,
+      isDirectory: () => new Promise<boolean>((resolve) => (finish = resolve))
+    }
+    const reply = openProjectFromWeb({ open: join(root, 'app') }, pending, () => {
+      asked.push(signed)
+      return signed
+    })
+    // The stat is pending: the device is revoked meanwhile.
+    signed = false
+    finish(true)
+    expect(await reply).toEqual({ unauthorized: true })
+    expect(asked).toEqual([false])
+    expect(calls).toEqual([])
   })
 })

@@ -1645,12 +1645,16 @@ function start(server: boolean): void {
           serverProjects: {
             // Whole records: the gateway picks the four fields that go on the wire.
             recent: () => registry.recent().filter((p) => windows.windowIdOf(p.id) === undefined),
-            open: (request: WebOpenProjectRequest) =>
-              openProjectFromWeb(request, {
-                openPath: (path) => windows.openPath(path),
-                openRecent: (id) => windows.openRecent(id),
-                log: warnLog
-              })
+            open: (request: WebOpenProjectRequest, authorized: () => boolean) =>
+              openProjectFromWeb(
+                request,
+                {
+                  openPath: (path) => windows.openPath(path),
+                  openRecent: (id) => windows.openRecent(id),
+                  log: warnLog
+                },
+                authorized
+              )
           }
         }
       : {})
@@ -2527,7 +2531,7 @@ function start(server: boolean): void {
   // project window at `hello` and reaches the same router handlers. Installed here, once every
   // handler is registered; the gateway refuses upgrades until then.
   const webConnections: WebConnections = new WebConnections({
-    dispatch: (caller, channel, payload) => router.dispatch(caller, channel, payload),
+    dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
     addView: (windowId, viewId, sink) => {
       const remove = views.addRemote(windowId, viewId, sink)
       // The last browser leaving a window kept running hidden shows it again (window-manager.ts).

@@ -19,7 +19,8 @@ import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
-import { MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
+import { MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type ServerProjects, type WsModule } from '../../src/main/web/gateway'
+import { openProjectFromWeb } from '../../src/main/web/open-project'
 import { webAccessOf } from '../../src/main/web/settings'
 import { CLOSE, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
@@ -771,7 +772,11 @@ describe('server mode: projects from the browser', () => {
   }
 
   /** Link mode with one signed-in device; `server` false leaves `serverProjects` out (a desktop). */
-  async function signedIn(server = true, recent: () => Array<{ id: string; name: string; path: string; missing: boolean }> = () => []): Promise<Signed> {
+  async function signedIn(
+    server = true,
+    recent: () => Array<{ id: string; name: string; path: string; missing: boolean }> = () => [],
+    open?: ServerProjects['open']
+  ): Promise<Signed> {
     const port = await freePort()
     const opened: unknown[] = []
     const { gw, auth, devices, logs } = make({
@@ -780,11 +785,13 @@ describe('server mode: projects from the browser', () => {
         ? {
             serverProjects: {
               recent,
-              open: (request) => {
-                opened.push(request)
-                if ('reopen' in request) return request.reopen === 'r1' ? { id: 'r1' } : { error: 'not a recent project' }
-                return request.open === '/work/new' ? { id: 'new1' } : { error: `not a folder: ${request.open}` }
-              }
+              open:
+                open ??
+                ((request) => {
+                  opened.push(request)
+                  if ('reopen' in request) return request.reopen === 'r1' ? { id: 'r1' } : { error: 'not a recent project' }
+                  return request.open === '/work/new' ? { id: 'new1' } : { error: `not a folder: ${request.open}` }
+                })
             }
           }
         : {})
@@ -914,6 +921,53 @@ describe('server mode: projects from the browser', () => {
     expect(res.status).toBe(401)
     expect(s.opened).toEqual([])
     expect(s.logs.some((l) => l.includes('opened project'))).toBe(false)
+  })
+
+  // External review round 3: main's open awaits a `stat` of the folder after the gateway's check, so
+  // a device revoked while that stat was pending still opened the project and got 200. Main's real
+  // open (open-project.ts) behind the gateway, its folder check held until the revoke is made.
+  it('a device revoked while main checks the folder opens nothing and gets 401', async () => {
+    let statStarted!: () => void
+    const started = new Promise<void>((resolve) => (statStarted = resolve))
+    let finishStat!: (isDir: boolean) => void
+    const openPath = vi.fn<(path: string) => { id: string }>(() => ({ id: 'new1' }))
+    const openRecent = vi.fn((id: string) => ({ id }))
+    const s = await signedIn(true, () => [], (request, authorized) =>
+      openProjectFromWeb(
+        request,
+        {
+          openPath,
+          openRecent,
+          isDirectory: () => {
+            statStarted()
+            return new Promise<boolean>((resolve) => (finishStat = resolve))
+          }
+        },
+        authorized
+      )
+    )
+    const answer = post(s.port, { headers: headers(s), body: JSON.stringify({ open: '/work/new' }) })
+    await started
+    expect(s.devices.revokeAll()).toBe(1)
+    finishStat(true)
+    const res = await answer
+    expect(res.status).toBe(401)
+    expect(JSON.parse(res.body)).toEqual({ error: 'not signed in' })
+    expect(openPath).not.toHaveBeenCalled()
+    expect(s.logs.some((l) => l.includes('opened project'))).toBe(false)
+    // A reopen has no await before its open; still refused once the device is gone (here at the door).
+    expect((await post(s.port, { headers: headers(s), body: JSON.stringify({ reopen: 'r1' }) })).status).toBe(401)
+    expect(openRecent).not.toHaveBeenCalled()
+  })
+
+  it('the same open with the device still signed in opens the folder', async () => {
+    const openPath = vi.fn<(path: string) => { id: string }>(() => ({ id: 'new1' }))
+    const s = await signedIn(true, () => [], (request, authorized) =>
+      openProjectFromWeb(request, { openPath, openRecent: (id) => ({ id }), isDirectory: async () => true }, authorized)
+    )
+    const res = await post(s.port, { headers: headers(s), body: JSON.stringify({ open: '/work/new' }) })
+    expect(res.status).toBe(200)
+    expect(openPath).toHaveBeenCalledWith('/work/new')
   })
 
   it('refuses a body that is not JSON, too large, or not exactly one of open and reopen', async () => {

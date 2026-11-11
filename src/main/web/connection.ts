@@ -91,8 +91,11 @@ export const MAX_PENDING_INVOKES = 256
 export const SOCKET_HIGH_WATER = 32 * 1024 * 1024
 
 export interface WebConnectionDeps {
-  /** IpcRouter.dispatch: the same handlers an Electron invoke reaches. */
-  dispatch(caller: WebCaller, channel: string, payload: unknown): Promise<unknown>
+  /**
+   * IpcRouter.dispatch: the same handlers an Electron invoke reaches. `live` says whether this
+   * connection's socket is still open; the router asks it right before the handler runs.
+   */
+  dispatch(caller: WebCaller, channel: string, payload: unknown, live: () => boolean): Promise<unknown>
   /** ViewRegistry.addRemote. */
   addView(windowId: number, viewId: ViewId, sink: ViewSink): () => void
   /** The window that shows the project now (WindowManager.windowIdOf); project windows only. */
@@ -468,7 +471,9 @@ export class WebConnection {
     if (!invokeAllowed(channel)) return this.send({ t: 'result', id, ok: false, err: `${channel.slice(0, 64)}: refused` })
     if (this.pending >= MAX_PENDING_INVOKES) return this.send({ t: 'result', id, ok: false, err: 'busy' })
     this.pending++
-    this.deps.dispatch(caller, channel, payload).then(
+    // Asked again by the router right before the handler, a microtask later: a revoke (or web
+    // access off) in between terminates the socket, and a frame read before it must then change nothing.
+    this.deps.dispatch(caller, channel, payload, () => !this.closed && this.ws.readyState === OPEN).then(
       (value: unknown) => {
         this.pending--
         this.send({ t: 'result', id, ok: true, v: value })

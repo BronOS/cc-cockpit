@@ -178,7 +178,7 @@ function setup(
   const desktop = { send: vi.fn(), isClosed: () => false }
   views.addDesktop(1, desktop)
   const conns = new WebConnections({
-    dispatch: (caller, channel, payload) => router.dispatch(caller, channel, payload),
+    dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
     addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
     windowIdOf: (projectId) => windows.get(projectId),
     snapshot:
@@ -558,6 +558,25 @@ describe('invoke', () => {
     await flush()
     expect(input).not.toHaveBeenCalled()
     expect(ws.sent.filter((f) => f.t === 'result')).toEqual([])
+  })
+
+  // Found with external review round 3's fix: a frame is checked when `ws` emits it, its handler runs
+  // a microtask later, and `ws` emits every frame of one read first. A Revoke all earlier in the same
+  // read terminates the socket (CLOSING) before the next frame's handler runs: that one changes nothing.
+  it('a frame read with the one that revoked its device reaches no handler', async () => {
+    const { connect, router } = setup()
+    const close = vi.fn()
+    const ws = connect('p1')
+    router.handleProject('settings.webDevicesRevokeAll', () => {
+      // The gateway's onRevoked: `terminate` makes the socket CLOSING at once.
+      ws.readyState = 2
+      return 1
+    })
+    router.handleProject('projects.close', close)
+    ws.feed({ t: 'invoke', id: 1, ch: 'settings.webDevicesRevokeAll' })
+    ws.feed({ t: 'invoke', id: 2, ch: 'projects.close' })
+    await flush()
+    expect(close).not.toHaveBeenCalled()
   })
 
   it('unknown and `no`-class channels answer refused without reaching a handler; the socket stays', async () => {

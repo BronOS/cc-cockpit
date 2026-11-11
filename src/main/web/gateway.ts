@@ -47,7 +47,6 @@ import {
   SIGN_IN_LINK_PATH,
   SIGN_IN_PASSWORD_PATH,
   type WebConfirmTicket,
-  type WebOpenProjectReply,
   type WebOpenProjectRequest,
   type WebProjectEntry,
   type WebProjectsReply,
@@ -59,7 +58,7 @@ import type { AccessLog } from './access-log'
 import { deviceCookie, type SignInResult, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp, type OriginRule } from './checks'
 import type { WebDevice } from './devices'
-import { parseOpenProjectBody } from './open-project'
+import { parseOpenProjectBody, type OpenProjectOutcome } from './open-project'
 import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
 import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
 import { listenPlanOf, type ListenPlan } from './settings'
@@ -135,8 +134,12 @@ export interface GatewayDeps {
 export interface ServerProjects {
   /** The recent projects with no window open, newest first, `missing` when the folder is gone. */
   recent(): WebRecentProject[]
-  /** A checked body (parseOpenProjectBody): the project id, or the error text. */
-  open(request: WebOpenProjectRequest): WebOpenProjectReply | Promise<WebOpenProjectReply>
+  /**
+   * A checked body (parseOpenProjectBody): the project id, the error text, or `unauthorized`.
+   * `authorized` re-checks the request's device; the open must call it synchronously right before it
+   * changes anything, after its last await (open-project.ts), and open nothing when it is false.
+   */
+  open(request: WebOpenProjectRequest, authorized: () => boolean): OpenProjectOutcome | Promise<OpenProjectOutcome>
 }
 
 export type GatewayStatus =
@@ -663,7 +666,9 @@ export class WebGateway {
    * before the route (request above); the body is read as a sign-in body is (JSON, capped), checked
    * by parseOpenProjectBody, and only the checked request reaches main. The cookie is checked again
    * once the body is in: a client may take its time sending it, and a device revoked (or a mode
-   * change that signs it out) meanwhile must open nothing with a check made before the revoke.
+   * change that signs it out) meanwhile must open nothing with a check made before the revoke. And
+   * once more inside the open, right before it changes anything (`authorized`): the open awaits a
+   * folder check of its own, and a check made before that await is as stale (external review round 3).
    */
   private async openProject(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects): Promise<void> {
     const read = await this.readJson(req, res, host)
@@ -673,7 +678,8 @@ export class WebGateway {
     const request = parseOpenProjectBody(read.body)
     if ('error' in request) return this.json(res, host, 400, request)
     if (res.destroyed) return
-    const reply = await projects.open(request)
+    const reply = await projects.open(request, () => this.deps.auth.authorize(req.headers.cookie) !== undefined)
+    if ('unauthorized' in reply) return this.json(res, host, 401, { error: 'not signed in' })
     if ('error' in reply) return this.json(res, host, 400, { error: reply.error })
     // Which device opened which project, for the server's log (no path: the id names it).
     this.deps.log(`web access: device ${device.id} opened project ${reply.id}`)

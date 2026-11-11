@@ -250,9 +250,16 @@ export class IpcRouter {
    * Run a remote view's invoke through the same handler an Electron invoke reaches. Always async,
    * like `ipcRenderer.invoke`: a throwing handler rejects. The channel is untrusted text from the
    * frame: an unknown name or a `no`-class channel is refused before any handler runs (authenticate).
+   *
+   * `live` is the connection's own "socket still open" (connection.ts), asked again here, in the
+   * same microtask as the handler: the frame was checked when it arrived, but the handler runs a
+   * microtask later, and `ws` emits every frame of one read before any of them runs, so an earlier
+   * frame of that read (a Revoke all, or main's own revoke between them) may already have revoked
+   * the device and terminated its socket. Nothing is awaited between this check and the handler.
    */
-  dispatch(caller: WebCaller, channel: string, payload: unknown): Promise<unknown> {
+  dispatch(caller: WebCaller, channel: string, payload: unknown, live: () => boolean = () => true): Promise<unknown> {
     return Promise.resolve().then(() => {
+      if (!live()) throw new Error('refused, the view is closed')
       if (!remoteAllowed(channel)) {
         // The name is not logged: it is whatever the remote frame sent.
         this.log(`ipc: refused a channel remote views may not call (view ${caller.viewId})`)

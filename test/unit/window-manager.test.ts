@@ -1470,20 +1470,20 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     const deps = { openPath: (path: string) => s.wm.openPath(path), openRecent: (id: string) => s.wm.openRecent(id) }
     const a = folder('a')
     const b = folder('b')
-    const opened = await openProjectFromWeb({ open: a }, deps)
+    const opened = await openProjectFromWeb({ open: a }, deps, () => true)
     expect(opened).toEqual({ id: registry.findByPath(a)?.id })
     // Closed again: it stays in the recent list, from which the browser reopens it by id.
     factory.open('project')[0]!.userClose()
     expect(factory.open('project')).toHaveLength(0)
-    expect(await openProjectFromWeb({ reopen: (opened as { id: string }).id }, deps)).toEqual(opened)
+    expect(await openProjectFromWeb({ reopen: (opened as { id: string }).id }, deps, () => true)).toEqual(opened)
     expect(factory.open('project')).toHaveLength(1)
     // An id that is not in the recent list opens nothing, whatever record it may name.
-    expect(await openProjectFromWeb({ reopen: 'not-a-project' }, deps)).toEqual({ error: 'not a recent project' })
+    expect(await openProjectFromWeb({ reopen: 'not-a-project' }, deps, () => true)).toEqual({ error: 'not a recent project' })
     // A recent project whose folder is gone: the error, no window.
-    const gone = (await openProjectFromWeb({ open: b }, deps)) as { id: string }
+    const gone = (await openProjectFromWeb({ open: b }, deps, () => true)) as { id: string }
     factory.open('project').at(-1)!.userClose()
     rmSync(b, { recursive: true })
-    expect(await openProjectFromWeb({ reopen: gone.id }, deps)).toEqual({ error: `project folder is missing: ${b}` })
+    expect(await openProjectFromWeb({ reopen: gone.id }, deps, () => true)).toEqual({ error: `project folder is missing: ${b}` })
     expect(factory.open('project')).toHaveLength(1)
     untouched()
   })
