@@ -98,7 +98,7 @@ describe('ccc guide', () => {
 })
 
 describe('ccc <command> --help', () => {
-  it.each(['open', 'session', 'overlay', 'sessions', 'notify', 'guide', 'help'])('prints the usage of %s', async (command) => {
+  it.each(['open', 'session', 'overlay', 'sessions', 'notify', 'guide', 'web', 'help'])('prints the usage of %s', async (command) => {
     expect(parseArgs([command, '--help'])).toEqual({ kind: 'help', command })
     const c = capture()
     const code = await run([command, '-h'], {}, Readable.from([]), c.out)

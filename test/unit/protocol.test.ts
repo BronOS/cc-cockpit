@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  HOST_ONLY_COMMANDS,
   LineFramer,
+  PROJECTLESS_COMMANDS,
+  TOKENLESS_COMMANDS,
+  WINDOW_TOKEN_COMMANDS,
   LineTooLongError,
   MAX_LINE_BYTES,
   ProtocolError,
@@ -131,3 +135,19 @@ function catchError(fn: () => unknown): unknown {
   }
   throw new Error('expected a throw')
 }
+
+describe('HOST_ONLY_COMMANDS (ccc web, design-web.md §9.4)', () => {
+  it('lists all eight ccc web requests, those whose handler comes later included', () => {
+    expect([...HOST_ONLY_COMMANDS].sort()).toEqual(
+      ['web.status', 'web.revoke', 'web.stop', 'web.link', 'web.add-device', 'web.password', 'web.mode', 'web.set'].sort()
+    )
+  })
+
+  it('is kept out of every list a tab token or a --project caller is let through by', () => {
+    for (const cmd of HOST_ONLY_COMMANDS) {
+      expect(TOKENLESS_COMMANDS, cmd).not.toContain(cmd)
+      expect(PROJECTLESS_COMMANDS, cmd).not.toContain(cmd)
+      expect(WINDOW_TOKEN_COMMANDS, cmd).not.toContain(cmd)
+    }
+  })
+})

@@ -307,3 +307,19 @@ export function otherStoreLine(kind: SecretStore['kind'], count: number): string
     ? `secrets: ${count} stored value(s) belong to server mode's key file and cannot be read on the desktop; enter them again here`
     : `secrets: ${count} stored value(s) belong to the desktop's keychain and cannot be read in server mode; enter them again here`
 }
+
+/**
+ * How many of `values` the running store cannot read, by why (`ccc web status`, design-web.md
+ * §9.5): made by the other mode's store, or by a key file that was replaced since. Decided as the
+ * settings views decide (storedValueState), without decrypting anything.
+ */
+export function unreadableCounts(store: SecretStore, values: readonly string[]): { otherMode: number; replaced: number } {
+  let otherMode = 0
+  let replaced = 0
+  for (const value of values) {
+    const state = storedValueState(store, value)
+    if (state === 'other-mode') otherMode++
+    else if (state === 'replaced') replaced++
+  }
+  return { otherMode, replaced }
+}

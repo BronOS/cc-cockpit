@@ -108,7 +108,8 @@ import {
   otherStoreLine,
   safeStorageSecretStore,
   selectSecretStore,
-  storedSecretValues
+  storedSecretValues,
+  unreadableCounts
 } from './secrets/secret-store'
 import {
   AppearanceService,
@@ -135,6 +136,7 @@ import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import { registerWebHandlers, SHELL_REVOKE_REASON } from './socket/web-handlers'
 import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
@@ -1590,6 +1592,27 @@ function start(server: boolean): void {
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     openOverlay
+  })
+
+  // `ccc web` (socket/web-handlers.ts, design-web.md §9.4): a shell on the server only (any token
+  // is refused, protocol.ts HOST_ONLY_COMMANDS); on the desktop only status and revoke. The stop
+  // signals main itself as systemd does, a moment after the reply is written: the quit ends the
+  // socket's connections, and the shell would otherwise see a dropped one instead of the answer.
+  registerWebHandlers(socket, {
+    server,
+    status: async () => {
+      const values = storedSecretValues(dataDir)
+      return webAccess.cliStatus({
+        store: secretStore.kind,
+        unavailable: await secretStore.unavailableReason(),
+        ...unreadableCounts(secretStore, values)
+      })
+    },
+    revoke: (id) => webAccess.revoke(id, SHELL_REVOKE_REASON),
+    revokeAll: () => webAccess.revokeAll(SHELL_REVOKE_REASON),
+    stop: () => {
+      setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100)
+    }
   })
 
   // `ccc <plugin command> …` (plan B Task 5). The owner comes from the installer's index: only a

@@ -311,7 +311,7 @@ describe('contributes.cli', () => {
     expect((await validateManifest(withCli([cmd('a'.repeat(32))]), dir)).ok).toBe(true)
   })
 
-  it.each(['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'help', 'guide', 'plugin', 'app', 'config', 'version'])(
+  it.each(['open', 'hook', 'session', 'overlay', 'sessions', 'notify', 'help', 'guide', 'plugin', 'web', 'app', 'config', 'version'])(
     'refuses the reserved name %s',
     async (name) => {
       expect(await errorsOf(withCli([cmd(name)]))).toContain(`cli command "${name}" is reserved for the app`)

@@ -143,3 +143,44 @@ export interface WebAccessIndicator {
 
 /** An access link (or a one-time one, which expires), or why there is none. */
 export type WebLinkReply = { ok: true; link: string; expiresAt?: number } | { ok: false; reason: string }
+
+/** A stored credential (the access link's token, the password) as `ccc web status` reports it (main/web/auth.ts). */
+export type WebCredentialState = 'unset' | 'set' | 'other-mode' | 'replaced'
+
+/** The secret store of this run, as `ccc web status` reports it (design-web.md §9.5). */
+export interface WebSecretsStatus {
+  /** `os` the keychain (desktop), `keyfile` server mode's `<data>/secret.key`, `fake` a test run's. */
+  store: 'os' | 'keyfile' | 'fake'
+  /** Why the store cannot store or read anything now, or null. */
+  unavailable: string | null
+  /** Stored values made by the other mode's store: neither readable here nor lost. */
+  otherMode: number
+  /** Key file values made under a key file that was replaced since: lost, enter them again. */
+  replaced: number
+}
+
+/**
+ * `ccc web status [--json]` (design-web.md §9.4), answered in both modes. Never a link, a token, a
+ * hash or a stored value: what the person reads to know who is in and why nothing listens.
+ */
+export interface WebCliStatus {
+  /** Main's `server` flag for the run. */
+  server: boolean
+  enabled: boolean
+  mode: WebAccessMode
+  bind: string
+  port: number
+  /** The external origin set in the settings, or null. */
+  externalOrigin: string | null
+  /** Listening (with the origin links point at), or why not. */
+  gateway: WebGatewayView
+  secrets: WebSecretsStatus
+  accessLink: WebCredentialState
+  password: WebCredentialState
+  devices: WebDeviceView[]
+}
+
+/** `ccc web revoke`: how many devices were signed out. */
+export interface WebCliRevokeResult {
+  revoked: number
+}

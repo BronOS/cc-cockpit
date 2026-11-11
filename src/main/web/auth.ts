@@ -52,7 +52,7 @@
 import { randomBytes, randomInt } from 'node:crypto'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import type { WebAccessMode } from '../../shared/types'
-import type { WebActionReply, WebConfirmAsk } from '../../shared/web-access'
+import type { WebActionReply, WebConfirmAsk, WebCredentialState } from '../../shared/web-access'
 import type { WebConfirmPoll } from '../../shared/web-protocol'
 import { storedValueState, type SecretStore } from '../secrets/secret-store'
 import type { AccessLog } from './access-log'
@@ -229,7 +229,7 @@ export type SignInResult =
   | { ok: false; status: 400 | 401 | 409 | 429 | 499 | 503; error: string }
 
 /** A stored credential as `credentialStates` reports it. */
-export type CredentialState = 'unset' | 'set' | 'other-mode' | 'replaced'
+export type CredentialState = WebCredentialState
 
 export type LinkResult = { ok: true; link: string } | { ok: false; reason: string }
 

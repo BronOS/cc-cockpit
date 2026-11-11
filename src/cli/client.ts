@@ -1,7 +1,8 @@
 // The `ccc` client side of the socket (plan: Task 13, user commands Task 21). The one invariant of
 // this file: nothing the app does or fails to do may fail a Claude hook. Not running, a stale socket file, a hung owner, a
 // foreign listener, an unsafe directory: every one of them ends in a silent exit 0 (`run` resolves,
-// index.ts exits 0), for a hook and for every other command alike. A hook that exits non-zero
+// index.ts exits 0), for a hook and for every other command alike but `ccc web`, which a person on
+// the server runs to see who gets in and is told "not running" with exit 1. A hook that exits non-zero
 // shows up in the user's Claude session. Anything else a user command throws is exit 1 with the
 // message: a script must not read a failure as success.
 //
@@ -42,6 +43,7 @@ import { hookSocketPath } from './hook-socket'
 import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
 import { runStatusLine } from './statusline'
+import { formatWebStatus } from './web-format'
 
 type Env = Record<string, string | undefined>
 
@@ -375,6 +377,18 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       }
       routing = callerOf(env, command.project, cwd, 'plugin config')
       break
+    // `ccc web` never names a project; in a tab the token goes along (the default routing above)
+    // only so main refuses it with the host-only text (protocol.ts HOST_ONLY_COMMANDS).
+    case 'web-status':
+      cmd = 'web.status'
+      break
+    case 'web-revoke':
+      cmd = 'web.revoke'
+      args = command.all ? { all: true } : { id: command.id }
+      break
+    case 'web-stop':
+      cmd = 'web.stop'
+      break
   }
   if ('error' in routing) return routing
   return { v: PROTOCOL_VERSION, id: 1, cmd, args, ...routing }
@@ -410,10 +424,17 @@ function roundTrip(socket: Socket, line: string, timeoutMs: number | undefined):
   })
 }
 
+/** What `ccc web` prints, exit 1, when nothing answers on the socket. */
+export const NOT_RUNNING = 'cc-cockpit is not running'
+
+function isWebCommand(command: UserCommand): boolean {
+  return command.kind === 'web-status' || command.kind === 'web-revoke' || command.kind === 'web-stop'
+}
+
 /**
  * A user command (everything but `hook`): one request, one reply. Exit codes: 0 with the result
  * printed, or 0 and silent when the app is not there (not running, stale socket), because scripts and skills call `ccc` without checking that the cockpit is
- * open; 1 with the app's error on stderr (main refused the request, or dropped the connection unanswered); 2 for a usage error.
+ * open (`ccc web` excepted: exit 1, NOT_RUNNING); 1 with the app's error on stderr (main refused the request, or dropped the connection unanswered); 2 for a usage error.
  */
 export async function runCommand(
   command: UserCommand,
@@ -426,13 +447,21 @@ export async function runCommand(
     out.stderr(`ccc: ${request.error}\n`)
     return 2
   }
+  // `ccc web` is run by a person or a script on the server to see or change who gets in: "not
+  // running" is an answer they need, so it is exit 1 with a line, unlike every other command's
+  // silent 0 (kept for hooks and the skills that call `ccc` without checking, design-web.md §9.4).
+  const absent = (): number => {
+    if (!isWebCommand(command)) return 0
+    out.stderr(`ccc: ${NOT_RUNNING}\n`)
+    return 1
+  }
   const path = resolveSocketPath(env)
-  if (!path) return 0
+  if (!path) return absent()
   let socket: Socket
   try {
     socket = await connect(path, CONNECT_TIMEOUT_MS)
   } catch {
-    return 0
+    return absent()
   }
   try {
     // An overlay lives until the user is done with it, however long that takes; so does the
@@ -732,6 +761,12 @@ function formatResult(command: UserCommand, result: unknown): string {
       .map((row) => `${row}\n`)
       .join('')
   }
+  if (command.kind === 'web-status') return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
+  if (command.kind === 'web-revoke') {
+    const revoked = ((result ?? {}) as { revoked?: unknown }).revoked
+    return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
+  }
+  if (command.kind === 'web-stop') return 'cc-cockpit is stopping\n'
   if (command.kind === 'sessions') {
     const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
     if (command.json) return `${JSON.stringify(list)}\n`

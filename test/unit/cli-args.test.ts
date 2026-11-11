@@ -51,3 +51,33 @@ describe('CORE_CLI_COMMANDS and RESERVED_CLI_NAMES', () => {
     expect(formatUsageEntry({ synopsis: ['z'], text: [] })).toBe('  ccc z')
   })
 })
+
+describe('ccc web (design-web.md §9.4)', () => {
+  it('parses status, revoke and stop', () => {
+    expect(parseArgs(['web', 'status'])).toEqual({ kind: 'web-status', json: false })
+    expect(parseArgs(['web', 'status', '--json'])).toEqual({ kind: 'web-status', json: true })
+    expect(parseArgs(['web', 'revoke', 'AbC-12_x'])).toEqual({ kind: 'web-revoke', id: 'AbC-12_x', all: false })
+    expect(parseArgs(['web', 'revoke', '--all'])).toEqual({ kind: 'web-revoke', all: true })
+    expect(parseArgs(['web', 'stop'])).toEqual({ kind: 'web-stop' })
+    expect(parseArgs(['web', '--help'])).toEqual({ kind: 'help', command: 'web' })
+    expect(parseArgs(['web', 'status', '-h'])).toEqual({ kind: 'help', command: 'web' })
+  })
+
+  it.each([
+    [['web'], /web needs status, revoke or stop/],
+    [['web', 'status', '--all'], /web status takes only --json/],
+    [['web', 'revoke'], /one device id or --all/],
+    [['web', 'revoke', 'a', 'b'], /one device id or --all/],
+    [['web', 'revoke', '--all', 'a'], /one device id or --all/],
+    [['web', 'revoke', ''], /one device id or --all/],
+    [['web', 'revoke', '--json'], /unknown option --json/],
+    [['web', 'stop', 'now'], /web stop takes no arguments/],
+    // Task 12's subcommands are not parsed yet: a usage error, never a request.
+    [['web', 'link'], /unknown web command: link/],
+    [['web', 'bogus'], /unknown web command: bogus/]
+  ])('%j is a usage error', (argv, message) => {
+    const parsed = parseArgs(argv)
+    expect(parsed.kind).toBe('usage')
+    expect((parsed as { message: string }).message).toMatch(message)
+  })
+})

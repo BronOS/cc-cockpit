@@ -591,34 +591,34 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/protocol.test.ts`, `socket-server.test.ts`, `cli-args.test.ts`, `cli-client.test.ts`,
   `cli-commands.test.ts`, `cli-guide.test.ts`, `manifest.test.ts`
 
-- [ ] `HOST_ONLY_COMMANDS`: a fixed list in `shared/protocol.ts` with all eight request names now (`web.status`,
+- [x] `HOST_ONLY_COMMANDS`: a fixed list in `shared/protocol.ts` with all eight request names now (`web.status`,
       `web.revoke`, `web.stop`, `web.link`, `web.add-device`, `web.password`, `web.mode`, `web.set`), projectless and
       kept out of `WINDOW_TOKEN_COMMANDS`. `identify` refuses a listed request that carries any token, a session's
       included, before a handler is looked up: "run `ccc web` from a shell on the server, outside cc-cockpit". The five
       that have no handler yet answer "unknown command" to a tokenless caller until Task 12. The comment says it is not
       a boundary and why it is there (§9.4)
-- [ ] each `web.*` handler refuses any caller kind but the tokenless one itself, as the session-only handlers refuse a
+- [x] each `web.*` handler refuses any caller kind but the tokenless one itself, as the session-only handlers refuse a
       window token again: a `web.*` handler that is registered but missing from the list would otherwise be reached by
       any Claude tab, which could print the access link
-- [ ] a drift test: every request `web-handlers.ts` registers, and every registered handler whose name starts with
+- [x] a drift test: every request `web-handlers.ts` registers, and every registered handler whose name starts with
       `web.`, is in `HOST_ONLY_COMMANDS`
-- [ ] `web` joins `CORE_CLI_COMMANDS`, so a plugin contributing a `web` command becomes invalid; run
+- [x] `web` joins `CORE_CLI_COMMANDS`, so a plugin contributing a `web` command becomes invalid; run
       `npm run build:marketplace-tools` and commit `marketplace/tools/dist` if its bytes changed
-- [ ] `ccc web status [--json]`, answered in both modes: mode, listen address and external origin, listening or the
+- [x] `ccc web status [--json]`, answered in both modes: mode, listen address and external origin, listening or the
       error, the secret store and how many values it cannot read (Task 5), the link and password states of Task 6,
       server mode or not, the devices (name, signed in with, last seen). Never a link, a token or a hash
-- [ ] `ccc web revoke <device>|--all`, answered in both modes; `ccc web stop` quits as SIGTERM does, in server mode only.
+- [x] `ccc web revoke <device>|--all`, answered in both modes; `ccc web stop` quits as SIGTERM does, in server mode only.
       Outside server mode everything but `status` and `revoke` is refused with "use Settings › Web access", decided by
       main's `server`
-- [ ] the CLI: with the app not running `ccc web` prints "cc-cockpit is not running" and exits 1 (plugin commands and
+- [x] the CLI: with the app not running `ccc web` prints "cc-cockpit is not running" and exits 1 (plugin commands and
       hooks keep their silent 0); every wait has a deadline
-- [ ] guide text in `cli.md` in the same change: what it does, and that it is for a shell on the server, not for Claude
-- [ ] write tests: each of the eight requests refused for a session token and for a window token, with the same text,
+- [x] guide text in `cli.md` in the same change: what it does, and that it is for a shell on the server, not for Claude
+- [x] write tests: each of the eight requests refused for a session token and for a window token, with the same text,
       whether or not it has a handler; answered tokenless (`unknown command` for the five); a handler called directly
       with a session, window or project caller refuses; outside server mode only `status` and `revoke`; no secret in
       `status`; not running exits 1; `web` reserved; the drift test; guide drift. The smoke script now asks
       `ccc web status --json` and has a second run that stops with `ccc web stop`
-- [ ] run tests, the smoke script and `npm run test:e2e` (`cli`, `socket`, `plugin-cli`: `identify`, `cli/args.ts` and
+- [x] run tests, the smoke script and `npm run test:e2e` (`cli`, `socket`, `plugin-cli`: `identify`, `cli/args.ts` and
       `cli/client.ts` serve every `ccc` call) - must pass before next task
 
 ### Task 12: `ccc web` part 2: `link`, `add-device`, `password`, `mode`, `set` [model: opus]

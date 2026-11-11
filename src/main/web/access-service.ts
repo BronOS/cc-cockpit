@@ -11,9 +11,11 @@ import type {
   WebAccessPatch,
   WebAccessSetReply,
   WebAccessView,
+  WebCliStatus,
   WebDeviceView,
   WebGatewayView,
-  WebLinkReply
+  WebLinkReply,
+  WebSecretsStatus
 } from '../../shared/web-access'
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
@@ -101,11 +103,10 @@ export class WebAccessService {
     return status
   }
 
-  view(): WebAccessView {
-    const settings = this.settings()
-    const gateway = this.gatewayView(settings)
+  /** The signed-in devices as the card and `ccc web status` list them: no hash, no cookie. */
+  private devicesView(): WebDeviceView[] {
     const open = this.deps.gateway.connections()
-    const devices: WebDeviceView[] = this.deps.auth.devices.list().map((d) => ({
+    return this.deps.auth.devices.list().map((d) => ({
       id: d.id,
       name: d.name,
       createdAt: d.createdAt,
@@ -113,6 +114,12 @@ export class WebAccessService {
       mode: d.mode,
       connected: open.has(d.id)
     }))
+  }
+
+  view(): WebAccessView {
+    const settings = this.settings()
+    const gateway = this.gatewayView(settings)
+    const devices = this.devicesView()
     return {
       form: {
         enabled: settings.enabled,
@@ -130,6 +137,30 @@ export class WebAccessService {
       // A risky choice that is refused (nothing listens) is no risk: the badge is for what is live.
       risks: gateway.state === 'listening' ? webAccessRisks(settings) : [],
       passwordSet: this.deps.auth.hasPassword()
+    }
+  }
+
+  /**
+   * `ccc web status` (design-web.md §9.4), in both modes: the stored settings, the gateway's state,
+   * the secret store (`secrets`, which main reads from the store and the data dir), the states of
+   * the access link and the password, and the devices. Built only from views that hold no secret:
+   * never a link, a token, a hash or a stored value.
+   */
+  cliStatus(secrets: WebSecretsStatus): WebCliStatus {
+    const settings = this.settings()
+    const credentials = this.deps.auth.credentialStates()
+    return {
+      server: this.deps.server === true,
+      enabled: settings.enabled,
+      mode: settings.mode,
+      bind: settings.bind,
+      port: settings.port,
+      externalOrigin: settings.externalOrigin ?? null,
+      gateway: this.gatewayView(settings),
+      secrets: { store: secrets.store, unavailable: secrets.unavailable, otherMode: secrets.otherMode, replaced: secrets.replaced },
+      accessLink: credentials.accessLink,
+      password: credentials.password,
+      devices: this.devicesView()
     }
   }
 
@@ -297,13 +328,14 @@ export class WebAccessService {
     return this.deps.gateway.disconnectDevice(id) > 0
   }
 
-  revoke(id: unknown): boolean {
+  /** `reason` goes to `web-access.log` (the desktop's default, or `ccc web revoke`'s). */
+  revoke(id: unknown, reason?: string): boolean {
     if (typeof id !== 'string') return false
-    return this.deps.auth.devices.revoke(id)
+    return this.deps.auth.devices.revoke(id, reason)
   }
 
-  revokeAll(): number {
-    return this.deps.auth.devices.revokeAll()
+  revokeAll(reason?: string): number {
+    return this.deps.auth.devices.revokeAll(reason)
   }
 
   /** The origin a link points at, or the reply that says why there is no link. */

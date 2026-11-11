@@ -13,6 +13,8 @@
 //   - without a token: only the TOKENLESS_COMMANDS, and only with `project` (`--project <path>`),
 //     which main resolves against its own project registry. The PROJECTLESS_COMMANDS (notify,
 //     sessions) may leave `project` out; they act on no single project.
+//   - the HOST_ONLY_COMMANDS (`ccc web`): tokenless and projectless only. Any token is refused with
+//     HOST_ONLY_TEXT before the lookup; the caller is `anonymous`.
 // Handlers get that identity as `caller`; anything in `args` that looks like a tab or project id
 // is just data to be looked up inside the caller's scope.
 //
@@ -23,6 +25,8 @@ import { dirname, isAbsolute } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import {
   encodeReply,
+  HOST_ONLY_COMMANDS,
+  HOST_ONLY_TEXT,
   LineFramer,
   parseRequest,
   PROJECTLESS_COMMANDS,
@@ -58,7 +62,10 @@ export type Caller =
    * reach its handler, and each handler decides whether it needs a known (or open) project.
    */
   | { kind: 'project'; path: string; projectId: string | undefined }
-  /** A tokenless caller of a PROJECTLESS_COMMANDS command that named no project (`ccc sessions`). */
+  /**
+   * A tokenless caller of a PROJECTLESS_COMMANDS command that named no project (`ccc sessions`), or
+   * of a HOST_ONLY_COMMANDS one (`ccc web`, from a shell outside the app).
+   */
   | { kind: 'anonymous' }
 
 /**
@@ -131,6 +138,12 @@ export class SocketServer {
   /** Register the handler for `cmd`. One per command; a second registration is a bug. */
   handle(cmd: string, handler: Handler): void {
     if (this.handlers.has(cmd)) throw new Error(`socket command ${cmd} is already registered`)
+    // A `web.*` handler missing from HOST_ONLY_COMMANDS would be reached by whatever identify lets
+    // through for an unlisted name (a session token reaches every handler), so a Claude tab could
+    // print the access link. Refused at registration, so the drift is a start-up error, not a hole.
+    if (cmd.startsWith('web.') && !HOST_ONLY_COMMANDS.includes(cmd)) {
+      throw new Error(`socket command ${cmd} must be listed in HOST_ONLY_COMMANDS`)
+    }
     this.handlers.set(cmd, handler)
   }
 
@@ -302,6 +315,14 @@ export class SocketServer {
   }
 
   private identify(request: Request): Caller {
+    // `ccc web` (HOST_ONLY_COMMANDS, design-web.md §9.4): a shell on the server, never a tab. Any
+    // token is refused before it is even looked up and before any handler, registered or not, so a
+    // Claude tab learns nothing and reaches nothing; the handlers refuse every other caller again.
+    if (HOST_ONLY_COMMANDS.includes(request.cmd)) {
+      if (request.token !== undefined) throw new Error(HOST_ONLY_TEXT)
+      if (request.project !== undefined && request.project !== '') throw new Error(`${request.cmd} names no project`)
+      return { kind: 'anonymous' }
+    }
     if (request.token !== undefined) {
       const owner = this.options.resolveToken(request.token)
       if (!owner) throw new Error('invalid token')

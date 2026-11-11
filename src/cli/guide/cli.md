@@ -6,10 +6,11 @@ name the project with `--project <path>` (`overlay` takes it after its name, a p
 before it: `ccc --project <path> <plugin command> …`). Only a Claude tab is a Claude session:
 `session note` and `session steps` are refused anywhere else, and a `hook` from there records
 nothing (it still exits 0).
-When the app is not running every command except `guide` and `help` exits 0 silently.
+When the app is not running every command except `guide`, `help` and `web` exits 0 silently.
 
-Exit codes: 0 done (or the app is not running), 1 the app refused the request or `ccc` crashed,
-2 a usage error (the message and the usage text go to stderr).
+Exit codes: 0 done (or the app is not running), 1 the app refused the request or `ccc` crashed
+(and `ccc web` when the app is not running), 2 a usage error (the message and the usage text go to
+stderr).
 
 ## Commands
 
@@ -69,6 +70,17 @@ Exit codes: 0 done (or the app is not running), 1 the app refused the request or
   it for a narrow terminal (what `ctx.panels.show` does for the
   plugin itself). Exit 1 for an unknown plugin, a plugin not enabled in this project, a project
   with no open window, or a panel the plugin does not declare.
+- `ccc web status [--json]`, `ccc web revoke <device id>|--all` and `ccc web stop` are web access
+  from a shell on the server, for the person who runs cc-cockpit, not for Claude: inside any
+  cockpit tab (Claude, shell or command) they are refused with "run `ccc web` from a shell on the
+  server, outside cc-cockpit". `status` prints the sign-in mode, the address and external origin,
+  whether the gateway listens (or why not), the secret store and how many stored values it cannot
+  read, whether the access link and the password are set, whether this is server mode, and the
+  signed-in devices (id, name, how each signed in, last seen); never a link, a token or a hash.
+  `revoke` signs out one device by the id `status` shows, or all of them. `stop` quits a
+  server-mode app as SIGTERM does (open browser tabs reconnect when it is back). On the desktop only
+  `status` and `revoke` are answered; the rest says "use Settings › Web access". When the app is
+  not running `ccc web` prints "cc-cockpit is not running" and exits 1.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 - `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
   (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost

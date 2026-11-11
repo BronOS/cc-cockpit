@@ -4,7 +4,8 @@
 // line it cannot make sense of is `{ kind: 'none' }` and the caller exits 0 without doing
 // anything. The user-facing commands are different: a mistyped one gets a `usage` message (stderr,
 // exit 2), because silence would hide a typo from the person or the skill running it. Neither is
-// the "app not running" case, which every command answers with a silent exit 0 (client.ts).
+// the "app not running" case, which every command but `ccc web` answers with a silent exit 0
+// (client.ts).
 //
 // Paths stay as typed here (possibly relative); client.ts resolves them against its own cwd,
 // because main's cwd means nothing to the caller.
@@ -68,6 +69,14 @@ export type Command =
   | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; useGlobal?: string[]; project?: string }
   /** `ccc panel show <plugin>/<panel>` (friction round 1, Task 7). */
   | { kind: 'panel-show'; plugin: string; panel: string; project?: string }
+  /**
+   * `ccc web …` (design-web.md §9.4): web access from a shell on the server. Never routed by a
+   * project; a token, when the CLI runs in a tab, goes along only so main can refuse it.
+   */
+  | { kind: 'web-status'; json: boolean }
+  /** `ccc web revoke <device id>` (`id`) or `--all` (`all`), exactly one. */
+  | { kind: 'web-revoke'; id?: string; all: boolean }
+  | { kind: 'web-stop' }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -210,6 +219,17 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
         ]
       },
       { synopsis: ['plugin logs <id> [--follow]'], text: ["print a plugin's log (the last lines; --follow keeps going)"] }
+    ]
+  },
+  web: {
+    parse: (rest) => parseWeb(rest),
+    usage: [
+      {
+        synopsis: ['web status [--json]'],
+        text: ['web access: mode, address, secret store, devices. ccc web is', 'for a shell on the server, outside cc-cockpit']
+      },
+      { synopsis: ['web revoke <device id>|--all'], text: ['sign a device out (ids in ccc web status)'] },
+      { synopsis: ['web stop'], text: ['stop a server-mode cc-cockpit, as SIGTERM does'] }
     ]
   },
   help: {
@@ -437,6 +457,33 @@ function parseSession(rest: readonly string[]): Command {
     return { kind: 'steps', done, total }
   }
   return usage(sub === undefined ? 'session needs note or steps' : `unknown session command: ${sub}`)
+}
+
+/**
+ * `ccc web status|revoke|stop` (server-mode plan Task 11). Each takes a fixed shape; anything else is
+ * a usage error. A device id is passed as typed: main checks it against its own list.
+ */
+function parseWeb(rest: readonly string[]): Command {
+  const [sub, ...args] = rest
+  if (sub === undefined) return usage('web needs status, revoke or stop')
+  if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'web' }
+  switch (sub) {
+    case 'status':
+      if (args.length === 0) return { kind: 'web-status', json: false }
+      if (args.length === 1 && args[0] === '--json') return { kind: 'web-status', json: true }
+      return usage('web status takes only --json')
+    case 'revoke': {
+      const [target, ...extra] = args
+      if (target === undefined || target === '' || extra.length > 0) return usage('web revoke takes one device id or --all')
+      if (target === '--all') return { kind: 'web-revoke', all: true }
+      if (target.startsWith('-')) return usage(`web revoke: unknown option ${target}`)
+      return { kind: 'web-revoke', id: target, all: false }
+    }
+    case 'stop':
+      return args.length === 0 ? { kind: 'web-stop' } : usage('web stop takes no arguments')
+    default:
+      return usage(`unknown web command: ${sub}`)
+  }
 }
 
 /** `ccc panel show [--project <path>] <plugin>/<panel>`: the panel key is the plugin id, a slash, the manifest's panel id. */

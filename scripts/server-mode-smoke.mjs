@@ -22,8 +22,11 @@
 // appears, and a `POST /auth/link` with it answers 200 once and 401 the second time (design-web.md §9.3).
 // One more run with the port already taken (design-web.md §9.1 "Start order"): the app exits with status
 // 1 on its own, and no renderer process (a window, the picker's included) ever appeared in the run.
+// `ccc web` (§9.4): every run asks `<data>/bin/ccc web status --json` (server mode, listening on its
+// port) and checks a tab's token is refused with the host-only text; one run ends with `ccc web stop`
+// instead of SIGTERM, which must quit the same way (status 0, nothing left).
 // Exits 1 on any failure.
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import pty from 'node-pty'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -128,6 +131,36 @@ function launch(exe, args, env, underPty) {
 function signalName(n) {
   for (const [name, value] of Object.entries(osConstants.signals)) if (value === n) return name
   return String(n)
+}
+
+/** The data dir's `ccc` wrapper (written at start) with `args`: its exit code and output, bounded. */
+function ccc(dataDir, env, args) {
+  return new Promise((r) => {
+    execFile(join(dataDir, 'bin', 'ccc'), args, { env, timeout: 20_000 }, (err, stdout, stderr) => {
+      r({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, stdout, stderr })
+    })
+  })
+}
+
+/** `ccc web status --json` from a shell (no token): server mode, on, listening on `port`; a tab token refused. */
+async function checkWebStatus(dataDir, env, port, failures) {
+  const status = await ccc(dataDir, env, ['web', 'status', '--json'])
+  let parsed
+  try {
+    parsed = JSON.parse(status.stdout)
+  } catch {
+    parsed = undefined
+  }
+  console.log(`   ccc web status --json: exit ${status.code}, gateway ${JSON.stringify(parsed?.gateway)}`)
+  if (status.code !== 0 || !parsed) failures.push(`ccc web status --json: exit ${status.code}: ${status.stderr.trim()}`)
+  else if (parsed.server !== true || parsed.enabled !== true || parsed.gateway?.state !== 'listening' || parsed.gateway?.port !== port) {
+    failures.push(`ccc web status --json: unexpected ${status.stdout.trim()}`)
+  } else if (status.stdout.includes('#t=')) failures.push('ccc web status printed a link')
+  // A tab's token (any, a forged one too) is refused before anything is looked up.
+  const fromTab = await ccc(dataDir, { ...env, APP_TAB_TOKEN: 'f'.repeat(64), CC_COCKPIT_SOCK: join(dataDir, 'app.sock') }, ['web', 'status'])
+  if (fromTab.code !== 1 || !fromTab.stderr.includes('run `ccc web` from a shell on the server')) {
+    failures.push(`ccc web status with a tab token: exit ${fromTab.code}: ${fromTab.stderr.trim()}`)
+  }
 }
 
 /** A `POST /auth/link` as the sign-in page sends it (Origin-checked, JSON). */
@@ -238,7 +271,7 @@ function newRunEnv(port, webAccess) {
   return { base, dataDir, runtime, bus, env }
 }
 
-async function run(name, { flag, noExecve, underPty = false, webAccess }) {
+async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false }) {
   const port = 20000 + Math.floor(Math.random() * 20000)
   const { base, dataDir, runtime, bus, env } = newRunEnv(port, webAccess)
   if (noExecve) env.CC_COCKPIT_NO_EXECVE = '1'
@@ -293,12 +326,19 @@ async function run(name, { flag, noExecve, underPty = false, webAccess }) {
       console.log(`   start link: POST /auth/link ${first}, again ${second}`)
       if (first !== 200 || second !== 401) failures.push(`start link answered ${first} then ${second} (expected 200, 401)`)
     }
+    await checkWebStatus(dataDir, env, port, failures)
     const termAt = Date.now()
-    process.kill(child.pid, 'SIGTERM')
+    const how = stopWithCcc ? 'ccc web stop' : 'SIGTERM'
+    if (stopWithCcc) {
+      const stop = await ccc(dataDir, env, ['web', 'stop'])
+      if (stop.code !== 0 || stop.stdout !== 'cc-cockpit is stopping\n') failures.push(`ccc web stop: exit ${stop.code}: ${stop.stdout}${stop.stderr}`)
+    } else {
+      process.kill(child.pid, 'SIGTERM')
+    }
     const result = await Promise.race([exited, sleep(QUIT_MS).then(() => undefined)])
-    if (!result) failures.push(`still running ${QUIT_MS} ms after SIGTERM`)
+    if (!result) failures.push(`still running ${QUIT_MS} ms after ${how}`)
     else {
-      console.log(`   quit ${Date.now() - termAt} ms after SIGTERM: code ${result.code}, signal ${result.signal}`)
+      console.log(`   quit ${Date.now() - termAt} ms after ${how}: code ${result.code}, signal ${result.signal}`)
       // The fallback's first process is blocked in spawnSync before `ready`, with no handler of its
       // own: SIGTERM kills it, and the parent watch then quits its child.
       const expected = noExecve ? result.signal === 'SIGTERM' : result.code === 0
@@ -342,5 +382,6 @@ const results = [
 ]
 if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))
 results.push(await run('--server under a pty, link mode', { flag: true, underPty: true, webAccess: { enabled: true, mode: 'link' } }))
+results.push(await run('--server, stopped with ccc web stop', { flag: true, webAccess: none, stopWithCcc: true }))
 results.push(await runPortTaken())
 process.exit(results.every(Boolean) ? 0 : 1)

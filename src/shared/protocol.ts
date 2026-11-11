@@ -76,6 +76,35 @@ export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions']
  */
 export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 'plugin.cli.list']
 
+/**
+ * `ccc web` (design-web.md §9.4): web access settings from a shell on the server. Answered only for
+ * a TOKENLESS caller that names no project: a request that carries any token, a Claude tab's, a
+ * shell tab's or a forged one, is refused in `identify` before a handler is looked up, with
+ * HOST_ONLY_TEXT, and each handler (main/socket/web-handlers.ts) refuses every caller kind but the
+ * tokenless one again. Projectless (no project is involved) and never in TOKENLESS_COMMANDS or
+ * WINDOW_TOKEN_COMMANDS. All eight names are here from the start, those whose handler comes later
+ * included (they answer "unknown command" to a tokenless caller until then), so a handler added
+ * later can never be reached by a tab first.
+ *
+ * Not a boundary: a tab's process is the same OS user and can drop its token or edit app.json
+ * itself (§9.12). It is there so a Claude session never reconfigures access, or prints the access
+ * link into its transcript, as a side effect of a prompt (an injection included), and so v1's rule
+ * "a view does not widen its own access" stays visible: a shell tab is reached from a browser too.
+ */
+export const HOST_ONLY_COMMANDS: readonly string[] = [
+  'web.status',
+  'web.revoke',
+  'web.stop',
+  'web.link',
+  'web.add-device',
+  'web.password',
+  'web.mode',
+  'web.set'
+]
+
+/** What a tab (any token) is told for a HOST_ONLY_COMMANDS request, whatever the request and whether it has a handler. */
+export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside cc-cockpit'
+
 /** Keys that reach an object's prototype when copied with Object.assign or a for...in loop. */
 const RESERVED_ARG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
