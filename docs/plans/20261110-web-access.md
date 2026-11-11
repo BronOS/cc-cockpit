@@ -628,12 +628,15 @@ remote client, a phone layout, headless server mode (design §9, §10).
 
 **Files:**
 - Create: `test/e2e/web-access-terminal.spec.ts`, helpers to launch the app with web access on loopback
+- ➕ Helpers are `test/e2e/web-fixtures.ts` (`enableWebAccess`, `openBrowser`); the plain browser is Electron's own
+  Chromium started from `test/fixtures/web-browser/main.cjs` (no preload, sandboxed, its own temp profile), not
+  Playwright's Chromium, which is a separate download the suite does not otherwise need
 
-- [ ] sign in with the access link in a plain Chromium next to the Electron window
-- [ ] a terminal tab's output on both screens; input from the browser reaches the tab; reload of the web page
+- [x] sign in with the access link in a plain Chromium next to the Electron window
+- [x] a terminal tab's output on both screens; input from the browser reaches the tab; reload of the web page
       re-snapshots cleanly
-- [ ] existing e2e specs still pass
-- [ ] run `npm run test:e2e` - must pass before next task
+- [x] existing e2e specs still pass
+- [x] run `npm run test:e2e` - must pass before next task
 
 ### Task 30: e2e part 2: panels, take-over, security [model: opus]
 
