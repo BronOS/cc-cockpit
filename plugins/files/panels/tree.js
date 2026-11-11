@@ -365,34 +365,33 @@ function copy(text) {
   if (!copyText(text)) showError('Could not copy: the clipboard refused it.')
 }
 
-/** The items for a row (`file`, `dir`) or the project folder (`root`): [label, run, danger?] or 'sep'. */
+/**
+ * The items for a row (`file`, `dir`) or the project folder (`root`): [label, run, danger?] or 'sep'.
+ * Which ones is dist/lib/menu.js's (ccFilesMenu.menuEntries); in a browser view (`ccPanel.view.remote`, said by
+ * the shell) the host-only ones are left out.
+ */
 function menuItems(target) {
   const { rel, kind } = target
   const post = (type, extra = {}) => () => ccPanel.post({ type, path: rel, ...extra })
+  const remote = ccPanel.view?.remote === true
+  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote })
   const items = []
-  if (kind === 'file') {
-    // With matching rules: one item per rule (the first is what a click does), then the project's
-    // opener, so a rule never locks the Reviewer out. A rule that cannot run says why.
-    const rules = rulesFor(rel)
-    if (!rules.length) items.push(['Open', () => activate(rel, 'file', target.entry)])
-    for (const r of rules) items.push([`Open with ${r.label}${r.error ? ' (not runnable)' : ''}`, post('open', { rule: r.index })])
-    if (rules.length) items.push(['Open in file viewer', post('open', { rule: -1 })])
-    if (env.system) items.push(['Open with default app', post('open-system')])
-    if (env.system) items.push([revealLabel(), post('reveal')])
-    items.push(['Ask Claude about this file', post('ask')])
-  } else {
-    if (env.system) items.push([revealLabel(), post('reveal')])
-    if (kind === 'dir' && env.shell) items.push(['Open terminal here', post('terminal')])
-    items.push(['New file…', () => askName({ action: 'create', kind: 'file', rel })])
-    items.push(['New folder…', () => askName({ action: 'create', kind: 'dir', rel })])
-  }
-  items.push('sep')
-  items.push(['Copy path', () => copy(absolutePath(rel))])
-  if (kind !== 'root') {
-    items.push(['Copy relative path', () => copy(rel)])
-    items.push('sep')
-    items.push(['Rename…', () => askName({ action: 'rename', rel, kind })])
-    if (env.system) items.push(['Move to Trash', post('trash'), true])
+  for (const e of entries) {
+    if (e === 'sep') items.push('sep')
+    // A rule that cannot run says why.
+    else if (typeof e === 'object') items.push([`Open with ${e.rule.label}${e.rule.error ? ' (not runnable)' : ''}`, post('open', { rule: e.rule.index })])
+    else if (e === 'open') items.push(['Open', () => activate(rel, 'file', target.entry)])
+    else if (e === 'open-viewer') items.push(['Open in file viewer', post('open', { rule: -1 })])
+    else if (e === 'open-system') items.push(['Open with default app', post('open-system')])
+    else if (e === 'reveal') items.push([revealLabel(), post('reveal')])
+    else if (e === 'ask') items.push(['Ask Claude about this file', post('ask')])
+    else if (e === 'terminal') items.push(['Open terminal here', post('terminal')])
+    else if (e === 'new-file') items.push(['New file…', () => askName({ action: 'create', kind: 'file', rel })])
+    else if (e === 'new-folder') items.push(['New folder…', () => askName({ action: 'create', kind: 'dir', rel })])
+    else if (e === 'copy-path') items.push(['Copy path', () => copy(absolutePath(rel))])
+    else if (e === 'copy-relative') items.push(['Copy relative path', () => copy(rel)])
+    else if (e === 'rename') items.push(['Rename…', () => askName({ action: 'rename', rel, kind })])
+    else if (e === 'trash') items.push(['Move to Trash', post('trash'), true])
   }
   return items
 }

@@ -53,9 +53,10 @@ module.exports = tseslint.config(
     rules: { '@typescript-eslint/no-require-imports': 'off' }
   },
   {
-    // The files plugin's panel page: a classic script in a sandboxed frame, with the panel SDK's global.
+    // The files plugin's panel page: a classic script in a sandboxed frame, with the panel SDK's global
+    // and the plugin's menu helper (dist/lib/menu.js), loaded first by the page.
     files: ['plugins/files/panels/**/*.js'],
-    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly' }, sourceType: 'script' }
+    languageOptions: { globals: { ...globals.browser, ccPanel: 'readonly', ccFilesMenu: 'readonly' }, sourceType: 'script' }
   },
   {
     // The sessions plugin's panel and slot pages: classic scripts with the panel SDK's global and the

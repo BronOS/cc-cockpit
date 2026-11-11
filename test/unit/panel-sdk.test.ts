@@ -21,6 +21,7 @@ import {
 } from '../../src/sdk/panel-core'
 import { isPluginPage, overlayMessageOf, overlayResultOf, portMessage, themeMessage } from '../../src/renderer/plugins/frame-messages'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
+import { markWebShell, resetShellKindForTest } from '../../src/renderer/shell-kind'
 import type { Theme } from '../../src/shared/theme'
 
 class FakePort implements PortLike {
@@ -445,6 +446,66 @@ function splitSelectors(prelude: string): string[] {
   return out
 }
 
+describe('panel SDK: view.remote', () => {
+  it('is false before the port and on the desktop shell, true from the web shell', () => {
+    resetShellKindForTest()
+    try {
+      const desk = client().c
+      expect(desk.api.view.remote).toBe(false)
+      desk.receive(portMessage(), [new FakePort()])
+      expect(desk.api.view.remote).toBe(false)
+
+      markWebShell()
+      const web = client().c
+      expect(web.api.view.remote).toBe(false)
+      web.receive(portMessage(), [new FakePort()])
+      expect(web.api.view.remote).toBe(true)
+    } finally {
+      resetShellKindForTest()
+    }
+  })
+
+  it('is known before the first host message is delivered on the new port', () => {
+    const { c } = client()
+    const port = new FakePort()
+    const seen: boolean[] = []
+    c.api.onMessage(() => seen.push(c.api.view.remote))
+    c.receive({ type: PORT_MESSAGE, remote: true }, [port])
+    port.deliver('{"hello":1}')
+    expect(seen).toEqual([true])
+  })
+
+  it('takes only a literal true, and only with a port', () => {
+    const { c } = client()
+    c.receive({ type: PORT_MESSAGE, remote: true }, [])
+    expect(c.api.view.remote).toBe(false)
+    for (const remote of ['true', 1, {}, null]) {
+      c.receive({ type: PORT_MESSAGE, remote }, [new FakePort()])
+      expect(c.api.view.remote).toBe(false)
+    }
+    // Other shell messages do not touch it.
+    c.receive({ type: PORT_MESSAGE, remote: true }, [new FakePort()])
+    c.receive({ type: SLOT_MESSAGE, slot: { type: 'x' }, remote: false }, [])
+    c.receive(themeMessage({ id: 'x', name: 'X', kind: 'dark', vars: {}, xterm: {} }), [])
+    expect(c.api.view.remote).toBe(true)
+  })
+
+  it('cannot be set or redefined by the page', () => {
+    const { c } = client()
+    c.receive({ type: PORT_MESSAGE, remote: false }, [new FakePort()])
+    const view = c.api.view as { remote: boolean }
+    expect(() => {
+      view.remote = true
+    }).toThrow(TypeError)
+    expect(() => Object.defineProperty(view, 'remote', { value: true })).toThrow(TypeError)
+    expect(() => {
+      ;(c.api as { view: unknown }).view = { remote: true }
+    }).toThrow(TypeError)
+    expect(c.api.view.remote).toBe(false)
+    expect(Object.isFrozen(c.api.view)).toBe(true)
+  })
+})
+
 describe('frame messages (the shell side)', () => {
   it('tells plugin pages from inline overlay pages', () => {
     expect(isPluginPage('cc-plugin://a.one/p.html')).toBe(true)
@@ -452,7 +513,7 @@ describe('frame messages (the shell side)', () => {
   })
 
   it('posts the port and the theme in the shape the SDK reads', () => {
-    expect(portMessage).toEqual({ type: PORT_MESSAGE })
+    expect(portMessage()).toEqual({ type: PORT_MESSAGE, remote: false })
     const msg = themeMessage({ id: 'x', name: 'X', kind: 'light', vars: { '--a': '#fff' }, xterm: { red: '#f00' } })
     // The xterm palette stays in the shell.
     expect(msg).toEqual({ type: THEME_MESSAGE, theme: { kind: 'light', vars: { '--a': '#fff' } }, mac: false })

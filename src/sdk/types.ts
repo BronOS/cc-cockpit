@@ -926,6 +926,8 @@ export interface PluginContext {
      * desktop's file manager on Linux). `path` as for `open`, and `''` is the project folder itself
      * (shown in its parent). Rejects for a path whose real path is outside the project or a missing
      * one. At most 3 per 10 s. Check `typeof ctx.files.reveal === 'function'`: an older app has none.
+     * Rejects when the call came from a web access browser view (it acts on the host's screen); a
+     * page hides the item there with `ccPanel.view.remote`, a UI hint only, never a security check.
      */
     reveal(path: string): Promise<void>
     /**
@@ -933,7 +935,8 @@ export interface PluginContext {
      * manager would. Rejects for what that would RUN instead of open: a folder (use `reveal`), a
      * file with an exec bit, an app bundle (`.app`) or anything inside one, and the runnable types
      * (`.command`, `.sh`, `.desktop`, `.AppImage`, `.exe`, `.bat`, `.ps1`, `.js`, `.jar` and the rest
-     * listed in `ccc guide api`, any case). Same path rules as `reveal`; at most 3 per 10 s.
+     * listed in `ccc guide api`, any case). Same path rules as `reveal`; at most 3 per 10 s. Like
+     * `reveal`, rejects from a web access browser view (`ccPanel.view.remote` in the page).
      */
     openWithSystem(path: string): Promise<void>
     /**

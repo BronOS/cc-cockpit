@@ -39,7 +39,8 @@ load, the strip shows the title's first letter.
 
 - With web access a panel can be open in a browser as well as the desktop, one page per view. What a browser view cannot
   do: `WebContentsView` features (`ctx.webview`, url overlays) show "available on the desktop", and `ctx.files.reveal` /
-  `openWithSystem` are refused. See `ccc guide api` (`ctx.panels.post` `{ view }`).
+  `openWithSystem` are refused. A page knows it is in a browser view from `ccPanel.view.remote` (below) and can hide
+  such items. See `ccc guide api` (`ctx.panels.post` `{ view }`).
 
 ## `ccPanel`
 
@@ -62,6 +63,13 @@ load, the strip shows the title's first letter.
   its content (`width: max-content`), never on the page's body, which only echoes the frame.
   `undefined` in a panel or an overlay. It appears once the app has said what the page is, so
   read it after load, not at script start.
+- `ccPanel.view.remote`: `true` when the page is drawn in a web access browser view (the person's
+  phone or another browser), `false` on the desktop. The app's shell that mounts the page says so with
+  the page's connection, so it is `false` until then: read it once the host's first message has come,
+  or on a click, not at script start. Neither the page nor your host can set it. Use it to hide
+  what cannot work there, such as a "Reveal in Finder" or "Open with default app" item. It is a UI
+  hint only, never a security check: main refuses `ctx.files.reveal` / `openWithSystem` from a
+  browser view whatever the page shows.
 - `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
   its content, so the app's loader over it goes (without `ready: 'manual'` the loader goes when the
   page has loaded). Harmless in a panel or a slot.

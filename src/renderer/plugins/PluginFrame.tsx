@@ -75,7 +75,8 @@ export function PluginFrame(props: {
     const current = new FrameLoads({
       guard: isWebShell(),
       early: !localPort.current,
-      portMessage,
+      // Says whether this shell is the web one: the page's `ccPanel.view.remote` (false on the desktop).
+      portMessage: portMessage(),
       target: frameTarget(frame, setFrameKey),
       theme: () => {
         const theme = currentTheme()

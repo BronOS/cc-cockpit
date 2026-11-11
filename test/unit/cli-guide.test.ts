@@ -267,7 +267,7 @@ describe('guide drift guards', () => {
   })
 
   it('documents the panel SDK members', () => {
-    for (const member of ['ccPanel.post', 'ccPanel.onMessage', 'theme.current', 'theme.onChange']) {
+    for (const member of ['ccPanel.post', 'ccPanel.onMessage', 'theme.current', 'theme.onChange', 'ccPanel.view.remote']) {
       expect(topic('panels')).toContain(member)
     }
   })

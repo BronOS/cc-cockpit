@@ -3,14 +3,22 @@
 import { MAX_PANEL_MESSAGE_LENGTH, PORT_MESSAGE, THEME_MESSAGE } from '../../sdk/panel-core'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import type { Theme } from '../../shared/theme'
+import { isWebShell } from '../shell-kind'
 
 /** A page of a plugin (a panel, or an html overlay a plugin opened), not an inline overlay page. */
 export function isPluginPage(src: string): boolean {
   return src.startsWith('cc-plugin://')
 }
 
-/** Hands the page its MessagePort (transferred alongside). */
-export const portMessage = Object.freeze({ type: PORT_MESSAGE })
+/**
+ * Hands the page its MessagePort (transferred alongside), and says whether the shell posting it is
+ * the web shell (`ccPanel.view.remote`). `remote` comes from the shell that mounts the page
+ * (shell-kind.ts), never from the page or the plugin's host; a UI hint only, main still refuses a
+ * desktop-only call from a browser view (host-api.ts `desktopOnly`).
+ */
+export function portMessage(): Readonly<{ type: string; remote: boolean }> {
+  return Object.freeze({ type: PORT_MESSAGE, remote: isWebShell() })
+}
 
 /** The theme as a page gets it: the CSS variables and the kind, not the xterm palette. */
 export function themeMessage(

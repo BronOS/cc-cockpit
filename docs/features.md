@@ -546,7 +546,8 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - Some things only the desktop can do. In a browser, a link a page or plugin asks to open (`openExternal`, the update
   notice's release link) opens in a new tab at once when it follows the person's click by a few seconds at most, and
   otherwise shows as a notice to click (a browser blocks a tab nobody clicked for); the host's own browser is not opened. Showing a file in the file
-  manager or opening it with its default app is refused with a message, and a plugin's OAuth sign-in says to sign in
+  manager or opening it with its default app is refused with a message (the Files menu leaves those two items out in a
+  browser; a plugin page reads `ccPanel.view.remote`, a UI hint only), and a plugin's OAuth sign-in says to sign in
   on the desktop. Moving a file to the Trash (confirmed in the window), notifications (they stay on the host) are the
   same as on the desktop. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,
   the confirm of `ccc plugin link` is an in-page dialog on every place (first answer wins); a browser can only Deny it

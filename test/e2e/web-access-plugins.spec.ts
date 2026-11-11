@@ -13,6 +13,8 @@
 //  2b. A plugin's link (ctx.openExternal, §6.1): asked on a click in the browser's panel, it opens in a
 //     new tab at once (the click's user activation still holds); asked with no click, the browser
 //     shows the notice to click instead, and the host's own browser opens neither.
+//  2c. A plugin page knows it is in a browser view (`ccPanel.view.remote`): the Files menu has no Reveal
+//     nor Open with default app there, and keeps them on the desktop.
 //  3. Security end to end (§4.1): a socket with the browser's own device cookie but a foreign
 //     Origin is refused (from the same browser too, where the cookie does go along: a page on
 //     another localhost port is same-site), no cookie is refused, and revoking the device on the
@@ -20,6 +22,7 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, request, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 // Named apart from the page's own WebSocket, which the foreign page below uses.
@@ -295,6 +298,78 @@ test("a plugin's link opens in a new tab on a click in the browser; asked with n
 
     // The host's browser opened neither.
     expect(await c.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened)).toEqual([])
+  } finally {
+    await browser?.close()
+    await close()
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// 2c. A plugin page knows it is in a browser view (ccPanel.view.remote, said by the web shell with
+// the page's port): the Files menu leaves out Reveal and Open with default app there, which main
+// refuses from a browser view anyway, and keeps them on the desktop.
+
+test('the Files menu in the browser has no Reveal nor Open with default app; the desktop keeps them', async () => {
+  test.setTimeout(120_000)
+  // The bundled plugins on (the harness turns them off): the Files panel is cockpit.files'.
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  let browser: WebBrowser | undefined
+  try {
+    writeFileSync(join(c.projectDir, 'notes.md'), 'n\n')
+    mkdirSync(join(c.projectDir, 'src'))
+    await expect
+      .poll(async () => (await c.hook<HostStatus>('hostStatus', c.projectDir)).plugins.find((p) => p.id === 'cockpit.files')?.state, {
+        timeout: 15_000
+      })
+      .toBe('active')
+    const web = await enableWebAccess(c)
+    browser = await joinProject(web)
+    const reveal = process.platform === 'darwin' ? 'Reveal in Finder' : process.platform === 'win32' ? 'Show in Explorer' : 'Open in file manager'
+
+    /** The Files panel's frame in a shell, opened from its zone strip when it is not shown. */
+    const files = async (p: Page) => {
+      const section = p.locator('section.panel[aria-label="Files"]')
+      if (!(await section.isVisible())) await p.locator('.zone-left').getByRole('button', { name: /^Files/ }).click()
+      await expect(section).toBeVisible({ timeout: 15_000 })
+      return p.frameLocator('section.panel[aria-label="Files"] iframe')
+    }
+    /** The menu items of `name`'s row, from a right click, closed again with Escape. */
+    const menuOf = async (p: Page, name: string): Promise<string[]> => {
+      const tree = await files(p)
+      const row = tree.locator('.row', { has: tree.locator('.name', { hasText: new RegExp(`^${name}$`) }) })
+      await expect(row).toBeVisible()
+      await row.click({ button: 'right' })
+      const menu = tree.getByRole('menu')
+      await expect(menu).toBeVisible()
+      const items = await menu.getByRole('menuitem').allTextContents()
+      await p.keyboard.press('Escape')
+      await expect(menu).toBeHidden()
+      return items
+    }
+
+    // The browser: no host-only items; Move to Trash and Open terminal here stay.
+    expect(await (await files(browser.page)).locator('body').evaluate(() => location.protocol)).toBe('http:')
+    expect(await (await files(browser.page)).locator('body').evaluate(() => (window as unknown as { ccPanel: { view: { remote: boolean } } }).ccPanel.view.remote)).toBe(true)
+    const webFile = await menuOf(browser.page, 'notes.md')
+    expect(webFile).toEqual(['Open', 'Ask Claude about this file', 'Copy path', 'Copy relative path', 'Rename…', 'Move to Trash'])
+    const webDir = await menuOf(browser.page, 'src')
+    expect(webDir).not.toContain(reveal)
+    expect(webDir).toContain('Open terminal here')
+    expect(webDir).toContain('Move to Trash')
+
+    // The desktop, at the same time: unchanged.
+    expect(await (await files(c.page)).locator('body').evaluate(() => (window as unknown as { ccPanel: { view: { remote: boolean } } }).ccPanel.view.remote)).toBe(false)
+    expect(await menuOf(c.page, 'notes.md')).toEqual([
+      'Open',
+      'Open with default app',
+      reveal,
+      'Ask Claude about this file',
+      'Copy path',
+      'Copy relative path',
+      'Rename…',
+      'Move to Trash'
+    ])
+    expect(await menuOf(c.page, 'src')).toContain(reveal)
   } finally {
     await browser?.close()
     await close()

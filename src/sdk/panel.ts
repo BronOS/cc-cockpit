@@ -13,6 +13,9 @@
 //                                        or an overlay (setWidth: the top bar's frame only)
 //   ccPanel.ready()                      an html overlay's page has drawn: the app's loader goes
 //                                        (needed with `ready: 'manual'`; harmless elsewhere)
+//   ccPanel.view.remote                  the page is drawn in a web access browser view (the shell
+//                                        says so with the port; false until then and on the desktop).
+//                                        A UI hint only: main refuses desktop-only calls by itself
 //
 // Built to out/sdk/panel.js by the main build (electron.vite.config.ts) and served by the
 // cc-plugin:// handler for every plugin (src/main/plugins/plugin-protocol.ts). It is a classic

@@ -5,9 +5,11 @@
 //
 // What reaches a panel page, all from its parent (the shell renderer), checked by the bootstrap to
 // come from `window.parent`:
-//   { type: 'cc-plugin.port' } + a MessagePort   the line to the plugin's host (or, for an html
-//                                                 overlay, to the overlay itself); a later one
-//                                                 replaces the earlier one
+//   { type: 'cc-plugin.port', remote } + a MessagePort   the line to the plugin's host (or, for an
+//                                                 html overlay, to the overlay itself); a later one
+//                                                 replaces the earlier one. `remote`: the shell that
+//                                                 mounts the page is the web shell (a web access
+//                                                 browser view), read as `ccPanel.view.remote`
 //   { type: 'cc-plugin.theme', theme: { kind, vars }, mac }   the app's theme, again on every change;
 //                                                 `mac` is the shell's platform (no scrollbar rule there)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
@@ -109,6 +111,19 @@ export interface SlotPageApi {
   setWidth(px: number): void
 }
 
+/**
+ * `ccPanel.view`: where the page is drawn. A UI hint only (hide what cannot work there): main refuses
+ * a desktop-only call from a browser view whatever the page shows, so no check may rest on it.
+ */
+export interface PanelViewApi {
+  /**
+   * The page is drawn in a web access browser view, not the desktop window. Said by the shell that
+   * mounts the page, with its port: false until the page is connected (before the host's first
+   * message can arrive), and always false on the desktop.
+   */
+  readonly remote: boolean
+}
+
 export interface PanelApi {
   /** Send to the plugin (JSON, at most 1 MiB as text). Queued until the page is connected. */
   post(message: JsonValue): void
@@ -121,6 +136,8 @@ export interface PanelApi {
   }
   /** Set (a frozen object) once the shell says the page is a slot; undefined for a panel or an overlay. */
   readonly slot: SlotPageApi | undefined
+  /** Where the page is drawn (a frozen object; `remote` is read-only). */
+  readonly view: PanelViewApi
   /**
    * An html overlay's page has drawn what it shows: the app's loader over it goes. Needed only for
    * an overlay opened with `ready: 'manual'` (the default loader goes at load); harmless elsewhere.
@@ -159,6 +176,8 @@ export class PanelClient {
   private baseStyled = false
   private slotType: string | undefined
   private slotApi: SlotPageApi | undefined
+  /** From the shell's port message only (receive); nothing the page can call sets it. */
+  private remote = false
   readonly api: PanelApi
 
   /**
@@ -196,10 +215,15 @@ export class PanelClient {
         this.warn(`could not install the component styles: ${errorText(err)}`)
       }
     }
+    // A getter with no setter on a frozen object: the page reads what the shell said and cannot
+    // write it (an assignment throws in strict code and is ignored otherwise).
+    const view = {}
+    Object.defineProperty(view, 'remote', { enumerable: true, get: (): boolean => this.remote })
     const api = {
       post: (message: JsonValue) => this.post(message),
       onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),
       theme: Object.freeze(theme) as PanelApi['theme'],
+      view: Object.freeze(view) as PanelViewApi,
       ready: (): void => this.toParent?.({ type: READY_MESSAGE })
     }
     // A getter: the page learns it is a slot after load, and `slot` must then appear on the same object.
@@ -210,7 +234,11 @@ export class PanelClient {
   /** A message from the parent window (the bootstrap checked its source). */
   receive(data: unknown, ports: readonly PortLike[]): void {
     const type = (data as { type?: unknown } | null)?.type
-    if (type === PORT_MESSAGE && ports[0]) this.connect(ports[0])
+    if (type === PORT_MESSAGE && ports[0]) {
+      // Before the port is connected: a message the host sent first may already be waiting on it.
+      this.remote = (data as { remote?: unknown }).remote === true
+      this.connect(ports[0])
+    }
     else if (type === SLOT_MESSAGE) this.becomeSlot((data as { slot?: { type?: unknown } }).slot?.type)
     else if (type === THEME_MESSAGE) {
       this.installBaseStyles((data as { mac?: unknown }).mac === true)

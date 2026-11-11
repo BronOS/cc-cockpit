@@ -368,6 +368,11 @@ with full Node access.
   `openWithSystem` 3 per 10 s, `trash` 10 a minute. The host has no desktop session in its env, so
   `ctx.exec(['open', ...])` or `xdg-open` fail on Linux: use these. Call them on the person's click.
   An older app has none of them: check `typeof ctx.files.reveal === 'function'`.
+- With web access, `reveal` and `openWithSystem` reject when the click came from a browser view: they
+  act on the host's screen. A panel, slot, overlay or settings page reads `ccPanel.view.remote`
+  (`true` in a browser view, set by the app's shell, `ccc guide panels`) to leave such items out of
+  its menus there. A UI hint only: do not rely on it for security; main refuses the call either way.
+  `trash` works from a browser view.
 
 ## Commands and misc
 

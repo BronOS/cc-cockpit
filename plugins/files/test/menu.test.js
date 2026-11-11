@@ -1,5 +1,5 @@
 'use strict'
-// The right-click menu's host side: lib/ops.js (New file, New folder, Rename, confined to the
+// The right-click menu: the page's items (lib/menu.js, desktop and browser view) and its host side: lib/ops.js (New file, New folder, Rename, confined to the
 // project by real path, never replacing an entry) and the host's menu messages against a fake ctx
 // (what reaches ctx.files.*, ctx.sessions.open and the page). Temp dirs only.
 const test = require('node:test')
@@ -71,6 +71,45 @@ test('renameEntry: in place, refusing an existing name, the project folder and a
   assert.equal(await ops.renameEntry(root, 'out', 'elsewhere'), 'elsewhere')
   assert.ok(fs.lstatSync(path.join(root, 'elsewhere')).isSymbolicLink())
   assert.deepEqual(fs.readdirSync(outside), ['secret.txt'])
+})
+
+// ---- the page's menu items (dist/lib/menu.js), on the desktop and in a browser view ----
+
+const { menuEntries } = require('../dist/lib/menu')
+
+test('menuEntries: the desktop menus per kind, with every item the app offers', () => {
+  const full = { system: true, shell: true }
+  assert.deepEqual(menuEntries({ kind: 'file', ...full }), ['open', 'open-system', 'reveal', 'ask', 'sep', 'copy-path', 'copy-relative', 'sep', 'rename', 'trash'])
+  assert.deepEqual(menuEntries({ kind: 'dir', ...full }), ['reveal', 'terminal', 'new-file', 'new-folder', 'sep', 'copy-path', 'copy-relative', 'sep', 'rename', 'trash'])
+  assert.deepEqual(menuEntries({ kind: 'root', ...full }), ['reveal', 'new-file', 'new-folder', 'sep', 'copy-path'])
+  // remote: false is the desktop (and the default).
+  assert.deepEqual(menuEntries({ kind: 'file', ...full, remote: false }), menuEntries({ kind: 'file', ...full }))
+  // "Open with" rules: one item each, then the file viewer, no plain Open.
+  const rule = { index: 0, extensions: ['pdf'], label: 'Preview' }
+  assert.deepEqual(menuEntries({ kind: 'file', rules: [rule], ...full }).slice(0, 4), [{ rule }, 'open-viewer', 'open-system', 'reveal'])
+})
+
+test('menuEntries: a browser view (ccPanel.view.remote) has no Reveal nor Open with default app, and keeps the rest', () => {
+  const remote = { system: true, shell: true, remote: true }
+  const file = menuEntries({ kind: 'file', ...remote })
+  const dir = menuEntries({ kind: 'dir', ...remote })
+  const root = menuEntries({ kind: 'root', ...remote })
+  for (const items of [file, dir, root]) {
+    assert.ok(!items.includes('reveal'))
+    assert.ok(!items.includes('open-system'))
+  }
+  assert.deepEqual(file, ['open', 'ask', 'sep', 'copy-path', 'copy-relative', 'sep', 'rename', 'trash'])
+  assert.deepEqual(dir, ['terminal', 'new-file', 'new-folder', 'sep', 'copy-path', 'copy-relative', 'sep', 'rename', 'trash'])
+  assert.deepEqual(root, ['new-file', 'new-folder', 'sep', 'copy-path'])
+})
+
+test('menuEntries: an app without ctx.files.* (system false) or openShell has none of their items', () => {
+  const file = menuEntries({ kind: 'file', system: false, shell: false })
+  const dir = menuEntries({ kind: 'dir', system: false, shell: false })
+  for (const id of ['reveal', 'open-system', 'trash', 'terminal']) {
+    assert.ok(!file.includes(id), id)
+    assert.ok(!dir.includes(id), id)
+  }
 })
 
 // ---- the host's menu messages, against a fake ctx ----

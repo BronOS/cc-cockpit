@@ -133,7 +133,9 @@ A context menu (right click, the context-menu key, Shift+F10) or a dropdown the 
 the app's menu look. It is `position: fixed`: set `left` and `top`, and keep it inside the frame. The
 page owns the behaviour: focus the first item when it opens, Up/Down (and Home/End) move between
 items, Enter runs one, Escape, a click outside or losing focus closes it and puts focus back where
-it was. `.cc-danger` marks a destructive item; `.cc-menu-separator` divides groups.
+it was. `.cc-danger` marks a destructive item; `.cc-menu-separator` divides groups. In a web access
+browser view (`ccPanel.view.remote`, `ccc guide panels`) leave out items that act on the host's screen
+("Reveal in Finder", "Open with default app"): main refuses them there.
 
 ## Group header
 
