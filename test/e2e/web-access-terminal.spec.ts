@@ -8,6 +8,7 @@
 //
 // Markers are printed by shell arithmetic (`echo web-$((50+5))` prints web-55), so the command line
 // echoed back never contains the text a step waits for: only the shell's output does.
+import type { Page } from '@playwright/test'
 import type { CockpitApi } from '../../src/shared/ipc'
 import { expect, test } from './fixtures'
 import { enableWebAccess, openBrowser } from './web-fixtures'
@@ -85,6 +86,67 @@ test('web access: the access link signs a browser in; a terminal tab is mirrored
     await browser.waitForTerminalText('back-88')
     expect(count(await cockpit.terminalText(), 'back-88')).toBe(1)
     expect(count(await browser.terminalText(), 'back-88')).toBe(1)
+  } finally {
+    await browser.close()
+  }
+})
+
+/** Elements of the browser's page that overflow: the document, and the central zone down to the terminal pane. */
+async function overflowing(webPage: Page): Promise<string[]> {
+  return webPage.evaluate(() => {
+    const els = [
+      document.documentElement,
+      document.body,
+      ...document.querySelectorAll('.zones-centre, .terminals, .terminal-view:not([hidden]), .terminal-view:not([hidden]) .terminal-host')
+    ]
+    return els
+      .filter((el) => el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight)
+      .map((el) => `${el.tagName}.${el.className} ${el.scrollWidth}x${el.scrollHeight} in ${el.clientWidth}x${el.clientHeight}`)
+  })
+}
+
+// The terminal area is an app's, not a web page's: while the browser sizes the tab nothing in the
+// central zone (nor the page) overflows, so no scrollbar shows. While another view sizes it and the
+// grid is cropped (below MIN_DRAW_SCALE, terminal-draw.ts) the pane scrolls along the cropped axis
+// only, with no visible scrollbar in a browser, and the page still never scrolls.
+test('web access: the browser terminal zone never shows a scrollbar; a cropped pane scrolls with no bar', async ({ cockpit }) => {
+  test.setTimeout(90_000)
+  const web = await enableWebAccess(cockpit)
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+
+  const browser = await openBrowser(web.link)
+  try {
+    const { page: webPage } = browser
+    const projects = webPage.getByRole('list', { name: 'Open projects' }).getByRole('link')
+    await expect(projects).toHaveCount(1)
+    await projects.click()
+    await browser.waitForTerminalText('FAKE-SHELL ready')
+    const host = webPage.locator('.terminal-view:not([hidden]) .terminal-host')
+
+    // 1. The browser took the size when it loaded: it fits, nothing overflows.
+    await expect.poll(() => overflowing(webPage)).toEqual([])
+    await expect(host).not.toHaveClass(/terminal-crop/)
+
+    // 2. The desktop takes (it types) while the browser is far smaller (zoomed in): the browser's
+    //    pane is cropped and scrolls, with no scrollbar taking room, and the page itself does not.
+    await browser.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.setZoomFactor(2.5))
+    await cockpit.typeLine('echo desk-$((40+2))')
+    await cockpit.waitForTerminalText('desk-42')
+    await expect(host).toHaveClass(/terminal-crop/)
+    const cropped = await host.evaluate((el: HTMLElement) => ({
+      overflows: el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth,
+      barX: el.offsetHeight - el.clientHeight,
+      barY: el.offsetWidth - el.clientWidth
+    }))
+    expect(cropped).toEqual({ overflows: true, barX: 0, barY: 0 })
+    expect(await overflowing(webPage)).toEqual([expect.stringContaining('terminal-host')])
+
+    // 3. A click takes the size back: it fits again, nothing overflows, nothing left scrolled.
+    await host.click()
+    await expect(host).not.toHaveClass(/terminal-crop/)
+    await expect.poll(() => overflowing(webPage)).toEqual([])
+    expect(await host.evaluate((el) => [el.scrollTop, el.scrollLeft])).toEqual([0, 0])
   } finally {
     await browser.close()
   }

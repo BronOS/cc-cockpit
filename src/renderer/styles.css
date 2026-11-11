@@ -984,10 +984,22 @@ iframe:focus-visible {
      the pty's size, scaled down (a smaller font) or letterboxed; nothing spills. */
   overflow: hidden;
 }
-/* Below MIN_DRAW_SCALE (terminal-draw.ts) the grid is cropped: the pane scrolls both ways and is
-   kept at the bottom and the cursor (terminal-session.ts). */
-.terminal-host.terminal-crop {
-  overflow: auto;
+/* Below MIN_DRAW_SCALE (terminal-draw.ts) the grid is cropped: the pane scrolls along the cropped
+   axis only and is kept at the bottom and the cursor (terminal-session.ts). The other axis stays
+   hidden: a scaled font's cell rounding can overshoot it by a pixel or two, which is no reason for a
+   scrollbar. */
+.terminal-host.terminal-crop-cols {
+  overflow-x: auto;
+}
+.terminal-host.terminal-crop-rows {
+  overflow-y: auto;
+}
+/* In a browser (web shell, `data-shell` from shell-kind.ts) the crop's scrollbar ran down the whole
+   terminal area and made the app read as a web page. Hidden there, still scrollable (wheel, a
+   touch drag, a selection dragged past the edge); the pane follows the cursor on its own, and "Fit
+   to this screen" says the view is drawn at another size. The desktop window keeps its thin bar. */
+:root[data-shell='web'] .terminal-host.terminal-crop {
+  scrollbar-width: none;
 }
 /* "Fit to this screen" (terminal-session.ts): over the terminal while it has another view's size. */
 .terminal-fit {

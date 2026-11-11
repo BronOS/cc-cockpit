@@ -273,7 +273,7 @@ export class TerminalSession {
 
   detach(): void {
     this.container?.removeEventListener('pointerdown', this.onPointerDown, true)
-    this.container?.classList.remove('terminal-crop')
+    this.container?.classList.remove('terminal-crop', 'terminal-crop-cols', 'terminal-crop-rows')
     this.observer?.disconnect()
     this.observer = undefined
     this.container = undefined
@@ -378,14 +378,24 @@ export class TerminalSession {
     if (this.term.options.fontSize !== fontSize) this.term.options.fontSize = fontSize
     const container = this.container
     // Below MIN_DRAW_SCALE the grid overflows the pane: it scrolls (terminal-crop), kept at the
-    // bottom and the cursor, where Claude Code's prompt is.
+    // bottom and the cursor, where Claude Code's prompt is. Only along the cropped axis: the other
+    // one fits at the scale, give or take the pixel or two a scaled font's cell rounding adds, and
+    // must not scroll (nor show a bar) for that.
     const crop = cropCols || cropRows
     container?.classList.toggle('terminal-crop', crop)
+    container?.classList.toggle('terminal-crop-cols', cropCols)
+    container?.classList.toggle('terminal-crop-rows', cropRows)
     if (crop && !this.cursorWatch) {
       this.cursorWatch = this.term.onCursorMove(() => this.keepCursorInView())
     } else if (!crop && this.cursorWatch) {
       this.cursorWatch.dispose()
       this.cursorWatch = undefined
+      // Back to fitting: overflow is hidden again, and a scroll offset left from the crop would
+      // keep the grid shifted off its top left corner.
+      if (container) {
+        container.scrollTop = 0
+        container.scrollLeft = 0
+      }
     }
     if (crop) requestAnimationFrame(() => this.keepCursorInView(true))
     if (!fit || !this.io.fit || !container) {
@@ -414,10 +424,13 @@ export class TerminalSession {
     const buf = this.term.buffer.active
     const x = buf.cursorX * cellW
     const y = buf.cursorY * cellH
-    if (bottom) pane.scrollTop = pane.scrollHeight
+    // An axis that is not cropped stays at 0 (overflow hidden there, layout's per-axis classes).
+    if (!pane.classList.contains('terminal-crop-rows')) pane.scrollTop = 0
+    else if (bottom) pane.scrollTop = pane.scrollHeight
     else if (y + cellH > pane.scrollTop + pane.clientHeight) pane.scrollTop = y + cellH - pane.clientHeight
     else if (y < pane.scrollTop) pane.scrollTop = y
-    if (x + cellW > pane.scrollLeft + pane.clientWidth) pane.scrollLeft = x + cellW * 4 - pane.clientWidth
+    if (!pane.classList.contains('terminal-crop-cols')) pane.scrollLeft = 0
+    else if (x + cellW > pane.scrollLeft + pane.clientWidth) pane.scrollLeft = x + cellW * 4 - pane.clientWidth
     else if (x < pane.scrollLeft) pane.scrollLeft = Math.max(0, x - cellW * 4)
   }
 

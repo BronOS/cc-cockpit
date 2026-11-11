@@ -126,3 +126,13 @@
   font-size: 2rem;
   letter-spacing: 0.2em;
 }
+
+/* The shell in a browser is an app, not a page (design-web.md §2): the page itself never scrolls
+   nor bounces, whatever a zone overflows by; only the panes that scroll in the desktop window do.
+   Only once the shell is up (:has): the picker and the sign-in states are plain pages, and a long
+   project list or a phone keyboard over the password form still scrolls them. */
+html[data-shell='web']:has(.tabs-pane),
+html[data-shell='web']:has(.tabs-pane) body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
