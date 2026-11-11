@@ -2683,6 +2683,10 @@ function start(server: boolean): void {
         for (const line of webAccess.serverStartLines({ tty: process.stdout.isTTY === true, wrapperPath: paths.cccWrapper })) {
           console.log(line)
         }
+      }).catch((err) => {
+        // A bad stored origin or a failed device link must not become an unhandled rejection
+        // after the gateway is already up; the lines are a courtesy.
+        console.error('server start lines not printed:', errorText(err))
       })
       // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
       // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
