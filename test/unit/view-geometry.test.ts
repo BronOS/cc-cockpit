@@ -390,6 +390,23 @@ describe('a layout edit in one view reaches the window\'s other views (design-we
     expect(remote.get().layout.zones.left.size).toBe(180)
   })
 
+  it('an answer that arrives behind another view\'s later edit does not put that edit back', async () => {
+    const { desktop, remote, stored } = await mirror()
+    // The desktop closes Sessions; main stores it and publishes, but its answer waits for the
+    // call's promise, and the browser's move (handled right after) publishes before that answer lands.
+    desktop.commit((l) => togglePanel(l, 'p/sessions'))
+    remote.commit((l) => movePanel(togglePanel(l, 'p/notes'), 'p/notes', 'left'))
+    await settle()
+    expect(leftKeys(stored.get(P)!)).toEqual(['p/sessions', 'p/notes'])
+    expect(leftKeys(desktop.get().layout)).toEqual(['p/sessions', 'p/notes'])
+    expect(desktop.get().layout.zones.left.panels[0]?.open).toBe(false)
+    // The desktop's next shared edit must not write Notes back to the right.
+    desktop.commit((l) => togglePanel(l, 'p/sessions'))
+    await settle()
+    expect(leftKeys(stored.get(P)!)).toEqual(['p/sessions', 'p/notes'])
+    expect(leftKeys(remote.get().layout)).toEqual(['p/sessions', 'p/notes'])
+  })
+
   it('a desktop splitter drag across a remote view\'s move keeps the move on release', async () => {
     const { desktop, remote, stored } = await mirror()
     desktop.preview((l) => resizeZone(l, 'left', 250))

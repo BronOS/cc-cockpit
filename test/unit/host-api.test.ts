@@ -782,6 +782,9 @@ describe('panels.header / panelAction', () => {
     })
     expect(api.panelAction('a.one/board', 'refresh')).toBe(true)
     expect(clicks()).toEqual([{ pluginId: 'a.one', panelId: 'board', actionId: 'refresh' }])
+    // A remote view's click (the router's caller) names that view: the host runs the listeners in it.
+    expect(api.panelAction('a.one/board', 'refresh', 'web:3')).toBe(true)
+    expect(clicks().at(-1)).toEqual({ pluginId: 'a.one', panelId: 'board', actionId: 'refresh', view: 'web:3' })
     // An unknown or disabled action, another panel, a key no header of this host is on.
     expect(api.panelAction('a.one/board', 'nope')).toBe(false)
     expect(api.panelAction('a.one/board', 'add')).toBe(false)
@@ -794,12 +797,12 @@ describe('panels.header / panelAction', () => {
     await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { actions: [refresh] } })
     await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: null })
     expect(api.panelAction('a.one/board', 'refresh')).toBe(false)
-    expect(clicks()).toHaveLength(1)
+    expect(clicks()).toHaveLength(2)
     // A stopping host takes no clicks.
     await call('panels.header', { pluginId: 'a.one', panelId: 'board', header: { actions: [refresh] } })
     api.revoke()
     expect(api.panelAction('a.one/board', 'refresh')).toBe(false)
-    expect(clicks()).toHaveLength(1)
+    expect(clicks()).toHaveLength(2)
   })
 
   it("clears the headers when the host goes, the plugin's ctx ends or it reloads; a newer host's stay", async () => {
@@ -2119,6 +2122,30 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     }
     expect(focused).toEqual([[tab.id, 'web:1'], [tab.id], [tab.id], [tab.id]])
     expect(shown).toEqual([[A, 'a.one/board', 'web:1'], [A, 'a.one/board'], [A, 'a.one/board'], [A, 'a.one/board']])
+  })
+
+  it("files.open and sessions.openFile hand the route a view of the host's own window, and no other", async () => {
+    const files: unknown[] = []
+    const sessionFiles: unknown[] = []
+    deps.openFile = async (_caller, _path, _tabId, view) => {
+      files.push(view)
+      return 'plugin'
+    }
+    deps.openSessionFile = async (_caller, _tabId, _file, view) => {
+      sessionFiles.push(view)
+      return true
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    const tab = tabs.create(A, { kind: 'claude' })
+    const host = hostWithMeta()
+    for (const meta of [{ view: 'web:1' }, { view: 'web:2' }, { view: 'web:99' }, {}]) {
+      await host('files.open', { pluginId: 'a.one', path: 'src/a.ts' }, meta)
+      await host('sessions.openFile', { pluginId: 'a.one', tabId: tab.id, path: '/p/a.ts' }, meta)
+    }
+    // A view named in the payload is not the call's.
+    await host('files.open', { pluginId: 'a.one', path: 'src/a.ts', view: 'web:1' }, {})
+    expect(files).toEqual(['web:1', undefined, undefined, undefined, undefined])
+    expect(sessionFiles).toEqual(['web:1', undefined, undefined, undefined])
   })
 
   it("overlay.open opens in a view of the host's own window, and ignores any other view", async () => {

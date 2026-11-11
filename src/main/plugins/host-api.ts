@@ -89,9 +89,10 @@
 //                                                                and trash asks the person in this window
 //                                                                first (false: they said no)
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
-// only by sessions.focus (select in that view), panels.show (reveal there) and overlay.open (an html
-// page opens in that view, design-web.md §5.4), and only when it is a live view of this host's own
-// window (originOf); otherwise ignored.
+// by sessions.focus (select in that view), panels.show (reveal there), overlay.open (an html page
+// opens in that view, design-web.md §5.4), files.open and sessions.openFile (handed on to the plugin
+// that opens the file), openExternal (a link notice there) and the desktop-only calls (refused),
+// and only when it is a live view of this host's own window (originOf); otherwise ignored.
 // events main pushes to the host:
 //   sessions        { sessions: SessionInfo[] }                  this project's tabs changed (throttled)
 //   sessions.all    { sessions: SessionSummary[] }               any window's Claude tab changed (throttled;
@@ -102,14 +103,16 @@
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
 //   overlay.message { pluginId, handle, message, view? }         that overlay's page posted (not a result;
 //                                                                `view`: a remote view's page)
-//   panel.action    { pluginId, panelId, actionId }              a click on a header action this host set
-//                                                                (panelAction: current, not busy/disabled)
+//   panel.action    { pluginId, panelId, actionId, view? }       a click on a header action this host set
+//                                                                (panelAction: current, not busy/disabled;
+//                                                                `view`: a remote view's click)
 // requests main makes of the host (overlay toolbar, design-next §3.3; `overlayButtons`, channel onButton):
 //   overlay.buttons { key, info }              -> button[]       the type buttons of a typed overlay
 //                                                                (each with its plugin id: one of this
 //                                                                host's, or the button is refused)
-//   overlay.buttonClick { source: 'opener', pluginId, handle, buttonId } | { source: 'type', key,
-//                         pluginId, buttonId, info } -> { close } | null   a click, 30 s bound
+//   overlay.buttonClick { source: 'opener', pluginId, handle, buttonId, view? } | { source: 'type',
+//                         key, pluginId, buttonId, info, view? } -> { close } | null   a click, 30 s
+//                         bound (`view`: the remote view whose toolbar was clicked)
 //   overlay.ended   { key } (event)                              that typed overlay went
 //   overlay.discuss { pluginId, handle }       -> { text } | null  Discuss asks the opener for context, 5 s
 // and one event the host sends (host-manager routes it to contextDisposed):
@@ -347,8 +350,9 @@ export interface HostApiDeps {
   /**
    * The Sessions panel's file click (open-file.ts routeOpenFile): false when the tab is not the
    * caller's project's or the file is not one main recorded for it. Without it ctx.sessions.openFile is refused.
+   * `view`: the live remote view the plugin acted for (originOf), handed on to the plugin that opens it.
    */
-  openSessionFile?(caller: { windowId: number; projectId: string }, tabId: string, file: string): Promise<boolean>
+  openSessionFile?(caller: { windowId: number; projectId: string }, tabId: string, file: string, view?: ViewId): Promise<boolean>
   /**
    * Name a tab of `projectId` (TabManager.rename, which checks the name again; the registry and the
    * saved record follow). Without it ctx.sessions.rename is refused.
@@ -471,8 +475,9 @@ export interface HostApiDeps {
   /**
    * ctx.files.open (open-file.ts routeProjectFile with main's open-file route): `caller` is this
    * host's scope, `path` and `tabId` the plugin's, checked there. Without it files.open is refused.
+   * `view`: the live remote view the plugin acted for (originOf), handed on to the plugin that opens it.
    */
-  openFile?(caller: { windowId: number; projectId: string }, path: string, tabId?: string): Promise<'plugin' | 'builtin'>
+  openFile?(caller: { windowId: number; projectId: string }, path: string, tabId?: string, view?: ViewId): Promise<'plugin' | 'builtin'>
   /**
    * ctx.openExternal: hand an already checked http(s) URL to the system browser (shell.openExternal,
    * through a lambda so the e2e recorder that replaces it is seen). Without it openExternal is refused.
@@ -771,7 +776,7 @@ export class HostApi {
       'sessions.openCommand': (params) => this.openCommand(params),
       'sessions.focus': (params, meta) => this.focus(params, meta),
       'sessions.close': (params) => this.close(params),
-      'sessions.openFile': (params) => this.sessionFile(params),
+      'sessions.openFile': (params, meta) => this.sessionFile(params, meta),
       'sessions.rename': (params) => this.rename(params),
       badge: (params) => this.badge(params),
       'panels.show': (params, meta) => this.showPanel(params, meta),
@@ -811,7 +816,7 @@ export class HostApi {
       'webview.forward': (params) => this.webviewStep(params, 'forward'),
       'webview.reload': (params) => this.webviewStep(params, 'reload'),
       'webview.current': (params) => this.webviewCurrent(params),
-      'files.open': (params) => this.filesOpen(params),
+      'files.open': (params, meta) => this.filesOpen(params, meta),
       openExternal: (params, meta) => this.openExternal(params, meta),
       'files.reveal': (params, meta) => this.filesReveal(params, meta),
       'files.openWithSystem': (params, meta) => this.filesOpenWithSystem(params, meta),
@@ -907,13 +912,19 @@ export class HostApi {
    * busy and not disabled: the renderer ignores those clicks too, but main does not trust it, and
    * a click can race the header that just made the action busy. False when dropped.
    */
-  panelAction(panelKey: string, actionId: string): boolean {
+  panelAction(panelKey: string, actionId: string, view?: ViewId): boolean {
     if (this.revoked) return false
     const action = this.headers.get(panelKey)?.actions?.find((a) => a.id === actionId)
     if (!action || action.busy || action.disabled) return false
     const slash = panelKey.indexOf('/')
     // Plugin ids hold no slash, so the first one splits the key (the key is ours: set in panelHeader).
-    this.emit('panel.action', { pluginId: panelKey.slice(0, slash), panelId: panelKey.slice(slash + 1), actionId })
+    // `view` (a remote view's click, main's own id from the router): the listeners run in it.
+    this.emit('panel.action', {
+      pluginId: panelKey.slice(0, slash),
+      panelId: panelKey.slice(slash + 1),
+      actionId,
+      ...(view !== undefined ? { view } : {})
+    })
     return true
   }
 
@@ -1109,7 +1120,7 @@ export class HostApi {
    * file main recorded for it (routeOpenFile checks both against its own registry and the window);
    * a refusal spends nothing, so a plugin with a stale list does not lock itself out.
    */
-  private async sessionFile(params: unknown): Promise<null> {
+  private async sessionFile(params: unknown, meta?: RpcMeta): Promise<null> {
     this.alive()
     const { pluginId, tabId, path } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.openFile')
@@ -1123,7 +1134,9 @@ export class HostApi {
     }
     let opened: boolean
     try {
-      opened = await this.deps.openSessionFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, tabId, path)
+      // The view the plugin acted for goes to the plugin that opens the file (a browser's click opens there).
+      const caller = { windowId: this.scope.windowId, projectId: this.scope.projectId }
+      opened = await this.deps.openSessionFile(caller, tabId, path, this.originOf(meta))
     } catch (err) {
       this.sessionFiles.refund(plugin.id)
       throw withMethod('sessions.openFile', err)
@@ -1452,7 +1465,7 @@ export class HostApi {
    * The shapes are checked before the budget is spent; a path refusal (open-file.ts) is not
    * refunded: each one costs fs lookups in main, and a loop of bad paths must stay bounded too.
    */
-  private async filesOpen(params: unknown): Promise<{ via: 'plugin' | 'builtin' }> {
+  private async filesOpen(params: unknown, meta?: RpcMeta): Promise<{ via: 'plugin' | 'builtin' }> {
     this.alive()
     const { pluginId, path, tabId } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'files.open')
@@ -1464,7 +1477,8 @@ export class HostApi {
     }
     let via: 'plugin' | 'builtin'
     try {
-      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId)
+      // As for sessions.openFile: the taker's listeners run in the view the plugin acted for.
+      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId, this.originOf(meta))
     } catch (err) {
       throw withMethod('files.open', err)
     }
@@ -1650,7 +1664,9 @@ export class HostApi {
           if (link.closing) this.deps.closeOverlay?.(this.scope.windowId, overlayId)
         },
         // A click on one of its own buttons: to this host, this plugin and this handle only.
-        onButton: (buttonId) => this.hostCall('overlay.buttonClick', { source: 'opener', pluginId: pid, handle, buttonId }),
+        // `view`: the remote view whose toolbar was clicked (main's id): the handlers run in it.
+        onButton: (buttonId, view) =>
+          this.hostCall('overlay.buttonClick', { source: 'opener', pluginId: pid, handle, buttonId, ...(view !== undefined ? { view } : {}) }),
         // Discuss with Claude's context: to this host, this plugin and this handle only (the
         // manager bounds it to 5 s too and checks the answer's shape).
         onDiscuss: () => this.hostCall('overlay.discuss', { pluginId: pid, handle }, DISCUSS_ASK_MS),
@@ -1832,9 +1848,16 @@ export class HostApi {
         const raw = await this.hostCall('overlay.buttons', { key, info: query }, TYPE_BUTTONS_ASK_MS)
         return this.typeButtonsOf(raw, query)
       },
-      click: async (key, pluginId, buttonId, query) => {
+      click: async (key, pluginId, buttonId, query, view) => {
         const plugin = this.plugin(pluginId, 'overlay.buttonClick')
-        const answer = await this.hostCall('overlay.buttonClick', { source: 'type', key, pluginId: plugin.id, buttonId, info: query })
+        const answer = await this.hostCall('overlay.buttonClick', {
+          source: 'type',
+          key,
+          pluginId: plugin.id,
+          buttonId,
+          info: query,
+          ...(view !== undefined ? { view } : {})
+        })
         return { close: (answer as { close?: unknown } | null)?.close === true }
       },
       ended: (key) => {

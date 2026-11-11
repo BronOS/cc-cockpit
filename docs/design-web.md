@@ -274,7 +274,10 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   (an `AsyncLocalStorage` around listener dispatch, attached to the RPC calls the listener makes), so
   `ctx.sessions.focus` from a phone's click selects on the phone, with no plugin change. The same holds for every page a
   view shows: panels and slots (their port tag names the view), settings pages (the `settingsPageOpen` tag) and html
-  overlays (main's `overlay.message` names the holder's view).
+  overlays (main's `overlay.message` names the holder's view); and for the clicks main hands a plugin from a view: a
+  palette command (`command.run`), a panel header action (`panel.action`), an overlay toolbar button
+  (`overlay.buttonClick`) and a file given to the open-file plugin (`files.open`, from a `ctx.files.open` or
+  `ctx.sessions.openFile` made in a view). Main adds the view the router bound to the call, never one from the payload.
 - **Per-page replies.** Some answers belong to one page (file search results, the Sessions panel's `refused`
   message). The listener gets an optional second argument `{ view }` and `post` an optional `{ view }` target. Old
   plugins keep broadcasting, correct for state pushes; the bundled plugins that reply per page adopt it in phase 3.

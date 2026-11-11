@@ -1600,7 +1600,15 @@ describe('toolbar clicks and type buttons (design-next §3.3)', () => {
   function fakeHost(): {
     source: OverlayTypeButtons
     lists: { key: string; query: OverlayTypeQuery }[]
-    clicks: { key: string; pluginId: string; buttonId: string; query: OverlayTypeQuery; settle: (v: { close: boolean }) => void; fail: (e: Error) => void }[]
+    clicks: {
+      key: string
+      pluginId: string
+      buttonId: string
+      query: OverlayTypeQuery
+      view?: string
+      settle: (v: { close: boolean }) => void
+      fail: (e: Error) => void
+    }[]
     ended: string[]
     answer: CleanTypeButton[]
   } {
@@ -1611,6 +1619,7 @@ describe('toolbar clicks and type buttons (design-next §3.3)', () => {
         pluginId: string
         buttonId: string
         query: OverlayTypeQuery
+        view?: string
         settle: (v: { close: boolean }) => void
         fail: (e: Error) => void
       }[],
@@ -1623,8 +1632,8 @@ describe('toolbar clicks and type buttons (design-next §3.3)', () => {
         host.lists.push({ key, query })
         return Promise.resolve(host.answer.map((b) => ({ ...b })))
       },
-      click: (key, pluginId, buttonId, query) =>
-        new Promise((settle, fail) => host.clicks.push({ key, pluginId, buttonId, query, settle, fail })),
+      click: (key, pluginId, buttonId, query, view) =>
+        new Promise((settle, fail) => host.clicks.push({ key, pluginId, buttonId, query, view, settle, fail })),
       ended: (key) => host.ended.push(key)
     }
     return host
@@ -1786,6 +1795,33 @@ describe('toolbar clicks and type buttons (design-next §3.3)', () => {
     release[0]!([{ pluginId: 'p.mail', id: 'late', label: 'Late' }])
     await settle()
     expect(m.infos(W1)).toEqual([])
+  })
+
+  it("a click hands the plugin the clicking view when it is a remote one (origin-view.ts), none for the desktop's", async () => {
+    const host = fakeHost()
+    host.answer = [{ pluginId: 'p.mail', id: 'read', label: 'Mark read' }]
+    const m = typed(host)
+    const views: unknown[] = []
+    const channel: OverlayChannel = {
+      onMessage: () => {},
+      onButton: (_buttonId, view) => {
+        views.push(view)
+        return Promise.resolve()
+      }
+    }
+    void m.open(W1, { ...url(), type: fileSpec.type, buttons: [{ id: 'star', label: 'Star' }] }, 'plugin p.rev', undefined, channel, 'p.rev')
+    await settle()
+    const id = m.infos(W1)[0]!.id
+    expect(m.buttonClick(W1, id, { source: 'opener', buttonId: 'star' }, 'web:4')).toBe(true)
+    await settle()
+    expect(m.buttonClick(W1, id, { source: 'opener', buttonId: 'star' }, 'desktop:1')).toBe(true)
+    expect(views).toEqual(['web:4', undefined])
+    expect(m.buttonClick(W1, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' }, 'web:4')).toBe(true)
+    expect(host.clicks.at(-1)!.view).toBe('web:4')
+    host.clicks.at(-1)!.settle({ close: false })
+    await settle()
+    expect(m.buttonClick(W1, id, { source: 'type', pluginId: 'p.mail', buttonId: 'read' }, 'desktop:1')).toBe(true)
+    expect(host.clicks.at(-1)!.view).toBeUndefined()
   })
 
   it("an opener click goes to the opener's channel only; setButtons replaces them and asks again", async () => {

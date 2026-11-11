@@ -11,7 +11,8 @@
 //   mounted afresh, so whatever changed while away is drawn from main's current state, not patched
 //   from missed events (no resume in v1, design §3);
 // - while away, a "host unreachable" notice sits over the last state, which stays visible but
-//   whose calls fail until the socket is back.
+//   whose calls fail until the socket is back; once the new `ready` is in, it is taken down before
+//   the resync, so it never acts on the new view (bridge.ts shellToDraw).
 import { StrictMode, useEffect, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WebAccessMode } from '../../shared/types'
@@ -22,7 +23,7 @@ import { markWebShell, setOwnView } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { loadTerminalFont } from '../tabs/terminal-font'
-import { createWebBridge, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
+import { createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
@@ -131,10 +132,12 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
       </main>
     )
   }
+  // Not the last state once a newer `ready` is in: it would act on the new view (shellToDraw).
+  const drawn = shellToDraw(status, shown)
   return (
     <>
-      {shown > 0 && <App key={shown} />}
-      {shown === 0 && status.state !== 'away' && <main className="web-state">Connecting...</main>}
+      {drawn > 0 && <App key={drawn} />}
+      {drawn === 0 && status.state !== 'away' && <main className="web-state">Connecting...</main>}
       {status.state === 'away' && <Unreachable status={status} bridge={bridge} />}
     </>
   )

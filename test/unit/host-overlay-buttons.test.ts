@@ -3,6 +3,7 @@
 // setButtons, a plugin's ctx ending). main is a recording fake `call`.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ctx'
+import { currentView } from '../../src/host/ctx/origin-view'
 import { OverlayButtonRegistry, PROVIDER_TIMEOUT_MS } from '../../src/host/overlay-buttons'
 import type { OverlayInfo, OverlayTypeButton, PluginContext } from '../../src/sdk/types'
 import { hostSpec } from '../fakes/host-spec'
@@ -224,6 +225,28 @@ describe('through the host (HostContexts)', () => {
     overlay.setButtons([{ id: 'unstar', label: 'Unstar', primary: true }])
     await Promise.resolve()
     expect(calls.at(-1)).toEqual({ method: 'overlay.setButtons', params: { pluginId: 'a.one', handle, buttons: [{ id: 'unstar', label: 'Unstar', primary: true }] } })
+  })
+
+  it("a remote view's click runs the handler in that view (origin-view.ts); a view main never mints is refused", async () => {
+    const { contexts, ctx, calls } = setup()
+    const views: unknown[] = []
+    ctx.overlay.buttons('file', () => [button('edit', () => void views.push(currentView()))])
+    await contexts.overlayButtons({ key: 'k', info: info() })
+    await contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), view: 'web:5' })
+    await contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info() })
+    await expect(
+      contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), view: 'nope' })
+    ).rejects.toThrow(/bad view/)
+    const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/', buttons: [{ id: 'star', label: 'Star' }] })
+    const handle = (calls.find((c) => c.method === 'overlay.open')?.params as { handle: string }).handle
+    overlay.onButton('star', async () => {
+      await Promise.resolve()
+      views.push(currentView())
+    })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 'web:6' })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star' })
+    await expect(contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 7 })).rejects.toThrow(/bad view/)
+    expect(views).toEqual(['web:5', undefined, 'web:6', undefined])
   })
 
   it('a ctx that added type buttons tells main when it ends; its providers go with it', async () => {

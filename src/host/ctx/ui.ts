@@ -347,13 +347,23 @@ export class PanelActions {
     for (const key of [...this.listeners.keys()]) if (key.startsWith(prefix)) this.listeners.delete(key)
   }
 
-  /** main's `panel.action`; anything malformed is dropped. */
+  /**
+   * main's `panel.action`; anything malformed is dropped. Each listener runs in the clicking view
+   * (`view`, a remote one; none for the desktop's), as a panel's message listeners do.
+   */
   handleEvent(params: unknown): void {
-    const { pluginId, panelId, actionId } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, panelId, actionId, view: rawView } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || typeof panelId !== 'string' || typeof actionId !== 'string') return
+    // A view main did not mint is refused, never read as the desktop's (as slots.ts does).
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) return
     for (const listener of [...(this.listeners.get(`${pluginId}/${panelId}`) ?? [])]) {
       try {
-        listener(actionId)
+        dispatchInView(
+          view,
+          () => listener(actionId),
+          (err) => this.log(pluginId, `a panels.onAction listener failed: ${errorText(err)}`)
+        )
       } catch (err) {
         this.log(pluginId, `a panels.onAction listener threw: ${errorText(err)}`)
       }
@@ -420,14 +430,20 @@ export class OverlayLinks {
    * plugin's overlay; one for an ended handle runs nothing.
    */
   async click(params: unknown): Promise<null> {
-    const { pluginId, handle, buttonId } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, handle, buttonId, view: rawView } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || typeof handle !== 'string' || typeof buttonId !== 'string') {
       throw new Error('overlay.buttonClick: bad button')
     }
+    // The remote view whose toolbar was clicked; one main did not mint is refused, never read as the desktop's.
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) throw new Error('overlay.buttonClick: bad view')
     const link = this.links.get(`${pluginId}/${handle}`)
     if (!link || link.ended) return null
     const handlers = [...(link.buttonHandlers.get(buttonId) ?? [])]
-    const outcomes = await Promise.allSettled(handlers.map((h) => Promise.resolve().then(h)))
+    // Each in the clicking view (origin-view.ts); a rejection is logged below, from the outcomes.
+    const outcomes = await Promise.allSettled(
+      handlers.map((h) => Promise.resolve().then(() => dispatchInView(view, h, () => undefined)))
+    )
     for (const o of outcomes) {
       if (o.status === 'rejected') this.log(pluginId, `an overlay onButton("${buttonId}") handler threw: ${errorText(o.reason)}`)
     }

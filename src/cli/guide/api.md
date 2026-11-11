@@ -99,7 +99,9 @@ with full Node access.
   A view that has no page of the panel any more drops the message; a `view` that is not one throws. A
   listener keeps its origin view for the calls it makes (`ctx.sessions.focus` acts in that view) only until it
   returns or its returned promise settles (10 s cap): work started fire-and-forget (timers, unreturned promises)
-  gets no view, so `return` or `await` your promise.
+  gets no view, so `return` or `await` your promise. The same holds for the other clicks a browser makes: a
+  command run from its palette, a panel header action (`onAction`), an overlay toolbar button (`onButton`, a
+  type button's `run`) and a `ctx.files.onOpen` for a file opened there.
 - `ctx.panels.show(panelId)`: bring one of your own panels into sight (either kind): a hidden
   panel comes back, a closed one opens and its zone expands (a side zone the window auto-hid for a
   narrow terminal shows again too). Use it when a command should make

@@ -201,8 +201,11 @@ export interface OverlayTypeQuery {
  */
 export interface OverlayTypeButtons {
   list(key: string, query: OverlayTypeQuery): Promise<CleanTypeButton[]>
-  /** Run one; `close` when its run answered `{ close: true }`. */
-  click(key: string, pluginId: string, buttonId: string, query: OverlayTypeQuery): Promise<{ close: boolean }>
+  /**
+   * Run one; `close` when its run answered `{ close: true }`. `view`: the remote view whose toolbar
+   * was clicked (the caller main bound), absent for the desktop's: the run acts there.
+   */
+  click(key: string, pluginId: string, buttonId: string, query: OverlayTypeQuery, view?: ViewId): Promise<{ close: boolean }>
   /** The overlay went: the host forgets its runs. */
   ended(key: string): void
 }
@@ -310,9 +313,10 @@ export interface OverlayChannel {
   onMessage(message: unknown, view?: ViewId): void
   /**
    * A click on one of the opener's own buttons (any kind of overlay): settles when its handlers
-   * have. Absent: the opener cannot hear clicks, and they are refused.
+   * have. Absent: the opener cannot hear clicks, and they are refused. `view` as for onMessage: the
+   * remote view whose toolbar was clicked, absent for the desktop's.
    */
-  onButton?(buttonId: string): Promise<unknown>
+  onButton?(buttonId: string, view?: ViewId): Promise<unknown>
   /**
    * Discuss with Claude asks the opener's `onDiscuss` handlers for the context (`{ text }` or null).
    * Asked only once the opener said it has a handler (setDiscussHandler).
@@ -979,11 +983,13 @@ export class OverlayManager {
    * host, with the overlay's info; neither ever reaches the overlay's page. The button shows busy
    * until the click settles or OVERLAY_CLICK_TIMEOUT_MS passed; a type button's `{ close: true }`
    * dismisses the overlay. After it, the type buttons are asked again (labels follow state). True
-   * when the click went out.
+   * when the click went out. `viewId`: the view that clicked (the router's caller); a remote one is
+   * handed to the plugin so what its handler opens or focuses shows on that screen (origin-view.ts).
    */
-  buttonClick(windowId: number, overlayId: string, click: OverlayButtonClick): boolean {
+  buttonClick(windowId: number, overlayId: string, click: OverlayButtonClick, viewId?: ViewId): boolean {
     const overlay = this.find(windowId, overlayId)
     if (!overlay) return false
+    const view = viewId !== undefined && isRemoteViewId(viewId) ? viewId : undefined
     const key = clickKey(click)
     if (overlay.running.has(key)) return false
     let run: () => Promise<unknown>
@@ -991,14 +997,14 @@ export class OverlayManager {
       const button = overlay.openerButtons.find((b) => b.id === click.buttonId)
       const onButton = overlay.channel?.onButton
       if (!button || button.busy || button.disabled || !onButton) return false
-      run = () => onButton.call(overlay.channel, click.buttonId)
+      run = () => onButton.call(overlay.channel, click.buttonId, view)
     } else {
       const button = overlay.typeButtons.find((b) => b.pluginId === click.pluginId && b.id === click.buttonId)
       const source = this.options.typeButtons?.(windowId)
       const query = this.typeQuery(overlay)
       if (!button || button.busy || button.disabled || !source || !query || overlay.buttonsKey === undefined) return false
       const buttonsKey = overlay.buttonsKey
-      run = () => source.click(buttonsKey, click.pluginId, click.buttonId, query)
+      run = () => source.click(buttonsKey, click.pluginId, click.buttonId, query, view)
     }
     overlay.running.add(key)
     this.publishButtons(overlay)

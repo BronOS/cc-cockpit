@@ -515,6 +515,12 @@ export class WindowManager {
       this.closing.add(handle)
       handle.close()
     } else if (choice === 'keep') {
+      // The last browser may have left while the dialog was up: remoteViewGone found nothing hidden
+      // to show then, and hiding now would leave the app running off screen with no view at all.
+      if ((this.options.remoteDevices?.(handle.id) ?? []).length === 0) {
+        this.logLine('window close dialog: Keep running, but no browser is attached any more: the window stays on screen')
+        return
+      }
       this.hide(handle)
     }
   }

@@ -45,6 +45,7 @@ import { createStorage, type StorageHandle } from './storage'
 import { createThemesApi } from './themes'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
 import { viewIdOf, type ViewId } from '../../shared/views'
+import { dispatchInView } from './origin-view'
 import { OverlayButtonRegistry } from '../overlay-buttons'
 import { createWebviewApi, WebviewHub } from './webview'
 
@@ -783,6 +784,7 @@ export class HostContexts {
    * its built-in viewer on false.
    */
   async openFile(params: unknown): Promise<boolean> {
+    // `view` in the request (a remote view's open): the listeners run in it (files.ts).
     const req = parseOpenFile(params)
     const rt = this.runtimes.get(req.pluginId)
     if (!rt || rt.disposed) return false
@@ -813,13 +815,20 @@ export class HostContexts {
     return this.overlays.discuss(params)
   }
 
-  /** Main asks to run a command a plugin registered: `{ pluginId, id }`. */
+  /**
+   * Main asks to run a command a plugin registered: `{ pluginId, id, view? }`. `view`: the remote view
+   * that ran it (the palette of a browser); the command runs in it (origin-view.ts), so what it opens
+   * or focuses shows on that screen. One main did not mint is refused, never read as the desktop's.
+   */
   async runCommand(params: unknown): Promise<null> {
-    const { pluginId, id } = (params ?? {}) as { pluginId?: unknown; id?: unknown }
+    const { pluginId, id, view: rawView } = (params ?? {}) as { pluginId?: unknown; id?: unknown; view?: unknown }
     if (typeof pluginId !== 'string' || typeof id !== 'string') throw new Error('command.run: pluginId and id must be strings')
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) throw new Error('command.run: view is not a view id')
     const run = this.runtimes.get(pluginId)?.commands.get(id)
     if (!run) throw new Error(`command ${pluginId}/${id} is not registered`)
-    await run()
+    // The rejection reaches main through the await; nothing to log here.
+    await dispatchInView(view, () => run(), () => undefined)
     return null
   }
 }

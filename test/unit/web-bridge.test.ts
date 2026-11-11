@@ -22,6 +22,7 @@ import {
   READY_TIMEOUT_MS,
   STABLE_MS,
   reconnectDelay,
+  shellToDraw,
   socketUrl,
   UNREACHABLE,
   type BridgeStatus,
@@ -530,6 +531,25 @@ describe('drops and reconnect', () => {
     s2.serverSend({ t: 'result', id: lastInvokeId(s2), ok: true, v: 'ok' })
     await expect(p).resolves.toBe('ok')
     expect(r.statuses.map((s) => s.state)).toEqual(['ready', 'away', 'ready'])
+  })
+
+  it('the shell mounted for the last ready is drawn while away and reconnecting, never after the new ready', () => {
+    const r = rig()
+    connect(r, 'web:1')
+    // The web root mounted the shell for generation 1.
+    expect(shellToDraw(r.bridge.status(), 1)).toBe(1)
+    r.last().serverClose(1006)
+    expect(shellToDraw(r.bridge.status(), 1)).toBe(1)
+    r.timers.advance(500)
+    r.last().open()
+    expect(shellToDraw(r.bridge.status(), 1)).toBe(1)
+    r.last().serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:2', snapshot: SNAPSHOT })
+    // The resync is still running: the old shell is down, so a tab it picks cannot take the new
+    // view's snapshot into terminals the remount drops.
+    expect(shellToDraw(r.bridge.status(), 1)).toBe(0)
+    expect(shellToDraw(r.bridge.status(), 2)).toBe(2)
+    // Before the first ready nothing is drawn.
+    expect(shellToDraw({ state: 'connecting' }, 0)).toBe(0)
   })
 
   it('resets the backoff after a good connection', () => {

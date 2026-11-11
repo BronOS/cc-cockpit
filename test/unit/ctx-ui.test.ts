@@ -382,10 +382,20 @@ describe('ctx.panels.header / onAction', () => {
     contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'go' })
     expect(heard).toEqual(['board:refresh', 'side:go'])
     expect(heardByOther).toEqual([])
+    // A remote view's click: the listeners run in that view (origin-view.ts); a view main did not
+    // mint is dropped, never read as the desktop's.
+    const views: unknown[] = []
+    const offView = ctx.panels.onAction('side', () => views.push(currentView()))
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'go', view: 'web:2' })
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'go' })
+    contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'go', view: 'desktop:1' })
+    expect(views).toEqual(['web:2', undefined])
+    expect(heard).toEqual(['board:refresh', 'side:go', 'side:go', 'side:go'])
+    offView()
     // Disposed: its listeners went with it.
     contexts.dispose('a.one')
     contexts.handleEvent('panel.action', { pluginId: 'a.one', panelId: 'side', actionId: 'late' })
-    expect(heard).toEqual(['board:refresh', 'side:go'])
+    expect(heard).toEqual(['board:refresh', 'side:go', 'side:go', 'side:go'])
     expect(() => ctx.panels.header('board', null)).toThrow('deactivated')
   })
 

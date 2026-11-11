@@ -1098,7 +1098,7 @@ function start(): void {
       // ctx.sessions.rename: HostApi checked the tab is this project's and the name.
       renameTab: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
       // ctx.sessions.openFile: a session card's file click (the recorded-file check is routeOpenFile's).
-      openSessionFile: (caller, tabId, file) => routeOpenFile(openFileRoute, caller, tabId, file),
+      openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
       openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
@@ -1137,7 +1137,7 @@ function start(): void {
       updateTheme: (id, theme) => themes.update(id, theme),
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
-      openFile: (caller, path, tabId) => routeProjectFile(openFileRoute, caller, path, tabId),
+      openFile: (caller, path, tabId, view) => routeProjectFile(openFileRoute, caller, path, tabId, view),
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget. A
       // lambda, as for ctx.oauth: the e2e's recorder replaces shell.openExternal after launch.
       openExternal: (url) => shell.openExternal(url),
@@ -1658,7 +1658,7 @@ function start(): void {
     // `appearance` is built below; start() runs to its end before any IPC message is handled.
     shellPrefs: () => appearance.prefs(),
     commands: (projectId) => commands.view(projectId),
-    runCommand: (projectId, id) => hosts.runCommand(projectId, id)
+    runCommand: (projectId, id, view) => hosts.runCommand(projectId, id, view)
   })
 
   // Settings overlay (design §6; settings-service.ts): projects and plugins. The data is
@@ -2060,7 +2060,7 @@ function start(): void {
   registerPanelHandlers(router, {
     connect: (projectId, viewId, panelKey, nonce) => panelPorts.connect(projectId, viewId, panelKey, nonce),
     restartHost: (projectId) => hosts.restartStopped(projectId),
-    panelAction: (projectId, panelKey, actionId) => hosts.panelAction(projectId, panelKey, actionId)
+    panelAction: (projectId, panelKey, actionId, view) => hosts.panelAction(projectId, panelKey, actionId, view)
   })
   // A plugin's html settings page (design-next §5.4): shown only when the plugin is enabled in the
   // window's project (there is no backend for it otherwise; the page says so). The URL is the
@@ -2196,7 +2196,7 @@ function start(): void {
     ready: (windowId, overlayId, viewId) => overlays.pageReady(windowId, overlayId, viewId),
     loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
     take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
-    button: (windowId, overlayId, click) => overlays.buttonClick(windowId, overlayId, click),
+    button: (windowId, overlayId, click, viewId) => overlays.buttonClick(windowId, overlayId, click, viewId),
     discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target)
   })
 

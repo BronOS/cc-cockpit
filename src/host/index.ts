@@ -8,18 +8,18 @@
 // Methods main may call (src/host/rpc.ts):
 //   activate   { plugins: HostPluginSpec[], serviceProviders? } -> PluginRunState[]  load and activate them
 //   deactivate {}                           -> null               every plugin's deactivate()
-//   command.run { pluginId, id }             -> null               run a command the plugin registered
+//   command.run { pluginId, id, view? }      -> null               run a command the plugin registered
 //   plugin.reload { plugin: HostPluginSpec } -> PluginRunState     deactivate, forget its modules,
 //                                                                  activate again (linked dev plugin)
 //   plugin.unload { pluginId }              -> null               deactivate one plugin, keep the rest
 //   cli.run    { pluginId, name, argv, stdin, cwd, tabId?, callId } -> { stdout, stderr, code }
 //                                                                  run a ctx.cli.register handler (`ccc <name>`)
-//   files.open { pluginId, path, tabId? }   -> boolean            a Sessions panel file click (or a
+//   files.open { pluginId, path, tabId?, view? } -> boolean       a Sessions panel file click (or a
 //                                                                  ctx.files.open main routed here) for
 //                                                                  ctx.files.onOpen (true: taken)
 //   overlay.buttons { key, info }           -> button[]           the type buttons for a typed overlay
 //                                                                  (ctx.overlay.buttons, host/overlay-buttons.ts)
-//   overlay.buttonClick { source, ... }     -> { close } | null   a toolbar click: the opener's onButton
+//   overlay.buttonClick { source, ..., view? } -> { close } | null  a toolbar click: the opener's onButton
 //                                                                  or a type button's run
 //   overlay.discuss { pluginId, handle }    -> { text } | null    Discuss with Claude: the handle's onDiscuss
 // Events from main:
@@ -27,8 +27,11 @@
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
 //   sessions.rateLimits { rateLimits }        the account's plan usage changed (ctx.sessions.onRateLimits)
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
-//   overlay.message { pluginId, handle, message }  an html overlay's page posted (ctx.overlay.start)
-//   panel.action { pluginId, panelId, actionId }   a click on a panel header action (ctx.panels.onAction)
+//   overlay.message { pluginId, handle, message, view? }  an html overlay's page posted (ctx.overlay.start)
+//   panel.action { pluginId, panelId, actionId, view? }   a click on a panel header action (ctx.panels.onAction)
+// A `view` (a remote view main minted) names the browser the click or page message came from: the
+// plugin code it reaches runs in it (ctx/origin-view.ts), so what that code opens or focuses shows
+// on that screen. A malformed one is refused, never read as the desktop's.
 //   slot.close { pluginId, id, view? }        a slot frame this host provides ended (SlotInstance.onClose)
 //   settingsPage.close { pluginId, id }       the plugin's settings page ended (SettingsPageInstance.onClose)
 //   overlay.ended { key }                     a typed overlay went: its type buttons' runs go

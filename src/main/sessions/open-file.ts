@@ -28,6 +28,7 @@ import { errorText } from '../../shared/error-text'
 import { resolveInside } from '../plugins/validate'
 import type { DiffTab } from './open-diff'
 import { warnLog } from '../warn-log'
+import type { ViewId } from '../../shared/views'
 
 /** ctx.files.open's path, at most this long: far above any real project path (PATH_MAX is 4096). */
 export const MAX_OPEN_PATH_LENGTH = 4096
@@ -42,9 +43,10 @@ export interface OpenFileRouteDeps {
   handler(projectId: string): Promise<string | null>
   /**
    * Ask the plugin's host to take the open; true only when it did, within the ack bound. `tabId` is
-   * absent for a ctx.files.open without a (valid) tab.
+   * absent for a ctx.files.open without a (valid) tab. `view`: the remote view the open started in
+   * (the calling plugin's origin view, HostApi originOf), so the taker's listeners act there.
    */
-  deliver(projectId: string, pluginId: string, req: { path: string; tabId?: string }): Promise<boolean>
+  deliver(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId }): Promise<boolean>
   /** Core's viewer (openDiff); it re-checks the tab and the file itself. */
   builtin(caller: { windowId: number; projectId: string }, tabId: string, file: string): Promise<boolean>
   /**
@@ -114,13 +116,15 @@ function realOf(abs: string, realpath: (path: string) => string): string | null 
 /**
  * Route one click. True when the plugin took it or the built-in viewer opened (or is already open);
  * false for the refusals openDiff makes (unknown tab, a tab of another project, a file main never
- * recorded for it).
+ * recorded for it). `view`: the remote view the click came from (main checked it), handed on to the
+ * plugin that takes it; the built-in viewer is a terminal overlay, shared by every view.
  */
 export async function routeOpenFile(
   deps: OpenFileRouteDeps,
   caller: { windowId: number; projectId: string },
   tabId: string,
-  file: string
+  file: string,
+  view?: ViewId
 ): Promise<boolean> {
   // The tab must be the caller's project's, record the file, and the caller must still be that
   // project's window. Asked again after every await that comes before a delivery.
@@ -151,7 +155,7 @@ export async function routeOpenFile(
   deps.delivering.add(key)
   let taken = false
   try {
-    taken = await deps.deliver(caller.projectId, pluginId, { path, tabId })
+    taken = await deps.deliver(caller.projectId, pluginId, { path, tabId, ...(view !== undefined ? { view } : {}) })
   } catch (err) {
     log(`sessions panel: handing a file to ${pluginId} failed: ${errorText(err)}`)
   } finally {
@@ -221,12 +225,14 @@ export async function resolveProjectFile(projectDir: string, path: unknown): Pro
  * of the caller's project, checked right before the delivery; anything else is dropped without an
  * error (a tab that closed meanwhile is ordinary, and a foreign id learns nothing either way).
  * The picked plugin may be the caller itself: its own onOpen listener then gets the file, as for a click.
+ * `view` as for routeOpenFile: the remote view the caller acted for, handed on to the taker.
  */
 export async function routeProjectFile(
   deps: OpenFileRouteDeps,
   caller: { windowId: number; projectId: string },
   path: unknown,
-  tabId?: string
+  tabId?: string,
+  view?: ViewId
 ): Promise<'plugin' | 'builtin'> {
   const windowStill = (): void => {
     if (deps.windowOf(caller.projectId) !== caller.windowId) throw new Error('the project window is gone')
@@ -255,7 +261,11 @@ export async function routeProjectFile(
     deps.delivering.add(key)
     let taken = false
     try {
-      taken = await deps.deliver(caller.projectId, pluginId, { path: rel, ...(tab !== undefined ? { tabId: tab } : {}) })
+      taken = await deps.deliver(caller.projectId, pluginId, {
+        path: rel,
+        ...(tab !== undefined ? { tabId: tab } : {}),
+        ...(view !== undefined ? { view } : {})
+      })
     } catch (err) {
       log(`files.open: handing a file to ${pluginId} failed: ${errorText(err)}`)
     } finally {

@@ -25,6 +25,8 @@
 // one of its items.
 import type { Disposer, JsonValue, OverlayInfo, OverlayTypeButton } from '../sdk/types'
 import { errorText } from '../shared/error-text'
+import { viewIdOf } from '../shared/views'
+import { dispatchInView } from './ctx/origin-view'
 import { within } from '../shared/timeout'
 import {
   MAX_OVERLAY_BUTTONS,
@@ -174,16 +176,20 @@ export class OverlayButtonRegistry {
    * logged in its plugin's log and the error goes back to main (the button is idle again there).
    */
   async click(params: unknown): Promise<{ close: true } | null> {
-    const { key: rawKey, pluginId, buttonId, info: rawInfo } = (params ?? {}) as Record<string, unknown>
+    const { key: rawKey, pluginId, buttonId, info: rawInfo, view: rawView } = (params ?? {}) as Record<string, unknown>
     const key = keyOf(rawKey, 'overlay.buttonClick')
     if (typeof pluginId !== 'string' || typeof buttonId !== 'string') throw new Error('overlay.buttonClick: bad button')
+    // The remote view whose toolbar was clicked; one main did not mint is refused, never read as the desktop's.
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) throw new Error('overlay.buttonClick: bad view')
     const info = infoOf(rawInfo)
     const run = this.runs.get(key)?.get(`${pluginId}/${buttonId}`)
     if (!run) throw new Error(`overlay.buttonClick: ${pluginId} has no button "${buttonId}" on that overlay now`)
     let result: unknown
     try {
       // Through a resolved promise: a run that throws synchronously lands in the same catch.
-      result = await Promise.resolve().then(() => run(info))
+      // In the clicking view (origin-view.ts): what the run opens or focuses shows on that screen.
+      result = await Promise.resolve().then(() => dispatchInView(view, () => run(info), () => undefined))
     } catch (err) {
       this.log(pluginId, `overlay button "${buttonId}" failed: ${errorText(err)}`)
       throw err

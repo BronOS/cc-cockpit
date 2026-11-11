@@ -931,6 +931,25 @@ describe('window lifetime with remote views (design-web.md §5.6)', () => {
     expect(quits).toBe(0)
   })
 
+  it('"Keep running" after the last browser left while the dialog was up keeps the window on screen', async () => {
+    const l = lifetime()
+    const a = l.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    l.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    // The browser disconnects with the dialog up: nothing is hidden yet, so there is nothing to show.
+    l.devices.set(win.id, [])
+    l.wm.remoteViewGone(win.id)
+    l.asks[0]!.answer('keep')
+    await settle()
+    expect(win.closed).toBe(false)
+    expect(win.hidden).toBe(false)
+    expect(l.wm.isHidden(win.id)).toBe(false)
+    expect(l.visibility).toEqual([])
+    expect(l.wm.windowIdOf(a.id)).toBe(win.id)
+    expect(l.logs.join('\n')).toMatch(/no browser is attached/)
+  })
+
   it('Cancel leaves the window as it was', async () => {
     const l = lifetime()
     l.wm.openPath(folder('a'))

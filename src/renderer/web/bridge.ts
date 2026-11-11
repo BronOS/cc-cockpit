@@ -212,6 +212,19 @@ const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
   [CLOSE.tooManyViews, 'This browser has too many views of this project open. Close one, then reload this page.']
 ])
 
+/**
+ * Which mounted shell (the `ready` generation it was mounted for) the web root draws now; 0 for
+ * none. The last state stays up while the host is away or the socket reconnects (its calls fail
+ * then), but not once a newer `ready` arrived: until the shell is mounted afresh for it (after the
+ * resync), the old one would act on the new view. A tab picked there has main send its snapshot to
+ * terminals the remount then drops, and main does not send it again when the new shell picks the
+ * same tab (the view already follows it), so the new terminal could stay blank.
+ */
+export function shellToDraw(status: BridgeStatus, shown: number): number {
+  if (status.state === 'ready' && status.generation !== shown) return 0
+  return shown
+}
+
 /** The socket URL for a page loaded from `location` (same host, ws or wss to match http or https). */
 export function socketUrl(location: { protocol: string; host: string }, path: string): string {
   return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`

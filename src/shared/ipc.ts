@@ -751,6 +751,14 @@ export interface LayoutView {
   reveal?: string
   /** Slot frames the app places itself (the top bar's `sessions-strip`). Absent: none. */
   appSlots?: SlotFrameInfo[]
+  /**
+   * The order main sent it in (LayoutService.send): every `layout.updated` and the `layout.set`
+   * answer (the same view the set published) carry one, higher for a newer view. A view's answer
+   * to its own `layout.set` can reach it after an event another view's later edit caused (the
+   * answer waits for the call's promise, the event does not); LayoutSync takes the newer of the
+   * two by this. Absent on `layout.get` answers.
+   */
+  seq?: number
 }
 
 export type OverlayKind = 'terminal' | 'url' | 'html'

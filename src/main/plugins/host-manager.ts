@@ -680,9 +680,11 @@ export class HostManager {
 
   /**
    * Run a plugin command (`<pluginId>/<id>`) in the project's host. Only a command the host
-   * registered with main is accepted; the host re-checks, but the id came from a renderer.
+   * registered with main is accepted; the host re-checks, but the id came from a renderer. `view`:
+   * the remote view that ran it (main's id from the router): the host runs the command in it
+   * (origin-view.ts), so what it opens or focuses shows on that screen.
    */
-  async runCommand(projectId: string, commandId: string): Promise<void> {
+  async runCommand(projectId: string, commandId: string, view?: ViewId): Promise<void> {
     const rec = this.hosts.get(projectId)
     if (!rec?.rpc || !rec.registered.has(commandId)) throw new Error(`unknown command: ${commandId}`)
     // Plugin ids hold no slash and neither do contribution ids, so the last slash splits them.
@@ -690,7 +692,8 @@ export class HostManager {
     // No RPC timeout: a palette command that asks something awaits `ctx.overlay.open` (itself
     // called with no timeout, ui.ts) and is still running long after the default 30 s. It ends
     // with the command or rejects when the host exits (the endpoint's close rejects every call).
-    await rec.rpc.call('command.run', { pluginId: commandId.slice(0, slash), id: commandId.slice(slash + 1) }, { timeoutMs: Infinity })
+    const params = { pluginId: commandId.slice(0, slash), id: commandId.slice(slash + 1), ...(view !== undefined ? { view } : {}) }
+    await rec.rpc.call('command.run', params, { timeoutMs: Infinity })
   }
 
   /**
@@ -812,9 +815,10 @@ export class HostManager {
    * a plugin on its way in: the person is looking at the screen, and the viewer is the answer then.
    * `req` is main's own (open-file.ts checked the tab and made the path project-relative). The same
    * delivery serves a plugin's ctx.files.open (routeProjectFile), where `tabId` is absent unless the
-   * caller passed one of this project's tabs; the params then carry no `tabId` at all.
+   * caller passed one of this project's tabs; the params then carry no `tabId` at all. `view`: the
+   * remote view the open started in; the plugin's listeners run in it.
    */
-  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string }): Promise<boolean> {
+  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId }): Promise<boolean> {
     const rec = this.hosts.get(projectId)
     const rpc = rec?.rpc
     if (!rec || !rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return false
@@ -822,7 +826,12 @@ export class HostManager {
     try {
       const answer = await rpc.call(
         'files.open',
-        { pluginId, path: req.path, ...(req.tabId !== undefined ? { tabId: req.tabId } : {}) },
+        {
+          pluginId,
+          path: req.path,
+          ...(req.tabId !== undefined ? { tabId: req.tabId } : {}),
+          ...(req.view !== undefined ? { view: req.view } : {})
+        },
         { timeoutMs: OPEN_FILE_ACK_MS }
       )
       return answer === true
@@ -838,10 +847,10 @@ export class HostManager {
    * not busy or disabled); false when there is no running host or it dropped the click. The key and
    * id are renderer input and are only looked up, never parsed into anything else.
    */
-  panelAction(projectId: string, panelKey: string, actionId: string): boolean {
+  panelAction(projectId: string, panelKey: string, actionId: string, view?: ViewId): boolean {
     const rec = this.hosts.get(projectId)
     if (!rec?.proc || rec.stopping) return false
-    return rec.api?.panelAction(panelKey, actionId) ?? false
+    return rec.api?.panelAction(panelKey, actionId, view) ?? false
   }
 
   /**

@@ -352,7 +352,8 @@ export interface CoreHandlerDeps {
   /** The project's commands with keys resolved (main's registry + the user's overrides). */
   commands(projectId: string): CommandsView
   /** Run a plugin command the project's host registered (HostManager.runCommand); rejects otherwise. */
-  runCommand(projectId: string, id: string): Promise<void>
+  /** `view`: the remote view that ran it (main's id from the caller), absent for the desktop. */
+  runCommand(projectId: string, id: string, view?: ViewId): Promise<void>
 }
 
 /**
@@ -448,13 +449,15 @@ export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): 
   router.handleProject('commands.list', (ctx) => deps.commands(ctx.projectId))
 
   // Plugin commands only: they run in the sender's project's host, which main looks up itself.
-  // Core commands run in the renderer and have no business here.
-  router.handleProject('commands.run', async (ctx, payload) => {
+  // Core commands run in the renderer and have no business here. A remote view's run carries that
+  // view (the caller main bound, never the payload), so what the command opens or focuses shows
+  // on that screen (design-web.md §5.3, origin-view.ts).
+  router.handleProject('commands.run', async (ctx, payload, view) => {
     const id: unknown = (payload as { id?: unknown } | undefined)?.id
     if (typeof id !== 'string' || id.length > 200 || !id.includes('/')) {
       throw new Error('commands.run: id must name a plugin command')
     }
-    await deps.runCommand(ctx.projectId, id)
+    await deps.runCommand(ctx.projectId, id, remoteViewOf(view))
   })
 }
 
@@ -464,8 +467,11 @@ export interface PanelHandlerDeps {
   connect(projectId: string, viewId: ViewId, panelKey: unknown, nonce: unknown): boolean
   /** Start the project's plugin host again if it gave up (HostManager.restartStopped). */
   restartHost(projectId: string): Promise<void>
-  /** A header action click (HostManager.panelAction); false when the host dropped it. */
-  panelAction(projectId: string, panelKey: string, actionId: string): boolean
+  /**
+   * A header action click (HostManager.panelAction); false when the host dropped it. `view`: the
+   * remote view it came from (main's id from the caller), absent for the desktop.
+   */
+  panelAction(projectId: string, panelKey: string, actionId: string, view?: ViewId): boolean
 }
 
 /**
@@ -481,13 +487,13 @@ export function registerPanelHandlers(router: IpcRouter, deps: PanelHandlerDeps)
   router.handleProject('plugins.restart', (ctx) => deps.restartHost(ctx.projectId))
   // The project is the sender's; the key and id are only looked up in that project's host
   // (HostApi.panelAction), which delivers nothing but an action its plugin set there. The caps
-  // keep a junk payload from being carried any further.
-  router.handleProject('panels.action', (ctx, payload) => {
+  // keep a junk payload from being carried any further. The view is the caller's, as for commands.run.
+  router.handleProject('panels.action', (ctx, payload, view) => {
     const { panelKey, actionId } = fields('panels.action', payload)
     if (typeof panelKey !== 'string' || panelKey.length > 300 || typeof actionId !== 'string' || actionId.length > 40) {
       throw new Error('panels.action: panelKey and actionId must be short strings')
     }
-    return deps.panelAction(ctx.projectId, panelKey, actionId)
+    return deps.panelAction(ctx.projectId, panelKey, actionId, remoteViewOf(view))
   })
 }
 
@@ -852,7 +858,7 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
     if (typeof version === 'string') deps.dismiss(version)
   })
   // No payload is read: the URL is main's own.
-  router.handleWindow('updates.openRelease', (_ctx, _payload, view) => deps.openRelease(view.remote ? view.viewId : undefined))
+  router.handleWindow('updates.openRelease', (_ctx, _payload, view) => deps.openRelease(remoteViewOf(view)))
 }
 
 /** The "Install ccc command" row of General (CccCommandInstaller, main/hooks/ccc-install.ts). */
@@ -1249,8 +1255,11 @@ export interface OverlayHandlerDeps {
   loaded(windowId: number, overlayId: string, viewId: ViewId): void
   /** "Take over": the html overlay's page moves to the calling view (OverlayManager.take). */
   take(windowId: number, viewId: ViewId, overlayId: string): boolean
-  /** A toolbar button click (OverlayManager.buttonClick checks it is a button it shows now). */
-  button(windowId: number, overlayId: string, click: OverlayButtonClick): boolean
+  /**
+   * A toolbar button click (OverlayManager.buttonClick checks it is a button it shows now), from
+   * `viewId` (the caller main bound): the plugin's handlers run in it when it is a remote view.
+   */
+  button(windowId: number, overlayId: string, click: OverlayButtonClick, viewId: ViewId): boolean
   /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again). */
   discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer>
 }
@@ -1336,12 +1345,12 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
   )
 
   // Only a button of an overlay of the SENDER's window; the manager checks it is one it shows.
-  router.handleProject('overlays.button', (ctx, payload) => {
+  router.handleProject('overlays.button', (ctx, payload, view) => {
     const { source, pluginId, buttonId } = fields('overlays.button', payload)
     if (typeof buttonId !== 'string') throw new Error('overlays.button: buttonId must be a string')
     const overlayId = overlayIdOf('overlays.button', payload)
-    if (source === 'opener') return deps.button(ctx.windowId, overlayId, { source, buttonId })
-    if (source === 'type' && typeof pluginId === 'string') return deps.button(ctx.windowId, overlayId, { source, pluginId, buttonId })
+    if (source === 'opener') return deps.button(ctx.windowId, overlayId, { source, buttonId }, view.viewId)
+    if (source === 'type' && typeof pluginId === 'string') return deps.button(ctx.windowId, overlayId, { source, pluginId, buttonId }, view.viewId)
     throw new Error('overlays.button: source must be opener, or type with a pluginId')
   })
 
@@ -1405,6 +1414,11 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     deps.views[step](owner)
   })
   router.handleProject('webviews.current', (ctx, payload) => deps.views.current(panelOf('webviews.current', ctx, payload)))
+}
+
+/** The caller's view when it is a remote one (main bound it), else undefined: the desktop acts as before. */
+function remoteViewOf(view: CallView): ViewId | undefined {
+  return view.remote ? view.viewId : undefined
 }
 
 function overlayIdOf(channel: string, payload: unknown): string {

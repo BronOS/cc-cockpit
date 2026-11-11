@@ -23,6 +23,8 @@
 // checks, its refusal of runnable files and the person's confirmation for the Trash.
 import type { Disposer, OpenFileRequest, PluginContext } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
+import { viewIdOf, type ViewId } from '../../shared/views'
+import { dispatchInView } from './origin-view'
 
 /** How long a listener's promise may take to reject and still count as a failure. */
 export const OPEN_LISTENER_WAIT_MS = 1_000
@@ -125,22 +127,27 @@ function checkSystemPath(method: string, path: unknown, allowRoot: boolean): voi
  * Main's `files.open` params, checked (main built them; the shapes are verified anyway). `tabId` is
  * optional: absent for a ctx.files.open that named no tab of this project.
  */
-export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string } {
-  const { pluginId, path, tabId } = (params ?? {}) as Record<string, unknown>
+export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string; view?: ViewId } {
+  const { pluginId, path, tabId, view: rawView } = (params ?? {}) as Record<string, unknown>
   if (typeof pluginId !== 'string' || typeof path !== 'string' || (tabId !== undefined && typeof tabId !== 'string')) {
     throw new Error('files.open: pluginId and path must be strings, tabId a string when present')
   }
-  return tabId !== undefined ? { pluginId, path, tabId } : { pluginId, path }
+  // `view`: the remote view the open started in. One main did not mint is refused, never read as
+  // the desktop's (as slots.ts does); main then opens its built-in viewer.
+  const view = viewIdOf(rawView)
+  if (rawView !== undefined && view === undefined) throw new Error('files.open: view is not a view id')
+  return { pluginId, path, ...(tabId !== undefined ? { tabId } : {}), ...(view !== undefined ? { view } : {}) }
 }
 
 /**
  * Call every listener with its own frozen request; true when at least one returned, resolved, or is
  * still pending after `waitMs`. A throw or rejection is logged against the plugin. False with no
- * listener at all.
+ * listener at all. Each runs in `req.view` (origin-view.ts; none: the desktop's), so what it opens
+ * or focuses shows on the screen the open started on.
  */
 export async function runOpenListeners(
   listeners: Iterable<Listener>,
-  req: { path: string; tabId?: string },
+  req: { path: string; tabId?: string; view?: ViewId },
   log: (message: string) => void,
   waitMs = OPEN_LISTENER_WAIT_MS
 ): Promise<boolean> {
@@ -156,7 +163,14 @@ export async function runOpenListeners(
         // Through a resolved promise, so a synchronous throw lands in the same catch as a rejection.
         const run = Promise.resolve()
           // No `tabId` key at all when there is none, so `'tabId' in req` agrees with the type.
-          .then(() => listener(Object.freeze(req.tabId !== undefined ? { path: req.path, tabId: req.tabId } : { path: req.path })))
+          .then(() =>
+            dispatchInView(
+              req.view,
+              () => listener(Object.freeze(req.tabId !== undefined ? { path: req.path, tabId: req.tabId } : { path: req.path })),
+              // Logged below, where the outcome is read.
+              () => undefined
+            )
+          )
           .then(
             () => true,
             (err: unknown) => {

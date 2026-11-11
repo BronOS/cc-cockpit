@@ -1380,6 +1380,10 @@ describe('HostManager', () => {
       await factory.last.host.call('commands.register', { pluginId: 'a.one', id: 'refresh' })
       await manager.runCommand('p1', 'a.one/refresh')
       expect(ran).toEqual([{ pluginId: 'a.one', id: 'refresh' }])
+      // A remote view's run names it: the host runs the command in that view.
+      await manager.runCommand('p1', 'a.one/refresh', 'web:2')
+      expect(ran.at(-1)).toEqual({ pluginId: 'a.one', id: 'refresh', view: 'web:2' })
+      ran.pop()
       await expect(manager.runCommand('p2', 'a.one/refresh')).rejects.toThrow('unknown command')
       await expect(manager.runCommand('p1', 'a.one/other')).rejects.toThrow('unknown command')
     })
@@ -1598,6 +1602,9 @@ describe('HostManager', () => {
       answer = true
       await expect(manager.openFile('p1', 'a.one', { path: 'src/a.ts' })).resolves.toBe(true)
       expect(seen[2]).toEqual({ pluginId: 'a.one', path: 'src/a.ts' })
+      // An open from a remote view names it: the host runs the listeners there.
+      await expect(manager.openFile('p1', 'a.one', { path: 'src/a.ts', view: 'web:3' })).resolves.toBe(true)
+      expect(seen.pop()).toEqual({ pluginId: 'a.one', path: 'src/a.ts', view: 'web:3' })
       // Not a candidate (no openFile), not in this host, or another project: false without asking.
       await expect(manager.openFile('p1', 'a.two', req)).resolves.toBe(false)
       await expect(manager.openFile('p1', 'x.gone', req)).resolves.toBe(false)

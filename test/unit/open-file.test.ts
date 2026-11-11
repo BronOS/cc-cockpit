@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
 import { OPEN_LISTENER_WAIT_MS, runOpenListeners } from '../../src/host/ctx/files'
+import { currentView } from '../../src/host/ctx/origin-view'
 import { parsePluginSpecs } from '../../src/host/loader'
 import { ServiceChoices } from '../../src/main/plugins/service-choices'
 import type { DiffTab } from '../../src/main/sessions/open-diff'
@@ -125,7 +126,7 @@ describe('routeOpenFile', () => {
   const caller = { windowId: 7, projectId: P }
 
   function setup(options: { handler?: string | null; deliver?: OpenFileRouteDeps['deliver']; tabs?: Record<string, DiffTab> } = {}) {
-    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId?: string } }> = []
+    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId?: string; view?: string } }> = []
     const builtin: Array<{ tabId: string; file: string }> = []
     const logs: string[] = []
     const deps: OpenFileRouteDeps = {
@@ -165,6 +166,12 @@ describe('routeOpenFile', () => {
     await expect(routeOpenFile(deps, caller, 't1', '/work/p/src/a.ts')).resolves.toBe(true)
     expect(delivered).toEqual([{ projectId: P, pluginId: 'a.rev', req: { path: 'src/a.ts', tabId: 't1' } }])
     expect(builtin).toEqual([])
+  })
+
+  it("a click made in a remote view hands that view to the plugin (its listeners act there)", async () => {
+    const { deps, delivered } = setup()
+    await expect(routeOpenFile(deps, caller, 't1', '/work/p/src/a.ts', 'web:2')).resolves.toBe(true)
+    expect(delivered).toEqual([{ projectId: P, pluginId: 'a.rev', req: { path: 'src/a.ts', tabId: 't1', view: 'web:2' } }])
   })
 
   it('falls back to the built-in viewer when the host does not take it or the delivery throws', async () => {
@@ -302,7 +309,7 @@ describe('resolveProjectFile / routeProjectFile (ctx.files.open)', () => {
   })
 
   function setup(options: { handler?: string | null; deliver?: OpenFileRouteDeps['deliver']; tabs?: Record<string, DiffTab> } = {}) {
-    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId?: string } }> = []
+    const delivered: Array<{ projectId: string; pluginId: string; req: { path: string; tabId?: string; view?: string } }> = []
     const builtinFiles: Array<{ projectDir: string; path: string }> = []
     const deps: OpenFileRouteDeps = {
       tab: (id) => (options.tabs ?? { t1: { projectId: P, cwd: proj, files: [] }, t2: { projectId: OTHER, cwd: proj, files: [] } })[id],
@@ -334,6 +341,12 @@ describe('resolveProjectFile / routeProjectFile (ctx.files.open)', () => {
     expect(delivered).toEqual([{ projectId: P, pluginId: 'a.tree', req: { path: 'src/a.ts' } }])
     expect('tabId' in delivered[0]!.req).toBe(false)
     expect(builtinFiles).toEqual([])
+  })
+
+  it('an open made in a remote view hands that view to the picked plugin', async () => {
+    const { deps, delivered } = setup()
+    await expect(routeProjectFile(deps, caller, 'src/a.ts', undefined, 'web:2')).resolves.toBe('plugin')
+    expect(delivered).toEqual([{ projectId: P, pluginId: 'a.tree', req: { path: 'src/a.ts', view: 'web:2' } }])
   })
 
   it('passes a tab of this project on, and drops a foreign or unknown one without an error', async () => {
@@ -539,6 +552,23 @@ describe('ctx.files.onOpen (host)', () => {
     await expect(open()).resolves.toBe(true)
     expect(seen).toEqual([{ path: 'src/a.ts', tabId: 't1' }])
     expect(Object.isFrozen(seen[0])).toBe(true)
+  })
+
+  it("runs the listeners in the remote view main names (origin-view.ts); the request stays { path, tabId }", async () => {
+    const { contexts, ctx } = setup()
+    const seen: unknown[] = []
+    ctx.files.onOpen(async (req) => {
+      await Promise.resolve()
+      seen.push([req, currentView()])
+    })
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts', view: 'web:2' })).resolves.toBe(true)
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts' })).resolves.toBe(true)
+    // A view main never mints is refused (main opens its own viewer), never read as the desktop's.
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts', view: 'desktop:1' })).rejects.toThrow('not a view id')
+    expect(seen).toEqual([
+      [{ path: 'src/a.ts' }, 'web:2'],
+      [{ path: 'src/a.ts' }, undefined]
+    ])
   })
 
   it('acks false with no listener, after the disposer, for another plugin, and after deactivate', async () => {

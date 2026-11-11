@@ -45,6 +45,11 @@ const NO_SLOTS: SlotFrameInfo[] = []
  * during the drag is not put back by the release (the drag held main's views off, its working
  * copy has the old placement). Only with a shared edit of its own still unanswered does it send
  * the working copy, which carries that edit.
+ *
+ * An answer to `layout.set` is ordered against main's events by `seq` (LayoutView.seq): it can
+ * arrive after an event another view's later edit caused, and taking it then would put that view's
+ * change back out of this one's working copy, and the next shared edit would write the old placement
+ * back to main. Main's newest view is taken instead.
  */
 export class LayoutSync {
   private snapshot: LayoutSnapshot = { layout: defaultLayout(), panels: [], appSlots: NO_SLOTS }
@@ -62,6 +67,8 @@ export class LayoutSync {
   private placed = false
   /** `layout.set` calls not answered yet. */
   private inFlight = 0
+  /** The newest view from main with a `seq` (events and answers alike), for a late answer. */
+  private newest: LayoutView | undefined
 
   constructor(
     private readonly bridge: LayoutBridge,
@@ -150,7 +157,8 @@ export class LayoutSync {
         // An answer to an older `layout.set` must not undo a newer edit.
         if (this.edits !== sent) return
         this.acked = sent
-        this.take(view)
+        // Behind an event main sent after it (another view's edit): that event is main's state now.
+        this.take(this.isOlder(view) && this.newest ? this.newest : view)
       })
       .catch(() => {
         this.inFlight -= 1
@@ -177,6 +185,9 @@ export class LayoutSync {
 
   /** A view main sent on its own (an event, or the `layout.get` answer). */
   private onView(view: LayoutView): void {
+    // Events come in main's order; one older than an answer already taken has nothing newer.
+    if (this.isOlder(view)) return
+    if (view.seq !== undefined) this.newest = view
     // Main's geometry is the desktop's: kept current even mid-edit, as it is what a send carries back.
     this.main = view.layout
     // The app's slot frames are not the layout: like the panels, they follow main at once.
@@ -184,7 +195,13 @@ export class LayoutSync {
     else this.take(view)
   }
 
+  /** `view` is older than the newest view taken or held off (by `seq`; one without is never older). */
+  private isOlder(view: LayoutView): boolean {
+    return view.seq !== undefined && this.newest?.seq !== undefined && view.seq < this.newest.seq
+  }
+
   private take(view: LayoutView): void {
+    if (view.seq !== undefined) this.newest = view
     this.ready = true
     this.main = view.layout
     this.set({ layout: this.display(view.layout), panels: view.panels, appSlots: view.appSlots ?? NO_SLOTS })

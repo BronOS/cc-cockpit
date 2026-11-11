@@ -1,6 +1,7 @@
 // ctx.commands, ctx.notify, ctx.openExternal, ctx.log and the clean-up on deactivate, against a fake main.
 import { describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
+import { currentView } from '../../src/host/ctx/origin-view'
 import { MAX_NOTIFY_TITLE, NOTIFY_ACTION_WAIT_MS } from '../../src/shared/notify'
 import { hostSpec } from '../fakes/host-spec'
 
@@ -54,6 +55,20 @@ describe('ctx.commands', () => {
     off() // the old disposer must not remove the new registration
     await contexts.runCommand({ pluginId: 'a.one', id: 'refresh' })
     expect(second).toHaveBeenCalledTimes(1)
+  })
+
+  it("runs a command in the remote view main names (origin-view.ts), refusing a view main never mints", async () => {
+    const { contexts, ctx } = setup()
+    const views: unknown[] = []
+    ctx.commands.register('refresh', async () => {
+      // Past an await, as a command that opens something after a lookup: still that view.
+      await Promise.resolve()
+      views.push(currentView())
+    })
+    await contexts.runCommand({ pluginId: 'a.one', id: 'refresh', view: 'web:3' })
+    await contexts.runCommand({ pluginId: 'a.one', id: 'refresh' })
+    await expect(contexts.runCommand({ pluginId: 'a.one', id: 'refresh', view: 'desktop:1' })).rejects.toThrow('not a view id')
+    expect(views).toEqual(['web:3', undefined])
   })
 
   it('runCommand propagates a failing command and refuses unknown or malformed requests', async () => {

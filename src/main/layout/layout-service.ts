@@ -133,6 +133,11 @@ export class LayoutService {
   /** projectId -> the slot frames of the last view sent to the window, as JSON (refreshSlots). */
   private readonly sentSlots = new Map<string, string>()
   private nextFrame = 1
+  /**
+   * The last `seq` stamped on a view sent (LayoutView.seq): one counter for every project, so it
+   * only grows. A view of one window is only ever compared with views of the same window.
+   */
+  private seq = 0
 
   constructor(private readonly deps: LayoutServiceDeps) {}
 
@@ -163,8 +168,8 @@ export class LayoutService {
    */
   set(projectId: string, raw: unknown, opts: { keepGeometry?: boolean } = {}): LayoutView | undefined {
     const view = this.store(projectId, raw, opts)
-    if (view) this.send(projectId, view)
-    return view
+    // The answer is the very view published (its `seq` included), so the sender can order it.
+    return view ? this.send(projectId, view) : undefined
   }
 
   /** `set` without the publish: `move` and `show` send their own view (`show` with `reveal`). */
@@ -216,8 +221,7 @@ export class LayoutService {
     // movePanel leaves a layout alone when the panel is neither placed nor hidden.
     if (next === current) throw new Error('unknown panel')
     const view = this.store(projectId, next)
-    if (view) this.send(projectId, view)
-    return view
+    return view ? this.send(projectId, view) : undefined
   }
 
   /**
@@ -246,7 +250,7 @@ export class LayoutService {
       return true
     }
     if (changed) this.send(projectId, view)
-    this.deps.publishTo(viewId, { ...view, reveal: panelKey })
+    this.deps.publishTo(viewId, { ...view, reveal: panelKey, seq: ++this.seq })
     return true
   }
 
@@ -412,10 +416,15 @@ export class LayoutService {
     if (view) this.send(projectId, view)
   }
 
-  /** Every view to the window goes here: what it was sent of the slots is what refreshSlots compares. */
-  private send(projectId: string, view: LayoutView): void {
-    this.sentSlots.set(projectId, slotsJson(view))
-    this.deps.publish(projectId, view)
+  /**
+   * Every view to the window goes here: what it was sent of the slots is what refreshSlots compares.
+   * Each gets the next `seq` (LayoutView.seq), and the stamped view is returned for an answer.
+   */
+  private send(projectId: string, view: LayoutView): LayoutView {
+    const stamped: LayoutView = { ...view, seq: ++this.seq }
+    this.sentSlots.set(projectId, slotsJson(stamped))
+    this.deps.publish(projectId, stamped)
+    return stamped
   }
 
   private hasKey(projectId: string, panelKey: string): boolean {

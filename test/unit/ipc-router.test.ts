@@ -554,6 +554,24 @@ describe('core handlers', () => {
     expect(ran).toHaveLength(1)
   })
 
+  it("commands.run names a remote caller's view to the host, none for the desktop's", async () => {
+    const seen: unknown[][] = []
+    const { ipc, router } = core({
+      runCommand: async (projectId, id, view) => {
+        seen.push([projectId, id, view])
+      }
+    })
+    await ipc.invoke('commands.run', 11, [{ id: 'a.one/refresh', view: 'web:9' }])
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4'), 'commands.run', {
+      id: 'a.one/refresh',
+      view: 'web:9'
+    })
+    expect(seen).toEqual([
+      [PROJECT_A, 'a.one/refresh', undefined],
+      [PROJECT_A, 'a.one/refresh', 'web:4']
+    ])
+  })
+
   it("commands.run passes the host's refusal back to the renderer", async () => {
     const { ipc } = core({
       runCommand: async (_projectId, id) => {
@@ -1161,23 +1179,30 @@ describe('registerPanelHandlers', () => {
     registerPanelHandlers(router, {
       connect: () => false,
       restartHost: async () => {},
-      panelAction: (projectId, panelKey, actionId) => {
-        clicks.push([projectId, panelKey, actionId])
+      panelAction: (projectId, panelKey, actionId, view) => {
+        clicks.push([projectId, panelKey, actionId, view])
         return actionId === 'refresh'
       }
     })
     // The project is the sender's, whatever the payload says.
     await expect(ipc.invoke('panels.action', 11, [{ panelKey: 'a.one/board', actionId: 'refresh', projectId: PROJECT_B }])).resolves.toBe(true)
     await expect(ipc.invoke('panels.action', 12, [{ panelKey: 'a.one/board', actionId: 'other' }])).resolves.toBe(false)
+    // A remote view's click names that view (the caller main bound), none for the desktop's.
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5'), 'panels.action', {
+      panelKey: 'a.one/board',
+      actionId: 'refresh',
+      view: 'web:9'
+    })
     expect(clicks).toEqual([
-      [PROJECT_A, 'a.one/board', 'refresh'],
-      [PROJECT_B, 'a.one/board', 'other']
+      [PROJECT_A, 'a.one/board', 'refresh', undefined],
+      [PROJECT_B, 'a.one/board', 'other', undefined],
+      [PROJECT_A, 'a.one/board', 'refresh', 'web:5']
     ])
     await expect(ipc.invoke('panels.action', 11, [{ panelKey: 'a.one/board', actionId: 'x'.repeat(41) }])).rejects.toThrow(/short strings/)
     await expect(ipc.invoke('panels.action', 11, [{ panelKey: 7, actionId: 'refresh' }])).rejects.toThrow(/short strings/)
     await expect(ipc.invoke('panels.action', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('panels.action', 13, [{ panelKey: 'a.one/board', actionId: 'refresh' }])).rejects.toThrow(/not a project window/)
-    expect(clicks).toHaveLength(2)
+    expect(clicks).toHaveLength(3)
   })
 })
 
@@ -1821,8 +1846,8 @@ describe('registerOverlayHandlers', () => {
         calls.push(['take', windowId, viewId, overlayId])
         return true
       },
-      button: (windowId, overlayId, click) => {
-        calls.push(['button', windowId, overlayId, click])
+      button: (windowId, overlayId, click, viewId) => {
+        calls.push(['button', windowId, overlayId, click, viewId])
         return true
       },
       discuss: (windowId, overlayId, target) => {
@@ -1843,6 +1868,17 @@ describe('registerOverlayHandlers', () => {
       ['input', 1, 'o1', 'j', 'web:3'],
       ['resize', 1, 'o1', 50, 30, 'web:3']
     ])
+  })
+
+  it("a remote view's toolbar click names that view (the caller main bound), never one in the payload", async () => {
+    const { router, calls } = overlaySetup()
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'overlays.button', {
+      overlayId: 'o1',
+      source: 'opener',
+      buttonId: 'b',
+      viewId: 'web:9'
+    })
+    expect(calls).toEqual([['button', 1, 'o1', { source: 'opener', buttonId: 'b' }, 'web:3']])
   })
 
   it('acts on the sender’s window, whatever the payload names', async () => {
@@ -1876,8 +1912,8 @@ describe('registerOverlayHandlers', () => {
       ['loaded', 2, 'o2', 'desktop:2'],
       ['take', 2, 'desktop:2', 'o2'],
       // An opener click carries no plugin id: the opener is the overlay's own.
-      ['button', 1, 'o1', { source: 'opener', buttonId: 'b' }],
-      ['button', 2, 'o2', { source: 'type', pluginId: 'p.one', buttonId: 'edit' }],
+      ['button', 1, 'o1', { source: 'opener', buttonId: 'b' }, 'desktop:1'],
+      ['button', 2, 'o2', { source: 'type', pluginId: 'p.one', buttonId: 'edit' }, 'desktop:2'],
       // A clean target: only the fields of its kind.
       ['discuss', 1, 'o1', { kind: 'tab', tabId: 't1' }],
       ['discuss', 2, 'o2', { kind: 'new' }]
