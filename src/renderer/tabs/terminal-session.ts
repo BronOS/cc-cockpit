@@ -9,6 +9,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { TerminalFont } from '../../shared/terminal-font'
 import { commandForEvent } from '../commands/keybindings'
 import { currentPrefs, onPrefs } from '../prefs/prefs-store'
+import { isWebShell } from '../shell-kind'
 import { xtermLookOptions } from '../theme/see-through'
 import { currentXtermTheme, onXtermTheme } from '../theme/theme-store'
 import { drawAt, type TermSize, usableSize } from './terminal-draw'
@@ -105,8 +106,11 @@ export class TerminalSession {
   private disposed = false
   /** Set while this.focus() runs: a programmatic focus (tab activation, start, restore) never takes. */
   private focusing = false
-  /** takeOnLoad() is waiting for the first size item. */
-  private pendingLoadTake = false
+  /**
+   * takeOnLoad() or takeOnSelect() is waiting: for the pane to be laid out (a tab just selected or
+   * created has no terminal attached yet) and for the pty's first size item (resolvePendingTake).
+   */
+  private pendingTake = false
   /** The window and page listeners of the take on focus, removed on dispose. */
   private readonly offTakeListeners: () => void
   private readonly offTheme: () => void
@@ -198,7 +202,7 @@ export class TerminalSession {
    * off, or while this view sizes it, nothing is sent and the terminal keeps fitting at once.
    */
   private takeSize(): void {
-    this.pendingLoadTake = false
+    this.pendingTake = false
     if (this.disposed || !this.ptySize || !this.io.fit || !this.shown()) return
     this.io.fit()
   }
@@ -211,8 +215,39 @@ export class TerminalSession {
    */
   takeOnLoad(): void {
     if (this.disposed) return
+    this.pendingTake = true
+    this.resolvePendingTake()
+  }
+
+  /**
+   * The person selected this tab in this view (a tab bar click, the switcher, a tab shortcut, a tab
+   * made with +): take as a click in the pane would. A tab whose terminal is not attached and laid
+   * out yet takes once it is (refit), as the load take waits for its size item. Programmatic
+   * selections never call this (TabsPane), and a wait is dropped once another tab is active
+   * (cancelPendingTake).
+   */
+  takeOnSelect(): void {
+    if (this.disposed) return
+    this.pendingTake = true
+    this.resolvePendingTake()
+  }
+
+  /** Another tab became active: a take still waiting here would land on a tab nobody picked. */
+  cancelPendingTake(): void {
+    this.pendingTake = false
+  }
+
+  /**
+   * A waiting take lands once the pane is laid out and the pty's size is known: another view's
+   * size takes. With none, the desktop page sizes the pty itself (it is told `local` items, and
+   * none at all when the pty already had its size), so the wait ends there: web access off sends
+   * nothing. A browser page is only told sizes of other views' kind, so no size there means its
+   * first item has not come yet (setPtySize resolves it; a `local` one drops it, fitLocally).
+   */
+  private resolvePendingTake(): void {
+    if (!this.pendingTake || this.disposed || !this.shown()) return
     if (this.ptySize) this.takeSize()
-    else this.pendingLoadTake = true
+    else if (!isWebShell()) this.pendingTake = false
   }
 
   /** Attached to a pane that is laid out (the active tab: an inactive one is display:none). */
@@ -343,15 +378,19 @@ export class TerminalSession {
     if (!this.ptySize) this.fit.fit()
     this.layout()
     const size = `${own.cols}x${own.rows}`
-    if (size === this.lastSize) return
-    this.lastSize = size
-    this.io.resize(own.cols, own.rows)
+    if (size !== this.lastSize) {
+      this.lastSize = size
+      this.io.resize(own.cols, own.rows)
+    }
+    // A take waiting for this pane to be laid out (takeOnSelect of a tab just shown or created):
+    // after the resize, so main knows the size this view takes.
+    this.resolvePendingTake()
   }
 
   /** This view sizes the pty again: fit the pane, no more drawing at another view's size. */
   private fitLocally(): void {
     if (this.disposed) return
-    this.pendingLoadTake = false
+    this.pendingTake = false
     if (!this.ptySize) return
     this.ptySize = undefined
     this.refit()
@@ -363,7 +402,7 @@ export class TerminalSession {
     this.ptySize = size
     if (this.term.cols !== size.cols || this.term.rows !== size.rows) this.term.resize(size.cols, size.rows)
     this.layout()
-    if (this.pendingLoadTake) this.takeSize()
+    this.resolvePendingTake()
   }
 
   /** Scale or letterbox the pty-sized terminal in the pane, and show "Fit to this screen" when they differ. */
@@ -502,17 +541,46 @@ export class SessionRegistry {
     if (!session) {
       session = new TerminalSession(tabId, this.ioFor(tabId), this.look)
       this.sessions.set(tabId, session)
+      if (this.selectTake === tabId) {
+        this.selectTake = undefined
+        session.takeOnSelect()
+      }
     }
     return session
   }
+
+  /**
+   * The person selected `tabId` in this view (TerminalSession.takeOnSelect) but its session is
+   * not made yet (a tab just created with +): get() hands the take to it when it is.
+   */
+  private selectTake: string | undefined
 
   /** The page loaded with `tabId` active: its terminal takes the size; none yet, nothing (never created for it). */
   takeOnLoad(tabId: string): void {
     this.sessions.get(tabId)?.takeOnLoad()
   }
 
+  /** The person selected `tabId` here: its terminal takes the size, now or once it is attached. */
+  takeOnSelect(tabId: string): void {
+    if (this.closed.has(tabId)) return
+    this.activeChanged(tabId)
+    const session = this.sessions.get(tabId)
+    if (session) session.takeOnSelect()
+    else this.selectTake = tabId
+  }
+
+  /**
+   * `tabId` is the active tab now, whoever changed it: a take waiting on any other tab is
+   * dropped, so a programmatic selection (restore, a plugin's focus, a close) never inherits one.
+   */
+  activeChanged(tabId: string): void {
+    if (this.selectTake !== tabId) this.selectTake = undefined
+    for (const [id, session] of this.sessions) if (id !== tabId) session.cancelPendingTake()
+  }
+
   dispose(tabId: string): void {
     this.closed.add(tabId)
+    if (this.selectTake === tabId) this.selectTake = undefined
     this.sessions.get(tabId)?.dispose()
     this.sessions.delete(tabId)
   }
@@ -521,5 +589,6 @@ export class SessionRegistry {
     for (const session of this.sessions.values()) session.dispose()
     this.sessions.clear()
     this.closed.clear()
+    this.selectTake = undefined
   }
 }

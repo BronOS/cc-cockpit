@@ -252,9 +252,11 @@ Claude tab); the tabs that attach brings are announced to the other views as `ta
   person's typing counts as input: a focus or mouse report, or a view's own reply to a query, takes nothing. A view's
   page also takes the size as "fit" does, at once, when the person presses the pointer in the pane, focuses the
   terminal, or brings the window (after it was left) or the page (visibility) back to the front while the terminal is
-  the active tab, and a browser page does so once when it loads (the first `ready` of the page, never a reconnect's; a
-  tab without a terminal yet is skipped); programmatic focus (start, restore, tab activation) never takes, and a view already sizing sends
-  nothing (`TerminalSession.takeSize`). A view that follows draws the grid scaled down to its pane, but never below
+  the active tab, when the person selects the tab in that view (a tab bar click, the tab switcher, a tab shortcut, a tab
+  made with +; a terminal not attached yet takes once it is, `TerminalSession.takeOnSelect`), and a browser page does so
+  once when it loads (the first `ready` of the page, never a reconnect's; a tab without a terminal yet is skipped);
+  programmatic focus and selection (start, restore, main's `tabs.select` from a plugin's focus or the Sessions panel,
+  the neighbour of a closed tab) never take, and a view already sizing sends nothing (`TerminalSession.takeSize`). A view that follows draws the grid scaled down to its pane, but never below
   `MIN_DRAW_SCALE` (0.7, `terminal-draw.ts`); past that the pane scrolls, kept at the bottom and the cursor. A terminal
   overlay keeps a size per view too: the first view to measure it sizes it, typing in another view moves it there
   at once, and its flow control is the desktop page's acks alone. With no headless copy to answer for it, only the

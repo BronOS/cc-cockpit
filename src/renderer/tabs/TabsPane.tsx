@@ -268,10 +268,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // Browser shell, first load only (armLoadTake): the active terminal takes the size once, as a
     // click would; a tab without a terminal yet is skipped, never taken later for another tab.
     if (takeLoadTake()) sessions.takeOnLoad(state.activeId)
+    // A take waiting on another tab (a selection whose terminal had not attached) is dropped, so
+    // a programmatic change after it (a close, main's tabs.select) never takes for that tab.
+    sessions.activeChanged(state.activeId)
     window.cockpit.invoke('tabs.selected', { tabId: state.activeId }).catch((err: unknown) => {
       console.warn('reporting the selected tab failed', err)
     })
-  }, [state.activeId])
+  }, [state.activeId, sessions])
 
   // Whether this view is on screen (a minimized window, a background browser tab): main lets only
   // a visible view size a tab's pty (main/tabs/terminal-sizes.ts). Told on mount (a page loading
@@ -292,11 +295,32 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     action.catch((err: unknown) => setError(ipcErrorMessage(err)))
   }
 
+  /**
+   * The person selected `tabId` in this view (a tab bar click, the switcher, a tab shortcut): its
+   * terminal takes the pty's size here, as a click in the pane would (TerminalSession.takeOnSelect;
+   * nothing is sent while this view sizes it, web access off always). Every programmatic selection
+   * (restore, main's tabs.select, a close) dispatches `selected` or `added` directly instead. A
+   * Sessions panel click is one of those: it reaches this page as main's tabs.select, from a
+   * plugin's ctx.sessions.focus, and nothing there tells a person's click from a plugin's call.
+   */
+  const pickTab = useCallback(
+    (tabId: string): void => {
+      sessions.takeOnSelect(tabId)
+      dispatch({ type: 'selected', tabId })
+    },
+    [sessions]
+  )
+  /** A tab this view's person made (the + menu, a new-tab command): added, selected and taken. */
+  const addPicked = (tab: TabInfo): void => {
+    sessions.takeOnSelect(tab.id)
+    dispatch({ type: 'added', tab })
+  }
+
   const create = (kind: 'claude' | 'shell'): void =>
     run(
       window.cockpit.invoke('tabs.create', { kind }).then((tab) => {
         // Never null for Claude or Shell (only a command entry opens as an overlay).
-        if (tab) dispatch({ type: 'added', tab })
+        if (tab) addPicked(tab)
       })
     )
 
@@ -305,7 +329,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const createCommand = (level: TabCommandLevel, entryId: string): void =>
     run(
       window.cockpit.invoke('tabs.create', { kind: 'command', level, entryId }).then((tab) => {
-        if (tab) dispatch({ type: 'added', tab })
+        if (tab) addPicked(tab)
       })
     )
 
@@ -590,10 +614,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       swallow.current = new Set(heldKeys.current)
       heldKeys.current.clear()
       setSwitcher(null)
-      if (pick) dispatch({ type: 'selected', tabId: pick })
+      if (pick) pickTab(pick)
       requestAnimationFrame(focusActive)
     },
-    [focusActive, setSwitcher]
+    [focusActive, setSwitcher, pickTab]
   )
   /**
    * A switch chord: open the switcher one step from the current tab, or step it when it is open.
@@ -754,7 +778,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     const select = (n: number) => (): void => {
       const tab = stateRef.current.tabs[n - 1]
-      if (tab) dispatch({ type: 'selected', tabId: tab.id })
+      if (tab) pickTab(tab.id)
     }
     const selects: Record<string, () => void> = {}
     for (let n = 1; n <= 9; n++) selects[`tab.select.${n}`] = select(n)
@@ -898,7 +922,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       window.removeEventListener('blur', onBlur)
       window.clearTimeout(showTimer.current)
     }
-  }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher])
+  }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher, pickTab])
 
   return (
     // `in-page-title-bar`: full-window layers (overlays, the settings screen) start under the bar,
@@ -922,7 +946,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         <TabBar
           tabs={state.tabs}
           activeId={state.activeId}
-          onSelect={(tabId) => dispatch({ type: 'selected', tabId })}
+          onSelect={pickTab}
           onClose={requestClose}
           onCreate={create}
           onCreateCommand={createCommand}

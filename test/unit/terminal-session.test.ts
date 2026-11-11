@@ -87,13 +87,28 @@ interface Session {
   write(data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
   attach(container: HTMLElement): void
   takeOnLoad(): void
+  takeOnSelect(): void
+  dispose(): void
 }
-type SessionClass = new (
-  tabId: string,
-  io: { input(d: string): void; ack(n: number): void; resize(c: number, r: number): void; fit?(): void }
-) => Session
+type Io = { input(d: string): void; ack(n: number): void; resize(c: number, r: number): void; fit?(): void }
+type SessionClass = new (tabId: string, io: Io) => Session
+interface Registry {
+  write(tabId: string, data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
+  get(tabId: string): Session
+  takeOnSelect(tabId: string): void
+  activeChanged(tabId: string): void
+  disposeAll(): void
+}
+type RegistryClass = new (ioFor: (id: string) => Io) => Registry
 const file = '../../src/renderer/tabs/terminal-session'
-const { TerminalSession } = (await import(file)) as { TerminalSession: SessionClass }
+const { TerminalSession, SessionRegistry } = (await import(file)) as {
+  TerminalSession: SessionClass
+  SessionRegistry: RegistryClass
+}
+const shellKind = (await import('../../src/renderer/shell-kind')) as {
+  markWebShell(): void
+  resetShellKindForTest(): void
+}
 
 interface FakeTerm {
   cols: number
@@ -101,17 +116,10 @@ interface FakeTerm {
   resizes: Array<[number, number]>
 }
 
-function session() {
-  const resized: Array<[number, number]> = []
-  let fits = 0
-  const s = new TerminalSession('t1', {
-    input: () => undefined,
-    ack: () => undefined,
-    resize: (cols, rows) => resized.push([cols, rows]),
-    fit: () => fits++
-  })
+/** A laid-out pane (the active tab's); clientWidth/Height 0 is a hidden one. */
+function laidOutPane(): HTMLElement {
   const target = new EventTarget()
-  const container = Object.assign(target, {
+  return Object.assign(target, {
     clientWidth: 800,
     clientHeight: 600,
     isConnected: true,
@@ -119,8 +127,32 @@ function session() {
     appendChild: () => undefined,
     classList: { toggle: () => undefined, remove: () => undefined, contains: () => false }
   }) as unknown as HTMLElement
-  s.attach(container)
-  return { s, term: s.term as unknown as FakeTerm, resized, container, fits: () => fits }
+}
+
+/** Disposed after each test: each session listens on the shared fake window and document. */
+let made: Array<{ dispose(): void }> = []
+
+function session(attached = true) {
+  const resized: Array<[number, number]> = []
+  // The calls in order: a take must come after this view's size reached main.
+  const calls: string[] = []
+  let fits = 0
+  const s = new TerminalSession('t1', {
+    input: () => undefined,
+    ack: () => undefined,
+    resize: (cols, rows) => {
+      resized.push([cols, rows])
+      calls.push(`resize ${cols}x${rows}`)
+    },
+    fit: () => {
+      fits++
+      calls.push('fit')
+    }
+  })
+  made.push(s)
+  const container = laidOutPane()
+  if (attached) s.attach(container)
+  return { s, term: s.term as unknown as FakeTerm, resized, calls, container, fits: () => fits }
 }
 
 let observers: Array<() => void> = []
@@ -147,6 +179,8 @@ beforeEach(() => {
   )
 })
 afterEach(() => {
+  for (const s of made) s.dispose()
+  made = []
   vi.unstubAllGlobals()
 })
 
@@ -191,6 +225,10 @@ describe('TerminalSession sizes', () => {
 })
 
 describe('TerminalSession takes the size when the page loads', () => {
+  // The load take is the browser page's (armLoadTake).
+  beforeEach(() => shellKind.markWebShell())
+  afterEach(() => shellKind.resetShellKindForTest())
+
   it('takes at once when another view already sizes the pty, else on the first size item', () => {
     const a = session()
     a.s.write('', false, { cols: 50, rows: 30 }, false)
@@ -246,5 +284,119 @@ describe('TerminalSession takes the size on interaction', () => {
     container.dispatchEvent(new Event('pointerdown'))
     fakeDocument.dispatchEvent(new Event('visibilitychange'))
     expect(fits()).toBe(0)
+  })
+})
+
+describe('TerminalSession takes the size when the person selects its tab', () => {
+  afterEach(() => shellKind.resetShellKindForTest())
+
+  it('takes at once while another view sizes the pty', () => {
+    const { s, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    s.takeOnSelect()
+    expect(fits()).toBe(1)
+  })
+
+  it('web access off (the desktop sizes the pty): nothing is sent, and no wait is left behind', () => {
+    const a = session()
+    // Its own size items are `local`.
+    a.s.write('', false, { cols: 120, rows: 40 }, true)
+    a.s.takeOnSelect()
+    // None at all (the pty already had the pane's size): the desktop still sizes it.
+    const b = session()
+    b.s.takeOnSelect()
+    // Web access turned on later and a browser took the size: not a take of the old selection.
+    a.s.write('', false, { cols: 50, rows: 30 }, false)
+    b.s.write('', false, { cols: 50, rows: 30 }, false)
+    expect(a.fits()).toBe(0)
+    expect(b.fits()).toBe(0)
+  })
+
+  it('a terminal not attached yet (a tab just made) takes once it is attached, after its size reached main', () => {
+    const { s, container, calls, fits } = session(false)
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    s.takeOnSelect()
+    expect(fits()).toBe(0)
+    s.attach(container)
+    expect(fits()).toBe(1)
+    expect(calls).toEqual(['resize 120x40', 'fit'])
+  })
+
+  it('a pane not laid out yet takes when it is shown', () => {
+    const { s, container, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    Object.assign(container, { clientWidth: 0, clientHeight: 0 })
+    s.takeOnSelect()
+    expect(fits()).toBe(0)
+    Object.assign(container, { clientWidth: 800, clientHeight: 600 })
+    drag(120, 40)
+    expect(fits()).toBe(1)
+  })
+
+  it("in a browser, a terminal waits for its first size item (another view's takes, a local one drops it)", () => {
+    shellKind.markWebShell()
+    const a = session()
+    a.s.takeOnSelect()
+    expect(a.fits()).toBe(0)
+    a.s.write('', false, { cols: 50, rows: 30 }, false)
+    expect(a.fits()).toBe(1)
+    const b = session()
+    b.s.takeOnSelect()
+    b.s.write('', false, { cols: 50, rows: 30 }, true)
+    b.s.write('', false, { cols: 60, rows: 30 }, false)
+    expect(b.fits()).toBe(0)
+  })
+})
+
+describe('SessionRegistry selection takes', () => {
+  function registry() {
+    const fits: string[] = []
+    const r = new SessionRegistry((id) => ({
+      input: () => undefined,
+      ack: () => undefined,
+      resize: () => undefined,
+      fit: () => fits.push(id)
+    }))
+    made.push({ dispose: () => r.disposeAll() })
+    return { r, fits }
+  }
+
+  it("a person's selection takes; a programmatic one (only activeChanged) never does", () => {
+    const { r, fits } = registry()
+    r.write('a', '', false, { cols: 50, rows: 30 }, false)
+    r.write('b', '', false, { cols: 50, rows: 30 }, false)
+    r.get('a').attach(laidOutPane())
+    r.get('b').attach(laidOutPane())
+    // Restore, main's tabs.select (a plugin's focus, the Sessions panel), a close's neighbour.
+    r.activeChanged('a')
+    r.activeChanged('b')
+    expect(fits).toEqual([])
+    r.takeOnSelect('a')
+    expect(fits).toEqual(['a'])
+  })
+
+  it('a tab made with + takes once its terminal exists and is attached', () => {
+    const { r, fits } = registry()
+    r.takeOnSelect('new')
+    r.activeChanged('new')
+    r.write('new', '', false, { cols: 50, rows: 30 }, false)
+    expect(fits).toEqual([])
+    r.get('new').attach(laidOutPane())
+    expect(fits).toEqual(['new'])
+  })
+
+  it('a waiting take is dropped when another tab becomes active first', () => {
+    const { r, fits } = registry()
+    // Selected before its session exists, then a programmatic change to another tab.
+    r.takeOnSelect('x')
+    r.activeChanged('y')
+    r.write('x', '', false, { cols: 50, rows: 30 }, false)
+    r.get('x').attach(laidOutPane())
+    // Selected with its session made but not attached, then another tab is selected.
+    r.write('p', '', false, { cols: 50, rows: 30 }, false)
+    r.takeOnSelect('p')
+    r.activeChanged('q')
+    r.get('p').attach(laidOutPane())
+    expect(fits).toEqual([])
   })
 })

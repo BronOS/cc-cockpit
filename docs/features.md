@@ -335,7 +335,7 @@ Host and Origin checks, the device cookie and the log (sign-ins and revokes, nev
 tab by itself; notifications and sounds stay on the host; "Reveal in the file manager" and "Open with the system" are
 refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; the Browser panel and URL overlays
 show "available on the desktop"; window controls, full screen and the update notice are not shown. A terminal has one
-size for all places (the one that typed, clicked or was brought to the front last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
+size for all places (the one that typed, clicked, selected its tab or was brought to the front last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
 open in one place at a time, with Take over on the others.
 
 **For plugin authors:** nothing has to change for a panel to work in a browser, with three rules. Load everything by a
@@ -517,7 +517,9 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   query then reports the top-left corner and default modes rather than the program's real state.
 - A terminal shown in several places (the desktop window and browsers) has one size: the place that typed last (after
   half a second without the other typing), that pressed "Fit to this screen", or where you clicked or focused the
-  terminal or brought its window or browser tab to the front, or opened or reloaded the browser page (at once). The others draw it at that size, scaled
+  terminal, selected its tab (a click in the tab bar, the tab switcher, a tab shortcut, or a new tab made with +; not a
+  tab selected by a plugin or the Sessions panel, nor the neighbour of a closed tab), brought its window or browser tab
+  to the front, or opened or reloaded the browser page (at once). The others draw it at that size, scaled
   down (a smaller font, never below 70%; past that the terminal scrolls, kept at the bottom and the cursor) when it is
   larger than their pane, with empty space when it is smaller. A
   minimized window or a browser tab in the background never sizes a terminal while another place shows it.
