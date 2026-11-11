@@ -125,6 +125,23 @@ describe('activeTab follows the view that acted last', () => {
     expect(selections.selectionOf('web:2')).toBeUndefined()
   })
 
+  it("lastActing: of the candidates, the view that acted last (server mode's overlay holder)", async () => {
+    const { tabs, selections, remoteSelect, remoteInput, desktopSelect } = setup()
+    const a = tabs.create(P, { kind: 'claude' })
+    expect(selections.lastActing(['web:1', 'web:2'])).toBeUndefined()
+    await remoteSelect('web:1', a.id)
+    await remoteSelect('web:2', a.id)
+    // The desktop acting last is not a candidate: the newest browser among them wins.
+    await desktopSelect(a.id)
+    expect(selections.lastActing(['web:1', 'web:2'])).toBe('web:2')
+    await remoteInput('web:1', a.id, 'x')
+    expect(selections.lastActing(['web:1', 'web:2'])).toBe('web:1')
+    expect(selections.lastActing(['web:2'])).toBe('web:2')
+    selections.viewGone('web:1')
+    expect(selections.lastActing(['web:1', 'web:2'])).toBe('web:2')
+    expect(selections.lastActing([])).toBeUndefined()
+  })
+
   it("ignores a tab that is not the project's, and forgets a closed window's views", async () => {
     const { tabs, sessions, selections, remoteSelect, desktopSelect } = setup()
     const a = tabs.create(P, { kind: 'claude' })

@@ -26,6 +26,14 @@
 // leaving (back to the desktop), reload the page as a desktop reload does: `pageReady` false, the
 // loader back, the opener's posts queued again until the new page's port is up.
 //
+// Server mode (design-web.md §9.8): the desktop view is the hidden page nobody looks at, so it never
+// holds a page (every browser would show "Open on Desktop — Take over" with nobody there to answer).
+// With no browser origin the holder is the window's last-acting browser view, else its first live
+// one (`browserViews`); with none attached the overlay has no holder and waits, its opener's posts
+// queued, until the first browser lists the stack (`list`, every web shell's mount). A leaving holder
+// passes the page to another browser the same way, and the hidden page can neither take it nor
+// report for it.
+//
 // No Electron import: terminal overlays run on a PtyBackend (its own PtyService, separate from
 // the tabs'), url overlays go through a UrlViewFactory (the WebContentsView adapter is
 // electron-url-view.ts), and renderer events leave through `emit`. Unit tests pass fakes.
@@ -187,6 +195,13 @@ export interface OverlayManagerOptions {
    * overlay nobody answers (the program's query times out, as with no terminal at all).
    */
   server?: boolean
+  /**
+   * Server mode only: the window's live browser views that may hold an html overlay's page, best
+   * first: the one that acted last (ViewSelections, design-web.md §5.1), then the others in the order
+   * they attached. Main's own registry, never a payload; the desktop view is never one of them (and
+   * is skipped if it were). Absent or empty: no browser is attached, so the page waits for one.
+   */
+  browserViews?(windowId: number): ViewId[]
 }
 
 /** What a type-button provider is told about an overlay (the SDK's OverlayInfo). */
@@ -527,7 +542,7 @@ export class OverlayManager {
    *
    * `view` is the view the opening action came from (HostApi.originOf: a live remote view of THIS
    * window, checked by the caller): an html overlay's page opens there. Absent, or not a remote
-   * view's id: the window's desktop view.
+   * view's id: the window's desktop view, or in server mode a browser's (see the top of the file).
    */
   start(
     windowId: number,
@@ -571,10 +586,12 @@ export class OverlayManager {
     // Discuss shows for a typed overlay from the start; an onDiscuss handler adds it later.
     overlay.info = withDiscuss(overlay.info, overlay)
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
-    if (parsed.kind === 'html') this.hold(
-        overlay,
-        view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) ? view : desktopViewId(windowId)
-      )
+    if (parsed.kind === 'html') {
+      const origin =
+        view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) ? view : undefined
+      // Server mode: never the hidden page; no browser at all leaves it waiting (holder undefined).
+      this.hold(overlay, origin ?? (this.options.server === true ? this.browserHolder(windowId) : desktopViewId(windowId)))
+    }
     // Every kind keeps it (its buttons' clicks go there); only an html page uses the messaging part.
     if (channel) overlay.channel = channel
     // A failed spawn or view throws out of here (open turns it into a rejection), before the
@@ -656,11 +673,24 @@ export class OverlayManager {
     // the desktop's page: its acks are the overlay's flow (ack below), and a browser loading the
     // shell must not resume a PTY paused on a saturated desktop xterm (the tabs.list rule).
     if (viewId === desktopViewId(windowId)) for (const o of stack) if (o.info.kind === 'terminal') this.pty.resetFlow(o.id)
+    // Server mode: an html page nobody holds (opened, or left, with no browser attached) goes to the
+    // first browser to list the stack. The view is the router's caller, a live view of this window.
+    let taken = false
+    if (this.options.server === true && isRemoteViewId(viewId)) {
+      for (const o of stack) {
+        if (o.info.kind !== 'html' || o.holder !== undefined) continue
+        this.hold(o, viewId)
+        this.log(`overlay ${o.id}: its waiting page went to view ${viewId}`)
+        taken = true
+      }
+    }
     // The html pages it holds reload with it: an opener's posts wait again until each one's port is
     // up, and the loader is back until the page is ready again (a `manual` page calls ready() once
     // more). A page another view holds did not reload. A url view and a PTY live in main and do
     // not reload with the renderer.
     for (const o of stack) if (o.info.kind === 'html' && o.holder === viewId) this.reloading(o)
+    // The other views (the hidden page included) learn who holds it now.
+    if (taken) this.changed(windowId)
     return this.infos(windowId)
   }
 
@@ -672,6 +702,8 @@ export class OverlayManager {
   take(windowId: number, viewId: ViewId, overlayId: string): boolean {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind !== 'html') return false
+    // Server mode: the hidden page never holds a page (nothing there asks; refused all the same).
+    if (this.options.server === true && !isRemoteViewId(viewId)) return false
     if (overlay.holder === viewId) return true
     this.hold(overlay, viewId)
     this.reloading(overlay)
@@ -682,7 +714,8 @@ export class OverlayManager {
 
   /**
    * A view is gone (a browser left): the html pages it held go back to their window's desktop view,
-   * which loads them, so an overlay is never left with nobody able to show or answer it.
+   * which loads them, so an overlay is never left with nobody able to show or answer it. In server
+   * mode they go to another browser of the window instead, else wait for the first to list them.
    */
   viewGone(viewId: ViewId): void {
     // A desktop view goes with its window (whose overlays close with it): only its hidden mark here.
@@ -695,20 +728,40 @@ export class OverlayManager {
     const touched = new Set<number>()
     for (const overlay of this.byId.values()) {
       if (overlay.holder !== viewId) continue
-      this.hold(overlay, desktopViewId(overlay.windowId))
+      this.hold(
+        overlay,
+        this.options.server === true ? this.browserHolder(overlay.windowId, viewId) : desktopViewId(overlay.windowId)
+      )
       this.reloading(overlay)
       touched.add(overlay.windowId)
     }
     for (const windowId of touched) this.changed(windowId)
   }
 
-  /** `viewId` holds the html overlay's page now; `info.heldBy` names a browser, absent for the desktop. */
-  private hold(overlay: Overlay, viewId: ViewId): void {
-    overlay.holder = viewId
+  /**
+   * `viewId` holds the html overlay's page now; `info.heldBy` names a browser, absent for the desktop.
+   * Undefined (server mode, no browser attached): nobody holds it, so no view's reports count and the
+   * opener's posts wait in the outbox (`pageReady` stays false) until a browser lists the stack.
+   */
+  private hold(overlay: Overlay, viewId: ViewId | undefined): void {
+    if (viewId === undefined) delete overlay.holder
+    else overlay.holder = viewId
     const info = { ...overlay.info }
-    if (isRemoteViewId(viewId)) info.heldBy = { viewId, device: this.options.deviceOf?.(viewId) ?? viewId }
+    if (viewId !== undefined && isRemoteViewId(viewId)) info.heldBy = { viewId, device: this.options.deviceOf?.(viewId) ?? viewId }
     else delete info.heldBy
     overlay.info = info
+  }
+
+  /**
+   * Server mode: the browser view of `windowId` to hold a page (the last to act, else the first
+   * attached), never `except` (the view leaving) nor a desktop view; undefined when none is attached.
+   */
+  private browserHolder(windowId: number, except?: ViewId): ViewId | undefined {
+    for (const viewId of this.options.browserViews?.(windowId) ?? []) {
+      if (viewId === except || !isRemoteViewId(viewId)) continue
+      if (this.options.isViewLive?.(viewId, windowId) ?? true) return viewId
+    }
+    return undefined
   }
 
   /** The html overlay's page loads anew (a reload, a take): posts wait for its port, the loader is back. */

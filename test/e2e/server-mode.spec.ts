@@ -384,6 +384,64 @@ test('server mode: Move to Trash from Files is confirmed in the browser; the res
   }
 })
 
+// plan Task 19 (design-web.md §9.8): an html overlay with no browser origin is held by a browser, never
+// by the hidden page. One opened while no browser is attached waits and goes to the first to join;
+// `ccc overlay` from a Claude tab goes to the browser that typed it. Neither shows "Take over", and
+// the answer given in the browser reaches the opener.
+const ASK_PAGE = `<!doctype html><p>question page</p><button id="send">Send</button><script>
+  let port
+  window.addEventListener('message', (e) => { if (e.ports[0]) port = e.ports[0] })
+  document.getElementById('send').addEventListener('click', () => {
+    port?.postMessage({ type: 'result', value: 'answered over ' + location.protocol })
+  })
+</script>`
+
+test('server mode: html overlays are held by a browser; ccc overlay from a Claude tab is answered there', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer()
+  const { cockpit } = server
+  // No browser yet: the overlay waits with nobody holding it.
+  const handle = await cockpit.hook<number | undefined>('openOverlay', cockpit.projectDir, { kind: 'html', html: ASK_PAGE, title: 'Early' })
+  if (handle === undefined) throw new Error('no window for the project')
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const overlay = page.locator('.overlay[data-kind="html"]')
+    // The first browser to join holds it: the page is here, with no "Open on …" and no Take over.
+    await expect(overlay.frameLocator('iframe').getByText('question page')).toBeVisible()
+    await expect(overlay.getByTestId('held-elsewhere')).toHaveCount(0)
+    await expect(overlay.getByRole('button', { name: 'Take over' })).toHaveCount(0)
+    await overlay.frameLocator('iframe').getByRole('button', { name: 'Send' }).click()
+    await expect
+      .poll(async () => (await cockpit.hook<{ result?: unknown } | undefined>('overlayResult', handle))?.result)
+      .toEqual({ kind: 'value', value: 'answered over http:' })
+    await expect(overlay).toHaveCount(0)
+
+    // `ccc overlay --html` from a Claude tab the browser typed into: the page opens in that browser.
+    const file = join(cockpit.root, 'ask.html')
+    writeFileSync(file, ASK_PAGE)
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await browser.waitForTerminalText('FAKE-CLAUDE banner')
+    await page.locator('.terminal-view:not([hidden]) .xterm').click()
+    await page.keyboard.type(`/ccc overlay --html ${file}`)
+    await page.keyboard.press('Enter')
+    const frame = overlay.frameLocator('iframe')
+    await expect(frame.getByText('question page')).toBeVisible()
+    await expect(overlay.getByTestId('held-elsewhere')).toHaveCount(0)
+    await expect(overlay.getByRole('button', { name: 'Take over' })).toHaveCount(0)
+    await frame.getByRole('button', { name: 'Send' }).click()
+    // The caller (the tab's ccc) got the browser's answer.
+    await browser.waitForTerminalText(/FAKE-CLAUDE ccc exit=0 out=".*answered over http:/, 20_000)
+    await expect(overlay).toHaveCount(0)
+    expect(await cockpit.hook<unknown[]>('overlays', cockpit.projectDir)).toEqual([])
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
 // design-web.md §9.8: with no desktop the browser picker is the picker. It opens a folder by its
 // path on the server (an error for a bad one, in the asking view), lists the recent projects with no
 // window and reopens one, and shows a gone folder as missing. `ccc open <path>` from a server shell

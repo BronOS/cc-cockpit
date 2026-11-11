@@ -1187,6 +1187,167 @@ describe('html overlays held by one view (design-web.md §5.4)', () => {
   })
 })
 
+describe('server mode: html overlays held by browsers only (design-web.md §9.8)', () => {
+  const page = { kind: 'html', src: 'cc-plugin://a.one/chat.html' }
+  const gone = new Set<string>()
+  /** browserViews' answer, as index.ts gives it: the last to act first, then attach order. */
+  let browsers: string[]
+  beforeEach(() => {
+    gone.clear()
+    browsers = []
+  })
+  function serverManager(server = true): { m: OverlayManager; toView: Array<{ viewId: string; payload: unknown }> } {
+    const toView: Array<{ viewId: string; payload: unknown }> = []
+    const m = new OverlayManager({
+      server,
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: <C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]) => {
+        events.push({ windowId, channel, payload })
+      },
+      emitToView: <C extends EventChannel>(viewId: string, _channel: C, payload: IpcEventMap[C]) => {
+        toView.push({ viewId, payload })
+        return !gone.has(viewId)
+      },
+      isViewLive: (viewId) => !gone.has(viewId),
+      browserViews: () => browsers.filter((v) => !gone.has(v)),
+      deviceOf: (viewId) => (viewId === 'web:1' ? 'Phone' : viewId === 'web:2' ? 'Tablet' : viewId === 'web:3' ? 'Laptop' : 'Desktop'),
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    return { m, toView }
+  }
+  function open(m: OverlayManager, view?: string): { result: Promise<OverlayResult>; id: string } {
+    // A channel, so the opener can post (as a plugin's ctx.overlay.start); not passed for ccc's.
+    const result = m.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', view)
+    return { result, id: m.infos(W1).at(-1)!.id }
+  }
+  const messages = (toView: Array<{ viewId: string; payload: unknown }>): Array<[string, string]> =>
+    toView.map((e) => [e.viewId, (e.payload as { message: string }).message])
+
+  it('no origin view: held by the browser that acted last, never the hidden page', async () => {
+    const { m, toView } = serverManager()
+    browsers = ['web:2', 'web:1']
+    const { id, result } = open(m)
+    expect(m.infos(W1)[0]?.heldBy).toEqual({ viewId: 'web:2', device: 'Tablet' })
+    // The hidden page's reports and answers are dropped; it cannot take the page either.
+    m.pageReady(W1, id, 'desktop:1')
+    expect(m.infos(W1)[0]?.loading).toBe(true)
+    expect(m.result(W1, id, 'hidden', 'desktop:1')).toBe(false)
+    expect(m.take(W1, 'desktop:1', id)).toBe(false)
+    expect(m.infos(W1)[0]?.heldBy?.viewId).toBe('web:2')
+    // The holder's page talks and answers.
+    m.post(W1, id, '"hi"')
+    m.pageReady(W1, id, 'web:2')
+    expect(messages(toView)).toEqual([['web:2', '"hi"']])
+    expect(m.result(W1, id, 'yes', 'web:2')).toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'value', value: 'yes' })
+  })
+
+  it("an origin view (a browser's own action) still wins; the desktop's id as origin is not one", () => {
+    const { m } = serverManager()
+    browsers = ['web:2', 'web:1']
+    open(m, 'web:1')
+    expect(m.infos(W1)[0]?.heldBy?.viewId).toBe('web:1')
+    open(m, 'desktop:1')
+    expect(m.infos(W1)[1]?.heldBy?.viewId).toBe('web:2')
+    // An origin browser that left meanwhile: the window's other browser.
+    gone.add('web:1')
+    open(m, 'web:1')
+    expect(m.infos(W1)[2]?.heldBy?.viewId).toBe('web:2')
+  })
+
+  it('a leaving holder passes the page to another browser, which loads it with the queued posts', () => {
+    const { m, toView } = serverManager()
+    browsers = ['web:2', 'web:1']
+    const { id } = open(m)
+    m.pageReady(W1, id, 'web:2')
+    m.post(W1, id, '1')
+    gone.add('web:2')
+    m.viewGone('web:2')
+    expect(lastStack(W1)[0]).toMatchObject({ heldBy: { viewId: 'web:1', device: 'Phone' }, loading: true })
+    m.post(W1, id, '2')
+    // Neither the hidden page nor the old holder delivers it.
+    m.pageReady(W1, id, 'desktop:1')
+    m.pageReady(W1, id, 'web:2')
+    expect(messages(toView)).toEqual([['web:2', '1']])
+    m.pageReady(W1, id, 'web:1')
+    expect(messages(toView)).toEqual([
+      ['web:2', '1'],
+      ['web:1', '2']
+    ])
+  })
+
+  it('with no browser attached the page waits, its posts kept, for the first browser to list the stack', async () => {
+    const { m, toView } = serverManager()
+    const { id, result } = open(m)
+    // Nobody holds it: no heldBy, and nothing reaches any view.
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    m.post(W1, id, '"queued"')
+    m.pageReady(W1, id, 'desktop:1')
+    expect(m.result(W1, id, 'hidden', 'desktop:1')).toBe(false)
+    expect(toView).toEqual([])
+    expect(events.filter((e) => e.channel === 'overlays.message')).toEqual([])
+    // The hidden page's own reload (list) does not take it.
+    m.list(W1, 'desktop:1')
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    // The first browser lists the stack: it holds the page now, and the window's views are told.
+    const listed = m.list(W1, 'web:3')
+    expect(listed[0]).toMatchObject({ heldBy: { viewId: 'web:3', device: 'Laptop' }, loading: true })
+    expect(lastStack(W1)[0]?.heldBy?.viewId).toBe('web:3')
+    // A second browser listing later does not move it.
+    m.list(W1, 'web:1')
+    expect(m.infos(W1)[0]?.heldBy?.viewId).toBe('web:3')
+    m.pageReady(W1, id, 'web:3')
+    expect(messages(toView)).toEqual([['web:3', '"queued"']])
+    expect(m.result(W1, id, 'answer', 'web:3')).toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'value', value: 'answer' })
+  })
+
+  it('the last holder leaving with no other browser: the page waits again, then goes to the next to list', () => {
+    const { m, toView } = serverManager()
+    browsers = ['web:1']
+    const { id } = open(m)
+    m.pageReady(W1, id, 'web:1')
+    gone.add('web:1')
+    m.viewGone('web:1')
+    expect(lastStack(W1)[0]).not.toHaveProperty('heldBy')
+    expect(lastStack(W1)[0]?.loading).toBe(true)
+    m.post(W1, id, '"later"')
+    m.pageReady(W1, id, 'desktop:1')
+    expect(toView).toEqual([])
+    m.list(W1, 'web:2')
+    m.pageReady(W1, id, 'web:2')
+    expect(messages(toView)).toEqual([['web:2', '"later"']])
+  })
+
+  it('a browser may still take over; terminal overlays are never held', () => {
+    const { m } = serverManager()
+    browsers = ['web:1', 'web:2']
+    const { id } = open(m)
+    expect(m.take(W1, 'web:2', id)).toBe(true)
+    expect(m.infos(W1)[0]?.heldBy?.viewId).toBe('web:2')
+    void m.open(W1, terminal(['sleep', '9']), 'test')
+    m.list(W1, 'web:3')
+    expect(m.infos(W1)[1]).not.toHaveProperty('heldBy')
+  })
+
+  it('on the desktop the rule is unchanged: the desktop holds by default and takes back from a leaving browser', () => {
+    const { m } = serverManager(false)
+    browsers = ['web:1']
+    const { id } = open(m)
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    m.list(W1, 'web:1')
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    expect(m.take(W1, 'web:1', id)).toBe(true)
+    m.viewGone('web:1')
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    expect(m.take(W1, 'desktop:1', id)).toBe(true)
+  })
+})
+
 describe('window close and quit', () => {
   it('open for a window that closed meanwhile rejects and creates nothing', async () => {
     const m = manager()

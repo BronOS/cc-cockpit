@@ -858,6 +858,14 @@ function start(server: boolean): void {
       return views.toView(viewId, channel, payload)
     },
     isViewLive: (viewId, windowId) => views.windowOf(viewId) === windowId,
+    // Server mode: who holds an html overlay with no browser origin (design-web.md §9.8): the
+    // window's browser that acted last (`selections`, defined below; this runs at an open or a
+    // view's leaving), then the others in attach order. Never the hidden page.
+    browserViews: (windowId) => {
+      const live = views.viewsOf(windowId).filter((v) => isRemoteViewId(v))
+      const last = selections.lastActing(live)
+      return last === undefined ? live : [last, ...live.filter((v) => v !== last)]
+    },
     deviceOf: (viewId) => viewDevice(viewId),
     commandForChord,
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).

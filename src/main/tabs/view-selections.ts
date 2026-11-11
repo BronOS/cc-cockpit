@@ -42,6 +42,16 @@ export class ViewSelections {
   }
 
   /**
+   * Of `candidates`, the view that acted last (selected or typed into a tab), or undefined when none
+   * of them has acted. Server mode's html overlay holder (overlay-manager.ts browserViews).
+   */
+  lastActing(candidates: readonly ViewId[]): ViewId | undefined {
+    let last: ViewId | undefined
+    for (const viewId of this.byView.keys()) if (candidates.includes(viewId)) last = viewId
+    return last
+  }
+
+  /**
    * A view went away (a socket closed, a window closed). When another view of its project remains,
    * the newest one's selection becomes the active tab again; when it was not the last to act, that
    * is the active tab already and nothing changes.

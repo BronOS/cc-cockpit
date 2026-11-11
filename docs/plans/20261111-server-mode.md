@@ -814,15 +814,15 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `src/main/overlays/overlay-manager.ts` (`:20-25`, `:568`, `:689-702`), `src/main/index.ts` (the last-acting
   view it is given), `test/unit/overlay-manager.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] in server mode an HTML overlay with no origin view (`ccc overlay` from a Claude tab, the reviewer from a plugin
+- [x] in server mode an HTML overlay with no origin view (`ccc overlay` from a Claude tab, the reviewer from a plugin
       command or a timer) is held by the window's last-acting browser view, else by the first browser to list it, never
       by the hidden page
-- [ ] a holder that leaves passes it to another browser; with none attached it waits for the first, its queued messages kept
-- [ ] the desktop is unchanged: the desktop view holds by default and takes back from a leaving browser
-- [ ] write tests: no origin view goes to the last-acting browser, a leaving holder passes it on, none attached waits,
+- [x] a holder that leaves passes it to another browser; with none attached it waits for the first, its queued messages kept
+- [x] the desktop is unchanged: the desktop view holds by default and takes back from a leaving browser
+- [x] write tests: no origin view goes to the last-acting browser, a leaving holder passes it on, none attached waits,
       never the desktop view in server mode; every existing holder test passes
-- [ ] e2e: `ccc overlay` from a Claude tab opens in the browser with no "Take over" and its answer reaches the caller
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `overlays`, `web-access-plugins`) - must pass before next task
+- [x] e2e: `ccc overlay` from a Claude tab opens in the browser with no "Take over" and its answer reaches the caller
+- [x] run tests and `npm run test:e2e` (`server-mode`, `overlays`, `web-access-plugins`) - must pass before next task
 
 ### Task 20: The web access card and devices in a browser [model: opus]
 
