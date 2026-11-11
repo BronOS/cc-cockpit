@@ -156,7 +156,9 @@ function scripted(line) {
     // stderr is cut: a usage error prints the whole USAGE text (about 60 terminal rows once `ccc web` was in
     // it), and a line that tall scrolls `exit=<code>`, its first words, out of the visible terminal the
     // specs read (cli.spec 'session note and steps' waited for 'exit=2').
-    const err = r.stderr.length > MAX_ECHOED_ERR ? `${r.stderr.slice(0, MAX_ECHOED_ERR)}...` : r.stderr
+    // ENOENT (no `ccc` on PATH) leaves stderr undefined.
+    const stderr = String(r.stderr ?? '')
+    const err = stderr.length > MAX_ECHOED_ERR ? `${stderr.slice(0, MAX_ECHOED_ERR)}...` : stderr
     console.log(`FAKE-CLAUDE ccc exit=${r.status} out=${JSON.stringify(r.stdout)} err=${JSON.stringify(err)}`)
     return true
   }
