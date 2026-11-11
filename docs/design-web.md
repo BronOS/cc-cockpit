@@ -250,7 +250,9 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   overlay keeps a size per view too: the first view to measure it sizes it, typing in another view moves it there
   at once, and its flow control is the desktop page's acks alone. With no headless copy to answer for it, only the
   view that sizes an overlay (the desktop's until another takes it) answers its queries; the other views' replies are
-  stripped from their input as for tabs.
+  stripped from their input as for tabs. Hidden views follow the tab rule: a hidden view sizes (and so answers) an
+  overlay only as its one measured view, and a hidden sizer hands both to the visible view active last, since a
+  throttled renderer answers late and the late reply reads as typed keys.
 - **Input from any view.** Input is the person's: it sets `typed` like desktop typing, and the send gate applies
   unchanged. Two views typing at once interleave, as two keyboards on one machine would; each view shows which
   device typed last in a tab. Turn-taking is a multi-user concern (§10).

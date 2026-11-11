@@ -27,6 +27,7 @@ import { WebviewManager, type WebviewView } from '../../src/main/webview/webview
 import { OVERLAY_CLICK_TIMEOUT_MS, type CleanTypeButton } from '../../src/shared/overlay-buttons'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 import { PluginPages } from '../../src/main/web/plugin-pages'
+import { desktopViewId } from '../../src/shared/views'
 
 const W1 = 1
 const W2 = 2
@@ -1372,6 +1373,76 @@ describe('exactly one result', () => {
     m.viewGone('web:1')
     m.input(W1, id, da1)
     expect(pty.writes).toEqual([da1 + osc11, 'j', da1, '\x1b[I', da1])
+  })
+
+  it('a hidden desktop that measured first hands size and answering to a browser that measured', () => {
+    const m = manager()
+    void m.open(W1, terminal(['revdiff']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    const da1 = '\x1b[?62;22c'
+    // The window is minimized: its local refit still arrives before the browser's over the WebSocket.
+    m.viewVisible(desktopViewId(W1), false)
+    m.resize(W1, id, 120, 40)
+    expect(pty.resizes).toEqual([[120, 40]])
+    m.resize(W1, id, 50, 30, 'web:1')
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    // The browser answers; the throttled desktop's late reply is stripped, and its refit is only remembered.
+    m.input(W1, id, da1, 'web:1')
+    m.input(W1, id, da1)
+    m.resize(W1, id, 130, 40)
+    expect(pty.writes).toEqual([da1])
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    // A hidden desktop typing (a stray key) does not take it either.
+    m.input(W1, id, 'j')
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    // Shown again, the desktop takes it back only once the browser is hidden or it types.
+    m.viewVisible(desktopViewId(W1), true)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    m.input(W1, id, 'k')
+    expect(pty.resizes).toEqual([[120, 40], [50, 30], [130, 40]])
+  })
+
+  it('a hidden sizer hands the overlay to the visible view active last; nobody visible keeps the size', () => {
+    const m = manager()
+    void m.open(W1, terminal(['revdiff']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    const da1 = '\x1b[?62;22c'
+    m.resize(W1, id, 120, 40)
+    m.resize(W1, id, 60, 20, 'web:2')
+    m.resize(W1, id, 50, 30, 'web:1')
+    m.input(W1, id, 'j', 'web:1')
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    // The browser tab goes to the background: web:2 measured last after it, so it sizes and answers.
+    m.viewVisible('web:1', false)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30], [60, 20]])
+    m.input(W1, id, da1, 'web:1')
+    m.input(W1, id, da1, 'web:2')
+    expect(pty.writes).toEqual(['j', da1])
+    // web:2 hidden too: the desktop is the one visible view left.
+    m.viewVisible('web:2', false)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30], [60, 20], [120, 40]])
+    // Every view hidden: the size stays, the desktop answers until one shows again, which takes it.
+    m.viewVisible(desktopViewId(W1), false)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30], [60, 20], [120, 40]])
+    m.input(W1, id, da1)
+    expect(pty.writes).toEqual(['j', da1, da1])
+    m.viewVisible('web:1', true)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30], [60, 20], [120, 40], [50, 30]])
+  })
+
+  it('a hidden desktop that is the only view still sizes and answers (web access off)', () => {
+    const m = manager()
+    void m.open(W1, terminal(['cat']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    m.viewVisible(desktopViewId(W1), false)
+    m.resize(W1, id, 80, 24)
+    m.resize(W1, id, 100, 30)
+    m.input(W1, id, '\x1b[?62;22c')
+    expect(pty.resizes).toEqual([[80, 24], [100, 30]])
+    expect(pty.writes).toEqual(['\x1b[?62;22c'])
   })
 
   it('a terminal overlay with the desktop as its only view gets its input as it is (web access off)', () => {

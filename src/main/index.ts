@@ -492,6 +492,8 @@ function start(): void {
       if (visible) hiddenDesktopViews.delete(viewId)
       else hiddenDesktopViews.add(viewId)
       tabs.viewVisible(viewId, visible)
+      // Terminal overlays follow the same marks: a hidden view never answers their queries.
+      overlays.viewVisible(viewId, visible)
     },
     // The window's plugin host (host-manager.ts); `hosts` is defined below, windows open after ready.
     // Runs after startup only (a window event), by which time sendToWindow below exists.
@@ -538,6 +540,7 @@ function start(): void {
       tabs.viewGone(desktopViewId(windowId))
       panelPorts.viewGone(desktopViewId(windowId))
       hiddenDesktopViews.delete(desktopViewId(windowId))
+      overlays.viewGone(desktopViewId(windowId))
       // No window, no selection: a reopened window reports its own once its page loads. Every
       // view's selection of it goes first, so a remote view closing after this hands nothing back.
       selections.closeProject(projectId)
@@ -2110,7 +2113,12 @@ function start(): void {
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
     fit: (projectId, tabId, viewId) => tabs.fit(projectId, tabId, viewId),
     // A window kept running hidden stays hidden for the sizes whatever its page reports.
-    visible: (viewId, visible) => tabs.viewVisible(viewId, visible && !hiddenDesktopViews.has(viewId)),
+    // Terminal overlays take the same marks (overlay-manager.ts viewVisible: who sizes and answers).
+    visible: (viewId, visible) => {
+      const shown = visible && !hiddenDesktopViews.has(viewId)
+      tabs.viewVisible(viewId, shown)
+      overlays.viewVisible(viewId, shown)
+    },
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),
     // A remote view: the plain list (never the desktop's re-attach), and its own terminal flow and
     // joins (web/connection.ts). Only reached by a web caller, which exists once webConnections does.
