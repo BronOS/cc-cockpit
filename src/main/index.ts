@@ -1265,7 +1265,13 @@ function start(): void {
     // spawn time only.
     sock: (): string | undefined => (socket.listening ? sock : undefined),
     lifecycle: {
-      started: (tab) => sessions.tabStarted(tab),
+      started: (tab) => {
+        sessions.tabStarted(tab)
+        // A browser that selected the tab before it had a process joins its terminal now
+        // (web/view-terminals.ts `started`). Only called once a window attached, after
+        // `webConnections` below is defined.
+        webConnections.tabStarted(tab.tabId)
+      },
       // The signal too: a signal death can arrive as code 0 (tabExited maps it to 128 + n).
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
       closed: (tabId) => sessions.tabClosed(tabId),

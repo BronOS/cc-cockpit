@@ -1007,9 +1007,20 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   // `adapted`: a remote view gets the plain list. Attaching is the desktop page's: it resets (or
   // resyncs) the DESKTOP's terminals and runs the window's restore, and a browser joining or
   // reconnecting must leave the desktop exactly as it was; its own terminals start at its select.
-  router.handleProject('tabs.list', (ctx, _payload, view) =>
-    view.remote ? tabs.list(ctx.projectId) : tabs.attach(ctx.projectId, ctx.windowId)
-  )
+  // The desktop's first attach restores the window's saved tabs or opens its first Claude tab, and
+  // it alone gets them in this reply: a browser that joined while that was under way took a list
+  // without them (its own `tabs.list` never waits for the desktop's restore, which may not run until
+  // the desktop page loads). So each tab the attach brought is announced to the other views, merged
+  // by id and generation there; with no browser attached that tells nobody, as before.
+  router.handleProject('tabs.list', async (ctx, _payload, view) => {
+    if (view.remote) return tabs.list(ctx.projectId)
+    const before = new Set(tabs.list(ctx.projectId).map((t) => t.id))
+    const list = await tabs.attach(ctx.projectId, ctx.windowId)
+    for (const tab of list) {
+      if (!before.has(tab.id)) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.added', payload: tab })
+    }
+    return list
+  })
 
   router.handleProject('tabs.commands', (ctx) => tabs.commands(ctx.projectId))
 

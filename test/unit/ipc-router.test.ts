@@ -733,6 +733,8 @@ describe('registerTabHandlers', () => {
     await ipc.invoke('tabs.ack', 11, [{ tabId: 't1', count: 5 }])
     await ipc.invoke('tabs.selected', 12, [{ tabId: 't1', projectId: PROJECT_A }])
     expect(calls).toEqual([
+      // The tabs before the attach: the ones it restores are announced to the other views.
+      ['list', PROJECT_A],
       ['attach', PROJECT_A, 1],
       ['create', PROJECT_B, { kind: 'claude', cwd: 'sub' }, 2],
       // The closing tab's generation, for the window's other views (TabHandlerDeps.others).

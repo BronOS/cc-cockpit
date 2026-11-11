@@ -20,6 +20,11 @@
 // from before a resync may land after it (up to `lowWater`), clamped at zero: a looser limit for a
 // moment, never a stuck one.
 //
+// A tab the view selected while the mirror did not hold it (a restored command tab waiting for its
+// first Restart has no pty, so nothing to mirror) is remembered and joined when it starts
+// (`started`, from TabManager's lifecycle): a restart keeps the page's selection, so the page never
+// selects it again, and its terminal would stay blank until the person switched tabs.
+//
 // The connection wires `select` to the view's own tab selection and `ack` to its acks. Never
 // trusted: the tab must pass `canFollow` (a tab of the view's own window, checked by main), whatever
 // id the page sent.
@@ -66,6 +71,8 @@ interface Followed {
 
 export class ViewTerminals {
   private readonly followed = new Map<string, Followed>()
+  /** Tabs selected while the mirror did not hold them: joined at their start (see the header). */
+  private readonly waiting = new Set<string>()
   private disposed = false
   private readonly high: number
   private readonly low: number
@@ -86,9 +93,24 @@ export class ViewTerminals {
     if (!this.deps.canFollow(tabId)) return false
     const f: Followed = { leave: null, join: null, unacked: 0, behind: false, failedJoins: 0 }
     this.followed.set(tabId, f)
-    if (this.join(tabId, f)) return true
+    if (this.join(tabId, f)) {
+      this.waiting.delete(tabId)
+      return true
+    }
     this.followed.delete(tabId)
+    this.waiting.add(tabId)
     return false
+  }
+
+  /**
+   * The tab's process started (a new tab, a restart, a restored tab's first run): the mirror holds
+   * it now. A tab the view selected before, when there was nothing to join, is joined; any other
+   * is left alone (the view joins it when it selects it).
+   */
+  started(tabId: string): void {
+    if (this.disposed || !this.waiting.has(tabId)) return
+    this.waiting.delete(tabId)
+    this.select(tabId)
   }
 
   /** The page wrote `count` characters of the tab's live output into its terminal. */
@@ -126,6 +148,7 @@ export class ViewTerminals {
   /** The view is gone: leave every tab; nothing is sent after this. */
   dispose(): void {
     this.disposed = true
+    this.waiting.clear()
     for (const tabId of [...this.followed.keys()]) this.leave(tabId)
   }
 

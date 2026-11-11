@@ -223,6 +223,8 @@ The `ready` snapshot a joining view gets carries all of it: tabs, layout, the ov
 CLI dialogs, panel headers and badges, slot frames. The browser bridge hands the pending close asks to the shell's
 `sessions.closeAsk` listener when it subscribes (after `ready`), as if they had just arrived. A terminal overlay
 joined mid-run shows only output from the join on (it redraws on the view's resize); its scrollback is not mirrored.
+A view's `tabs.list` never waits for the desktop's first attach (which restores the window's tabs or opens its first
+Claude tab); the tabs that attach brings are announced to the other views as `tabs.added`.
 
 ### 5.2 Terminals
 
@@ -233,7 +235,8 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   of chunk N (xterm's `write` is asynchronous, so serializing earlier would miss parsed-later bytes), tagged `seq: N`;
   its live stream starts at N+1, chunks held for it meanwhile. A chunk boundary can fall inside an escape sequence,
   and a snapshot carries no parser state: the snapshot waits for the parser's ground state (or a short timeout). Only
-  the visible tab is snapshotted; others when selected.
+  the visible tab is snapshotted; others when selected. A tab selected before it has a process (a restored command
+  tab waiting for its first Restart) is joined when it starts, since a restart keeps the view's selection.
 - **Every view, desktop included, drops and resyncs.** A view whose buffer passes a limit stops getting live data and
   is resynced with a snapshot. The desktop renderer follows the same rule instead of today's `tabs.ack` pausing the
   pty, so `cat bigfile` cannot flood it (the freeze `HIGH_WATER` exists to prevent); `TabManager.attach` →

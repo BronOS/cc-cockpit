@@ -23,7 +23,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 /** main's wiring of the tab handlers (index.ts) over a real TabManager; `told` records `others`. */
-function setup(options: { others?: boolean } = {}) {
+function setup(options: { others?: boolean; attach?: TabHandlerDeps['attach'] } = {}) {
   const tabs = new TabManager({
     backend,
     projectPath: (id) => (id === P ? root : undefined),
@@ -61,6 +61,7 @@ function setup(options: { others?: boolean } = {}) {
     flag: (projectId, tabId, patch) => tabs.setFlag(projectId, tabId, patch),
     toggleFlag: (projectId, tabId) => tabs.toggleFlag(projectId, tabId),
     rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
+    attach: options.attach ?? ((projectId) => tabs.attach(projectId)),
     ...(options.others === false ? { others: undefined } : { others: (windowId, except, event) => void told.push({ windowId, except, event }) })
   })
   const desktopFrame = { sender: { id: 11 }, senderFrame: { parent: null, url: 'file:///app/index.html' } }
@@ -150,6 +151,37 @@ describe('a tab-list change one view makes reaches the others', () => {
     await expect(desktop('tabs.reorder', { tabId: 'nope', toIndex: 0 })).rejects.toThrow()
     await expect(desktop('tabs.reorder', { tabId: a.id, toIndex: 1.5 })).rejects.toThrow()
     expect(told).toHaveLength(2)
+  })
+
+  it("tabs the desktop's attach restores are announced to a browser that joined before they existed", async () => {
+    // index.ts's attach: it awaits the window's restore (and first tab) before taking the list.
+    let restore!: () => void
+    const restored = new Promise<void>((resolve) => (restore = resolve))
+    const r = setup({
+      attach: async (projectId) => {
+        await restored
+        const tabs = r.tabs
+        // The restore runs at the first attach only.
+        if (tabs.list(projectId).length === 0) {
+          tabs.create(projectId, { kind: 'claude' })
+          tabs.create(projectId, { kind: 'shell' })
+        }
+        return tabs.attach(projectId)
+      }
+    })
+    const attached = r.desktop('tabs.list')
+    // The browser joins while the desktop's restore is under way: an empty list, and it never waits.
+    await expect(r.remote('web:1', 'tabs.list')).resolves.toEqual([])
+    restore()
+    const list = (await attached) as Array<{ id: string }>
+    expect(list).toHaveLength(2)
+    expect(r.told).toEqual(list.map((tab) => ({ windowId: 1, except: 'desktop:1', event: { channel: 'tabs.added', payload: tab } })))
+    // A desktop reload attaches again: the tabs were there before, nothing is announced.
+    await r.desktop('tabs.list')
+    expect(r.told).toHaveLength(2)
+    // A browser's own list announces nothing either.
+    await r.remote('web:1', 'tabs.list')
+    expect(r.told).toHaveLength(2)
   })
 
   it('works with nobody to tell (no `others` wired)', async () => {

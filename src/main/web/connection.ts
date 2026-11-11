@@ -236,6 +236,14 @@ export class WebConnections {
   }
 
   /**
+   * A tab's process started (TabManager's lifecycle `started`): every view that selected it while
+   * it had none joins its stream now (view-terminals.ts `started`).
+   */
+  tabStarted(tabId: string): void {
+    for (const conn of this.open.values()) conn.terminalStarted(tabId)
+  }
+
+  /**
    * The name of the device behind an open view (TabInfo.typedBy), as it was when the view
    * connected; undefined for a view that is gone. The requester's own text, plain (devices.ts).
    */
@@ -430,6 +438,11 @@ export class WebConnection {
   /** The page shows this tab now (router `viewSelect`); a tab not of this window is refused there. */
   terminalSelect(tabId: string): void {
     if (!this.closed) this.terminals?.select(tabId)
+  }
+
+  /** The tab's process started (WebConnections.tabStarted). */
+  terminalStarted(tabId: string): void {
+    if (!this.closed) this.terminals?.started(tabId)
   }
 
   /**

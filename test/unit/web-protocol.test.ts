@@ -782,7 +782,10 @@ describe('through the gateway', () => {
 /** A mirror the test drives: every join is recorded with its view, and its leave counted. */
 class FakeMirror implements TerminalSource {
   readonly joins: Array<{ tabId: string; view: MirrorView; left: boolean }> = []
-  join(tabId: string, view: MirrorView): () => void {
+  /** Tabs with no process yet (a restored command tab before its first Restart): not held. */
+  readonly notHeld = new Set<string>()
+  join(tabId: string, view: MirrorView): (() => void) | undefined {
+    if (this.notHeld.has(tabId)) return undefined
     const entry = { tabId, view, left: false }
     this.joins.push(entry)
     return () => {
@@ -924,6 +927,26 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
     expect(logs.some((l) => l.includes(`no snapshot after ${MAX_REJOINS} joins`))).toBe(true)
     for (let i = MAX_REJOINS; i < 2 * MAX_REJOINS; i++) mirror.joins[i]!.view.closed()
     expect(ws.closedWith?.code).toBe(CLOSE.failed)
+  })
+
+  it('a tab selected before it had a process is joined when it starts; a closed view joins nothing', () => {
+    const { conns, mirror, ws, connect } = terminals()
+    // A second view of the window (web:2) that never selected the tab.
+    connect('p1')
+    mirror.notHeld.add('p1-t1')
+    conns.select('web:1', 'p1-t1')
+    expect(mirror.joins).toEqual([])
+    // Restarted (the page's selection unchanged, so no new select): main's lifecycle tells the views.
+    mirror.notHeld.delete('p1-t1')
+    conns.tabStarted('p1-t1')
+    // One join, web:1's: the other view never selected the tab.
+    expect(mirror.joins.map((j) => j.tabId)).toEqual(['p1-t1'])
+    mirror.notHeld.add('p1-t2')
+    conns.select('web:1', 'p1-t2')
+    ws.drop()
+    mirror.notHeld.delete('p1-t2')
+    conns.tabStarted('p1-t2')
+    expect(mirror.joins).toHaveLength(1)
   })
 
   it('the socket closing leaves every followed tab', () => {

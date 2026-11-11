@@ -1251,6 +1251,40 @@ describe('ViewTerminals', () => {
     expect(vt.following()).toEqual([])
   })
 
+  it('a tab selected before it had a process is joined when it starts, a foreign one never', async () => {
+    m = mirror()
+    m.start()
+    const { vt, pages } = view()
+    // A restored command tab waiting for its first Restart: no pty, nothing in the mirror.
+    expect(vt.select('waiting')).toBe(false)
+    expect(vt.select('foreign')).toBe(false)
+    // Another tab starting changes nothing.
+    m.spawned('other', 20, 5)
+    vt.started('other')
+    expect(vt.following()).toEqual([])
+    // The restart keeps the page's selection, so the page never selects again: the start joins it.
+    m.spawned('waiting', 20, 5)
+    m.data('waiting', 'running now\r\n')
+    vt.started('waiting')
+    expect(vt.following()).toEqual(['waiting'])
+    await settle(m, 'waiting')
+    expect(pages.get('waiting')!.snapshots).toBe(1)
+    expect(await pages.get('waiting')!.text()).toBe(await mirrorText(m, 'waiting'))
+    // A later start (another restart) of a followed tab joins nothing twice.
+    vt.started('waiting')
+    await settle(m, 'waiting')
+    expect(pages.get('waiting')!.snapshots).toBe(1)
+    m.spawned('foreign', 20, 5)
+    vt.started('foreign')
+    expect(vt.following()).toEqual(['waiting'])
+    // Nothing once disposed.
+    expect(vt.select('late')).toBe(false)
+    vt.dispose()
+    m.spawned('late', 20, 5)
+    vt.started('late')
+    expect(vt.following()).toEqual([])
+  })
+
   it('forgets a closed tab, leaves and rejoins, and sends nothing once disposed', async () => {
     m = mirror()
     m.start()
