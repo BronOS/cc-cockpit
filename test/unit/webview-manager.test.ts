@@ -51,6 +51,8 @@ let home: string
 let proj: string
 let views: FakeView[]
 let external: string[]
+/** The window each external open was for (the openExternal adapter's target). */
+let externalWindows: number[]
 let chords: { windowId: number; chord: string }[]
 let refocused: number[]
 let closedPartitions: string[]
@@ -80,6 +82,7 @@ beforeEach(() => {
   symlinkSync(join(home, 'top.html'), join(proj, 'alias.html'))
   views = []
   external = []
+  externalWindows = []
   chords = []
   refocused = []
   closedPartitions = []
@@ -122,7 +125,10 @@ beforeEach(() => {
         return view
       }
     },
-    openExternal: (url) => external.push(url),
+    openExternal: (url, windowId) => {
+      external.push(url)
+      externalWindows.push(windowId)
+    },
     focusShell: (windowId) => refocused.push(windowId),
     partitionClosed: (partition) => closedPartitions.push(partition),
     isWindowFocused: (windowId) => !unfocused.has(windowId),
@@ -388,14 +394,18 @@ describe('WebviewManager', () => {
     expect(allow(foreign, false)).toBe(false)
   })
 
-  it('sends window.open to the system browser for http(s) only', async () => {
+  it('sends window.open to the openExternal adapter for http(s) only, with the view\'s window', async () => {
     await manager.navigate(owner(), 'https://example.com/')
+    await manager.navigate(owner('view', 'a.one', 8), 'https://example.com/')
     const view = views[0] as FakeView
     view.events.openWindow('https://other.example/')
     view.events.openWindow('file:///etc/passwd')
     view.events.openWindow('javascript:alert(1)')
-    expect(external).toEqual(['https://other.example/'])
-    expect(views).toHaveLength(1)
+    ;(views[1] as FakeView).events.openWindow('https://eight.example/')
+    expect(external).toEqual(['https://other.example/', 'https://eight.example/'])
+    // The window of the view whose page asked: in server mode its browsers get the link notice.
+    expect(externalWindows).toEqual([WIN, 8])
+    expect(views).toHaveLength(2)
   })
 
   it('caps window.open per view: the rest of a loop is dropped until the window passes', async () => {

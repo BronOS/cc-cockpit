@@ -9,7 +9,7 @@
 // - every permission (camera, notifications, ...), device and screen capture denied, downloads
 //   cancelled;
 // - `window.open` and navigation to another site go to the system browser (http/https only).
-import { BrowserWindow, shell, WebContentsView, type Session } from 'electron'
+import { BrowserWindow, WebContentsView, type Session } from 'electron'
 import {
   chordOfInput,
   overlayUrlOf,
@@ -34,18 +34,26 @@ function harden(session: Session): void {
   session.on('will-download', (event) => event.preventDefault())
 }
 
-/** Hand a link to the system browser when it is http(s); anything else is dropped. */
-function openExternal(url: string): void {
-  let href: string
-  try {
-    href = overlayUrlOf(url)
-  } catch {
-    return
-  }
-  shell.openExternal(href).catch((err: unknown) => console.warn('open external failed', err))
-}
+/**
+ * What a URL overlay's page does with a link that leaves it: the openExternal adapter
+ * (external/open-external.ts) for the overlay's window, which main wires in.
+ */
+export type OverlayLinkOpener = (url: string, windowId: number) => Promise<void>
 
 export class ElectronUrlViewFactory implements UrlViewFactory {
+  constructor(private readonly open: OverlayLinkOpener) {}
+
+  /** Hand a link on when it is http(s); anything else is dropped. */
+  private openExternal(url: string, windowId: number): void {
+    let href: string
+    try {
+      href = overlayUrlOf(url)
+    } catch {
+      return
+    }
+    this.open(href, windowId).catch((err: unknown) => console.warn('open external failed', err))
+  }
+
   create(
     windowId: number,
     url: string,
@@ -73,7 +81,7 @@ export class ElectronUrlViewFactory implements UrlViewFactory {
     const wc = view.webContents
     harden(wc.session)
     wc.setWindowOpenHandler(({ url: target }) => {
-      openExternal(target)
+      this.openExternal(target, windowId)
       return { action: 'deny' }
     })
     // The page went away by itself (renderer crash or kill, OOM, the page closed itself): the
@@ -98,7 +106,7 @@ export class ElectronUrlViewFactory implements UrlViewFactory {
     wc.on('will-navigate', (event) => {
       if (sameSite(wc.getURL() || url, event.url)) return
       event.preventDefault()
-      openExternal(event.url)
+      this.openExternal(event.url, windowId)
     })
     // Server redirects. The first load may land on another host (example.com -> www.example.com,
     // a login hop) and the caller chose that URL, so only the scheme is checked until a page has
@@ -117,7 +125,7 @@ export class ElectronUrlViewFactory implements UrlViewFactory {
       }
       if (httpLike && (!committed || sameSite(wc.getURL() || url, event.url))) return
       event.preventDefault()
-      if (httpLike) openExternal(event.url)
+      if (httpLike) this.openExternal(event.url, windowId)
     })
     // Keys typed into the page never reach the shell UI; the overlay keys are resolved in main.
     wc.on('before-input-event', (event, input) => {

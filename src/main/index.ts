@@ -6,8 +6,9 @@
 // `notifications/electron-notification.ts`, `files/electron-shell.ts` for the file calls of `shell`
 // behind ctx.files.reveal / openWithSystem / trash; `safeStorage` is used only through
 // `secrets/secret-store.ts`; `dialog` only in `dialogs/electron-dialog.ts`, and never called in server
-// mode), never from logic modules that unit tests load. This file still calls
-// `shell.openExternal` itself, always through a lambda the e2e recorder can replace.
+// mode); `shell.openExternal` only in `external/electron-open-external.ts`, reached through the
+// openExternal adapter (`external/open-external.ts`), never on the server in server mode), never from
+// logic modules that unit tests load.
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
 // Playwright e2e run exercises the real adapters.
@@ -20,7 +21,6 @@ import {
   nativeTheme,
   safeStorage,
   session,
-  shell,
   type OpenDialogOptions
 } from 'electron'
 import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from 'node:fs'
@@ -141,6 +141,8 @@ import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
 import { electronDialogs } from './dialogs/electron-dialog'
 import { serverDialogs, type Dialogs } from './dialogs/dialogs'
+import { systemOpenExternal } from './external/electron-open-external'
+import { createOpenExternal, type OpenExternal, type OpenTarget } from './external/open-external'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -287,9 +289,9 @@ function start(server: boolean): void {
   // plugin's secrets) both clean up in it.
   const secretStore = selectSecretStore(process.env, app.isPackaged, () => safeStorageSecretStore(safeStorage))
   const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: warnLog })
-  // ctx.oauth (plugin-oauth.ts). A lambda, not `shell.openExternal` itself: looked up at each
-  // sign-in, so the e2e's recorder that replaces it after launch is what runs (no real browser).
-  const pluginOAuth = new PluginOAuth({ openExternal: (url) => shell.openExternal(url), log: warnLog })
+  // ctx.oauth (plugin-oauth.ts). The auth URL goes through the openExternal adapter (defined below
+  // with the view registry; a sign-in only starts once a host runs), for the window that asked.
+  const pluginOAuth = new PluginOAuth({ openExternal: (url, target) => openExternal(url, target), log: warnLog })
   const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
   // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).
@@ -380,6 +382,10 @@ function start(server: boolean): void {
   const views: ViewRegistry<Electron.MessagePortMain> = new ViewRegistry({
     windowIdOf: (projectId): number | undefined => windows.windowIdOf(projectId)
   })
+  // Every link main opens outside the app (external/open-external.ts): the OS browser on the desktop,
+  // a clickable notice in a browser view, and in server mode never the host's browser. The OS opener
+  // looks shell.openExternal up at each call, so the e2e's recorder that replaces it is what runs.
+  const openExternal: OpenExternal = createOpenExternal({ server, system: systemOpenExternal, views, log: warnLog })
   // App-wide: one theme for every window. The OS appearance only matters until the user picks one.
   const themes = new ThemeService({
     settings: {
@@ -521,7 +527,8 @@ function start(server: boolean): void {
   // only the window being shown again does.
   const hiddenDesktopViews = new Set<ViewId>()
   const windows = new WindowManager({
-    factory: new ElectronWindowFactory(),
+    // A link a window's page asks to open (the reviewer's mail frame) comes from its desktop page.
+    factory: new ElectronWindowFactory((url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) })),
     registry,
     platform: process.platform,
     quit: () => app.quit(),
@@ -718,7 +725,7 @@ function start(server: boolean): void {
   // overlay's program is not a Claude tab) and the socket while main listens on it.
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
-    views: new ElectronUrlViewFactory(),
+    views: new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId })),
     // main's own table, not BrowserWindow.fromId: the picker is a window too, and a closing
     // project window leaves this table before onProjectClosed runs closeWindow.
     isWindowOpen: (windowId) => windows.projectWindows().some((w) => w.windowId === windowId),
@@ -879,9 +886,9 @@ function start(server: boolean): void {
       })
     ),
     partitionClosed: (partition) => previewBudgets.drop(partition),
-    // A lambda, as for ctx.oauth: the e2e's recorder replaces shell.openExternal after launch.
-    openExternal: (url) => {
-      shell.openExternal(url).catch((err: unknown) => console.warn('open external failed', err))
+    // A page's window.open, for the view's window (no browser view asked: a page did).
+    openExternal: (url, windowId) => {
+      openExternal(url, { windowId }).catch((err: unknown) => console.warn('open external failed', err))
     },
     chord: (windowId, chord) =>
       webviewChord(
@@ -1191,12 +1198,9 @@ function start(server: boolean): void {
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
       openFile: (caller, path, tabId, view) => routeProjectFile(openFileRoute, caller, path, tabId, view),
-      // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget. A
-      // lambda, as for ctx.oauth: the e2e's recorder replaces shell.openExternal after launch.
-      openExternal: (url) => shell.openExternal(url),
-      linkNotice: (viewId, url) => {
-        views.toView(viewId, 'app.linkNotice', { url })
-      },
+      // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget, and
+      // names its own window and the view main knows the plugin acted for.
+      openExternal,
       // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
       // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
       systemFiles
@@ -1714,11 +1718,9 @@ function start(server: boolean): void {
       }
     },
     forget: (id) => forgetMissing(registry, id),
-    // The router already checked the scheme (webUrlOf); main is the only place a link leaves the app.
-    openExternal: (url) => shell.openExternal(url),
-    linkNotice: (viewId, url) => {
-      views.toView(viewId, 'app.linkNotice', { url })
-    },
+    // The router already checked the scheme (webUrlOf) and bound the caller's window and view; main
+    // is the only place a link leaves the app.
+    openExternal,
     currentTheme: () => themes.current(),
     // `appearance` is built below; start() runs to its end before any IPC message is handled.
     shellPrefs: () => appearance.prefs(),
@@ -2069,11 +2071,10 @@ function start(server: boolean): void {
       updateChecker.settingChanged()
     },
     dismiss: (version) => updateChecker.dismiss(version),
-    openRelease: (remoteView) => {
+    openRelease: (target) => {
       const a = updateChecker.available()
       if (!a) return
-      if (remoteView !== undefined) views.toView(remoteView, 'app.linkNotice', { url: a.url })
-      else return shell.openExternal(a.url)
+      return openExternal(a.url, target)
     }
   })
   registerProjectSettingsHandlers(router, {
@@ -2392,6 +2393,21 @@ function start(server: boolean): void {
               console.error = original
             }
             return { box, open, logged }
+          },
+          // A link opened through the openExternal adapter with no asking view (as a timer or a
+          // sign-in a plugin started on its own would): for the window showing `projectId`, or
+          // app-wide without one. Answers 'opened' or the refusal's text (server-mode e2e).
+          openExternalProbe: async (url: string, projectId?: string) => {
+            let target: OpenTarget = 'app'
+            if (projectId !== undefined) {
+              const windowId = windows.windowIdOf(projectId)
+              if (windowId === undefined) return 'no window shows that project'
+              target = { windowId }
+            }
+            return openExternal(url, target).then(
+              () => 'opened',
+              (err: unknown) => errorText(err)
+            )
           },
           // What the update check's fake fetcher answers (a tag such as 'v99.0.0'), then one check.
           fakeRelease: async (tag: string) => {

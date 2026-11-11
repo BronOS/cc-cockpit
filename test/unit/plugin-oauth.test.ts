@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
 import { PluginLoader } from '../../src/host/loader'
 import { MAX_TOKEN_RESPONSE_BYTES, OAuthError } from '../../src/main/oauth/oauth'
+import type { OpenTarget } from '../../src/main/external/open-external'
 import {
   checkOAuthSpec,
   checkRefreshToken,
@@ -33,10 +34,14 @@ import { unusedSecrets } from '../fakes/unused-host-services'
 
 const CLIENT_ID = 'unit-client'
 const CLIENT_SECRET = 'unit-client-secret-91c4'
+/** The window a sign-in is for (main passes the calling host's window and origin view). */
+const TARGET = { windowId: 7 } as const
 
 let server: FakeOAuthServer
 /** What openExternal was handed, oldest first. */
 let opened: string[]
+/** The target openExternal got with each URL. */
+let openedFor: OpenTarget[]
 /** Called with each URL openExternal gets (default: nothing; a test plays the browser itself). */
 let onOpen: (url: string) => void
 
@@ -48,8 +53,9 @@ const toFake: typeof fetch = (input, init) => fetch(String(input instanceof Requ
 
 function oauthWith(options: Partial<PluginOAuthOptions> = {}): PluginOAuth {
   return new PluginOAuth({
-    openExternal: async (url) => {
+    openExternal: async (url, target) => {
       opened.push(url)
+      openedFor.push(target)
       onOpen(url)
     },
     fetch: toFake,
@@ -89,6 +95,7 @@ function browseOnOpen(override: { state?: string; error?: string } = {}): Promis
 beforeEach(async () => {
   server = await new FakeOAuthServer({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }).start()
   opened = []
+  openedFor = []
   onOpen = () => {}
 })
 
@@ -165,12 +172,14 @@ describe('PluginOAuth.authorize', () => {
   it('signs in: browser on the plugin auth URL with PKCE and a loopback redirect, code exchanged with the client secret', async () => {
     const now = vi.fn(() => 1_000_000)
     const landing = browseOnOpen()
-    const tokens = await oauthWith({ now }).authorize(spec(), new AbortController().signal)
+    const tokens = await oauthWith({ now }).authorize(spec(), new AbortController().signal, TARGET)
     expect((await landing).status).toBe(200)
     expect(tokens).toEqual({ accessToken: expect.stringMatching(/^access-/), refreshToken: expect.stringMatching(/^refresh-/), expiresAt: 1_000_000 + 3600 * 1000 })
     expect(server.validRefreshTokens.has(tokens.refreshToken!)).toBe(true)
 
     expect(opened).toHaveLength(1)
+    // The window the host asked for goes with the URL to the openExternal adapter.
+    expect(openedFor).toEqual([TARGET])
     const url = new URL(opened[0]!)
     expect(url.origin + url.pathname).toBe('https://auth.fake.test/authorize')
     // The plugin's own query is kept; main's parameters are set.
@@ -203,7 +212,7 @@ describe('PluginOAuth.authorize', () => {
         clientId: CLIENT_ID,
         scopes: []
       })
-      const tokens = await oauthWith().authorize(s, new AbortController().signal)
+      const tokens = await oauthWith().authorize(s, new AbortController().signal, TARGET)
       expect(tokens.accessToken).toMatch(/^access-/)
       const url = new URL(opened[0]!)
       expect(url.searchParams.getAll('client_id')).toEqual([CLIENT_ID])
@@ -218,24 +227,24 @@ describe('PluginOAuth.authorize', () => {
   it('returns a null refresh token when the provider sends none', async () => {
     server.omitRefreshToken = true
     void browseOnOpen()
-    const tokens = await oauthWith().authorize(spec(), new AbortController().signal)
+    const tokens = await oauthWith().authorize(spec(), new AbortController().signal, TARGET)
     expect(tokens.refreshToken).toBeNull()
   })
 
   it('rejects when the user cancels at the provider (error=access_denied)', async () => {
     void browseOnOpen({ error: 'access_denied' })
-    await expect(oauthWith().authorize(spec(), new AbortController().signal)).rejects.toThrow('the provider refused the sign-in (access_denied)')
+    await expect(oauthWith().authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('the provider refused the sign-in (access_denied)')
     expect(server.tokenRequests).toEqual([])
   })
 
   it('times out when the browser never comes back, and closes the loopback', async () => {
-    await expect(oauthWith({ loginTimeoutMs: 50 }).authorize(spec(), new AbortController().signal)).rejects.toThrow('timed out')
+    await expect(oauthWith({ loginTimeoutMs: 50 }).authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('timed out')
     await expect(server.browse(opened[0]!)).rejects.toThrow()
     expect(server.tokenRequests).toEqual([])
   })
 
   it('ignores a redirect with the wrong state: the sign-in keeps waiting, then the right one finishes it', async () => {
-    const pending = oauthWith().authorize(spec(), new AbortController().signal)
+    const pending = oauthWith().authorize(spec(), new AbortController().signal, TARGET)
     await vi.waitFor(() => expect(opened).toHaveLength(1))
     const wrong = await server.browse(opened[0]!, { state: 'not-the-state' })
     expect(wrong.status).toBe(400)
@@ -247,13 +256,13 @@ describe('PluginOAuth.authorize', () => {
   it('aborted before the browser opens: no browser, no listener left', async () => {
     const controller = new AbortController()
     controller.abort()
-    await expect(oauthWith().authorize(spec(), controller.signal)).rejects.toThrow('sign-in was cancelled')
+    await expect(oauthWith().authorize(spec(), controller.signal, TARGET)).rejects.toThrow('sign-in was cancelled')
     expect(opened).toEqual([])
   })
 
   it('aborted while waiting for the browser: rejects and the loopback is gone', async () => {
     const controller = new AbortController()
-    const pending = oauthWith().authorize(spec(), controller.signal)
+    const pending = oauthWith().authorize(spec(), controller.signal, TARGET)
     await vi.waitFor(() => expect(opened).toHaveLength(1))
     controller.abort()
     await expect(pending).rejects.toThrow('sign-in was cancelled')
@@ -265,7 +274,7 @@ describe('PluginOAuth.authorize', () => {
     server.delayMs = 2000
     const controller = new AbortController()
     void browseOnOpen()
-    const pending = oauthWith().authorize(spec(), controller.signal)
+    const pending = oauthWith().authorize(spec(), controller.signal, TARGET)
     await vi.waitFor(() => expect(server.tokenRequests).toHaveLength(1))
     controller.abort()
     await expect(pending).rejects.toThrow('sign-in was cancelled')
@@ -279,7 +288,7 @@ describe('PluginOAuth.authorize', () => {
         throw new Error('no browser')
       }
     })
-    await expect(oauth.authorize(spec(), new AbortController().signal)).rejects.toThrow('could not open the system browser')
+    await expect(oauth.authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('could not open the system browser')
     await expect(fetch(redirect)).rejects.toThrow()
   })
 
@@ -291,7 +300,7 @@ describe('PluginOAuth.authorize', () => {
         throw new Error('raw sync failure')
       }
     })
-    const pending = oauth.authorize(spec(), new AbortController().signal)
+    const pending = oauth.authorize(spec(), new AbortController().signal, TARGET)
     await expect(pending).rejects.toThrow('could not open the system browser')
     await expect(pending).rejects.not.toThrow('raw sync failure')
     await expect(fetch(redirect)).rejects.toThrow()
@@ -303,10 +312,10 @@ describe('PluginOAuth.authorize', () => {
       redirect = new URL(url).searchParams.get('redirect_uri')!
       return new Promise<void>(() => {})
     }
-    await expect(oauthWith({ openExternal, loginTimeoutMs: 50 }).authorize(spec(), new AbortController().signal)).rejects.toThrow('timed out')
+    await expect(oauthWith({ openExternal, loginTimeoutMs: 50 }).authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('timed out')
     await expect(fetch(redirect)).rejects.toThrow()
     const controller = new AbortController()
-    const pending = oauthWith({ openExternal }).authorize(spec(), controller.signal)
+    const pending = oauthWith({ openExternal }).authorize(spec(), controller.signal, TARGET)
     await vi.waitFor(() => expect(redirect).not.toBe(''))
     const second = redirect
     controller.abort()
@@ -321,21 +330,21 @@ describe('PluginOAuth.authorize', () => {
         return new Promise<void>(() => {})
       }
     })
-    await expect(oauth.authorize(spec(), new AbortController().signal)).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
+    await expect(oauth.authorize(spec(), new AbortController().signal, TARGET)).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
   })
 
   it('refuses an oversized token response without echoing it (the streamed case: oauth.test.ts readLimited)', async () => {
     const big = JSON.stringify({ access_token: 'x'.repeat(MAX_TOKEN_RESPONSE_BYTES), token_type: 'Bearer' })
     server.override = { status: 200, body: big }
     void browseOnOpen()
-    const err = await failure(oauthWith().authorize(spec(), new AbortController().signal))
+    const err = await failure(oauthWith().authorize(spec(), new AbortController().signal, TARGET))
     expect(err.message).toBe('the token endpoint sent an oversized response')
   })
 
   it('refuses to follow a redirect from the token endpoint (the code and secret are not re-sent)', async () => {
     server.override = { status: 307, body: '{}', headers: { Location: server.tokenUrl } }
     void browseOnOpen()
-    await expect(oauthWith().authorize(spec(), new AbortController().signal)).rejects.toThrow('the token endpoint could not be reached')
+    await expect(oauthWith().authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('the token endpoint could not be reached')
     // One request only: a followed redirect would have reached the fake's /token a second time.
     expect(server.tokenRequests).toHaveLength(1)
   })
@@ -343,7 +352,7 @@ describe('PluginOAuth.authorize', () => {
   it('names the provider error code but never the response body, code or secret', async () => {
     server.invalidGrant = true
     void browseOnOpen()
-    const err = await failure(oauthWith().authorize(spec(), new AbortController().signal))
+    const err = await failure(oauthWith().authorize(spec(), new AbortController().signal, TARGET))
     expect(err.message).toBe('the token endpoint refused the request: HTTP 400 (invalid_grant)')
     expect(err.code).toBe('invalid_grant')
     expect(err.message).not.toContain('expired or revoked')
@@ -353,18 +362,18 @@ describe('PluginOAuth.authorize', () => {
   it('refuses a token that is not bearer, and a token endpoint that does not answer in time', async () => {
     server.tokenType = 'mac'
     void browseOnOpen()
-    await expect(oauthWith().authorize(spec(), new AbortController().signal)).rejects.toThrow('not a bearer token')
+    await expect(oauthWith().authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('not a bearer token')
     server.tokenType = 'Bearer'
     server.delayMs = 500
     void browseOnOpen()
-    await expect(oauthWith({ fetchTimeoutMs: 50 }).authorize(spec(), new AbortController().signal)).rejects.toThrow('did not answer in time')
+    await expect(oauthWith({ fetchTimeoutMs: 50 }).authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('did not answer in time')
   })
 })
 
 describe('PluginOAuth.refresh', () => {
   async function signedIn(): Promise<OAuthTokens> {
     void browseOnOpen()
-    return oauthWith().authorize(spec(), new AbortController().signal)
+    return oauthWith().authorize(spec(), new AbortController().signal, TARGET)
   }
 
   it('hands the granted scopes to the plugin when the provider sends them, and nothing when it does not', async () => {
@@ -454,13 +463,13 @@ const RAW_SPEC = { authUrl: 'https://auth.example/authorize', tokenUrl: 'https:/
 
 /** A fake PluginOAuth: each authorize waits until the test settles it or its signal aborts. */
 class FakeOAuth implements PluginOAuthApi {
-  readonly authorizes: { spec: CheckedOAuthSpec; signal: AbortSignal; resolve(t: OAuthTokens): void }[] = []
+  readonly authorizes: { spec: CheckedOAuthSpec; signal: AbortSignal; target: OpenTarget; resolve(t: OAuthTokens): void }[] = []
   readonly refreshes: { token: string; signal: AbortSignal | undefined; resolve(t: OAuthTokens): void }[] = []
 
-  authorize(spec: CheckedOAuthSpec, signal: AbortSignal): Promise<OAuthTokens> {
+  authorize(spec: CheckedOAuthSpec, signal: AbortSignal, target: OpenTarget): Promise<OAuthTokens> {
     return new Promise((resolve, reject) => {
       signal.addEventListener('abort', () => reject(new OAuthError('sign-in was cancelled')), { once: true })
-      this.authorizes.push({ spec, signal, resolve })
+      this.authorizes.push({ spec, signal, target, resolve })
     })
   }
 
@@ -516,6 +525,8 @@ describe('HostApi oauth requests', () => {
     await vi.waitFor(() => expect(fake.authorizes).toHaveLength(1))
     expect(fake.authorizes[0]!.spec.tokenUrl).toBeInstanceOf(URL)
     expect(fake.authorizes[0]!.spec).not.toHaveProperty('junk')
+    // The auth URL is for this host's own window (its scope), never a window the plugin named.
+    expect(fake.authorizes[0]!.target).toEqual({ windowId: 1, viewId: undefined })
     fake.authorizes[0]!.resolve(TOKENS)
     await expect(pending).resolves.toEqual(TOKENS)
   })

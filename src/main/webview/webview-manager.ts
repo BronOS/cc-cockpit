@@ -158,8 +158,12 @@ export interface WebviewViewFactory {
 
 export interface WebviewManagerDeps {
   views: WebviewViewFactory
-  /** Hand an http(s) URL to the system browser. */
-  openExternal(url: string): void
+  /**
+   * Hand an http(s) URL a view's page asked to open in a new window to the openExternal adapter
+   * (external/open-external.ts) for that view's window: the system browser on the desktop, a link
+   * notice in the window's browsers in server mode.
+   */
+  openExternal(url: string, windowId: number): void
   /** A chord typed into a view (overlay and app keys); true when it was acted on. Default: none. */
   chord?(windowId: number, chord: string): boolean
   /**
@@ -565,7 +569,7 @@ export class WebviewManager {
     }
     rec.opens.push(now)
     try {
-      this.deps.openExternal(href)
+      this.deps.openExternal(href, rec.owner.windowId)
     } catch (err) {
       this.log(`webview: open external failed: ${errorText(err)}`)
     }

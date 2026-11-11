@@ -397,33 +397,33 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
 - Modify: `test/unit/plugin-oauth.test.ts`, `webview-manager.test.ts`, `view-registry.test.ts`,
   `no-direct-webcontents-send.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] the adapter's one call is `open(url, target)`. `target` is `{ windowId, viewId? }`, always from what main bound
+- [x] the adapter's one call is `open(url, target)`. `target` is `{ windowId, viewId? }`, always from what main bound
       (the router's caller for `app.openExternal` and the update notice's click, the plugin host's window and origin
       view for `ctx.openExternal`, the window a webview, a URL overlay or a window-open belongs to), or `'app'` for a
       call tied to no window. No caller builds a target from a payload
-- [ ] every call goes through it: `ctx.openExternal`, `app.openExternal`, the update notice, plugin OAuth, the webview
+- [x] every call goes through it: `ctx.openExternal`, `app.openExternal`, the update notice, plugin OAuth, the webview
       manager, the window-open handler, the URL overlay view. It looks `shell.openExternal` up at each call, so the e2e
       recorder that replaces it after launch still runs. The remote-view branches the call sites have today
       (`router.ts:437-440`, `index.ts:2026`) move into it
-- [ ] `PluginOAuth` and the webview manager pass the window on: `PluginOAuth` takes the calling host's window and
+- [x] `PluginOAuth` and the webview manager pass the window on: `PluginOAuth` takes the calling host's window and
       origin view with each sign-in and hands them to `openExternal(url, target)`, the webview manager passes the
       window of the view. Task 24 binds its paste box to that same pending sign-in
-- [ ] `ViewRegistry` gets the one method for "the browser views of a window, or of every window, never the hidden
+- [x] `ViewRegistry` gets the one method for "the browser views of a window, or of every window, never the hidden
       page" (it answers how many it reached); the adapter and every later task use it instead of filtering views
-- [ ] in server mode never on the server: with a `viewId` that is a browser view, a link notice (`app.linkNotice`) to
+- [x] in server mode never on the server: with a `viewId` that is a browser view, a link notice (`app.linkNotice`) to
       that view; with a window only, or the hidden page's view, to every browser view of the window; `'app'` goes to
       every browser view of every window. With no browser reached, refused with a log line that carries no query string
       (an OAuth URL has its `state` there)
-- [ ] the desktop is unchanged: the OS browser for the desktop view and for a call with no view, v1's notice for a
+- [x] the desktop is unchanged: the OS browser for the desktop view and for a call with no view, v1's notice for a
       remote view
-- [ ] a grep test: only the adapter file calls `shell.openExternal`
-- [ ] write tests: each caller type in both modes with the target it passes; `'app'` in both modes; the no-browser
+- [x] a grep test: only the adapter file calls `shell.openExternal`
+- [x] write tests: each caller type in both modes with the target it passes; `'app'` in both modes; the no-browser
       refusal and its log line without the query; the notice reaching only the asking view; a plugin's sign-in URL
       reaching the window of the host that asked and no other; nothing opened on the server in server mode
-- [ ] e2e in the real server process: a link opened from a browser view shows as a link notice there, one opened with
+- [x] e2e in the real server process: a link opened from a browser view shows as a link notice there, one opened with
       no asking view (a test hook) shows in the attached browser, and the `shell.openExternal` recorder saw no call;
       main alive
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `plugin-oauth`, `webview-panel`, `update-notice`, `plugin-ctx`,
+- [x] run tests and `npm run test:e2e` (`server-mode`, `plugin-oauth`, `webview-panel`, `update-notice`, `plugin-ctx`,
       `web-access-plugins`) - must pass before next task
 
 ### Task 5: The key file secret store [model: opus]

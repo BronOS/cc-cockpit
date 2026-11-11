@@ -49,6 +49,7 @@ import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
 import type { SenderContext } from '../windows/window-manager'
 import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
+import type { OpenTarget } from '../external/open-external'
 import { warnLog } from '../warn-log'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
@@ -339,13 +340,12 @@ export interface CoreHandlerDeps {
   homeDir(): string
   /** The chord the menu's Open Folder accelerator uses in the picker (menu.ts `openFolderKey`). */
   pickerOpenFolderKey(): string | undefined
-  /** Hand an already validated http(s) URL to the system browser. */
-  openExternal(url: string): void | Promise<void>
   /**
-   * The clickable notice for a remote view (`app.linkNotice` to that view only, design-web.md §6.1): a
-   * browser cannot open a tab without a click, and the host's browser is not the person's screen.
+   * Hand an already validated http(s) URL to the openExternal adapter (external/open-external.ts) for
+   * the calling view: the system browser on the desktop, a clickable notice in a browser view
+   * (design-web.md §6.1), never the host's browser in server mode.
    */
-  linkNotice(viewId: ViewId, url: string): void
+  openExternal(url: string, target: OpenTarget): void | Promise<void>
   /** The theme every window shows now (app-wide, never per project). */
   currentTheme(): Theme
   /** The app settings the shell page applies itself (AppearanceService.prefs), defaults applied. */
@@ -433,11 +433,11 @@ export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): 
     deps.forget(id)
   })
 
-  // `adapted`: decided by the view main bound to the call (`view.remote`), never by the payload.
-  router.handleWindow('app.openExternal', async (_ctx, payload, view) => {
+  // `adapted`: decided by the view main bound to the call, never by the payload. The adapter turns a
+  // browser view's call into a notice in that view (external/open-external.ts).
+  router.handleWindow('app.openExternal', async (ctx, payload, view) => {
     const url = webUrlOf((payload as { url?: unknown } | undefined)?.url)
-    if (view.remote) deps.linkNotice(view.viewId, url)
-    else await deps.openExternal(url)
+    await deps.openExternal(url, { windowId: ctx.windowId, viewId: view.viewId })
   })
 
   // Read-only and app-wide: any of our windows may ask. Changes arrive as `theme.changed`.
@@ -841,9 +841,10 @@ export interface UpdateHandlerDeps {
   dismiss(version: string): void
   /**
    * Opens the release page of the available version, which main built; nothing from a renderer.
-   * `remoteView`: the asking browser view, which gets a clickable notice instead (design-web.md §6.1).
+   * `target`: the asking window and view, as the router bound them, for the openExternal adapter (a
+   * browser view gets a clickable notice instead, design-web.md §6.1).
    */
-  openRelease(remoteView?: ViewId): void | Promise<void>
+  openRelease(target: OpenTarget): void | Promise<void>
 }
 
 export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDeps): void {
@@ -859,7 +860,7 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
     if (typeof version === 'string') deps.dismiss(version)
   })
   // No payload is read: the URL is main's own.
-  router.handleWindow('updates.openRelease', (_ctx, _payload, view) => deps.openRelease(remoteViewOf(view)))
+  router.handleWindow('updates.openRelease', (ctx, _payload, view) => deps.openRelease({ windowId: ctx.windowId, viewId: view.viewId }))
 }
 
 /** The "Install ccc command" row of General (CccCommandInstaller, main/hooks/ccc-install.ts). */

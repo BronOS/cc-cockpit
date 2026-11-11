@@ -69,3 +69,49 @@ test('server mode: the dialogs main wired never reach Electron; main survives ea
   expect(probe.logged).toEqual(['probe title: probe content'])
   await expectMainAlive(server)
 })
+
+test('server mode: links never open on the server; they reach the browser as a link notice', async () => {
+  test.setTimeout(90_000)
+  server = await launchServer()
+  const { cockpit } = server
+  // A recorder in place of shell.openExternal: a link that reached the host's opener lands here.
+  await cockpit.app.evaluate(({ shell }) => {
+    const g = globalThis as { __opened?: string[] }
+    g.__opened = []
+    shell.openExternal = (url: string) => {
+      g.__opened!.push(url)
+      return Promise.resolve()
+    }
+  })
+  // No browser attached yet: refused (and logged without the query), nothing opened on the server.
+  expect(await cockpit.hook<string>('openExternalProbe', 'https://example.com/early?state=x', server.projectId)).toContain('no browser')
+  expect(await cockpit.hook<string>('openExternalProbe', 'https://example.com/early-app')).toContain('no browser')
+
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const notice = page.locator('.link-notice')
+    /** The link reached this browser: opened in a new tab (a recent gesture) or shown as the notice. */
+    const reached = async (url: string): Promise<boolean> =>
+      (await browser.opened()).includes(url) || (await notice.getByRole('link', { name: url }).count()) > 0
+
+    // Asked by the browser view itself (`app.openExternal`, the router binds the view): Playwright's
+    // evaluate is a user gesture, so the notice opens the tab at once.
+    await page.evaluate(() => window.cockpit.invoke('app.openExternal', { url: 'https://example.com/from-view' }))
+    await expect.poll(() => reached('https://example.com/from-view')).toBe(true)
+
+    // No asking view, for the project's window (a timer, a plugin's own sign-in), then app-wide: the
+    // attached browser gets it.
+    expect(await cockpit.hook<string>('openExternalProbe', 'https://example.com/no-view', server.projectId)).toBe('opened')
+    await expect.poll(() => reached('https://example.com/no-view')).toBe(true)
+    expect(await cockpit.hook<string>('openExternalProbe', 'https://example.com/app-wide')).toBe('opened')
+    await expect.poll(() => reached('https://example.com/app-wide')).toBe(true)
+
+    // The server's opener saw none of them.
+    expect(await cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened)).toEqual([])
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})

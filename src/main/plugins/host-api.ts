@@ -204,6 +204,7 @@ import { prepareText } from '../sessions/send-gate'
 import type { SessionChange } from '../sessions/session-registry'
 import type { SendOrigin, SessionEntry } from '../sessions/status-reducer'
 import { checkOAuthSpec, checkRefreshToken, type PluginOAuthApi } from '../oauth/plugin-oauth'
+import type { OpenTarget } from '../external/open-external'
 import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
 import { checkSessionName } from '../../shared/session-name'
@@ -479,15 +480,12 @@ export interface HostApiDeps {
    */
   openFile?(caller: { windowId: number; projectId: string }, path: string, tabId?: string, view?: ViewId): Promise<'plugin' | 'builtin'>
   /**
-   * ctx.openExternal: hand an already checked http(s) URL to the system browser (shell.openExternal,
-   * through a lambda so the e2e recorder that replaces it is seen). Without it openExternal is refused.
+   * ctx.openExternal: hand an already checked http(s) URL to the openExternal adapter
+   * (external/open-external.ts) for this host's window and the view the plugin acted for: the system
+   * browser on the desktop, a clickable notice in a browser view, never the host's browser in server
+   * mode. Without it openExternal is refused.
    */
-  openExternal?(url: string): Promise<void>
-  /**
-   * ctx.openExternal from a remote view: the clickable notice in that view instead of the host's
-   * browser (`app.linkNotice` to the view, ViewRegistry.toView). Absent: a remote caller's link opens on the host.
-   */
-  linkNotice?(view: ViewId, url: string): void
+  openExternal?(url: string, target: OpenTarget): Promise<void>
   /**
    * ctx.files.reveal / openWithSystem / trash (main/files/system-files.ts SystemFiles): `caller` is
    * this host's scope, `path` the plugin's, checked there. `trash` resolves false when the person
@@ -1504,16 +1502,11 @@ export class HostApi {
         `openExternal: more than ${MAX_EXTERNAL_OPENS_PER_WINDOW} links in ${EXTERNAL_OPEN_WINDOW_MS / 1000} s; try again in a moment`
       )
     }
-    // A remote view's click (design-web.md §6.1): the host's browser is not the person's screen, so
-    // that view gets a clickable notice and nothing opens on the host. Decided by the view main knows
-    // (originOf), never by anything the plugin sent. Same budget as a desktop open.
-    const remote = this.originOf(meta)
-    if (remote !== undefined && this.deps.linkNotice) {
-      this.deps.linkNotice(remote, href)
-      return null
-    }
+    // This host's window and the view main knows the plugin acted for (originOf), never anything the
+    // plugin sent: the adapter gives a browser view's click a clickable notice there (design-web.md
+    // §6.1) and, in server mode, never opens the host's browser. Same budget either way.
     try {
-      await this.deps.openExternal(href)
+      await this.deps.openExternal(href, { windowId: this.scope.windowId, viewId: this.originOf(meta) })
     } catch (err) {
       throw withMethod('openExternal', err)
     }
@@ -2081,7 +2074,9 @@ export class HostApi {
     const controller = new AbortController()
     this.signIns.set(plugin.id, controller)
     try {
-      return await this.deps.oauth.authorize(checked, controller.signal)
+      // This host's window and origin view, for the openExternal adapter: in server mode the auth URL
+      // is a link notice in that window's browsers, never this host's browser.
+      return await this.deps.oauth.authorize(checked, controller.signal, { windowId: this.scope.windowId, viewId: this.originOf(meta) })
     } catch (err) {
       throw withMethod('oauth.authorize', err)
     } finally {

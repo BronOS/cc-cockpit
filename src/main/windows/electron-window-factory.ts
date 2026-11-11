@@ -3,12 +3,15 @@
 // and window-bounds.ts.
 import { BrowserWindow, screen, type MessagePortMain } from 'electron'
 import type { ProjectView, WindowBounds } from '../../shared/types'
-import { createWindow, loadRenderer } from './create-window'
+import { createWindow, loadRenderer, type WindowLinkOpener } from './create-window'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type Rect } from './window-bounds'
 import { blurCall, projectWindowBackground, projectWindowChrome, type ProjectWindowLook } from './window-chrome'
 import type { WindowCallbacks, WindowFactory, WindowHandle } from './window-manager'
 
 export class ElectronWindowFactory implements WindowFactory {
+  /** `openLink`: main's openExternal adapter, for the links a window's page asks to open (create-window.ts). */
+  constructor(private readonly openLink: WindowLinkOpener) {}
+
   createProjectWindow(
     project: ProjectView,
     bounds: WindowBounds | undefined,
@@ -29,7 +32,7 @@ export class ElectronWindowFactory implements WindowFactory {
       title: project.name,
       minWidth: MIN_WINDOW_WIDTH,
       minHeight: MIN_WINDOW_HEIGHT
-    })
+    }, this.openLink)
     if (maximized || fullScreen) {
       // After createWindow's own ready-to-show listener (listeners run in order), so the window is
       // shown first: maximize() on a hidden window shows it before the page is painted (Electron
@@ -84,7 +87,7 @@ export class ElectronWindowFactory implements WindowFactory {
       // A modal child: the parent takes no focus or input until this closes (a sheet on macOS).
       // A modal child needs a shown parent, and createWindow shows its window on ready-to-show.
       ...(modalOver ? { parent: modalOver, modal: true } : {})
-    })
+    }, this.openLink)
     return this.finish(win, callbacks.onClosed)
   }
 

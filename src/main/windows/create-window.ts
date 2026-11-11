@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { BrowserWindow, nativeTheme, shell, type BrowserWindowConstructorOptions } from 'electron'
+import { BrowserWindow, nativeTheme, type BrowserWindowConstructorOptions } from 'electron'
 import type { RendererLocation } from '../ipc/router'
 import { BUILTIN_THEMES } from '../themes/theme-service'
 import { sameOrigin } from './frame-origin'
@@ -9,6 +9,9 @@ import { windowOpenHandler } from './mail-frame-links'
 function builtinBackground(kind: 'light' | 'dark'): string {
   return BUILTIN_THEMES.find((t) => t.kind === kind)?.vars['--cc-bg'] ?? (kind === 'dark' ? '#1a1817' : '#faf8f6')
 }
+
+/** A link a window's page asked to open (the reviewer's mail frame): main's openExternal adapter for that window. */
+export type WindowLinkOpener = (url: string, windowId: number) => Promise<void>
 
 /**
  * The only place a BrowserWindow is constructed. Every window (project picker, project windows)
@@ -22,7 +25,7 @@ function builtinBackground(kind: 'light' | 'dark'): string {
  *   of a mail (a frame with no script, so a popup request is its only signal) has its URL checked
  *   and handed to the system browser (mail-frame-links.ts).
  */
-export function createWindow(options: BrowserWindowConstructorOptions = {}): BrowserWindow {
+export function createWindow(options: BrowserWindowConstructorOptions, openLink: WindowLinkOpener): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -71,8 +74,10 @@ export function createWindow(options: BrowserWindowConstructorOptions = {}): Bro
   // Every request is denied as a window. The reviewer's mail frame (the focused frame at the time;
   // Electron's details name no frame) gets its link opened in the system browser after the
   // ctx.openExternal checks; Chromium asks only after a real click or Enter (user activation).
-  // A lambda for shell.openExternal: looked up at each call, so the e2e recorder replacing it is seen.
-  const onWindowOpen = windowOpenHandler({ openExternal: (url) => shell.openExternal(url) })
+  // `openLink` is main's openExternal adapter (external/open-external.ts), given this window's id: it
+  // looks shell.openExternal up at each call, so the e2e recorder replacing it is seen.
+  const windowId = win.id
+  const onWindowOpen = windowOpenHandler({ openExternal: (url) => openLink(url, windowId) })
   win.webContents.setWindowOpenHandler((details) => onWindowOpen(details, win.webContents.focusedFrame))
   win.once('ready-to-show', () => win.show())
   return win

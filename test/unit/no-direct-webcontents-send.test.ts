@@ -1,12 +1,18 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { ViewRegistry, type ViewSink } from '../../src/main/views/view-registry'
+import { remoteViewId } from '../../src/shared/views'
 
 // design-web.md §2.2: every event and port post to a page goes through the ViewRegistry, so a new
 // event cannot skip remote views. A direct `webContents.send`, `webContents.postMessage` or
 // `getAllWindows()` broadcast reaches the desktop page only. Allowed in the registry and in the
 // Electron adapters that own a webContents (the window factory builds the desktop view's sink;
 // create-window, the url-overlay views and plugin webviews drive their own pages).
+// "The browser views of a window, never the hidden page" is the registry's own `toBrowserViews`
+// (server mode, design-web.md §9), not a filter over `viewsOf` at each call site; the test below
+// checks it skips desktop views, and the link notice's one sender is guarded by
+// no-direct-open-external.test.ts.
 
 const ROOT = join(__dirname, '..', '..')
 const MAIN = join(ROOT, 'src', 'main')
@@ -98,6 +104,17 @@ describe('no direct webContents sends outside the view registry', () => {
     ].join('\n')
     // Every line but the two comments.
     expect(offences('x.ts', sample)).toEqual(Array.from({ length: 11 }, (_, i) => `x.ts:${i + 1}`))
+  })
+
+  it('toBrowserViews reaches browser views only, never a desktop view (the hidden page in server mode)', () => {
+    const views = new ViewRegistry({ windowIdOf: () => undefined, log: () => {} })
+    const got: string[] = []
+    const sink = (name: string): ViewSink => ({ send: () => void got.push(name), isClosed: () => false })
+    views.addDesktop(1, sink('desktop'))
+    views.addRemote(1, remoteViewId(1), sink('web'))
+    expect(views.toBrowserViews(1, 'app.linkNotice', { url: 'https://a/' })).toBe(1)
+    expect(views.toBrowserViews('all', 'app.linkNotice', { url: 'https://a/' })).toBe(1)
+    expect(got).toEqual(['web', 'web'])
   })
 
   it('lets the read-only webContents uses through', () => {

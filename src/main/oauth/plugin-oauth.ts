@@ -22,8 +22,9 @@
 // Error messages carry at most the provider's `error` code (`invalid_grant`): never a token, a
 // code, a client secret, a URL (it may hold a secret in its query) or a response body.
 //
-// No `electron` import (main passes `shell.openExternal` in): unit tests load this file in Node.
+// No `electron` import (main passes the openExternal adapter in): unit tests load this file in Node.
 import { isPlainObject } from '../../shared/guards'
+import type { OpenTarget } from '../external/open-external'
 import type { OAuthTokens } from '../../sdk/types'
 import {
   ERROR_CODE,
@@ -109,8 +110,12 @@ export function checkRefreshToken(token: unknown): string {
 }
 
 export interface PluginOAuthOptions {
-  /** Opens a URL in the system browser (main: `shell.openExternal`, looked up at each call). */
-  openExternal(url: string): Promise<void>
+  /**
+   * Opens the auth URL for the window that asked (main: the openExternal adapter,
+   * external/open-external.ts: the system browser on the desktop, a link notice in that window's
+   * browsers in server mode).
+   */
+  openExternal(url: string, target: OpenTarget): Promise<void>
   fetch?: typeof fetch
   now?: () => number
   /** Test knobs (defaults LOGIN_TIMEOUT_MS, FETCH_TIMEOUT_MS). */
@@ -121,7 +126,8 @@ export interface PluginOAuthOptions {
 
 /** What host-api.ts needs (a fake in its unit tests). */
 export interface PluginOAuthApi {
-  authorize(spec: CheckedOAuthSpec, signal: AbortSignal): Promise<OAuthTokens>
+  /** `target`: the calling host's window and origin view (main's, never the plugin's), where the auth URL goes. */
+  authorize(spec: CheckedOAuthSpec, signal: AbortSignal, target: OpenTarget): Promise<OAuthTokens>
   refresh(spec: CheckedOAuthSpec, refreshToken: string, signal?: AbortSignal): Promise<OAuthTokens>
 }
 
@@ -141,7 +147,7 @@ export class PluginOAuth implements PluginOAuthApi {
    * exchanged. `signal` aborts it at any point: the loopback closes (a browser finishing late finds
    * nobody listening), a token request in flight is dropped, and the promise rejects.
    */
-  async authorize(spec: CheckedOAuthSpec, signal: AbortSignal): Promise<OAuthTokens> {
+  async authorize(spec: CheckedOAuthSpec, signal: AbortSignal, target: OpenTarget): Promise<OAuthTokens> {
     const cancelled = (): OAuthError => new OAuthError('sign-in was cancelled')
     if (signal.aborted) throw cancelled()
     const { verifier, challenge } = pkcePair()
@@ -167,7 +173,7 @@ export class PluginOAuth implements PluginOAuthApi {
       // a test double) gets the same fixed message as a rejection, never its own text.
       const url = authUrl.toString()
       const opened = Promise.resolve()
-        .then(() => this.options.openExternal(url))
+        .then(() => this.options.openExternal(url, target))
         .catch(() => {
           throw new OAuthError('could not open the system browser for the sign-in')
         })

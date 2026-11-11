@@ -26,6 +26,7 @@ import {
   webCaller
 } from '../../src/main/ipc/router'
 import type { SenderContext } from '../../src/main/windows/window-manager'
+import type { OpenTarget } from '../../src/main/external/open-external'
 import { BUILTIN_THEMES } from '../../src/main/themes/theme-service'
 import { ServiceChoices } from '../../src/main/plugins/service-choices'
 import type { ServicePlugin, ServicesStatus } from '../../src/shared/services'
@@ -355,7 +356,7 @@ describe('core handlers', () => {
   function core(overrides: Partial<CoreHandlerDeps> = {}): {
     ipc: FakeIpcMain
     router: IpcRouter
-    notices: Array<[string, string]>
+    targets: OpenTarget[]
     opened: string[]
     dialogs: number[]
     external: string[]
@@ -366,7 +367,7 @@ describe('core handlers', () => {
   } {
     const { ipc, router } = setup()
     const ran: string[] = []
-    const notices: Array<[string, string]> = []
+    const targets: OpenTarget[] = []
     const pickers = { count: 0, callers: [] as number[] }
     const opened: string[] = []
     const dialogs: number[] = []
@@ -400,11 +401,9 @@ describe('core handlers', () => {
       },
       homeDir: () => '/Users/me',
       pickerOpenFolderKey: () => 'meta+o',
-      openExternal: (url) => {
+      openExternal: (url, target) => {
         external.push(url)
-      },
-      linkNotice: (viewId, url) => {
-        notices.push([viewId, url])
+        targets.push(target)
       },
       currentTheme: () => BUILTIN_THEMES[0]!,
       shellPrefs: () => ({ tabCloseSide: 'left', zoneAutoHide: true, minTerminalWidth: 720, terminalFont: { ...DEFAULT_TERMINAL_FONT, size: 20 }, backgroundOpacity: 70, seeThroughArea: 'main' }),
@@ -417,7 +416,7 @@ describe('core handlers', () => {
       },
       ...overrides
     })
-    return { ipc, router, notices, opened, dialogs, external, relinked, forgotten, ran, pickers }
+    return { ipc, router, targets, opened, dialogs, external, relinked, forgotten, ran, pickers }
   }
 
   it("window.info answers with the sender's own project", async () => {
@@ -594,21 +593,26 @@ describe('core handlers', () => {
     await expect(ipc.invoke('prefs.get', 13)).resolves.toEqual(prefs)
   })
 
-  it('app.openExternal opens http and https links, normalized, from any window', async () => {
-    const { ipc, external } = core()
+  it('app.openExternal hands http and https links, normalized, from any window to the adapter for the caller\'s view', async () => {
+    const { ipc, external, targets } = core()
     await ipc.invoke('app.openExternal', 11, [{ url: 'https://example.com/a b?x=1#h' }])
     await ipc.invoke('app.openExternal', 13, [{ url: 'http://localhost:3000' }])
     expect(external).toEqual(['https://example.com/a%20b?x=1#h', 'http://localhost:3000/'])
+    expect(targets).toEqual([
+      { windowId: 1, viewId: 'desktop:1' },
+      { windowId: 3, viewId: 'desktop:3' }
+    ])
   })
 
-  it('app.openExternal from a remote view is a notice to that view, never opened on the host', async () => {
-    const { router, external, notices } = core()
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'https://example.com/x' })
-    expect(external).toEqual([])
-    expect(notices).toEqual([['web:3', 'https://example.com/x']])
-    // The same checks as the desktop's: a bad scheme is refused before any notice.
+  it('app.openExternal from a remote view names that view and its window, as the router bound them', async () => {
+    const { router, external, targets } = core()
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'https://example.com/x', viewId: 'web:9', windowId: 2 })
+    expect(external).toEqual(['https://example.com/x'])
+    // The payload's window and view are ignored: the adapter decides by what the router bound.
+    expect(targets).toEqual([{ windowId: 1, viewId: 'web:3' }])
+    // The same checks as the desktop's: a bad scheme is refused before the adapter is asked.
     await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'file:///etc/passwd' })).rejects.toThrow(/app\.openExternal/)
-    expect(notices).toHaveLength(1)
+    expect(targets).toHaveLength(1)
   })
 
   it('app.openExternal refuses other schemes and malformed payloads', async () => {
@@ -1810,7 +1814,7 @@ describe('registerUpdateHandlers', () => {
     expect(calls).toEqual([['dismiss', '9.9.9']])
   })
 
-  it('openRelease from a remote view names that view (a notice there, nothing opened on the host)', async () => {
+  it('openRelease from a remote view names that view and its window (the adapter shows a notice there)', async () => {
     const { router } = setup()
     const calls: unknown[][] = []
     registerUpdateHandlers(router, {
@@ -1820,13 +1824,13 @@ describe('registerUpdateHandlers', () => {
       openRelease: (...args) => void calls.push(args)
     })
     await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4'), 'updates.openRelease', { url: 'https://evil.example' })
-    expect(calls).toEqual([['web:4']])
+    expect(calls).toEqual([[{ windowId: 1, viewId: 'web:4' }]])
   })
 
   it('ignores any payload on openRelease', async () => {
     const { ipc, calls } = updateSetup()
     await ipc.invoke('updates.openRelease', 11, [{ url: 'https://evil.example' }])
-    expect(calls).toEqual([['openRelease', undefined]])
+    expect(calls).toEqual([['openRelease', { windowId: 1, viewId: 'desktop:1' }]])
   })
 })
 

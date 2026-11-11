@@ -16,7 +16,7 @@
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel } from '../../shared/ipc'
-import { desktopViewId, type ViewId } from '../../shared/views'
+import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 import { warnLog } from '../warn-log'
 
 /** One view's way out: a desktop window's webContents, or a remote view's socket. */
@@ -150,6 +150,21 @@ export class ViewRegistry<P = unknown> {
   toView(viewId: ViewId, channel: EventChannel, payload: unknown): boolean {
     const entry = this.views.get(viewId)
     return entry !== undefined && this.deliver(viewId, entry, channel, payload)
+  }
+
+  /**
+   * The browser views of one window, or of every window (`'all'`), never a desktop view: what is for
+   * a person at a browser and must not land on the hidden page in server mode (a link notice, an
+   * ask, a chime). The one place that filter lives, so no caller writes its own over `viewsOf`.
+   * Returns how many views took it: none means no browser is there to see it.
+   */
+  toBrowserViews(windowId: number | 'all', channel: EventChannel, payload: unknown): number {
+    let reached = 0
+    for (const [id, entry] of this.views) {
+      if (!isRemoteViewId(id) || (windowId !== 'all' && entry.windowId !== windowId)) continue
+      if (this.deliver(id, entry, channel, payload)) reached++
+    }
+    return reached
   }
 
   /** Every view of every window, the picker included (app-wide state: theme, prefs, updates). */

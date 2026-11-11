@@ -102,6 +102,34 @@ describe('ViewRegistry', () => {
     for (const s of sinks) expect(s.events).toEqual([{ channel: 'theme.changed', payload: { kind: 'dark' } }])
   })
 
+  it('toBrowserViews reaches the browser views of one window or of all, never a desktop view, and counts them', () => {
+    const views = registry()
+    const desk1 = new FakeSink()
+    const desk2 = new FakeSink()
+    const web1 = new FakeSink()
+    const web2 = new FakeSink()
+    const web3 = new FakeSink()
+    views.addDesktop(1, desk1)
+    views.addDesktop(2, desk2)
+    views.addRemote(1, remoteViewId(1), web1)
+    views.addRemote(1, remoteViewId(2), web2)
+    views.addRemote(2, remoteViewId(3), web3)
+    expect(views.toBrowserViews(1, 'app.linkNotice', { url: 'https://a/' })).toBe(2)
+    expect(web1.events).toEqual([{ channel: 'app.linkNotice', payload: { url: 'https://a/' } }])
+    expect(web2.events).toHaveLength(1)
+    expect(web3.events).toEqual([])
+    expect(views.toBrowserViews('all', 'app.linkNotice', { url: 'https://b/' })).toBe(3)
+    expect(web3.events).toHaveLength(1)
+    // The desktop views (the hidden page in server mode) never get it.
+    expect(desk1.events).toEqual([])
+    expect(desk2.events).toEqual([])
+    // A closed or throwing view is not counted; a window with no browser reaches none.
+    web1.closed = true
+    web2.broken = true
+    expect(views.toBrowserViews(1, 'app.linkNotice', { url: 'https://c/' })).toBe(0)
+    expect(views.toBrowserViews(9, 'app.linkNotice', { url: 'https://c/' })).toBe(0)
+  })
+
   it('toView reaches only that view', () => {
     const views = registry()
     const desktop = new FakeSink()

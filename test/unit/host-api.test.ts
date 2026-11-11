@@ -1598,22 +1598,29 @@ describe('files.open (ctx.files.open)', () => {
 })
 
 describe('openExternal (ctx.openExternal)', () => {
-  /** shell.openExternal as main wires it, faked: the URLs it was handed. */
-  function withBrowser(fail?: Error): string[] {
+  /** The openExternal adapter as main wires it, faked: the URLs it was handed. */
+  function withBrowser(fail?: Error, targets: unknown[] = []): string[] {
     const opened: string[] = []
-    deps.openExternal = async (url) => {
+    deps.openExternal = async (url, target) => {
       opened.push(url)
+      targets.push(target)
       if (fail) throw fail
     }
     return opened
   }
 
-  it('hands the normalized http(s) href to the openExternal lambda', async () => {
-    const opened = withBrowser()
+  it('hands the normalized http(s) href to the openExternal adapter, for this host\'s window', async () => {
+    const targets: unknown[] = []
+    const opened = withBrowser(undefined, targets)
     const call = hostA()
     await expect(call('openExternal', { pluginId: 'a.one', url: 'HTTPS://Example.com/a b?x=1#h' })).resolves.toBeNull()
-    await call('openExternal', { pluginId: 'a.two', url: 'http://localhost:3000' })
+    await call('openExternal', { pluginId: 'a.two', url: 'http://localhost:3000', windowId: WIN_B })
     expect(opened).toEqual(['https://example.com/a%20b?x=1#h', 'http://localhost:3000/'])
+    // The host's own window, never one the plugin named; no view asked.
+    expect(targets).toEqual([
+      { windowId: WIN_A, viewId: undefined },
+      { windowId: WIN_A, viewId: undefined }
+    ])
   })
 
   it('refuses other schemes, userinfo, long or malformed URLs and unknown plugins, before the browser', async () => {
@@ -2164,29 +2171,23 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
   })
 
   // Desktop-only features (design-web.md §6.1, plan Task 25): the caller type is main's (originOf), never a payload field.
-  it('openExternal from a remote view is a notice to that view; the desktop and an unknown view open on the host', async () => {
-    const opened: string[] = []
-    const notices: unknown[][] = []
-    deps.openExternal = async (url) => {
-      opened.push(url)
-    }
-    deps.linkNotice = (...args) => {
-      notices.push(args)
+  it('openExternal names the remote view the plugin acted for (a notice there, external/open-external.ts); another window\'s, an unknown or no view names none', async () => {
+    const calls: unknown[][] = []
+    deps.openExternal = async (url, target) => {
+      calls.push([url, target])
     }
     deps.viewWindow = (viewId) => viewWindows[viewId]
     const host = hostWithMeta()
     const params = { pluginId: 'a.one', url: 'https://example.com/a' }
     await host('openExternal', params, { view: 'web:1' })
-    expect(opened).toEqual([])
-    expect(notices).toEqual([['web:1', 'https://example.com/a']])
+    expect(calls).toEqual([['https://example.com/a', { windowId: WIN_A, viewId: 'web:1' }]])
     // A view of another window, one main never had, no view, and a forged field in the payload.
     for (const meta of [{ view: 'web:2' }, { view: 'web:99' }, {}]) await host('openExternal', { ...params, pluginId: 'a.two' }, meta)
     await host('openExternal', { ...params, view: 'web:1', remote: true }, {})
-    expect(opened).toHaveLength(4)
-    expect(notices).toHaveLength(1)
-    // The URL is still checked before a notice.
+    expect(calls.slice(1)).toEqual(Array.from({ length: 4 }, () => ['https://example.com/a', { windowId: WIN_A, viewId: undefined }]))
+    // The URL is still checked before the adapter is asked.
     await expect(host('openExternal', { pluginId: 'a.one', url: 'file:///etc/passwd' }, { view: 'web:1' })).rejects.toThrow()
-    expect(notices).toHaveLength(1)
+    expect(calls).toHaveLength(5)
   })
 
   it('files.reveal and files.openWithSystem are refused for a remote view and run for the desktop', async () => {
