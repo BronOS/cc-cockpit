@@ -71,6 +71,8 @@ export interface WebBrowser {
   terminalText(): Promise<string>
   /** Wait until the web shell's visible terminal shows `text`. */
   waitForTerminalText(text: string | RegExp, timeout?: number): Promise<void>
+  /** URLs the page asked to open in a new tab or window, in order (the fixture records and denies them). */
+  opened(): Promise<string[]>
   close(): Promise<void>
 }
 
@@ -122,6 +124,7 @@ export async function openBrowser(url: string): Promise<WebBrowser> {
         throw new Error(`web terminal never showed ${String(text)}; it shows:\n${await terminalText()}`, { cause: err })
       }
     },
+    opened: () => app.evaluate(() => [...((globalThis as { __opened?: string[] }).__opened ?? [])]),
     close: async () => {
       await app.close().catch(() => {})
       rmSync(profile, { recursive: true, force: true })

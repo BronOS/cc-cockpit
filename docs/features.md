@@ -544,7 +544,8 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   holding an overlay's page leaves (or reconnects), the page goes back to the desktop. When the place holding a settings
   page closes it, a place showing the note loads it.
 - Some things only the desktop can do. In a browser, a link a page or plugin asks to open (`openExternal`, the update
-  notice's release link) shows as a notice to click; the host's own browser is not opened. Showing a file in the file
+  notice's release link) opens in a new tab at once when it follows the person's click by a few seconds at most, and
+  otherwise shows as a notice to click (a browser blocks a tab nobody clicked for); the host's own browser is not opened. Showing a file in the file
   manager or opening it with its default app is refused with a message, and a plugin's OAuth sign-in says to sign in
   on the desktop. Moving a file to the Trash (confirmed in the window), notifications (they stay on the host) are the
   same as on the desktop. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,

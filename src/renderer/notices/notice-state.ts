@@ -15,6 +15,24 @@ export function linkNoticeUrl(payload: unknown): string | undefined {
 }
 
 /**
+ * What the shell does with an `app.linkNotice` (design-web.md §6.1): open the link in a new tab at once,
+ * show the notice to click, or nothing (an address linkNoticeUrl refuses is never opened nor shown).
+ * A page may open a tab only while it has transient user activation, and the person's click that led
+ * here (in a plugin's frame: Chrome's User Activation v2 activates the ancestors too, or on a shell
+ * button) usually still holds it when main's event arrives; without it the open would be blocked, so
+ * the notice is shown instead of trying. `window.open` with `noopener` returns null even when it
+ * opened, so activation is the only test there is before the call. Only the web shell ever opens: the
+ * desktop never gets this event (main opens the system browser), and if it did it would show the notice.
+ */
+export type LinkNoticeAction = { kind: 'open'; url: string } | { kind: 'notice'; url: string } | { kind: 'none' }
+
+export function linkNoticeAction(payload: unknown, env: { webShell: boolean; activationActive: boolean }): LinkNoticeAction {
+  const url = linkNoticeUrl(payload)
+  if (url === undefined) return { kind: 'none' }
+  return env.webShell && env.activationActive ? { kind: 'open', url } : { kind: 'notice', url }
+}
+
+/**
  * A `links.ask` joins the queue once: the bridge's replay and a live event can both carry it. The
  * same array when it is already there, so React skips the render.
  */

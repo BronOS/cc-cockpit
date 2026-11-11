@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeUrl, type LinkAsk } from '../../src/renderer/notices/notice-state'
+import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeAction, linkNoticeUrl, type LinkAsk } from '../../src/renderer/notices/notice-state'
 
 const ask = (n: number): LinkAsk => ({ requestId: `link-${n}`, id: 'x.p', name: 'P', path: '/p', caller: 'tab' })
 
@@ -12,6 +12,25 @@ describe('linkNoticeUrl', () => {
     }
     expect(linkNoticeUrl(undefined)).toBeUndefined()
     expect(linkNoticeUrl(null)).toBeUndefined()
+  })
+})
+
+describe('linkNoticeAction', () => {
+  const url = 'https://example.com/x'
+  it('opens at once in a browser view while the click still counts, else shows the notice', () => {
+    expect(linkNoticeAction({ url }, { webShell: true, activationActive: true })).toEqual({ kind: 'open', url })
+    expect(linkNoticeAction({ url }, { webShell: true, activationActive: false })).toEqual({ kind: 'notice', url })
+  })
+  it('never opens on the desktop', () => {
+    expect(linkNoticeAction({ url }, { webShell: false, activationActive: true })).toEqual({ kind: 'notice', url })
+  })
+  it('neither opens nor shows an address linkNoticeUrl refuses', () => {
+    for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', '', 42, undefined]) {
+      for (const activationActive of [true, false]) {
+        expect(linkNoticeAction({ url: bad }, { webShell: true, activationActive })).toEqual({ kind: 'none' })
+      }
+    }
+    expect(linkNoticeAction(null, { webShell: true, activationActive: true })).toEqual({ kind: 'none' })
   })
 })
 

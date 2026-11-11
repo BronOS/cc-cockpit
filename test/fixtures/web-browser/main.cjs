@@ -29,5 +29,12 @@ void app.whenReady().then(() => {
     height: 800,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
   })
+  // A new tab the page opens (window.open, a target=_blank link) is recorded for the spec to read
+  // (`app.evaluate(() => globalThis.__opened)`) and never opened: no window, no request leaves.
+  globalThis.__opened = []
+  win.webContents.setWindowOpenHandler(({ url: opened }) => {
+    globalThis.__opened.push(opened)
+    return { action: 'deny' }
+  })
   void win.loadURL(url)
 })

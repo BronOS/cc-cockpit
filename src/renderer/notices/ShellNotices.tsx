@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isWebShell } from '../shell-kind'
-import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeUrl, type LinkAsk } from './notice-state'
+import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeAction, type LinkAsk } from './notice-state'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
@@ -19,14 +19,33 @@ export function ShellNotices(): React.JSX.Element {
 }
 
 /**
- * `app.linkNotice`: a link a page or plugin asked to open. A browser cannot open a tab without a
- * click, and the host's browser is not this screen, so the link is shown to click. The last one only;
+ * `app.linkNotice`: a link a page or plugin asked to open, in a browser view (the host's browser is
+ * not this screen). While the click that asked for it still counts as the person's (transient
+ * activation, linkNoticeAction) the link opens in a new tab at once; otherwise a browser would block
+ * the tab, so the link is shown to click. One open per event, never retried. The last notice only;
  * `noopener noreferrer` so the opened page learns nothing about this one.
  */
 function LinkNotice(): React.JSX.Element | null {
   const [url, setUrl] = useState<string | undefined>(undefined)
   useEffect(() => {
-    return window.cockpit.on('app.linkNotice', (p) => setUrl(linkNoticeUrl(p)))
+    return window.cockpit.on('app.linkNotice', (p) => {
+      const action = linkNoticeAction(p, {
+        webShell: isWebShell(),
+        // Absent in an older browser: no way to know, so the notice.
+        activationActive: navigator.userActivation?.isActive === true
+      })
+      if (action.kind === 'none') return
+      if (action.kind === 'open') {
+        try {
+          // Null even on success with noopener; activation was checked above, a throw is the one failure seen here.
+          window.open(action.url, '_blank', 'noopener,noreferrer')
+          return
+        } catch {
+          // Fall through to the notice.
+        }
+      }
+      setUrl(action.url)
+    })
   }, [])
   if (url === undefined) return null
   return (

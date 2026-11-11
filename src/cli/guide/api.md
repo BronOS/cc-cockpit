@@ -503,7 +503,9 @@ with full Node access.
   `ctx.exec(['xdg-open', url])` or `open`: the host process has no display or desktop session in
   its env, so those fail on Linux. Open a page on the person's click, not unasked. A panel or an
   html overlay page cannot open links itself: post a message to the host and let it call this,
-  with a URL the host chose (never one taken from the page as is).
+  with a URL the host chose (never one taken from the page as is). Asked from a browser (web
+  access), the link opens in a new tab of that browser when the person's click is still recent
+  (a few seconds), else it shows there as a notice to click; the host's browser is not opened.
 
 Calls that reach main (`exec`, `overlay`, `notify`, `webview`, `openExternal`, `files`, ...) are limited there and
 a rejected promise carries the reason; `ctx.services` calls never reach main, see above.

@@ -10,6 +10,9 @@
 //     it over, answers it, and the opener settles once while the overlay goes from both screens. A
 //     plugin's close ask (ctx.sessions.close, §5.1) is asked on both screens; the browser's answer
 //     is the one main takes and the desktop's dialog goes down unanswered.
+//  2b. A plugin's link (ctx.openExternal, §6.1): asked on a click in the browser's panel, it opens in a
+//     new tab at once (the click's user activation still holds); asked with no click, the browser
+//     shows the notice to click instead, and the host's own browser opens neither.
 //  3. Security end to end (§4.1): a socket with the browser's own device cookie but a foreign
 //     Origin is refused (from the same browser too, where the cookie does go along: a page on
 //     another localhost port is same-site), no cookie is refused, and revoking the device on the
@@ -17,9 +20,11 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, request, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 // Named apart from the page's own WebSocket, which the foreign page below uses.
 import { WebSocket as WsClient } from 'ws'
+import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { CockpitApi } from '../../src/shared/ipc'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { enableWebAccess, openBrowser, type WebAccessOn, type WebBrowser } from './web-fixtures'
@@ -235,6 +240,61 @@ test('the browser takes over an html overlay and its answer settles the opener o
     await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(webPage.getByRole('tab')).toHaveCount(0)
     expect(await c.hook<unknown[]>('tabs', c.projectDir)).toEqual([])
+  } finally {
+    await browser?.close()
+    await close()
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// 2b. A plugin's link in the browser
+
+test("a plugin's link opens in a new tab on a click in the browser; asked with no click it is a notice", async () => {
+  test.setTimeout(120_000)
+  const { cockpit: c, close } = await launchCockpit()
+  let browser: WebBrowser | undefined
+  try {
+    // Nothing may reach the host's real browser: a link that went there would be recorded here.
+    await c.app.evaluate(({ shell }) => {
+      const g = globalThis as { __opened?: string[] }
+      g.__opened = []
+      shell.openExternal = (url: string) => {
+        g.__opened!.push(url)
+        return Promise.resolve()
+      }
+    })
+    await c.hook('linkPlugin', join(__dirname, '..', 'fixtures', 'plugins', 'open-link'))
+    await c.hook('enablePlugin', c.projectDir, 'test.open-link')
+    await expect
+      .poll(() => c.hook<HostStatus>('hostStatus', c.projectDir), { timeout: 15_000 })
+      .toMatchObject({ running: true, plugins: [{ id: 'test.open-link', state: 'active' }] })
+    const web = await enableWebAccess(c)
+    browser = await joinProject(web)
+    const webPage = browser.page
+    await webPage.locator('.zone-left').getByRole('button', { name: /^Links/ }).click()
+    const panel = webPage.frameLocator('section.panel[aria-label="Links"] iframe')
+    const notice = webPage.locator('.link-notice')
+
+    // The person's click in the panel's frame activates the shell's frame too (User Activation v2),
+    // and main's linkNotice comes back while it holds: the tab is asked for, no notice is shown.
+    await panel.getByRole('button', { name: 'Open link' }).click()
+    await expect.poll(() => browser!.opened()).toEqual(['https://example.com/clicked'])
+    await expect(notice).toHaveCount(0)
+    await expect.poll(() => c.hook<string[]>('notifications')).toContain('asked a')
+
+    // No recent click: the panel asks 6 s after its button, past the click's activation (5 s in
+    // Chrome), so the link is the notice and no tab is asked for. Nothing may touch the browser's
+    // page meanwhile: Playwright runs every evaluate and locator check there as a user gesture, which
+    // counts as a fresh click. So the wait is on the host's notification (main took the call and sent
+    // the event), plus a moment for the event to cross the socket, before the page is looked at.
+    await panel.getByRole('button', { name: 'Open later' }).click()
+    await expect.poll(() => c.hook<string[]>('notifications'), { timeout: 15_000 }).toContain('asked b')
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await expect(notice.getByRole('link', { name: 'https://example.com/unasked' })).toBeVisible()
+    expect(await browser.opened()).toEqual(['https://example.com/clicked'])
+
+    // The host's browser opened neither.
+    expect(await c.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened)).toEqual([])
   } finally {
     await browser?.close()
     await close()

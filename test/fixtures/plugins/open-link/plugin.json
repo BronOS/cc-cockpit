@@ -1,0 +1,17 @@
+{
+  "id": "test.open-link",
+  "name": "Open Link",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [
+      {
+        "id": "links",
+        "title": "Links",
+        "entry": "panel.html",
+        "defaultZone": "left"
+      }
+    ]
+  }
+}
