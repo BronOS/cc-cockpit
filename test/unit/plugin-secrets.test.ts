@@ -16,7 +16,15 @@ import {
   PluginSecrets,
   type PluginSecretsOptions
 } from '../../src/main/secrets/plugin-secrets'
-import { FAKE_PREFIX, fakeSecretStore, safeStorageSecretStore } from '../../src/main/secrets/secret-store'
+import { keyFileSecretStore, REPLACED_KEY_TEXT } from '../../src/main/secrets/key-file-store'
+import {
+  FAKE_PREFIX,
+  fakeSecretStore,
+  safeStorageSecretStore,
+  STORED_BY_KEY_FILE,
+  STORED_BY_KEYCHAIN,
+  type SecretStore
+} from '../../src/main/secrets/secret-store'
 import type { FsOps } from '../../src/main/store/json-file'
 import { hostSpec } from '../fakes/host-spec'
 import { unusedOAuth } from '../fakes/unused-host-services'
@@ -295,6 +303,66 @@ describe('PluginSecrets', () => {
     expect(await again.get(ONE, 'setting:app:t')).toBe('app')
     // A plugin's own key that merely looks similar is the plugin's business.
     expect(await again.get(TWO, `project:${PROJ_A}:mine`)).toBe('plugin-set')
+  })
+})
+
+describe('secrets of the other mode (design-web.md §9.5)', () => {
+  const KEYCHAIN_VALUE = 'djExQUJDREVGR0g='
+  const keyFile = (name: string): SecretStore =>
+    keyFileSecretStore({ path: join(dataDir, name), storedValues: () => [], log: (m) => logs.push(m) })
+  const keychain = (): SecretStore =>
+    safeStorageSecretStore(
+      {
+        isAsyncEncryptionAvailable: async () => false,
+        encryptStringAsync: async () => Buffer.alloc(0),
+        decryptStringAsync: async () => ({ result: '', shouldReEncrypt: false })
+      },
+      'darwin'
+    )
+  const write = (values: Record<string, string>): void => writeFileSync(file, JSON.stringify({ schemaVersion: 1, plugins: { [ONE]: values } }))
+
+  it('ctx.secrets.get rejects with the keychain value\'s text under the key file, and a set replaces it', async () => {
+    write({ token: KEYCHAIN_VALUE })
+    const s = open({ store: keyFile('a.key') })
+    await expect(s.get(ONE, 'token')).rejects.toThrow(STORED_BY_KEYCHAIN)
+    expect(await s.keys(ONE)).toEqual(['token'])
+    await s.set(ONE, 'token', 'fresh')
+    expect(await s.get(ONE, 'token')).toBe('fresh')
+  })
+
+  it('rejects a key file value under the desktop keychain with the key file text', async () => {
+    const value = await keyFile('made.key').encrypt('x')
+    write({ token: value })
+    await expect(open({ store: keychain() }).get(ONE, 'token')).rejects.toThrow(STORED_BY_KEY_FILE)
+  })
+
+  it('rejects a value of a replaced key file, and the text names the remedy', async () => {
+    const old = await keyFile('old.key').encrypt('x')
+    write({ token: old })
+    const s = open({ store: keyFile('new.key') })
+    await expect(s.get(ONE, 'token')).rejects.toThrow(REPLACED_KEY_TEXT)
+    // Not "not set": a plugin must not quietly ask for a sign-in over a broken store.
+    expect(await s.keys(ONE)).toEqual(['token'])
+  })
+
+  it('never carries the stored value in the error', async () => {
+    write({ token: KEYCHAIN_VALUE })
+    const err = await open({ store: keyFile('a.key') })
+      .get(ONE, 'token')
+      .catch((e: Error) => e)
+    expect((err as Error).message).not.toContain(KEYCHAIN_VALUE)
+  })
+
+  it('settingState tells set, unset and both unreadable kinds', async () => {
+    const old = await keyFile('old.key').encrypt('x')
+    write({ 'setting:app:a': KEYCHAIN_VALUE, 'setting:app:b': old, 'setting:app:c': await keyFile('new.key').encrypt('y') })
+    const s = open({ store: keyFile('new.key') })
+    expect(s.settingState(ONE, 'setting:app:a')).toBe('other-mode')
+    expect(s.settingState(ONE, 'setting:app:b')).toBe('replaced')
+    expect(s.settingState(ONE, 'setting:app:c')).toBe('set')
+    expect(s.settingState(ONE, 'setting:app:d')).toBe('unset')
+    // A plugin key is not a setting: never reported.
+    expect(s.settingState(ONE, 'token')).toBe('unset')
   })
 })
 

@@ -423,7 +423,7 @@ describe('turning a default-on plugin off and on (ProjectSettingsService)', () =
       settingsChanged: async () => {},
       layouts: { view: () => undefined, move: () => undefined },
       secrets: {
-        hasSetting: () => false,
+        hasSetting: () => false, settingState: () => 'unset' as const,
         settingsGuard: () => ({ removals: undefined, forgets: new Map() }),
         checkSettingsGuard: () => {},
         writeSettings: async () => {}

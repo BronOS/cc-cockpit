@@ -140,7 +140,7 @@ function rig(): Rig {
       calls.push('pluginSettingsChanged')
     },
     // Secret fields have their own tests (secret-settings.test.ts); none of these schemas has one.
-    secrets: { hasSetting: () => false, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} },
+    secrets: { hasSetting: () => false, settingState: () => 'unset' as const, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} },
     projectDefaults: { get: () => undefined, set: () => {} },
     openProjectIds: () => [...windowsOpen],
     settingsFingerprint: () => '',

@@ -460,7 +460,7 @@ export class SettingsService {
     if (!plugin?.manifest) throw new Error(`unknown plugin: ${String(id)}`)
     const schema = plugin.manifest.contributes?.settings?.project
     if (schema === undefined) return undefined
-    return settingsViewOf(schema, this.deps.projectDefaults.get(plugin.id), (f) => this.deps.secrets.hasSetting(plugin.id, projectDefaultSettingKey(f)))
+    return settingsViewOf(schema, this.deps.projectDefaults.get(plugin.id), (f) => this.deps.secrets.settingState(plugin.id, projectDefaultSettingKey(f)))
   }
 
   /**
@@ -477,7 +477,7 @@ export class SettingsService {
   private appSettingsView(p: InstalledPlugin): PluginAppSettingsView | undefined {
     const schema = p.manifest?.contributes?.settings?.app
     if (schema === undefined) return undefined
-    return settingsViewOf(schema, this.deps.appPluginSettings.get(p.id), (f) => this.deps.secrets.hasSetting(p.id, appSettingKey(f)))
+    return settingsViewOf(schema, this.deps.appPluginSettings.get(p.id), (f) => this.deps.secrets.settingState(p.id, appSettingKey(f)))
   }
 
   private pluginView(p: InstalledPlugin): PluginView {

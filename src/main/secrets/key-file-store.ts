@@ -84,6 +84,8 @@ export interface KeyFileSecretStore extends SecretStore {
   readonly kind: 'keyfile'
   /** How many stored `KEYFILE-V1:` values the current key cannot read (made under a replaced key); 0 when unavailable. */
   replacedCount(): number
+  /** Whether a stored value is a key file value this key cannot authenticate (the same test `replacedCount` counts). */
+  isReplaced(stored: string): boolean
 }
 
 type Loaded = { key: Buffer; made: boolean } | { reason: string }
@@ -313,6 +315,7 @@ export function keyFileSecretStore(options: KeyFileStoreOptions): KeyFileSecretS
     kind: 'keyfile' as const,
     unavailableReason: async () => reason,
     replacedCount,
+    isReplaced: (stored: string): boolean => key !== undefined && unreadable(key, stored),
     encrypt: async (plain: string): Promise<string> => {
       if (typeof plain !== 'string') throw new SecretStoreError('a secret must be a string')
       if (key === undefined) throw new SecretStoreError(`cannot store secrets: ${reason}`)

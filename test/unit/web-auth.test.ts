@@ -8,7 +8,8 @@ import { tmpdir, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
-import { fakeSecretStore, SecretStoreError, type SecretStore } from '../../src/main/secrets/secret-store'
+import { keyFileSecretStore } from '../../src/main/secrets/key-file-store'
+import { fakeSecretStore, SecretStoreError, STORED_BY_KEYCHAIN, storedValueState, type SecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog, FAILED_SIGN_IN_WINDOW_MS } from '../../src/main/web/access-log'
 import {
   ADD_DEVICE_TTL_MS,
@@ -203,6 +204,81 @@ describe('access link', () => {
     const a = auth()
     const [x, y] = await Promise.all([a.accessLink(ORIGIN), a.accessLink(ORIGIN)])
     expect(x).toEqual(y)
+  })
+})
+
+describe('credentials stored by the other mode (design-web.md §9.5)', () => {
+  /** The desktop's keychain stand-in: a reversible encoding whose values look like safeStorage's (base64). */
+  const keychain = (): SecretStore => ({
+    kind: 'os',
+    unavailableReason: async () => null,
+    encrypt: async (plain) => Buffer.from(plain, 'utf8').toString('base64'),
+    decrypt: async (stored) => Buffer.from(stored, 'base64').toString('utf8')
+  })
+  const keyFile = (name: string): SecretStore =>
+    keyFileSecretStore({ path: join(dir, name), storedValues: () => [], log: () => undefined })
+
+  it('reports unset, then set, with the store that made the values', async () => {
+    const a = auth({ secrets: keychain() })
+    expect(a.credentialStates()).toEqual({ accessLink: 'unset', password: 'unset' })
+    await linkToken(a)
+    expect(a.credentialStates()).toEqual({ accessLink: 'set', password: 'unset' })
+    expect(await a.setPassword('correct horse')).toEqual({ ok: true })
+    expect(a.credentialStates()).toEqual({ accessLink: 'set', password: 'set' })
+  })
+
+  it('under the other mode: devices stay signed in, the link cannot be shown until regenerated, the password is set again', async () => {
+    // The desktop made a link token, a password and a device.
+    const desktop = auth({ secrets: keychain() })
+    const token = await linkToken(desktop)
+    await desktop.setPassword('correct horse')
+    const device = await desktop.signInWithToken({ token, name: 'Phone' })
+    if (!device.ok) throw new Error('setup')
+
+    // The same data dir run as a server: the key file cannot read either value.
+    const server = auth({ secrets: keyFile('a.key') })
+    server.setMode('password')
+    expect(server.credentialStates()).toEqual({ accessLink: 'other-mode', password: 'other-mode' })
+    // The device is still in (a cookie is checked by hash), and so is a sign-in with the token.
+    expect(server.authorize(`${DEVICE_COOKIE}=${device.cookie}`)?.name).toBe('Phone')
+    server.setMode('link')
+    expect(await server.signInWithToken({ token })).toMatchObject({ ok: true })
+    // The link cannot be shown: the reason names the other store and the remedy.
+    const shown = await server.accessLink(ORIGIN)
+    expect(shown).toMatchObject({ ok: false, reason: expect.stringContaining(STORED_BY_KEYCHAIN) })
+    if (!shown.ok) expect(shown.reason).toContain('regenerate')
+    // The password cannot be checked, and the answer is the one for a wrong password.
+    server.setMode('password')
+    expect(await server.signInWithPassword({ password: 'correct horse' })).toMatchObject({ ok: false, status: 401, error: 'wrong password' })
+
+    // Setting the password again, and regenerating the link, make both readable here.
+    expect(await server.setPassword('correct horse')).toEqual({ ok: true })
+    expect(server.credentialStates()).toEqual({ accessLink: 'other-mode', password: 'set' })
+    expect(await server.signInWithPassword({ password: 'correct horse' })).toMatchObject({ ok: true })
+    const fresh = await server.regenerate(ORIGIN)
+    expect(fresh.ok).toBe(true)
+    expect(server.credentialStates()).toEqual({ accessLink: 'set', password: 'set' })
+    expect(await server.accessLink(ORIGIN)).toEqual(fresh)
+  })
+
+  it('a replaced key file reports both as replaced', async () => {
+    const before = auth({ secrets: keyFile('old.key') })
+    await linkToken(before)
+    await before.setPassword('correct horse')
+    expect(before.credentialStates()).toEqual({ accessLink: 'set', password: 'set' })
+    const after = auth({ secrets: keyFile('new.key') })
+    expect(after.credentialStates()).toEqual({ accessLink: 'replaced', password: 'replaced' })
+  })
+
+  it('the keychain calls a key file value the other mode\'s, the fake and empty ones nobody\'s', async () => {
+    const value = await keyFile('k.key').encrypt('x')
+    expect(storedValueState(keychain(), value)).toBe('other-mode')
+    expect(storedValueState(keyFile('k.key'), value)).toBe('readable')
+    expect(storedValueState(keyFile('k.key'), 'djExQUJD')).toBe('other-mode')
+    const fake = await fakeSecretStore().encrypt('x')
+    expect(storedValueState(keyFile('k.key'), fake)).toBe('readable')
+    expect(storedValueState(fakeSecretStore(), value)).toBe('readable')
+    expect(storedValueState(keychain(), '')).toBe('readable')
   })
 })
 

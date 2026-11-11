@@ -74,6 +74,9 @@ function SecretWidget(props: WidgetProps): React.JSX.Element {
   const ctx = useContext(SecretContext)
   const name = props.name
   const isSet = ctx.fields[name]?.set === true
+  // A value stored by the other mode's store (or under a replaced key file) is there but cannot be
+  // read here: the field says so and Replace takes the value again (design-web.md §9.5).
+  const unreadable = ctx.fields[name]?.unreadable
   const edit = Object.hasOwn(ctx.edits, name) ? ctx.edits[name] : undefined
   const disabled = props.disabled === true || props.readonly === true
   const label = typeof props.label === 'string' && props.label !== '' ? props.label : name
@@ -114,9 +117,15 @@ function SecretWidget(props: WidgetProps): React.JSX.Element {
   }
   return (
     <div className="settings-secret">
-      <span className={isSet ? 'settings-badge accent' : 'settings-badge'} data-secret-state={isSet ? 'set' : 'unset'}>
-        {isSet ? 'Set' : 'Not set'}
-      </span>
+      {unreadable !== undefined ? (
+        <span className="settings-badge warn" data-secret-state={unreadable}>
+          {unreadable === 'other-mode' ? 'Stored in the other mode: enter it again' : 'Key file replaced: enter it again'}
+        </span>
+      ) : (
+        <span className={isSet ? 'settings-badge accent' : 'settings-badge'} data-secret-state={isSet ? 'set' : 'unset'}>
+          {isSet ? 'Set' : 'Not set'}
+        </span>
+      )}
       <button
         type="button"
         aria-label={`${isSet ? 'Replace' : 'Add'} ${label}`}
@@ -329,7 +338,12 @@ export function PluginSettingsForm(props: {
         : Object.fromEntries(
             [...secretNames].map((f) => [
               f,
-              { set: overridden.has(f) ? project.fields.includes(f) : project.globalSecretFields?.[f]?.set === true }
+              // The view's own entry carries why a stored value cannot be read, so it is passed on whole.
+              overridden.has(f)
+                ? project.fields.includes(f)
+                  ? (secretFields[f] ?? { set: true })
+                  : { set: false }
+                : (project.globalSecretFields?.[f] ?? { set: false })
             ])
           ),
     edits,

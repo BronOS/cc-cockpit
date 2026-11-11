@@ -276,6 +276,7 @@ function rig() {
   const secretWrites: Array<Map<string, string | null>> = []
   const secrets = {
     hasSetting: (_pluginId: string, key: string) => storedSecrets.has(key),
+    settingState: (_pluginId: string, key: string) => (storedSecrets.has(key) ? ('set' as const) : ('unset' as const)),
     settingsGuard: () => ({ removals: undefined, forgets: new Map() }),
     checkSettingsGuard: () => {},
     writeSettings: async (_pluginId: string, changes: Map<string, string | null>) => {

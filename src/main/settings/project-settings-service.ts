@@ -28,7 +28,8 @@ import type {
   PluginSettingsSaveResult,
   ProjectPanelView,
   ProjectPluginView,
-  ProjectSettingsView
+  ProjectSettingsView,
+  SecretValueState
 } from '../../shared/ipc'
 import { isPlainObject } from '../../shared/guards'
 import { checkDiscussPrompt, discussPromptOf } from '../../shared/discuss'
@@ -181,7 +182,7 @@ export class ProjectSettingsService {
       store: this.deps.secrets,
       // Read in the plugin's queue: a global save queued ahead of this one has stored by then.
       effective: (overrides) => effectiveProjectValues(this.deps.projectDefaults(plugin.id), overrides),
-      secretSet: (field) => this.secretSet(plugin.id, projectId, field),
+      secretState: (field) => this.secretState(plugin.id, projectId, field),
       save: (value) =>
         this.deps.projects.update(projectId, (r) => {
           // The record file is user-writable: a damaged top level is replaced rather than written into.
@@ -252,19 +253,20 @@ export class ProjectSettingsService {
     return isPlainObject(project.pluginSettings) && Object.hasOwn(project.pluginSettings, pluginId) ? project.pluginSettings[pluginId] : undefined
   }
 
-  /** A secret project field is set for the project: its own value, else the global one. */
-  private secretSet(pluginId: string, projectId: string, field: string): boolean {
-    return this.deps.secrets.hasSetting(pluginId, projectSettingKey(projectId, field)) || this.deps.secrets.hasSetting(pluginId, projectDefaultSettingKey(field))
+  /** A secret project field's state for the project: its own value's when it has one, else the global one's. */
+  private secretState(pluginId: string, projectId: string, field: string): SecretValueState {
+    const own = this.deps.secrets.settingState(pluginId, projectSettingKey(projectId, field))
+    return own !== 'unset' ? own : this.deps.secrets.settingState(pluginId, projectDefaultSettingKey(field))
   }
 
   private projectSettingsView(project: ProjectView, p: InstalledPlugin): PluginAppSettingsView | undefined {
     const schema = p.manifest?.contributes?.settings?.project
     if (schema === undefined) return undefined
     const stored = this.storedOverrides(project, p.id)
-    const view = settingsViewOf(schema, effectiveProjectValues(this.deps.projectDefaults(p.id), stored), (f) => this.secretSet(p.id, project.id, f))
+    const view = settingsViewOf(schema, effectiveProjectValues(this.deps.projectDefaults(p.id), stored), (f) => this.secretState(p.id, project.id, f))
     view.overrides = overriddenFields(schema, stored, (f) => this.deps.secrets.hasSetting(p.id, projectSettingKey(project.id, f)))
     // What "Use global" shows for a field before the save: the global value (defaults applied).
-    const global = settingsViewOf(schema, this.deps.projectDefaults(p.id), (f) => this.deps.secrets.hasSetting(p.id, projectDefaultSettingKey(f)))
+    const global = settingsViewOf(schema, this.deps.projectDefaults(p.id), (f) => this.deps.secrets.settingState(p.id, projectDefaultSettingKey(f)))
     view.globalValues = global.values
     if (global.secretFields !== undefined) view.globalSecretFields = global.secretFields
     return view

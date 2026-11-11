@@ -43,7 +43,8 @@ import { isPlainObject, own } from '../../shared/guards'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
 import { dataPaths } from '../paths'
 import { JsonFile, type FsOps } from '../store/json-file'
-import type { SecretStore } from './secret-store'
+import { storedValueState, type SecretStore } from './secret-store'
+import type { SecretValueState } from '../../shared/ipc'
 import { warnLog } from '../warn-log'
 
 export const SECRET_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
@@ -203,6 +204,19 @@ export class PluginSecrets implements PluginSecretsApi {
   /** A `setting:` value is stored (whether or not it decrypts). For the settings views: no decrypt. */
   hasSetting(pluginId: string, key: string): boolean {
     return key.startsWith(SETTING_KEY_PREFIX) && own(this.entry(pluginId), key) !== undefined
+  }
+
+  /**
+   * What the settings views show for a `setting:` value, without decrypting it: not stored, stored,
+   * or stored but unreadable here because the other mode's store made it or the key file was
+   * replaced (design-web.md §9.5). The form shows the last two as "enter it again", and a save
+   * of a new value replaces the unreadable one like any other.
+   */
+  settingState(pluginId: string, key: string): SecretValueState {
+    const stored = key.startsWith(SETTING_KEY_PREFIX) ? own(this.entry(pluginId), key) : undefined
+    if (stored === undefined) return 'unset'
+    const state = storedValueState(this.store, stored)
+    return state === 'readable' ? 'set' : state
   }
 
   /** The decrypted `setting:` value, when stored and loaded (`loadSettings`, `writeSettings`). */

@@ -15,7 +15,8 @@ import { HostManager, type HostProcess, type HostProcessFactory } from '../../sr
 import type { InstalledPlugin } from '../../src/main/plugins/installer'
 import { checkPluginSettings, compileSettingsSchema, validateSettings } from '../../src/main/plugins/validate'
 import { PluginSecrets, type PluginSecretsOptions } from '../../src/main/secrets/plugin-secrets'
-import { FAKE_PREFIX, fakeSecretStore, safeStorageSecretStore, type SecretStore } from '../../src/main/secrets/secret-store'
+import { keyFileSecretStore } from '../../src/main/secrets/key-file-store'
+import { FAKE_PREFIX, fakeSecretStore, KEYFILE_PREFIX, safeStorageSecretStore, type SecretStore } from '../../src/main/secrets/secret-store'
 import { checkFormSettings, checkSecretEdits, hostSettingsOf, settingsViewOf } from '../../src/main/settings/plugin-settings'
 import { ProjectSettingsService } from '../../src/main/settings/project-settings-service'
 import { SettingsService } from '../../src/main/settings/settings-service'
@@ -255,9 +256,9 @@ describe('validation and views without secret values', () => {
   })
 
   it('never puts a value in the view, also not in the raw values of a problem', () => {
-    const ok = settingsViewOf(appSchema, { site: 's' }, (f) => f === 'token')
+    const ok = settingsViewOf(appSchema, { site: 's' }, (f) => (f === 'token' ? 'set' : 'unset'))
     expect(ok).toEqual({ schema: appSchema, values: { site: 's' }, secretFields: { token: { set: true } } })
-    const bad = settingsViewOf(appSchema, { site: 5, token: PLAIN }, () => false)
+    const bad = settingsViewOf(appSchema, { site: 5, token: PLAIN }, () => 'unset')
     expect(bad.problem).toMatch(/site/)
     expect(bad.values).toEqual({ site: 5 })
     expect(JSON.stringify(bad)).not.toContain(PLAIN)
@@ -602,6 +603,85 @@ describe('global values of project fields (design-next §5.2)', () => {
       app: { site: 'example' },
       project: { board: 'b', key: 'g' }
     })
+  })
+})
+
+describe('secret fields stored by the other mode (design-web.md §9.5)', () => {
+  /** A value the desktop's keychain would have made (base64 of safeStorage ciphertext). */
+  const KEYCHAIN_VALUE = 'djExQUJDREVGR0g='
+  const keyFile = (name: string): SecretStore =>
+    keyFileSecretStore({ path: join(dataDir, name), storedValues: () => [], log: (m) => logs.push(m) })
+  const APP = 'setting:app:token'
+  const GLOBAL = 'setting:projectDefault:key'
+  const OWN = `setting:project:${P}:key`
+
+  it('shows each of the three value kinds as unreadable ("enter it again") and a save replaces it', async () => {
+    // Server mode's key file, over values the desktop's keychain stored.
+    writeFileSync(
+      join(dataDir, 'secrets.json'),
+      JSON.stringify({ schemaVersion: 1, plugins: { [ID]: { [APP]: KEYCHAIN_VALUE, [GLOBAL]: KEYCHAIN_VALUE, [OWN]: KEYCHAIN_VALUE } } })
+    )
+    const secrets = openSecrets({ store: keyFile('a.key') })
+    const { app, project } = services(secrets)
+    const other = { set: true, unreadable: 'other-mode' }
+    expect(app.plugins()[0]!.appSettings?.secretFields).toEqual({ token: other })
+    expect(app.pluginProjectDefaults(ID)?.secretFields).toEqual({ key: other })
+    const view = project.view(P).plugins[0]!.projectSettings!
+    expect(view.secretFields).toEqual({ key: other })
+    expect(view.globalSecretFields).toEqual({ key: other })
+    // The override is stored (unreadable or not, it is the project's own).
+    expect(view.overrides).toEqual(['key'])
+    // Another project has only the global value, unreadable as well.
+    expect(project.view(Q).plugins[0]!.projectSettings?.secretFields).toEqual({ key: other })
+    expect(JSON.stringify([app.plugins(), project.view(P)])).not.toContain(KEYCHAIN_VALUE)
+
+    // Saving a new value replaces the unreadable one: set again, readable, and in the hosts' cache.
+    const saved = await app.savePluginSettings(ID, { site: 's' }, { token: PLAIN })
+    expect(saved).toEqual({ ok: true, values: { site: 's' }, secretFields: { token: { set: true } } })
+    expect(app.plugins()[0]!.appSettings?.secretFields).toEqual({ token: { set: true } })
+    expect(await secrets.cachedSetting(ID, APP)).toBe(PLAIN)
+    const globalSaved = await app.saveProjectDefaults(ID, {}, { key: 'g' })
+    expect(globalSaved).toMatchObject({ ok: true, secretFields: { key: { set: true } } })
+    const own = await project.saveSettings(P, ID, {}, { key: 'o' })
+    expect(own).toMatchObject({ ok: true, secretFields: { key: { set: true } } })
+    expect(project.view(P).plugins[0]!.projectSettings?.secretFields).toEqual({ key: { set: true } })
+    // Clearing an unreadable value works too.
+    expect(await project.saveSettings(P, ID, {}, { key: null })).toMatchObject({ ok: true })
+  })
+
+  it('shows a project save result with the unreadable global value when the override is cleared', async () => {
+    writeFileSync(join(dataDir, 'secrets.json'), JSON.stringify({ schemaVersion: 1, plugins: { [ID]: { [GLOBAL]: KEYCHAIN_VALUE } } }))
+    const { project } = services(openSecrets({ store: keyFile('a.key') }))
+    const result = await project.saveSettings(P, ID, {}, {})
+    expect(result).toMatchObject({ ok: true, secretFields: { key: { set: true, unreadable: 'other-mode' } } })
+  })
+
+  it('the desktop keychain shows a key file value the same way', () => {
+    const made = keyFile('made.key')
+    return made.encrypt('x').then((value) => {
+      expect(value.startsWith(KEYFILE_PREFIX)).toBe(true)
+      writeFileSync(join(dataDir, 'secrets.json'), JSON.stringify({ schemaVersion: 1, plugins: { [ID]: { [APP]: value } } }))
+      const { app } = services(openSecrets({ store: unavailableStore() }))
+      expect(app.plugins()[0]!.appSettings?.secretFields).toEqual({ token: { set: true, unreadable: 'other-mode' } })
+    })
+  })
+
+  it('a value of a replaced key file shows as unreadable, a readable one as plain set', async () => {
+    const before = keyFile('old.key')
+    const old = await before.encrypt('x')
+    const fresh = await keyFile('new.key').encrypt('y')
+    writeFileSync(join(dataDir, 'secrets.json'), JSON.stringify({ schemaVersion: 1, plugins: { [ID]: { [APP]: old, [GLOBAL]: fresh } } }))
+    const { app } = services(openSecrets({ store: keyFile('new.key') }))
+    expect(app.plugins()[0]!.appSettings?.secretFields).toEqual({ token: { set: true, unreadable: 'replaced' } })
+    expect(app.pluginProjectDefaults(ID)?.secretFields).toEqual({ key: { set: true } })
+  })
+
+  it('a test run is unaffected: the fake store reads its own values and nobody is "other"', async () => {
+    const secrets = openSecrets()
+    await secrets.writeSettings(ID, new Map([[APP, 'v']]))
+    expect(secrets.settingState(ID, APP)).toBe('set')
+    expect(secrets.settingState(ID, GLOBAL)).toBe('unset')
+    expect(secrets.settingState(ID, 'not-a-setting')).toBe('unset')
   })
 })
 

@@ -161,7 +161,7 @@ async function rig(opts: {
     bundledOff: { get: () => undefined, set: () => {} },
     bundledOffChanged: async () => {},
     pluginSettingsChanged: async () => {},
-    secrets: { hasSetting: () => false, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} },
+    secrets: { hasSetting: () => false, settingState: () => 'unset' as const, settingsGuard: () => ({ removals: undefined, forgets: new Map() }), checkSettingsGuard: () => {}, writeSettings: async () => {} },
     projectDefaults: { get: () => undefined, set: () => {} },
     openProjectIds: () => [],
     settingsFingerprint: () => '',

@@ -17,7 +17,7 @@
 // object field is overridden whole). The schema checks that merged object, never the overrides alone.
 import { errorText } from '../../shared/error-text'
 import { isPlainObject } from '../../shared/guards'
-import type { PluginAppSettingsView, PluginSettingsSaveResult, SecretFieldsView } from '../../shared/ipc'
+import type { PluginAppSettingsView, PluginSettingsSaveResult, SecretFieldsView, SecretValueState } from '../../shared/ipc'
 import type { JsonSchema, PluginManifest } from '../../shared/manifest'
 import {
   checkPluginSettings,
@@ -34,10 +34,13 @@ const MAX_SETTINGS_JSON = 256 * 1024
 const MAX_ERRORS = 20
 
 /** What a settings form's save needs of PluginSecrets (it also updates the hosts' decrypted cache). */
-export type SecretSettingsStore = Pick<PluginSecrets, 'hasSetting' | 'settingsGuard' | 'checkSettingsGuard' | 'writeSettings'>
+export type SecretSettingsStore = Pick<PluginSecrets, 'hasSetting' | 'settingState' | 'settingsGuard' | 'checkSettingsGuard' | 'writeSettings'>
 
 /** Whether a secret field of the form's scope is stored (by field name). */
 export type SecretIsSet = (field: string) => boolean
+
+/** A secret field of the form's scope as stored: not, stored, or stored but unreadable in this mode. */
+export type SecretStateOf = (field: string) => SecretValueState
 
 /**
  * Check a settings form's values from the renderer against the plugin's schema (validate.ts: no
@@ -141,8 +144,8 @@ export interface SettingsFormSave {
   refuse?(value: Record<string, unknown>): string[]
   /** Called once the save is sure to be attempted, right before anything is written (a before-state for `announce`). */
   beforeWrite?(): void
-  /** Whether a secret field counts as set in the result; default: this scope's key is stored. */
-  secretSet?: SecretIsSet
+  /** A secret field's state in the result; default: this scope's key's. */
+  secretState?: SecretStateOf
   /** Store the checked plain values (the settings JSON). */
   save(value: Record<string, unknown>): void
   /** Tell the hosts (after both halves are stored). */
@@ -231,7 +234,7 @@ export async function saveSettingsForm(form: SettingsFormSave): Promise<PluginSe
     }
     form.save(checked.stored)
     await form.announce()
-    const secretFields = secretFieldsView(form.schema, form.secretSet ?? ((f) => form.store.hasSetting(form.pluginId, form.keyOf(f))))
+    const secretFields = secretFieldsView(form.schema, form.secretState ?? ((f) => form.store.settingState(form.pluginId, form.keyOf(f))))
     return { ok: true, values: checked.shown, ...(secretFields !== undefined ? { secretFields } : {}) }
   }
   const previous = saving.get(form.pluginId) ?? Promise.resolve()
@@ -247,17 +250,22 @@ export async function saveSettingsForm(form: SettingsFormSave): Promise<PluginSe
   }
 }
 
-/** Set or not, per secret field of `schema`; undefined when it has none. */
-export function secretFieldsView(schema: JsonSchema, isSet: SecretIsSet): SecretFieldsView | undefined {
+/** Set, not set or unreadable here, per secret field of `schema`; undefined when it has none. */
+export function secretFieldsView(schema: JsonSchema, stateOf: SecretStateOf): SecretFieldsView | undefined {
   const fields = secretFieldsOf(schema)
   if (fields.length === 0) return undefined
-  return Object.fromEntries(fields.map((f) => [f, { set: isSet(f) }]))
+  return Object.fromEntries(
+    fields.map((f) => {
+      const state = stateOf(f)
+      return [f, state === 'other-mode' || state === 'replaced' ? { set: true, unreadable: state } : { set: state === 'set' }]
+    })
+  )
 }
 
 /** The form's view of the stored settings; stored values that fail the schema come with a problem. */
-export function settingsViewOf(schema: JsonSchema, stored: unknown, isSet: SecretIsSet = () => false): PluginAppSettingsView {
+export function settingsViewOf(schema: JsonSchema, stored: unknown, stateOf: SecretStateOf = () => 'unset'): PluginAppSettingsView {
   const checked = validateSettings(schema, stored)
-  const secretFields = secretFieldsView(schema, isSet)
+  const secretFields = secretFieldsView(schema, stateOf)
   const view: PluginAppSettingsView = checked.ok
     ? { schema, values: checked.value }
     : {

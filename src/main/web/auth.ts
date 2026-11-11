@@ -54,7 +54,7 @@ import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import type { WebAccessMode } from '../../shared/types'
 import type { WebActionReply, WebConfirmAsk } from '../../shared/web-access'
 import type { WebConfirmPoll } from '../../shared/web-protocol'
-import type { SecretStore } from '../secrets/secret-store'
+import { storedValueState, type SecretStore } from '../secrets/secret-store'
 import type { AccessLog } from './access-log'
 import { DeviceStore, deviceName as deviceNameOf, hashSecret, matchesHash, randomSecret, type DeviceSignIn, type WebDevice } from './devices'
 import { MAX_PASSWORD_LENGTH, PasswordHasher, passwordProblem } from './password'
@@ -228,6 +228,9 @@ export type SignInResult =
   | { ok: true; device: WebDevice; cookie: string }
   | { ok: false; status: 400 | 401 | 409 | 429 | 499 | 503; error: string }
 
+/** A stored credential as `credentialStates` reports it. */
+export type CredentialState = 'unset' | 'set' | 'other-mode' | 'replaced'
+
 export type LinkResult = { ok: true; link: string } | { ok: false; reason: string }
 
 /** A desktop-confirm ask: the code the browser shows and the ticket it polls with. */
@@ -356,6 +359,23 @@ export class WebAuth {
     return this.currentMode === 'none' ? { ...NONE_DEVICE } : undefined
   }
 
+  /**
+   * What a credential kept in the secret store is, for `ccc web status` and the card: `unset`
+   * (nothing stored), `set`, or stored but unreadable by the running store, because the other mode's
+   * store made it (`other-mode`) or the key file was replaced (`replaced`), design-web.md §9.5. Only
+   * the stored ciphertext is unreadable: devices stay signed in (their cookies and the access token
+   * are checked by hash, which needs no decrypt), the access link cannot be shown until it is
+   * regenerated, and the password must be set again. Synchronous, no decrypt.
+   */
+  credentialStates(): { accessLink: CredentialState; password: CredentialState } {
+    const stateOf = (record: { stored: string } | undefined): CredentialState => {
+      if (record === undefined) return 'unset'
+      const state = storedValueState(this.secrets, record.stored)
+      return state === 'readable' ? 'set' : state
+    }
+    return { accessLink: stateOf(this.devices.accessToken()), password: stateOf(this.devices.password()) }
+  }
+
   /** The access link, making the token on first use. Never throws. */
   accessLink(origin: string): Promise<LinkResult> {
     return this.serial(async () => {
@@ -364,7 +384,9 @@ export class WebAuth {
         try {
           return { ok: true, link: this.link(origin, await this.secrets.decrypt(record.stored)) }
         } catch (err) {
-          return { ok: false, reason: `cannot read the access token: ${errorText(err)}` }
+          // A token the running store cannot read is not a fault: regenerating makes one it can.
+          const unreadable = this.credentialStates().accessLink !== 'set'
+          return { ok: false, reason: `cannot read the access token: ${errorText(err)}${unreadable ? '; regenerate the link' : ''}` }
         }
       }
       return this.create(origin)

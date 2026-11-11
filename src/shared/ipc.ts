@@ -365,7 +365,17 @@ export type PluginSourceView =
  * Per secret field of a settings schema (`"format": "secret"` on a top-level property): whether a
  * value is stored. The value itself never reaches a renderer, in this or any other payload.
  */
-export type SecretFieldsView = Record<string, { set: boolean }>
+export type SecretFieldsView = Record<string, { set: boolean; unreadable?: SecretUnreadable }>
+
+/**
+ * Why a stored secret cannot be read here (design-web.md §9.5): made by the other mode's store
+ * (the desktop's keychain, server mode's key file) or by a key file that was replaced. Such a field
+ * counts as `set` (a value is stored) and the form says "enter it again".
+ */
+export type SecretUnreadable = 'other-mode' | 'replaced'
+
+/** A stored secret as the settings views tell it, before it is a field's `{ set, unreadable }`. */
+export type SecretValueState = 'unset' | 'set' | SecretUnreadable
 
 /** A plugin's app-wide settings as the form needs them. */
 export interface PluginAppSettingsView {
@@ -1763,7 +1773,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settings.projectRemove': 'yes',
 
   // Settings › Plugins and the marketplace (design §2.3: plugin settings, browsing and installs are
-  // project work). Secret fields are write-only in both saves (SecretFieldsView says only `set`).
+  // project work). Secret fields are write-only in both saves (SecretFieldsView says only `set`, and why one cannot be read).
   'settings.plugins': 'yes',
   'settings.pluginInstall': 'yes',
   // Native folder dialog.

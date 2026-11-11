@@ -463,18 +463,18 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
   `src/renderer/settings/PluginSettingsForm.tsx`, `src/main/web/auth.ts`
 - Modify: `test/unit/plugin-secrets.test.ts`, `secret-settings.test.ts`, `web-auth.test.ts`
 
-- [ ] a secret settings field shows "stored in the other mode: enter it again" instead of "set": the field's view
+- [x] a secret settings field shows "stored in the other mode: enter it again" instead of "set": the field's view
       carries a third state next to set and not set, for app, global and project values alike, and saving a new value
       replaces the unreadable one
-- [ ] `ctx.secrets.get` rejects with Task 5's text, so the plugin shows its own sign-in again; the same for a value of
+- [x] `ctx.secrets.get` rejects with Task 5's text, so the plugin shows its own sign-in again; the same for a value of
       a replaced key file
-- [ ] web access: devices stay signed in (cookies and the access token are checked by hash), the access link cannot
+- [x] web access: devices stay signed in (cookies and the access token are checked by hash), the access link cannot
       be shown until it is regenerated and the password must be set again; `web/auth.ts` reports both as states, for
       `ccc web status` (Task 11) and the card (Task 20) to show
-- [ ] write tests: the third state for each of the three value kinds and after a save; `ctx.secrets.get` with the
+- [x] write tests: the third state for each of the three value kinds and after a save; `ctx.secrets.get` with the
       other store's value and with a replaced key's value; the auth states with a link and a password stored by the
       other mode, and a sign-in with an existing device cookie still passing
-- [ ] run tests and `npm run test:e2e` (`plugin-secrets`, `settings-form`, `settings-project`) - must pass before next
+- [x] run tests and `npm run test:e2e` (`plugin-secrets`, `settings-form`, `settings-project`) - must pass before next
       task
 
 ### Task 7: Web access is on: what server mode writes, refuses and prints [model: opus]

@@ -47,6 +47,26 @@ export interface SecretStore {
   encrypt(plain: string): Promise<string>
   /** The plaintext of a value `encrypt` returned. Rejects (SecretStoreError) when it cannot. */
   decrypt(stored: string): Promise<string>
+  /**
+   * Whether `stored` is a value this store made under a key it no longer has (the key file store
+   * only; a synchronous check for the settings views and `ccc web status`, which must not decrypt).
+   */
+  isReplaced?(stored: string): boolean
+}
+
+/**
+ * Why a stored value cannot be read by the running store, without decrypting it: made by the other
+ * mode's store (`other-mode`), or by a key file that was replaced since (`replaced`); `readable` for
+ * the rest, which may still fail to decrypt (a reset keychain) but is this store's own. The fake
+ * store's values and the empty string are nobody's other store.
+ */
+export type StoredValueState = 'readable' | 'other-mode' | 'replaced'
+
+export function storedValueState(store: SecretStore, stored: string): StoredValueState {
+  if (store.kind === 'fake' || stored === '' || stored.startsWith(FAKE_PREFIX)) return 'readable'
+  const isKeyFile = stored.startsWith(KEYFILE_PREFIX)
+  if (store.kind === 'os' ? isKeyFile : !isKeyFile) return 'other-mode'
+  return store.isReplaced?.(stored) === true ? 'replaced' : 'readable'
 }
 
 /** A refusal or failure of the secret store. The message never contains a secret. */
