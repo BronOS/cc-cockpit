@@ -966,20 +966,27 @@ task only takes the hidden page out of the set of views that may own a size or a
 
 ### Task 25: Verify acceptance criteria (final regression pass) [model: sonnet]
 
-- [ ] verify every Overview item is implemented, against §9.11's table row by row and §9.13's test list
-- [ ] with web access off nothing listens, and on the desktop every v1 rule stands: a remote view may only Deny a link,
+- [x] verify every Overview item is implemented, against §9.11's table row by row and §9.13's test list
+- [x] with web access off nothing listens, and on the desktop every v1 rule stands: a remote view may only Deny a link,
       `ccc web` only reads and revokes, the keychain is the store, the native dialogs and OS notifications are used
-- [ ] run the full suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`, `npm run test:e2e`
-- [ ] run `node --expose-gc scripts/web-terminal-bench.mjs` (the mirror worker's cost to main is unchanged)
-- [ ] run `node scripts/server-mode-smoke.mjs` against `out/`, then `npm run package:dir` and the smoke script against
+- [x] run the full suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`, `npm run test:e2e`
+- [x] run `node --expose-gc scripts/web-terminal-bench.mjs` (the mirror worker's cost to main is unchanged)
+- [x] run `node scripts/server-mode-smoke.mjs` against `out/`, then `npm run package:dir` and the smoke script against
       the unpacked executable in `release/` (no app path on argv there). The packaged run ignores `CC_COCKPIT_TEST`,
       so it makes its one background fetch of the default index: run it once with the network off too, it must pass
-- [ ] run `npm run test:coverage` and check the new code is covered (`server-mode.ts`, `server-start.ts`,
+- [x] run `npm run test:coverage` and check the new code is covered (`server-mode.ts`, `server-start.ts`,
       `second-launch.ts`, `dialogs/`, `external/`, `secrets/key-file-store.ts`, `asks/`, `files/trash-asks.ts`,
       `socket/web-handlers.ts`)
-- [ ] the grep and drift tests hold: only `electron-dialog.ts` imports `dialog`, only its adapter calls
+- [x] the grep and drift tests hold: only `electron-dialog.ts` imports `dialog`, only its adapter calls
       `shell.openExternal`, `safeStorage` is still imported only by `index.ts`, nothing sends past `ViewRegistry`, every
       `web.*` handler is in `HOST_ONLY_COMMANDS`, `examples/plugin/sdk/types.ts` equals `src/sdk/types.ts`
+
+  Result (2026-11-11): Overview, §9.11 and §9.13 audited row by row, no gap. `npm test` 5377 passed, `test:plugins` 260,
+  typecheck, lint, bench (flooded p99 1.9 ms) pass. e2e: 251 passed, 2 skipped, 4 failed: `window-bounds` (2, the known
+  Hyprland tiling failure) and `zone-auto-hide` (2, the known flake; passes alone on rerun). Smoke: `out/` and the
+  unpacked `release/linux-unpacked/cc-cockpit` pass, the latter also with the network off (`unshare -rn`, loopback up,
+  `curl` refused). Coverage: new files at 94-100% lines; the Electron adapters (`electron-dialog.ts`,
+  `electron-open-external.ts`) are 0% by design (adapters, exercised by the e2e).
 
 ### Task 26: [Final] Documentation [model: sonnet]
 
