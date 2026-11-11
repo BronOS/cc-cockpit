@@ -23,7 +23,7 @@ import {
   session,
   type OpenDialogOptions
 } from 'electron'
-import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from 'node:fs'
+import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -156,13 +156,17 @@ import { armParentWatch, decideServerMode, serverStart } from './server-mode'
 import {
   boxAnswerOf,
   handleSecondInstance,
+  LAUNCH_PROFILE_PREFIX,
   launchHasDisplay,
   launchSocketPath,
   losingLaunchAsks,
+  pidAlive,
+  privateLaunchProfile,
   runSecondLaunch,
   SECOND_LAUNCH_ASK_MS,
   serverBoxOptions,
   socketAsk,
+  sweepLaunchProfiles,
   testBoxAnswer
 } from './second-launch'
 import { runStartOrder } from './server-start'
@@ -222,7 +226,8 @@ if (dataDir !== userData) {
 //
 // A desktop launch meets a server (second-launch.ts): the data carries whether this launch has a
 // display. A loser that has one asks the holder's socket whether it is a server before it quits, and
-// if so offers to stop it in a native box; any other answer, or none, quits as before.
+// if so offers to stop it in a native box; any other answer, or none, quits as before. Such a loser
+// first moves its own userData and sessionData to a private temp dir: it may now reach `ready`.
 const decision = decideServerMode({
   platform: process.platform,
   env: process.env,
@@ -237,6 +242,19 @@ const serverRun = serverStart({
   release: () => app.releaseSingleInstanceLock(),
   quit: () => {
     if (!losingLaunchAsks({ platform: process.platform, display: launchDisplay })) {
+      app.quit()
+      return
+    }
+    // Off the holder's profile before anything is awaited (second-launch.ts privateLaunchProfile);
+    // with no private dir the launch quits at once, as before server mode.
+    sweepLaunchProfiles({ dir: tmpdir(), uid: process.getuid?.(), alive: pidAlive })
+    const profile = privateLaunchProfile({
+      makeDir: () => mkdtempSync(join(tmpdir(), `${LAUNCH_PROFILE_PREFIX}${String(process.pid)}-`)),
+      setPath: (name, path) => app.setPath(name, path),
+      onExit: (fn) => process.once('exit', fn),
+      remove: (dir) => rmSync(dir, { recursive: true, force: true })
+    })
+    if (profile === undefined) {
       app.quit()
       return
     }

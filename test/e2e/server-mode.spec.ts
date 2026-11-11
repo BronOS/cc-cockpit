@@ -9,9 +9,9 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import type { WebCliStatus } from '../../src/shared/web-access'
-import { IGNORED_LINE, SECOND_LAUNCH_ASK_MS } from '../../src/main/second-launch'
+import { IGNORED_LINE } from '../../src/main/second-launch'
 import { launchCockpit } from './fixtures'
-import { addDeviceLink, ccc, expectMainAlive, launchServer, secondLaunch, type Server } from './server-fixtures'
+import { addDeviceLink, ccc, expectMainAlive, launchProfiles, launchServer, secondLaunch, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
@@ -287,28 +287,31 @@ test('server mode: a second launch from a desktop is ignored by the server; its 
   mkdirSync(other)
 
   // Cancel: the launch exits, the server lives on and opened nothing for the launch's folder.
-  expect(await secondLaunch(server.cockpit, other, 'cancel')).toEqual({ code: 0, signal: null })
+  const cancel = await secondLaunch(server.cockpit, other, 'cancel')
+  expect(cancel).toMatchObject({ code: 0, signal: null, files: [] })
   await expect.poll(() => output).toContain(IGNORED_LINE)
   expect(await server.cockpit.hook('windowLook', other)).toBeUndefined()
   await expectMainAlive(server)
 
   // Stop (`web.stop`): the server quits as systemd's stop makes it, with status 0.
-  expect(await secondLaunch(server.cockpit, other, 'stop')).toEqual({ code: 0, signal: null })
+  expect(await secondLaunch(server.cockpit, other, 'stop')).toMatchObject({ code: 0, signal: null, files: [] })
+  // The Stop launch swept what the Cancel launch's profile left (an empty dir Chromium made again).
+  expect(launchProfiles(cancel.pid)).toEqual([])
   expect(await exited).toEqual({ code: 0, signal: null })
 })
 
-test('desktop meets desktop: a second launch opens its folder at once, with no box and no wait', async () => {
+// No wall-clock bound on the launch: a cold Electron start under xvfb can come near the 2 s ask
+// deadline by itself. That a desktop answer (`server: false`) ends after one ask is a unit test
+// (second-launch.test.ts).
+test('desktop meets desktop: a second launch opens its folder, with no box', async () => {
   test.setTimeout(60_000)
   const { cockpit, close } = await launchCockpit()
   try {
     const other = join(cockpit.root, 'other')
     mkdirSync(other)
-    const started = Date.now()
     // A Stop answer in the env would stop a server; a desktop holder answers `web.status` with
     // `server: false`, so the launch never gets that far.
-    expect(await secondLaunch(cockpit, other, 'stop')).toEqual({ code: 0, signal: null })
-    // Well under the 2 s deadline the launch would wait on a socket that never answers.
-    expect(Date.now() - started).toBeLessThan(SECOND_LAUNCH_ASK_MS)
+    expect(await secondLaunch(cockpit, other, 'stop')).toMatchObject({ code: 0, signal: null, files: [] })
     await expect.poll(() => cockpit.hook('windowLook', other)).not.toBeUndefined()
     expect(await cockpit.hook('serverMode')).toBe(false)
   } finally {

@@ -17,9 +17,9 @@
 // paths.ts's `socketPath()`, never src/cli/client.ts. Pure Node (no Electron value import): the box
 // and the exit are passed in, so unit tests load this file in plain Node.
 import type { MessageBoxOptions } from 'electron'
-import { lstatSync } from 'node:fs'
+import { lstatSync, readdirSync, rmSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { encodeRequest, LineFramer, parseReply, PROTOCOL_VERSION, type Reply } from '../shared/protocol'
 import { isPlainObject } from '../shared/guards'
 import { fallbackSocketDir, socketPath } from './paths'
@@ -81,6 +81,91 @@ export function handleSecondInstance(
 /** Whether a losing launch asks the socket at all: one with a display, on Linux only. */
 export function losingLaunchAsks(input: { platform: string; display: boolean }): boolean {
   return input.display && input.platform === 'linux'
+}
+
+/** The losing launch's private profile dir name, before mkdtemp's suffix: `<prefix><pid>-`. */
+export const LAUNCH_PROFILE_PREFIX = 'cc-cockpit-launch-'
+
+export interface LaunchProfileDeps {
+  /** Creates the private dir (mkdtemp, 0700) and returns its path; may throw. */
+  makeDir: () => string
+  setPath: (name: 'userData' | 'sessionData', path: string) => void
+  /** Runs `fn` when the process exits (after `app.quit()`). */
+  onExit: (fn: () => void) => void
+  /** Removes the dir and everything in it; may throw. */
+  remove: (dir: string) => void
+}
+
+/**
+ * Moves a losing launch off the holder's profile before it awaits anything (so still before `ready`):
+ * `userData` and `sessionData` go to a private temp dir, removed again at exit. Until the lock was
+ * lost the loser quit at once and never started Chromium on the holder's dir; now it waits on the
+ * socket ask, and against a server it reaches `ready` and keeps its box open. Chromium's disk caches,
+ * `Local State` and the network state files are not made for two processes, and a loser's shutdown
+ * would write its stale copy over the holder's. The socket path is computed from the data dir main
+ * resolved at start (`launchSocketPath`), never from `userData`, so the ask still reaches the holder.
+ * Returns the dir, or undefined when it could not be made: the caller then quits at once, as before.
+ * Chromium makes `userData` again (empty) while it shuts down, after Node's `exit`: the removal there
+ * takes every profile file, and the next losing launch sweeps the empty dir (`sweepLaunchProfiles`).
+ */
+export function privateLaunchProfile(deps: LaunchProfileDeps): string | undefined {
+  let dir: string
+  try {
+    dir = deps.makeDir()
+  } catch {
+    return undefined
+  }
+  deps.onExit(() => {
+    try {
+      deps.remove(dir)
+    } catch {
+      // A temp dir left behind is harmless; an exit handler must not throw.
+    }
+  })
+  deps.setPath('userData', dir)
+  deps.setPath('sessionData', dir)
+  return dir
+}
+
+/** Whether a pid names a live process (EPERM: alive, someone else's). */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Removes the private profile dirs (`privateLaunchProfile`) earlier losing launches left in `dir`: only
+ * ours (a real directory, our uid) and only when the pid in the name is gone, so a launch still
+ * showing its box keeps its profile. What is left is mostly the empty dir Chromium makes again after
+ * the exit removal. Never throws: a sweep that fails costs a dir in the temp dir, nothing more.
+ */
+export function sweepLaunchProfiles(input: { dir: string; uid: number | undefined; alive: (pid: number) => boolean }): void {
+  let names: string[]
+  try {
+    names = readdirSync(input.dir)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (!name.startsWith(LAUNCH_PROFILE_PREFIX)) continue
+    const rest = name.slice(LAUNCH_PROFILE_PREFIX.length)
+    const dash = rest.indexOf('-')
+    const pidText = dash > 0 ? rest.slice(0, dash) : ''
+    const pid = Number(pidText)
+    if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== pidText || input.alive(pid)) continue
+    const path = join(input.dir, name)
+    try {
+      const st = lstatSync(path)
+      if (!st.isDirectory() || (input.uid !== undefined && st.uid !== input.uid)) continue
+      rmSync(path, { recursive: true, force: true })
+    } catch {
+      // Gone already, or not ours to remove.
+    }
+  }
 }
 
 /** The test run's box answer from the env; anything outside a test run, or any other value, is ignored. */

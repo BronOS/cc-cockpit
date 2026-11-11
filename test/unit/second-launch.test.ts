@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,9 +7,12 @@ import {
   boxAnswerOf,
   handleSecondInstance,
   IGNORED_LINE,
+  LAUNCH_PROFILE_PREFIX,
   launchHasDisplay,
   launchSocketPath,
   losingLaunchAsks,
+  pidAlive,
+  privateLaunchProfile,
   runSecondLaunch,
   SECOND_LAUNCH_ANSWER_ENV,
   SECOND_LAUNCH_ASK_MS,
@@ -18,6 +21,7 @@ import {
   serverBoxMessage,
   serverBoxOptions,
   socketAsk,
+  sweepLaunchProfiles,
   testBoxAnswer,
   type BoxAnswer
 } from '../../src/main/second-launch'
@@ -300,5 +304,96 @@ describe('launchSocketPath', () => {
     chmodSync(fallback, 0o700)
     // Owned by someone else.
     expect(launchSocketPath({ dataDir: long, env: {}, uid: uid + 1, tmpdir: dir })).toBeUndefined()
+  })
+})
+
+describe('privateLaunchProfile', () => {
+  it('moves userData and sessionData to the new dir and removes it at exit', () => {
+    const calls: string[] = []
+    let exit: (() => void) | undefined
+    const dir = privateLaunchProfile({
+      makeDir: () => '/tmp/cc-cockpit-launch-1-abc',
+      setPath: (name, path) => calls.push(`${name}=${path}`),
+      onExit: (fn) => (exit = fn),
+      remove: (d) => calls.push(`rm ${d}`)
+    })
+    expect(dir).toBe('/tmp/cc-cockpit-launch-1-abc')
+    expect(calls).toEqual(['userData=/tmp/cc-cockpit-launch-1-abc', 'sessionData=/tmp/cc-cockpit-launch-1-abc'])
+    exit?.()
+    expect(calls.at(-1)).toBe('rm /tmp/cc-cockpit-launch-1-abc')
+  })
+
+  it('no dir: nothing is moved, the caller quits at once', () => {
+    const calls: string[] = []
+    const dir = privateLaunchProfile({
+      makeDir: () => {
+        throw new Error('ENOSPC')
+      },
+      setPath: (name) => calls.push(name),
+      onExit: () => calls.push('exit'),
+      remove: () => calls.push('rm')
+    })
+    expect(dir).toBeUndefined()
+    expect(calls).toEqual([])
+  })
+
+  it('a failing removal does not throw from the exit handler', () => {
+    let exit: (() => void) | undefined
+    privateLaunchProfile({
+      makeDir: () => '/tmp/x',
+      setPath: () => undefined,
+      onExit: (fn) => (exit = fn),
+      remove: () => {
+        throw new Error('EBUSY')
+      }
+    })
+    expect(() => exit?.()).not.toThrow()
+  })
+})
+
+describe('sweepLaunchProfiles', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sweep-'))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('removes the dirs of gone launches only, ours only, and nothing else in the temp dir', () => {
+    const uid = process.getuid?.()
+    for (const name of [
+      `${LAUNCH_PROFILE_PREFIX}100-aaa`, // gone
+      `${LAUNCH_PROFILE_PREFIX}200-bbb`, // alive: still showing its box
+      `${LAUNCH_PROFILE_PREFIX}x-ccc`, // no pid
+      `${LAUNCH_PROFILE_PREFIX}0100-ddd`, // not a pid as written
+      'other-100-eee'
+    ]) {
+      mkdirSync(join(dir, name, 'Crashpad'), { recursive: true })
+    }
+    // A file with the prefix is not a profile.
+    writeFileSync(join(dir, `${LAUNCH_PROFILE_PREFIX}101-fff`), '')
+    sweepLaunchProfiles({ dir, uid, alive: (pid) => pid === 200 })
+    expect(readdirSync(dir).sort()).toEqual(
+      [
+        `${LAUNCH_PROFILE_PREFIX}0100-ddd`,
+        `${LAUNCH_PROFILE_PREFIX}101-fff`,
+        `${LAUNCH_PROFILE_PREFIX}200-bbb`,
+        `${LAUNCH_PROFILE_PREFIX}x-ccc`,
+        'other-100-eee'
+      ].sort()
+    )
+  })
+
+  it("leaves another uid's dir, and a missing dir does not throw", () => {
+    const uid = process.getuid?.()
+    if (uid === undefined) return
+    mkdirSync(join(dir, `${LAUNCH_PROFILE_PREFIX}100-aaa`))
+    sweepLaunchProfiles({ dir, uid: uid + 1, alive: () => false })
+    expect(readdirSync(dir)).toEqual([`${LAUNCH_PROFILE_PREFIX}100-aaa`])
+    expect(() => sweepLaunchProfiles({ dir: join(dir, 'missing'), uid, alive: () => false })).not.toThrow()
+  })
+
+  it('pidAlive: this process lives, a pid past the max does not', () => {
+    expect(pidAlive(process.pid)).toBe(true)
+    expect(pidAlive(2 ** 30)).toBe(false)
   })
 })

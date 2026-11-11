@@ -26,12 +26,12 @@
 // and the hooks on `__ccTest` answer (`serverMode()` is true), so server specs may use `cockpit.hook`.
 import { expect } from '@playwright/test'
 import { execFile, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import type { CockpitApi } from '../../src/shared/ipc'
-import { SECOND_LAUNCH_ANSWER_ENV } from '../../src/main/second-launch'
+import { LAUNCH_PROFILE_PREFIX, SECOND_LAUNCH_ANSWER_ENV } from '../../src/main/second-launch'
 import { launchCockpit, type Cockpit, type LaunchOptions } from './fixtures'
 
 /** The switches the re-exec appends (server-mode.ts), with `--server` in front. */
@@ -194,13 +194,15 @@ export async function addDeviceLink(server: Server): Promise<string> {
  * A second launch of the app on this machine's desktop (`cc-cockpit <folder>` typed while `holder`
  * holds the data dir): a desktop Electron process with the suite's display, the holder's data dir,
  * a test run, so `answer` answers the box it shows when the holder is a server (second-launch.ts).
- * Resolves with its exit; bounded by the spec's timeout.
+ * Resolves with its exit, its pid and the files left in the private profile it moved to off the
+ * holder's (`files`, none expected: they are removed at exit; Chromium may make the empty dir again,
+ * which the next losing launch sweeps, see `launchProfiles`). Bounded by the spec's timeout.
  */
 export function secondLaunch(
   holder: Cockpit,
   folder: string,
   answer: 'stop' | 'cancel'
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; pid: number | undefined; files: string[] }> {
   const repo = resolve(__dirname, '../..')
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) {
@@ -219,5 +221,16 @@ export function secondLaunch(
   // The electron package's main export, in Node, is the binary's path.
   const electronPath = createRequire(__filename)('electron') as string
   const child = spawn(electronPath, [join(repo, 'out/main/index.js'), folder], { cwd: repo, env, stdio: 'ignore' })
-  return new Promise((done) => child.once('exit', (code, signal) => done({ code, signal })))
+  const pid = child.pid
+  return new Promise((done) =>
+    child.once('exit', (code, signal) => {
+      const files = launchProfiles(pid).flatMap((d) => readdirSync(join(tmpdir(), d)))
+      done({ code, signal, pid, files })
+    })
+  )
+}
+
+/** The private profile dirs (second-launch.ts `privateLaunchProfile`) of the launch with `pid` in the temp dir. */
+export function launchProfiles(pid: number | undefined): string[] {
+  return readdirSync(tmpdir()).filter((n) => n.startsWith(`${LAUNCH_PROFILE_PREFIX}${String(pid)}-`))
 }
