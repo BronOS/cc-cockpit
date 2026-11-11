@@ -2,11 +2,13 @@
 // mounted (`tabs.create` resolves after the PTY started), and a hidden tab must keep receiving
 // output so its scrollback survives; a registry that outlives the views covers both.
 import { FitAddon } from '@xterm/addon-fit'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalFont } from '../../shared/terminal-font'
+import { screenOf, type ScreenAnswer } from '../../shared/terminal-screen'
 import { commandForEvent } from '../commands/keybindings'
 import { currentPrefs, onPrefs } from '../prefs/prefs-store'
 import { isWebShell } from '../shell-kind'
@@ -34,6 +36,11 @@ export interface TerminalIo {
    * pty only this view sizes (an overlay's): it never gets a size item, so it never offers one.
    */
   fit?(): void
+  /**
+   * This view's screen of the terminal, answering main's `tabs.screenAsk` (`tabs.screen`). Absent
+   * for a terminal main never asks about (an overlay's).
+   */
+  screen?(answer: ScreenAnswer): void
 }
 
 /** The tab channels. Failures are dropped: main ignores a tab that is gone. */
@@ -50,6 +57,9 @@ export function tabIo(tabId: string): TerminalIo {
     },
     fit: () => {
       window.cockpit.invoke('tabs.fit', { tabId }).catch(() => {})
+    },
+    screen: (answer) => {
+      window.cockpit.invoke('tabs.screen', { tabId, ...answer }).catch(() => {})
     }
   }
 }
@@ -120,6 +130,8 @@ export class TerminalSession {
   private fontAsk = 0
   /** The font size the person chose; the drawn size is smaller while a larger pty is scaled to the pane (layout). */
   private baseFontSize: number
+  /** Loaded on main's first `tabs.screenAsk` for this terminal (answerScreen); most never get one. */
+  private serializer: SerializeAddon | undefined
 
   constructor(
     tabId: string,
@@ -194,6 +206,29 @@ export class TerminalSession {
     }
     if (reset) this.term.write(`${RIS}${data}`)
     else if (data.length > 0) this.term.write(data, () => this.io.ack(data.length))
+  }
+
+  /**
+   * Main asks for this terminal's screen (`tabs.screenAsk`): web access started while the tab runs,
+   * or its headless copy was lost with a worker restart, and the copy starts from this page's state
+   * (alternate screen, mouse modes, scrollback) rather than blank (main/terminals/mirror.ts
+   * "Seeding"). Taken in the callback of a write queued now, so it holds exactly the output this
+   * page was sent before the ask, which is the point of the stream main asked at. 'busy' when the
+   * parser is inside a sequence there (main asks again); no screen once disposed.
+   */
+  answerScreen(id: number, scrollback: number): void {
+    const answer = (a: Omit<ScreenAnswer, 'id'>): void => this.io.screen?.({ id, ...a })
+    if (this.disposed) return answer({})
+    this.term.write('', () => {
+      if (this.disposed) return answer({})
+      if (!this.serializer) {
+        this.serializer = new SerializeAddon()
+        this.term.loadAddon(this.serializer)
+      }
+      const serializer = this.serializer
+      const screen = screenOf(this.term, (lines) => serializer.serialize({ scrollback: lines }), scrollback)
+      answer(screen === 'busy' ? { busy: true } : { screen })
+    })
   }
 
   /**
@@ -554,6 +589,16 @@ export class SessionRegistry {
    * not made yet (a tab just created with +): get() hands the take to it when it is.
    */
   private selectTake: string | undefined
+
+  /**
+   * Main asks for a tab's screen (TerminalSession.answerScreen). A tab with no session here has
+   * nothing on screen to give: answered with none at once (main starts the copy blank).
+   */
+  answerScreen(tabId: string, id: number, scrollback: number): void {
+    const session = this.closed.has(tabId) ? undefined : this.sessions.get(tabId)
+    if (session) session.answerScreen(id, scrollback)
+    else this.ioFor(tabId).screen?.({ id })
+  }
 
   /** The page loaded with `tabId` active: its terminal takes the size; none yet, nothing (never created for it). */
   takeOnLoad(tabId: string): void {

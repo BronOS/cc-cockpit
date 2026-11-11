@@ -10,6 +10,7 @@ import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, IpcEventMap, TabInfo } from '../../shared/ipc'
+import type { ScreenAnswer } from '../../shared/terminal-screen'
 import { checkSessionName } from '../../shared/session-name'
 import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
@@ -82,6 +83,12 @@ export interface TabManagerOptions {
   sock(): string | undefined
   /** Send an event to the window that owns `projectId` (a closed window drops it). */
   emit<C extends EventChannel>(projectId: string, channel: C, payload: IpcEventMap[C]): void
+  /**
+   * The same, to that window's desktop view only (not its browsers); false when none took it.
+   * Through the same sink as `emit`, so it reaches the page in order with the `tabs.data` before it
+   * (TerminalFlow.askScreen relies on that). Absent: nothing is ever asked of the desktop.
+   */
+  emitDesktop?<C extends EventChannel>(projectId: string, channel: C, payload: IpcEventMap[C]): boolean
   /** Told when a tab's process starts, exits or the tab is forgotten (the session registry). */
   lifecycle?: TabLifecycle
   /**
@@ -144,6 +151,11 @@ export interface TerminalTap {
    * then the views' own replies are stripped from their input (`viewInput`).
    */
   answers?(tabId: string): boolean
+  /**
+   * The desktop page's answer to an `askScreen` (mirror.ts `screen`), for a tab of the sender's
+   * project (TabManager.screen checked): untrusted data the tap checks against its own ask.
+   */
+  screen?(tabId: string, answer: ScreenAnswer): void
 }
 
 /**
@@ -168,6 +180,12 @@ export interface TerminalFlow {
    * pty as it is, like a terminal's own reply. Not input: it never reaches `typed` or the send gate.
    */
   reply?(tabId: string, data: string): void
+  /**
+   * Ask the tab's desktop page for its screen (`tabs.screenAsk`, mirror.ts "Seeding"), answered
+   * with `tabs.screen` (TabManager.screen). Sent at once, after every `tabs.data` sent before this
+   * call: the page answers as of exactly that output. False when no desktop view took the ask.
+   */
+  askScreen?(tabId: string, ask: { id: number; scrollback: number }): boolean
 }
 
 /**
@@ -422,7 +440,12 @@ export class TabManager {
       },
       settled: (id) => this.desktop.settled(id),
       // An exited tab has no pty: PtyService.write ignores it (the query died with the process).
-      reply: (id, data) => this.pty.write(id, data)
+      reply: (id, data) => this.pty.write(id, data),
+      askScreen: (id, ask) => {
+        const tab = this.byId.get(id)
+        if (!tab || !this.options.emitDesktop) return false
+        return this.options.emitDesktop(tab.projectId, 'tabs.screenAsk', { tabId: id, id: ask.id, scrollback: ask.scrollback })
+      }
     })
   }
 
@@ -842,6 +865,16 @@ export class TabManager {
     const payload: IpcEventMap['tabs.data'] = { tabId: tab.id, data: '' }
     this.desktopSize(tab.id, payload, cols, rows)
     this.options.emit(tab.projectId, 'tabs.data', payload)
+  }
+
+  /**
+   * The desktop page's screen of a tab, answering main's `tabs.screenAsk` (router `tabs.screen`,
+   * desktop views only). Only a tab of the sender's project reaches the tap, which checks the rest.
+   */
+  screen(projectId: string, tabId: string, answer: ScreenAnswer): void {
+    const tab = this.find(projectId, tabId)
+    if (!tab) return
+    this.tap((t) => t.screen?.(tab.id, answer))
   }
 
   /** The desktop renderer's ack: the pty's flow, or the desktop's own while main consumes the pty. */

@@ -40,6 +40,7 @@ import { isSettingsPageScope } from '../../shared/settings-page'
 import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
 import type { TabFlag } from '../../shared/tab-flag'
+import type { ScreenAnswer } from '../../shared/terminal-screen'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from '../../shared/web-access'
@@ -962,6 +963,11 @@ export interface TabHandlerDeps {
   visible(viewId: ViewId, visible: boolean): void
   ack(projectId: string, tabId: string, count: number): void
   /**
+   * The desktop page's screen of a tab (TabManager.screen, `tabs.screen`), its shape checked here.
+   * Absent (unit tests of other handlers): the answer is dropped.
+   */
+  screen?(projectId: string, tabId: string, answer: ScreenAnswer): void
+  /**
    * The view `viewId` shows this tab now (design-web.md §5.1): its own selection, and the project's
    * active tab as the view that acted last (tabs/view-selections.ts, after a check that the tab is
    * the project's).
@@ -1137,6 +1143,29 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const tabId = tabIdOf('tabs.ack', payload)
     if (view.remote) tabs.viewAck(view.viewId, tabId, count)
     else tabs.ack(ctx.projectId, tabId, count)
+  })
+
+  // `no`: the desktop page's answer to main's `tabs.screenAsk` (terminals/mirror.ts "Seeding"). The
+  // router already refuses a remote view; checked again, since a browser's screen would be shown
+  // to the other views. Only the shape is checked here: the tab against the sender's project in
+  // TabManager, the ask id, the size and MAX_SCREEN_CHARS in the mirror.
+  router.handleProject('tabs.screen', (ctx, payload, view) => {
+    if (view.remote) throw new Error('tabs.screen: refused')
+    const p = fields('tabs.screen', payload)
+    const tabId = tabIdOf('tabs.screen', payload)
+    if (typeof p.id !== 'number' || !Number.isSafeInteger(p.id)) throw new Error('tabs.screen: id must be an integer')
+    const answer: ScreenAnswer = { id: p.id }
+    if (p.busy === true) answer.busy = true
+    if (p.screen !== undefined) {
+      const screen = p.screen
+      if (typeof screen !== 'object' || screen === null) throw new Error('tabs.screen: bad screen')
+      const { cols, rows, data } = screen as Record<string, unknown>
+      if (typeof cols !== 'number' || typeof rows !== 'number' || typeof data !== 'string') {
+        throw new Error('tabs.screen: bad screen')
+      }
+      answer.screen = { cols, rows, data }
+    }
+    tabs.screen?.(ctx.projectId, tabId, answer)
   })
 
   // Only the id travels; whether it is one of the sender's project's tabs is main's check (select).

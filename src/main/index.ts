@@ -1296,7 +1296,13 @@ function start(): void {
     closeOnCleanExit: () => !quitting && tabExitOf(registry.app.data.tabExit) === 'close-clean',
     // TabInfo.typedBy: the typing view's device (viewDevice).
     deviceOf: (viewId) => viewDevice(viewId),
-    emit: sendToProject
+    emit: sendToProject,
+    // The desktop page alone: a tab's screen is asked of it to seed web access's copy (mirror.ts
+    // "Seeding"). The same view sink `tabs.data` goes through, so the ask follows that output.
+    emitDesktop: (projectId, channel, payload) => {
+      const windowId = windows.windowIdOf(projectId)
+      return windowId !== undefined && views.toView(desktopViewId(windowId), channel, payload)
+    }
   })
   // Saved tabs follow the live ones (restore.ts); the saves go through the record's debounced
   // writer and registry.flushAll() on quit writes the last ones.
@@ -2143,6 +2149,7 @@ function start(): void {
       overlays.viewVisible(viewId, shown)
     },
     ack: (projectId, tabId, count) => tabs.ack(projectId, tabId, count),
+    screen: (projectId, tabId, answer) => tabs.screen(projectId, tabId, answer),
     // A remote view: the plain list (never the desktop's re-attach), and its own terminal flow and
     // joins (web/connection.ts). Only reached by a web caller, which exists once webConnections does.
     list: (projectId) => tabs.list(projectId),

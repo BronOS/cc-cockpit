@@ -1,9 +1,16 @@
 // What main (mirror.ts) and the headless-terminal worker (mirror-worker.ts) post each other
 // (design-web.md §5.2). Kept apart from both so neither bundle pulls in the other: main must not
 // load the xterm packages, the worker must not load main code.
+import type { TerminalScreen } from '../../shared/terminal-screen'
 
 /** Marks the worker main started (workerData), so importing the worker file anywhere else starts nothing. */
 export const WORKER_MARK = 'cc-cockpit.terminal-mirror'
+
+/**
+ * Scrollback of a headless copy. The desktop keeps 10,000; the spike measured about 9 MiB per tab at
+ * 5,000. Main asks a desktop page for no more than this when it seeds a copy (mirror.ts "Seeding").
+ */
+export const MIRROR_SCROLLBACK = 5000
 
 /**
  * One item of a tab's terminal stream. Every item is numbered, output and size changes alike: a
@@ -45,8 +52,12 @@ export type OscColorIdent = 10 | 11 | 12
 
 export type ToWorker =
   | { t: 'item'; tabId: string; item: MirrorItem }
-  /** After a worker restart: a blank terminal at this size, whose stream continues after `seq`. */
-  | { t: 'reset'; tabId: string; seq: number; cols: number; rows: number }
+  /**
+   * A new terminal for the tab, at this size, whose stream continues after `seq`: blank after a
+   * worker restart, or started from `seed`, the desktop page's screen as of item `seq` (mirror.ts
+   * "Seeding"), reported `parsed` at `seq` once the seed is parsed.
+   */
+  | { t: 'reset'; tabId: string; seq: number; cols: number; rows: number; seed?: TerminalScreen }
   /** Answered with `inspected` once everything posted before it is parsed. */
   | { t: 'inspect'; id: number; tabId: string }
   /** Answered with `snapshot` at the first write callback at ground state, or after the ground wait. */

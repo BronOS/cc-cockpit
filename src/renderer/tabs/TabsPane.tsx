@@ -208,6 +208,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const size = typeof cols === 'number' && typeof rows === 'number' ? { cols, rows } : undefined
       sessions.write(tabId, data, reset === true, size, local === true)
     })
+    // Main asks this (desktop) page for a tab's screen to seed web access's copy of it; in order
+    // with the output above, so the answer is as of exactly what main had sent (desktop only: a
+    // browser is never asked, `tabs.screenAsk` is a `no` channel).
+    const offScreenAsk = window.cockpit.on('tabs.screenAsk', ({ tabId, id, scrollback }) => {
+      sessions.answerScreen(tabId, id, scrollback)
+    })
     // Who typed last (TerminalView shows it when that was another view).
     const offTyped = window.cockpit.on('tabs.typed', ({ tabId, viewId, device }) => {
       dispatch({ type: 'typed', tabId, typedBy: viewId === null || device === null ? null : { viewId, device } })
@@ -249,6 +255,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
     return () => {
       offData()
+      offScreenAsk()
       offTyped()
       offExit()
       offRemoved()

@@ -21,8 +21,8 @@ function count(text: string, marker: string): number {
 test('web access: the access link signs a browser in; a terminal tab is mirrored both ways and a reload re-snapshots', async ({ cockpit }) => {
   test.setTimeout(90_000)
   const { page } = cockpit
-  // On before the tab starts: a tab already running when web access turns on is mirrored from a
-  // blank screen (docs/features.md, known limitation), and this spec checks the whole screen.
+  // On before the tab starts, so all of its output passes through the copy (a tab already running
+  // when web access turns on is seeded from the desktop's screen: the next spec).
   const web = await enableWebAccess(cockpit)
   await cockpit.newTab('shell')
   await cockpit.waitForTerminalText('FAKE-SHELL ready')
@@ -147,6 +147,59 @@ test('web access: the browser terminal zone never shows a scrollbar; a cropped p
     await expect(host).not.toHaveClass(/terminal-crop/)
     await expect.poll(() => overflowing(webPage)).toEqual([])
     expect(await host.evaluate((el) => [el.scrollTop, el.scrollLeft])).toEqual([0, 0])
+  } finally {
+    await browser.close()
+  }
+})
+
+/** The browser's visible terminal: mouse tracking on, and its vertical scrollbar (xterm's own) as laid out. */
+async function terminalState(webPage: Page): Promise<{ mouse: boolean; track: number; slider: number }> {
+  return webPage.evaluate(() => {
+    const xterm = document.querySelector('.terminal-view:not([hidden]) .xterm')
+    const bar = xterm?.querySelector('.xterm-scrollable-element > .scrollbar.vertical')
+    const slider = bar?.querySelector('.slider')
+    return {
+      mouse: xterm?.classList.contains('enable-mouse-events') === true,
+      track: bar?.getBoundingClientRect().height ?? -1,
+      slider: slider?.getBoundingClientRect().height ?? -1
+    }
+  })
+}
+
+// A tab already in a full-screen program when web access turns on (Claude Code 2.1 draws on the
+// alternate screen with SGR mouse tracking, as htop does): such a program never sends those modes
+// again, so a copy started blank would show its redraws on the normal screen, piling up as
+// scrollback, and the wheel would scroll the page's buffer instead of reaching the program. The copy
+// is seeded from the desktop's screen instead (terminals/mirror.ts "Seeding"): the browser shows
+// that screen, mouse tracking on, and later redraws leave no scrollback.
+test('web access turned on while a tab is full-screen: the browser shows its screen, mouse tracking on, no scrollback', async ({ cockpit }) => {
+  test.setTimeout(90_000)
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+  // The alternate screen and SGR mouse tracking, then redraws taller than the screen.
+  const redraws = "i=0; while [ $i -lt 3 ]; do printf '\\033[H\\033[2J'; seq 1 80; i=$((i+1)); done"
+  await cockpit.typeLine(`printf '\\033[?1049h\\033[?1000h\\033[?1006h'; ${redraws}; echo alt-$((30+3))`)
+  await cockpit.waitForTerminalText('alt-33')
+
+  const web = await enableWebAccess(cockpit)
+  const browser = await openBrowser(web.link)
+  try {
+    const { page: webPage } = browser
+    const projects = webPage.getByRole('list', { name: 'Open projects' }).getByRole('link')
+    await expect(projects).toHaveCount(1)
+    await projects.click()
+    // Printed before web access was on: only the desktop's screen has it.
+    await browser.waitForTerminalText('alt-33')
+    await expect.poll(async () => (await terminalState(webPage)).mouse).toBe(true)
+
+    // More redraws now that the copy is live: on the alternate screen they leave no scrollback.
+    await cockpit.typeLine(`${redraws}; echo again-$((40+4))`)
+    await cockpit.waitForTerminalText('again-44')
+    await browser.waitForTerminalText('again-44')
+    const state = await terminalState(webPage)
+    expect(state.mouse).toBe(true)
+    // Nothing to scroll: the slider fills its track (or there is none to draw).
+    expect(state.slider <= 0 || state.slider >= state.track - 1).toBe(true)
   } finally {
     await browser.close()
   }

@@ -241,6 +241,14 @@ Claude tab); the tabs that attach brings are announced to the other views as `ta
   is resynced with a snapshot. The desktop renderer follows the same rule instead of today's `tabs.ack` pausing the
   pty, so `cat bigfile` cannot flood it (the freeze `HIGH_WATER` exists to prevent); `TabManager.attach` →
   `resetFlow` becomes a snapshot.
+- **Seeded from the desktop.** A tab already running when web access starts, and every tab after a worker restart, has
+  output main never saw (a full-screen program that switched to the alternate screen and mouse tracking before would
+  otherwise be copied onto the normal screen, its redraws piling up as scrollback). Main asks the desktop page for its
+  screen (`tabs.screenAsk`, desktop only, sent in order after the output that page got) and holds that tab's items for
+  the worker until the answer (`tabs.screen`, `no` class: checked against the ask out for that tab of the sender's
+  project, its size and `MAX_SCREEN_CHARS`) lands as the copy's start, then posts the items after it. A page parsing
+  mid-sequence answers busy and is asked again; no answer within 3 s, a page that was behind, or none at all: the
+  copy starts blank, as before (`mirror.ts` "Seeding").
 - **Main answers terminal queries.** The headless terminal's own replies to DSR and DA go to the pty; OSC 10/11
   (colours) are answered from the theme. Query replies from every view are stripped in main. Mouse and focus reports
   pass from any view (a second view can click and scroll in a TUI). This also stops Claude's startup queries timing

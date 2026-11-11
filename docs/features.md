@@ -497,14 +497,22 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   restart). The bind is an IP address, never a name. Listening on 0.0.0.0, the link names the computer's first LAN
   IPv4 address; for a certificate made for a name, enter that name as the external address. With no sign-in, Revoke
   has no effect (anyone who can reach the address comes back in).
-- Web access keeps a headless copy of each terminal in a worker. If that worker crashes or hangs, it is restarted with
-  blank copies: a terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind)
-  shows a blank screen until Claude redraws, and a shell tab until it prints again. After three restarts within a
-  minute web access stops mirroring until it is turned on again, and the tabs run as with web access off.
-- Turning web access on while tabs run starts each tab's copy blank, at its current size: a browser that opens such a
-  tab (or a desktop page that reloads or falls behind) sees only what the tab printed since, until its program redraws
-  (Claude on its next update, a shell when it prints again). A desktop tab still catching up on output at that moment
-  stays paced by the desktop until it has caught up, so it is not resynced from that blank copy. Turning it off closes the browsers with a notice and waits
+- Web access keeps a headless copy of each terminal in a worker. If that worker crashes or hangs, it is restarted and
+  each copy starts again from the desktop window's screen of that tab (its scrollback up to 5,000 lines, the alternate
+  screen, mouse and cursor modes). A tab whose desktop terminal was itself behind at that moment starts blank: a
+  terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind) then shows a blank
+  screen until Claude redraws, and a shell tab until it prints again. After three restarts within a minute web access
+  stops mirroring until it is turned on again, and the tabs run as with web access off.
+- Turning web access on while tabs run starts each tab's copy from the desktop window's screen of it, at its current
+  size, so a browser that opens such a tab sees what the desktop shows, a full-screen program (Claude Code, htop) on
+  its alternate screen with mouse tracking included. The desktop has a few seconds to answer; meanwhile that tab's
+  output waits (a program printing a lot pauses briefly) and its terminal queries are answered once the copy has
+  started. If the desktop does not answer in time (its window still loading, for example), the copy starts blank and a
+  browser sees only what the tab printed since, until its program redraws; a full-screen program that turned on the
+  alternate screen and mouse tracking before then is shown on the normal screen, its redraws piling up as scrollback,
+  until it starts again. Still lost, as for any copy: charsets, tab stops and the cursor position saved by the program.
+  A desktop tab still catching up on output at that moment
+  stays paced by the desktop until it has caught up, so it is not resynced from that copy. Turning it off closes the browsers with a notice and waits
   up to 5 seconds for a desktop tab that fell behind to be resynced before it ends the copies.
 - While web access is on, the app itself answers a program's terminal queries (cursor position, device attributes,
   modes, the foreground, background and cursor colours from the app theme) and the terminals' own answers are dropped.
@@ -513,8 +521,9 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   A query the program sends in the moment web access is switched on or off can go unanswered.
   It can also be answered twice: switching web access off right after a query that the app already answered can let the
   desktop's own reply, still unparsed in its terminal, reach the program as well. A tab that was already running when
-  web access was switched on (or whose copy was reset) is answered from a blank copy, so a cursor position or mode
-  query then reports the top-left corner and default modes rather than the program's real state.
+  web access was switched on (or whose copy was reset) is answered from the copy started from the desktop's screen, or
+  from a blank one when the desktop did not answer, so a cursor position or mode query then reports the top-left corner
+  and default modes rather than the program's real state.
 - A terminal shown in several places (the desktop window and browsers) has one size: the place that typed last (after
   half a second without the other typing), that pressed "Fit to this screen", or where you clicked or focused the
   terminal, selected its tab (a click in the tab bar, the tab switcher, a tab shortcut, or a new tab made with +; not a

@@ -671,6 +671,7 @@ describe('registerTabHandlers', () => {
       fit: rec('fit', true) as TabHandlerDeps['fit'],
       visible: rec('visible') as TabHandlerDeps['visible'],
       ack: rec('ack') as TabHandlerDeps['ack'],
+      screen: rec('screen') as TabHandlerDeps['screen'],
       select: rec('select') as TabHandlerDeps['select'],
       list: rec('list', [info]) as TabHandlerDeps['list'],
       viewAck: rec('viewAck') as TabHandlerDeps['viewAck'],
@@ -698,6 +699,23 @@ describe('registerTabHandlers', () => {
       ['select', PROJECT_A, 't1', 'desktop:1']
     ])
     await expect(router.dispatch(web, 'tabs.ack', { tabId: 't1', count: 'x' })).rejects.toThrow(/count/)
+  })
+
+  it('tabs.screen: the desktop page\'s answer, shape-checked, on its own project; a remote view is refused', async () => {
+    const { ipc, router, calls } = tabsSetup()
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    await expect(router.dispatch(web, 'tabs.screen', { tabId: 't1', id: 1, screen: { cols: 80, rows: 24, data: 'x' } })).rejects.toThrow(/refused/)
+    await ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 1, screen: { cols: 80, rows: 24, data: 'x', extra: 1 }, other: 2 }])
+    await ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 2, busy: true }])
+    await ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 3 }])
+    await expect(ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 'x' }])).rejects.toThrow(/id/)
+    await expect(ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 4, screen: { cols: 80, rows: 24, data: 5 } }])).rejects.toThrow(/bad screen/)
+    await expect(ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 4, screen: 'x' }])).rejects.toThrow(/bad screen/)
+    expect(calls).toEqual([
+      ['screen', PROJECT_A, 't1', { id: 1, screen: { cols: 80, rows: 24, data: 'x' } }],
+      ['screen', PROJECT_A, 't1', { id: 2, busy: true }],
+      ['screen', PROJECT_A, 't1', { id: 3 }]
+    ])
   })
 
   it("keys terminal sizes, fits, visibility and input by the caller's own view, never one from the payload", async () => {

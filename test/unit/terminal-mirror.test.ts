@@ -356,6 +356,39 @@ describe('the worker side', () => {
     expect(out).toEqual([])
   })
 
+  it('a seeded reset: the seed is parsed quietly, reported at its seq, and no snapshot is taken before it', async () => {
+    const out: FromWorker[] = []
+    // No ground wait at all: the deadline passes before the seed is parsed, and still waits for it.
+    const terms = new HeadlessTerms((m) => out.push(m), { groundWaitMs: 0 })
+    // A device status query inside the seed: the page's data, never the program's, so never answered.
+    const seed = { cols: 40, rows: 5, data: 'seeded line\r\n\x1b[6n\x1b[?1049h\x1b[?1000h\x1b[?1006hon the alt screen' }
+    terms.handle({ t: 'reset', tabId: 'a', seq: 7, cols: 30, rows: 5, seed })
+    terms.handle({ t: 'snapshot', id: 1, tabId: 'a' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(out.filter((m) => m.t === 'reply')).toEqual([])
+    expect(out.filter((m) => m.t === 'parsed')).toEqual([{ t: 'parsed', tabId: 'a', seq: 7 }])
+    const snap = out.find((m) => m.t === 'snapshot')
+    expect(snap).toMatchObject({ t: 'snapshot', ids: [1], snapshot: { seq: 7, cols: 30, rows: 5 } })
+    const data = (snap as { snapshot: MirrorSnapshot }).snapshot.data
+    expect(data).toContain('on the alt screen')
+    expect(data).toContain('\x1b[?1049h')
+    expect(data).toContain('\x1b[?1006h')
+    // The program's own query after the seed is answered again.
+    terms.handle({ t: 'item', tabId: 'a', item: { seq: 8, kind: 'data', data: '\x1b[6n' } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(out.filter((m) => m.t === 'reply')).toHaveLength(1)
+    terms.dispose()
+  })
+
+  it('a seed at a bad size is a blank reset', () => {
+    const out: FromWorker[] = []
+    const terms = new HeadlessTerms((m) => out.push(m))
+    terms.handle({ t: 'reset', tabId: 'a', seq: 3, cols: 30, rows: 5, seed: { cols: 0, rows: 5, data: 'x' } })
+    expect(out).toEqual([{ t: 'parsed', tabId: 'a', seq: 3 }])
+    expect(terms.size()).toBe(1)
+    terms.dispose()
+  })
+
   it('keeps the configured scrollback and no more', async () => {
     const m = new TerminalMirror({
       createWorker: () => {

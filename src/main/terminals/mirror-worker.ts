@@ -15,8 +15,10 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { Terminal } from '@xterm/headless'
+import { atGround, extraModes, type TerminalScreen } from '../../shared/terminal-screen'
 import {
   type FromWorker,
+  MIRROR_SCROLLBACK,
   type MirrorItem,
   type MirrorSnapshot,
   type OscColorIdent,
@@ -24,8 +26,9 @@ import {
   WORKER_MARK
 } from './mirror-protocol'
 
-/** Scrollback of a headless copy. The desktop keeps 10,000; the spike measured about 9 MiB per tab at 5,000. */
-export const MIRROR_SCROLLBACK = 5000
+// Where they lived before the desktop page needed them too (shared/terminal-screen.ts).
+export { extraModes } from '../../shared/terminal-screen'
+export { MIRROR_SCROLLBACK } from './mirror-protocol'
 /**
  * How long a snapshot request waits for the parser's ground state before it is taken anyway
  * (design-web.md §5.2): a program that stopped mid-sequence, or a stream whose chunk boundaries
@@ -60,84 +63,21 @@ interface TabTerm {
   snaps: number[]
   /** The ground wait's deadline, armed by the first waiting request. */
   groundTimer: ReturnType<typeof setTimeout> | null
+  /**
+   * No snapshot below this seq: a seeded terminal (`reset` with a seed) holds its stream from the
+   * seed's seq on, so a snapshot taken before the seed is parsed would be a blank screen tagged with
+   * the seq before it, and the view would miss the seed (its `spawn` item is only a size to a view).
+   */
+  floor: number
+  /** The ground wait ran out while the seed was still unparsed: the snapshot is taken at the floor. */
+  overdue: boolean
+  /** Parsing the seed: what the terminal answers is not the program's to get (answerQueries). */
+  quiet: boolean
 }
 
 export interface HeadlessTermsOptions {
   scrollback?: number
   groundWaitMs?: number
-}
-
-/** The xterm internals `atGround` and `extraModes` read (6.0.0); absent fields read as "unknown". */
-interface XtermCore {
-  _inputHandler?: {
-    _parser?: { currentState?: number }
-    _stringDecoder?: { _interim?: number }
-  }
-  coreService?: {
-    isCursorHidden?: boolean
-    decPrivateModes?: { cursorStyle?: 'block' | 'underline' | 'bar'; cursorBlink?: boolean }
-  }
-  coreMouseService?: { activeEncoding?: string }
-  buffer?: { scrollTop?: number; scrollBottom?: number }
-}
-
-function coreOf(term: Terminal): XtermCore {
-  return ((term as unknown as { _core?: XtermCore })._core ?? {}) as XtermCore
-}
-
-/**
- * Whether the parser is between sequences: ParserState.GROUND (0) and no half surrogate pair
- * waiting in the string decoder. A flushed chunk can end inside an escape sequence (PtyService
- * flushes on time and size, not on sequence boundaries) and a serialized screen carries no parser
- * state, so a view whose live stream starts with the tail of a CSI would print it as text. xterm
- * internals (6.0.0, the pinned version): if they move, this reads as ground and a snapshot is taken
- * at the next callback, which only brings that risk back (the tests catch it on an upgrade).
- */
-function atGround(term: Terminal): boolean {
-  const ih = coreOf(term)._inputHandler
-  const state = ih?._parser?.currentState
-  const interim = ih?._stringDecoder?._interim ?? 0
-  return (state === undefined || state === 0) && interim === 0
-}
-
-/** DECSCUSR's steady shapes; the blinking one is one less. */
-const CURSOR_STYLE: Record<string, number> = { block: 2, underline: 4, bar: 6 }
-
-/**
- * Modes the serialize addon (0.14.0) does not write but a live program relies on. Measured in the
- * spike against the addon's _serializeModes: it keeps DECCKM 1, DECNKM 66, 2004, IRM 4, DECOM 6,
- * 45, 1004, DECAWM 7 off, mouse tracking 9/1000/1002/1003 and the alt screen 1049; it drops:
- * - cursor visibility (DECTCEM 25): Claude Code hides the cursor; a view would show a stray one;
- * - mouse encoding (1006 SGR, 1016 SGR-pixels): without it a view with mouse tracking would send
- *   X10 reports the program cannot parse;
- * - the scroll region (DECSTBM): set inside DECSC/DECRC, since DECSTBM homes the cursor;
- * - the cursor style (DECSCUSR);
- * - synchronized output (2026): a snapshot inside a sync block would draw the half-drawn frame at
- *   once (harmless, the closing 2026l follows), but re-emitting keeps the view identical.
- * Still lost (design-web.md §7a): the window title (main has its own), charsets (G0-G3), the saved
- * cursor slot (the DECSTBM fix even overwrites it), tab stops, the normal screen's cursor while the
- * alt screen is on.
- */
-export function extraModes(term: Terminal): string {
-  const core = coreOf(term)
-  let out = ''
-  if (core.coreService?.isCursorHidden) out += '\x1b[?25l'
-  const encoding = core.coreMouseService?.activeEncoding
-  if (encoding === 'SGR') out += '\x1b[?1006h'
-  else if (encoding === 'SGR_PIXELS') out += '\x1b[?1016h'
-  const top = core.buffer?.scrollTop
-  const bottom = core.buffer?.scrollBottom
-  if (top !== undefined && bottom !== undefined && (top !== 0 || bottom !== term.rows - 1)) {
-    out += `\x1b7\x1b[${top + 1};${bottom + 1}r\x1b8`
-  }
-  const modes = core.coreService?.decPrivateModes
-  if (modes?.cursorStyle !== undefined) {
-    const steady = CURSOR_STYLE[modes.cursorStyle]
-    if (steady !== undefined) out += `\x1b[${modes.cursorBlink ? steady - 1 : steady} q`
-  }
-  // Last: everything above must apply before the view starts deferring its rendering.
-  if (term.modes.synchronizedOutputMode) out += '\x1b[?2026h'
-  return out
 }
 
 /**
@@ -185,7 +125,7 @@ export class HeadlessTerms {
         this.item(message.tabId, message.item)
         return
       case 'reset':
-        this.reset(message.tabId, message.seq, message.cols, message.rows)
+        this.reset(message.tabId, message.seq, message.cols, message.rows, message.seed)
         return
       case 'inspect':
         this.inspect(message.id, message.tabId)
@@ -235,11 +175,15 @@ export class HeadlessTerms {
   }
 
   /**
-   * After a worker restart (mirror.ts): the tab's terminal starts blank at main's current seq. The
-   * content before is lost with the old worker; Claude redraws its own screen, and every view is
-   * resynced from here (Task 12).
+   * A new terminal for the tab at main's `seq` (mirror.ts): after a worker restart, or for a tab
+   * that ran before web access started. Blank without `seed`: the content before is lost (Claude
+   * redraws its own screen). With one, the desktop page's screen as of `seq` (mirror.ts "Seeding"):
+   * the terminal starts at the page's size, the seed is written, and it takes the pty's size in the
+   * seed's write callback, where `seq` is reported parsed; the items after it follow in the queue.
+   * The seed is the page's data, not the program's output: what the terminal would answer while
+   * parsing it never reaches the pty (`quiet`).
    */
-  private reset(tabId: string, seq: number, cols: number, rows: number): void {
+  private reset(tabId: string, seq: number, cols: number, rows: number, seed?: TerminalScreen): void {
     const old = this.tabs.get(tabId)
     if (old) {
       this.disposeTab(old)
@@ -247,8 +191,21 @@ export class HeadlessTerms {
     }
     this.tabs.delete(tabId)
     if (!validSize(cols, rows)) return
-    this.tabs.set(tabId, this.create(tabId, cols, rows, seq))
-    this.post({ t: 'parsed', tabId, seq })
+    if (!seed || typeof seed.data !== 'string' || !validSize(seed.cols, seed.rows) || !(seq >= 1)) {
+      this.tabs.set(tabId, this.create(tabId, cols, rows, seq))
+      this.post({ t: 'parsed', tabId, seq })
+      return
+    }
+    const t = this.create(tabId, seed.cols, seed.rows, seq - 1)
+    t.received = seq
+    t.floor = seq
+    t.quiet = true
+    this.tabs.set(tabId, t)
+    t.term.write(seed.data, () => {
+      t.quiet = false
+      if (!t.disposed && (cols !== t.term.cols || rows !== t.term.rows)) t.term.resize(cols, rows)
+      this.parsed(tabId, t, seq)
+    })
   }
 
   private resize(tabId: string, t: TabTerm, seq: number, cols: number, rows: number): void {
@@ -308,7 +265,10 @@ export class HeadlessTerms {
     if (!t.groundTimer) {
       t.groundTimer = setTimeout(() => {
         t.groundTimer = null
-        if (!t.disposed && t.snaps.length > 0) this.takeSnapshot(tabId, t)
+        if (t.disposed || t.snaps.length === 0) return
+        // A seed still parsing: taken in its callback, at ground or not (`parsed`).
+        if (t.parsed < t.floor) t.overdue = true
+        else this.takeSnapshot(tabId, t)
       }, this.groundWaitMs)
       t.groundTimer.unref?.()
     }
@@ -330,6 +290,7 @@ export class HeadlessTerms {
       clearTimeout(t.groundTimer)
       t.groundTimer = null
     }
+    t.overdue = false
     if (t.snaps.length === 0) return
     const ids = t.snaps.splice(0)
     this.post({ t: 'snapshot', ids, tabId, snapshot })
@@ -340,7 +301,7 @@ export class HeadlessTerms {
     if (t.disposed) return
     t.parsed = seq
     this.post({ t: 'parsed', tabId, seq })
-    if (t.snaps.length > 0 && atGround(t.term)) this.takeSnapshot(tabId, t)
+    if (t.snaps.length > 0 && (t.overdue || atGround(t.term))) this.takeSnapshot(tabId, t)
   }
 
   private create(tabId: string, cols: number, rows: number, seq: number): TabTerm {
@@ -353,7 +314,18 @@ export class HeadlessTerms {
     // wide characters (emoji in Claude's UI) in other cells.
     term.loadAddon(new Unicode11Addon())
     term.unicode.activeVersion = '11'
-    const t: TabTerm = { term, serializer, disposed: false, received: seq, parsed: seq, snaps: [], groundTimer: null }
+    const t: TabTerm = {
+      term,
+      serializer,
+      disposed: false,
+      received: seq,
+      parsed: seq,
+      snaps: [],
+      groundTimer: null,
+      floor: 0,
+      overdue: false,
+      quiet: false
+    }
     this.answerQueries(tabId, t)
     return t
   }
@@ -372,11 +344,11 @@ export class HeadlessTerms {
    */
   private answerQueries(tabId: string, t: TabTerm): void {
     t.term.onData((data) => {
-      if (!t.disposed) this.post({ t: 'reply', tabId, data })
+      if (!t.disposed && !t.quiet) this.post({ t: 'reply', tabId, data })
     })
     for (const ident of [10, 11, 12] as const) {
       t.term.parser.registerOscHandler(ident, (data) => {
-        if (t.disposed) return false
+        if (t.disposed || t.quiet) return false
         // `OSC 10 ; ? ; ? ST` asks for 10 and then 11: each further `;` field is the next ident.
         const fields = data.split(';')
         for (let i = 0; i < fields.length && ident + i <= 12; i++) {

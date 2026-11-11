@@ -6,15 +6,17 @@
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { Terminal } from '@xterm/headless'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FLUSH_BYTES, HIGH_WATER, LOW_WATER, PtyService } from '../../src/main/pty/pty-service'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import { VIEW_HIGH_WATER } from '../../src/main/terminals/desktop-flow'
-import { TerminalMirror } from '../../src/main/terminals/mirror'
+import { MAX_SCREEN_ASKS, SCREEN_HOLD_CHARS, TerminalMirror, type MirrorSnapshot } from '../../src/main/terminals/mirror'
 import { ViewTerminals } from '../../src/main/web/view-terminals'
 import type { EventChannel, IpcEventMap } from '../../src/shared/ipc'
+import { MAX_SCREEN_CHARS, screenOf, type ScreenAnswer } from '../../src/shared/terminal-screen'
 import { FakeWorker } from '../fakes/fake-mirror-worker'
 import { FakePtyBackend, type FakePty } from '../fakes/fake-pty-backend'
 
@@ -64,13 +66,21 @@ function chunk(n: number): string {
   return out
 }
 
-/** A desktop page's terminal for one tab: live output acked once parsed, a snapshot never acked. */
+/**
+ * A desktop page's terminal for one tab: live output acked once parsed, a snapshot never acked, and
+ * main's screen asks answered as terminal-session.ts answerScreen does (`screenMode` 'answer'), or
+ * never ('silent'), or always mid-sequence ('busy'); `answerDelay` holds the answer back that long.
+ */
 class DesktopPage {
   readonly t = term()
   received = 0
   snapshots = 0
   holdAcks = false
+  screenMode: 'answer' | 'silent' | 'busy' = 'answer'
+  answerDelay = 0
+  readonly asks: Array<IpcEventMap['tabs.screenAsk']> = []
   private held = 0
+  private serializer: SerializeAddon | undefined
 
   constructor(private readonly ack: (count: number) => void) {}
 
@@ -93,6 +103,26 @@ class DesktopPage {
     this.held = 0
     if (n > 0) this.ack(n)
   }
+
+  screenAsk(ask: IpcEventMap['tabs.screenAsk'], reply: (answer: ScreenAnswer) => void): void {
+    this.asks.push(ask)
+    if (this.screenMode === 'silent') return
+    this.t.write('', () => {
+      let answer: ScreenAnswer = { id: ask.id, busy: true }
+      if (this.screenMode === 'answer') {
+        this.serializer ??= (() => {
+          const s = new SerializeAddon()
+          this.t.loadAddon(s)
+          return s
+        })()
+        const serializer = this.serializer
+        const screen = screenOf(this.t, (n) => serializer.serialize({ scrollback: n }), ask.scrollback)
+        answer = screen === 'busy' ? { id: ask.id, busy: true } : { id: ask.id, screen }
+      }
+      // Across IPC: never inside main's call that asked.
+      setTimeout(() => reply(answer), this.answerDelay)
+    })
+  }
 }
 
 let root: string
@@ -113,7 +143,11 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-function setup(options: { drainMs?: number } = {}) {
+/**
+ * `screens`: the desktop view can be asked for a tab's screen (TabManagerOptions.emitDesktop, the
+ * mirror's seeding); without it nobody is asked and running tabs start blank.
+ */
+function setup(options: { drainMs?: number; screens?: boolean; screenTimeoutMs?: number } = {}) {
   const m = new TerminalMirror({
     createWorker: () => {
       const w = new FakeWorker()
@@ -122,7 +156,8 @@ function setup(options: { drainMs?: number } = {}) {
     },
     log: (l) => logs.push(l),
     drainMs: options.drainMs,
-    drainPollMs: 5
+    drainPollMs: 5,
+    screenTimeoutMs: options.screenTimeoutMs
   })
   mirror = m
   const pages = new Map<string, DesktopPage>()
@@ -141,7 +176,19 @@ function setup(options: { drainMs?: number } = {}) {
       pages.get(p.tabId)?.data(p)
     },
     log: (l) => logs.push(l),
-    terminalTap: m
+    terminalTap: m,
+    ...(options.screens
+      ? {
+          emitDesktop: <C extends EventChannel>(_p: string, channel: C, payload: IpcEventMap[C]): boolean => {
+            if (channel !== 'tabs.screenAsk') return false
+            const ask = payload as IpcEventMap['tabs.screenAsk']
+            const page = pages.get(ask.tabId)
+            if (!page) return false
+            page.screenAsk(ask, (answer) => tabs.screen(P, ask.tabId, answer))
+            return true
+          }
+        }
+      : {})
   })
   /** A shell tab with its page and its reference terminal; `pty` emits through both. */
   const open = (): { id: string; pty: FakePty; page: DesktopPage; emit: (data: string) => void } => {
@@ -233,6 +280,8 @@ describe('turning on: running tabs from a baseline', () => {
     await wait(20)
     m.start()
     for (const t of [a, b, c]) {
+      // No desktop to ask (TabManagerOptions.emitDesktop absent): blank at once, nothing waits.
+      expect(m.seeding(t.id)).toBe(false)
       expect(m.seq(t.id)).toBe(1)
       expect(m.size(t.id)).toEqual(t === b ? { cols: 100, rows: 30 } : { cols: 80, rows: 24 })
       expect(workers[0]!.items(t.id)).toEqual([{ seq: 1, kind: 'spawn', ...m.size(t.id)! }])
@@ -321,6 +370,287 @@ describe('turning on while a desktop is deep in debt', () => {
     await m.whenParsed(a.id)
     await tick()
     expect(a.pty.paused).toBe(false)
+  })
+})
+
+/** Full-screen the way Claude Code 2.1 draws (and htop): the alternate screen, SGR mouse tracking, no cursor. */
+const FULLSCREEN = '\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25l'
+
+/** One redraw, taller than the screen: on the normal screen each one would push lines into scrollback. */
+function frame(n: number): string {
+  let out = '\x1b[H\x1b[2J'
+  for (let r = 0; r < 30; r++) out += `frame ${n} row ${r}\r\n`
+  return out
+}
+
+/** A view joining the tab now, its terminal built as a page builds it: RIS, then the snapshot. */
+async function joined(m: TerminalMirror, tabId: string): Promise<{ t: Terminal; snapshot: MirrorSnapshot }> {
+  const snapshot = await new Promise<MirrorSnapshot>((resolve, reject) => {
+    let leave: (() => void) | undefined = undefined
+    leave = m.join(tabId, {
+      snapshot: (got) => {
+        resolve(got)
+        leave?.()
+      },
+      item: () => undefined,
+      closed: () => reject(new Error('the join ended'))
+    })
+    if (!leave) reject(new Error('the mirror does not hold the tab'))
+  })
+  const t = new Terminal({ cols: snapshot.cols, rows: snapshot.rows, scrollback: 10_000, allowProposedApi: true })
+  t.loadAddon(new Unicode11Addon())
+  t.unicode.activeVersion = '11'
+  await written(t, RIS + snapshot.data)
+  return { t, snapshot }
+}
+
+describe('turning on: seeded from the desktop\'s screen', () => {
+  it('a tab already in the alternate screen with SGR mouse tracking: its copy is too, with no scrollback from the redraws', async () => {
+    const { m, open, truthText } = setup({ screens: true })
+    const a = open()
+    a.emit(FULLSCREEN)
+    for (let f = 0; f < 5; f++) a.emit(frame(f))
+    await wait(20)
+    m.start()
+    expect(m.seeding(a.id)).toBe(true)
+    expect(a.page.asks).toEqual([{ tabId: a.id, id: expect.any(Number), scrollback: 5000 }])
+    await until(() => !m.seeding(a.id))
+    // The worker got one reset carrying the screen, never the blank spawn.
+    expect(workers[0]!.received.filter((r) => r.t === 'reset')).toEqual([
+      { t: 'reset', tabId: a.id, seq: 1, cols: 80, rows: 24, seed: expect.objectContaining({ cols: 80, rows: 24 }) }
+    ])
+    expect(workers[0]!.items(a.id)).toEqual([])
+    for (let f = 5; f < 10; f++) a.emit(frame(f))
+    await wait(20)
+    await m.whenParsed(a.id)
+    const { t, snapshot } = await joined(m, a.id)
+    expect(t.buffer.active.type).toBe('alternate')
+    expect(t.modes.mouseTrackingMode).toBe('vt200')
+    expect(snapshot.data).toContain('\x1b[?1006h')
+    // The normal screen under it holds nothing but its own rows: no redraw went to scrollback.
+    expect(t.buffer.normal.length).toBe(t.rows)
+    expect(text(t)).toBe(await truthText(a.id))
+    t.dispose()
+  })
+
+  it('output while the desktop answers lands after the screen, once; a flood meanwhile pauses the pty until it lands', async () => {
+    const { m, open, truthText } = setup({ screens: true })
+    const a = open()
+    for (let i = 0; i < 100; i++) a.emit(`before ${i}\r\n`)
+    await wait(20)
+    a.page.answerDelay = 100
+    m.start()
+    // Main holds what the worker would parse, so the pty pauses at HIGH_WATER (flood waits it out).
+    const n = await flood(a, 2 * HIGH_WATER, 0)
+    expect(m.seeding(a.id)).toBe(false)
+    a.emit('after\r\n')
+    await until(() => m.seq(a.id)! > 1 && m.parsed(a.id) === m.seq(a.id))
+    await wait(20)
+    await m.whenParsed(a.id)
+    expect(await mirrorText(m, a.id)).toBe(await truthText(a.id))
+    const { t } = await joined(m, a.id)
+    expect(text(t)).toBe(await truthText(a.id))
+    t.dispose()
+    // Main consumes the pty: a page that stops acking does not pause it.
+    a.page.holdAcks = true
+    await flood(a, 2 * HIGH_WATER, n)
+    await m.whenParsed(a.id)
+    await tick()
+    expect(a.pty.paused).toBe(false)
+  }, 30_000)
+
+  it('a desktop mid-sequence at the ask answers busy and is asked again where the stream is then', async () => {
+    const { m, open, truthText } = setup({ screens: true })
+    const a = open()
+    a.emit('plain\r\nhello \x1b[3')
+    await wait(20)
+    a.page.answerDelay = 30
+    m.start()
+    a.emit('1mworld\x1b[0m\r\n')
+    await until(() => !m.seeding(a.id))
+    expect(a.page.asks).toHaveLength(2)
+    expect(workers[0]!.received.find((r) => r.t === 'reset')).toMatchObject({ seq: 2 })
+    await m.whenParsed(a.id)
+    const copy = await mirrorText(m, a.id)
+    expect(copy).toBe(await truthText(a.id))
+    expect(copy).not.toContain('[3')
+  })
+
+  it(`busy at every ask: blank after ${MAX_SCREEN_ASKS} asks`, async () => {
+    const { m, open } = setup({ screens: true })
+    const a = open()
+    a.emit('hello\r\n')
+    await wait(20)
+    a.page.screenMode = 'busy'
+    m.start()
+    await until(() => !m.seeding(a.id))
+    expect(a.page.asks).toHaveLength(MAX_SCREEN_ASKS)
+    expect(workers[0]!.received.some((r) => r.t === 'reset')).toBe(false)
+  })
+
+  it('no answer in time: the copy starts blank, as without seeding, and the pty was never lost', async () => {
+    const { m, open } = setup({ screens: true, screenTimeoutMs: 40 })
+    const a = open()
+    a.emit(FULLSCREEN)
+    for (let f = 0; f < 3; f++) a.emit(frame(f))
+    await wait(20)
+    a.page.screenMode = 'silent'
+    m.start()
+    a.emit(frame(3))
+    await wait(20)
+    expect(m.seeding(a.id)).toBe(true)
+    await until(() => !m.seeding(a.id))
+    expect(logs.some((l) => l.includes(`no screen of tab ${a.id}`))).toBe(true)
+    // The queue went as it was: the baseline spawn, then the frame.
+    expect(workers[0]!.items(a.id).map((i) => i.kind)).toEqual(['spawn', 'data'])
+    expect(workers[0]!.received.some((r) => r.t === 'reset')).toBe(false)
+    await m.whenParsed(a.id)
+    const { t } = await joined(m, a.id)
+    // The blank start's known limit (the bug the seed fixes): the modes were never seen, so the
+    // redraw lands on the normal screen and pushes lines into scrollback.
+    expect(t.buffer.active.type).toBe('normal')
+    expect(t.buffer.normal.length).toBeGreaterThan(t.rows)
+    expect(text(t)).toContain('frame 3 row 29')
+    t.dispose()
+  })
+
+  it('an answer for another ask, another project or another tab is dropped; an oversized or misshapen screen is refused', async () => {
+    const { m, tabs, open } = setup({ screens: true })
+    const a = open()
+    const b = open()
+    a.page.screenMode = 'silent'
+    b.page.screenMode = 'silent'
+    a.emit('hello a\r\n')
+    b.emit('hello b\r\n')
+    await wait(20)
+    m.start()
+    const askA = a.page.asks[0]!
+    const askB = b.page.asks[0]!
+    const forged = { cols: 80, rows: 24, data: 'forged\r\n' }
+    tabs.screen('bbbbbbbbbbbbbbbb', a.id, { id: askA.id, screen: forged })
+    tabs.screen(P, a.id, { id: askA.id + 1000, screen: forged })
+    tabs.screen(P, a.id, { id: askB.id, screen: forged })
+    tabs.screen(P, 'no-such-tab', { id: askA.id, screen: forged })
+    expect(m.seeding(a.id)).toBe(true)
+    tabs.screen(P, a.id, { id: askA.id, screen: { cols: 80, rows: 24, data: 'x'.repeat(MAX_SCREEN_CHARS + 1) } })
+    expect(m.seeding(a.id)).toBe(false)
+    tabs.screen(P, b.id, { id: askB.id, screen: { cols: 0, rows: 24, data: 'forged\r\n' } })
+    expect(m.seeding(b.id)).toBe(false)
+    expect(logs.filter((l) => l.includes('refused the desktop\'s screen'))).toHaveLength(2)
+    // An answer to an ask that already ended is dropped too.
+    tabs.screen(P, a.id, { id: askA.id, screen: forged })
+    await m.whenParsed(a.id)
+    await m.whenParsed(b.id)
+    expect(await mirrorText(m, a.id)).not.toContain('forged')
+    expect(await mirrorText(m, b.id)).not.toContain('forged')
+    expect(workers[0]!.received.some((r) => r.t === 'reset')).toBe(false)
+  })
+
+  it(`output piling up past ${SCREEN_HOLD_CHARS} characters while it waits (only a flow that never pauses gets there): blank at once`, () => {
+    const m = new TerminalMirror({
+      createWorker: () => {
+        const w = new FakeWorker()
+        workers.push(w)
+        return w
+      },
+      log: (l) => logs.push(l)
+    })
+    mirror = m
+    m.bindFlow({
+      take: () => undefined,
+      ack: () => undefined,
+      release: () => undefined,
+      running: () => [{ tabId: 't', cols: 80, rows: 24 }],
+      askScreen: () => true
+    })
+    m.start()
+    expect(m.seeding('t')).toBe(true)
+    const c = chunk(0)
+    for (let sent = 0; sent <= SCREEN_HOLD_CHARS; sent += c.length) m.data('t', c)
+    expect(m.seeding('t')).toBe(false)
+    expect(logs.some((l) => l.includes('waiting for the desktop\'s screen'))).toBe(true)
+    expect(workers[0]!.items('t')[0]).toEqual({ seq: 1, kind: 'spawn', cols: 80, rows: 24 })
+    expect(workers[0]!.items('t')).toHaveLength(m.seq('t')!)
+  })
+
+  it('a tab closed while it waits: its stream goes to the worker whole, then the close', async () => {
+    const { m, tabs, open } = setup({ screens: true })
+    const a = open()
+    a.page.screenMode = 'silent'
+    m.start()
+    a.emit('bye\r\n')
+    await wait(20)
+    tabs.close(P, a.id)
+    expect(m.seq(a.id)).toBeUndefined()
+    expect(workers[0]!.items(a.id).map((i) => i.kind)).toEqual(['spawn', 'data', 'close'])
+  })
+})
+
+describe('a worker restart: copies seeded from the desktop\'s screen', () => {
+  it('a live desktop seeds the new worker\'s copy: the alternate screen and mouse modes survive the restart', async () => {
+    const { m, open, truthText } = setup({ screens: true })
+    m.start()
+    const a = open()
+    a.emit(FULLSCREEN)
+    for (let f = 0; f < 3; f++) a.emit(frame(f))
+    await wait(20)
+    await m.whenParsed(a.id)
+    // A tab spawned with the mirror on is never asked: its copy has seen everything.
+    expect(a.page.asks).toEqual([])
+    const seq = m.seq(a.id)!
+    workers[0]!.crash()
+    expect(workers).toHaveLength(2)
+    expect(a.page.asks).toHaveLength(1)
+    await until(() => !m.seeding(a.id))
+    expect(workers[1]!.received.filter((r) => r.t === 'reset')).toEqual([
+      { t: 'reset', tabId: a.id, seq, cols: 80, rows: 24, seed: expect.objectContaining({ cols: 80, rows: 24 }) }
+    ])
+    a.emit(frame(3))
+    await wait(20)
+    await m.whenParsed(a.id)
+    const { t } = await joined(m, a.id)
+    expect(t.buffer.active.type).toBe('alternate')
+    expect(t.modes.mouseTrackingMode).toBe('vt200')
+    expect(t.buffer.normal.length).toBe(t.rows)
+    expect(text(t)).toBe(await truthText(a.id))
+    t.dispose()
+  })
+
+  it('a desktop that is behind is not asked: the copy starts blank, as before', async () => {
+    const { m, open } = setup({ screens: true })
+    m.start()
+    const a = open()
+    a.page.holdAcks = true
+    await flood(a, 3 * VIEW_HIGH_WATER, 0)
+    await m.whenParsed(a.id)
+    workers[0]!.crash()
+    expect(a.page.asks).toEqual([])
+    expect(m.seeding(a.id)).toBe(false)
+    expect(workers[1]!.received.filter((r) => r.t === 'reset')).toEqual([
+      { t: 'reset', tabId: a.id, seq: m.seq(a.id), cols: 80, rows: 24 }
+    ])
+    await a.page.release()
+  })
+
+  it('a crash while a tab waits for its screen asks again for the new worker', async () => {
+    const { m, open, truthText } = setup({ screens: true })
+    const a = open()
+    a.emit(FULLSCREEN + frame(0))
+    await wait(20)
+    a.page.answerDelay = 50
+    m.start()
+    workers[0]!.crash()
+    expect(a.page.asks).toHaveLength(2)
+    await until(() => !m.seeding(a.id))
+    // The first ask's answer comes late, for an ask no longer out: dropped.
+    await wait(80)
+    expect(workers[0]!.received).toEqual([])
+    expect(workers[1]!.received.filter((r) => r.t === 'reset')).toHaveLength(1)
+    await m.whenParsed(a.id)
+    const { t } = await joined(m, a.id)
+    expect(t.buffer.active.type).toBe('alternate')
+    expect(text(t)).toBe(await truthText(a.id))
+    t.dispose()
   })
 })
 

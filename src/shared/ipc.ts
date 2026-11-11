@@ -10,6 +10,7 @@ import type { KeyConflict } from './keys'
 import type { LayoutState, ZoneId } from './layout'
 import type { ProjectColor } from './project-color'
 import type { TerminalFont } from './terminal-font'
+import type { ScreenAnswer } from './terminal-screen'
 import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
@@ -1305,6 +1306,12 @@ export interface IpcInvokeMap {
   /** The renderer wrote `count` characters (string length) of output into xterm. */
   'tabs.ack': { req: { tabId: string; count: number }; res: void }
   /**
+   * The desktop page's answer to `tabs.screenAsk` (shared/terminal-screen.ts ScreenAnswer): its
+   * screen of the tab, as of the output it was sent before the ask. Untrusted in main: checked
+   * against the ask out for that tab of the sender's project, its size and MAX_SCREEN_CHARS.
+   */
+  'tabs.screen': { req: { tabId: string } & ScreenAnswer; res: void }
+  /**
    * The tab pane's selection changed (or the page loaded with one): main keeps it per project for
    * `SessionInfo.active`, so plugins know the tab the person is looking at. A tab id that is not
    * the sender's project's is ignored, as a selection racing a close is normal.
@@ -1328,6 +1335,12 @@ export interface IpcEventMap {
    * before web access and the size is only the pty catching up; absent, it follows the pty's size.
    */
   'tabs.data': { tabId: string; data: string; reset?: true; cols?: number; rows?: number; local?: true }
+  /**
+   * Main asks the desktop page for a tab's screen (web access started while the tab runs, or its
+   * headless copy was lost with a worker restart: terminals/mirror.ts "Seeding"), as of the output
+   * sent before this event, with at most `scrollback` lines. Answered with `tabs.screen` and `id`.
+   */
+  'tabs.screenAsk': { tabId: string; id: number; scrollback: number }
   /**
    * The person typed in another view of the tab than before (TabInfo.typedBy): sent when the view
    * changes, not per key. `device` is the requester's own text for a browser: plain text only.
@@ -1596,12 +1609,14 @@ export const INVOKE_CHANNELS = [
   'tabs.fit',
   'tabs.visibility',
   'tabs.ack',
+  'tabs.screen',
   'tabs.selected'
 ] as const satisfies readonly InvokeChannel[]
 
 /** Every main -> renderer event channel, for the preload's allow-list (see INVOKE_CHANNELS). */
 export const EVENT_CHANNELS = [
   'tabs.data',
+  'tabs.screenAsk',
   'tabs.typed',
   'tabs.exit',
   'tabs.removed',
@@ -1871,6 +1886,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.ack': 'adapted',
   'tabs.selected': 'adapted',
   'tabs.data': 'adapted',
+  // The desktop page seeds web access's copy of a tab from its own screen: asked of the desktop view
+  // only, and only its answer is taken (a browser's would let it put what it likes on the other views).
+  'tabs.screen': 'no',
+  'tabs.screenAsk': 'no',
   // Who typed last, for every view of the window (each tells whether that was itself).
   'tabs.typed': 'yes',
   'tabs.exit': 'yes',

@@ -49,7 +49,11 @@ describe('REMOTE_CLASS drift', () => {
     'settings.webDeviceRevoke',
     'settings.webDevicesRevokeAll',
     'webAccess.state',
-    'webAccess.changed'
+    'webAccess.changed',
+    // The desktop page seeds web access's terminal copies from its own screen: a browser's answer
+    // would be shown to the other views.
+    'tabs.screen',
+    'tabs.screenAsk'
   ])('%s is no', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('no')
   })

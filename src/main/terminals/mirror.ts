@@ -23,14 +23,33 @@
 // ended by `drain()` (web access turned off at runtime) or `stop()` (the app quits).
 //
 // Turning on while tabs run (Task 13): their earlier output never passed through here, and main
-// has no copy of it (only each page's xterm does). So `start` gives every running tab a baseline: a
-// blank terminal at the size its pty has now (a `spawn` item, seq 1), numbered from there; the copy
-// is what the pty sends next. A program that redraws (Claude does on its next render, a resize, or
-// any full-screen TUI) fills it in; until then a view that joins, or a desktop that resyncs, sees
-// only what came after the baseline. The desktop itself keeps its screen: it stays on the direct
-// path, live, and is resynced from the copy only if it falls behind or reloads. Then the tab's
-// flow goes to main (`take`, with what the desktop was already sent and not acked carried over;
+// has no copy of it (only each page's xterm does). So `start` gives every running tab a baseline at
+// the size its pty has now (a `spawn` item, seq 1), numbered from there, seeded from the desktop's
+// screen when it can be (below), else blank: the copy is then what the pty sends next, until the
+// program redraws (Claude on its next render; a full-screen program that switched to the alternate
+// screen and turned on mouse tracking before never sends those modes again, so a blank copy keeps
+// its redraws as scrollback and scrolls locally). The desktop itself keeps its screen: it stays on
+// the direct path, live, and is resynced from the copy only if it falls behind or reloads. Then the
+// tab's flow goes to main (`take`, with what the desktop was already sent and not acked carried over;
 // TabManager defers that while the desktop owes much, so a debt alone never forces the resync).
+//
+// Seeding (`beginSeed`): the desktop page's xterm has the tab's true state, modes and alternate
+// screen included. Main asks it (TerminalFlow.askScreen, `tabs.screenAsk` to the desktop view only)
+// at a point A of the stream, synchronously, so the page has been sent exactly the output up to A
+// (every chunk the desktop was sent went out before, nothing after): the page serializes inside a
+// write callback (after everything sent before the ask is parsed), as a snapshot is taken, and
+// answers `tabs.screen`. Meanwhile everything for the worker about that tab (its items, snapshot
+// requests, inspects) is queued, not posted, and numbered as usual (views keep their held lists;
+// the pty, unacked, pauses at HIGH_WATER as on any slow worker). The screen lands as a `reset` at
+// A carrying the seed, the queued items after A follow, and the worker reports A parsed once the
+// seed is parsed, which acks the items up to A (they are in the seed). Only for a desktop that was
+// sent every chunk (`settled`: not behind, not resyncing). The answer is untrusted data: taken only
+// for the ask out now for that tab (a stale or unasked one is dropped), at a valid size, at most
+// MAX_SCREEN_CHARS. A page parsing mid-sequence at A answers `busy` and is asked again at the
+// current point, MAX_SCREEN_ASKS times at most. Falls back to the blank start, the queue posted as
+// it is (exactly what happens without seeding), when no desktop view can be asked, it answers
+// nothing usable, SCREEN_TIMEOUT_MS passes, or SCREEN_HOLD_CHARS of output pile up meanwhile.
+// A worker restart seeds each tab the same way (below).
 //
 // Turning off (`drain`): the gateway has closed the remote views first (access-service.ts). A tab
 // whose desktop is live has been sent everything, and is handed back to the desktop's acks at
@@ -68,10 +87,11 @@
 // had not parsed when it crashed, or when a drain released the tab, are lost (the program's own
 // timeout applies, as with a desktop page that is not loaded).
 //
-// A worker that dies (a crash, out of memory) is started again with a blank terminal per tab at
-// main's current seq ("reset"): the content before is lost with it, the numbering goes on, and the
+// A worker that dies (a crash, out of memory) is started again with a new terminal per tab at
+// main's current seq ("reset"), seeded from the desktop's screen when its desktop is live (see
+// Seeding), else blank: the content before is lost with it, the numbering goes on, and the
 // restart listeners are told. Views that are live keep their stream and their screen: they hold the
-// real content, which a resync from the blank copy would wipe (Claude redraws its screen soon, and
+// real content, which a resync from a blank copy would wipe (Claude redraws its screen soon, and
 // the copy catches up then; until then a view that resyncs, a desktop page reload among them, gets
 // the blank copy). Restarts are bounded: past MAX_RESTARTS within RESTART_WINDOW_MS the mirror gives
 // up (logs, mirrors nothing) rather than loop on a crash it keeps hitting, and hands every pty back
@@ -81,9 +101,11 @@
 // `nodeMirrorWorker` (worker_threads, which Electron's main process supports as Node does).
 import { Worker } from 'node:worker_threads'
 import type { TerminalFlow, TerminalTap } from '../tabs/tab-manager'
+import { MAX_SCREEN_CHARS, type ScreenAnswer, type TerminalScreen } from '../../shared/terminal-screen'
 import type { XtermTheme } from '../../shared/theme'
 import {
   type FromWorker,
+  MIRROR_SCROLLBACK,
   type MirrorItem,
   type MirrorSnapshot,
   type MirrorState,
@@ -129,6 +151,24 @@ export const MAX_BACKLOG_CHARS = 8 * 1024 * 1024
 export const DRAIN_MS = 5_000
 /** How often a drain checks whether the desktops it waits on are live again. */
 const DRAIN_POLL_MS = 50
+
+/**
+ * How long a tab waits for the desktop page's screen (see Seeding) before its copy starts blank. The
+ * page answers once it has parsed what it was sent (up to VIEW_HIGH_WATER behind, at most) and
+ * serialized up to MIRROR_SCROLLBACK lines: well under a second, unless its window is throttled.
+ * Well under STALL_MS and SNAPSHOT_TIMEOUT_MS too: a snapshot request queued meanwhile still gets
+ * its answer in time.
+ */
+export const SCREEN_TIMEOUT_MS = 3_000
+/** Asks of one seed (the first and the ones after a `busy` answer) before the copy starts blank. */
+export const MAX_SCREEN_ASKS = 3
+/**
+ * Output of a tab waiting for its screen past which it starts blank. Main's flow pauses the pty at
+ * HIGH_WATER (1 MiB) while it waits, and a tab whose take TabManager deferred (a desktop deep in
+ * debt) is taken once the desktop is down to VIEW_LOW_WATER, before its pty resumes: a backstop like
+ * MAX_BACKLOG_CHARS, which only a broken flow binding reaches, keeping the queue bounded even then.
+ */
+export const SCREEN_HOLD_CHARS = 2 * 1024 * 1024
 
 /** Same bounds as PtyService (validSize). */
 const MAX_DIM = 1000
@@ -189,6 +229,9 @@ export interface TerminalMirrorOptions {
    * colour query is answered from, read at each query so a theme change applies at once.
    */
   colors?: () => XtermTheme | undefined
+  /** The worker's scrollback (nodeMirrorWorker): the most a desktop's screen is asked for. */
+  scrollback?: number
+  screenTimeoutMs?: number
 }
 
 /** xterm's own colours where a theme sets none (the desktop's xterm answers with these then). */
@@ -287,6 +330,21 @@ interface SnapshotRequest {
   timer: ReturnType<typeof setTimeout>
 }
 
+/** A tab waiting for the desktop's screen (see Seeding). */
+interface SeedWait {
+  /** The ask out now; a re-ask after a `busy` answer gets a new one. */
+  id: number
+  /** The point of the stream the ask stands at: the desktop had been sent exactly the output up to it. */
+  seq: number
+  /** The pty's size as of `seq`: what the seeded terminal takes after the seed. */
+  cols: number
+  rows: number
+  asks: number
+  /** Everything for the worker about this tab since the wait began, in order. */
+  queue: ToWorker[]
+  timer: ReturnType<typeof setTimeout>
+}
+
 interface TabStream {
   /** Last item numbered and posted. */
   seq: number
@@ -307,6 +365,8 @@ interface TabStream {
   views: Map<MirrorView, ViewState>
   /** The snapshot request out for the views still waiting, if any. */
   request: SnapshotRequest | null
+  /** Waiting for the desktop's screen: the tab's posts to the worker are queued (see Seeding). */
+  seed: SeedWait | null
 }
 
 interface PendingInspect {
@@ -334,6 +394,7 @@ export class TerminalMirror implements TerminalTap {
   private readonly inspects = new Map<number, PendingInspect>()
   private nextInspect = 1
   private nextSnapshot = 1
+  private nextScreen = 1
   private restarts: number[] = []
   private failed = false
   private readonly restartListeners = new Set<() => void>()
@@ -411,6 +472,7 @@ export class TerminalMirror implements TerminalTap {
     this.failed = false
     this.disarmWatchdog()
     this.drop(new Error('terminal mirror stopped'))
+    for (const tab of this.tabs.values()) this.dropSeed(tab)
     this.endAllViews()
     this.releaseAll()
     this.tabs.clear()
@@ -443,8 +505,11 @@ export class TerminalMirror implements TerminalTap {
     this.open(tabId, cols, rows)
   }
 
-  /** Number the tab's spawn (its first, a restart's, or a running tab's baseline) and take its flow. */
-  private open(tabId: string, cols: number, rows: number): void {
+  /**
+   * Number the tab's spawn (its first, a restart's, or a running tab's baseline) and take its flow.
+   * `seed`: a running tab's baseline, started from the desktop's screen if it answers (see Seeding).
+   */
+  private open(tabId: string, cols: number, rows: number, seed = false): void {
     let tab = this.tabs.get(tabId)
     if (!tab) {
       // Above the old stream of the same tab if the worker may still answer for it (closedSeqs).
@@ -458,20 +523,24 @@ export class TerminalMirror implements TerminalTap {
         unparsedChars: 0,
         waiters: [],
         views: new Map(),
-        request: null
+        request: null,
+        seed: null
       }
       this.tabs.set(tabId, tab)
     }
     tab.cols = cols
     tab.rows = rows
-    this.send(tabId, tab, { seq: ++tab.seq, kind: 'spawn', cols, rows })
+    const spawn: MirrorItem = { seq: ++tab.seq, kind: 'spawn', cols, rows }
+    // Asked at the spawn's seq, before it is posted: the spawn is the first thing queued.
+    if (seed) this.beginSeed(tabId, tab)
+    this.send(tabId, tab, spawn)
     // Every spawn, a restart too: the restarted process is a new pty, whose flow starts as the
     // desktop's. Before any output (node-pty reads on a later tick; a running tab's next chunk
     // comes on a later turn too, main being single-threaded).
     this.flowCall('take', () => this.flow?.take(tabId))
   }
 
-  /** Take every running tab the mirror does not hold yet, from a blank baseline (see the header). */
+  /** Take every running tab the mirror does not hold yet, from a baseline (see the header). */
   private adopt(): void {
     let running: Array<{ tabId: string; cols: number; rows: number }> = []
     this.flowCall('running', () => {
@@ -479,8 +548,134 @@ export class TerminalMirror implements TerminalTap {
     })
     for (const { tabId, cols, rows } of running) {
       if (!this.worker) return
-      if (!this.tabs.has(tabId) && validSize(cols, rows)) this.open(tabId, cols, rows)
+      if (!this.tabs.has(tabId) && validSize(cols, rows)) this.open(tabId, cols, rows, true)
     }
+  }
+
+  // --- seeding from the desktop's screen (see the header) ---------------------------------------------
+
+  /**
+   * Ask the desktop for the tab's screen as of `tab.seq` and queue the tab's posts until it lands.
+   * Nothing (the blank start) when nobody can be asked, or the desktop missed output (`settled`).
+   */
+  private beginSeed(tabId: string, tab: TabStream): void {
+    if (!this.worker || tab.seed || !this.flow?.askScreen || !this.desktopSettled(tabId)) return
+    const timeoutMs = this.options.screenTimeoutMs ?? SCREEN_TIMEOUT_MS
+    const wait: SeedWait = {
+      id: 0,
+      seq: tab.seq,
+      cols: tab.cols,
+      rows: tab.rows,
+      asks: 0,
+      queue: [],
+      timer: setTimeout(() => {
+        if (tab.seed !== wait) return
+        this.log(`terminal mirror: no screen of tab ${tabId} from the desktop in ${timeoutMs} ms, its copy starts blank`)
+        this.endSeed(tabId, tab, null)
+      }, timeoutMs)
+    }
+    wait.timer.unref?.()
+    tab.seed = wait
+    this.askScreen(tabId, tab, wait)
+  }
+
+  /** One ask, at the stream's current point. Not delivered (no desktop view): the blank start. */
+  private askScreen(tabId: string, tab: TabStream, wait: SeedWait): void {
+    wait.id = this.nextScreen++
+    wait.asks++
+    wait.seq = tab.seq
+    wait.cols = tab.cols
+    wait.rows = tab.rows
+    let asked = false
+    this.flowCall('askScreen', () => {
+      asked = this.flow?.askScreen?.(tabId, { id: wait.id, scrollback: this.options.scrollback ?? MIRROR_SCROLLBACK }) ?? false
+    })
+    if (!asked && tab.seed === wait) this.endSeed(tabId, tab, null)
+  }
+
+  private desktopSettled(tabId: string): boolean {
+    let settled = true
+    this.flowCall('settled', () => {
+      settled = this.flow?.settled?.(tabId) ?? true
+    })
+    return settled
+  }
+
+  /**
+   * The desktop page's answer (`tabs.screen`, through TabManager, which checked the tab is the
+   * sender's project's). Untrusted data: dropped unless it answers the ask out now for this tab; a
+   * screen at a bad size or over MAX_SCREEN_CHARS is refused and the copy starts blank.
+   */
+  screen(tabId: string, answer: ScreenAnswer): void {
+    const tab = this.tabs.get(tabId)
+    const wait = tab?.seed
+    if (!this.worker || !tab || !wait || answer.id !== wait.id) return
+    if (answer.busy === true) {
+      // Mid-sequence at the asked point: asked again where the stream is now, while the desktop is
+      // still sent every chunk (the items up to there go into the seed instead of being posted).
+      if (wait.asks < MAX_SCREEN_ASKS && this.desktopSettled(tabId)) this.askScreen(tabId, tab, wait)
+      else this.endSeed(tabId, tab, null)
+      return
+    }
+    const screen = answer.screen
+    if (screen === undefined) {
+      this.endSeed(tabId, tab, null)
+      return
+    }
+    if (
+      typeof screen !== 'object' ||
+      screen === null ||
+      typeof screen.data !== 'string' ||
+      screen.data.length > MAX_SCREEN_CHARS ||
+      !validSize(screen.cols, screen.rows)
+    ) {
+      this.log(`terminal mirror: refused the desktop's screen of tab ${tabId} (bad size or too long), its copy starts blank`)
+      this.endSeed(tabId, tab, null)
+      return
+    }
+    this.endSeed(tabId, tab, { cols: screen.cols, rows: screen.rows, data: screen.data })
+  }
+
+  /** Whether the tab waits for the desktop's screen (tests, diagnostics). */
+  seeding(tabId: string): boolean {
+    return this.tabs.get(tabId)?.seed != null
+  }
+
+  /**
+   * The wait is over: with a screen, the tab's terminal is a `reset` at the asked seq carrying it,
+   * and the queued items up to that seq (in the screen already) and the queued baseline are not
+   * posted; without one, the queue goes as it is, the blank start.
+   */
+  private endSeed(tabId: string, tab: TabStream, screen: TerminalScreen | null): void {
+    const wait = tab.seed
+    if (!wait) return
+    this.dropSeed(tab)
+    const worker = this.worker
+    if (!worker) return
+    let queue = wait.queue
+    if (screen) {
+      worker.post({ t: 'reset', tabId, seq: wait.seq, cols: wait.cols, rows: wait.rows, seed: screen })
+      queue = queue.filter((m) => m.t !== 'reset' && !(m.t === 'item' && m.item.seq <= wait.seq))
+    }
+    for (const message of queue) worker.post(message)
+    this.armWatchdog()
+  }
+
+  /** Stop waiting, posting nothing (the worker is gone, or its successor starts the tab anew). */
+  private dropSeed(tab: TabStream): void {
+    if (!tab.seed) return
+    clearTimeout(tab.seed.timer)
+    tab.seed = null
+  }
+
+  /** Post to the worker, or queue while the tab waits for its screen. */
+  private post(tab: TabStream, message: ToWorker): void {
+    if (tab.seed) {
+      tab.seed.queue.push(message)
+      return
+    }
+    this.worker?.post(message)
+    this.armWatchdog()
   }
 
   /** A drain's check: hand back every tab whose desktop has all its output; stop once none is left. */
@@ -514,6 +709,10 @@ export class TerminalMirror implements TerminalTap {
     if (!this.worker || !tab || chunk.length === 0) return
     tab.unparsedChars += chunk.length
     this.send(tabId, tab, { seq: ++tab.seq, kind: 'data', data: chunk })
+    if (tab.seed && tab.unparsedChars > SCREEN_HOLD_CHARS) {
+      this.log(`terminal mirror: tab ${tabId} printed over ${SCREEN_HOLD_CHARS} characters waiting for the desktop's screen, its copy starts blank`)
+      this.endSeed(tabId, tab, null)
+    }
     if (tab.unparsedChars > MAX_BACKLOG_CHARS && this.worker) this.drowned(tabId)
   }
 
@@ -528,6 +727,8 @@ export class TerminalMirror implements TerminalTap {
   closed(tabId: string): void {
     const tab = this.tabs.get(tabId)
     if (!this.worker || !tab) return
+    // A wait still out ends as the blank start: the worker gets the tab's stream whole, then its close.
+    this.endSeed(tabId, tab, null)
     this.tabs.delete(tabId)
     // Posted, not given to the views: they are told with `closed` instead.
     this.closedSeqs.set(tabId, ++tab.seq)
@@ -632,7 +833,10 @@ export class TerminalMirror implements TerminalTap {
       }, this.options.inspectTimeoutMs ?? INSPECT_TIMEOUT_MS)
       timer.unref?.()
       this.inspects.set(id, { resolve, reject, timer })
-      worker.post({ t: 'inspect', id, tabId })
+      const tab = this.tabs.get(tabId)!
+      // Queued behind the tab's items while it waits for its screen.
+      if (tab.seed) tab.seed.queue.push({ t: 'inspect', id, tabId })
+      else worker.post({ t: 'inspect', id, tabId })
     })
   }
 
@@ -641,8 +845,7 @@ export class TerminalMirror implements TerminalTap {
   /** Post one numbered item and hand it to the tab's views (live ones now, waiting ones held). */
   private send(tabId: string, tab: TabStream, item: MirrorItem): void {
     tab.inflight.push(item)
-    this.worker?.post({ t: 'item', tabId, item })
-    this.armWatchdog()
+    this.post(tab, { t: 'item', tabId, item })
     // Over a copy: a view's callback may leave, or a view may join (its held list, copied from
     // `inflight`, already has this item) while the others are served.
     for (const [view, state] of [...tab.views]) {
@@ -666,8 +869,7 @@ export class TerminalMirror implements TerminalTap {
     }, this.options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS)
     timer.unref?.()
     tab.request = { id, timer }
-    worker.post({ t: 'snapshot', id, tabId })
-    this.armWatchdog()
+    this.post(tab, { t: 'snapshot', id, tabId })
   }
 
   private cancelRequest(tab: TabStream): void {
@@ -837,6 +1039,8 @@ export class TerminalMirror implements TerminalTap {
     // The old worker's silence is not the new one's: the check starts over with it.
     this.disarmWatchdog()
     this.drop(new Error('terminal mirror worker restarted'))
+    // A wait's queue was never posted: its items count as consumed below, like the old worker's.
+    for (const tab of this.tabs.values()) this.dropSeed(tab)
     // Nothing the old worker posts reaches `received` any more (spawnWorker), so no late answer
     // for a closed stream can come.
     this.closedSeqs.clear()
@@ -864,7 +1068,10 @@ export class TerminalMirror implements TerminalTap {
       tab.unparsedChars = 0
       this.pruneHeld(tab)
       if (unparsed > 0) this.flowCall('ack', () => this.flow?.ack(tabId, unparsed))
-      worker.post({ t: 'reset', tabId, seq: tab.seq, cols: tab.cols, rows: tab.rows })
+      // Seeded from the desktop's screen when it is live (the blank reset is queued first, and
+      // posted only if the seed does not come).
+      this.beginSeed(tabId, tab)
+      this.post(tab, { t: 'reset', tabId, seq: tab.seq, cols: tab.cols, rows: tab.rows })
       // The old worker's snapshot is not coming: views still waiting are asked for again, and start
       // from the blank copy at the current seq (their held items after it follow). Live views keep
       // their stream; resyncing them is the restart listeners' job (Task 12).
@@ -924,7 +1131,11 @@ export class TerminalMirror implements TerminalTap {
 
   /** Whether the worker has items to report parsed or a snapshot to answer. */
   private owesAnswer(): boolean {
-    for (const tab of this.tabs.values()) if (tab.inflight.length > 0 || tab.request) return true
+    for (const tab of this.tabs.values()) {
+      // A tab waiting for its screen has posted nothing the worker could owe (its deadline is shorter).
+      if (tab.seed) continue
+      if (tab.inflight.length > 0 || tab.request) return true
+    }
     return false
   }
 

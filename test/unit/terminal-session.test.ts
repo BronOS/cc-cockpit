@@ -17,6 +17,9 @@ vi.mock('@xterm/xterm', () => ({
     options: Record<string, unknown>
     element: { style: Record<string, string> } | undefined
     unicode = { activeVersion: '' }
+    modes = { synchronizedOutputMode: false }
+    // What shared/terminal-screen.ts atGround reads: 0 is the parser's ground state.
+    _core = { _inputHandler: { _parser: { currentState: 0 } } }
     readonly resizes: Array<[number, number]> = []
     constructor(options: Record<string, unknown>) {
       this.options = { ...options }
@@ -62,6 +65,13 @@ vi.mock('@xterm/addon-fit', () => ({
   }
 }))
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
+vi.mock('@xterm/addon-serialize', () => ({
+  SerializeAddon: class {
+    serialize(options: { scrollback: number }): string {
+      return `screen with ${options.scrollback} lines`
+    }
+  }
+}))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('../../src/renderer/prefs/prefs-store', () => ({
@@ -84,15 +94,24 @@ vi.mock('../../src/renderer/tabs/terminal-font', () => ({
 // DOM lib and CSS imports); vitest transforms it like any other.
 interface Session {
   readonly term: unknown
+  answerScreen(id: number, scrollback: number): void
   write(data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
   attach(container: HTMLElement): void
   takeOnLoad(): void
   takeOnSelect(): void
   dispose(): void
 }
-type Io = { input(d: string): void; ack(n: number): void; resize(c: number, r: number): void; fit?(): void }
+type ScreenReply = { id: number; screen?: { cols: number; rows: number; data: string }; busy?: true }
+type Io = {
+  input(d: string): void
+  ack(n: number): void
+  resize(c: number, r: number): void
+  fit?(): void
+  screen?(answer: ScreenReply): void
+}
 type SessionClass = new (tabId: string, io: Io) => Session
 interface Registry {
+  answerScreen(tabId: string, id: number, scrollback: number): void
   write(tabId: string, data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
   get(tabId: string): Session
   takeOnSelect(tabId: string): void
@@ -398,5 +417,47 @@ describe('SessionRegistry selection takes', () => {
     r.activeChanged('q')
     r.get('p').attach(laidOutPane())
     expect(fits).toEqual([])
+  })
+})
+
+describe('the screen main asks for (tabs.screenAsk)', () => {
+  function asked(): { s: Session; term: { _core: { _inputHandler: { _parser: { currentState: number } } } }; replies: ScreenReply[] } {
+    const replies: ScreenReply[] = []
+    const s = new TerminalSession('t1', {
+      input: () => undefined,
+      ack: () => undefined,
+      resize: () => undefined,
+      screen: (answer) => replies.push(answer)
+    })
+    made.push(s)
+    return { s, term: s.term as never, replies }
+  }
+
+  it('answers with its screen at the scrollback asked, after what was written before the ask', () => {
+    const { s, replies } = asked()
+    s.answerScreen(4, 5000)
+    expect(replies).toEqual([{ id: 4, screen: { cols: 80, rows: 24, data: 'screen with 5000 lines' } }])
+  })
+
+  it('busy when its parser is inside a sequence; nothing to give once disposed', () => {
+    const { s, term, replies } = asked()
+    term._core._inputHandler._parser.currentState = 3
+    s.answerScreen(1, 5000)
+    s.dispose()
+    s.answerScreen(2, 5000)
+    expect(replies).toEqual([{ id: 1, busy: true }, { id: 2 }])
+  })
+
+  it('a tab with no terminal on this page answers with no screen at once', () => {
+    const replies: Array<[string, ScreenReply]> = []
+    const registry = new SessionRegistry((id) => ({
+      input: () => undefined,
+      ack: () => undefined,
+      resize: () => undefined,
+      screen: (answer) => replies.push([id, answer])
+    }))
+    registry.answerScreen('nope', 9, 5000)
+    expect(replies).toEqual([['nope', { id: 9 }]])
+    registry.disposeAll()
   })
 })
