@@ -10,10 +10,11 @@ import {
   dropSharedAsk,
   dropUnseen,
   linkNoticeAction,
+  nextTitleMark,
   noteUnseen,
-  titleWithMark,
   type LinkAsk,
   type PageNotice,
+  type TitleMark,
   type TrashAsk
 } from './notice-state'
 
@@ -65,15 +66,19 @@ function PageNotices(): React.JSX.Element | null {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
-  // The page's own title, read once: the mark is put on and taken off around it.
-  const baseTitle = useRef(document.title)
+  // The mark is put on and taken off around the page's own title (nextTitleMark): a title written by
+  // anyone else meanwhile is kept, and nothing is written when nothing changes (the desktop page,
+  // which never gets a notice).
+  const mark = useRef<TitleMark | undefined>(undefined)
   useEffect(() => {
-    document.title = titleWithMark(baseTitle.current, unseen.size)
+    const next = nextTitleMark(document.title, mark.current, unseen.size)
+    mark.current = next
+    if (document.title !== next.set) document.title = next.set
   }, [unseen])
   useEffect(() => {
-    const base = baseTitle.current
     return () => {
-      document.title = base
+      const last = mark.current
+      if (last !== undefined && document.title === last.set) document.title = last.base
     }
   }, [])
   if (notices.length === 0) return null

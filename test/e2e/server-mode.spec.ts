@@ -7,7 +7,7 @@
 // echoed back never contains the text a step waits for: only the shell's output does.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator } from '@playwright/test'
 import { WebSocket } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
@@ -445,13 +445,31 @@ test('server mode: ccc notify and ctx.notify are in-page notices in the browser;
 // by the hidden page. One opened while no browser is attached waits and goes to the first to join;
 // `ccc overlay` from a Claude tab goes to the browser that typed it. Neither shows "Take over", and
 // the answer given in the browser reaches the opener.
-const ASK_PAGE = `<!doctype html><p>question page</p><button id="send">Send</button><script>
+// Ready to answer takes two signals, both waited for before each Send (pageReady below), never the
+// page text: the page says "port ready" once it holds the port the shell posts after load (a Send
+// before that posts into nothing), and the overlay's loader is gone (main heard `overlays.ready`;
+// until then the loader covers the frame). Send is then pressed with the keyboard on the focused
+// button, not clicked: the page is an out-of-process frame, and a mouse click a few ms after it was
+// drawn was reported done, the frame focused, yet the button never got it (about 1 run in 30, with
+// both signals already up), the opener then waiting for good. Keys go to the focused frame, with no
+// hit test.
+const ASK_PAGE = `<!doctype html><p>question page</p><p id="ready"></p><button id="send">Send</button><script>
   let port
-  window.addEventListener('message', (e) => { if (e.ports[0]) port = e.ports[0] })
+  window.addEventListener('message', (e) => {
+    if (!e.ports[0]) return
+    port = e.ports[0]
+    document.getElementById('ready').textContent = 'port ready'
+  })
   document.getElementById('send').addEventListener('click', () => {
     port?.postMessage({ type: 'result', value: 'answered over ' + location.protocol })
   })
 </script>`
+
+/** The overlay's page can be answered: it holds its port and no loader covers it (see ASK_PAGE). */
+async function pageReady(overlay: Locator): Promise<void> {
+  await expect(overlay.frameLocator('iframe').getByText('port ready')).toBeVisible()
+  await expect(overlay.locator('.overlay-loader')).toHaveCount(0)
+}
 
 test('server mode: html overlays are held by a browser; ccc overlay from a Claude tab is answered there', async () => {
   test.setTimeout(120_000)
@@ -469,7 +487,8 @@ test('server mode: html overlays are held by a browser; ccc overlay from a Claud
     await expect(overlay.frameLocator('iframe').getByText('question page')).toBeVisible()
     await expect(overlay.getByTestId('held-elsewhere')).toHaveCount(0)
     await expect(overlay.getByRole('button', { name: 'Take over' })).toHaveCount(0)
-    await overlay.frameLocator('iframe').getByRole('button', { name: 'Send' }).click()
+    await pageReady(overlay)
+    await overlay.frameLocator('iframe').getByRole('button', { name: 'Send' }).press('Enter')
     await expect
       .poll(async () => (await cockpit.hook<{ result?: unknown } | undefined>('overlayResult', handle))?.result)
       .toEqual({ kind: 'value', value: 'answered over http:' })
@@ -488,7 +507,8 @@ test('server mode: html overlays are held by a browser; ccc overlay from a Claud
     await expect(frame.getByText('question page')).toBeVisible()
     await expect(overlay.getByTestId('held-elsewhere')).toHaveCount(0)
     await expect(overlay.getByRole('button', { name: 'Take over' })).toHaveCount(0)
-    await frame.getByRole('button', { name: 'Send' }).click()
+    await pageReady(overlay)
+    await frame.getByRole('button', { name: 'Send' }).press('Enter')
     // The caller (the tab's ccc) got the browser's answer.
     await browser.waitForTerminalText(/FAKE-CLAUDE ccc exit=0 out=".*answered over http:/, 20_000)
     await expect(overlay).toHaveCount(0)

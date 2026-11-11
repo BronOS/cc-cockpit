@@ -11,7 +11,8 @@ import {
   MAX_NOTIFY_CHARS,
   readHtmlFile,
   registerCliHandlers,
-  type CliHandlerOptions
+  type CliHandlerOptions,
+  type CliNoticeTarget
 } from '../../src/main/socket/handlers'
 import type { Caller, Handler } from '../../src/main/socket/socket-server'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
@@ -24,7 +25,7 @@ const WINDOW: Caller = { kind: 'window', projectId: 'p1' }
 
 let dir: string
 let handlers: Map<string, Handler>
-let calls: { opened: string[]; notified: string[]; notifiedFor: Array<string | undefined>; overlays: Array<{ windowId: number; spec: unknown; opener: string }> }
+let calls: { opened: string[]; notified: string[]; notifiedFor: CliNoticeTarget[]; overlays: Array<{ windowId: number; spec: unknown; opener: string }> }
 let registry: SessionRegistry
 let result: OverlayResult
 let windows: Record<string, number>
@@ -49,9 +50,9 @@ beforeEach(() => {
       if (p.includes('missing')) throw new Error('not a directory')
       calls.opened.push(p)
     },
-    notify: (t, projectId) => {
+    notify: (t, target) => {
       calls.notified.push(t)
-      calls.notifiedFor.push(projectId)
+      calls.notifiedFor.push(target)
     },
     sessions: registry,
     project: (id) => (id === 'p1' ? { name: 'alpha', path: '/proj' } : id === 'p2' ? { name: 'beta', path: '/other' } : undefined),
@@ -165,13 +166,25 @@ describe('notify', () => {
 
   // design-web.md §9.9: in server mode the in-page notice goes to the caller's project's window, and
   // to every window when the call names none. The project is main's resolution, never an argument.
-  it("passes on the caller's project: a tab's, a window token's, --project's; none for a projectless call", async () => {
+  it("targets the caller's project window: a tab's, a window token's, --project's; every window for a projectless call", async () => {
     await call('notify', { text: 'a', projectId: 'p2' }, TAB)
     await call('notify', { text: 'b' }, WINDOW)
     await call('notify', { text: 'c' }, OUTSIDE)
     await call('notify', { text: 'd', projectId: 'p1' }, ANON)
-    await call('notify', { text: 'e' }, { kind: 'project', path: '/new', projectId: undefined })
-    expect(calls.notifiedFor).toEqual(['p1', 'p1', 'p1', undefined, undefined])
+    expect(calls.notifiedFor).toEqual([7, 7, 7, 'all'])
+  })
+
+  // Review finding (task 21): a project with no open window once went app-wide, so its text (a mail
+  // subject a hook passed on) reached the browsers of every other project and every later joiner.
+  it('targets nowhere for a named project with no open window, or a folder with no project record; never every window', async () => {
+    await call('notify', { text: 'a' }, { kind: 'project', path: '/other', projectId: 'p2' })
+    await call('notify', { text: 'b' }, { kind: 'window', projectId: 'p2' })
+    await call('notify', { text: 'c' }, { kind: 'project', path: '/new', projectId: undefined })
+    delete windows.p1
+    await call('notify', { text: 'd' }, TAB)
+    expect(calls.notifiedFor).toEqual(['none', 'none', 'none', 'none'])
+    // Still a success for the caller: `ccc notify` runs in hooks.
+    expect(calls.notified).toEqual(['a', 'b', 'c', 'd'])
   })
 
   it.each([[undefined], [''], ['   '], [7]])('refuses text %j', async (text) => {

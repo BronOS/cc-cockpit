@@ -7,6 +7,7 @@ import {
   linkNoticeAction,
   linkNoticeUrl,
   noteUnseen,
+  nextTitleMark,
   titleWithMark,
   type LinkAsk
 } from '../../src/renderer/notices/notice-state'
@@ -71,6 +72,20 @@ describe('the title mark of unseen in-page notices', () => {
   it('counts unseen notices in front of the page title, and leaves it alone with none', () => {
     expect(titleWithMark('cc-cockpit', 0)).toBe('cc-cockpit')
     expect(titleWithMark('cc-cockpit', 2)).toBe('(2) cc-cockpit')
+  })
+
+  // Review finding (task 21): the base was read once at mount, so a later title change was overwritten
+  // by the mark and reverted at unmount.
+  it('puts the mark around the current title, adopting one written by someone else meanwhile', () => {
+    const first = nextTitleMark('cc-cockpit', undefined, 1)
+    expect(first).toEqual({ base: 'cc-cockpit', set: '(1) cc-cockpit' })
+    // The title is still the marked one: the old base stays.
+    expect(nextTitleMark('(1) cc-cockpit', first, 2)).toEqual({ base: 'cc-cockpit', set: '(2) cc-cockpit' })
+    expect(nextTitleMark('(1) cc-cockpit', first, 0)).toEqual({ base: 'cc-cockpit', set: 'cc-cockpit' })
+    // Someone renamed the page: that is the new base, never overwritten with the old one.
+    expect(nextTitleMark('alpha · cc-cockpit', first, 1)).toEqual({ base: 'alpha · cc-cockpit', set: '(1) alpha · cc-cockpit' })
+    // Nothing unseen and no mark yet: the title as it is.
+    expect(nextTitleMark('cc-cockpit', undefined, 0)).toEqual({ base: 'cc-cockpit', set: 'cc-cockpit' })
   })
 
   it('a notice counts only when it came while the page was hidden, once, until it ends', () => {

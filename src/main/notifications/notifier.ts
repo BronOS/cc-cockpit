@@ -17,6 +17,8 @@
 // session bus, so PageNoticeBackend below shows each notice in the browsers instead: an in-page
 // notice in every browser view of the notice's window (never the hidden page), kept by main until it
 // is clicked, dismissed, timed out or pushed out by the cap, so `wait` and the click work the same.
+// One nobody waits on (`show`) times out too, after the same NOTIFY_ACTION_WAIT_MS, so a browser that
+// joins hours later is not shown a stale "Standup in 2 min".
 // A notice's text is the plugin's (mail subjects, meeting titles): nothing here logs it.
 //
 // The chime (ChimeGate): an OS notification sound is unreliable (most Linux daemons play none,
@@ -176,6 +178,8 @@ export interface PageNoticeBackendOptions {
   newId?: () => string
   /** Notices kept per window, and app-wide (MAX_PAGE_NOTICES). */
   cap?: number
+  /** How long a notice nobody waits on is kept (NOTIFY_ACTION_WAIT_MS, as a `wait`'s). */
+  lifeMs?: number
 }
 
 interface PageEntry {
@@ -184,6 +188,12 @@ interface PageEntry {
   notice: PageNotice
   click: (() => void)[]
   close: (() => void)[]
+  /**
+   * A caller waits on it: listeners were added before `show` (Notifier.wait does, Notifier.show never
+   * does). Set at show; such a notice ends by the Notifier's own timer, the others by `expiry`.
+   */
+  waited: boolean
+  expiry?: ReturnType<typeof setTimeout>
 }
 
 /**
@@ -198,10 +208,12 @@ export class PageNoticeBackend implements NoticeBackend {
   private readonly shown = new Map<string, PageEntry>()
   private readonly newId: () => string
   private readonly cap: number
+  private readonly lifeMs: number
 
   constructor(private readonly options: PageNoticeBackendOptions) {
     this.newId = options.newId ?? randomUUID
     this.cap = options.cap ?? MAX_PAGE_NOTICES
+    this.lifeMs = options.lifeMs ?? NOTIFY_ACTION_WAIT_MS
   }
 
   isSupported(): boolean {
@@ -210,7 +222,7 @@ export class PageNoticeBackend implements NoticeBackend {
 
   create(spec: NoticeSpec): NativeNotice {
     const target = spec.windowId ?? 'all'
-    const entry: PageEntry = { target, notice: { requestId: this.newId(), ...pageNoticeTexts(spec) }, click: [], close: [] }
+    const entry: PageEntry = { target, notice: { requestId: this.newId(), ...pageNoticeTexts(spec) }, click: [], close: [], waited: false }
     return {
       show: () => this.show(entry),
       // The Notifier's own end (the wait timed out, the plugin's ctx ended): no listener runs.
@@ -256,10 +268,21 @@ export class PageNoticeBackend implements NoticeBackend {
   private show(entry: PageEntry): void {
     const { requestId } = entry.notice
     if (this.shown.has(requestId)) return
+    entry.waited = entry.click.length > 0 || entry.close.length > 0
     // Past the cap the oldest of the same target goes first, as a dismissal: the newest is the one
-    // the person most likely still cares about, and a plugin waiting on the old one is told.
+    // the person most likely still cares about, and a plugin waiting on the old one is told. One
+    // nobody waits on goes before one a plugin waits on, and never pushes one out itself: `ccc notify`
+    // has no rate limit, and a tab running it in a loop would otherwise end every plugin's reminder as
+    // `{ clicked: false }`. With only waited ones to push out, a new unwaited notice is not shown.
     const same = [...this.shown.values()].filter((e) => e.target === entry.target)
-    for (const old of same.slice(0, Math.max(0, same.length - this.cap + 1))) this.end(old.notice.requestId, 'close')
+    const over = same.length - this.cap + 1
+    if (over > 0) {
+      const unwaited = same.filter((e) => !e.waited)
+      const evictable = entry.waited ? [...unwaited, ...same.filter((e) => e.waited)] : unwaited
+      if (evictable.length < over) return
+      for (const old of evictable.slice(0, over)) this.end(old.notice.requestId, 'close')
+    }
+    if (!entry.waited) entry.expiry = setTimeout(() => this.end(requestId, 'close'), this.lifeMs)
     this.shown.set(requestId, entry)
     // No browser attached yet is no failure: the notice waits for the first view's snapshot.
     this.options.views.toBrowserViews(entry.target, 'notices.show', { ...entry.notice })
@@ -277,6 +300,7 @@ export class PageNoticeBackend implements NoticeBackend {
     const entry = this.shown.get(requestId)
     if (!entry) return
     this.shown.delete(requestId)
+    clearTimeout(entry.expiry)
     this.options.views.toBrowserViews(entry.target, 'notices.gone', { requestId })
     if (how === undefined) return
     for (const listener of entry[how]) listener()

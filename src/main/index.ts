@@ -1721,9 +1721,13 @@ function start(server: boolean): void {
     openPath: (path) => {
       windows.openPath(path)
     },
-    // The caller's project window places an in-page notice (server mode); none (a projectless call,
-    // or a project with no window open) is app-wide. The OS notification on the desktop ignores it.
-    notify: (text, projectId) => showNotification(text, 'cc-cockpit', projectId === undefined ? undefined : windows.windowIdOf(projectId)),
+    // The target places a server's in-page notice (CliNoticeTarget): the caller's project window,
+    // every window for a projectless call, and nowhere for a project with no window open (its text is
+    // that project's, never widened to every browser). The OS notification on the desktop ignores it.
+    notify: (text, target) => {
+      if (server && target === 'none') return
+      showNotification(text, 'cc-cockpit', typeof target === 'number' ? target : undefined)
+    },
     sessions,
     project: (projectId) => {
       const project = registry.get(projectId)

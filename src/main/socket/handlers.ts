@@ -15,9 +15,10 @@
 //     window and grants nothing more.
 //   - open: names a folder on purpose (that is its job); main's registry validates it.
 //   - sessions / notify: act on no single project. The socket is the user's own, so `sessions`
-//     lists every window's tabs (plugins never reach this socket). `notify` passes on the caller's
-//     project when it has one (a tab's token or `--project`): in server mode the in-page notice goes
-//     to that project's window, and a call naming none to every window (design-web.md §9.9).
+//     lists every window's tabs (plugins never reach this socket). `notify` passes on where its
+//     in-page notice goes in server mode (design-web.md §9.9, CliNoticeTarget): the caller's project's
+//     window when it has one (a tab's token or `--project`), every window for a call naming none, and
+//     nowhere for one naming a project with no open window, never widened to every window.
 //   - plugin.cli*: the caller's project (a tab's, or the one `--project` named). The owning plugin
 //     is looked up by name in main's index (the clash rules leave at most one valid owner), and
 //     must be enabled in that project; the host manager then checks it runs in the window.
@@ -48,6 +49,16 @@ import type { Caller, Handler } from './socket-server'
 /** Longest notification text shown; the CLI argument is otherwise unbounded. */
 export const MAX_NOTIFY_CHARS = 1000
 
+/**
+ * Where a `ccc notify` goes as an in-page notice in server mode (design-web.md §9.9); the desktop's OS
+ * notification shows it whatever this says. A window id: the caller's project's open window. `'all'`:
+ * a call that names no project (no token, no `--project`), every window. `'none'`: a call that names a
+ * project (a `--project` folder, a token's) whose window is not open, or a folder with no project
+ * record: dropped in server mode. Never `'all'` for it: the text is that project's (a mail subject a
+ * hook passed on) and would reach the devices viewing other projects, and every browser joining later.
+ */
+export type CliNoticeTarget = number | 'all' | 'none'
+
 /** The slice of a registry the handlers read and write. */
 export interface CliSessions {
   addNote(tabId: string, text: string): void
@@ -59,10 +70,10 @@ export interface CliHandlerOptions {
   /** Open the folder as a project, or focus its window. Throws for a path that is not a folder. */
   openPath(path: string): void
   /**
-   * A notification with this text. `projectId`: the caller's project as main resolved it (a tab's
-   * token, `--project`), absent for a projectless call or a folder with no project record.
+   * A notification with this text. `target`: where its in-page notice goes in server mode, from the
+   * caller main resolved (CliNoticeTarget); the OS notification on the desktop ignores it.
    */
-  notify(text: string, projectId?: string): void
+  notify(text: string, target: CliNoticeTarget): void
   sessions: CliSessions
   /** The display name and folder of a project, for the `sessions` listing. */
   project(projectId: string): { name: string; path: string } | undefined
@@ -128,12 +139,19 @@ export function stepsHandler(options: Pick<CliHandlerOptions, 'sessions'>): Hand
   }
 }
 
-export function notifyHandler(options: Pick<CliHandlerOptions, 'notify'>): Handler {
+/** The in-page notice's target for a `ccc notify` caller (CliNoticeTarget). */
+function noticeTarget(caller: Caller, windowIdOf: (projectId: string) => number | undefined): CliNoticeTarget {
+  if (caller.kind === 'anonymous') return 'all'
+  const windowId = caller.projectId === undefined ? undefined : windowIdOf(caller.projectId)
+  return windowId ?? 'none'
+}
+
+export function notifyHandler(options: Pick<CliHandlerOptions, 'notify' | 'windowIdOf'>): Handler {
   return (args, caller) => {
     if (typeof args.text !== 'string' || args.text.trim() === '') throw new Error('notify needs text')
     const text = args.text.trim()
-    const projectId = caller.kind === 'anonymous' ? undefined : caller.projectId
-    options.notify(text.length > MAX_NOTIFY_CHARS ? `${text.slice(0, MAX_NOTIFY_CHARS - 1)}…` : text, projectId)
+    // A target that shows nothing is still a success: `ccc notify` runs in hooks, which never fail.
+    options.notify(text.length > MAX_NOTIFY_CHARS ? `${text.slice(0, MAX_NOTIFY_CHARS - 1)}…` : text, noticeTarget(caller, options.windowIdOf))
     return null
   }
 }

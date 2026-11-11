@@ -77,6 +77,22 @@ export function titleWithMark(base: string, unseen: number): string {
   return unseen > 0 ? `(${unseen}) ${base}` : base
 }
 
+/** The title the mark last put on, and the page's own title it was put around. */
+export interface TitleMark {
+  base: string
+  set: string
+}
+
+/**
+ * The next title mark for the current `document.title`. The base is the page's own title: the last
+ * one's base while the title is still what the mark set, else the current title, so a title the page
+ * (or the shell) wrote meanwhile becomes the new base instead of being overwritten with an old one.
+ */
+export function nextTitleMark(current: string, last: TitleMark | undefined, unseen: number): TitleMark {
+  const base = last !== undefined && current === last.set ? last.base : current
+  return { base, set: titleWithMark(base, unseen) }
+}
+
 /**
  * The unseen notice ids after a `notices.show`: it counts only when the page is hidden now (one shown
  * on a visible page was seen). The same set when nothing changes, so React skips the render.

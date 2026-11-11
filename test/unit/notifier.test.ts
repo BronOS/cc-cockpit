@@ -412,11 +412,11 @@ describe('PageNoticeBackend (server mode)', () => {
   it(`keeps at most ${MAX_PAGE_NOTICES} per window and app-wide; the oldest of the same one ends as dismissed`, async () => {
     const { backend, notifier, phone, other } = setup()
     const first = notifier.wait({ windowId: 1, title: 't', body: 'first', actionLabel: 'Go' })
-    for (let i = 1; i < MAX_PAGE_NOTICES; i++) notifier.show({ windowId: 1, title: 't', body: `w1 ${i}` })
+    for (let i = 1; i < MAX_PAGE_NOTICES; i++) void notifier.wait({ windowId: 1, title: 't', body: `w1 ${i}`, actionLabel: 'Go' })
     // Other windows and app-wide notices have their own count.
     notifier.show({ windowId: 2, title: 't', body: 'w2' })
     expect(backend.pendingFor(1)).toHaveLength(MAX_PAGE_NOTICES)
-    notifier.show({ windowId: 1, title: 't', body: 'newest' })
+    void notifier.wait({ windowId: 1, title: 't', body: 'newest', actionLabel: 'Go' })
     await expect(first).resolves.toBe(false)
     expect(backend.pendingFor(1)).toHaveLength(MAX_PAGE_NOTICES)
     expect(backend.pendingFor(1).map((n) => n.text)).not.toContain('first')
@@ -424,7 +424,60 @@ describe('PageNoticeBackend (server mode)', () => {
     expect(other.showing()).toHaveLength(1)
     for (let i = 0; i < MAX_PAGE_NOTICES + 5; i++) notifier.show({ title: 't', body: `app ${i}` })
     expect(other.showing()).toHaveLength(1 + MAX_PAGE_NOTICES)
+    expect(backend.pendingFor(2).map((n) => n.text)).toContain(`app ${MAX_PAGE_NOTICES + 4}`)
+    expect(backend.pendingFor(2).map((n) => n.text)).not.toContain('app 4')
     expect(backend.size).toBe(2 * MAX_PAGE_NOTICES + 1)
+  })
+
+  // Review finding (task 21): `ccc notify` has no rate limit and shares the cap with plugin notices;
+  // a tab running it in a loop must not end the plugins' reminders as { clicked: false }.
+  it('a notice nobody waits on never pushes out one a plugin waits on, and goes first when a waited one comes', async () => {
+    const { backend, notifier, phone } = setup()
+    const waits = Array.from({ length: MAX_PAGE_NOTICES }, (_, i) => notifier.wait({ windowId: 1, title: 't', body: `wait ${i}`, actionLabel: 'Go' }))
+    for (let i = 0; i < 5; i++) notifier.show({ windowId: 1, title: 'cc-cockpit', body: `loop ${i}` })
+    // Not shown at all: every waiting notice stays.
+    expect(phone.showing()).toHaveLength(MAX_PAGE_NOTICES)
+    expect(backend.pendingFor(1).map((n) => n.text)).not.toContain('loop 0')
+    expect(notifier.pending).toBe(MAX_PAGE_NOTICES)
+    // One waited notice ends; an unwaited one fills its place, then the loop pushes out only its own.
+    expect(backend.dismiss(1, 'n1')).toBe(true)
+    await expect(waits[0]).resolves.toBe(false)
+    for (let i = 0; i < 5; i++) notifier.show({ windowId: 1, title: 'cc-cockpit', body: `again ${i}` })
+    const texts = backend.pendingFor(1).map((n) => n.text)
+    expect(texts).toHaveLength(MAX_PAGE_NOTICES)
+    expect(texts.filter((t) => t.startsWith('again'))).toEqual(['again 4'])
+    expect(notifier.pending).toBe(MAX_PAGE_NOTICES - 1)
+    // A new waited notice pushes out the unwaited one before any waited one.
+    void notifier.wait({ windowId: 1, title: 't', body: 'newest', actionLabel: 'Go' })
+    expect(backend.pendingFor(1).map((n) => n.text)).not.toContain('again 4')
+    expect(notifier.pending).toBe(MAX_PAGE_NOTICES)
+  })
+
+  // Review finding (task 21): a notice with no action once lived until clicked or pushed out, and a
+  // browser joining days later was shown "Standup in 2 min".
+  it('a notice nobody waits on times out after NOTIFY_ACTION_WAIT_MS, like a waited one', () => {
+    vi.useFakeTimers()
+    try {
+      const { backend, notifier, phone, other } = setup()
+      notifier.show({ windowId: 1, title: 'Calendar', body: 'Standup in 2 min' })
+      notifier.show({ title: 'cc-cockpit', body: 'build done' })
+      vi.advanceTimersByTime(NOTIFY_ACTION_WAIT_MS - 1)
+      expect(phone.showing()).toEqual(['n1', 'n2'])
+      vi.advanceTimersByTime(1)
+      expect(phone.showing()).toEqual([])
+      expect(other.showing()).toEqual([])
+      expect(backend.pendingFor(1)).toEqual([])
+      expect(backend.size).toBe(0)
+      // One ended early clears its timer: nothing is sent for it again.
+      notifier.show({ windowId: 1, title: 't', body: 'b' })
+      expect(backend.dismiss(1, 'n3')).toBe(true)
+      const sent = phone.events.length
+      vi.advanceTimersByTime(NOTIFY_ACTION_WAIT_MS)
+      expect(phone.events).toHaveLength(sent)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("a window that closes ends its own notices as dismissed and keeps the app-wide ones", async () => {

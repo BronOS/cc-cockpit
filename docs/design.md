@@ -995,10 +995,12 @@ logic (a test run swaps in a recording backend the e2e clicks through test hooks
 - Server mode (design-web.md §9.9): no OS notification. `notifier.ts` `PageNoticeBackend` behind the same
   `Notifier`, so `wait` and the action work unchanged: main sends `notices.show` to the browser views of
   the plugin's window (`ViewRegistry.toBrowserViews`, never the hidden page; `ccc notify` naming no
-  project goes to every window's), plain text with the same cuts (the body cut at 500 characters, `ccc
+  project goes to every window's, one naming a project with no open window or a folder with no project
+  record nowhere), plain text with the same cuts (the body cut at 500 characters, `ccc
   notify`'s too). Main keeps at most 20 per window (and 20 app-wide) until each is clicked, dismissed or
-  timed out, replays them to a browser that joins (`ready`'s `notices`), and past the cap ends the oldest
-  as dismissed. The action button or ✕ in any view ends it for all (`notices.click` / `notices.dismiss`,
+  timed out (`NOTIFY_ACTION_WAIT_MS`, a notice nobody waits on too), replays them to a browser that joins
+  (`ready`'s `notices`), and past the cap ends the oldest as dismissed, one nobody waits on first; one
+  nobody waits on (`ccc notify` has no rate limit) never ends a waited one and is not shown instead. The action button or ✕ in any view ends it for all (`notices.click` / `notices.dismiss`,
   `adapted`: from a browser view of a server only, for a notice of the window main bound the view to,
   never an id of another window's). The chime (`notify.chime`, `adapted`) goes to the same browser views
   only; a background tab's title counts unseen notices. The text is never logged (it carries mail

@@ -509,9 +509,11 @@ with full Node access.
     on the server), as plain text with the same cuts, `title` and `action` as above; the action is a
     button, and the first click or ✕ in any browser ends it there and in the others. `sound` rings in
     those browsers. Main keeps at most 20 notices per window until each is clicked, dismissed or
-    timed out, so a browser that opens the project later still shows them; a newer one past that
-    ends the oldest as dismissed (`{ clicked: false }`). A background browser tab counts unseen
-    notices in its title. A browser that is closed (a phone in a pocket) gets nothing.
+    timed out (10 minutes, with or without an action), so a browser that opens the project in that
+    time still shows them; a newer one past that ends the oldest as dismissed (`{ clicked: false }`),
+    one without an action first, and one without an action never ends one with an action (it is
+    not shown instead). A background browser tab counts unseen notices in its title. A browser that
+    is closed (a phone in a pocket) gets nothing.
 - `ctx.openExternal(url)`: open a web page in the person's default browser, outside the app.
   `url` is http or https, at most 2048 characters, with no `user:pass@` in it; anything else
   rejects, and so does a call past 3 per 10 s per plugin and window. The app opens the normalized
