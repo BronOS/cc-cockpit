@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OverlayInfo } from '../../src/shared/ipc'
-import { domOrder, followOverlays, type OverlayStackBridge } from '../../src/renderer/overlays/follow-overlays'
+import { domOrder, followOverlays, listOnce, type OverlayStackBridge } from '../../src/renderer/overlays/follow-overlays'
 
 // OverlayStack itself needs a DOM and is covered end to end in test/e2e/overlays.spec.ts; this
 // plays out the list-versus-update ordering that e2e cannot pin down.
@@ -104,5 +104,28 @@ describe('domOrder', () => {
     order = domOrder(order, [html('c'), html('a')])
     expect(order).toEqual(['a', 'c'])
     expect(domOrder(order, [])).toEqual([])
+  })
+})
+
+describe('listOnce', () => {
+  it('the desktop page asks once per load (a StrictMode remount reuses it); the web shell asks on every mount', async () => {
+    let calls = 0
+    const list = (): Promise<OverlayInfo[]> => Promise.resolve([{ id: `o${++calls}` } as OverlayInfo])
+    const desktop = listOnce(list, () => false)
+    expect(await desktop()).toEqual([{ id: 'o1' }])
+    expect(await desktop()).toEqual([{ id: 'o1' }])
+    expect(calls).toBe(1)
+    // A reconnect remounts the web shell: drawn from the new socket's answer, not the first one's.
+    const web = listOnce(list, () => true)
+    expect(await web()).toEqual([{ id: 'o2' }])
+    expect(await web()).toEqual([{ id: 'o3' }])
+  })
+
+  it("in the web shell a first call the dropped socket rejected is not kept", async () => {
+    let fail = true
+    const web = listOnce(() => (fail ? Promise.reject(new Error('UNREACHABLE')) : Promise.resolve([])), () => true)
+    await expect(web()).rejects.toThrow('UNREACHABLE')
+    fail = false
+    await expect(web()).resolves.toEqual([])
   })
 })

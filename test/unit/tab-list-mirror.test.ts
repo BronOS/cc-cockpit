@@ -1,5 +1,5 @@
 // One tab strip for every view of a window (design-web.md §5.1; found by the plan Task 30 e2e): a
-// tab one view creates, restarts, flags, closes or moves is told to the window's other views as the
+// tab one view creates, restarts, flags, renames, closes or moves is told to the window's other views as the
 // `tabs.added` / `tabs.removed` / `tabs.moved` events every page understands, and never echoed to the
 // view that acted (it has the change from its own reply).
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
@@ -60,6 +60,7 @@ function setup(options: { others?: boolean } = {}) {
     restart: (projectId, tabId) => tabs.restart(projectId, tabId),
     flag: (projectId, tabId, patch) => tabs.setFlag(projectId, tabId, patch),
     toggleFlag: (projectId, tabId) => tabs.toggleFlag(projectId, tabId),
+    rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
     ...(options.others === false ? { others: undefined } : { others: (windowId, except, event) => void told.push({ windowId, except, event }) })
   })
   const desktopFrame = { sender: { id: 11 }, senderFrame: { parent: null, url: 'file:///app/index.html' } }
@@ -122,6 +123,17 @@ describe('a tab-list change one view makes reaches the others', () => {
     // A bad patch is refused before anything is told.
     await expect(desktop('tabs.flag', { tabId: tab.id, flag: { color: 'nope' } })).rejects.toThrow()
     expect(told).toHaveLength(2)
+  })
+
+  it('a rename in one view is announced with the tab as stored; a refused one tells nobody', async () => {
+    const { tabs, told, remote } = setup()
+    const tab = tabs.create(P, { kind: 'claude' })
+    await remote('web:1', 'tabs.rename', { tabId: tab.id, name: 'Review' })
+    expect(told).toEqual([{ windowId: 1, except: 'web:1', event: { channel: 'tabs.added', payload: tabs.list(P)[0] } }])
+    expect((told[0]!.event.payload as { name?: string }).name).toBe('Review')
+    const shell = tabs.create(P, { kind: 'shell' })
+    await expect(remote('web:1', 'tabs.rename', { tabId: shell.id, name: 'x' })).rejects.toThrow(/only a Claude tab/)
+    expect(told).toHaveLength(1)
   })
 
   it("a move is told with the index main applied (clamped), not the one asked for", async () => {

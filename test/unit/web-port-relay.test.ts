@@ -534,6 +534,19 @@ describe('live views per window and device', () => {
     expect(hello().closedWith?.code).toBe(CLOSE.tooManyViews)
   })
 
+  it("None's anonymous caller is every browser at once: its views are not capped per device", () => {
+    const t = (current = setup())
+    const none: WebDevice = { id: 'none', name: 'No sign-in', createdAt: 0, lastSeenAt: 0, mode: 'none' }
+    const views = Array.from({ length: MAX_VIEWS_PER_DEVICE_WINDOW + 2 }, () => {
+      const ws = new LinkedWs()
+      t.conns.accept(ws, none)
+      ws.feed({ t: 'hello', v: PROTOCOL_VERSION, project: 'p1' })
+      return ws
+    })
+    expect(views.every((ws) => ws.closedWith === undefined)).toBe(true)
+    expect(t.views.viewsOf(1)).toHaveLength(1 + MAX_VIEWS_PER_DEVICE_WINDOW + 2)
+  })
+
   it('the browser stops on tooManyViews instead of retrying', async () => {
     const statuses: BridgeStatus[] = []
     let socket: { onclose: SocketLike['onclose']; onopen: SocketLike['onopen'] } | undefined

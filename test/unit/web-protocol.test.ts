@@ -19,7 +19,7 @@ import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { ViewRegistry } from '../../src/main/views/view-registry'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
-import { MAX_PENDING_INVOKES, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
+import { MAX_PENDING_INVOKES, SOCKET_HIGH_WATER, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
 import { DeviceStore, type WebDevice } from '../../src/main/web/devices'
 import type { TerminalSource } from '../../src/main/web/view-terminals'
 import type { MirrorView } from '../../src/main/terminals/mirror'
@@ -234,6 +234,20 @@ describe('handshake', () => {
     expect(conns.deviceName('web:1')).toBeUndefined()
   })
 
+  it('a view that stops reading is closed to resync once its socket holds too much, never queued without bound', () => {
+    const { connect, views, logs } = setup()
+    const ws = connect('p1')
+    views.toProject('p1', 'layout.updated', { n: 1 })
+    expect(ws.frames('event')).toHaveLength(1)
+    // A phone asleep with its socket still open: nothing it was sent has left main.
+    ws.bufferedAmount = SOCKET_HIGH_WATER + 1
+    views.toProject('p1', 'layout.updated', { n: 2 })
+    expect(ws.frames('event')).toHaveLength(1)
+    expect(ws.closedWith).toEqual({ code: CLOSE.failed, reason: 'view behind' })
+    expect(views.viewsOf(1)).toEqual(['desktop:1'])
+    expect(logs.some((l) => l.includes('unsent, closed to resync'))).toBe(true)
+  })
+
   it('an event right after hello comes after ready, never before it', () => {
     const { connect, views } = setup()
     const ws = connect('p1')
@@ -251,8 +265,7 @@ describe('handshake', () => {
     old.feed({ t: 'hello', v: PROTOCOL_VERSION + 1, project: 'p1' })
     expect(old.closedWith?.code).toBe(CLOSE.version)
     const silent = connect()
-    await new Promise((resolve) => setTimeout(resolve, 80))
-    expect(silent.closedWith?.code).toBe(CLOSE.noHello)
+    await vi.waitFor(() => expect(silent.closedWith?.code).toBe(CLOSE.noHello))
     expect(views.viewsOf(1)).toEqual(['desktop:1'])
   })
 

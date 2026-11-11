@@ -245,7 +245,10 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
 - **Size.** Main remembers each view's size. The pty takes a view's size only when that view explicitly takes the
   terminal (typing after another view typed, after a short debounce, or a "fit to this screen" action), not on every
   resize, so phone and desktop typing in turn do not redraw Claude each time. The headless terminal resizes with it
-  and views get a size event. When the sizing view leaves, the size falls back to a remaining visible view.
+  and views get a size event. When the sizing view leaves, the size falls back to a remaining visible view. Only the
+  person's typing counts: a focus or mouse report, or a view's own reply to a query, takes nothing. A terminal
+  overlay keeps a size per view too: the first view to measure it sizes it, typing in another view moves it there
+  at once, and its flow control is the desktop page's acks alone.
 - **Input from any view.** Input is the person's: it sets `typed` like desktop typing, and the send gate applies
   unchanged. Two views typing at once interleave, as two keyboards on one machine would; each view shows which
   device typed last in a tab. Turn-taking is a multi-user concern (§10).
@@ -277,7 +280,10 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   `settingsPage.connect`, each with a nonce); a refused one answers false as on the desktop and no port follows, and
   an accepted one comes back as `port.open` with that nonce (`main/web/port-relay.ts`, `renderer/web/port-relay.ts`).
   The shell says `port.close` when a frame's page goes (a browser port has no close event to rely on); main closes
-  every end a view held when it leaves, and a device may hold at most 8 views of one window.
+  every end a view held when it leaves, and a device may hold at most 8 views of one window (not None's anonymous
+  caller, which is every browser at once; the gateway caps connections). The gateway pings every socket every 30 s and
+  drops one that missed the last ping (a phone that slept or changed networks leaves a half-open socket), and a view
+  whose socket holds more than 32 MiB unsent is closed to resync.
 
 ### 5.4 Overlays and settings pages
 

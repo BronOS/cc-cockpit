@@ -1310,6 +1310,42 @@ describe('exactly one result', () => {
     m.list(W1)
     expect(pty.paused).toBe(false)
   })
+
+  it("a browser loading the shell does not reset a terminal overlay's flow (only the desktop page's reload does)", () => {
+    const m = manager()
+    void m.open(W1, terminal(['yes']), 'test')
+    const pty = backend.last
+    pty.emit('y'.repeat(2 * 1024 * 1024))
+    expect(pty.paused).toBe(true)
+    m.list(W1, 'web:1')
+    expect(pty.paused).toBe(true)
+  })
+
+  it('terminal sizes are per view: the first to measure sizes it, typing in another view moves it, a leaving view gives it back', () => {
+    const m = manager()
+    void m.open(W1, terminal(['revdiff']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    m.resize(W1, id, 120, 40)
+    // A phone showing the same overlay: remembered, the pty keeps the desktop's size.
+    m.resize(W1, id, 50, 30, 'web:1')
+    m.resize(W1, id, 30, 50, 'web:1')
+    expect(pty.resizes).toEqual([[120, 40]])
+    // A focus or mouse report is not the person typing there.
+    m.input(W1, id, '\x1b[I', 'web:1')
+    expect(pty.resizes).toEqual([[120, 40]])
+    m.input(W1, id, 'j', 'web:1')
+    expect(pty.resizes).toEqual([[120, 40], [30, 50]])
+    // The desktop's own refit is only remembered while the phone sizes it; its typing takes it back.
+    m.resize(W1, id, 130, 40)
+    expect(pty.resizes).toEqual([[120, 40], [30, 50]])
+    m.input(W1, id, 'k')
+    m.input(W1, id, 'k')
+    expect(pty.resizes).toEqual([[120, 40], [30, 50], [130, 40]])
+    m.input(W1, id, 'j', 'web:1')
+    m.viewGone('web:1')
+    expect(pty.resizes).toEqual([[120, 40], [30, 50], [130, 40], [30, 50], [130, 40]])
+  })
 })
 
 // design-next §3.4: the overlay is on the stack at once and `loading` until its body is ready.

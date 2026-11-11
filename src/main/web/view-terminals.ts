@@ -94,7 +94,9 @@ export class ViewTerminals {
   /** The page wrote `count` characters of the tab's live output into its terminal. */
   ack(tabId: string, count: number): void {
     const f = this.followed.get(tabId)
-    if (!f || this.disposed || !(count > 0)) return
+    // Page-supplied: an ack beyond what was sent (Infinity) only clamps to zero, and the socket's own
+    // bound (connection.ts SOCKET_HIGH_WATER) still closes a view that keeps acking and never reads.
+    if (!f || this.disposed || !(count > 0) || !Number.isFinite(count)) return
     f.unacked = Math.max(0, f.unacked - count)
     if (f.behind && f.unacked <= this.low) {
       f.behind = false

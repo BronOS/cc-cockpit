@@ -13,6 +13,8 @@ skills, webview, bundled browser plugin) is in `docs/plans/20261031-claude-opera
 The real-work redesign (component stylesheet, slots, overlay toolbar, settings pages, `cockpit.sessions`, marketplace
 previews, Inbox v2 with inbox-feed v2) is designed in `docs/design-next.md` and `cc-cockpit-inbox/docs/design-v2.md`; its plan
 is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checked against `ccc guide style` (`src/cli/guide/style.md`).
+Web access v1 (the app in a plain browser: live mirror views over one WebSocket each, sign-in modes, devices) is implemented;
+design in `docs/design-web.md`, plan in `docs/plans/20261110-web-access.md`, user docs in `docs/features.md` ("Web access").
 
 ## Commands
 
@@ -24,10 +26,13 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
   master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
   pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
-  editing `marketplace/tools/src` or the `src/shared` files it imports, `git-source.ts` and `marketplace.ts` above all;
+  editing `marketplace/tools/src` or the `src/shared` files it imports, `git-source.ts`, `marketplace.ts` and
+  `root-absolute-urls.ts` above all;
   `marketplace/tools/dist` is committed because the index repo's CI runs it with plain node and no install, and a unit
   test compares the bytes), `npm run package` (unsigned mac build),
   `npm run package:dir` (unpacked app in `release/`, for a smoke launch).
+- `node --expose-gc scripts/web-terminal-bench.mjs [tabs] [seconds] [p99ms]`: the headless terminals' cost to main's event
+  loop; exits 1 when parsing lands back on main. Run it after changing `main/terminals/mirror.ts` or `mirror-worker.ts`.
 
 ## Implementation patterns
 
@@ -104,6 +109,9 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
   listens only with the confirm recorded by `applyWebAccessPatch`; secrets are hashed (scrypt off-thread) and failures are slowed
   by one global bucket, never locked out and never keyed by peer address (behind a proxy every peer is 127.0.0.1). No regexes in
   the settings or path parsing there. A remote view cannot change the auth mode, bind, secrets, hosts or devices (`no` channels).
+- Web e2e specs drive Electron's own Chromium as the "plain browser" (`test/fixtures/web-browser/main.cjs`, helpers in
+  `test/e2e/web-fixtures.ts`: `enableWebAccess` on a random loopback port, retried on `failed`, and `openBrowser`); a spec that
+  needs plugin panels launches with `env: { CC_COCKPIT_NO_BUNDLED: '' }`.
 - With web access on, a headless terminal mirror worker (`main/terminals/mirror-worker.ts`; `view-terminals.ts` for browser views) owns pty flow control and answers the
   program's terminal queries; views get numbered chunks and snapshots and resync from them, the desktop included. Do not add a
   second consumer of pty data or a reply path that bypasses the worker. Terminal size has one owner (last typer or "Fit to this

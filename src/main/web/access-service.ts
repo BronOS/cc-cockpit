@@ -43,7 +43,7 @@ export interface WebAccessServiceDeps {
    * listens, so web access off costs no worker and loads no xterm package. `drain` turns them off
    * once the desktops have all their output (mirror.ts header); it never rejects.
    */
-  terminals?: { start(): void; drain(): Promise<void> }
+  terminals: { start(): void; drain(): Promise<void> }
 }
 
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
@@ -172,9 +172,9 @@ export class WebAccessService {
   private async applySettings(settings: WebAccessSettings): Promise<GatewayStatus> {
     const terminals = this.deps.terminals
     const on = listenPlanOf(settings).ok
-    if (on) terminals?.start()
+    if (on) terminals.start()
     const status = await this.deps.gateway.apply(settings)
-    if (!on && terminals && !listenPlanOf(this.settings()).ok) void terminals.drain()
+    if (!on && !listenPlanOf(this.settings()).ok) void terminals.drain()
     return status
   }
 

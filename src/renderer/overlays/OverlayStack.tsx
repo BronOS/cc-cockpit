@@ -7,7 +7,7 @@ import { holdsPage, isWebShell } from '../shell-kind'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { DiscussButton } from './DiscussPopover'
 import type { DiscussTab } from './discuss-tabs'
-import { domOrder, followOverlays } from './follow-overlays'
+import { domOrder, followOverlays, listOnce } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
 import { urlViewBounds, type ToolbarEntry } from './overlay-toolbar'
@@ -50,15 +50,8 @@ function buttonClicked(overlayId: string, entry: ToolbarEntry): void {
   window.cockpit.invoke('overlays.button', click).catch(() => {})
 }
 
-/**
- * `overlays.list` resets terminal overlays' flow control in main, so it runs once per page load
- * (the same rule as `tabs.list`); a StrictMode remount reuses the answer.
- */
-let listed: Promise<OverlayInfo[]> | undefined
-function listOverlays(): Promise<OverlayInfo[]> {
-  listed ??= window.cockpit.invoke('overlays.list')
-  return listed
-}
+/** The page's `overlays.list` (follow-overlays.ts listOnce: once per page load, every mount in the web shell). */
+const listOverlays = listOnce(() => window.cockpit.invoke('overlays.list'), isWebShell)
 
 /**
  * The window's overlay stack (design §4), drawn from main's list: each overlay covers the whole

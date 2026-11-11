@@ -62,18 +62,18 @@ import { isWildcardBind } from './settings'
 
 export const DEVICE_COOKIE = 'ccc_device'
 /** Chrome's cap on a cookie's lifetime; the device's own 30-day sliding expiry is what counts. */
-export const COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60
+const COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60
 export const ADD_DEVICE_TTL_MS = 10 * 60 * 1000
 /** Far above a 43-character token; anything longer is not one. */
 const MAX_TOKEN_LENGTH = 256
 /** A desktop-confirm request waits this long for the person, then lapses. */
 export const CONFIRM_TTL_MS = 2 * 60 * 1000
 /** Once allowed, the browser has this long to collect its cookie (it polls every couple of seconds). */
-export const CONFIRM_COLLECT_MS = 60 * 1000
+const CONFIRM_COLLECT_MS = 60 * 1000
 /** Wrong codes typed on the desktop before the request is denied (a request that is not the person's). */
 export const CONFIRM_MAX_WRONG = 3
 /** Digits of the code the browser shows; the person types it, nobody guesses it. */
-export const CONFIRM_CODE_DIGITS = 6
+const CONFIRM_CODE_DIGITS = 6
 /**
  * The browser's answer while another request waits. It may not be the person's (an attacker can keep
  * the one slot taken), so it says what to do about that rather than only to wait.

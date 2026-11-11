@@ -65,6 +65,22 @@ export type WsModule = typeof import('ws')
 /** A view closed with a notice has this long to answer the close handshake before it is dropped. */
 export const CLOSE_GRACE_MS = 1_000
 
+/**
+ * Every socket is pinged this often; one that has not answered the previous ping by the next is
+ * dropped. A phone that sleeps or moves from Wi-Fi to cellular leaves a half-open socket that still
+ * reads as OPEN: without this its view stayed bound (counted against MAX_VIEWS_PER_DEVICE_WINDOW,
+ * so the same phone's next page got the final `tooManyViews`), kept its device from expiring, kept
+ * its size claim and holds, and piled up event frames until the kernel gave up on an idle link,
+ * which it never does. So a dead peer goes within two intervals.
+ */
+const HEARTBEAT_MS = 30_000
+
+// Listener bounds (listen below). Generous for a phone on a slow link, small next to an fd limit.
+const HEADERS_TIMEOUT_MS = 10_000
+const REQUEST_TIMEOUT_MS = 30_000
+const IDLE_SOCKET_MS = 60_000
+const MAX_CONNECTIONS = 256
+
 // Largest frame a view may send (design-web.md §3, protocol.ts): `ws` closes the socket (1009) on
 // a bigger one before it is buffered whole.
 export { MAX_FRAME_BYTES }
@@ -100,6 +116,8 @@ export interface GatewayDeps {
   openProjects?: () => WebProjectEntry[]
   /** Plugin files and inline overlays (plugin-pages.ts). Absent: `/p/` and `/o/` are 404. */
   pages?: PluginPages
+  /** The ping interval (HEARTBEAT_MS); tests shorten it. */
+  heartbeatMs?: number
 }
 
 export type GatewayStatus =
@@ -192,6 +210,9 @@ export class WebGateway {
   private ws: WsModule | undefined
   /** Every handed-out socket and the device it belongs to. */
   private readonly sockets = new Map<WebSocket, WebDevice>()
+  /** Sockets that answered the last ping (or opened since); the rest are dropped on the next beat. */
+  private readonly alive = new Set<WebSocket>()
+  private heartbeat: ReturnType<typeof setInterval> | undefined
   /** Told after a socket is handed out or closes (the desktop's connected-devices indicator). */
   private readonly connectionListeners = new Set<() => void>()
 
@@ -356,10 +377,20 @@ export class WebGateway {
     this.wss = new ws.WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
     const handle = (req: IncomingMessage, res: ServerResponse): void => this.request(req, res)
     const server = tls ? createHttpsServer(tls, handle) : createServer(handle)
+    // Bounds for what anyone past the Host check can hold before signing in (the shell, its assets
+    // and plugin files stream from open file handles): a request must arrive in time, a stalled
+    // download is dropped, and the listener takes a bounded number of sockets (upgraded views
+    // included; `ws` clears the idle timeout on a socket it takes over).
+    server.headersTimeout = HEADERS_TIMEOUT_MS
+    server.requestTimeout = REQUEST_TIMEOUT_MS
+    server.timeout = IDLE_SOCKET_MS
+    server.maxConnections = MAX_CONNECTIONS
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(req, socket, head))
     // A client error (a malformed request line) is answered by Node; never let it reach the app.
     server.on('clientError', (_err, socket: Duplex) => refuseUpgrade(socket, '400 Bad Request'))
     this.server = server
+    this.heartbeat = setInterval(() => this.beat(), this.deps.heartbeatMs ?? HEARTBEAT_MS)
+    this.heartbeat.unref()
     return await new Promise((resolve, reject) => {
       server.once('error', reject)
       // `localhost` resolves through the resolver (often ::1 only, or something else on an odd host);
@@ -382,6 +413,8 @@ export class WebGateway {
   private async close(notice?: number): Promise<void> {
     const server = this.server
     const wss = this.wss
+    clearInterval(this.heartbeat)
+    this.heartbeat = undefined
     this.server = undefined
     this.wss = undefined
     this.plan = undefined
@@ -416,6 +449,22 @@ export class WebGateway {
       server.close(() => resolve())
       server.closeAllConnections()
     })
+  }
+
+  /** One heartbeat (HEARTBEAT_MS): drop a socket that did not answer the last ping, ping the rest. */
+  private beat(): void {
+    for (const ws of this.sockets.keys()) {
+      if (!this.alive.delete(ws)) {
+        this.deps.log('web access: socket dropped, no answer to a ping')
+        ws.terminate()
+        continue
+      }
+      try {
+        ws.ping()
+      } catch {
+        // Not open any more: its 'close' takes it out.
+      }
+    }
   }
 
   /** The origins the shell page may be loaded under, for the CSP's frame-src. */
@@ -658,6 +707,10 @@ export class WebGateway {
     if (!handler || !wss) return refuseUpgrade(socket, '401 Unauthorized')
     wss.handleUpgrade(req, socket, head, (ws) => {
       this.sockets.set(ws, device)
+      this.alive.add(ws)
+      // Any frame proves the peer is there, not only the pong (a busy view answers late).
+      ws.on('pong', () => this.alive.add(ws))
+      ws.on('message', () => this.alive.add(ws))
       // An open socket keeps its device from expiring (devices.ts); None's anonymous one has no record.
       const tracked = device.mode !== 'none'
       if (tracked) this.deps.auth.devices.socketOpened(device.id)
@@ -665,6 +718,7 @@ export class WebGateway {
       this.connectionsChanged()
       ws.on('close', () => {
         this.sockets.delete(ws)
+        this.alive.delete(ws)
         if (tracked) this.deps.auth.devices.socketClosed(device.id)
         this.deps.accessLog.write({ event: 'disconnect', device: device.id, name: device.name })
         this.connectionsChanged()

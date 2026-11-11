@@ -2166,8 +2166,8 @@ function start(): void {
   registerOverlayHandlers(router, {
     list: (windowId, viewId) => overlays.list(windowId, viewId),
     close: (windowId, overlayId) => overlays.close(windowId, overlayId),
-    input: (windowId, overlayId, data) => overlays.input(windowId, overlayId, data),
-    resize: (windowId, overlayId, cols, rows) => overlays.resize(windowId, overlayId, cols, rows),
+    input: (windowId, overlayId, data, viewId) => overlays.input(windowId, overlayId, data, viewId),
+    resize: (windowId, overlayId, cols, rows, viewId) => overlays.resize(windowId, overlayId, cols, rows, viewId),
     ack: (windowId, overlayId, count) => overlays.ack(windowId, overlayId, count),
     setBounds: (windowId, overlayId, bounds) => overlays.setBounds(windowId, overlayId, bounds),
     result: (windowId, overlayId, value, viewId) => overlays.result(windowId, overlayId, value, viewId),

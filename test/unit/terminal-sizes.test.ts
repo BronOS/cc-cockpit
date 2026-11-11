@@ -234,6 +234,28 @@ describe('TabManager: the pty takes the sizing view, the desktop gets size items
     expect(tapped).toEqual(['spawned 80x24', 'resized 120x40', 'data before', 'resized 50x30'])
   })
 
+  it("a view's focus or mouse report and its query replies never take the size, nor cancel another view's take", async () => {
+    const { tabs } = manager()
+    const tab = tabs.create(P, { kind: 'shell' })
+    const pty = backend.last
+    tabs.resize(P, tab.id, 120, 40, D)
+    tabs.resize(P, tab.id, 50, 30, W)
+    // A phone that only shows the tab: clicked into (focus), scrolled (SGR mouse), and its xterm
+    // answering the program's start-up queries (DA1, a cursor position report).
+    tabs.viewInput(P, tab.id, '\x1b[I', W)
+    tabs.viewInput(P, tab.id, '\x1b[<64;10;5M', W)
+    tabs.viewInput(P, tab.id, '\x1b[?1;2c\x1b[3;1R', W)
+    await vi.advanceTimersByTimeAsync(TAKE_DEBOUNCE_MS * 2)
+    expect(pty.resizes).toEqual([[120, 40]])
+    expect(tabs.sizerOf(tab.id)).toBe(D)
+    // The phone types for real; the desktop's own automatic reply meanwhile does not cancel the take.
+    tabs.viewInput(P, tab.id, 'x', W)
+    tabs.viewInput(P, tab.id, '\x1b[?1;2c', D)
+    await vi.advanceTimersByTimeAsync(TAKE_DEBOUNCE_MS)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    expect(tabs.sizerOf(tab.id)).toBe(W)
+  })
+
   it('fit, fallback on disconnect, and a junk or foreign size never remembered', () => {
     const { tabs, events } = manager()
     const tab = tabs.create(P, { kind: 'shell' })

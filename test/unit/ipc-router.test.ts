@@ -723,8 +723,11 @@ describe('registerTabHandlers', () => {
       ['reorder', PROJECT_A, 't1', 2],
       // The index main applied, for the other views (`tabs.moved`).
       ['list', PROJECT_A],
+      // Each followed by the tab as stored, announced to the window's other views.
       ['rename', PROJECT_A, 't1', 'Mine'],
+      ['list', PROJECT_A],
       ['rename', PROJECT_A, 't1', null],
+      ['list', PROJECT_A],
       ['restart', PROJECT_B, 't1', 2],
       ['input', PROJECT_A, 't1', 'ls\r', 'desktop:1'],
       ['resize', PROJECT_A, 't1', 80, 24, 'desktop:1'],
@@ -1783,7 +1786,7 @@ describe('registerUpdateHandlers', () => {
 })
 
 describe('registerOverlayHandlers', () => {
-  function overlaySetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
+  function overlaySetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     registerOverlayHandlers(router, {
@@ -1795,9 +1798,9 @@ describe('registerOverlayHandlers', () => {
         calls.push(['close', windowId, overlayId])
         return true
       },
-      input: (windowId, overlayId, data) => calls.push(['input', windowId, overlayId, data]),
-      resize: (windowId, overlayId, cols, rows) =>
-        calls.push(['resize', windowId, overlayId, cols, rows]),
+      input: (windowId, overlayId, data, viewId) => calls.push(['input', windowId, overlayId, data, viewId]),
+      resize: (windowId, overlayId, cols, rows, viewId) =>
+        calls.push(['resize', windowId, overlayId, cols, rows, viewId]),
       ack: (windowId, overlayId, count) => calls.push(['ack', windowId, overlayId, count]),
       setBounds: (windowId, overlayId, bounds) => calls.push(['bounds', windowId, overlayId, bounds]),
       result: (windowId, overlayId, value, viewId) => {
@@ -1827,8 +1830,20 @@ describe('registerOverlayHandlers', () => {
         return Promise.resolve({ ok: true, tabId: 't1', queued: false })
       }
     })
-    return { ipc, calls }
+    return { ipc, router, calls }
   }
+
+  it("a remote view's terminal overlay input and size are its own; its acks never reach the PTY's flow", async () => {
+    const { router, calls } = overlaySetup()
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    await router.dispatch(web, 'overlays.input', { overlayId: 'o1', data: 'j', viewId: 'desktop:1' })
+    await router.dispatch(web, 'overlays.resize', { overlayId: 'o1', cols: 50, rows: 30 })
+    await router.dispatch(web, 'overlays.ack', { overlayId: 'o1', count: 9 })
+    expect(calls).toEqual([
+      ['input', 1, 'o1', 'j', 'web:3'],
+      ['resize', 1, 'o1', 50, 30, 'web:3']
+    ])
+  })
 
   it('acts on the sender’s window, whatever the payload names', async () => {
     const { ipc, calls } = overlaySetup()
@@ -1851,8 +1866,8 @@ describe('registerOverlayHandlers', () => {
     expect(calls).toEqual([
       ['list', 1, 'desktop:1'],
       ['close', 2, 'o1'],
-      ['input', 1, 'o1', 'x'],
-      ['resize', 1, 'o1', 80, 24],
+      ['input', 1, 'o1', 'x', 'desktop:1'],
+      ['resize', 1, 'o1', 80, 24, 'desktop:1'],
       ['ack', 1, 'o1', 3],
       ['bounds', 2, 'o2', { x: 0, y: 30, width: 10, height: 20 }],
       ['result', 2, 'o2', { a: 1 }, 'desktop:2'],

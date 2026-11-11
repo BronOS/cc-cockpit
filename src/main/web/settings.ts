@@ -49,7 +49,7 @@ function isWebPort(value: unknown): value is number {
  * A loopback host name or address as `URL.hostname` gives it: `localhost`, 127.0.0.0/8 and `[::1]`
  * (also bare `::1`, the form a bind is written in). Anything else is reachable from the network.
  */
-export function isLoopbackHost(host: string): boolean {
+function isLoopbackHost(host: string): boolean {
   const h = host.toLowerCase()
   if (h === 'localhost' || h === '::1' || h === '[::1]') return true
   return isIP(h) === 4 && h.startsWith('127.')
@@ -65,7 +65,7 @@ export function isLoopbackBind(bind: string): boolean {
  * gateway.ts). Never another name: what a name resolves to is the resolver's choice, so the address
  * that listens would not be the one the settings and the Host list say.
  */
-export function isBindAddress(bind: string): boolean {
+function isBindAddress(bind: string): boolean {
   return bind === 'localhost' || isIP(bind) !== 0
 }
 

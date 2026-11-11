@@ -93,7 +93,7 @@ function coreOf(term: Terminal): XtermCore {
  * internals (6.0.0, the pinned version): if they move, this reads as ground and a snapshot is taken
  * at the next callback, which only brings that risk back (the tests catch it on an upgrade).
  */
-export function atGround(term: Terminal): boolean {
+function atGround(term: Terminal): boolean {
   const ih = coreOf(term)._inputHandler
   const state = ih?._parser?.currentState
   const interim = ih?._stringDecoder?._interim ?? 0

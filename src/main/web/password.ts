@@ -57,7 +57,7 @@ export const nodeScrypt: ScryptFn = (password, salt, keylen, options) =>
  * The password as hashed: NFC, so the same password typed on a phone keyboard (which may compose
  * accents differently) and on the desktop is the same bytes.
  */
-export function normalizePassword(password: string): string {
+function normalizePassword(password: string): string {
   return password.normalize('NFC')
 }
 

@@ -665,6 +665,10 @@ describe('a remote view (ViewTerminals) drops and resyncs on its own acks', () =
     expect(vt.isBehind(tab.id)).toBe(true)
     expect(p.st.liveChars).toBeLessThanOrEqual(VIEW_HIGH_WATER + FLUSH_BYTES)
     expect(backend.last.paused).toBe(false)
+    // A page-supplied ack of more than was ever sent (Infinity, NaN) catches nothing up.
+    vt.ack(tab.id, Infinity)
+    vt.ack(tab.id, Number.NaN)
+    expect(vt.isBehind(tab.id)).toBe(true)
     // Caught up: acked down to the low mark, it joins again and gets a fresh snapshot.
     p.st.holdAcks = false
     await written(p.t)

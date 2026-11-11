@@ -97,21 +97,21 @@ export type { MirrorItem, MirrorSnapshot, MirrorState } from './mirror-protocol'
 export const MAX_RESTARTS = 3
 export const RESTART_WINDOW_MS = 60_000
 /** An `inspect` the worker never answers (it hung) fails after this rather than waiting forever. */
-export const INSPECT_TIMEOUT_MS = 10_000
+const INSPECT_TIMEOUT_MS = 10_000
 /**
  * A snapshot the worker never answers: the worker counts as hung and is restarted (`hung`), which
  * asks the new one for the views still waiting. Far above the worker's own ground wait (300 ms), so
  * a worker that answers anything at all gets here only if it lost the request (a bug); a stalled
  * one is usually caught first by STALL_MS.
  */
-export const SNAPSHOT_TIMEOUT_MS = 10_000
+const SNAPSHOT_TIMEOUT_MS = 10_000
 /**
  * A worker that owes main an answer (items not parsed, a snapshot) and posts nothing at all for this
  * long is hung (see the header). It reports `parsed` after every item, each at most one flushed
  * chunk (64 KiB, milliseconds of parsing), so a healthy one is never silent this long; the check
  * runs once per period, so a hang is caught within one to two periods.
  */
-export const STALL_MS = 5_000
+const STALL_MS = 5_000
 /**
  * Output characters of one tab posted to the worker and not parsed, past which the worker counts as
  * drowned and is restarted like a crashed one. Flow control pauses the pty at an eighth of this
@@ -127,7 +127,7 @@ export const MAX_BACKLOG_CHARS = 8 * 1024 * 1024
  */
 export const DRAIN_MS = 5_000
 /** How often a drain checks whether the desktops it waits on are live again. */
-export const DRAIN_POLL_MS = 50
+const DRAIN_POLL_MS = 50
 
 /** Same bounds as PtyService (validSize). */
 const MAX_DIM = 1000
@@ -138,7 +138,8 @@ export interface MirrorWorkerLike {
   onMessage(listener: (message: FromWorker) => void): void
   /** The worker ended without being asked (`terminate` does not report here). */
   onExit(listener: (reason: string) => void): void
-  terminate(): void
+  /** Ends the worker. The real one resolves once it is gone (its 'exit' has run); main never waits. */
+  terminate(): void | Promise<void>
 }
 
 export type MirrorWorkerFactory = () => MirrorWorkerLike
@@ -166,7 +167,7 @@ export function nodeMirrorWorker(entry: string, scrollback?: number): MirrorWork
       onExit: (listener) => exitListeners.push(listener),
       terminate: () => {
         terminated = true
-        void worker.terminate()
+        return worker.terminate().then(() => undefined)
       }
     }
   }
@@ -413,7 +414,7 @@ export class TerminalMirror implements TerminalTap {
     this.releaseAll()
     this.tabs.clear()
     this.closedSeqs.clear()
-    worker?.terminate()
+    void worker?.terminate()
     this.endDrain()
   }
 
@@ -895,7 +896,7 @@ export class TerminalMirror implements TerminalTap {
   private hung(reason: string): void {
     const worker = this.worker
     if (!worker) return
-    worker.terminate()
+    void worker.terminate()
     this.crashed(reason)
   }
 

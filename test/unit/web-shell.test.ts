@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openProjectEntries } from '../../src/main/web/connection'
 import { shellFileOf } from '../../src/main/web/shell-files'
-import { currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, shellChrome } from '../../src/renderer/shell-kind'
+import { currentShellChrome, isWebShell, markWebShell, resetShellKindForTest } from '../../src/renderer/shell-kind'
 import { topStripClass } from '../../src/renderer/status/strip-order'
 import { loadOpenProjects, projectHref } from '../../src/renderer/web/picker-model'
 import {
@@ -313,8 +313,19 @@ describe('the project picker', () => {
   })
 })
 
+/** The chrome a page of this shell kind draws on this platform (navigator stubbed). */
+function shellChrome(web: boolean, mac: boolean): ReturnType<typeof currentShellChrome> {
+  resetShellKindForTest()
+  vi.stubGlobal('navigator', { platform: mac ? 'MacIntel' : 'Linux x86_64' })
+  if (web) markWebShell()
+  return currentShellChrome()
+}
+
 describe('window chrome in the web shell', () => {
-  afterEach(() => resetShellKindForTest())
+  afterEach(() => {
+    resetShellKindForTest()
+    vi.unstubAllGlobals()
+  })
 
   it('the web shell draws no title bar, full screen, see-through or update notice, on any platform', () => {
     for (const mac of [true, false]) {

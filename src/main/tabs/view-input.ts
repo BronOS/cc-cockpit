@@ -21,7 +21,7 @@ export interface ViewInputDeps {
    * active tab now (design-web.md §5.1, the view that acted last). A focus or mouse report, which a
    * view sends just by being clicked into, does not count.
    */
-  acted?(projectId: string, tabId: string, viewId: ViewId): void
+  acted(projectId: string, tabId: string, viewId: ViewId): void
 }
 
 /** The router's `tabs.input` dependency. The registry sees what reached the pty, not the raw chunk. */
@@ -29,6 +29,6 @@ export function viewInputHandler(deps: ViewInputDeps): (projectId: string, tabId
   return (projectId, tabId, data, viewId) => {
     const sent = deps.viewInput(projectId, tabId, data, viewId)
     deps.userInput(projectId, tabId, sent)
-    if (isPersonInput(sent)) deps.acted?.(projectId, tabId, viewId)
+    if (isPersonInput(sent)) deps.acted(projectId, tabId, viewId)
   }
 }

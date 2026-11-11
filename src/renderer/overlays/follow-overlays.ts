@@ -9,6 +9,24 @@ export interface OverlayStackBridge {
 }
 
 /**
+ * `overlays.list` resets terminal overlays' flow control in main, so the desktop page asks once per
+ * page load (the same rule as `tabs.list`); a StrictMode remount reuses the answer.
+ *
+ * The web shell (`fresh()` true) asks on every call, as TabsPane does: main resets no flow for a
+ * remote view's list (OverlayManager.list), and a reconnect remounts the shell, which must be drawn
+ * from the new socket's list, not the first one's (overlays opened or closed while away, or a first
+ * call the dropped socket rejected, kept for good).
+ */
+export function listOnce(list: () => Promise<OverlayInfo[]>, fresh: () => boolean): () => Promise<OverlayInfo[]> {
+  let listed: Promise<OverlayInfo[]> | undefined
+  return () => {
+    if (fresh()) return list()
+    listed ??= list()
+    return listed
+  }
+}
+
+/**
  * Follow main's overlay stack: `apply` gets the list answer, then every update. The two may
  * arrive in either order: an overlay opened (or closed) while `overlays.list` was in flight sends
  * `overlays.updated` before the list answer lands, and that answer is then an older snapshot.

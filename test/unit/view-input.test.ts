@@ -63,7 +63,9 @@ function setup() {
     ...unused,
     input: viewInputHandler({
       viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
-      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data)
+      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+      // The selection follow-up has its own test (view-selections.test.ts).
+      acted: () => undefined
     })
   })
   const remote = (viewId: string, tabId: string, data: string): Promise<unknown> =>

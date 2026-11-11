@@ -78,6 +78,16 @@ export const HELLO_TIMEOUT_MS = 5000
  */
 export const MAX_PENDING_INVOKES = 256
 
+/**
+ * Bytes a view's socket may have queued and unsent before the view is closed (`failed`, so the page
+ * reconnects to a fresh snapshot). A view that stops reading while its socket stays open (a phone
+ * asleep, before the gateway's heartbeat drops it) would otherwise pile up every window event and
+ * result in main's memory. Well above what a working view queues: a tab snapshot of a few MiB plus
+ * each followed tab's terminal window (VIEW_HIGH_WATER characters), and the port relay's own limit
+ * (RELAY_HIGH_WATER), which closes only a panel's port, comes first.
+ */
+export const SOCKET_HIGH_WATER = 32 * 1024 * 1024
+
 export interface WebConnectionDeps {
   /** IpcRouter.dispatch: the same handlers an Electron invoke reaches. */
   dispatch(caller: WebCaller, channel: string, payload: unknown): Promise<unknown>
@@ -315,8 +325,11 @@ export class WebConnection {
     // Not logged with the id itself: it is whatever the page sent.
     if (windowId === undefined) return this.close(CLOSE.noProject, 'project not open')
     // Counted before this view is bound (it is not one of them yet). A device past the cap is told
-    // so, and the page stops instead of retrying (bridge.ts FINAL_CLOSES).
-    if (this.boundViews(this.device.id, windowId) >= MAX_VIEWS_PER_DEVICE_WINDOW) {
+    // so, and the page stops instead of retrying (bridge.ts FINAL_CLOSES). Not for None's anonymous
+    // caller: every browser is that one "device", so the ninth browser would be refused for the
+    // other eight's views, and a cap anyone can step around by being anonymous bounds nothing (the
+    // gateway's connection cap does).
+    if (this.device.mode !== 'none' && this.boundViews(this.device.id, windowId) >= MAX_VIEWS_PER_DEVICE_WINDOW) {
       this.deps.log(`web access: view ${this.viewId} refused: device ${this.device.id} has ${MAX_VIEWS_PER_DEVICE_WINDOW} views of window ${windowId}`)
       return this.close(CLOSE.tooManyViews, 'too many views')
     }
@@ -463,6 +476,10 @@ export class WebConnection {
       // it reconnect and start again from a snapshot (design-web.md §3: no resume in v1).
       this.deps.log(`web access: view ${this.viewId}: ${frame.t === 'event' ? frame.ch : frame.t} frame over ${MAX_FRAME_BYTES} bytes`)
       return this.close(CLOSE.tooLarge, 'frame too large')
+    }
+    if (this.ws.bufferedAmount > SOCKET_HIGH_WATER) {
+      this.deps.log(`web access: view ${this.viewId}: over ${SOCKET_HIGH_WATER} bytes unsent, closed to resync`)
+      return this.close(CLOSE.failed, 'view behind')
     }
     this.ws.send(text)
   }

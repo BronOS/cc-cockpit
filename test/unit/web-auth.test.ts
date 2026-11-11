@@ -490,6 +490,16 @@ describe('gateway: sign-in over HTTP', () => {
         return gate
       }
     })
+    // Watched, not timed: the request's `cancelled` check, and what its turn came to.
+    let cancelled: (() => boolean) | undefined
+    const outcomes: unknown[] = []
+    const run = limiter.run.bind(limiter)
+    limiter.run = (async (...args: Parameters<typeof run>) => {
+      cancelled = args[1]
+      const outcome = await run(...args)
+      outcomes.push(outcome)
+      return outcome
+    }) as typeof limiter.run
     const { a, port, host, origin } = await served({}, limiter)
     const token = tokenOf(a.addDeviceLink(ORIGIN).link)
     const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/auth/link', headers: { Host: host, Origin: origin, 'Content-Type': 'application/json' } })
@@ -497,10 +507,10 @@ describe('gateway: sign-in over HTTP', () => {
     req.end(JSON.stringify({ token }))
     await queued
     req.destroy()
-    // Loopback: the server sees the close at once; give it a moment before the turn comes.
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    // The server has seen the hang-up before the turn comes.
+    await vi.waitFor(() => expect(cancelled?.()).toBe(true))
     release()
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await vi.waitFor(() => expect(outcomes).toEqual(['cancelled']))
     expect(devices.list()).toEqual([])
     expect(accessLog.recent().some((e) => e.event === 'sign-in')).toBe(false)
     expect(await a.signInWithToken({ token })).toMatchObject({ ok: true })

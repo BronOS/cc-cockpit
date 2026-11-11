@@ -10,7 +10,7 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { Terminal } from '@xterm/headless'
 import { build } from 'esbuild'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_RESTARTS,
   nodeMirrorWorker,
@@ -424,8 +424,7 @@ describe('TabManager tap points', () => {
     const tab = tabs.create(P, { kind: 'shell' })
     expect(tap.calls).toEqual([`spawned ${tab.id} 80x24`])
     backend.last.emit('hello')
-    await new Promise((r) => setTimeout(r, 30))
-    expect(order).toEqual(['emit hello', 'tap hello'])
+    await vi.waitFor(() => expect(order).toEqual(['emit hello', 'tap hello']))
     tabs.resize(P, tab.id, 120, 40)
     tabs.resize(P, tab.id, 0, 40)
     tabs.resize('bbbbbbbbbbbbbbbb', tab.id, 50, 50)
@@ -477,7 +476,8 @@ describe('TabManager tap points', () => {
     const tabs = manager(m)
     const tab = tabs.create(P, { kind: 'shell' })
     backend.last.emit('$ echo hi\r\nhi\r\n')
-    await new Promise((r) => setTimeout(r, 30))
+    // The flush timer hands the chunk to the mirror; then the resize lands after it.
+    await vi.waitFor(async () => expect((await screen(await m.inspect(tab.id))).slice(0, 2)).toEqual(['$ echo hi', 'hi']))
     tabs.resize(P, tab.id, 100, 30)
     const state = await m.inspect(tab.id)
     expect(state).toMatchObject({ cols: 100, rows: 30 })
@@ -582,8 +582,8 @@ describe('the real worker thread', () => {
     const w = nodeMirrorWorker(entry)()
     const reasons: string[] = []
     w.onExit((r) => reasons.push(r))
-    w.terminate()
-    await new Promise((r) => setTimeout(r, 200))
+    // Resolves once the worker's 'exit' has been emitted: a listener that was going to hear it has.
+    await w.terminate()
     expect(reasons).toEqual([])
   })
 })

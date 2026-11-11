@@ -22,9 +22,9 @@
 import * as nodeFs from 'node:fs'
 import { dirname } from 'node:path'
 
-export const MAX_ACCESS_LOG_BYTES = 1024 * 1024
+const MAX_ACCESS_LOG_BYTES = 1024 * 1024
 /** Entries kept in memory for the desktop's view. */
-export const ACCESS_LOG_RING = 200
+const ACCESS_LOG_RING = 200
 /** Repeated failed sign-ins within this long are one line and a count (see the header). */
 export const FAILED_SIGN_IN_WINDOW_MS = 10 * 60 * 1000
 /** Longest string kept in an entry field. */

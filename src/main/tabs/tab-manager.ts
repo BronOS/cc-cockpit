@@ -713,8 +713,6 @@ export class TabManager {
   viewInput(projectId: string, tabId: string, data: string, viewId: ViewId = DESKTOP_VIEW): string {
     const tab = this.find(projectId, tabId)
     if (!tab) return ''
-    // Typing after another view typed takes the terminal's size (after the debounce).
-    this.sizes.typed(tab.id, viewId)
     let answers = false
     this.tap((t) => {
       answers = t.answers?.(tab.id) ?? false
@@ -722,8 +720,14 @@ export class TabManager {
     const rest = answers ? stripQueryReplies(data) : data
     if (rest.length > 0) this.pty.write(tab.id, rest)
     // The same rule as SessionInfo.typed (terminal-reports.ts): a focus or mouse report, which a
-    // view sends just by being clicked into, is not the person typing there.
-    if (isPersonInput(rest)) this.typedIn(tab, viewId)
+    // view sends just by being clicked into, is not the person typing there, and neither is a
+    // query reply every awake view's xterm writes by itself.
+    if (!isPersonInput(rest)) return rest
+    // Typing after another view typed takes the terminal's size (after the debounce). Only the
+    // person's input: with a reply counted, whichever view answered Claude's start-up queries last
+    // took the pty size, and the sizing view's own reply cancelled another view's pending take.
+    this.sizes.typed(tab.id, viewId)
+    this.typedIn(tab, viewId)
     return rest
   }
 

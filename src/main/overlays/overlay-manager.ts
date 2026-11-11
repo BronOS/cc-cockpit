@@ -67,6 +67,7 @@ import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { composeDiscuss, DiscussSessionBudget } from './discuss'
 import { PtyService } from '../pty/pty-service'
+import { isPersonInput } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 
@@ -417,6 +418,14 @@ interface Overlay {
   discussPrimary?: boolean
   /** A Send is under way: a second one is refused until it ends. */
   discussing: boolean
+  /**
+   * A terminal overlay's size as each view last measured it, and the view whose size the pty has
+   * (design-web.md §5.2 "Size", the tab rule made simple): the first view to report sizes it, and
+   * the person typing in another view moves it there. Without this a phone and the desktop showing
+   * the same TUI (revdiff) resized the pty on every fit or rotation, each over the other.
+   */
+  sizes?: Map<ViewId, { cols: number; rows: number }>
+  sizer?: ViewId
 }
 
 /** A click's key in `running`. */
@@ -618,8 +627,10 @@ export class OverlayManager {
    */
   list(windowId: number, viewId: ViewId = desktopViewId(windowId)): OverlayInfo[] {
     const stack = this.stacks.get(windowId) ?? []
-    // The old page never acked what it was sent; a paused PTY would otherwise stay paused.
-    for (const o of stack) if (o.info.kind === 'terminal') this.pty.resetFlow(o.id)
+    // The old page never acked what it was sent; a paused PTY would otherwise stay paused. Only for
+    // the desktop's page: its acks are the overlay's flow (ack below), and a browser loading the
+    // shell must not resume a PTY paused on a saturated desktop xterm (the tabs.list rule).
+    if (viewId === desktopViewId(windowId)) for (const o of stack) if (o.info.kind === 'terminal') this.pty.resetFlow(o.id)
     // The html pages it holds reload with it: an opener's posts wait again until each one's port is
     // up, and the loader is back until the page is ready again (a `manual` page calls ready() once
     // more). A page another view holds did not reload. A url view and a PTY live in main and do
@@ -652,6 +663,14 @@ export class OverlayManager {
     if (!isRemoteViewId(viewId)) return
     const touched = new Set<number>()
     for (const overlay of this.byId.values()) {
+      overlay.sizes?.delete(viewId)
+      // The size goes back to the desktop's, when it has measured the overlay.
+      if (overlay.sizer === viewId) {
+        overlay.sizer = undefined
+        const desktop = desktopViewId(overlay.windowId)
+        const size = overlay.sizes?.get(desktop)
+        if (size) this.sizeFrom(overlay, desktop, size)
+      }
       if (overlay.holder !== viewId) continue
       this.hold(overlay, desktopViewId(overlay.windowId))
       this.reloading(overlay)
@@ -782,17 +801,33 @@ export class OverlayManager {
     return false
   }
 
-  /** The user typing into a terminal overlay. */
-  input(windowId: number, overlayId: string, data: string): void {
+  /**
+   * The user typing into a terminal overlay, in `viewId`. The person's input (not a focus, mouse or
+   * query report) from a view that has measured the overlay gives the pty that view's size.
+   */
+  input(windowId: number, overlayId: string, data: string, viewId: ViewId = desktopViewId(windowId)): void {
     const overlay = this.find(windowId, overlayId)
-    if (overlay?.info.kind === 'terminal') this.pty.write(overlay.id, data)
+    if (overlay?.info.kind !== 'terminal') return
+    this.pty.write(overlay.id, data)
+    const size = overlay.sizes?.get(viewId)
+    if (size && overlay.sizer !== viewId && isPersonInput(data)) this.sizeFrom(overlay, viewId, size)
   }
 
-  resize(windowId: number, overlayId: string, cols: number, rows: number): void {
+  /** A view measured a terminal overlay: remembered; the pty takes it when that view sizes it (input). */
+  resize(windowId: number, overlayId: string, cols: number, rows: number, viewId: ViewId = desktopViewId(windowId)): void {
     const overlay = this.find(windowId, overlayId)
-    if (overlay?.info.kind === 'terminal') this.pty.resize(overlay.id, cols, rows)
+    if (overlay?.info.kind !== 'terminal') return
+    overlay.sizes ??= new Map()
+    overlay.sizes.set(viewId, { cols, rows })
+    if (overlay.sizer === undefined || overlay.sizer === viewId) this.sizeFrom(overlay, viewId, { cols, rows })
   }
 
+  private sizeFrom(overlay: Overlay, viewId: ViewId, size: { cols: number; rows: number }): void {
+    overlay.sizer = viewId
+    this.pty.resize(overlay.id, size.cols, size.rows)
+  }
+
+  /** The desktop page's ack (the router takes no other view's): the overlay's flow control. */
   ack(windowId: number, overlayId: string, count: number): void {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind === 'terminal') this.pty.ack(overlay.id, count)

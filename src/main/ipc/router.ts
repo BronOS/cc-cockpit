@@ -1053,10 +1053,14 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (applied >= 0) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.moved', payload: { tabId, toIndex: applied } })
   })
 
-  router.handleProject('tabs.rename', (ctx, payload) => {
+  // The windows draw the name from the sessions snapshot, which reaches every view; the tab as
+  // stored is announced too, so each view's tab list holds it like any other change one view made.
+  router.handleProject('tabs.rename', (ctx, payload, view) => {
     const name = fields('tabs.rename', payload).name
     if (name !== null && typeof name !== 'string') throw new Error('tabs.rename: name must be a string or null')
-    tabs.rename(ctx.projectId, tabIdOf('tabs.rename', payload), name)
+    const tabId = tabIdOf('tabs.rename', payload)
+    tabs.rename(ctx.projectId, tabId, name)
+    announce(ctx, view, tabId)
   })
 
   // The person's flag: only from the shell page's top frame of the tab's own project window
@@ -1221,8 +1225,9 @@ export interface OverlayHandlerDeps {
   /** The calling view's re-attach (OverlayManager.list): only the html pages it holds reload. */
   list(windowId: number, viewId: ViewId): OverlayInfo[]
   close(windowId: number, overlayId: string): boolean
-  input(windowId: number, overlayId: string, data: string): void
-  resize(windowId: number, overlayId: string, cols: number, rows: number): void
+  /** Input and sizes are the caller's view's (OverlayManager: per-view sizes, the typing view sizes). */
+  input(windowId: number, overlayId: string, data: string, viewId: ViewId): void
+  resize(windowId: number, overlayId: string, cols: number, rows: number, viewId: ViewId): void
   ack(windowId: number, overlayId: string, count: number): void
   setBounds(
     windowId: number,
@@ -1261,23 +1266,28 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     deps.close(ctx.windowId, overlayIdOf('overlays.close', payload))
   )
 
-  router.handleProject('overlays.input', (ctx, payload) => {
+  router.handleProject('overlays.input', (ctx, payload, view) => {
     const data = fields('overlays.input', payload).data
     if (typeof data !== 'string') throw new Error('overlays.input: data must be a string')
-    deps.input(ctx.windowId, overlayIdOf('overlays.input', payload), data)
+    deps.input(ctx.windowId, overlayIdOf('overlays.input', payload), data, view.viewId)
   })
 
-  router.handleProject('overlays.resize', (ctx, payload) => {
+  router.handleProject('overlays.resize', (ctx, payload, view) => {
     const { cols, rows } = fields('overlays.resize', payload)
     if (typeof cols !== 'number' || typeof rows !== 'number') {
       throw new Error('overlays.resize: cols and rows must be numbers')
     }
-    deps.resize(ctx.windowId, overlayIdOf('overlays.resize', payload), cols, rows)
+    deps.resize(ctx.windowId, overlayIdOf('overlays.resize', payload), cols, rows, view.viewId)
   })
 
-  router.handleProject('overlays.ack', (ctx, payload) => {
+  // The desktop page's acks are a terminal overlay's flow control (PtyService pauses the PTY on a
+  // saturated desktop xterm). A remote view's are dropped: the fastest view would otherwise hide
+  // the desktop's backlog, and a browser that falls behind is bounded by its socket instead
+  // (connection.ts SOCKET_HIGH_WATER closes it to resync).
+  router.handleProject('overlays.ack', (ctx, payload, view) => {
     const count = fields('overlays.ack', payload).count
     if (typeof count !== 'number') throw new Error('overlays.ack: count must be a number')
+    if (view.remote) return
     deps.ack(ctx.windowId, overlayIdOf('overlays.ack', payload), count)
   })
 

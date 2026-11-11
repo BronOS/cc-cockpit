@@ -315,7 +315,9 @@ describe('WebAccessService', () => {
       write: (next) => {
         stored = storedWebAccess(stored as Partial<WebAccessSettings> | undefined, next)
       },
-      emit: (i) => indicators.push(i)
+      emit: (i) => indicators.push(i),
+      // The terminals' own rule has its test below.
+      terminals: { start: () => undefined, drain: async () => undefined }
     })
   })
   afterEach(() => {

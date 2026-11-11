@@ -62,12 +62,12 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{32}$/
 const OVERLAY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** The prefix a plugin token serves: `/p/<token>/<pluginId>/`. */
-export function pluginPrefix(token: string, pluginId: string): string {
+function pluginPrefix(token: string, pluginId: string): string {
   return `${PLUGIN_PAGES_PATH}${token}/${pluginId}/`
 }
 
 /** The prefix a device's overlay token serves: `/o/<token>/`. */
-export function overlayPrefix(token: string): string {
+function overlayPrefix(token: string): string {
   return `${OVERLAY_PAGES_PATH}${token}/`
 }
 

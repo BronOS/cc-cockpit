@@ -492,6 +492,29 @@ describe('Origin check (upgrade and state-changing requests)', () => {
     expect(await closed).toBe(CLOSE.turnedOff)
   })
 
+  it('a socket that stops answering pings is dropped; one that answers stays (a phone that slept)', async () => {
+    const { gw, port, logs } = await listening({}, { heartbeatMs: 40 })
+    const host = `127.0.0.1:${port}`
+    gw.setSocketHandler(() => undefined)
+    const open = async (autoPong: boolean): Promise<wsModule.WebSocket> => {
+      const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin: `http://${host}`, autoPong })
+      await new Promise<void>((resolve, reject) => {
+        client.on('open', () => resolve())
+        client.on('error', reject)
+      })
+      return client
+    }
+    const live = await open(true)
+    const dead = await open(false)
+    // The half-open peer: it neither pongs nor sends, so it goes within two beats.
+    const deadClosed = new Promise<number>((resolve) => dead.on('close', (code) => resolve(code)))
+    expect(await deadClosed).toBe(1006)
+    await vi.waitFor(() => expect(gw.connections().get('none')).toBe(1))
+    expect(logs).toContain('web access: socket dropped, no answer to a ping')
+    expect(live.readyState).toBe(wsModule.WebSocket.OPEN)
+    live.close()
+  })
+
   it('stop closes open sockets', async () => {
     const { gw, port } = await listening()
     const host = `127.0.0.1:${port}`

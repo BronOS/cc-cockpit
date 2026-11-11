@@ -74,13 +74,12 @@ export interface ShellChrome {
   updateNotice: boolean
 }
 
-/** What window chrome this shell draws, from the shell kind and the platform. */
-export function shellChrome(web: boolean, mac: boolean): ShellChrome {
-  if (web) return { titleBar: false, fullScreen: false, seeThrough: false, updateNotice: false }
-  return { titleBar: mac, fullScreen: true, seeThrough: true, updateNotice: true }
-}
-
-/** shellChrome for this page (read when called: the web entry marks the shell before rendering). */
+/**
+ * What window chrome this page draws, from the shell kind and the platform (read when called: the
+ * web entry marks the shell before rendering).
+ */
 export function currentShellChrome(): ShellChrome {
-  return shellChrome(webShell, typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'))
+  if (webShell) return { titleBar: false, fullScreen: false, seeThrough: false, updateNotice: false }
+  const mac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
+  return { titleBar: mac, fullScreen: true, seeThrough: true, updateNotice: true }
 }

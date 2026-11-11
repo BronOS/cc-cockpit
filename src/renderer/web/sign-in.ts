@@ -158,7 +158,7 @@ export function signInWithPassword(env: Pick<SignInEnv, 'fetch' | 'userAgent'>, 
 }
 
 /** The CONFIRM_ASK_PATH answer, checked. */
-export function confirmTicketOf(body: unknown): WebConfirmTicket | undefined {
+function confirmTicketOf(body: unknown): WebConfirmTicket | undefined {
   if (body === null || typeof body !== 'object') return undefined
   const { code, ticket, expiresAt } = body as Record<string, unknown>
   if (typeof code !== 'string' || code.length === 0 || code.length > 16) return undefined
