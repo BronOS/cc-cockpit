@@ -355,6 +355,17 @@ export interface CoreHandlerDeps {
   /** Run a plugin command the project's host registered (HostManager.runCommand); rejects otherwise. */
   /** `view`: the remote view that ran it (main's id from the caller), absent for the desktop. */
   runCommand(projectId: string, id: string, view?: ViewId): Promise<void>
+  /**
+   * Main runs as a server (server-mode.ts, design-web.md §9): the one flag `projects.close` reads.
+   * Absent or false: the desktop, where no view may close a window through the router.
+   */
+  server?: boolean
+  /**
+   * Close this project window for every device, as "Close for everyone" does
+   * (WindowManager.closeForEveryone): its tabs end and its views get `windowClosed`. `viewId`: the
+   * browser view that asked, for the log line.
+   */
+  closeProjectWindow?(windowId: number, viewId: ViewId): void
 }
 
 /**
@@ -416,6 +427,19 @@ export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): 
   router.handleWindow('projects.closePicker', (ctx) => {
     if (ctx.kind !== 'picker') throw new Error('projects.closePicker: only the picker may close itself')
     deps.dismissPicker?.()
+  })
+
+  // `adapted` (design-web.md §9.8): a server's browser view closes its own project window for every
+  // device (the in-page confirm is the person's answer; nothing asks again). The window is the one
+  // main bound the caller to (ctx), and the payload is never read, so a view naming another project
+  // still closes only its own. Allowed only when main runs as a server and the caller is a remote
+  // view: on the desktop a browser must not close the host's window (only its own screen, the
+  // desktop's close dialog, decides that), and the desktop page has its window's close button.
+  router.handleProject('projects.close', (ctx, _payload, view) => {
+    if (deps.server !== true || !view.remote || !deps.closeProjectWindow) {
+      throw new Error('projects.close: only a browser view of a server may close a project')
+    }
+    deps.closeProjectWindow(ctx.windowId, view.viewId)
   })
 
   // Picker only: a project window has no business relinking or forgetting projects.

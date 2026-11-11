@@ -15,6 +15,7 @@ import {
   type WebSnapshot
 } from '../../src/shared/web-protocol'
 import {
+  backToPicker,
   createWebBridge,
   decodeServerJson,
   encodeClientFrame,
@@ -680,9 +681,26 @@ describe('drops and reconnect', () => {
     const st = r.bridge.status()
     expect(st.state).toBe('gone')
     expect((st as { reason: string }).reason).toContain(text)
+    expect(st).toMatchObject({ code })
     expect(r.timers.pending()).toBe(0)
     r.timers.advance(60_000)
     expect(r.sockets).toHaveLength(1)
+  })
+
+  // design-web.md §9.8: a server's project closed for every device (a browser's Close project) sends
+  // every view of it back to the project list; the desktop's close keeps saying why.
+  it('backToPicker: only a server view whose window closed goes back to the project list', () => {
+    const r = rig()
+    connect(r)
+    r.last().serverClose(CLOSE.windowClosed)
+    expect(backToPicker(r.bridge.status(), true)).toBe(true)
+    expect(backToPicker(r.bridge.status(), false)).toBe(false)
+    const other = rig()
+    connect(other)
+    other.last().serverClose(CLOSE.noProject)
+    expect(backToPicker(other.bridge.status(), true)).toBe(false)
+    expect(backToPicker({ state: 'gone', reason: 'signed out' }, true)).toBe(false)
+    expect(backToPicker({ state: 'away', retryAt: 0, attempt: 1 }, true)).toBe(false)
   })
 
   it.each([CLOSE.tooLarge, CLOSE.badFrame, CLOSE.failed, CLOSE.noHello, 1000, 1001, 1006, 1009])(

@@ -432,6 +432,31 @@ export class WindowManager {
     handle.close()
   }
 
+  /**
+   * Close this project window for every device, as the close dialog's "Close for everyone" does: its
+   * tabs end, its views are told the window closed, and the project leaves the open list. For a
+   * server's browser Close project (design-web.md §9.8), whose in-page confirm is already the
+   * person's answer, so nothing asks again. The id is the window main bound the caller to (the
+   * router's context), never one a page named. False when it is no open project window, while
+   * quitting, or while a reopen or an earlier close of it is under way (that close goes ahead).
+   */
+  closeForEveryone(windowId: number): boolean {
+    if (this.quitting) return false
+    for (const handle of this.projects.values()) {
+      if (handle.id !== windowId) continue
+      if (this.reopening.has(handle) || this.closing.has(handle)) return false
+      // A close dialog that is up (the desktop) is answered by this close: its later answer finds
+      // the window gone (closeAnswered checks).
+      this.asking.delete(handle)
+      // A modal picker over it goes first, as for a reopen (Electron would close it with its parent).
+      if (this.pickerParent === handle) this.closePicker()
+      this.closing.add(handle)
+      handle.close()
+      return true
+    }
+    return false
+  }
+
   /** The id of the project window that is open for this project, if any. */
   windowIdOf(projectId: string): number | undefined {
     return this.projects.get(projectId)?.id

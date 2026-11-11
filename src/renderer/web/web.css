@@ -205,3 +205,13 @@ html[data-shell='web']:has(.tabs-pane) body {
   overflow: hidden;
   overscroll-behavior: none;
 }
+
+/* Close project's failure (web/CloseProject.tsx), in the top bar before its button: one short line. */
+.close-project-error {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--cc-text-xs);
+  color: var(--cc-status-needs-permission);
+}

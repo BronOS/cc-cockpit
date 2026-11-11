@@ -1531,6 +1531,55 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     expect(s.closed).toEqual([view.id])
   })
 
+  it("closeForEveryone (a browser's Close project) closes only that window, its views and tabs; the others stay", () => {
+    const added: number[] = []
+    const removed: number[] = []
+    const s = { closed: [] as string[] }
+    const wm = new WindowManager({
+      factory,
+      registry,
+      platform: 'linux',
+      quit: () => quits++,
+      server: true,
+      views: {
+        addDesktop: (windowId) => {
+          added.push(windowId)
+          return `desktop:${windowId}`
+        },
+        removeWindow: (windowId) => {
+          removed.push(windowId)
+        }
+      },
+      onProjectClosed: (projectId) => s.closed.push(projectId)
+    })
+    const a = wm.openPath(folder('a'))
+    const b = wm.openPath(folder('b'))
+    const [winA, winB] = factory.open('project')
+    expect(wm.closeForEveryone(winA!.id)).toBe(true)
+    expect(winA!.closed).toBe(true)
+    expect(s.closed).toEqual([a.id])
+    expect(removed).toEqual([winA!.id])
+    expect(wm.windowIdOf(a.id)).toBeUndefined()
+    // It leaves the open list and stays recent: the browser picker offers it to reopen.
+    expect(registry.openIds()).toEqual([b.id])
+    expect(registry.recent().map((p) => p.id)).toContain(a.id)
+    // The other window and its views are untouched; nothing shown, no picker, no quit.
+    expect(winB!.closed).toBe(false)
+    expect(wm.windowIdOf(b.id)).toBe(winB!.id)
+    expect(added).toEqual([winA!.id, winB!.id])
+    expect(factory.windows.every((w) => w.focused === 0 && w.hides === 0)).toBe(true)
+    expect(wm.pickerOpen).toBe(false)
+    expect(quits).toBe(0)
+    // A window that is gone, or never was, closes nothing.
+    expect(wm.closeForEveryone(winA!.id)).toBe(false)
+    expect(wm.closeForEveryone(999)).toBe(false)
+    expect(s.closed).toEqual([a.id])
+    // Nothing closes while quitting (quit closes every window itself).
+    wm.beginQuit()
+    expect(wm.closeForEveryone(winB!.id)).toBe(false)
+    expect(winB!.closed).toBe(false)
+  })
+
   it('a crash reloads the page after a pause, with a log line, and the window stays', () => {
     const s = server()
     s.wm.openPath(folder('a'))

@@ -189,6 +189,52 @@ describe('trash confirm markup', () => {
   })
 })
 
+// plan Task 18: Close project in a server's browser shell asks with the same dialog; the project's
+// name is plain text, and the button is drawn only in a server's browser view.
+describe('close project', () => {
+  type Box = FunctionComponent<Record<string, unknown>>
+  async function parts(): Promise<{ Title: FunctionComponent<{ name: string }>; Box: Box; TopStrip: Box }> {
+    const close = '../../src/renderer/web/CloseProject.tsx'
+    const dialog = '../../src/renderer/notices/ApprovalDialog.tsx'
+    const strip = '../../src/renderer/status/TopStrip.tsx'
+    const c = (await import(close)) as { CloseProjectTitle: FunctionComponent<{ name: string }> }
+    const d = (await import(dialog)) as { ApprovalBox: Box }
+    const t = (await import(strip)) as { TopStrip: Box }
+    return { Title: c.CloseProjectTitle, Box: d.ApprovalBox, TopStrip: t.TopStrip }
+  }
+
+  it('asks "Close <name> for every device? Its tabs end." with Cancel and a guarded Close project', async () => {
+    const { Title, Box } = await parts()
+    const html = renderToStaticMarkup(
+      createElement(Box, {
+        title: createElement(Title, { name: '<img src=x onerror=alert(1)>' }),
+        children: 'Its tabs end.',
+        canAllow: true,
+        allowLabel: 'Close project',
+        denyLabel: 'Cancel',
+        onAnswer: () => {}
+      })
+    )
+    expect(html).not.toContain('<img')
+    expect(html).toContain('Close &lt;img src=x onerror=alert(1)&gt; for every device?')
+    expect(html).toContain('Its tabs end.')
+    expect(html).toMatch(/<button type="button">Cancel<\/button>/)
+    expect(html).toMatch(/<button type="button" class="confirm-danger" disabled="">Close project<\/button>/)
+  })
+
+  it('the top bar draws Close project only in a server\'s browser view', async () => {
+    const { TopStrip } = await parts()
+    const project = { id: 'p1', name: 'alpha', path: '/srv/alpha', missing: false }
+    const render = (): string => renderToStaticMarkup(createElement(TopStrip, { project, onOpenProject: () => {}, onOpenSettings: () => {} }))
+    // The desktop window, a desktop's browser view, then a server's browser view.
+    expect(render()).not.toContain('aria-label="Close project"')
+    markWebShell()
+    expect(render()).not.toContain('aria-label="Close project"')
+    setServerHint(true)
+    expect(render()).toContain('aria-label="Close project"')
+  })
+})
+
 describe('isServerView', () => {
   it('true only in the web shell told by ready that the app is a server', () => {
     setServerHint(true)

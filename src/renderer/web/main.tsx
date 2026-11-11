@@ -19,11 +19,11 @@ import type { WebAccessMode } from '../../shared/types'
 import { SESSION_PATH, WS_PATH } from '../../shared/web-protocol'
 import { App } from '../App'
 import { setPrefs, startPrefs } from '../prefs/prefs-store'
-import { armLoadTake, markWebShell, setOwnView, setServerHint } from '../shell-kind'
+import { armLoadTake, isServerView, markWebShell, setOwnView, setServerHint } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { loadTerminalFont } from '../tabs/terminal-font'
-import { createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
+import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
@@ -127,6 +127,15 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
     // `bridge` is the page's one bridge (a prop that never changes): listed for the lint only.
   }, [status, bridge])
 
+  // A server's project closed for every device (a browser's Close project): every view of it goes
+  // back to the project list, the asking one included. `replace`: Back must not land on the closed
+  // project's page.
+  const toPicker = backToPicker(status, isServerView())
+  useEffect(() => {
+    if (toPicker) location.replace('/')
+  }, [toPicker])
+
+  if (toPicker) return <main className="web-state">The project was closed. Opening the project list...</main>
   if (status.state === 'gone') {
     return (
       <main className="web-state" role="alert">

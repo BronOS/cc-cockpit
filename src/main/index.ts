@@ -1899,7 +1899,13 @@ function start(server: boolean): void {
     // `appearance` is built below; start() runs to its end before any IPC message is handled.
     shellPrefs: () => appearance.prefs(),
     commands: (projectId) => commands.view(projectId),
-    runCommand: (projectId, id, view) => hosts.runCommand(projectId, id, view)
+    runCommand: (projectId, id, view) => hosts.runCommand(projectId, id, view),
+    // Server mode's Close project from a browser (design-web.md §9.8): the router checks main's own
+    // flag and that the caller is a remote view; the window is the one it bound the caller to.
+    server,
+    closeProjectWindow: (windowId, viewId) => {
+      if (windows.closeForEveryone(windowId)) warnLog(`web access: view ${viewId} closed project window ${windowId} for every device`)
+    }
   })
 
   // Settings overlay (design §6; settings-service.ts): projects and plugins. The data is

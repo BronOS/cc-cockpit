@@ -437,7 +437,7 @@ test('server mode: projects are opened by path and reopened from the browser pic
     expect(secondId).not.toBe(server.projectId)
     expect(await openCount()).toBe(2)
 
-    // Closed on the server (Task 18 adds Close project in the browser): it is now a recent project.
+    // Closed on the server (Close project in the browser has its own spec below): now a recent project.
     // The bound view loses its window, so the picker is loaded again by hand.
     await closeNewestWindow()
     await expect.poll(openCount).toBe(1)
@@ -485,6 +485,80 @@ test('server mode: projects are opened by path and reopened from the browser pic
     await expectMainAlive(server)
   } finally {
     await browser.close()
+  }
+})
+
+// design-web.md §9.8: Close project in the browser shell asks in that view (the guarded in-page
+// approval), then `projects.close` closes the window main bound the view to, for every device: each
+// browser of that project goes back to the picker, the other project's window stays, and closing the
+// last one leaves main running with no project open (no picker window, no quit).
+test('server mode: Close project in the browser closes it for every device; the picker again; main lives with none open', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer()
+  const { cockpit } = server
+  const other = join(realpathSync(cockpit.root), 'other')
+  mkdirSync(other)
+  const openCount = (): Promise<number> => cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
+  const opened = await fetch(`${server.origin}/api/projects`, {
+    method: 'POST',
+    headers: { Origin: server.origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ open: other })
+  })
+  expect(opened.status).toBe(200)
+  const otherId = ((await opened.json()) as { id: string }).id
+  await expect.poll(openCount).toBe(2)
+
+  const first = await openBrowser(`${server.origin}/`)
+  const second = await openBrowser(`${server.origin}/`)
+  try {
+    for (const b of [first, second]) await openProjectInBrowser(b, server.origin, server.projectId)
+    const { page } = first
+    const closeButton = page.getByRole('button', { name: 'Close project' }).first()
+    const dialog = page.getByRole('alertdialog', { name: /^Close .+ for every device\?$/ })
+    const confirm = dialog.getByRole('button', { name: 'Close project' })
+
+    // Cancel leaves everything as it was. The other browser was never asked.
+    await closeButton.click()
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('Its tabs end.')
+    await expect(second.page.getByRole('alertdialog')).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toHaveCount(0)
+    expect(await openCount()).toBe(2)
+
+    // Asked again: not armed at first, Enter on the armed button does nothing, a click closes.
+    await closeButton.click()
+    await expect(confirm).toBeDisabled()
+    await expect(confirm).toBeEnabled({ timeout: 5_000 })
+    await confirm.focus()
+    await page.keyboard.press('Enter')
+    await expect(dialog).toBeVisible()
+    expect(await openCount()).toBe(2)
+    await confirm.click()
+
+    // Every browser of that project is back at the picker, which lists the other project only and
+    // offers the closed one as recent.
+    for (const b of [first, second]) {
+      await expect(b.page).toHaveURL(`${server.origin}/`, { timeout: 15_000 })
+      const list = b.page.getByRole('list', { name: 'Open projects' })
+      await expect(list.getByRole('link')).toHaveCount(1)
+      await expect(list.locator(`a[href="?project=${encodeURIComponent(otherId)}"]`)).toHaveCount(1)
+      await expect(b.page.getByRole('list', { name: 'Recent projects' })).toContainText(realpathSync(cockpit.projectDir))
+    }
+    expect(await openCount()).toBe(1)
+
+    // The last one, closed from the browser too: main runs on with no project open.
+    await openProjectInBrowser(first, server.origin, otherId)
+    await page.getByRole('button', { name: 'Close project' }).first().click()
+    await expect(confirm).toBeEnabled({ timeout: 5_000 })
+    await confirm.click()
+    await expect(page).toHaveURL(`${server.origin}/`, { timeout: 15_000 })
+    await expect(page.getByRole('list', { name: 'Recent projects' }).getByRole('button')).toHaveCount(2)
+    expect(await openCount()).toBe(0)
+    await expectMainAlive(server)
+  } finally {
+    await first.close()
+    await second.close()
   }
 })
 

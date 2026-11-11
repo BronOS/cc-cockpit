@@ -7,6 +7,8 @@ import { SlotFrame } from '../zones/SlotFrame'
 import { ProjectDot } from './ProjectDot'
 import { topStripClass } from './strip-order'
 import { WebAccessChip } from './WebAccessChip'
+import { isServerView } from '../shell-kind'
+import { CloseProjectButton } from '../web/CloseProject'
 
 /**
  * The bar across the top of every project window (variant A, "unified bar"): the project's name
@@ -35,7 +37,9 @@ import { WebAccessChip } from './WebAccessChip'
  * The "+" asks main to show the project picker (recent projects + Open Folder), so another project
  * is one click away from any window; it is always there, so the bar is always shown.
  * The web access chip (WebAccessChip) sits before the gear while a browser is connected or a risky
- * choice is on, and is not drawn otherwise. The gear
+ * choice is on, and is not drawn otherwise. In a server's browser view (and only there: a desktop
+ * window has its close button, and on the desktop a browser cannot close the host's window) Close
+ * project sits before the gear too (web/CloseProject.tsx, design-web.md §9.8). The gear
  * opens settings; it sits outside the slot's space so a wide strip never pushes it out of view.
  *
  * A project with a colour (Settings › This Project) marks its bar three ways: a 3px line along
@@ -99,6 +103,7 @@ export function TopStrip(props: {
       <div className={meter ? 'titlebar-end has-slot' : 'titlebar-end'}>
         {meter && <SlotFrame key={meter.id} frame={meter} collapseUntilConnected />}
         <WebAccessChip onOpen={props.onOpenSettings} />
+        {project && isServerView() && <CloseProjectButton name={project.name} />}
         <button
           type="button"
           className="strip-settings icon-button"

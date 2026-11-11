@@ -635,6 +635,62 @@ describe('core handlers', () => {
     expect(external).toEqual([])
   })
 
+  // design-web.md §9.8: a server's browser view closes the window main bound it to, for every device.
+  describe('projects.close', () => {
+    function closing(server: boolean | undefined): { ipc: FakeIpcMain; router: IpcRouter; closed: string[] } {
+      const closed: string[] = []
+      const { ipc, router } = core({
+        ...(server === undefined ? {} : { server }),
+        closeProjectWindow: (windowId, viewId) => {
+          closed.push(`${windowId}:${viewId}`)
+        }
+      })
+      return { ipc, router, closed }
+    }
+    const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId)
+
+    it('in server mode closes the window the remote view is bound to', async () => {
+      const { router, closed } = closing(true)
+      await router.dispatch(webA(), 'projects.close', undefined)
+      expect(closed).toEqual(['1:web:3'])
+    })
+
+    it('ignores a payload that names another project or window: only the caller\'s window closes', async () => {
+      const { router, closed } = closing(true)
+      await router.dispatch(webA('web:5'), 'projects.close', { projectId: PROJECT_B, windowId: 2, id: PROJECT_B })
+      expect(closed).toEqual(['1:web:5'])
+    })
+
+    it('refuses a remote view on the desktop (no server flag, or server false)', async () => {
+      for (const server of [undefined, false]) {
+        const { router, closed } = closing(server)
+        await expect(router.dispatch(webA(), 'projects.close', undefined)).rejects.toThrow(/projects\.close/)
+        expect(closed).toEqual([])
+      }
+    })
+
+    it('refuses the desktop page, server mode or not (it is no browser view)', async () => {
+      for (const server of [true, false]) {
+        const { ipc, closed } = closing(server)
+        await expect(ipc.invoke('projects.close', 11)).rejects.toThrow(/projects\.close/)
+        expect(closed).toEqual([])
+      }
+    })
+
+    it('refuses the picker and a remote view whose window is gone', async () => {
+      const { ipc, router, closed } = closing(true)
+      await expect(ipc.invoke('projects.close', 13)).rejects.toThrow(/not a project window/)
+      // A view bound to a window that now holds another project: the router refuses before the handler.
+      await expect(router.dispatch(webCaller({ kind: 'project', windowId: 2, projectId: PROJECT_A }, 'web:4'), 'projects.close', undefined)).rejects.toThrow(/refused/)
+      expect(closed).toEqual([])
+    })
+
+    it('refuses in server mode when main gave no way to close', async () => {
+      const { router } = core({ server: true })
+      await expect(router.dispatch(webA(), 'projects.close', undefined)).rejects.toThrow(/projects\.close/)
+    })
+  })
+
   it('every core channel refuses an unknown sender', async () => {
     const { ipc, opened, dialogs, external } = core()
     for (const channel of ipc.handlers.keys()) {

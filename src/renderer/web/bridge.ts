@@ -74,13 +74,25 @@ const OPEN = 1
  *   the first; a higher one is a reconnect, after which the page redraws from fresh state);
  * - `away`: the socket dropped (or never opened); the next attempt is due at `retryAt`;
  * - `gone`: main said this view cannot come back by retrying (the project window closed or is not
- *   open, or the page is from another app version); `reason` is for the person.
+ *   open, or the page is from another app version); `reason` is for the person, `code` the close
+ *   code main sent (absent when the page found itself signed out).
  */
 export type BridgeStatus =
   | { state: 'connecting' }
   | { state: 'ready'; view: ViewId; generation: number }
   | { state: 'away'; retryAt: number; attempt: number }
-  | { state: 'gone'; reason: string }
+  | { state: 'gone'; reason: string; code?: number }
+
+/**
+ * Whether a page that is `gone` goes straight back to the project list instead of saying why. Only a
+ * server's browser view (`server`: the `ready` snapshot's hint) whose window was closed: there a
+ * close is a browser's Close project, for every device (design-web.md §9.8), and the picker is
+ * where every view of that project goes next. On the desktop the message stays: the person at the
+ * host closed it, and the browser should say so.
+ */
+export function backToPicker(status: BridgeStatus, server: boolean): boolean {
+  return server && status.state === 'gone' && status.code === CLOSE.windowClosed
+}
 
 export interface Timers {
   now(): number
@@ -390,7 +402,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     if (closed) return
     const final = FINAL_CLOSES.get(code)
     if (final !== undefined) {
-      setStatus({ state: 'gone', reason: final })
+      setStatus({ state: 'gone', reason: final, code })
       return
     }
     scheduleRetry()

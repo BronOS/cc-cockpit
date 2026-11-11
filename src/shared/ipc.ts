@@ -866,6 +866,12 @@ export interface IpcInvokeMap {
   /** The modal picker's Cancel / Esc: close it and give the project window its focus back. */
   'projects.closePicker': { req: void; res: void }
   /**
+   * A server's browser view: close the project window main bound the calling view to, for every
+   * device, as the desktop's "Close for everyone" does (design-web.md §9.8). Takes no id: a payload
+   * is ignored, so a view can only ever close its own window. Refused for every other caller.
+   */
+  'projects.close': { req: void; res: void }
+  /**
    * Picker: point a project whose folder is gone at another folder (native dialog, then open it
    * with no tabs). False when the dialog was cancelled. Ids that are not recent, missing projects
    * are refused.
@@ -1517,6 +1523,7 @@ export const INVOKE_CHANNELS = [
   'projects.openRecent',
   'projects.showPicker',
   'projects.closePicker',
+  'projects.close',
   'projects.relink',
   'projects.forget',
   'app.openExternal',
@@ -1725,6 +1732,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // Opens the native picker window on the host, as a modal child of the desktop window.
   'projects.showPicker': 'no',
   'projects.closePicker': 'no',
+  // Server mode's Close project (§9.8): main closes the window it bound the caller to, refused unless
+  // main runs as a server and the caller is a remote view (main's flag and `view.remote`, never the
+  // payload). On the desktop a browser cannot close the host's window.
+  'projects.close': 'adapted',
   // Native folder dialog.
   'projects.relink': 'no',
   'projects.forget': 'no',

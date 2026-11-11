@@ -796,16 +796,16 @@ task only takes the hidden page out of the set of views that may own a size or a
   shell's project menu (`src/renderer/web/`), `src/renderer/notices/ApprovalDialog.tsx` (its use)
 - Modify: `test/unit/ipc-remote-class.test.ts`, `ipc-router.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] `projects.close` takes no id: main closes the window it bound the calling view to, as "Close for everyone" does,
+- [x] `projects.close` takes no id: main closes the window it bound the calling view to, as "Close for everyone" does,
       and that window's views go back to the picker. A payload that names a project is ignored
-- [ ] allowed for a remote view only in server mode (main's `server` and `view.remote`, never the payload); its
+- [x] allowed for a remote view only in server mode (main's `server` and `view.remote`, never the payload); its
       `REMOTE_CLASS` (`adapted`) in the same change
-- [ ] Close project in the browser shell: an `ApprovalDialog` in that view ("Close <name> for every device? Its tabs
+- [x] Close project in the browser shell: an `ApprovalDialog` in that view ("Close <name> for every device? Its tabs
       end."), then the call
-- [ ] write tests: from a remote view on the desktop refused; in server mode the bound window closes; a payload naming
+- [x] write tests: from a remote view on the desktop refused; in server mode the bound window closes; a payload naming
       another project still closes only the caller's window; the other windows and their views untouched; e2e: close,
       the picker again in every browser of that project, main alive with no project open
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `close-confirm`, `web-access-terminal`) - must pass before next
+- [x] run tests and `npm run test:e2e` (`server-mode`, `close-confirm`, `web-access-terminal`) - must pass before next
       task
 
 ### Task 19: Overlays held by browsers only [model: opus]
