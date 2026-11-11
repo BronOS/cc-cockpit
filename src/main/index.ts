@@ -2634,7 +2634,19 @@ function start(server: boolean): void {
     // browser tabs come back after a restart, an update or a reboot (design-web.md §9.1).
     webConnections.endAll(server ? CLOSE.serverStop : CLOSE.appQuit, server ? 'server stop' : 'app quit')
   })
-  app.on('will-quit', () => {
+  let mirrorEnded = false
+  app.on('will-quit', (event) => {
+    // Server mode: wait for the mirror's worker thread before exiting; a process that exits while it
+    // still bootstraps dies with SIGSEGV instead of status 0 (mirror.ts stop()). The cleanup below
+    // runs on the second pass, once the quit is asked for again.
+    if (server && !mirrorEnded) {
+      event.preventDefault()
+      void terminalMirror.stop().then(() => {
+        mirrorEnded = true
+        app.quit()
+      })
+      return
+    }
     updateChecker.stop()
     // Main's own helper processes (the login-env shell, an install's clone, the diff probe):
     // their timeouts are timers that die with main. Synchronous SIGKILLs, never throws, and first
@@ -2707,11 +2719,17 @@ function start(server: boolean): void {
     })
     .catch((err: unknown) => {
       console.error('startup failed', err)
+      // A server start that throws (a rejecting socket, an open() after the gateway is up) must end
+      // with status 1 like `fail`, so systemd's Restart=on-failure retries; see will-quit.
+      if (server) startFailed = true
       app.quit()
     })
 
   /** The rest of the start, once the order allows it: windows and their restored tabs. */
   function openAtStart(): void {
+    // A SIGTERM during the awaited start: before-quit already froze the restorer, so opening windows
+    // and restoring tabs now would be wrong.
+    if (quitting) return
     updateChecker.start()
     // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
     // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
