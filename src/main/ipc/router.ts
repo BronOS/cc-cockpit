@@ -972,8 +972,15 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
   }
   router.handleProject('settings.webAccess', async (_ctx, _payload, view) => {
     gate('settings.webAccess', view)
-    const out = deps.view()
+    const out = { ...deps.view() }
     if (options.secrets) out.secrets = await options.secrets()
+    if (view.remote) {
+      // The card draws neither TLS path nor the store's failure text (which names the key file's
+      // absolute path): a browser gets only that a cert is set and a path-free reason, so the
+      // server user's home path does not reach a lost phone. The desktop keeps the full view.
+      out.form = { ...out.form, certPath: out.form.certPath === '' ? '' : 'set', keyPath: out.form.keyPath === '' ? '' : 'set' }
+      if (out.secrets && out.secrets.unavailable !== null) out.secrets = { ...out.secrets, unavailable: 'the secret store cannot be opened (see the server log)' }
+    }
     return out
   })
   router.handleProject('settings.webAccessSet', (_ctx, payload) => deps.set((payload as { value?: WebAccessPatch } | undefined)?.value as WebAccessPatch))

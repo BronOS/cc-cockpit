@@ -1903,6 +1903,31 @@ describe('registerWebAccessHandlers', () => {
       expect(calls).toEqual([['view'], ['indicator']])
     })
 
+    it('hides the TLS paths and the key file path from a browser view, not from the desktop', async () => {
+      const { ipc, router } = setup()
+      const view = {
+        form: { enabled: true, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const, certPath: '/home/x/c.pem', keyPath: '/home/x/k.pem' },
+        network: false,
+        gateway: { state: 'off' as const },
+        devices: [],
+        risks: [],
+        passwordSet: false,
+        credentials: { accessLink: 'unset' as const, password: 'unset' as const }
+      }
+      const unavailable = 'the key file /home/x/secret.key cannot be opened'
+      registerWebAccessHandlers(router, { view: () => view } as unknown as Parameters<typeof registerWebAccessHandlers>[1], {
+        server: true,
+        actorOf: () => phone,
+        secrets: async () => ({ store: 'keyfile', unavailable, otherMode: 0, replaced: 0 })
+      })
+      const remote = (await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webAccess', undefined)) as WebAccessView
+      expect(JSON.stringify(remote)).not.toContain('/home/x')
+      expect(remote.form.certPath).not.toBe('')
+      const local = (await ipc.invoke('settings.webAccess', 11)) as WebAccessView
+      expect(local.form.certPath).toBe('/home/x/c.pem')
+      expect(local.secrets?.unavailable).toBe(unavailable)
+    })
+
     it('revokes and disconnects with the acting device main bound, never one from the payload', async () => {
       const { router, calls, asked } = serverSetup()
       const forged = { id: 'dev-laptop', by: { device: 'dev-forged', name: 'Forged' }, viewId: 'web:9' }
