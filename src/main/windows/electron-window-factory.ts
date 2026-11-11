@@ -113,9 +113,14 @@ export class ElectronWindowFactory implements WindowFactory {
     const id = win.id
     const senderId = win.webContents.id
     win.on('closed', onClosed)
+    // Counts the loads: a reload while an earlier load is still in flight makes the earlier one reject
+    // (ERR_ABORTED), and that rejection is not a failed page: only the newest load's failure counts,
+    // or it would schedule one extra reload cycle with a doubled pause.
+    let loads = 0
     const load = (): void => {
+      const mine = ++loads
       loadRenderer(win).catch((err: unknown) => {
-        if (win.isDestroyed()) return
+        if (win.isDestroyed() || mine !== loads) return
         // Server mode: the manager reloads it after a pause (closing would end the project's tabs).
         if (onPageGone?.(`failed to load (${errorText(err)})`)) return
         // ready-to-show never fires for a failed load, so the window would stay hidden forever.
