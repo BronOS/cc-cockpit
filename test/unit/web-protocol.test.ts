@@ -959,6 +959,7 @@ describe('shared asks', () => {
     const asks = (late.asks = new CloseAsks({
       send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
       settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
+      close: () => true,
       viewsOf: (windowId) => views.viewsOf(windowId)
     }))
     const links = (late.links = new LinkAsks({

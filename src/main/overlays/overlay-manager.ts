@@ -302,8 +302,12 @@ export interface OverlayChannel {
    * members matter for html overlays only.
    */
   onCreated?(overlayId: string): void
-  /** The page posted a message without a `result` key: plain JSON data, parsed from its text. */
-  onMessage(message: unknown): void
+  /**
+   * The page posted a message without a `result` key: plain JSON data, parsed from its text. `view`:
+   * the remote view whose page posted it (main's own id, never the page's word), absent for the
+   * desktop's; the opener runs its listeners in it (origin-view.ts), a hint for where they act.
+   */
+  onMessage(message: unknown, view?: ViewId): void
   /**
    * A click on one of the opener's own buttons (any kind of overlay): settles when its handlers
    * have. Absent: the opener cannot hear clicks, and they are refused.
@@ -959,7 +963,8 @@ export class OverlayManager {
       return false
     }
     try {
-      overlay.channel.onMessage(message)
+      if (isRemoteViewId(viewId)) overlay.channel.onMessage(message, viewId)
+      else overlay.channel.onMessage(message)
     } catch (err) {
       this.log(`overlay ${overlay.id}: delivering a page message failed: ${String(err)}`)
     }

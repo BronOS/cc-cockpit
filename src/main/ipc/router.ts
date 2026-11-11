@@ -1140,7 +1140,8 @@ export interface SessionHandlerDeps {
   cancelQueued(projectId: string, tabId: string, itemId: string): boolean
   /**
    * A view's answer to a plugin's close ask (CloseAsks.answer): the first from any view of the
-   * window wins, a decline waits for the others; false for an ask its window was not sent.
+   * window wins, a decline waits for the others; false for an ask its window was not sent. A winning
+   * Close closes the tab in main and answers whether it did.
    */
   closeAnswer(windowId: number, viewId: ViewId, requestId: string, answer: { closed: boolean; declined: boolean }): boolean
   /**

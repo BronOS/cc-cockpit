@@ -29,7 +29,8 @@
 // shell renderer, see src/renderer/overlays/HtmlOverlay.tsx), over the host RPC. Each start picks a
 // random handle that main keys by plugin id (src/main/plugins/host-api.ts); main's
 // `overlay.message` events come back with it and OverlayLinks hands them to that handle's
-// listeners. Once the overlay ended, post/close do nothing and the listeners are dropped.
+// listeners, in the view of the page that posted (`view`, origin-view.ts) as for panels. Once the
+// overlay ended, post/close do nothing and the listeners are dropped.
 import { randomUUID } from 'node:crypto'
 import type {
   BadgeValue,
@@ -465,16 +466,26 @@ export class OverlayLinks {
     return null
   }
 
-  /** main's `overlay.message`; anything malformed or for an ended handle is dropped. */
+  /**
+   * main's `overlay.message`; anything malformed or for an ended handle is dropped. Each listener
+   * runs in the posting page's view (`view`, a remote one; none for the desktop's).
+   */
   handleEvent(params: unknown): void {
-    const { pluginId, handle, message } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, handle, message, view: rawView } = (params ?? {}) as Record<string, unknown>
     if (typeof pluginId !== 'string' || typeof handle !== 'string') return
+    // A view main did not mint is refused, never read as the desktop's (as slots.ts does).
+    const view = viewIdOf(rawView)
+    if (rawView !== undefined && view === undefined) return
     const link = this.links.get(`${pluginId}/${handle}`)
     if (!link || link.ended) return
     for (const listener of [...link.listeners]) {
       try {
         // Each listener its own copy, as for panels: one cannot change what the next one sees.
-        listener(structuredClone(message as JsonValue))
+        dispatchInView(
+          view,
+          () => listener(structuredClone(message as JsonValue)),
+          (err) => this.log(pluginId, `an overlay onMessage listener failed: ${errorText(err)}`)
+        )
       } catch (err) {
         this.log(pluginId, `an overlay onMessage listener threw: ${errorText(err)}`)
       }

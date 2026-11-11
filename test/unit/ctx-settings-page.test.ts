@@ -3,6 +3,7 @@
 // (settingsPageOpenTag + attachSettingsPagePort), closed by main's `settingsPage.close` or the port.
 import { describe, expect, it } from 'vitest'
 import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ctx'
+import { currentView } from '../../src/host/ctx/origin-view'
 import { settingsPageOpenTag } from '../../src/host/ctx/settings-page'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { parsePluginSpecs } from '../../src/host/loader'
@@ -138,10 +139,29 @@ describe('ctx.settingsPage.onOpen', () => {
   })
 })
 
+describe('settingsPage messages and the origin view', () => {
+  it("runs a remote view's page listeners in that view, the desktop's in none", async () => {
+    const { contexts, withPage } = setup()
+    const seen: unknown[] = []
+    withPage.settingsPage.onOpen((p) => p.onMessage(() => seen.push(currentView())))
+    const remote = openPage(contexts, { ...TAG, view: 'web:3' })
+    remote.page.postMessage(JSON.stringify({ click: 1 }))
+    await flush()
+    const desktop = openPage(contexts, { ...TAG, id: 'p2' })
+    desktop.page.postMessage(JSON.stringify({ click: 2 }))
+    await flush()
+    expect(seen).toEqual(['web:3', undefined])
+  })
+})
+
 describe('settingsPageOpenTag', () => {
   it("reads main's tag and nothing else", () => {
     expect(settingsPageOpenTag(JSON.stringify({ settingsPageOpen: TAG }))).toEqual(TAG)
+    expect(settingsPageOpenTag(JSON.stringify({ settingsPageOpen: { ...TAG, view: 'web:2' } }))).toEqual({ ...TAG, view: 'web:2' })
     for (const bad of [
+      // A view main did not mint is refused, never read as the desktop's page.
+      { settingsPageOpen: { ...TAG, view: 'desktop:1' } },
+      { settingsPageOpen: { ...TAG, view: 5 } },
       { settingsPageOpen: { ...TAG, scope: 'global' } },
       { settingsPageOpen: { ...TAG, id: 'x' } },
       { settingsPageOpen: { ...TAG, pluginId: 5 } },

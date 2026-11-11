@@ -272,7 +272,9 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   slot instance.
 - **Where an action came from.** The plugin host knows which view each message came from and carries it implicitly
   (an `AsyncLocalStorage` around listener dispatch, attached to the RPC calls the listener makes), so
-  `ctx.sessions.focus` from a phone's click selects on the phone, with no plugin change.
+  `ctx.sessions.focus` from a phone's click selects on the phone, with no plugin change. The same holds for every page a
+  view shows: panels and slots (their port tag names the view), settings pages (the `settingsPageOpen` tag) and html
+  overlays (main's `overlay.message` names the holder's view).
 - **Per-page replies.** Some answers belong to one page (file search results, the Sessions panel's `refused`
   message). The listener gets an optional second argument `{ view }` and `post` an optional `{ view }` target. Old
   plugins keep broadcasting, correct for state pushes; the bundled plugins that reply per page adopt it in phase 3.

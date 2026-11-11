@@ -886,6 +886,8 @@ export interface IpcInvokeMap {
    * wins, design-web.md §5.1); false for any other id. `declined`: this view could not ask (another
    * dialog, a screen or an overlay was over it, or its close failed): it counts only once every
    * view of the window declined, so a covered browser cannot cancel the dialog the desktop shows.
+   * `closed: true` that wins makes main close the tab, and the reply is then whether it did (the
+   * view drops the tab only on true; false: another view answered first or the tab was gone).
    */
   'sessions.closeAnswer': { req: { requestId: string; closed: boolean; declined?: boolean }; res: boolean }
   /**
@@ -1361,7 +1363,8 @@ export interface IpcEventMap {
   /**
    * A plugin asks to close this Claude tab of the window (ctx.sessions.close): run the person's own
    * close (the dialog when it is running and the setting asks), then answer `sessions.closeAnswer`
-   * with the same `requestId`, `closed: false` on Cancel or when the close could not be asked.
+   * with the same `requestId`, `closed: false` on Cancel or when the close could not be asked. The
+   * view never closes the tab itself: main does, on the winning `closed: true`.
    */
   'sessions.closeAsk': { requestId: string; tabId: string }
   /**

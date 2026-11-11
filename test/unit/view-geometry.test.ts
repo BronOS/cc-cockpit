@@ -374,6 +374,37 @@ describe('a layout edit in one view reaches the window\'s other views (design-we
     expect(leftKeys(remote.get().layout)).toEqual(['p/sessions', 'p/notes'])
   })
 
+  it('a remote splitter drag across another view\'s move sends nothing and shows the move at once', async () => {
+    const { desktop, remote, stored } = await mirror()
+    remote.preview((l) => resizeZone(l, 'left', 200))
+    // The desktop moves Notes to the left zone while the browser is still dragging.
+    desktop.commit((l) => movePanel(togglePanel(l, 'p/notes'), 'p/notes', 'left'))
+    await settle()
+    expect(leftKeys(remote.get().layout)).toEqual(['p/sessions', 'p/notes'])
+    expect(remote.get().layout.zones.left.size).toBe(200)
+    remote.preview((l) => resizeZone(l, 'left', 180))
+    remote.flush()
+    await settle()
+    expect(leftKeys(stored.get(P)!)).toEqual(['p/sessions', 'p/notes'])
+    expect(leftKeys(desktop.get().layout)).toEqual(['p/sessions', 'p/notes'])
+    expect(remote.get().layout.zones.left.size).toBe(180)
+  })
+
+  it('a desktop splitter drag across a remote view\'s move keeps the move on release', async () => {
+    const { desktop, remote, stored } = await mirror()
+    desktop.preview((l) => resizeZone(l, 'left', 250))
+    // The browser moves Notes while the desktop drags: the desktop's working copy keeps the old placement.
+    remote.commit((l) => movePanel(togglePanel(l, 'p/notes'), 'p/notes', 'left'))
+    await settle()
+    expect(leftKeys(desktop.get().layout)).toEqual(['p/sessions'])
+    desktop.flush()
+    await settle()
+    expect(leftKeys(stored.get(P)!)).toEqual(['p/sessions', 'p/notes'])
+    expect(stored.get(P)!.zones.left.size).toBe(250)
+    expect(leftKeys(desktop.get().layout)).toEqual(['p/sessions', 'p/notes'])
+    expect(leftKeys(remote.get().layout)).toEqual(['p/sessions', 'p/notes'])
+  })
+
   it('a panel the desktop opens shows in the remote view, and the remote view\'s next shared edit keeps it', async () => {
     const { desktop, remote, stored } = await mirror()
     remote.commit((l) => resizeZone(l, 'left', 150))

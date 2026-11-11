@@ -518,6 +518,14 @@ describe('PanelPortHub settings pages (design-next §5.4)', () => {
     expect(sent.renderer).toEqual([{ viewId: D1, payload: { panelKey: '@settings/a.one', nonce: 4 }, port: ch.renderer }])
   })
 
+  it("a remote view's page names its view to the host (origin-view.ts), the desktop's does not", () => {
+    const { hub: h, opened } = pageHub()
+    expect(h.connectSettingsPage('p1', W1, 'a.one', 'project', 4)).toBe(true)
+    expect(opened[0]!.open).toEqual({ pluginId: 'a.one', id: 'p1', scope: 'project', view: W1 })
+    expect(h.connectSettingsPage('p1', D1, 'a.one', 'project', 5)).toBe(true)
+    expect(opened[1]!.open).toEqual({ pluginId: 'a.one', id: 'p2', scope: 'project' })
+  })
+
   it('refuses a plugin not running in the asking project, an undeclared scope, junk ids, scopes and nonces', () => {
     const { hub: h, sent } = pageHub()
     for (const [projectId, pluginId, scope, nonce] of [

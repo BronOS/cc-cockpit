@@ -625,6 +625,18 @@ function start(): void {
   const closeAsks = new CloseAsks({
     send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
+    // A view's Close won the ask: main closes the tab (a view only answers), as `tabs.close` does,
+    // and the window's other views hear `tabs.removed`; the answering view drops it on the reply.
+    close: (windowId, viewId, tabId) => {
+      const projectId = windows.projectWindows().find((w) => w.windowId === windowId)?.projectId
+      if (projectId === undefined) return false
+      const gen = tabs.list(projectId).find((t) => t.id === tabId)?.gen
+      // Already gone (its process ended cleanly with the dialog up, tabs.removed): what the plugin asked for.
+      if (gen === undefined) return true
+      tabs.close(projectId, tabId)
+      views.toOthers(windowId, viewId, 'tabs.removed', { tabId, gen })
+      return true
+    },
     viewsOf: (windowId) => views.viewsOf(windowId)
   })
   // `ccc plugin link`'s confirm while a browser view is attached (link-asks.ts): an in-page dialog on

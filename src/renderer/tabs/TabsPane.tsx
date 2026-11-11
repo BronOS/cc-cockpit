@@ -168,6 +168,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // view of the window is asked, the first answer wins). A repeat of one (the web bridge hands a
   // late subscriber the asks still pending) is ignored, and one settled meanwhile is not acted on.
   const liveAsks = useRef(new Set<string>())
+  // Plugin close asks that came before this view's tab list (a view joining mid-ask), asked once it
+  // is in; `runAsk` is the closeAsk listener's runner they are handed to.
+  const asksBeforeList = useRef<Array<{ requestId: string; tabId: string }>>([])
+  const runAsk = useRef<((requestId: string, tabId: string) => void) | null>(null)
   // The window's own Claude statuses, for the dialog's "Claude is working" (read when it opens).
   const ownRef = useRef(own)
   // The Ctrl+Tab switcher (tab-switcher.ts): open while non-null, mirrored in a ref for the window
@@ -392,15 +396,27 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // for every way the request is dropped or cancelled.
   //
   // `askId`: the plugin close ask this answers (shared with the window's other views); dropped
-  // without an answer once main settled it, since another view answered first.
+  // without an answer once main settled it, since another view answered first. For an ask this view
+  // never closes the tab: its Close is only the answer (`done(true)`), and main closes the tab once
+  // that answer wins (close-asks.ts), so a Close racing another view's Cancel cannot kill the process.
   const requestClose = (tabId: string, done?: CloseDone, askId?: string): void => {
     if (confirmFor.current !== null) {
       done?.(false, true)
       return
     }
+    const finish = (): void => {
+      if (askId === undefined) close(tabId, done)
+      else done?.(true)
+    }
     const tab = stateRef.current.tabs.find((t) => t.id === tabId)
+    // An ask for a tab this view does not hold (gone, or not listed yet: the asks wait for the list,
+    // see the closeAsk listener) is declined, never answered Close: "not here" is not "not running".
+    if (!tab && askId !== undefined) {
+      done?.(false, true)
+      return
+    }
     if (!tab || !tabIsRunning(tab)) {
-      close(tabId, done)
+      finish()
       return
     }
     window.cockpit
@@ -424,7 +440,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         }
         const question = closeQuestion(now, ownRef.current.get(tabId)?.status, enabled)
         if (!question) {
-          close(tabId, done)
+          finish()
           return
         }
         // Set before the render, as settingsShown is: a focus frame queued just before (the palette
@@ -442,10 +458,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   // Commands (Task 11). Main resolves the key table; the handlers below act through the same tab
   // IPC as the buttons, so the router's project scoping applies to keys and palette alike.
-  const actions = useRef({ create, createCommand, close: requestClose, closeNow: close, toggleFlag })
+  // main closed a tab on this view's winning Close answer (close-asks.ts): drop it as `close` does.
+  const dropClosed = (tabId: string): void => {
+    sessions.dispose(tabId)
+    dispatch({ type: 'closed', tabId })
+  }
+  const actions = useRef({ create, createCommand, close: requestClose, closeNow: close, toggleFlag, dropClosed })
   useEffect(() => {
     ownRef.current = own
-    actions.current = { create, createCommand, close: requestClose, closeNow: close, toggleFlag }
+    actions.current = { create, createCommand, close: requestClose, closeNow: close, toggleFlag, dropClosed }
     paletteOpen.current = paletteCommands !== null
     settingsShown.current = settingsOpen
   })
@@ -453,23 +474,40 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // dialog included, and main hears the outcome. A failed answer only logs: main's wait ends anyway.
   // Every view of the window is asked and the first answer wins (close-asks.ts); main's
   // `sessions.closeSettled` then takes this view's dialog down, unanswered, if it is still up.
+  //
+  // A view that joins or reconnects mid-ask gets the ask replayed before its `tabs.list` reply: the
+  // ask waits for the list (`asksBeforeList`), so it is asked about the tab as it really is.
   useEffect(() => {
     const live = liveAsks.current
-    const offAsk = window.cockpit.on('sessions.closeAsk', ({ requestId, tabId }) => {
-      if (live.has(requestId)) return
-      live.add(requestId)
+    const waiting = asksBeforeList.current
+    const run = (requestId: string, tabId: string): void => {
+      // Settled while it waited for the list.
+      if (!live.has(requestId)) return
       actions.current.close(
         tabId,
         (closed, declined) => {
           // Settled meanwhile (another view answered): main would ignore this answer anyway.
           if (!live.delete(requestId)) return
           const answer = declined === true ? { requestId, closed, declined: true } : { requestId, closed }
-          window.cockpit.invoke('sessions.closeAnswer', answer).catch((err: unknown) => {
-            console.warn('answering a plugin close failed', err)
-          })
+          window.cockpit.invoke('sessions.closeAnswer', answer).then(
+            (accepted) => {
+              // main closed the tab on this Close (it won the ask): drop it here too.
+              if (closed && declined !== true && accepted) actions.current.dropClosed(tabId)
+            },
+            (err: unknown) => {
+              console.warn('answering a plugin close failed', err)
+            }
+          )
         },
         requestId
       )
+    }
+    runAsk.current = run
+    const offAsk = window.cockpit.on('sessions.closeAsk', ({ requestId, tabId }) => {
+      if (live.has(requestId)) return
+      live.add(requestId)
+      if (stateRef.current.listed) run(requestId, tabId)
+      else waiting.push({ requestId, tabId })
     })
     const offSettled = window.cockpit.on('sessions.closeSettled', ({ requestId }) => {
       live.delete(requestId)
@@ -483,8 +521,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offAsk()
       offSettled()
       live.clear()
+      waiting.length = 0
+      runAsk.current = null
     }
   }, [])
+  // The tab list came: the asks that arrived before it are asked now, oldest first.
+  useEffect(() => {
+    if (!state.listed) return
+    const waiting = asksBeforeList.current.splice(0)
+    for (const { requestId, tabId } of waiting) runAsk.current?.(requestId, tabId)
+  }, [state.listed])
   /**
    * Give the keyboard back to what the user was in once a palette or overlay goes: the settings
    * screen while it is shown, else the active terminal. Decided when the frame fires, never when
@@ -634,7 +680,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           .invoke('settings.confirmTabCloseSet', { value: false })
           .catch((err: unknown) => setError(ipcErrorMessage(err)))
       }
-      if (doClose) {
+      const ask = confirmAsk.current
+      confirmAsk.current = null
+      // A plugin's ask: Close is only this view's answer, main closes the tab if it wins (close-asks.ts).
+      if (doClose && ask !== null) settleClose(confirmDone, true)
+      else if (doClose) {
         const done = confirmDone.current ?? undefined
         confirmDone.current = null
         actions.current.closeNow(tabId, done)

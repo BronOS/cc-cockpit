@@ -43,6 +43,12 @@ export interface CloseAskHooks {
   /** The ask is over: tell every view of the window, so the ones still asking stop. */
   settled?(windowId: number, requestId: string): void
   /**
+   * Close the ask's tab: a Close answer from `viewId` won the ask. The tab id is the one main asked
+   * about, never one a view sent. True for a tab already gone (it is closed, as asked); false (or a
+   * throw) when it could not be closed: the plugin hears `closed: false`.
+   */
+  close(windowId: number, viewId: ViewId, tabId: string): boolean
+  /**
    * The window's live views now (ViewRegistry.viewsOf). Absent: a decline settles at once, as a
    * window with one view would.
    */
@@ -101,7 +107,8 @@ export class CloseAsks {
    * A view's answer. Only a view of the window the ask went to settles it (the router took the
    * window and the view from the sender, never from the payload): another window naming the id is
    * ignored. The first answer wins; a decline waits for the others (see the top of the file). False
-   * for an unknown or settled id, and for another window's view.
+   * for an unknown or settled id, and for another window's view. A winning Close closes the tab here
+   * (the `close` hook) and answers whether it did: the view drops the tab only on true.
    */
   answer(windowId: number, viewId: ViewId, requestId: string, answer: CloseAskAnswer): boolean {
     const ask = this.pending.get(requestId)
@@ -111,8 +118,18 @@ export class CloseAsks {
       this.settleIfAllDeclined(requestId, ask)
       return true
     }
-    this.settle(requestId, answer.closed === true)
-    return true
+    if (answer.closed !== true) {
+      this.settle(requestId, false)
+      return true
+    }
+    let closed: boolean
+    try {
+      closed = this.hooks.close(ask.windowId, viewId, ask.tabId)
+    } catch {
+      closed = false
+    }
+    this.settle(requestId, closed)
+    return closed
   }
 
   /**

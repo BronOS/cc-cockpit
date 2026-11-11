@@ -3,6 +3,7 @@
 // arrive with Task 28).
 import { describe, expect, it } from 'vitest'
 import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ctx'
+import { currentView } from '../../src/host/ctx/origin-view'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
 import type { OverlaySpec, PluginContext } from '../../src/sdk/types'
@@ -503,6 +504,16 @@ describe('ctx.overlay.start', () => {
     off()
     contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 2 } })
     expect(heard).toEqual([{ n: 1 }])
+
+    // A remote view's page: its listeners run in that view (origin-view.ts); a view main did not
+    // mint is dropped, never read as the desktop's.
+    const views: unknown[] = []
+    const offView = overlay.onMessage(() => views.push(currentView()))
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 1, view: 'web:4' })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 2 })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 3, view: 'desktop:1' })
+    expect(views).toEqual(['web:4', undefined])
+    offView()
 
     overlay.onMessage((m) => heard.push(m))
     end({ kind: 'value', value: { done: true } })

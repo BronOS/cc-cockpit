@@ -37,6 +37,14 @@ const NO_SLOTS: SlotFrameInfo[] = []
  * on every edit, and never sent: `layout.set` carries main's (the desktop's) geometry back, and an
  * edit that only moved a splitter or collapsed a zone sends nothing at all. Main enforces the same
  * on its side (LayoutService.set `keepGeometry`), so this is about not sending, not about trust.
+ * There a geometry-only edit is not an unanswered edit at all: main's views keep arriving during
+ * the drag and are drawn under the view's own (dragged) geometry.
+ *
+ * An edit that changed only sizes (a splitter, a panel resize, a collapse) never sends a placement
+ * of its own: on the desktop it goes onto main's newest layout, so a panel another view moved
+ * during the drag is not put back by the release (the drag held main's views off, its working
+ * copy has the old placement). Only with a shared edit of its own still unanswered does it send
+ * the working copy, which carries that edit.
  */
 export class LayoutSync {
   private snapshot: LayoutSnapshot = { layout: defaultLayout(), panels: [], appSlots: NO_SLOTS }
@@ -50,6 +58,10 @@ export class LayoutSync {
   private main: LayoutState | undefined
   /** Geometry mode: this view's own geometry, drawn over main's layout. */
   private local: LayoutGeometry | undefined
+  /** A shared edit (placement, open, hidden: not only sizes) not sent yet. */
+  private placed = false
+  /** `layout.set` calls not answered yet. */
+  private inFlight = 0
 
   constructor(
     private readonly bridge: LayoutBridge,
@@ -109,38 +121,56 @@ export class LayoutSync {
     if (!this.ready) return
     const sent = this.edits
     let outgoing = this.snapshot.layout
-    if (this.geometry && this.main) {
+    if (this.geometry) {
       this.local = geometryOf(this.snapshot.layout)
       this.geometry.save(this.local)
-      outgoing = withGeometry(this.snapshot.layout, geometryOf(this.main))
-      if (JSON.stringify(outgoing) === JSON.stringify(this.main)) {
-        // Only this view's geometry changed: nothing for main. The edit is settled here, and the
-        // layout is main's newest (a view that came during a drag) under this view's geometry.
-        this.acked = sent
-        this.set({ ...this.snapshot, layout: this.display(this.main) })
-        return
-      }
+      // Only this view's geometry changed: nothing for main (and nothing unanswered, see apply).
+      if (!this.placed) return
+      if (this.main) outgoing = withGeometry(this.snapshot.layout, geometryOf(this.main))
+    } else if (!this.placed && this.inFlight === 0 && this.main) {
+      // Only sizes changed: they go onto main's newest layout, never the placement the drag began
+      // with (another view may have moved a panel meanwhile; its view was held off by the drag).
+      outgoing = withGeometry(this.main, geometryOf(this.snapshot.layout))
+      this.set({ ...this.snapshot, layout: outgoing })
     }
+    if (this.main && JSON.stringify(outgoing) === JSON.stringify(this.main)) {
+      // Nothing for main (an edit undone before the release): settled here, and the layout is
+      // main's newest (a view that came during a drag), under this view's geometry in geometry mode.
+      this.acked = sent
+      this.placed = false
+      this.set({ ...this.snapshot, layout: this.display(this.main) })
+      return
+    }
+    this.placed = false
+    this.inFlight += 1
     this.bridge
       .invoke('layout.set', { layout: outgoing })
       .then((view) => {
+        this.inFlight -= 1
         // An answer to an older `layout.set` must not undo a newer edit.
         if (this.edits !== sent) return
         this.acked = sent
         this.take(view)
       })
       .catch(() => {
+        this.inFlight -= 1
         // Not stored. The edit stays unanswered (views keep off the layout) so what the user sees
-        // is not reverted; the next edit sends the whole layout again.
+        // is not reverted; the next edit sends the whole working copy again, this one included.
+        this.placed = true
       })
   }
 
   private apply(op: (l: LayoutState) => LayoutState): boolean {
     if (!this.ready) return false
-    const next = op(this.snapshot.layout)
-    if (next === this.snapshot.layout) return false
+    const prev = this.snapshot.layout
+    const next = op(prev)
+    if (next === prev) return false
+    // Shared: anything but sizes and collapsed zones changed (next with prev's geometry is not prev).
+    const shared = JSON.stringify(withGeometry(next, geometryOf(prev))) !== JSON.stringify(prev)
+    if (shared) this.placed = true
     if (this.geometry) this.local = geometryOf(next)
-    this.edits += 1
+    // In geometry mode a sizes-only edit is the view's own: main's views need not wait for it.
+    if (shared || !this.geometry) this.edits += 1
     this.set({ ...this.snapshot, layout: next })
     return true
   }

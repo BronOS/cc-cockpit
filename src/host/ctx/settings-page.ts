@@ -9,7 +9,9 @@
 // (src/main/plugins/host-manager.ts sendSettingsPagePort, host/index.ts receivePort). One page per
 // plugin at a time: a new open ends the older one first (main closes it too). The page ends with
 // main's `settingsPage.close { pluginId, id }` event, or when its end of the port closes. Messages
-// follow the panel rules (host/ctx/ui.ts): ONE JSON string each, the same 1 MiB cap.
+// follow the panel rules (host/ctx/ui.ts): ONE JSON string each, the same 1 MiB cap. A page in a
+// remote (browser) view comes with that view in its tag (`view`), and its message listeners run in
+// it (origin-view.ts), as a panel's do: what they open or focus shows on that screen.
 //
 // The page has no settings API: the plugin keeps what it edits where it wants and never posts a
 // secret to it (a page is a web page; the guide says so).
@@ -17,6 +19,8 @@ import type { Disposer, JsonValue, PluginContext, SettingsPageInstance } from '.
 import { errorText } from '../../shared/error-text'
 import type { SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope, SETTINGS_PAGE_ID_PATTERN } from '../../shared/settings-page'
+import { viewIdOf, type ViewId } from '../../shared/views'
+import { dispatchInView } from './origin-view'
 import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
 
 type MessageListener = (message: JsonValue) => void
@@ -28,6 +32,8 @@ export interface SettingsPageOpenTag {
   pluginId: string
   id: string
   scope: SettingsPageScope
+  /** The remote view the page is in; absent for the desktop's page. */
+  view?: ViewId
 }
 
 /** main's port message `{ "settingsPageOpen": {...} }` (sent with the port), or undefined for anything else. */
@@ -39,7 +45,10 @@ export function settingsPageOpenTag(data: unknown): SettingsPageOpenTag | undefi
     const { pluginId, id, scope } = tag
     if (typeof pluginId !== 'string' || typeof id !== 'string' || !SETTINGS_PAGE_ID_PATTERN.test(id)) return undefined
     if (!isSettingsPageScope(scope)) return undefined
-    return { pluginId, id, scope }
+    // A view main did not mint is refused, never read as the desktop's page (as slots.ts does).
+    const view = viewIdOf(tag.view)
+    if (tag.view !== undefined && view === undefined) return undefined
+    return { pluginId, id, scope, ...(view !== undefined ? { view } : {}) }
   } catch {
     // Not one of main's port messages.
   }
@@ -50,6 +59,8 @@ export function settingsPageOpenTag(data: unknown): SettingsPageOpenTag | undefi
 interface Page {
   readonly pluginId: string
   readonly id: string
+  /** The remote view the page is in; undefined for the desktop's. */
+  readonly view: ViewId | undefined
   readonly port: PanelPort
   readonly unsubscribe: () => void
   readonly messageListeners: Set<MessageListener>
@@ -88,6 +99,7 @@ export class SettingsPageHub {
     const page: Page = {
       pluginId: tag.pluginId,
       id: tag.id,
+      view: tag.view,
       port,
       unsubscribe: port.onMessage((raw) => this.receive(page, raw)),
       messageListeners: new Set(),
@@ -192,7 +204,14 @@ export class SettingsPageHub {
       return
     }
     for (const listener of [...page.messageListeners]) {
-      this.safely(page.pluginId, 'onMessage', () => listener(structuredClone(got.value)))
+      // In the page's view (origin-view.ts), so the calls it makes act where the click came from.
+      this.safely(page.pluginId, 'onMessage', () =>
+        dispatchInView(
+          page.view,
+          () => listener(structuredClone(got.value)),
+          (err) => this.log(page.pluginId, `a settings page onMessage listener failed: ${errorText(err)}`)
+        )
+      )
     }
   }
 }

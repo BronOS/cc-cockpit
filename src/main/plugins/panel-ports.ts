@@ -119,7 +119,7 @@ export interface PanelPortDeps<P> {
   /** The scopes of the plugin's settings page when it runs in the project's host now (HostManager.runningSettingsPage). */
   settingsPageScopes?(projectId: string, pluginId: string): readonly SettingsPageScope[] | undefined
   /** Hand the plugin's host its end of a settings page (HostManager.sendSettingsPagePort); false when it does not run. */
-  settingsPageToHost?(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope }, port: P): boolean
+  settingsPageToHost?(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope; view?: ViewId }, port: P): boolean
   /** The page is gone: tell the plugin's host (HostManager.closeSettingsPage). */
   settingsPageClosed?(projectId: string, pluginId: string, id: string): void
   /**
@@ -298,7 +298,8 @@ export class PanelPortHub<P> {
     const channel = this.deps.createChannel()
     let sent = false
     try {
-      sent = this.deps.settingsPageToHost(projectId, { pluginId, id, scope }, channel.host)
+      // A remote view's page names it, so its listeners act in that view (origin-view.ts), as a panel's.
+      sent = this.deps.settingsPageToHost(projectId, { pluginId, id, scope, ...remoteOnly(viewId) }, channel.host)
     } catch (err) {
       this.log(`settings page of ${pluginId}: handing the host its port failed: ${errorText(err)}`)
     }

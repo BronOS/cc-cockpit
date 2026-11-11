@@ -1080,6 +1080,19 @@ describe('html overlays held by one view (design-web.md §5.4)', () => {
     expect(events).toHaveLength(count)
   })
 
+  it("hands the opener a remote holder's view with its page's messages (origin-view.ts), none for the desktop's", () => {
+    const { m } = viewsManager()
+    const views: unknown[] = []
+    const opener = { onMessage: (_message: unknown, view?: string) => void views.push(view) }
+    void m.open(W1, page, 'plugin a.one', undefined, opener, 'a.one', 'web:1')
+    const remote = m.infos(W1).at(-1)!.id
+    void m.open(W1, page, 'plugin a.one', undefined, opener, 'a.one')
+    const desktop = m.infos(W1).at(-1)!.id
+    expect(m.pageMessage(W1, remote, '{"a":1}', 'web:1')).toBe(true)
+    expect(m.pageMessage(W1, desktop, '{"a":2}', 'desktop:1')).toBe(true)
+    expect(views).toEqual(['web:1', undefined])
+  })
+
   it('only the holder answers, reports and messages; the result settles the opener once', async () => {
     const { m } = viewsManager()
     const { id, result, heard } = chat(m, 'web:1')

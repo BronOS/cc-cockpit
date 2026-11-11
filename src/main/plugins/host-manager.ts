@@ -949,7 +949,7 @@ export class HostManager {
    * Hand the plugin's host one end of its settings page's channel, tagged `settingsPageOpen` with
    * main's own ids (panel-ports.ts took them from runningSettingsPage). False when it does not run.
    */
-  sendSettingsPagePort(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope }, port: unknown): boolean {
+  sendSettingsPagePort(projectId: string, open: { pluginId: string; id: string; scope: SettingsPageScope; view?: ViewId }, port: unknown): boolean {
     const rec = this.hosts.get(projectId)
     if (!rec?.proc || rec.stopping || !rec.ran.has(open.pluginId) || rec.reloading.has(open.pluginId)) return false
     rec.proc.transferPort(JSON.stringify({ settingsPageOpen: open }), port)

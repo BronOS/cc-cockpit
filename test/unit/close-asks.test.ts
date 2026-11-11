@@ -11,12 +11,21 @@ import { desktopViewId } from '../../src/shared/views'
 let sent: { windowId: number; requestId: string; tabId: string }[]
 let settled: { windowId: number; requestId: string }[]
 let views: Map<number, string[]>
+let closes: { windowId: number; viewId: string; tabId: string }[]
 let asks: CloseAsks
+/** What a test's close hook does: closes (true), cannot (false). */
+let closeResult: boolean
+const close = (windowId: number, viewId: string, tabId: string): boolean => {
+  closes.push({ windowId, viewId, tabId })
+  return closeResult
+}
 
 beforeEach(() => {
   vi.useFakeTimers()
   sent = []
   settled = []
+  closes = []
+  closeResult = true
   views = new Map([
     [1, ['desktop:1']],
     [2, ['desktop:2']]
@@ -28,6 +37,7 @@ beforeEach(() => {
       return true
     },
     settled: (windowId, requestId) => settled.push({ windowId, requestId }),
+    close,
     viewsOf: (windowId) => views.get(windowId) ?? []
   })
 })
@@ -111,7 +121,7 @@ describe('CloseAsks', () => {
   })
 
   it('without a view list a decline is the answer (one view)', async () => {
-    const single = new CloseAsks({ send: () => true })
+    const single = new CloseAsks({ send: () => true, close })
     const p = single.ask(1, 't1')
     expect(single.answer(1, 'desktop:1', 'close-1', { closed: false, declined: true })).toBe(true)
     await expect(p).resolves.toBe(false)
@@ -133,7 +143,8 @@ describe('CloseAsks', () => {
     const throwing = new CloseAsks({
       send: () => {
         throw new Error('gone')
-      }
+      },
+      close
     })
     await expect(throwing.ask(1, 't1')).resolves.toBe(false)
     expect(asks.size).toBe(0)
@@ -150,12 +161,63 @@ describe('CloseAsks', () => {
     expect(asks.size).toBe(0)
   })
 
+  it('main closes the tab only on the winning Close, with the tab id it asked about', async () => {
+    views.set(1, ['desktop:1', 'web:1'])
+    const p = asks.ask(1, 't1')
+    const id = sent[0]!.requestId
+    expect(asks.answer(1, 'web:1', id, { closed: true })).toBe(true)
+    await expect(p).resolves.toBe(true)
+    expect(closes).toEqual([{ windowId: 1, viewId: 'web:1', tabId: 't1' }])
+  })
+
+  it('a Close arriving after another view’s Cancel won closes nothing (the race)', async () => {
+    views.set(1, ['desktop:1', 'web:1'])
+    const p = asks.ask(1, 't1')
+    const id = sent[0]!.requestId
+    // Both views answered at once; the browser's Cancel reached main first.
+    expect(asks.answer(1, 'web:1', id, { closed: false })).toBe(true)
+    expect(asks.answer(1, 'desktop:1', id, { closed: true })).toBe(false)
+    await expect(p).resolves.toBe(false)
+    expect(closes).toEqual([])
+  })
+
+  it('a decline, a Cancel and an answer from another window never close', async () => {
+    views.set(1, ['desktop:1', 'web:1'])
+    const p = asks.ask(1, 't1')
+    const id = sent[0]!.requestId
+    asks.answer(1, 'web:1', id, { closed: true, declined: true })
+    asks.answer(2, 'desktop:2', id, { closed: true })
+    expect(closes).toEqual([])
+    asks.answer(1, 'desktop:1', id, { closed: false })
+    await expect(p).resolves.toBe(false)
+    expect(closes).toEqual([])
+  })
+
+  it('a winning Close whose close fails or throws answers false to the view and the plugin', async () => {
+    closeResult = false
+    const p = asks.ask(1, 't1')
+    expect(asks.answer(1, 'desktop:1', sent[0]!.requestId, { closed: true })).toBe(false)
+    await expect(p).resolves.toBe(false)
+    expect(asks.size).toBe(0)
+    const throwing = new CloseAsks({
+      send: () => true,
+      close: () => {
+        throw new Error('unknown tab')
+      }
+    })
+    const q = throwing.ask(1, 't1')
+    expect(throwing.answer(1, 'desktop:1', 'close-1', { closed: true })).toBe(false)
+    await expect(q).resolves.toBe(false)
+    expect(throwing.size).toBe(0)
+  })
+
   it('a settled hook that throws does not keep the plugin from its answer', async () => {
     const loud = new CloseAsks({
       send: () => true,
       settled: () => {
         throw new Error('view gone')
-      }
+      },
+      close
     })
     const p = loud.ask(1, 't1')
     loud.answer(1, 'desktop:1', 'close-1', { closed: true })
@@ -180,6 +242,7 @@ describe('CloseAsks through the ViewRegistry (two views of one window)', () => {
     const shared = new CloseAsks({
       send: (windowId, ask) => registry.toWindow(windowId, 'sessions.closeAsk', ask),
       settled: (windowId, requestId) => registry.toWindow(windowId, 'sessions.closeSettled', { requestId }),
+      close,
       viewsOf: (windowId) => registry.viewsOf(windowId)
     })
     const p = shared.ask(1, 't1')

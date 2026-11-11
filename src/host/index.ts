@@ -52,7 +52,7 @@
 // RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts). A slot frame the
 // plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params?, view? } }`
 // and ends with the `slot.close { pluginId, id, view? }` event or its port closing (host/ctx/slots.ts).
-// A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope } }`, ended by
+// A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope, view? } }`, ended by
 // `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts).
 import { HostContexts, type LogLevel } from './ctx'
 import { carryView } from './ctx/origin-view'

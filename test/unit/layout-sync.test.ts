@@ -115,6 +115,30 @@ describe('LayoutSync', () => {
     expect(fake.sets[0]!.layout.zones.left.size).toBe(520)
   })
 
+  it('a sizes-only drag released while its own shared edit is in flight sends the working copy with it', async () => {
+    const { sync, fake } = await started()
+    sync.commit((l) => togglePanel(l, 'test/sessions'))
+    sync.preview((l) => resizeZone(l, 'left', 520))
+    sync.flush()
+    expect(fake.sets).toHaveLength(2)
+    expect(fake.sets[1]!.layout.zones.left).toMatchObject({ size: 520 })
+    expect(fake.sets[1]!.layout.zones.left.panels[0]!.open).toBe(false)
+  })
+
+  it('a sizes-only drag goes onto main\'s newest layout, not the placement it began with', async () => {
+    const { sync, fake } = await started()
+    sync.preview((l) => resizeZone(l, 'left', 520))
+    // Another view closed the panel during the drag (held off: the drag is unanswered).
+    const moved = storedView()
+    moved.layout = togglePanel(moved.layout, 'test/sessions')
+    fake.emit(moved)
+    expect(sync.get().layout.zones.left.panels[0]!.open).toBe(true)
+    sync.flush()
+    expect(fake.sets[0]!.layout.zones.left).toMatchObject({ size: 520 })
+    expect(fake.sets[0]!.layout.zones.left.panels[0]!.open).toBe(false)
+    expect(sync.get().layout.zones.left.panels[0]!.open).toBe(false)
+  })
+
   it('does not revert a click while its layout.set is in flight, nor build the next edit on old state', async () => {
     const { sync, fake } = await started()
     sync.commit((l) => setZoneCollapsed(l, 'left'))

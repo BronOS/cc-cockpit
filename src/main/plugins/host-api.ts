@@ -100,7 +100,8 @@
 //   sessions.rateLimits { rateLimits: RateLimits }               the plan usage changed (at most one per
 //                                                                2 s, RateLimitsStore; to every host)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
-//   overlay.message { pluginId, handle, message }                that overlay's page posted (not a result)
+//   overlay.message { pluginId, handle, message, view? }         that overlay's page posted (not a result;
+//                                                                `view`: a remote view's page)
 //   panel.action    { pluginId, panelId, actionId }              a click on a header action this host set
 //                                                                (panelAction: current, not busy/disabled)
 // requests main makes of the host (overlay toolbar, design-next §3.3; `overlayButtons`, channel onButton):
@@ -1654,8 +1655,9 @@ export class HostApi {
         // manager bounds it to 5 s too and checks the answer's shape).
         onDiscuss: () => this.hostCall('overlay.discuss', { pluginId: pid, handle }, DISCUSS_ASK_MS),
         // A dying host (revoked) gets nothing more; the overlay is dismissed when it is gone.
-        onMessage: (message) => {
-          if (!this.revoked) this.emit('overlay.message', { pluginId: pid, handle, message })
+        // `view` (a remote view's page) only as main's own id: the host runs the listeners in it.
+        onMessage: (message, view) => {
+          if (!this.revoked) this.emit('overlay.message', { pluginId: pid, handle, message, ...(view !== undefined ? { view } : {}) })
         }
       }
     }
