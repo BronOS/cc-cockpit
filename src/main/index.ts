@@ -5,7 +5,8 @@
 // `pty/node-pty-backend.ts`, `plugins/host-process.ts`, `windows/create-window.ts`,
 // `notifications/electron-notification.ts`, `files/electron-shell.ts` for the file calls of `shell`
 // behind ctx.files.reveal / openWithSystem / trash; `safeStorage` is used only through
-// `secrets/secret-store.ts`), never from logic modules that unit tests load. This file still calls
+// `secrets/secret-store.ts`; `dialog` only in `dialogs/electron-dialog.ts`, and never called in server
+// mode), never from logic modules that unit tests load. This file still calls
 // `shell.openExternal` itself, always through a lambda the e2e recorder can replace.
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
@@ -14,7 +15,6 @@ import { effectiveDiscussPrompt } from '../shared/discuss'
 import {
   app,
   BrowserWindow,
-  dialog,
   ipcMain,
   MessageChannelMain,
   nativeTheme,
@@ -139,6 +139,8 @@ import { TabManager } from './tabs/tab-manager'
 import { viewInputHandler } from './tabs/view-input'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
+import { electronDialogs } from './dialogs/electron-dialog'
+import { serverDialogs, type Dialogs } from './dialogs/dialogs'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -258,6 +260,9 @@ function testPreviewFetcher(inner: PreviewFetcher, testRun: boolean): PreviewFet
 }
 
 function start(server: boolean): void {
+  // Native dialogs (dialogs/): in server mode nothing reaches Electron's `dialog`, which aborts main
+  // under Ozone headless; a message box rejects, an open dialog is canceled, an error box is logged.
+  const dialogs: Dialogs<BrowserWindow> = server ? serverDialogs() : electronDialogs()
   // Before `ready` (Electron's rule for privileged schemes): html overlay pages (cc-overlay:),
   // plugin panel files (cc-plugin:) and webview panels' local files (cc-preview:), in the one call
   // Electron allows.
@@ -504,7 +509,7 @@ function start(server: boolean): void {
       testTrashConfirm?.confirm ??
       electronConfirmTrash({
         windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
-        showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
+        showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
       })
   })
   // Closing a window that browsers have open asks first (design-web.md §5.6, windows/close-dialog.ts):
@@ -534,7 +539,7 @@ function start(server: boolean): void {
       testCloseAsk?.ask ??
       electronAskClose({
         windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
-        showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
+        showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
       }),
     onWindowVisibility: (windowId, visible) => {
       const viewId = desktopViewId(windowId)
@@ -1572,7 +1577,7 @@ function start(server: boolean): void {
         testLinkConfirm?.confirm ??
         electronConfirmLink({
           windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
-          showMessageBox: (parent, options) => dialog.showMessageBox(parent, options)
+          showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
         })
     }),
     linkAndEnable: async (projectId, info) => {
@@ -1644,16 +1649,14 @@ function start(server: boolean): void {
       title: 'Open Folder',
       properties: ['openDirectory', 'createDirectory']
     }
-    const result = parent
-      ? await dialog.showOpenDialog(parent, options)
-      : await dialog.showOpenDialog(options)
+    const result = await dialogs.showOpenDialog(parent, options)
     const path = result.filePaths[0]
     if (result.canceled || !path) return false
     try {
       windows.openPath(path)
       return true
     } catch (err) {
-      dialog.showErrorBox('Cannot open folder', errorText(err))
+      dialogs.showErrorBox('Cannot open folder', errorText(err))
       return false
     }
   }
@@ -1699,16 +1702,14 @@ function start(server: boolean): void {
         properties: ['openDirectory']
       }
       const parent = BrowserWindow.fromId(windowId) ?? undefined
-      const result = parent
-        ? await dialog.showOpenDialog(parent, options)
-        : await dialog.showOpenDialog(options)
+      const result = await dialogs.showOpenDialog(parent, options)
       const path = result.filePaths[0]
       if (result.canceled || !path) return false
       try {
         windows.openPath(relinkMissing(registry, id, path).path)
         return true
       } catch (err) {
-        dialog.showErrorBox('Cannot relink', errorText(err))
+        dialogs.showErrorBox('Cannot relink', errorText(err))
         return false
       }
     },
@@ -1731,7 +1732,7 @@ function start(server: boolean): void {
   const pickFolder = async (windowId: number, title: string): Promise<string | undefined> => {
     const options: OpenDialogOptions = { title, properties: ['openDirectory'] }
     const parent = BrowserWindow.fromId(windowId) ?? undefined
-    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const result = await dialogs.showOpenDialog(parent, options)
     const path = result.filePaths[0]
     return result.canceled || !path ? undefined : path
   }
@@ -2373,6 +2374,25 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // The three calls of the Dialogs main wired, with no queued fake in the way (the server-mode
+          // e2e: the same calls on Electron's `dialog` abort main under Ozone headless). The error box's
+          // log line is caught by wrapping console.error for the call.
+          dialogProbe: async () => {
+            const box = await dialogs.showMessageBox(undefined, { message: 'probe' }).then(
+              () => 'resolved',
+              (err: unknown) => (err instanceof Error ? err.name : 'rejected')
+            )
+            const open = await dialogs.showOpenDialog(undefined, { properties: ['openDirectory'] })
+            const logged: string[] = []
+            const original = console.error
+            console.error = (...args: unknown[]) => logged.push(args.map(String).join(' '))
+            try {
+              dialogs.showErrorBox('probe title', 'probe content')
+            } finally {
+              console.error = original
+            }
+            return { box, open, logged }
+          },
           // What the update check's fake fetcher answers (a tag such as 'v99.0.0'), then one check.
           fakeRelease: async (tag: string) => {
             fakeReleaseTag = tag

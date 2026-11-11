@@ -53,3 +53,19 @@ test('server mode: main runs as a server; a terminal tab opened in the browser t
     await browser.close()
   }
 })
+
+test('server mode: the dialogs main wired never reach Electron; main survives each call', async () => {
+  test.setTimeout(60_000)
+  server = await launchServer()
+  // No queued fake in the way: the hook calls the Dialogs implementation index.ts chose. The same
+  // calls on Electron's `dialog` abort main under Ozone headless (spike).
+  const probe = await server.cockpit.hook<{
+    box: string
+    open: { canceled: boolean; filePaths: string[] }
+    logged: string[]
+  }>('dialogProbe')
+  expect(probe.box).toBe('ServerDialogError')
+  expect(probe.open).toEqual({ canceled: true, filePaths: [] })
+  expect(probe.logged).toEqual(['probe title: probe content'])
+  await expectMainAlive(server)
+})

@@ -368,20 +368,20 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
   RULE comment at the top), `src/main/plugins/link-dialog.ts`, `src/main/windows/close-dialog.ts`,
   `src/main/files/trash-dialog.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] `dialogs.ts`: the `Dialogs` interface (message box, open dialog, error box) and the server-mode implementation
+- [x] `dialogs.ts`: the `Dialogs` interface (message box, open dialog, error box) and the server-mode implementation
       that never calls Electron: a message box rejects with `ServerDialogError`, an open dialog answers canceled, an
       error box becomes a log line
-- [ ] `electron-dialog.ts`: the only importer of Electron's `dialog`; `index.ts` picks one of the two by `server` and
+- [x] `electron-dialog.ts`: the only importer of Electron's `dialog`; `index.ts` picks one of the two by `server` and
       hands it to `link-dialog.ts`, `close-dialog.ts`, `trash-dialog.ts` and the open-folder, relink and `pickFolder`
       call sites
-- [ ] on the desktop nothing changes: the same boxes, the same parents, the queued fakes of a test run as before
-- [ ] a grep test like `no-direct-webcontents-send.test.ts`: only `electron-dialog.ts` imports or calls `dialog`
-- [ ] write tests with a recorder `dialog`: server mode never calls it (box rejects, open dialog canceled, error box
+- [x] on the desktop nothing changes: the same boxes, the same parents, the queued fakes of a test run as before
+- [x] a grep test like `no-direct-webcontents-send.test.ts`: only `electron-dialog.ts` imports or calls `dialog`
+- [x] write tests with a recorder `dialog`: server mode never calls it (box rejects, open dialog canceled, error box
       logged), desktop mode passes parent and options through unchanged
-- [ ] e2e in the real server process (`server-mode.spec.ts`): a test hook calls the three methods of the adapter main
+- [x] e2e in the real server process (`server-mode.spec.ts`): a test hook calls the three methods of the adapter main
       wired, with no queued fake in the way: the message box rejects, the open dialog is canceled, the error box is a
       log line, and main is alive after each (the same calls on Electron's `dialog` abort main there)
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `link-confirm`, `close-confirm`, `files-menu`, `project-picker`)
+- [x] run tests and `npm run test:e2e` (`server-mode`, `link-confirm`, `close-confirm`, `files-menu`, `project-picker`)
       - must pass before next task
 
 ### Task 4: One adapter for `shell.openExternal` [model: opus]
