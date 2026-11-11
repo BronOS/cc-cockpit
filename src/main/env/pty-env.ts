@@ -34,7 +34,9 @@ export interface PtyEnvOptions {
  * server run from boot (the systemd unit's environment file, design-web.md §9.10) sets it in main's
  * environment so Claude tabs start signed in with no interactive login. It is an account
  * credential, not a nested-session marker, so passing it on does not make `claude` refuse to start.
- * An exact name, never a prefix: every other `CLAUDE_CODE_*` is still stripped.
+ * An exact name, never a prefix: every other `CLAUDE_CODE_*` is still stripped. Not gated by server
+ * mode, knowingly (design §9.10 words it unconditionally): a desktop user who exports the token in
+ * their shell rc now passes it to every child, so those `claude` runs use it over the stored login.
  */
 const KEPT_CLAUDE_VAR = 'CLAUDE_CODE_OAUTH_TOKEN'
 
