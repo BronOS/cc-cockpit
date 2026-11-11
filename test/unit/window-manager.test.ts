@@ -1598,7 +1598,7 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     const s = server()
     s.wm.openPath(folder('a'))
     const win = factory.open('project')[0]!
-    expect(win.callbacks.onPageGone?.('crashed (crashed, exit code 133)')).toBe(true)
+    win.callbacks.onPageGone?.('crashed (crashed, exit code 133)')
     // Not at once: the pause comes first.
     expect(win.reloads).toBe(0)
     expect(s.timers.map((t) => t.ms)).toEqual([PAGE_RELOAD_FIRST_MS])
@@ -1613,8 +1613,8 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     const s = server()
     s.wm.openPath(folder('a'))
     const win = factory.open('project')[0]!
-    expect(win.callbacks.onPageGone?.('failed to load (ERR_FILE_NOT_FOUND)')).toBe(true)
-    expect(win.callbacks.onPageGone?.('crashed (crashed, exit code 1)')).toBe(true)
+    win.callbacks.onPageGone?.('failed to load (ERR_FILE_NOT_FOUND)')
+    win.callbacks.onPageGone?.('crashed (crashed, exit code 1)')
     expect(s.timers).toHaveLength(1)
     fire(s)
     expect(win.reloads).toBe(1)
@@ -1656,7 +1656,7 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     fire(s)
     expect(b!.reloads).toBe(0)
     // Quitting: a crash then schedules nothing, but still never closes the window.
-    expect(b!.callbacks.onPageGone?.('crashed (crashed, exit code 1)')).toBe(true)
+    b!.callbacks.onPageGone?.('crashed (crashed, exit code 1)')
     expect(s.timers).toHaveLength(0)
   })
 

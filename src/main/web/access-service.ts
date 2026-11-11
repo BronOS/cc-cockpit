@@ -82,8 +82,6 @@ export const BROWSER_DISCONNECT_DETAIL = 'disconnected from a browser'
 
 /** stdout, once, when server mode wrote web access on (design-web.md §9.2). */
 export const SERVER_TURNED_ON_LINE = 'server mode: turned web access on in app.json'
-/** §9.12's None warning (shared/web-access.ts, where the browser's card reads it too). */
-export { SERVER_NONE_WARNING }
 
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
 const NOT_LISTENING = 'Turn web access on first: there is nothing to open the link on.'

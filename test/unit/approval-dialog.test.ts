@@ -124,17 +124,17 @@ describe('approvalKey', () => {
 })
 
 describe('ApprovalBox markup', () => {
-  type Props = { title: string; children: string; canAllow: boolean; note?: string; onAnswer(a: boolean): void; initiallyArmed?: boolean }
-  async function render(props: Omit<Props, 'onAnswer' | 'title' | 'children'>): Promise<string> {
+  type Props = { title: string; children: string; onAnswer(a: boolean): void }
+  async function render(): Promise<string> {
     // A .tsx module, loaded by a path the node typecheck does not follow (it has no JSX or DOM
     // lib); vitest transforms it like any other.
     const file = '../../src/renderer/notices/ApprovalDialog.tsx'
     const { ApprovalBox } = (await import(file)) as { ApprovalBox: FunctionComponent<Props> }
-    return renderToStaticMarkup(createElement(ApprovalBox, { title: 'Link <b>x</b>?', children: 'Body', onAnswer: () => {}, ...props }))
+    return renderToStaticMarkup(createElement(ApprovalBox, { title: 'Link <b>x</b>?', children: 'Body', onAnswer: () => {} }))
   }
 
   it('no form, no default button, no autofocus; Allow starts disabled', async () => {
-    const html = await render({ canAllow: true })
+    const html = await render()
     expect(html).not.toContain('<form')
     expect(html.toLowerCase()).not.toContain('autofocus')
     const buttons = html.match(/<button[^>]*>/g) ?? []
@@ -144,13 +144,6 @@ describe('ApprovalBox markup', () => {
     // The title is plain text.
     expect(html).toContain('Link &lt;b&gt;x&lt;/b&gt;?')
     expect(html).toContain('role="alertdialog"')
-  })
-
-  it('armed, Allow is enabled; without canAllow the note stands in its place', async () => {
-    expect(await render({ canAllow: true, initiallyArmed: true })).toMatch(/<button type="button" class="confirm-danger">Allow<\/button>/)
-    const denied = await render({ canAllow: false, note: 'Approve on the desktop' })
-    expect(denied).not.toContain('Allow</button>')
-    expect(denied).toContain('Approve on the desktop')
   })
 })
 
@@ -173,7 +166,6 @@ describe('trash confirm markup', () => {
       createElement(Box, {
         title: createElement(Title, { ask }),
         children: createElement(Text, { ask }),
-        canAllow: true,
         allowLabel: 'Move to Trash',
         denyLabel: 'Cancel',
         onAnswer: () => {}
@@ -209,7 +201,6 @@ describe('close project', () => {
       createElement(Box, {
         title: createElement(Title, { name: '<img src=x onerror=alert(1)>' }),
         children: 'Its tabs end.',
-        canAllow: true,
         allowLabel: 'Close project',
         denyLabel: 'Cancel',
         onAnswer: () => {}

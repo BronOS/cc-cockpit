@@ -32,9 +32,9 @@ import {
   type WebActionReply,
   type WebCliRevokeResult,
   type WebCliStatus,
+  SERVER_NONE_WARNING,
   type WebLinkReply
 } from '../../shared/web-access'
-import { SERVER_NONE_WARNING } from '../web/access-service'
 import { MAX_PASSWORD_LENGTH } from '../web/password'
 import { SERVER_NO_CONFIRM_MODE } from '../web/settings'
 import type { Caller, Handler } from './socket-server'

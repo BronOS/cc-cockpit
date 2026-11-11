@@ -8,11 +8,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseArgs } from '../../src/cli/args'
 import { buildRequest, NOT_RUNNING, readStdinCapped, run, runCommand, type Output } from '../../src/cli/client'
 import { formatWebStatus } from '../../src/cli/web-format'
-import { readHidden, readPassword } from '../../src/cli/web-password'
+import { PROMPT_TIMEOUT_MS, readHidden, readPassword } from '../../src/cli/web-password'
 import { fakeSecretStore, KEYFILE_PREFIX, unreadableCounts, type SecretStore } from '../../src/main/secrets/secret-store'
 import { SocketServer, type Caller, type Handler } from '../../src/main/socket/socket-server'
 import {
@@ -25,7 +25,7 @@ import {
 } from '../../src/main/socket/web-handlers'
 import { connect } from '../../src/main/socket/transport'
 import { AccessLog } from '../../src/main/web/access-log'
-import { SERVER_NONE_WARNING, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
+import { WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import type { GatewayStatus } from '../../src/main/web/gateway'
@@ -43,7 +43,7 @@ import {
   type Request
 } from '../../src/shared/protocol'
 import type { WebAccessSettings } from '../../src/shared/types'
-import { WEB_RISK_TEXT, type WebCliStatus } from '../../src/shared/web-access'
+import { SERVER_NONE_WARNING, WEB_RISK_TEXT, type WebCliStatus } from '../../src/shared/web-access'
 
 const POSIX = process.platform !== 'win32'
 const TOKEN = 'c'.repeat(64)
@@ -941,13 +941,39 @@ describe('ccc web part 2: the CLI', () => {
     expect(seen).toHaveLength(1)
   })
 
-  it('the prompt has a deadline of its own', async () => {
-    const tty = fakeTty([])
-    const read = await readHidden(tty, () => undefined, 'pw: ', 20, 256)
-    expect(read).toEqual({ error: 'no password typed within 0 minutes' })
-    expect(tty.raw).toEqual([true, false])
+  it('the prompt has a deadline of its own: five minutes by default', async () => {
+    vi.useFakeTimers()
+    try {
+      const tty = fakeTty([])
+      const pending = readPassword(tty, () => undefined, { maxChars: 256, stdinTimeoutMs: 20, readCapped: readStdinCapped })
+      await vi.advanceTimersByTimeAsync(PROMPT_TIMEOUT_MS - 1)
+      expect(tty.raw).toEqual([true])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await pending).toEqual({ error: 'no password typed within 5 minutes' })
+      expect(tty.raw).toEqual([true, false])
+    } finally {
+      vi.useRealTimers()
+    }
     const pipe = await readPassword(new Readable({ read() {} }), () => undefined, { maxChars: 256, stdinTimeoutMs: 20, readCapped: readStdinCapped })
     expect(pipe).toEqual({ error: 'stdin was not closed within 0 s' })
+  })
+
+  it('the prompt refuses a password over the cap rather than cutting it', async () => {
+    const tty = fakeTty(['abcde\r'])
+    expect(await readHidden(tty, () => undefined, 'pw: ', 60_000, 4)).toEqual({ error: 'the password may have at most 4 characters' })
+    expect(tty.raw).toEqual([true, false])
+    // At the cap exactly is fine.
+    expect(await readHidden(fakeTty(['abcd\r']), () => undefined, 'pw: ', 60_000, 4)).toEqual({ password: 'abcd' })
+  })
+
+  it('a terminal that hangs up ends the prompt at once, not at the deadline', async () => {
+    for (const event of ['end', 'close'] as const) {
+      const tty = fakeTty([])
+      const pending = readHidden(tty, () => undefined, 'pw: ', 60_000, 256)
+      tty.emit(event)
+      expect(await pending, event).toEqual({ error: 'the terminal closed' })
+      expect(tty.raw).toEqual([true, false])
+    }
   })
 
   it('in a tab, web password reads nothing and gets the host-only refusal', async () => {

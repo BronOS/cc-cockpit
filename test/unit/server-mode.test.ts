@@ -4,6 +4,7 @@ import {
   chooseStartPath,
   decideServerMode,
   DETECTED_LINE,
+  NOT_STARTED_LINE,
   LINUX_ONLY,
   parentMarker,
   serverStart,
@@ -178,6 +179,12 @@ describe('serverStart', () => {
     expect(serverStart(f.deps)).toEqual({ run: false })
     // process.exit, never app.quit(): with no display a quit fails at platform init with status 1.
     expect(f.calls).toEqual(['exit 0'])
+  })
+
+  it('with `--server` a held lock says this run started nothing, then exits 0', () => {
+    const f = fakes(flaggedExec, { lock: () => false })
+    expect(serverStart(f.deps)).toEqual({ run: false })
+    expect(f.calls).toEqual([`print ${NOT_STARTED_LINE}`, 'exit 0'])
   })
 
   it('releases the lock, prints the detected line, then execs in place with the switches', () => {

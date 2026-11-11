@@ -4,10 +4,8 @@ import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
 import { MAX_OAUTH_PASTE_LENGTH, OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../shared/oauth-paste'
 import {
-  addLinkAsk,
   addSharedAsk,
   canAllowLink,
-  dropLinkAsk,
   dropSharedAsk,
   dropUnseen,
   endSignIn,
@@ -286,8 +284,8 @@ function PlainLinkNotice(props: { url: string; onGone: () => void }): React.JSX.
 function LinkConfirm(): React.JSX.Element | null {
   const [asks, setAsks] = useState<readonly LinkAsk[]>([])
   useEffect(() => {
-    const offAsk = window.cockpit.on('links.ask', (ask) => setAsks((prev) => addLinkAsk(prev, ask)))
-    const offSettled = window.cockpit.on('links.settled', ({ requestId }) => setAsks((prev) => dropLinkAsk(prev, requestId)))
+    const offAsk = window.cockpit.on('links.ask', (ask) => setAsks((prev) => addSharedAsk(prev, ask)))
+    const offSettled = window.cockpit.on('links.settled', ({ requestId }) => setAsks((prev) => dropSharedAsk(prev, requestId)))
     return () => {
       offAsk()
       offSettled()
@@ -296,12 +294,12 @@ function LinkConfirm(): React.JSX.Element | null {
   const ask = asks[0]
   if (!ask) return null
   const onAnswer = (allow: boolean): void => {
-    setAsks((prev) => dropLinkAsk(prev, ask.requestId))
+    setAsks((prev) => dropSharedAsk(prev, ask.requestId))
     window.cockpit.invoke('links.answer', { requestId: ask.requestId, allow }).catch(() => {})
   }
   if (isServerView()) {
     return (
-      <ApprovalDialog key={ask.requestId} title={<LinkAskTitle ask={ask} />} canAllow={canAllowLink(true, true)} onAnswer={onAnswer}>
+      <ApprovalDialog key={ask.requestId} title={<LinkAskTitle ask={ask} />} onAnswer={onAnswer}>
         <LinkAskText ask={ask} />
       </ApprovalDialog>
     )
@@ -337,7 +335,6 @@ function TrashConfirm(): React.JSX.Element | null {
     <ApprovalDialog
       key={ask.requestId}
       title={<TrashAskTitle ask={ask} />}
-      canAllow
       allowLabel="Move to Trash"
       denyLabel="Cancel"
       onAnswer={onAnswer}

@@ -77,36 +77,26 @@ export function endSignIn(list: readonly OAuthSignInNotice[], signIn: string, fi
 }
 
 /**
- * A `links.ask` joins the queue once: the bridge's replay and a live event can both carry it. The
- * same array when it is already there, so React skips the render.
+ * Any shared ask's queue (links, trash): joins once, by request id (the bridge's replay and a live
+ * event can both carry it); the same array when it is already there, so React skips the render.
  */
-export function addLinkAsk(asks: readonly LinkAsk[], ask: LinkAsk): readonly LinkAsk[] {
-  return addSharedAsk(asks, ask)
-}
-
-/** An ask answered here, or settled in another view (`links.settled`), leaves the queue. */
-export function dropLinkAsk(asks: readonly LinkAsk[], requestId: string): readonly LinkAsk[] {
-  return dropSharedAsk(asks, requestId)
-}
-
-/** Any shared ask's queue (links, trash): joins once, by request id; the same array when already there. */
 export function addSharedAsk<A extends { requestId: string }>(asks: readonly A[], ask: A): readonly A[] {
   return asks.some((a) => a.requestId === ask.requestId) ? asks : [...asks, ask]
 }
 
-/** Any shared ask answered here or settled elsewhere leaves its queue. */
+/** Any shared ask answered here, or settled in another view (`links.settled`, `trash.settled`), leaves its queue. */
 export function dropSharedAsk<A extends { requestId: string }>(asks: readonly A[], requestId: string): readonly A[] {
   return asks.filter((a) => a.requestId !== requestId)
 }
 
 /**
- * Whether this page may offer Allow. On the desktop only the desktop approves a plugin link (main
- * refuses a remote view's Allow, design-web.md §6.1); a browser shows the ask with Deny and "Approve
- * on the desktop". A server's browser views are the owner (§9.6, `serverView` from the `ready`
- * snapshot's hint): Allow is offered there.
+ * Whether this page may offer Allow on the desktop's link dialog. Only the desktop approves a plugin
+ * link (main refuses a remote view's Allow, design-web.md §6.1); a browser shows the ask with Deny
+ * and "Approve on the desktop". A server's browser views (§9.6) get the ApprovalDialog instead,
+ * which always offers Allow.
  */
-export function canAllowLink(webShell: boolean, serverView = false): boolean {
-  return !webShell || serverView
+export function canAllowLink(webShell: boolean): boolean {
+  return !webShell
 }
 
 /**

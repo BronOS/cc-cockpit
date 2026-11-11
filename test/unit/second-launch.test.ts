@@ -11,6 +11,7 @@ import {
   launchHasDisplay,
   launchSocketPath,
   losingLaunchAsks,
+  storedWebAccessOn,
   pidAlive,
   privateLaunchProfile,
   runSecondLaunch,
@@ -59,11 +60,26 @@ describe('the decision table', () => {
     for (const [server, display, want] of rows) expect(secondInstanceAction({ server, display }), `${server} ${display}`).toBe(want)
   })
 
-  it('a losing launch asks the socket only with a display, on Linux', () => {
-    expect(losingLaunchAsks({ platform: 'linux', display: true })).toBe(true)
-    expect(losingLaunchAsks({ platform: 'linux', display: false })).toBe(false)
-    expect(losingLaunchAsks({ platform: 'darwin', display: true })).toBe(false)
-    expect(losingLaunchAsks({ platform: 'win32', display: true })).toBe(false)
+  it('a losing launch asks the socket only with a display, on Linux, with web access on in the data dir', () => {
+    expect(losingLaunchAsks({ platform: 'linux', display: true, webAccessOn: true })).toBe(true)
+    expect(losingLaunchAsks({ platform: 'linux', display: false, webAccessOn: true })).toBe(false)
+    expect(losingLaunchAsks({ platform: 'darwin', display: true, webAccessOn: true })).toBe(false)
+    expect(losingLaunchAsks({ platform: 'win32', display: true, webAccessOn: true })).toBe(false)
+    // Off: no server can hold the dir (a server run writes it on), so the launch quits at once.
+    expect(losingLaunchAsks({ platform: 'linux', display: true, webAccessOn: false })).toBe(false)
+  })
+
+  it("reads web access on from app.json's text; missing, damaged or anything but true is off", () => {
+    expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: true, port: 7330 } }))).toBe(true)
+    expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: false } }))).toBe(false)
+    expect(storedWebAccessOn(() => JSON.stringify({ webAccess: { enabled: 'yes' } }))).toBe(false)
+    expect(storedWebAccessOn(() => JSON.stringify({}))).toBe(false)
+    expect(storedWebAccessOn(() => '{not json')).toBe(false)
+    expect(
+      storedWebAccessOn(() => {
+        throw new Error('ENOENT')
+      })
+    ).toBe(false)
   })
 })
 

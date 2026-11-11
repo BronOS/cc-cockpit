@@ -30,7 +30,7 @@
 //  - The mode decides the real store (design-web.md §9.5): server mode always the key file
 //    (key-file-store.ts), the desktop always the keychain, never chosen by what is available. Each
 //    refuses the other's values with a text that names the other store, and start logs how many
-//    stored values belong to the other one (`otherStoreCount`): one data dir can be run both ways.
+//    stored values belong to the other one (`unreadableCounts`): one data dir can be run both ways.
 //
 // No `electron` import (index.ts passes `safeStorage` in): unit tests load this file in plain Node.
 import { readFileSync } from 'node:fs'
@@ -288,19 +288,7 @@ export function storedSecretValues(dataDir: string, read: (path: string) => stri
   return values
 }
 
-/**
- * How many of `values` belong to the other real store: key file values under the keychain,
- * keychain values under the key file. The fake store's values are nobody's here (and the fake
- * counts nothing: a test run's data dir holds only its own).
- */
-export function otherStoreCount(kind: SecretStore['kind'], values: readonly string[]): number {
-  if (kind === 'fake') return 0
-  const isKeyFile = (v: string): boolean => v.startsWith(KEYFILE_PREFIX)
-  const isFake = (v: string): boolean => v.startsWith(FAKE_PREFIX)
-  return values.filter((v) => v !== '' && !isFake(v) && (kind === 'os' ? isKeyFile(v) : !isKeyFile(v))).length
-}
-
-/** The start log line for `otherStoreCount`, or null when there is nothing to say. */
+/** The start log line for `unreadableCounts(...).otherMode`, or null when there is nothing to say. */
 export function otherStoreLine(kind: SecretStore['kind'], count: number): string | null {
   if (count === 0 || kind === 'fake') return null
   return kind === 'os'

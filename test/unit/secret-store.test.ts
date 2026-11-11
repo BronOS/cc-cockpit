@@ -9,14 +9,14 @@ import {
   FAKE_PREFIX,
   fakeSecretStore,
   KEYFILE_PREFIX,
-  otherStoreCount,
   otherStoreLine,
   safeStorageSecretStore,
   selectSecretStore,
   STORED_BY_KEY_FILE,
   storedSecretValues,
   type SafeStorageApi,
-  type SecretStore
+  type SecretStore,
+  unreadableCounts
 } from '../../src/main/secrets/secret-store'
 
 const SECRET = 'tok-very-secret-123'
@@ -201,9 +201,10 @@ describe('secret store', () => {
       )
       const values = storedSecretValues(dir)
       expect(values.sort()).toEqual([`${FAKE_PREFIX}y`, `${KEYFILE_PREFIX}p`, `${KEYFILE_PREFIX}x`, 'b3M=', 'dG9r'].sort())
-      expect(otherStoreCount('os', values)).toBe(2)
-      expect(otherStoreCount('keyfile', values)).toBe(2)
-      expect(otherStoreCount('fake', values)).toBe(0)
+      const as = (kind: SecretStore['kind']): SecretStore => ({ ...fakeSecretStore(), kind })
+      expect(unreadableCounts(as('os'), values).otherMode).toBe(2)
+      expect(unreadableCounts(as('keyfile'), values).otherMode).toBe(2)
+      expect(unreadableCounts(fakeSecretStore(), values).otherMode).toBe(0)
       expect(otherStoreLine('os', 2)).toContain("2 stored value(s) belong to server mode's key file")
       expect(otherStoreLine('keyfile', 2)).toContain("2 stored value(s) belong to the desktop's keychain")
       expect(otherStoreLine('os', 0)).toBeNull()

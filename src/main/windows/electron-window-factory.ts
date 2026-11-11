@@ -108,7 +108,7 @@ export class ElectronWindowFactory implements WindowFactory {
     return [primary, ...screen.getAllDisplays().filter((d) => d.id !== primary.id)].map((d) => d.workArea)
   }
 
-  private finish(win: BrowserWindow, onClosed: () => void, onPageGone?: (what: string) => boolean): WindowHandle {
+  private finish(win: BrowserWindow, onClosed: () => void, onPageGone?: (what: string) => void): WindowHandle {
     // Read the ids now: after `closed` the webContents is destroyed and reading it throws.
     const id = win.id
     const senderId = win.webContents.id
@@ -122,7 +122,10 @@ export class ElectronWindowFactory implements WindowFactory {
       loadRenderer(win).catch((err: unknown) => {
         if (win.isDestroyed() || mine !== loads) return
         // Server mode: the manager reloads it after a pause (closing would end the project's tabs).
-        if (onPageGone?.(`failed to load (${errorText(err)})`)) return
+        if (onPageGone) {
+          onPageGone(`failed to load (${errorText(err)})`)
+          return
+        }
         // ready-to-show never fires for a failed load, so the window would stay hidden forever.
         console.error('failed to load the shell UI', err)
         win.close()

@@ -28,6 +28,8 @@ export const PARENT_MARKER = '--server-parent='
 
 export const LINUX_ONLY = 'server mode runs on Linux only'
 export const DETECTED_LINE = 'no display: starting cc-cockpit in server mode, web access on; stop with Ctrl-C'
+/** `--server` while another run holds the lock: the person asked for a server and must not get silence. */
+export const NOT_STARTED_LINE = 'server mode: not started, cc-cockpit is already running with this data dir (it got this launch)'
 
 export interface ServerInput {
   platform: NodeJS.Platform
@@ -111,8 +113,10 @@ export type ServerStart = { run: true; server: boolean } | { run: false }
  * (desktop, or the headless switch already on argv) it is the old single-instance lock. With one:
  *
  * 1. the lock: held elsewhere, argv went to the holder as any second launch and this process exits 0
- *    with nothing re-executed. `process.exit`, not `app.quit()`: with no display a quit returns to
- *    Electron, which fails at platform init and exits 1;
+ *    with nothing re-executed (with `--server` it says so: the person asked for a server; a detected
+ *    one stays quiet, as `cc-cockpit <path>` from a server shell is an ordinary second launch).
+ *    `process.exit`, not `app.quit()`: with no display a quit returns to Electron, which fails at
+ *    platform init and exits 1;
  * 2. the start path is picked while the lock is still held, then the lock is released for the new
  *    image to take again (a launch that takes it in the gap becomes the primary, and the new image
  *    hands its argv over as a second launch);
@@ -137,6 +141,7 @@ export function serverStart(deps: ServerStartDeps): ServerStart {
     return { run: true, server: decision.server }
   }
   if (!deps.lock()) {
+    if (decision.server && !decision.detected) deps.print(NOT_STARTED_LINE)
     deps.exit(0)
     return { run: false }
   }

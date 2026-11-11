@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
 import { PluginLoader } from '../../src/host/loader'
 import { MAX_TOKEN_RESPONSE_BYTES, OAuthError } from '../../src/main/oauth/oauth'
-import type { OpenTarget } from '../../src/main/external/open-external'
+import { NO_BROWSER_TEXT, type OpenTarget } from '../../src/main/external/open-external'
 import { MAX_OAUTH_PASTE_LENGTH } from '../../src/shared/oauth-paste'
 import {
   checkOAuthSpec,
@@ -310,6 +310,15 @@ describe('PluginOAuth.authorize', () => {
     await expect(pending).rejects.toThrow('could not open the system browser')
     await expect(pending).rejects.not.toThrow('raw sync failure')
     await expect(fetch(redirect)).rejects.toThrow()
+  })
+
+  it("server mode's no-browser refusal keeps its own text (a server has no system browser to blame)", async () => {
+    const oauth = oauthWith({
+      openExternal: async () => {
+        throw new Error(NO_BROWSER_TEXT)
+      }
+    })
+    await expect(oauth.authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow(NO_BROWSER_TEXT)
   })
 
   it('a browser call that never settles still times out and still aborts, closing the loopback', async () => {

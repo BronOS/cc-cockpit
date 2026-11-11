@@ -37,7 +37,7 @@
 //
 // No `electron` import (main passes the openExternal adapter in): unit tests load this file in Node.
 import { isPlainObject } from '../../shared/guards'
-import type { OpenTarget } from '../external/open-external'
+import { NO_BROWSER_TEXT, type OpenTarget } from '../external/open-external'
 import type { OAuthTokens } from '../../sdk/types'
 import {
   ERROR_CODE,
@@ -209,11 +209,14 @@ export class PluginOAuth implements PluginOAuthApi {
       // Aborted while the loopback started listening: no browser.
       if (signal.aborted) throw cancelled()
       // Through a promise: a synchronous throw or a non-promise return of openExternal (a wrapper,
-      // a test double) gets the same fixed message as a rejection, never its own text.
+      // a test double) gets the same fixed message as a rejection, never its own text. The one
+      // exception is server mode's own fixed refusal (no browser view attached): there is no system
+      // browser on a server, so the general message would blame the wrong thing.
       const url = authUrl.toString()
       const opened = Promise.resolve()
         .then(() => this.options.openExternal(url, target, { signIn }))
-        .catch(() => {
+        .catch((err: unknown) => {
+          if (err instanceof Error && err.message === NO_BROWSER_TEXT) throw new OAuthError(NO_BROWSER_TEXT)
           throw new OAuthError('could not open the system browser for the sign-in')
         })
       // Raced with the code, never awaited alone: an openExternal that never settles would leave

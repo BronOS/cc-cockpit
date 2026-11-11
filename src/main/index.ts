@@ -23,7 +23,7 @@ import {
   session,
   type OpenDialogOptions
 } from 'electron'
-import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -108,7 +108,6 @@ import { PluginSecrets } from './secrets/plugin-secrets'
 import { choosePasswordStore, execRunner } from './secrets/password-store'
 import { keyFileSecretStore } from './secrets/key-file-store'
 import {
-  otherStoreCount,
   otherStoreLine,
   safeStorageSecretStore,
   selectSecretStore,
@@ -170,6 +169,7 @@ import {
   SECOND_LAUNCH_ASK_MS,
   serverBoxOptions,
   socketAsk,
+  storedWebAccessOn,
   sweepLaunchProfiles,
   testBoxAnswer
 } from './second-launch'
@@ -206,6 +206,10 @@ import {
   type SecondInstanceData
 } from './windows/window-manager'
 import { warnLog } from './warn-log'
+import { within } from '../shared/timeout'
+
+/** Server mode's quit waits this long at most for the terminal mirror's worker to end (will-quit). */
+const MIRROR_STOP_MS = 5000
 
 // Apply the CC_COCKPIT_DATA_DIR override FIRST: before `requestSingleInstanceLock()` and before
 // `ready`. The single-instance lock file and Electron's own state (caches, cookies, the Local
@@ -231,7 +235,8 @@ if (dataDir !== userData) {
 // kept for the run and handed to start(); later modules take it as an option.
 //
 // A desktop launch meets a server (second-launch.ts): the data carries whether this launch has a
-// display. A loser that has one asks the holder's socket whether it is a server before it quits, and
+// display. A loser that has one (and finds web access on in app.json, which every server run writes)
+// asks the holder's socket whether it is a server before it quits, and
 // if so offers to stop it in a native box; any other answer, or none, quits as before. Such a loser
 // first moves its own userData and sessionData to a private temp dir: it may now reach `ready`.
 const decision = decideServerMode({
@@ -247,7 +252,8 @@ const serverRun = serverStart({
   lock: () => app.requestSingleInstanceLock(launch),
   release: () => app.releaseSingleInstanceLock(),
   quit: () => {
-    if (!losingLaunchAsks({ platform: process.platform, display: launchDisplay })) {
+    const webAccessOn = storedWebAccessOn(() => readFileSync(dataPaths(dataDir).appJson, 'utf8'))
+    if (!losingLaunchAsks({ platform: process.platform, display: launchDisplay, webAccessOn })) {
       app.quit()
       return
     }
@@ -376,7 +382,7 @@ function start(server: boolean): void {
       keyFileSecretStore({ path: dataPaths(dataDir).secretKey, storedValues: () => storedSecretValues(dataDir), log: warnLog })
   })
   // One data dir run both ways: values of the other mode's store cannot be read here (§9.5).
-  const otherStore = otherStoreLine(secretStore.kind, otherStoreCount(secretStore.kind, storedSecretValues(dataDir)))
+  const otherStore = otherStoreLine(secretStore.kind, unreadableCounts(secretStore, storedSecretValues(dataDir)).otherMode)
   if (otherStore !== null) warnLog(otherStore)
   const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: warnLog })
   // ctx.oauth (plugin-oauth.ts). The auth URL goes through the openExternal adapter (defined below
@@ -1671,11 +1677,8 @@ function start(server: boolean): void {
     ...(server
       ? {
           serverProjects: {
-            recent: () =>
-              registry
-                .recent()
-                .filter((p) => windows.windowIdOf(p.id) === undefined)
-                .map((p) => ({ id: p.id, name: p.name, path: p.path, missing: p.missing })),
+            // Whole records: the gateway picks the four fields that go on the wire.
+            recent: () => registry.recent().filter((p) => windows.windowIdOf(p.id) === undefined),
             open: (request: WebOpenProjectRequest) =>
               openProjectFromWeb(request, {
                 openPath: (path) => windows.openPath(path),
@@ -2919,13 +2922,17 @@ function start(server: boolean): void {
   app.on('will-quit', (event) => {
     // Server mode: wait for the mirror's worker thread before exiting; a process that exits while it
     // still bootstraps dies with SIGSEGV instead of status 0 (mirror.ts stop()). The cleanup below
-    // runs on the second pass, once the quit is asked for again.
+    // runs on the second pass, once the quit is asked for again. Bounded: a terminate that never
+    // settles must not leave a SIGTERM or `ccc web stop` waiting for systemd's SIGKILL, which would
+    // skip the flushes below.
     if (server && !mirrorEnded) {
       event.preventDefault()
-      void terminalMirror.stop().then(() => {
-        mirrorEnded = true
-        app.quit()
-      })
+      void within(terminalMirror.stop(), MIRROR_STOP_MS, 'terminal mirror did not stop in time')
+        .catch((err: unknown) => console.error(err instanceof Error ? err.message : String(err)))
+        .then(() => {
+          mirrorEnded = true
+          app.quit()
+        })
       return
     }
     updateChecker.stop()

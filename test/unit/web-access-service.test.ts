@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
-import { SERVER_NONE_WARNING, SERVER_TURNED_ON_LINE, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
+import { SERVER_TURNED_ON_LINE, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { PasswordHasher } from '../../src/main/web/password'
@@ -26,7 +26,7 @@ import {
   webAccessRisks
 } from '../../src/main/web/settings'
 import type { WebAccessSettings } from '../../src/shared/types'
-import type { WebAccessIndicator, WebAccessSetReply, WebAccessView } from '../../src/shared/web-access'
+import { SERVER_NONE_WARNING, type WebAccessIndicator, type WebAccessSetReply, type WebAccessView } from '../../src/shared/web-access'
 
 const base: WebAccessSettings = { ...DEFAULT_WEB_ACCESS, hosts: [] }
 

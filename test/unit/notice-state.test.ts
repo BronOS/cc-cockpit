@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addLinkAsk,
+  addSharedAsk,
   addSignIn,
   MAX_SIGN_IN_NOTICES,
   oauthSignInOf,
   canAllowLink,
-  dropLinkAsk,
+  dropSharedAsk,
   dropUnseen,
   endSignIn,
   linkNoticeAction,
@@ -88,12 +88,12 @@ describe('linkNoticeAction', () => {
 
 describe('link ask queue', () => {
   it('adds an ask once (same array on a repeat) and drops it by id', () => {
-    const one = addLinkAsk([], ask(1))
-    expect(addLinkAsk(one, { ...ask(1), name: 'other' })).toBe(one)
-    const two = addLinkAsk(one, ask(2))
+    const one = addSharedAsk([], ask(1))
+    expect(addSharedAsk(one, { ...ask(1), name: 'other' })).toBe(one)
+    const two = addSharedAsk(one, ask(2))
     expect(two.map((a) => a.requestId)).toEqual(['link-1', 'link-2'])
-    expect(dropLinkAsk(two, 'link-1').map((a) => a.requestId)).toEqual(['link-2'])
-    expect(dropLinkAsk(two, 'link-9')).toEqual(two)
+    expect(dropSharedAsk(two, 'link-1').map((a) => a.requestId)).toEqual(['link-2'])
+    expect(dropSharedAsk(two, 'link-9')).toEqual(two)
   })
 })
 
@@ -101,9 +101,6 @@ describe('canAllowLink', () => {
   it('offers Allow on the desktop only', () => {
     expect(canAllowLink(false)).toBe(true)
     expect(canAllowLink(true)).toBe(false)
-    // A server's browser view is the owner (design-web.md §9.6); the hint never matters on the desktop.
-    expect(canAllowLink(true, true)).toBe(true)
-    expect(canAllowLink(false, false)).toBe(true)
   })
 })
 

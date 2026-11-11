@@ -228,9 +228,6 @@ export type SignInResult =
   | { ok: true; device: WebDevice; cookie: string }
   | { ok: false; status: 400 | 401 | 409 | 429 | 499 | 503; error: string }
 
-/** A stored credential as `credentialStates` reports it. */
-export type CredentialState = WebCredentialState
-
 export type LinkResult = { ok: true; link: string } | { ok: false; reason: string }
 
 /** A desktop-confirm ask: the code the browser shows and the ticket it polls with. */
@@ -368,8 +365,8 @@ export class WebAuth {
    * are checked by hash, which needs no decrypt), the access link cannot be shown until it is
    * regenerated, and the password must be set again. Synchronous, no decrypt.
    */
-  credentialStates(): { accessLink: CredentialState; password: CredentialState } {
-    const stateOf = (record: { stored: string } | undefined): CredentialState => {
+  credentialStates(): { accessLink: WebCredentialState; password: WebCredentialState } {
+    const stateOf = (record: { stored: string } | undefined): WebCredentialState => {
       if (record === undefined) return 'unset'
       const state = storedValueState(this.secrets, record.stored)
       return state === 'readable' ? 'set' : state

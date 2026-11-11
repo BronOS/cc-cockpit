@@ -23,23 +23,17 @@ export function ApprovalDialog(props: ApprovalDialogProps): React.JSX.Element {
 export interface ApprovalDialogProps {
   title: ReactNode
   children: ReactNode
-  /** Whether this view may Allow; false shows `note` in its place (a desktop-only approval in a browser). */
-  canAllow: boolean
-  note?: string
   allowLabel?: string
   /** The other button's label; default Deny. */
   denyLabel?: string
   onAnswer(allow: boolean): void
-  /** Starts armed (unit tests of the markup only). */
-  initiallyArmed?: boolean
 }
 
 /** The dialog itself (exported for its unit test, which renders it without a DOM). */
 export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
-  const { canAllow } = props
   const titleId = useId()
   const textId = useId()
-  const [armed, setArmed] = useState(props.initiallyArmed === true)
+  const [armed, setArmed] = useState(false)
   const answered = useRef(false)
   // How the last press on Allow began: armed or not (undefined: no press seen).
   const pressArmed = useRef<boolean | undefined>(undefined)
@@ -105,24 +99,21 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
         </h2>
         <div id={textId}>{props.children}</div>
         <div className="confirm-buttons">
-          {canAllow ? null : props.note !== undefined ? <span className="confirm-note">{props.note}</span> : null}
           <button type="button" onClick={() => answer(false)}>
             {props.denyLabel ?? 'Deny'}
           </button>
-          {canAllow ? (
-            <button
-              type="button"
-              className="confirm-danger"
-              disabled={!armed}
-              onClick={() => {
-                const counts = allowClickCounts(armed, pressArmed.current)
-                pressArmed.current = undefined
-                if (counts) answer(true)
-              }}
-            >
-              {props.allowLabel ?? 'Allow'}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="confirm-danger"
+            disabled={!armed}
+            onClick={() => {
+              const counts = allowClickCounts(armed, pressArmed.current)
+              pressArmed.current = undefined
+              if (counts) answer(true)
+            }}
+          >
+            {props.allowLabel ?? 'Allow'}
+          </button>
         </div>
       </div>
     </div>

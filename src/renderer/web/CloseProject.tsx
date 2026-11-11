@@ -39,7 +39,7 @@ export function CloseProjectButton({ name }: { name: string }): React.JSX.Elemen
         <CloseGlyph />
       </button>
       {asking && (
-        <ApprovalDialog title={<CloseProjectTitle name={name} />} canAllow allowLabel="Close project" denyLabel="Cancel" onAnswer={onAnswer}>
+        <ApprovalDialog title={<CloseProjectTitle name={name} />} allowLabel="Close project" denyLabel="Cancel" onAnswer={onAnswer}>
           <p>Its tabs end.</p>
         </ApprovalDialog>
       )}

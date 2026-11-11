@@ -6,7 +6,9 @@
 //    get a project opened on a page nobody sees), and opens the path of one that has none
 //    (`cc-cockpit <path>` from a server shell), as any second launch does; the window manager shows
 //    and focuses nothing in server mode. A desktop primary is unchanged.
-//  - the losing launch, when it has a display: it asks the socket for `web.status` (2 s, no token)
+//  - the losing launch, when it has a display and the data dir's `app.json` has web access on (a
+//    server run always writes it on at start, §9.2, so with it off no server holds the dir and the
+//    launch quits at once as before): it asks the socket for `web.status` (2 s, no token)
 //    and, when the answer says server mode, shows a native box (it has a screen) offering Stop
 //    (`web.stop`) or Cancel, then exits. Without it, that launch would seem to do nothing. Any other
 //    answer, or none, exits as before. Only on Linux: server mode runs nowhere else, so a desktop
@@ -24,6 +26,7 @@ import { encodeRequest, LineFramer, parseReply, PROTOCOL_VERSION, type Reply } f
 import { isPlainObject } from '../shared/guards'
 import { fallbackSocketDir, socketPath } from './paths'
 import type { ServerDecision } from './server-mode'
+import { plainText } from './web/access-log'
 
 /** The losing launch's deadline for each socket ask (`web.status`, then `web.stop`). */
 export const SECOND_LAUNCH_ASK_MS = 2000
@@ -78,9 +81,25 @@ export function handleSecondInstance(
   if (!deps.open(input.argv, input.cwd)) deps.focusAny()
 }
 
-/** Whether a losing launch asks the socket at all: one with a display, on Linux only. */
-export function losingLaunchAsks(input: { platform: string; display: boolean }): boolean {
-  return input.display && input.platform === 'linux'
+/**
+ * Whether a losing launch asks the socket at all: one with a display, on Linux only, and only when
+ * the data dir's web access is on. A server run always writes it on (design-web.md §9.2) and refuses
+ * turning it off, so a holder of a dir where it is off is a desktop: that launch quits at once, with
+ * no private profile and no wait on the socket, as before server mode.
+ */
+export function losingLaunchAsks(input: { platform: string; display: boolean; webAccessOn: boolean }): boolean {
+  return input.display && input.platform === 'linux' && input.webAccessOn
+}
+
+/** `app.json`'s `webAccess.enabled`, from its text; a missing, damaged or other value reads as off. */
+export function storedWebAccessOn(readAppJson: () => string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readAppJson())
+    if (!isPlainObject(parsed) || !isPlainObject(parsed.webAccess)) return false
+    return parsed.webAccess.enabled === true
+  } catch {
+    return false
+  }
 }
 
 /** The losing launch's private profile dir name, before mkdtemp's suffix: `<prefix><pid>-`. */
@@ -175,19 +194,9 @@ export function testBoxAnswer(env: Record<string, string | undefined>, testRun: 
   return value === 'stop' || value === 'cancel' ? value : undefined
 }
 
-/** Longest address text shown in the box: the answer comes from another process. */
+/** Longest address text shown in the box: the answer comes from another process (made plain, `plainText`). */
 const MAX_ADDRESS = 200
 
-/** Printable text only, capped (a status answer is another process's data, shown as plain text). */
-function plain(text: string): string {
-  return Array.from(text)
-    .filter((ch) => {
-      const code = ch.codePointAt(0) ?? 0
-      return code > 0x1f && (code < 0x7f || code > 0x9f)
-    })
-    .join('')
-    .slice(0, MAX_ADDRESS)
-}
 
 /**
  * The address of a `web.status` result that says server mode, or undefined for any other answer
@@ -198,11 +207,11 @@ export function serverAddress(result: unknown): string | undefined {
   if (!isPlainObject(result) || result.server !== true) return undefined
   const gateway = result.gateway
   if (isPlainObject(gateway) && gateway.state === 'listening' && typeof gateway.origin === 'string' && gateway.origin !== '') {
-    return plain(gateway.origin)
+    return plainText(gateway.origin, MAX_ADDRESS)
   }
   const { bind, port } = result
   if (typeof bind === 'string' && bind !== '' && Number.isInteger(port)) {
-    return plain(bind.includes(':') ? `[${bind}]:${String(port)}` : `${bind}:${String(port)}`)
+    return plainText(bind.includes(':') ? `[${bind}]:${String(port)}` : `${bind}:${String(port)}`, MAX_ADDRESS)
   }
   return 'an unknown address'
 }

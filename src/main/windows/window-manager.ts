@@ -84,11 +84,12 @@ export interface WindowCallbacks {
   onCloseRequested?(): boolean
   /**
    * The page is gone: its renderer crashed (`render-process-gone`) or the page failed to load
-   * (`what` says which, for the log line). True: the manager reloads it (server mode, design-web.md
-   * §9.8). Absent or false: today's desktop behaviour, a failed load closes the window (it would
-   * stay hidden forever, ready-to-show never fires) and a crash leaves the dead page as it is.
+   * (`what` says which, for the log line). Present: the manager reloads it and the window is never
+   * closed (server mode, design-web.md §9.8). Absent: today's desktop behaviour, a failed load closes
+   * the window (it would stay hidden forever, ready-to-show never fires) and a crash leaves the dead
+   * page as it is.
    */
-  onPageGone?(what: string): boolean
+  onPageGone?(what: string): void
 }
 
 /** The Electron side, behind an interface so the logic here runs under vitest with a fake. */
@@ -536,7 +537,11 @@ export class WindowManager {
         onCloseRequested: () => (handle ? this.closeRequested(projectId, handle) : false),
         // Server mode only: absent on the desktop, so the factory keeps today's behaviour there.
         ...(this.options.server
-          ? { onPageGone: (what: string) => (handle ? this.pageGone(projectId, view.name, handle, what) : true) }
+          ? {
+              onPageGone: (what: string) => {
+                if (handle) this.pageGone(projectId, view.name, handle, what)
+              }
+            }
           : {})
       },
       look
@@ -633,15 +638,15 @@ export class WindowManager {
    * Server mode: the hidden page crashed or failed to load. It is loaded again after a pause, with a
    * log line, and the window is never closed (that would end the project's tabs). The pause doubles
    * while the page keeps dying soon after each reload, up to PAGE_RELOAD_MAX_MS, so a page that can
-   * never load costs a try and a log line twice a minute, not a busy loop. True always: the factory
-   * must not close the window, whatever the state here.
+   * never load costs a try and a log line twice a minute, not a busy loop. The factory never closes
+   * the window, whatever the state here (onPageGone's presence decides that).
    */
-  private pageGone(projectId: string, name: string, handle: WindowHandle, what: string): boolean {
+  private pageGone(projectId: string, name: string, handle: WindowHandle, what: string): void {
     // Quitting, or a window that is no longer the project's (closing, a late event): nothing to reload.
-    if (this.quitting || this.projects.get(projectId) !== handle) return true
+    if (this.quitting || this.projects.get(projectId) !== handle) return
     const state = this.reloads.get(handle)
     // A pause already running: the crash and the failed load of one reload are one event.
-    if (state?.cancel) return true
+    if (state?.cancel) return
     const now = (this.options.now ?? Date.now)()
     const delay =
       state && now - state.at < PAGE_RELOAD_RESET_MS ? Math.min(state.delay * 2, PAGE_RELOAD_MAX_MS) : PAGE_RELOAD_FIRST_MS
@@ -655,7 +660,6 @@ export class WindowManager {
       handle.reload()
     }, delay)
     this.reloads.set(handle, next)
-    return true
   }
 
   /** The most recently opened project window on screen, else the most recently opened hidden one. */

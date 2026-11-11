@@ -635,7 +635,6 @@ function Devices(props: {
       {ask && askText && (
         <ApprovalDialog
           title={askText.title}
-          canAllow
           allowLabel={askText.allowLabel}
           denyLabel="Cancel"
           onAnswer={(yes) => {
