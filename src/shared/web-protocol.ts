@@ -267,6 +267,13 @@ export interface WebSnapshot {
    */
   notices?: Array<IpcEventMap['notices.show']>
   /**
+   * Plugin sign-ins of the window still waiting for their redirect (server mode, PluginOAuth.pendingFor,
+   * design-web.md §9.9): replayed to the shell's `app.linkNotice` listener with `replayed`, so a shell
+   * remounted by a reconnect (or a view joining mid-sign-in) keeps the paste box main would still
+   * settle; `oauth.signInEnded` takes them down. Absent (the desktop, an older fixture) reads as none.
+   */
+  signIns?: Array<{ url: string; signIn: string }>
+  /**
    * The app runs as a server (design-web.md §9, main's `server` flag): every signed-in view is the
    * owner and may Allow an approval (§9.6). A UI hint only, so the dialog offers Allow instead of
    * "Approve on the desktop": main decides who may answer from its own flag, never from this. Absent

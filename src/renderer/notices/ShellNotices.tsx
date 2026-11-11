@@ -120,7 +120,8 @@ function PageNotices(): React.JSX.Element | null {
  * `noopener noreferrer` so the opened page learns nothing about this one. A plugin's OAuth sign-in in
  * server mode (`signIn` in the event, design-web.md §9.9) gets a notice of its own that stays until it
  * is finished or dismissed (OAuthSignIn); when main says the sign-in ended (`oauth.signInEnded`) it goes
- * (a code came, from any view) or says the sign-in is over (endSignIn).
+ * (a code came, from any view) or says the sign-in is over (endSignIn). A reconnect remounts the shell;
+ * the bridge hands the window's pending sign-ins back then (`ready`'s `signIns`), so the box stays.
  */
 function LinkNotice(): React.JSX.Element | null {
   const [url, setUrl] = useState<string | undefined>(undefined)
@@ -135,8 +136,9 @@ function LinkNotice(): React.JSX.Element | null {
       const signIn = oauthSignInOf(p)
       if (signIn !== undefined) {
         // A plugin's sign-in (server mode): opened at once like any link while the click counts, and
-        // its notice stays either way, since the box is where the sign-in ends.
-        if (isWebShell() && navigator.userActivation?.isActive === true) {
+        // its notice stays either way, since the box is where the sign-in ends. One the bridge hands
+        // back after a reconnect (`replayed`) is only shown: a click active then was not for it.
+        if (p.replayed !== true && isWebShell() && navigator.userActivation?.isActive === true) {
           try {
             window.open(signIn.url, '_blank', 'noopener,noreferrer')
           } catch {

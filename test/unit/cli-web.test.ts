@@ -1015,6 +1015,17 @@ describe('ccc web part 2: the CLI', () => {
     expect(await readHidden(fakeTty(['abcd\r']), () => undefined, 'pw: ', 60_000, 4)).toEqual({ password: 'abcd' })
   })
 
+  it('the prompt decodes a character split across two reads as one (a paste, a slow link)', async () => {
+    const tty = fakeTty([])
+    const pending = readHidden(tty, () => undefined, 'pw: ', 60_000, 256)
+    const bytes = Buffer.from('pé€\r', 'utf8')
+    // `é` (2 bytes) and `€` (3 bytes) each cut in the middle.
+    for (const part of [bytes.subarray(0, 2), bytes.subarray(2, 4), bytes.subarray(4, 5), bytes.subarray(5)]) {
+      tty.emit('data', part)
+    }
+    expect(await pending).toEqual({ password: 'pé€' })
+  })
+
   it('a terminal that hangs up ends the prompt at once, not at the deadline', async () => {
     for (const event of ['end', 'close'] as const) {
       const tty = fakeTty([])

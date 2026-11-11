@@ -5,7 +5,8 @@
 // typed for Claude nor a click already on its way when the ask appears. So Allow is never the
 // default and never focused, no key answers Allow, and Allow is armed only after the dialog has been
 // visible and focused for about a second. "Visible" is the page's own visibility plus window focus: a browser tab in the
-// background shows nothing, so the second starts over when the person comes back to it.
+// background shows nothing, so the second starts over when the person comes back to it. And the dialog must be the top
+// one (ApprovalStack): one covered by another dialog is not seen either.
 
 /** How long the dialog must have been visible before Allow takes a click. */
 export const APPROVAL_ARM_MS = 1000
@@ -75,6 +76,44 @@ export class ApprovalArm {
     this.onChange(armed)
   }
 }
+
+/**
+ * The approvals open in this page, newest on top (ApprovalDialog portals each into `document.body` as
+ * it mounts, so the newest is drawn over the others). Only the top one counts as seen: a link ask and
+ * a trash ask can be up at once, and one covered by another must not arm behind it, or taking the
+ * upper one down would bare an Allow that is already armed. `enter` tells the new dialog it is on top
+ * and the one under it that it no longer is; its returned `leave` tells the one below it is on top
+ * again, which starts that dialog's second over (ApprovalArm.visible).
+ */
+export class ApprovalStack {
+  private readonly entries: Array<{ onTop(top: boolean): void }> = []
+
+  enter(onTop: (top: boolean) => void): () => void {
+    const entry = { onTop }
+    const below = this.entries.at(-1)
+    this.entries.push(entry)
+    below?.onTop(false)
+    onTop(true)
+    let left = false
+    return () => {
+      if (left) return
+      left = true
+      const at = this.entries.indexOf(entry)
+      if (at < 0) return
+      const wasTop = at === this.entries.length - 1
+      this.entries.splice(at, 1)
+      if (wasTop) this.entries.at(-1)?.onTop(true)
+    }
+  }
+
+  /** How many are open (tests). */
+  get size(): number {
+    return this.entries.length
+  }
+}
+
+/** The page's one stack: every ApprovalDialog enters it. */
+export const approvalStack = new ApprovalStack()
 
 /**
  * Whether a click on Allow counts: Allow is armed now, and the press that ends in this click began

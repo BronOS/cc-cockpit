@@ -2538,7 +2538,11 @@ function start(server: boolean): void {
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
-    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, server }, ctx),
+    snapshot: (ctx) => windowSnapshot(
+        // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
+        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
+        ctx
+      ),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),

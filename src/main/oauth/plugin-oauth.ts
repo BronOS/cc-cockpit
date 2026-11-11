@@ -161,6 +161,8 @@ interface PendingSignIn {
   windowId: number | undefined
   loopback: Loopback
   refused: number
+  /** The auth URL, set as its notice goes out (before that the sign-in has no notice to replay). */
+  url?: string
 }
 
 export class PluginOAuth implements PluginOAuthApi {
@@ -213,6 +215,8 @@ export class PluginOAuth implements PluginOAuthApi {
       // exception is server mode's own fixed refusal (no browser view attached): there is no system
       // browser on a server, so the general message would blame the wrong thing.
       const url = authUrl.toString()
+      const entry = this.pending.get(signIn)
+      if (entry) entry.url = url
       const opened = Promise.resolve()
         .then(() => this.options.openExternal(url, target, { signIn }))
         .catch((err: unknown) => {
@@ -249,6 +253,20 @@ export class PluginOAuth implements PluginOAuthApi {
       if (signal.aborted) throw cancelled()
       throw err
     }
+  }
+
+  /**
+   * The window's sign-ins still waiting whose notice went out (`ready`'s `signIns`, server mode): a
+   * view joining, or a shell remounted by a reconnect, gets its paste box back while main would still
+   * settle the sign-in. Only a window's own (`windowId`, main's binding of the view): one tied to no
+   * window cannot be pasted into from any view (`paste`). Oldest first.
+   */
+  pendingFor(windowId: number): Array<{ url: string; signIn: string }> {
+    const out: Array<{ url: string; signIn: string }> = []
+    for (const [signIn, entry] of this.pending) {
+      if (entry.windowId === windowId && entry.url !== undefined) out.push({ url: entry.url, signIn })
+    }
+    return out
   }
 
   /**

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { allowClickCounts, ApprovalArm, approvalKey } from './approval-model'
+import { allowClickCounts, ApprovalArm, approvalKey, approvalStack } from './approval-model'
 
 /**
  * An in-page approval (design-web.md §9.6): a question only the owner may answer with Allow, in a
@@ -12,7 +12,9 @@ import { allowClickCounts, ApprovalArm, approvalKey } from './approval-model'
  * - Allow is never the default: no form, plain `type="button"` buttons, and inside the dialog Enter
  *   and Space do nothing (approval-model.ts `approvalKey`); Esc there is Deny.
  * - Allow is enabled only after the dialog has been visible for about a second (ApprovalArm), and a
- *   press begun before that does not count when it is released after (`allowClickCounts`).
+ *   press begun before that does not count when it is released after (`allowClickCounts`). Visible
+ *   means the top dialog too (`approvalStack`): one under another (a link ask under a trash ask) is
+ *   disarmed, and its second starts when the one over it goes.
  * - The backdrop blocks clicks to what is behind it but answers nothing: a click on its way to a
  *   terminal lands there and neither allows nor denies.
  */
@@ -45,8 +47,19 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
   useEffect(() => {
     const arm = new ApprovalArm(setArmed)
     // Visible and focused: a visible but unfocused window (behind another one) would otherwise arm,
-    // and the click that focuses it could land on Allow.
-    const onVisibility = (): void => arm.visible(document.visibilityState === 'visible' && document.hasFocus())
+    // and the click that focuses it could land on Allow. And on top: a dialog covered by another one
+    // is not seen either.
+    let pageSeen = false
+    let onTop = false
+    const update = (): void => arm.visible(pageSeen && onTop)
+    const onVisibility = (): void => {
+      pageSeen = document.visibilityState === 'visible' && document.hasFocus()
+      update()
+    }
+    const leave = approvalStack.enter((top) => {
+      onTop = top
+      update()
+    })
     // A `blur` is read after the focus has settled: one that only moves the focus into a frame of the
     // page (a plugin panel) leaves `hasFocus()` true, and the arm ignores an unchanged state.
     let blurCheck: ReturnType<typeof setTimeout> | undefined
@@ -63,6 +76,7 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('focus', onVisibility)
       window.removeEventListener('blur', onBlur)
+      leave()
       arm.dispose()
     }
   }, [])

@@ -4,7 +4,7 @@
 import { createElement, type FunctionComponent } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it } from 'vitest'
-import { allowClickCounts, APPROVAL_ARM_MS, ApprovalArm, approvalKey, type ArmTimers } from '../../src/renderer/notices/approval-model'
+import { allowClickCounts, APPROVAL_ARM_MS, ApprovalArm, approvalKey, ApprovalStack, type ArmTimers } from '../../src/renderer/notices/approval-model'
 import { isServerView, markWebShell, resetShellKindForTest, setServerHint } from '../../src/renderer/shell-kind'
 
 /** Timers driven by hand: `advance(ms)` fires what is due. */
@@ -97,6 +97,58 @@ describe('ApprovalArm', () => {
     arm.visible(true)
     timers.advance(APPROVAL_ARM_MS)
     expect(seen).toEqual([])
+  })
+})
+
+describe('ApprovalStack', () => {
+  /** A dialog as ApprovalDialog wires it: armed when the page is seen and it is the top one. */
+  function dialog(stack: ApprovalStack, timers: ArmTimers): { arm: ApprovalArm; leave: () => void } {
+    const arm = new ApprovalArm(() => {}, timers)
+    let top = false
+    const leave = stack.enter((t) => {
+      top = t
+      arm.visible(top)
+    })
+    arm.visible(top)
+    return { arm, leave }
+  }
+
+  it('a dialog covered by another never arms, and its second starts only when the upper one goes', () => {
+    const timers = fakeTimers()
+    const stack = new ApprovalStack()
+    const link = dialog(stack, timers)
+    timers.advance(APPROVAL_ARM_MS / 2)
+    // A trash ask comes up over the link ask.
+    const trash = dialog(stack, timers)
+    timers.advance(5 * APPROVAL_ARM_MS)
+    expect(trash.arm.armed).toBe(true)
+    expect(link.arm.armed).toBe(false)
+    // The trash ask is answered: the link ask is bared disarmed and needs its own second.
+    trash.leave()
+    expect(link.arm.armed).toBe(false)
+    timers.advance(APPROVAL_ARM_MS - 1)
+    expect(link.arm.armed).toBe(false)
+    timers.advance(1)
+    expect(link.arm.armed).toBe(true)
+    link.leave()
+    expect(stack.size).toBe(0)
+  })
+
+  it('an armed top dialog disarms when another opens over it; a covered one leaving changes nothing on top', () => {
+    const timers = fakeTimers()
+    const stack = new ApprovalStack()
+    const first = dialog(stack, timers)
+    timers.advance(APPROVAL_ARM_MS)
+    expect(first.arm.armed).toBe(true)
+    const second = dialog(stack, timers)
+    expect(first.arm.armed).toBe(false)
+    timers.advance(APPROVAL_ARM_MS)
+    expect(second.arm.armed).toBe(true)
+    // The covered one is settled elsewhere: the top one stays armed.
+    first.leave()
+    first.leave()
+    expect(second.arm.armed).toBe(true)
+    expect(stack.size).toBe(1)
   })
 })
 

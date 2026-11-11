@@ -405,6 +405,13 @@ export class TerminalMirror implements TerminalTap {
   private answered = false
   /** Turning off, waiting on desktops that are behind (see the header). */
   private draining: Drain | null = null
+  /**
+   * Terminations asked for and not over yet (`stop`, a hung worker), each settled whatever the worker
+   * did. `stop` waits for all of them, not only the one it asked for: a second `stop` while the first
+   * is still waiting (SIGTERM during a failed server start's cleanup) finds no worker, and resolving it
+   * at once would let the process exit under a worker still bootstrapping (see `stop`).
+   */
+  private readonly ending = new Set<Promise<void>>()
   private readonly log: (message: string) => void
   private readonly now: () => number
 
@@ -469,7 +476,9 @@ export class TerminalMirror implements TerminalTap {
    * End the worker and forget every tab (the app quits, a drain is over). Resolves once the worker's
    * thread is gone: server mode's failed start (server-start.ts) waits for it before quitting, because
    * a process that exits while the worker is still bootstrapping crashes in Node's loader (SIGSEGV,
-   * Electron 45.1.0) instead of exiting with its status.
+   * Electron 45.1.0) instead of exiting with its status. Every call waits for every termination still
+   * under way (`ending`), so a second `stop` racing the first (will-quit's while the failed start's is
+   * pending) waits as long as the first.
    */
   stop(): Promise<void> {
     const worker = this.worker
@@ -482,12 +491,25 @@ export class TerminalMirror implements TerminalTap {
     this.releaseAll()
     this.tabs.clear()
     this.closedSeqs.clear()
-    const ended = worker?.terminate()
+    if (worker) this.endWorker(worker)
     this.endDrain()
-    return Promise.resolve(ended).then(
+    return Promise.all([...this.ending]).then(() => undefined)
+  }
+
+  /** Terminate `worker`, kept in `ending` until its thread is gone (a throw or rejection counts as gone). */
+  private endWorker(worker: MirrorWorkerLike): void {
+    let result: void | Promise<void>
+    try {
+      result = worker.terminate()
+    } catch {
+      result = undefined
+    }
+    const ended = Promise.resolve(result).then(
       () => undefined,
       () => undefined
     )
+    this.ending.add(ended)
+    void ended.then(() => this.ending.delete(ended))
   }
 
   /** Told after the worker restarted: every tab's copy is blank from its current seq on. */
@@ -1113,7 +1135,7 @@ export class TerminalMirror implements TerminalTap {
   private hung(reason: string): void {
     const worker = this.worker
     if (!worker) return
-    void worker.terminate()
+    this.endWorker(worker)
     this.crashed(reason)
   }
 

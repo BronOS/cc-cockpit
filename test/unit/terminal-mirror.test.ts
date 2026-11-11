@@ -106,6 +106,42 @@ describe('off', () => {
     await expect(m.stop()).resolves.toBeUndefined()
   })
 
+  it('a second stop() while the first is waiting waits for the same thread (SIGTERM during a failed start)', async () => {
+    const m = mirror()
+    m.start()
+    let end: (() => void) | undefined
+    workers[0]!.terminate = () => new Promise<void>((r) => (end = r))
+    const done: string[] = []
+    const first = m.stop().then(() => done.push('first'))
+    const second = m.stop().then(() => done.push('second'))
+    await new Promise((r) => setImmediate(r))
+    expect(done).toEqual([])
+    end!()
+    await Promise.all([first, second])
+    expect(done.sort()).toEqual(['first', 'second'])
+    // Over: a later stop has nothing left to wait for.
+    await expect(m.stop()).resolves.toBeUndefined()
+  })
+
+  it('stop() also waits for a worker ended earlier and not gone yet (a restart, a hang)', async () => {
+    const m = mirror()
+    m.start()
+    let endOld: (() => void) | undefined
+    workers[0]!.terminate = () => new Promise<void>((r) => (endOld = r))
+    void m.stop()
+    m.start()
+    let endNew: (() => void) | undefined
+    workers[1]!.terminate = () => new Promise<void>((r) => (endNew = r))
+    let done = false
+    const stopped = m.stop().then(() => (done = true))
+    endNew!()
+    await new Promise((r) => setImmediate(r))
+    expect(done).toBe(false)
+    endOld!()
+    await stopped
+    expect(done).toBe(true)
+  })
+
   it('stop() ends the worker, forgets every tab and a later start begins fresh', async () => {
     const m = mirror()
     m.start()

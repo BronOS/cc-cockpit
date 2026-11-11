@@ -35,6 +35,10 @@
 //   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) are the same (SHARED_ASKS),
 //   and so are a server's in-page notices (`notices.show` / `notices.gone`, `notices`,
 //   main/notifications/notifier.ts PageNoticeBackend): one shown before the shell mounted still shows.
+//   A plugin's pending OAuth sign-in in server mode is held the same way (`app.linkNotice` with
+//   `signIn`, ended by `oauth.signInEnded`, `ready`'s `signIns`, keyed by its id): a reconnect remounts
+//   the shell, and without it the paste box would be gone while main still waits for the address. A
+//   held sign-in is handed over with `replayed`, so the shell shows it and never opens it at once.
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -53,6 +57,7 @@ import {
   utf8Length
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
+import { isSignInId } from '../../shared/oauth-paste'
 import { PortRelay, type ChannelLike } from './port-relay'
 
 /** The parts of a browser WebSocket the bridge uses (`WebSocket` itself fits). */
@@ -173,20 +178,41 @@ function noticeOf(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * A pending plugin sign-in from main (an `app.linkNotice` with `signIn`, or `ready`'s `signIns`),
+ * checked and marked `replayed` for its replay (see the top of the file); undefined for a plain link
+ * or a malformed one. The shell checks the address again (notice-state.ts oauthSignInOf).
+ */
+function signInOf(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  if (typeof v.url !== 'string' || !isSignInId(v.signIn)) return undefined
+  return { url: v.url, signIn: v.signIn, replayed: true }
+}
+
+/**
  * The shared asks the bridge keeps for a late subscriber (see the top of the file): the event that
- * opens one, the one that settles it, `ready`'s list and the checker of an item.
+ * opens one, the one that settles it, `ready`'s list, the checker of an item and the field naming it
+ * in both events (`requestId`; a sign-in's own id).
  */
 const SHARED_ASKS: ReadonlyArray<{
   ask: string
   settled: string
-  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'notices'
-  parse(value: unknown): { requestId: string } | undefined
+  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'notices' | 'signIns'
+  key: 'requestId' | 'signIn'
+  parse(value: unknown): Record<string, unknown> | undefined
 }> = [
-  { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', parse: closeAskOf },
-  { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', parse: (v) => linkAskOf(v) as { requestId: string } | undefined },
-  { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', parse: (v) => trashAskOf(v) as { requestId: string } | undefined },
-  { ask: 'notices.show', settled: 'notices.gone', field: 'notices', parse: (v) => noticeOf(v) as { requestId: string } | undefined }
+  { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', key: 'requestId', parse: closeAskOf },
+  { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', key: 'requestId', parse: linkAskOf },
+  { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', key: 'requestId', parse: trashAskOf },
+  { ask: 'notices.show', settled: 'notices.gone', field: 'notices', key: 'requestId', parse: noticeOf },
+  { ask: 'app.linkNotice', settled: 'oauth.signInEnded', field: 'signIns', key: 'signIn', parse: signInOf }
 ]
+
+/** An item's id under `key`, or undefined. */
+function askKey(item: Record<string, unknown> | null | undefined, key: 'requestId' | 'signIn'): string | undefined {
+  const id = item?.[key]
+  return typeof id === 'string' ? id : undefined
+}
 
 /** Main's paths, checked: string prefixes under the gateway's own paths only, else none. */
 export function pagePathsOf(value: unknown): WebPagePaths {
@@ -362,8 +388,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   let snapParts = new Map<string, { seq: number; parts: number; cols: number; rows: number; data: string[] }>()
   // The current socket's relayed panel ports (a new socket starts with none).
   let ports: PortRelay | undefined
-  // Plugin close asks of this window still waiting, by request id (see the top of the file).
-  const sharedAsks = new Map<string, Map<string, { requestId: string }>>(SHARED_ASKS.map((k) => [k.ask, new Map()]))
+  // Shared asks of this window still waiting, per kind, by id (see the top of the file).
+  const sharedAsks = new Map<string, Map<string, Record<string, unknown>>>(SHARED_ASKS.map((k) => [k.ask, new Map()]))
 
   const setStatus = (next: BridgeStatus): void => {
     status = next
@@ -441,10 +467,11 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     for (const kind of SHARED_ASKS) {
       if (channel === kind.ask) {
         const ask = kind.parse(payload)
-        if (ask) sharedAsks.get(kind.ask)!.set(ask.requestId, ask)
+        const id = askKey(ask, kind.key)
+        if (ask && id !== undefined) sharedAsks.get(kind.ask)!.set(id, ask)
       } else if (channel === kind.settled) {
-        const id = (payload as { requestId?: unknown } | null)?.requestId
-        if (typeof id === 'string') sharedAsks.get(kind.ask)!.delete(id)
+        const id = askKey(payload as Record<string, unknown> | null, kind.key)
+        if (id !== undefined) sharedAsks.get(kind.ask)!.delete(id)
       }
     }
   }
@@ -518,7 +545,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
         if (Array.isArray(list)) {
           for (const item of list as unknown[]) {
             const ask = kind.parse(item)
-            if (ask) held.set(ask.requestId, ask)
+            const id = askKey(ask, kind.key)
+            if (ask && id !== undefined) held.set(id, ask)
           }
         }
       }

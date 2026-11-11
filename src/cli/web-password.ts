@@ -9,6 +9,7 @@
 // The password is only ever returned to the caller: never written to stdout or stderr, never in an
 // error text (each names the rule, not the value).
 import type { Readable } from 'node:stream'
+import { StringDecoder } from 'node:string_decoder'
 import { MAX_PASSWORD_BYTES } from '../main/web/password'
 import { readStdinBounded } from './stdin-read'
 
@@ -56,8 +57,12 @@ export function readHidden(input: TtyInput, write: (text: string) => void, promp
     const timer = setTimeout(() => finish({ error: `no password typed within ${Math.round(timeoutMs / 60000)} minutes` }), timeoutMs)
     // 0: text; 1: after ESC; 2: inside a CSI/SS3 sequence (`ESC [ A`), until its final byte.
     let escape = 0
+    // One decoder for the whole prompt: a character's bytes may come in two reads (a paste, a slow
+    // link), and decoding each read alone would turn `é` split in two into two U+FFFD, so the two
+    // answers could differ for the same password, or a different one be stored.
+    const decoder = new StringDecoder('utf8')
     const onData = (chunk: Buffer | string): void => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+      const text = typeof chunk === 'string' ? chunk : decoder.write(chunk)
       for (const ch of text) {
         const code = ch.codePointAt(0) ?? 0
         if (escape === 1) {

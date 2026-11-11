@@ -728,7 +728,8 @@ stays: a remote view may only Deny.
 - **Close project and error notices**: in-page, in the asking view (§9.7, §9.8).
 - An in-page approval never has Allow as the default, Enter does nothing, the dialog never takes keyboard focus from a
   terminal by itself, and Allow is enabled only after the dialog has been visible for about a second: neither keys typed
-  for Claude nor a click already on its way when an ask appears can approve.
+  for Claude nor a click already on its way when an ask appears can approve. Visible means on top too: of two dialogs up
+  at once (a link ask and a trash ask) only the upper one arms, and the one under it starts its second when it is bared.
 
 ### 9.7 Native dialogs
 
@@ -845,7 +846,9 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   unknown id, a non-string or an over-long text is refused unread and not counted), and every refusal is the one
   `OAUTH_PASTE_REFUSED` (`shared/oauth-paste.ts`); the log counts refusals and never names the address. However a sign-in
   ends, `oauth.signInEnded` goes to the window's browsers: with a code the notice goes (in every view), otherwise (timeout,
-  the attempt limit, replaced, the provider's refusal) it says the sign-in is over in place of the box.
+  the attempt limit, replaced, the provider's refusal) it says the sign-in is over in place of the box. The window's
+  pending sign-ins are in `ready` (`signIns`) and the bridge hands them to the remounted shell after a reconnect, shown
+  but never opened at once, so the box is not lost while main still waits for the address.
 
 ### 9.10 Claude login
 

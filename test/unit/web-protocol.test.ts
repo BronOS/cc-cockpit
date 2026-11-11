@@ -504,6 +504,23 @@ describe('windowSnapshot leaves the desktop as it was', () => {
     const snap = windowSnapshot({ ...base, notices: { pendingFor }, server: true }, { windowId: 7, projectId: 'p1' })
     expect(pendingFor).toHaveBeenCalledWith(7)
     expect(snap.notices).toEqual([{ requestId: 'n1', title: 'Calendar', text: 'Standup', action: 'Join' }])
+    expect(snap.signIns).toEqual([])
+  })
+
+  // design-web.md §9.9: a plugin's sign-in still waiting is in `ready`, so a shell remounted by a
+  // reconnect keeps its paste box (main passes the source in server mode only).
+  it('carries the window\'s pending plugin sign-ins when main has a source', () => {
+    const base = {
+      tabs: { list: () => [] },
+      layouts: { view: () => LAYOUT },
+      overlays: { infos: () => [] },
+      closeAsks: { pendingFor: () => [] },
+      linkAsks: { pendingFor: () => [] }
+    }
+    const pendingFor = vi.fn(() => [{ url: 'https://auth.example/a', signIn: 'abcdefghijklmnopqrstuv' }])
+    const snap = windowSnapshot({ ...base, signIns: { pendingFor }, server: true }, { windowId: 7, projectId: 'p1' })
+    expect(pendingFor).toHaveBeenCalledWith(7)
+    expect(snap.signIns).toEqual([{ url: 'https://auth.example/a', signIn: 'abcdefghijklmnopqrstuv' }])
   })
 })
 

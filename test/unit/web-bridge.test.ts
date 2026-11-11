@@ -883,6 +883,51 @@ describe('pending in-page notices', () => {
   })
 })
 
+// design-web.md §9.9: a plugin's pending OAuth sign-in in server mode. A reconnect remounts the shell;
+// the sign-ins main still waits on come back in `ready` and are handed over `replayed` (shown, never
+// opened at once); one that ended goes.
+describe('pending sign-ins', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
+  const id = (n: number): string => `signin-${n}-abcdefghijkl`
+  const signIn = (n: number): Record<string, unknown> => ({ url: `https://auth.example/${n}`, signIn: id(n) })
+
+  it('hands ready’s list and early sign-in notices to a late app.linkNotice listener as replayed, minus ended and plain links', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    const bad = [{ url: 'https://x', signIn: 'short' }, { signIn: id(8) }]
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, signIns: [signIn(1), signIn(2), ...bad] as never } })
+    s.serverSend({ t: 'event', ch: 'oauth.signInEnded', p: { signIn: id(2), finished: false } })
+    s.serverSend({ t: 'event', ch: 'app.linkNotice', p: signIn(3) })
+    // A plain link is not held: it was for that moment's shell.
+    s.serverSend({ t: 'event', ch: 'app.linkNotice', p: { url: 'https://plain.example/' } })
+    const got: unknown[] = []
+    anyApi(r.api).on('app.linkNotice', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([
+      { ...signIn(1), replayed: true },
+      { ...signIn(3), replayed: true }
+    ])
+  })
+
+  it('a reconnect hands the remounted shell the sign-ins main still waits on, not one that ended while away', async () => {
+    const r = rig()
+    const s1 = connect(r, 'web:1')
+    s1.serverSend({ t: 'event', ch: 'app.linkNotice', p: signIn(1) })
+    s1.serverSend({ t: 'event', ch: 'app.linkNotice', p: signIn(2) })
+    s1.serverClose(1006)
+    r.timers.advance(reconnectDelay(1))
+    const s2 = r.last()
+    s2.open()
+    // Sign-in 2 ended while the socket was away: main's list no longer has it.
+    s2.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:2', snapshot: { ...SNAPSHOT, signIns: [signIn(1)] as never } })
+    const got: unknown[] = []
+    anyApi(r.api).on('app.linkNotice', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([{ ...signIn(1), replayed: true }])
+  })
+})
+
 describe('pending close asks', () => {
   const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
 

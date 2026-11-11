@@ -1476,8 +1476,11 @@ export interface IpcEventMap {
    * Sent only to the view that asked; `url` is http(s), checked by main. In server mode a link with no
    * asking view goes to every browser view of its window, and a plugin's OAuth sign-in carries `signIn`
    * (§9.9): the notice then has a box for the address the redirect ended on (`oauth.paste`).
+   * `replayed`: set by the web bridge only, on a pending sign-in handed to a shell mounted after the
+   * notice came (a reconnect's `ready`, `WebSnapshot.signIns`); such a notice is shown, never opened
+   * at once (the click that may be active then was not for this link). Main never sends it.
    */
-  'app.linkNotice': { url: string; signIn?: string }
+  'app.linkNotice': { url: string; signIn?: string; replayed?: true }
   /**
    * A plugin's sign-in named by an `app.linkNotice`'s `signIn` is over, however it ended (server mode,
    * design-web.md §9.9): sent to every browser view of its window. `finished` when the redirect brought a

@@ -531,6 +531,28 @@ describe('PluginOAuth.paste', () => {
     await expect(appWide).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
   })
 
+  it('pendingFor lists the window’s own sign-ins with their notice’s address until each ends (a reconnect’s replay)', async () => {
+    const oauth = oauthWith()
+    const controller = new AbortController()
+    const a = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    const b = oauth.authorize(spec({ scopes: ['other'] }), controller.signal, TARGET)
+    const appWide = oauth.authorize(spec(), new AbortController().signal, 'app')
+    await vi.waitFor(() => expect(opened).toHaveLength(3))
+    expect(oauth.pendingFor(TARGET.windowId)).toEqual([
+      { url: opened[0], signIn: signInsOpened[0] },
+      { url: opened[1], signIn: signInsOpened[1] }
+    ])
+    // Another window's view gets none; the one tied to no window is never listed (no view can paste into it).
+    expect(oauth.pendingFor(TARGET.windowId + 1)).toEqual([])
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirectOf(0))).toBe(true)
+    await a
+    controller.abort()
+    await expect(b).rejects.toThrow('cancelled')
+    expect(oauth.pendingFor(TARGET.windowId)).toEqual([])
+    expect((await fetch(redirectOf(2))).status).toBe(200)
+    await appWide
+  })
+
   it('onEnded tells of every end once, for the target: finished only when a code came', async () => {
     const ended: { signIn: string; target: OpenTarget; finished: boolean }[] = []
     const oauth = oauthWith({ loginTimeoutMs: 300, onEnded: (signIn, target, finished) => ended.push({ signIn, target, finished }) })
