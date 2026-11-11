@@ -525,7 +525,7 @@ describe('ccc web part 2 (server-mode plan Task 12): the handlers called directl
     expect(() => h['web.add-device']!({ name: 'x' }, HOST)).toThrow(/unexpected field/)
   })
 
-  it('a link that cannot be made says why; a regenerate is logged all the same (it took access back)', async () => {
+  it('a link that cannot be made says why; a failed regenerate is logged as an attempt', async () => {
     const deps = recorder(true)
     deps.link = async () => ({ ok: false, reason: 'links work only in the access-link mode' })
     deps.addDevice = () => ({ ok: false, reason: 'web access is not listening' })
@@ -533,7 +533,7 @@ describe('ccc web part 2 (server-mode plan Task 12): the handlers called directl
     await expect(Promise.resolve().then(() => h['web.link']!({}, HOST))).rejects.toThrow('web link: links work only in the access-link mode')
     await expect(Promise.resolve().then(() => h['web.link']!({ regenerate: true }, HOST))).rejects.toThrow(/web link:/)
     expect(() => h['web.add-device']!({}, HOST)).toThrow('web add-device: web access is not listening')
-    expect(deps.calls).toEqual(['log ccc web link --regenerate'])
+    expect(deps.calls).toEqual(['log ccc web link --regenerate (failed: nothing may have changed)'])
   })
 
   it('password: text within the cap only, the reason never quotes it, the log line names the command only', async () => {

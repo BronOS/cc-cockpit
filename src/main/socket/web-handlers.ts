@@ -170,8 +170,11 @@ export function webLinkHandler(deps: Pick<WebHandlerDeps, 'server' | 'link' | 'l
     if (args.regenerate !== undefined && args.regenerate !== true) throw new Error('web link: regenerate is true or absent')
     const regenerate = args.regenerate === true
     const reply = await deps.link(regenerate)
-    // A regenerate took access back even when the new link could not be stored: logged either way.
-    if (regenerate || reply.ok) deps.logShell(regenerate ? 'ccc web link --regenerate' : 'ccc web link')
+    // A regenerate that ran took access back even when the new link could not be stored, but a refusal
+    // before it ran (not listening, not link mode) is indistinguishable here: a failed one is worded
+    // as an attempt so the log never claims a change that may not have happened.
+    if (reply.ok) deps.logShell(regenerate ? 'ccc web link --regenerate' : 'ccc web link')
+    else if (regenerate) deps.logShell('ccc web link --regenerate (failed: nothing may have changed)')
     return linkResult(reply, 'web link')
   }
 }

@@ -35,11 +35,14 @@ export function readHidden(input: TtyInput, write: (text: string) => void, promp
   return new Promise((resolve) => {
     let chars: string[] = []
     let done = false
+    const onGone = (): void => finish({ error: 'the terminal closed' })
     const finish = (result: PasswordRead): void => {
       if (done) return
       done = true
       clearTimeout(timer)
       input.off('data', onData)
+      input.off('end', onGone)
+      input.off('close', onGone)
       try {
         input.setRawMode?.(false)
       } catch {
@@ -84,9 +87,12 @@ export function readHidden(input: TtyInput, write: (text: string) => void, promp
       }
     }
     if (typeof input.setRawMode !== 'function') {
-      resolve({ error: 'this terminal cannot turn echo off; pipe the password on stdin instead' })
+      finish({ error: 'this terminal cannot turn echo off; pipe the password on stdin instead' })
       return
     }
+    // A hung-up terminal ends the prompt now instead of waiting out the timer.
+    input.once('end', onGone)
+    input.once('close', onGone)
     write(prompt)
     input.setRawMode(true)
     input.on('data', onData)
