@@ -48,11 +48,17 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
   }
   useEffect(() => {
     const arm = new ApprovalArm(setArmed)
-    const onVisibility = (): void => arm.visible(document.visibilityState === 'visible')
+    // Visible and focused: a visible but unfocused window (behind another one) would otherwise arm,
+    // and the click that focuses it could land on Allow.
+    const onVisibility = (): void => arm.visible(document.visibilityState === 'visible' && document.hasFocus())
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onVisibility)
+    window.addEventListener('blur', onVisibility)
     onVisibility()
     return () => {
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onVisibility)
+      window.removeEventListener('blur', onVisibility)
       arm.dispose()
     }
   }, [])
@@ -64,6 +70,18 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={textId}
+        // Recorded on the dialog, not on Allow: a disabled button may get no pointer events, and a
+        // press begun while disarmed must never read as "no press seen".
+        onPointerDownCapture={() => {
+          pressArmed.current = armed
+        }}
+        // Space presses a focused button on keyup (and Firefox clicks after a keydown-only block).
+        onKeyUp={(e) => {
+          if (approvalKey(e.key) === 'block') {
+            e.preventDefault()
+            e.stopPropagation()
+          }
+        }}
         onKeyDown={(e) => {
           const action = approvalKey(e.key)
           if (action === 'pass') return
@@ -86,9 +104,6 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
               type="button"
               className="confirm-danger"
               disabled={!armed}
-              onPointerDown={() => {
-                pressArmed.current = armed
-              }}
               onClick={() => {
                 const counts = allowClickCounts(armed, pressArmed.current)
                 pressArmed.current = undefined

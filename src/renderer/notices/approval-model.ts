@@ -4,7 +4,7 @@
 // An in-page approval must not be given by anything but a deliberate click on Allow: neither keys
 // typed for Claude nor a click already on its way when the ask appears. So Allow is never the
 // default and never focused, no key answers Allow, and Allow is armed only after the dialog has been
-// visible for about a second. "Visible" is the page's own visibility: a browser tab in the
+// visible and focused for about a second. "Visible" is the page's own visibility plus window focus: a browser tab in the
 // background shows nothing, so the second starts over when the person comes back to it.
 
 /** How long the dialog must have been visible before Allow takes a click. */
