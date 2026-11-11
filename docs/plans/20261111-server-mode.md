@@ -719,21 +719,21 @@ task only takes the hidden page out of the set of views that may own a size or a
   `src/shared/web-protocol.ts` (`WebSnapshot.server`), `src/main/web/connection.ts`,
   `src/renderer/notices/ShellNotices.tsx`, `test/unit/link-asks.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] the shared-ask core (first answer wins, `settled`, the timeout, pending ones for a joining view) is one class
+- [x] the shared-ask core (first answer wins, `settled`, the timeout, pending ones for a joining view) is one class
       `LinkAsks` uses; its existing tests pass unchanged
-- [ ] in server mode `chooseLinkConfirm` always takes the shared ask, never the native dialog and never a test run's
+- [x] in server mode `chooseLinkConfirm` always takes the shared ask, never the native dialog and never a test run's
       queued fake; with no browser attached the ask waits (the hidden page takes it), a browser that joins finds it in
       `ready.linkAsks`, and after 5 min it is Deny as now
-- [ ] `LinkAsks.answer` accepts an Allow from a view main counts as owner (`!view.remote || server`), never from the
+- [x] `LinkAsks.answer` accepts an Allow from a view main counts as owner (`!view.remote || server`), never from the
       payload; on the desktop a remote view may still only Deny
-- [ ] `ApprovalDialog`: Allow is never the default, Enter does nothing, the dialog never takes keyboard focus from a
+- [x] `ApprovalDialog`: Allow is never the default, Enter does nothing, the dialog never takes keyboard focus from a
       terminal by itself, and Allow is enabled only after the dialog has been visible for about a second. In server
       mode the link dialog uses it and drops "Approve on the desktop" (`snapshot.server`, a UI hint only)
-- [ ] write tests: a remote Allow taken only in server mode, and refused on the desktop whatever the payload says; the
+- [x] write tests: a remote Allow taken only in server mode, and refused on the desktop whatever the payload says; the
       wait with no browser and the timeout; a joining view gets the pending ask; an answer for another window's ask
       refused; Allow disabled for the first second, Enter and typing never approve; e2e: `ccc plugin link` from a tab,
       Allowed in the browser, the plugin loads, main is alive
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `link-confirm`, `web-access-plugins`) - must pass before next task
+- [x] run tests and `npm run test:e2e` (`server-mode`, `link-confirm`, `web-access-plugins`) - must pass before next task
 
 ### Task 16: Trash confirm as a shared ask [model: opus]
 

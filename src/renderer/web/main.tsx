@@ -19,7 +19,7 @@ import type { WebAccessMode } from '../../shared/types'
 import { SESSION_PATH, WS_PATH } from '../../shared/web-protocol'
 import { App } from '../App'
 import { setPrefs, startPrefs } from '../prefs/prefs-store'
-import { armLoadTake, markWebShell, setOwnView } from '../shell-kind'
+import { armLoadTake, markWebShell, setOwnView, setServerHint } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { loadTerminalFont } from '../tabs/terminal-font'
@@ -107,6 +107,8 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
     if (status.state !== 'ready') return
     // Before the shell mounts: "typed last on <device>" is hidden for this view's own typing.
     setOwnView(status.view)
+    // Before the shell mounts: approvals offer Allow in a server's browser views (a UI hint).
+    setServerHint(bridge.snapshot()?.server === true)
     // Before the shell mounts (its tabs pane consumes it): the first ready of this page load only.
     armLoadTake(status.generation)
     const generation = status.generation
@@ -122,7 +124,8 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
     return () => {
       live = false
     }
-  }, [status])
+    // `bridge` is the page's one bridge (a prop that never changes): listed for the lint only.
+  }, [status, bridge])
 
   if (status.state === 'gone') {
     return (

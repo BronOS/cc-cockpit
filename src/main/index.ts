@@ -87,7 +87,7 @@ import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, 
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
-import { chooseLinkConfirm, LinkAsks } from './plugins/link-asks'
+import { chooseLinkConfirm, LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
@@ -791,12 +791,18 @@ function start(server: boolean): void {
     viewsOf: (windowId) => views.viewsOf(windowId)
   })
   // `ccc plugin link`'s confirm while a browser view is attached (link-asks.ts): an in-page dialog on
-  // every view of the window, first `links.answer` wins, but only the desktop view can Allow (a browser
-  // may Deny). With no browser view the native dialog is used.
-  const linkAsks = new LinkAsks({
-    send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
-    settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
-  })
+  // every view of the window, first `links.answer` wins, but on the desktop only the desktop view can
+  // Allow (a browser may Deny). With no browser view the native dialog is used. In server mode always
+  // this ask, and any signed-in view is the owner and may Allow (design-web.md §9.6); the hidden page
+  // is a view too, so with no browser attached the ask waits for one (5 min).
+  const linkAsks = new LinkAsks(
+    {
+      send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
+      settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
+    },
+    LINK_ASK_MS,
+    { server }
+  )
   // ctx.sessions.close's body (HostApi checked the tab is the project's); a function so the test
   // hook `pluginCloseTab` runs the very same path.
   const closeTabForPlugin = (windowId: number, projectId: string, tabId: string): Promise<boolean> => {
@@ -1704,7 +1710,9 @@ function start(server: boolean): void {
   registerPluginDevHandlers(socket, {
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     inspectLink: (path) => plugins.inspectLink(path),
+    // Server mode: never the native dialog (it aborts main under Ozone headless) nor the queued fake.
     confirmLink: chooseLinkConfirm({
+      server,
       hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
       shared: (windowId, info, signal) => linkAsks.ask(windowId, info, signal),
       native:
@@ -2414,7 +2422,7 @@ function start(server: boolean): void {
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
-    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks }, ctx),
+    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks, server }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),

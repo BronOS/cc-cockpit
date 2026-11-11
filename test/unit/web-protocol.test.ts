@@ -976,13 +976,20 @@ describe('terminal streams (term.* frames instead of tabs.data)', () => {
 // (`sessions.closeSettled`, `overlays.updated`), a view joining mid-ask finds them in `ready`, and
 // a view of another window cannot answer.
 describe('shared asks', () => {
-  function sharedSetup() {
+  function sharedSetup(opts: { server?: boolean } = {}) {
     // Filled in below: `snapshot` reads them lazily, at each hello.
     const late = {} as { asks: CloseAsks; links: LinkAsks; overlays: OverlayManager }
     const ctx = setup({
       snapshot: ((c: ProjectContext) =>
         windowSnapshot(
-          { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: late.overlays, closeAsks: late.asks, linkAsks: late.links },
+          {
+            tabs: { list: () => [] },
+            layouts: { view: () => LAYOUT },
+            overlays: late.overlays,
+            closeAsks: late.asks,
+            linkAsks: late.links,
+            ...(opts.server !== undefined ? { server: opts.server } : {})
+          },
           c
         )) as never,
       viewGone: () => late.asks.viewGone()
@@ -995,10 +1002,14 @@ describe('shared asks', () => {
       close: () => true,
       viewsOf: (windowId) => views.viewsOf(windowId)
     }))
-    const links = (late.links = new LinkAsks({
-      send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
-      settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
-    }))
+    const links = (late.links = new LinkAsks(
+      {
+        send: (windowId, ask) => views.toWindow(windowId, 'links.ask', ask),
+        settled: (windowId, requestId) => views.toWindow(windowId, 'links.settled', { requestId })
+      },
+      undefined,
+      { server: opts.server === true }
+    ))
     registerSessionHandlers(router, {
       linkAnswer: (windowId, requestId, allow, remote) => links.answer(windowId, requestId, allow, { remote }),
       snapshotFor: () => ({ own: [] }) as never,
@@ -1106,6 +1117,36 @@ describe('shared asks', () => {
     await expect(result).resolves.toBe(false)
     expect(desktop.send).toHaveBeenCalledWith('links.settled', { requestId: 'link-1' })
     expect(events(web, 'links.settled')).toEqual([{ requestId: 'link-1' }])
+  })
+
+  // design-web.md §9.6: in server mode every signed-in view is the owner. The router binds the view;
+  // `remote` stays true for a browser, and main's flag (not the payload) lets its Allow through.
+  it('link confirm in server mode: a browser’s Allow links, another window’s is refused, ready says server', async () => {
+    const { connect, desktop, links } = sharedSetup({ server: true })
+    const web = connect('p1')
+    expect((web.frames('ready')[0]!.snapshot as { server?: unknown }).server).toBe(true)
+    const result = links.ask(1, { id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' })
+    const foreign = connect('p2')
+    foreign.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: true } })
+    await flush()
+    expect(answers(foreign)).toEqual([false])
+    expect(links.size).toBe(1)
+    // A browser joining mid-ask finds it in ready, and its Allow is taken.
+    const late = connect('p1')
+    expect((late.frames('ready')[0]!.snapshot as { linkAsks: unknown }).linkAsks).toEqual([
+      { requestId: 'link-1', id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' }
+    ])
+    late.feed({ t: 'invoke', id: 1, ch: 'links.answer', p: { requestId: 'link-1', allow: true } })
+    await flush()
+    expect(answers(late)).toEqual([true])
+    await expect(result).resolves.toBe(true)
+    expect(desktop.send).toHaveBeenCalledWith('links.settled', { requestId: 'link-1' })
+    expect(events(web, 'links.settled')).toEqual([{ requestId: 'link-1' }])
+  })
+
+  it('ready says not a server on the desktop', () => {
+    const { connect } = sharedSetup({ server: false })
+    expect((connect('p1').frames('ready')[0]!.snapshot as { server?: unknown }).server).toBe(false)
   })
 
   it('close ask: a browser that leaves after every other view declined ends the ask', async () => {

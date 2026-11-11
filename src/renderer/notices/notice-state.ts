@@ -46,9 +46,11 @@ export function dropLinkAsk(asks: readonly LinkAsk[], requestId: string): readon
 }
 
 /**
- * Whether this page may offer Allow. Only the desktop approves a plugin link (main refuses a remote
- * view's Allow, design-web.md §6.1); a browser shows the ask with Deny and "Approve on the desktop".
+ * Whether this page may offer Allow. On the desktop only the desktop approves a plugin link (main
+ * refuses a remote view's Allow, design-web.md §6.1); a browser shows the ask with Deny and "Approve
+ * on the desktop". A server's browser views are the owner (§9.6, `serverView` from the `ready`
+ * snapshot's hint): Allow is offered there.
  */
-export function canAllowLink(webShell: boolean): boolean {
-  return !webShell
+export function canAllowLink(webShell: boolean, serverView = false): boolean {
+  return !webShell || serverView
 }

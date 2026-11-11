@@ -228,6 +228,13 @@ export interface WebSnapshot {
   closeAsks: Array<IpcEventMap['sessions.closeAsk']>
   /** `ccc plugin link` confirms still waiting (LinkAsks.pendingFor): replayed to the shell's `links.ask` listener like `closeAsks`. */
   linkAsks: Array<IpcEventMap['links.ask']>
+  /**
+   * The app runs as a server (design-web.md §9, main's `server` flag): every signed-in view is the
+   * owner and may Allow an approval (§9.6). A UI hint only, so the dialog offers Allow instead of
+   * "Approve on the desktop": main decides who may answer from its own flag, never from this. Absent
+   * reads as false.
+   */
+  server?: boolean
 }
 
 export type HelloFrame = { t: 'hello'; v: number; project: string }

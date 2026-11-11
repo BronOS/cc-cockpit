@@ -57,6 +57,22 @@ export function holdsPage(heldBy: { viewId: string } | undefined): boolean {
   return heldBy === undefined ? !webShell : isOwnView(heldBy.viewId)
 }
 
+let serverHint = false
+
+/**
+ * The web shell's `ready` said the app runs as a server (WebSnapshot.server, web/main.tsx sets it
+ * before mounting the shell): every signed-in view is the owner and may Allow an approval
+ * (design-web.md §9.6). A UI hint only: main decides who may answer from its own flag.
+ */
+export function setServerHint(on: boolean): void {
+  serverHint = on
+}
+
+/** Whether this page is a browser view of a server (setServerHint); false in the Electron window. */
+export function isServerView(): boolean {
+  return webShell && serverHint
+}
+
 let loadTake = false
 
 /**
@@ -80,6 +96,7 @@ export function resetShellKindForTest(): void {
   webShell = false
   loadTake = false
   ownView = undefined
+  serverHint = false
 }
 
 export interface ShellChrome {

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { isWebShell } from '../shell-kind'
+import { isServerView, isWebShell } from '../shell-kind'
+import { ApprovalDialog } from './ApprovalDialog'
 import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeAction, type LinkAsk } from './notice-state'
 
 /**
@@ -65,7 +66,9 @@ function LinkNotice(): React.JSX.Element | null {
  * `links.ask`: the confirm of `ccc plugin link` while a browser view is attached. Every view of the
  * window shows it, the first answer wins and `links.settled` takes it down in the others. Deny has the
  * focus and is the Esc / backdrop answer, so Enter alone never links a plugin (as the native dialog).
- * Only the desktop may Allow (main refuses a remote Allow); a browser offers Deny and points to the desktop.
+ * On the desktop only the desktop may Allow (main refuses a remote Allow); a browser offers Deny and
+ * points to the desktop. A server's browser views are the owner (design-web.md §9.6): they get the
+ * guarded ApprovalDialog, which takes no focus and arms Allow after a second, with Allow offered.
  */
 function LinkConfirm(): React.JSX.Element | null {
   const [asks, setAsks] = useState<readonly LinkAsk[]>([])
@@ -79,16 +82,38 @@ function LinkConfirm(): React.JSX.Element | null {
   }, [])
   const ask = asks[0]
   if (!ask) return null
+  const onAnswer = (allow: boolean): void => {
+    setAsks((prev) => dropLinkAsk(prev, ask.requestId))
+    window.cockpit.invoke('links.answer', { requestId: ask.requestId, allow }).catch(() => {})
+  }
+  if (isServerView()) {
+    return (
+      <ApprovalDialog key={ask.requestId} title={<LinkAskTitle ask={ask} />} canAllow={canAllowLink(true, true)} onAnswer={onAnswer}>
+        <LinkAskText ask={ask} />
+      </ApprovalDialog>
+    )
+  }
+  return <LinkDialog key={ask.requestId} ask={ask} canAllow={canAllowLink(isWebShell())} onAnswer={onAnswer} />
+}
+
+/** The id first: the name is the plugin's own text and could imitate a second parenthesis. */
+function LinkAskTitle({ ask }: { ask: LinkAsk }): React.JSX.Element {
   return (
-    <LinkDialog
-      key={ask.requestId}
-      ask={ask}
-      canAllow={canAllowLink(isWebShell())}
-      onAnswer={(allow) => {
-        setAsks((prev) => dropLinkAsk(prev, ask.requestId))
-        window.cockpit.invoke('links.answer', { requestId: ask.requestId, allow }).catch(() => {})
-      }}
-    />
+    <>
+      Link plugin {ask.id} (named “{ask.name}”)?
+    </>
+  )
+}
+
+function LinkAskText({ ask }: { ask: LinkAsk }): React.JSX.Element {
+  return (
+    <p>
+      {ask.caller === 'tab'
+        ? 'A "ccc plugin link" command in a tab of this window'
+        : 'A "ccc plugin link" command run outside the app\'s tabs (naming this project with --project)'}{' '}
+      asked to link the plugin in <code>{ask.path}</code>. A linked plugin runs with full access to the host computer, like any program
+      you start, and stays until it is unlinked. Allow only a plugin you wrote or trust.
+    </p>
   )
 }
 
@@ -141,17 +166,12 @@ function LinkDialog(props: { ask: LinkAsk; canAllow: boolean; onAnswer: (allow: 
         aria-describedby={textId}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* The id first: the name is the plugin's own text and could imitate a second parenthesis. */}
         <h2 id={titleId} className="confirm-title">
-          Link plugin {ask.id} (named “{ask.name}”)?
+          <LinkAskTitle ask={ask} />
         </h2>
-        <p id={textId}>
-          {ask.caller === 'tab'
-            ? 'A "ccc plugin link" command in a tab of this window'
-            : 'A "ccc plugin link" command run outside the app\'s tabs (naming this project with --project)'}{' '}
-          asked to link the plugin in <code>{ask.path}</code>. A linked plugin runs with full access to the host computer, like any program
-          you start, and stays until it is unlinked. Allow only a plugin you wrote or trust.
-        </p>
+        <div id={textId}>
+          <LinkAskText ask={ask} />
+        </div>
         <div className="confirm-buttons">
           {canAllow ? null : <span className="confirm-note">Approve on the desktop</span>}
           <button type="button" ref={deny} onClick={() => answer(false)}>

@@ -1250,6 +1250,14 @@ iframe:focus-visible {
 .confirm-buttons .confirm-danger {
   color: var(--cc-status-ended, #cd3131);
 }
+/* An approval's Allow before it is armed (ApprovalDialog: about a second after the dialog shows). */
+.confirm-buttons button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.confirm-buttons button:disabled:hover {
+  background: var(--cc-surface-2);
+}
 /* In place of a button only the desktop may press (the plugin link confirm in a browser). */
 .confirm-buttons .confirm-note {
   margin-right: auto;

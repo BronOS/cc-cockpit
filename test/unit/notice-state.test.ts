@@ -49,5 +49,8 @@ describe('canAllowLink', () => {
   it('offers Allow on the desktop only', () => {
     expect(canAllowLink(false)).toBe(true)
     expect(canAllowLink(true)).toBe(false)
+    // A server's browser view is the owner (design-web.md §9.6); the hint never matters on the desktop.
+    expect(canAllowLink(true, true)).toBe(true)
+    expect(canAllowLink(false, false)).toBe(true)
   })
 })

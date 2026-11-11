@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
+import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
 import { launchCockpit } from './fixtures'
@@ -265,6 +266,66 @@ test('server mode: ccc web add-device signs a browser in once; stop and start br
     await page.keyboard.type('echo back-$((30+3))')
     await page.keyboard.press('Enter')
     await browser.waitForTerminalText('back-33', 20_000)
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+// design-web.md §9.6: with no desktop, every signed-in browser is the owner. `ccc plugin link` from a
+// tab is asked in the browser (never a native box, which aborts main under Ozone headless, nor the
+// test run's queued fake), in the guarded dialog: no focus taken, Enter does nothing, Allow armed
+// after a second. A browser that joins mid-ask (a reload) finds it, and its Allow links the plugin.
+test('server mode: ccc plugin link from a tab is Allowed in the browser; the plugin loads', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer()
+  const { cockpit } = server
+  const dir = join(cockpit.root, 'devplugin')
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const dialog = page.getByRole('alertdialog', { name: /Link plugin local\.devplugin/ })
+    const allow = dialog.getByRole('button', { name: 'Allow' })
+    const typeLine = async (text: string): Promise<void> => {
+      await page.locator('.terminal-view:not([hidden]) .xterm').click()
+      await page.keyboard.type(text)
+      await page.keyboard.press('Enter')
+    }
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await browser.waitForTerminalText('FAKE-CLAUDE banner')
+    await typeLine(`/ccc plugin new ${dir} --cli devdemo`)
+    await browser.waitForTerminalText(/FAKE-CLAUDE ccc exit=0 out="created plugin local\.devplugin in /)
+
+    await typeLine(`/ccc plugin link ${dir}`)
+    await expect(dialog).toBeVisible()
+    // Allow is offered (no "Approve on the desktop") but not armed yet, and the terminal keeps the focus.
+    await expect(dialog.getByText('Approve on the desktop')).toHaveCount(0)
+    await expect(allow).toBeDisabled()
+    expect(await page.evaluate(() => document.activeElement?.closest('.xterm') !== null)).toBe(true)
+    // Armed after about a second. Enter and Space on a focused Allow do nothing.
+    await expect(allow).toBeEnabled({ timeout: 5_000 })
+    await allow.focus()
+    await page.keyboard.press('Enter')
+    await page.keyboard.press(' ')
+    await page.keyboard.type('y')
+    await expect(dialog).toBeVisible()
+
+    // A browser joining mid-ask (this one, reloaded) finds it in ready, with Allow disarmed again.
+    await page.reload()
+    await page.locator('.tabs-pane').waitFor()
+    await expect(dialog).toBeVisible()
+    await expect(allow).toBeDisabled()
+    await expect(allow).toBeEnabled({ timeout: 5_000 })
+    await allow.click()
+    await expect(dialog).toHaveCount(0)
+    await browser.waitForTerminalText(/FAKE-CLAUDE ccc exit=0 out="linked local\.devplugin \(Devplugin\)/, 20_000)
+    await expect
+      .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'local.devplugin')?.state, {
+        timeout: 20_000
+      })
+      .toBe('active')
     await expectMainAlive(server)
   } finally {
     await browser.close()
