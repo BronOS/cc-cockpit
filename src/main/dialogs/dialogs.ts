@@ -35,7 +35,7 @@ export class ServerDialogError extends Error {
 /** The dialogs of a server-mode process: nothing ever reaches Electron's `dialog`. */
 export function serverDialogs(log: (message: string) => void = (m) => console.error(m)): Dialogs {
   return {
-    showMessageBox: (_parent, options) => Promise.reject(new ServerDialogError(options.message)),
+    showMessageBox: (_parent, options) => Promise.reject(new ServerDialogError(options.title ?? options.message.split('\n')[0] ?? '')),
     showOpenDialog: () => Promise.resolve({ canceled: true, filePaths: [] }),
     showErrorBox: (title, content) => log(`${title}: ${content}`)
   }

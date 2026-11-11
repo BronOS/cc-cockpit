@@ -40,7 +40,7 @@ function callerText(caller: LinkCaller): string {
     : 'A "ccc plugin link" command run outside the app\'s tabs (naming this project with --project)'
 }
 
-/** The Electron pieces the real dialog needs (index.ts passes BrowserWindow.fromId and dialog.showMessageBox). */
+/** The Electron pieces the real dialog needs (index.ts passes BrowserWindow.fromId and dialogs.showMessageBox). */
 export interface LinkDialogDeps<W> {
   windowOf(windowId: number): W | undefined
   showMessageBox(parent: W, options: MessageBoxOptions): Promise<{ response: number }>

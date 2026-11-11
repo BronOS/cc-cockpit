@@ -35,7 +35,7 @@ export function trashDialogOptions(info: TrashDialogInfo, platform: NodeJS.Platf
   }
 }
 
-/** The Electron pieces the real dialog needs (index.ts passes BrowserWindow.fromId and dialog.showMessageBox). */
+/** The Electron pieces the real dialog needs (index.ts passes BrowserWindow.fromId and dialogs.showMessageBox). */
 export interface TrashDialogDeps<W> {
   windowOf(windowId: number): W | undefined
   showMessageBox(parent: W, options: MessageBoxOptions): Promise<{ response: number }>

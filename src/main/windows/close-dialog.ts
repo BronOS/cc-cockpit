@@ -48,7 +48,7 @@ export function closeDialogOptions(devices: readonly string[]): MessageBoxOption
   }
 }
 
-/** The Electron pieces the real dialog needs (index.ts passes BrowserWindow.fromId and dialog.showMessageBox). */
+/** The Electron pieces the real dialog needs (index.ts passes BrowserWindow.fromId and dialogs.showMessageBox). */
 export interface CloseDialogDeps<W> {
   windowOf(windowId: number): W | undefined
   showMessageBox(parent: W, options: MessageBoxOptions): Promise<{ response: number }>
