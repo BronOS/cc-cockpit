@@ -58,6 +58,8 @@ describe('ccc web (design-web.md §9.4)', () => {
     expect(parseArgs(['web', 'status', '--json'])).toEqual({ kind: 'web-status', json: true })
     expect(parseArgs(['web', 'revoke', 'AbC-12_x'])).toEqual({ kind: 'web-revoke', id: 'AbC-12_x', all: false })
     expect(parseArgs(['web', 'revoke', '--all'])).toEqual({ kind: 'web-revoke', all: true })
+    expect(parseArgs(['web', 'revoke', '--', '-abc'])).toEqual({ kind: 'web-revoke', id: '-abc', all: false })
+    expect(parseArgs(['web', 'revoke', '--', '--all'])).toEqual({ kind: 'web-revoke', id: '--all', all: false })
     expect(parseArgs(['web', 'stop'])).toEqual({ kind: 'web-stop' })
     expect(parseArgs(['web', '--help'])).toEqual({ kind: 'help', command: 'web' })
     expect(parseArgs(['web', 'status', '-h'])).toEqual({ kind: 'help', command: 'web' })

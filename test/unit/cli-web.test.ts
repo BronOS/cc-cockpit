@@ -397,6 +397,12 @@ describe('ccc web: the CLI', () => {
     expect(err).toBe('')
   })
 
+  it('brackets an IPv6 address in the status lines', () => {
+    const text = formatWebStatus({ bind: '::', port: 7000, gateway: { state: 'listening', bind: '::1', port: 7000, origin: 'http://[::1]:7000' } }, String)
+    expect(text).toContain('address: [::]:7000')
+    expect(text).toContain('listening on [::1]:7000')
+  })
+
   it('prints the status as JSON with --json and as lines without; a refusal is exit 1 with its text', async () => {
     const seen = await fakeApp((r) => (r.token !== undefined ? { ok: false, error: HOST_ONLY_TEXT } : { ok: true, result: { ...STATUS, devices: [{ id: 'dev-1', name: 'Phone\u001b[2J', createdAt: 0, lastSeenAt: 0, mode: 'add', connected: true }] } }))
     expect(await runCommand({ kind: 'web-status', json: true }, { CC_COCKPIT_SOCK: sock }, CWD, io)).toBe(0)

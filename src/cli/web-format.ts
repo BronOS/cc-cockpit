@@ -34,10 +34,16 @@ function credential(state: unknown, set: string, unset: string, fix: string): st
   }
 }
 
+/** host:port with an IPv6 address bracketed, so `::` and port 7000 do not read `:::7000`. */
+function hostPort(bind: unknown, port: unknown, plain: Plain): string {
+  const host = plain(bind)
+  return `${host.includes(':') ? `[${host}]` : host}:${plain(String(port))}`
+}
+
 function gatewayLine(gateway: WebGatewayView | undefined, plain: Plain): string {
   switch (gateway?.state) {
     case 'listening':
-      return `listening on ${plain(gateway.bind)}:${plain(String(gateway.port))}, links point at ${plain(gateway.origin)}`
+      return `listening on ${hostPort(gateway.bind, gateway.port, plain)}, links point at ${plain(gateway.origin)}`
     case 'refused':
     case 'failed':
       return `not listening: ${plain(gateway.reason)}`
@@ -65,7 +71,7 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
     `server mode: ${s.server === true ? 'yes' : 'no (the desktop app)'}`,
     `web access: ${s.enabled === true ? 'on' : 'off'}`,
     `sign-in: ${MODE_NAMES[String(s.mode)] ?? plain(s.mode)}`,
-    `address: ${plain(s.bind)}:${plain(String(s.port))}`,
+    `address: ${hostPort(s.bind, s.port, plain)}`,
     `external origin: ${typeof s.externalOrigin === 'string' ? plain(s.externalOrigin) : 'none'}`,
     `gateway: ${gatewayLine(s.gateway, plain)}`,
     `secret store: ${STORE_NAMES[String(secrets.store)] ?? plain(secrets.store)}`

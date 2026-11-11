@@ -473,10 +473,12 @@ function parseWeb(rest: readonly string[]): Command {
       if (args.length === 1 && args[0] === '--json') return { kind: 'web-status', json: true }
       return usage('web status takes only --json')
     case 'revoke': {
-      const [target, ...extra] = args
+      // `--` ends options so an id that starts with `-` (about 1 in 64 base64url ids) can still be revoked.
+      const [target, ...extra] = args[0] === '--' ? args.slice(1) : args
+      const literal = args[0] === '--'
       if (target === undefined || target === '' || extra.length > 0) return usage('web revoke takes one device id or --all')
-      if (target === '--all') return { kind: 'web-revoke', all: true }
-      if (target.startsWith('-')) return usage(`web revoke: unknown option ${target}`)
+      if (!literal && target === '--all') return { kind: 'web-revoke', all: true }
+      if (!literal && target.startsWith('-')) return usage(`web revoke: unknown option ${target}`)
       return { kind: 'web-revoke', id: target, all: false }
     }
     case 'stop':
