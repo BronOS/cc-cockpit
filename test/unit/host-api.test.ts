@@ -2209,6 +2209,39 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     expect(calls).toEqual(['reveal src/a.ts', 'open src/a.ts', 'reveal src/a.ts'])
   })
 
+  // design-web.md §9.9: the origin view is a hint that lapses (10 s) and is absent for a timer or a
+  // plugin command, so in server mode main's own flag refuses both calls whatever the origin.
+  it('files.reveal and files.openWithSystem are refused in server mode from a view, a timer and a plugin command', async () => {
+    const calls: string[] = []
+    deps.systemFiles = {
+      reveal: async (_c, path) => void calls.push(`reveal ${String(path)}`),
+      openWithSystem: async (_c, path) => void calls.push(`open ${String(path)}`),
+      trash: async () => true
+    }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    deps.server = true
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    const params = { pluginId: 'a.one', path: 'src/a.ts' }
+    // A browser view's click (a live view of this window), a call whose hint lapsed or that never had
+    // one (a timer, a `ccc` plugin command: no meta at all), and a desktop-looking payload field.
+    const origins: Array<RpcMeta | undefined> = [{ view: 'web:1' }, {}, undefined]
+    for (const method of ['files.reveal', 'files.openWithSystem']) {
+      for (const meta of origins) {
+        await expect(Promise.resolve().then(() => api.handlers[method]!(params, meta))).rejects.toThrow(/not available in server mode/)
+      }
+      await expect(Promise.resolve().then(() => api.handlers[method]!({ ...params, view: 'desktop' }, undefined))).rejects.toThrow(
+        /not available in server mode/
+      )
+    }
+    expect(calls).toEqual([])
+    // Refused before the budget (3 per 10 s): the same host, flag off (the desktop), still has all of it.
+    deps.server = false
+    for (let i = 0; i < 3; i++) await api.handlers['files.reveal']!(params, {})
+    await api.handlers['files.openWithSystem']!(params, undefined)
+    expect(calls).toEqual(['reveal src/a.ts', 'reveal src/a.ts', 'reveal src/a.ts', 'open src/a.ts'])
+  })
+
   it('files.trash stays the same for a remote view (the confirm is in the window)', async () => {
     const trashed: string[] = []
     deps.systemFiles = {

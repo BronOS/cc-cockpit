@@ -21,7 +21,8 @@ import {
   type OverlayTypeQuery,
   type UrlView,
   type UrlViewFactory,
-  type ViewBounds
+  type ViewBounds,
+  URL_OVERLAY_SERVER_REFUSAL
 } from '../../src/main/overlays/overlay-manager'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { OVERLAY_CLICK_TIMEOUT_MS, type CleanTypeButton } from '../../src/shared/overlay-buttons'
@@ -1184,6 +1185,28 @@ describe('html overlays held by one view (design-web.md §5.4)', () => {
       ['web:1', '1'],
       ['desktop:1', '2']
     ])
+  })
+})
+
+// design-web.md §9.9: a url overlay's page is a native view, which nobody on a server sees and a
+// browser cannot show. Refused at the open by main's flag, whoever opens it, before anything exists.
+describe('server mode: url overlays are refused at their open', () => {
+  it('open rejects and start throws with the text; no view, no stack, nothing emitted', async () => {
+    const m = manager({ server: true })
+    await expect(m.open(W1, url(), 'cli')).rejects.toThrow(URL_OVERLAY_SERVER_REFUSAL)
+    expect(() => m.start(W1, url(), 'plugin a.one', undefined, undefined, 'a.one', 'web:1')).toThrow(URL_OVERLAY_SERVER_REFUSAL)
+    expect(views.created).toEqual([])
+    expect(m.infos(W1)).toEqual([])
+    expect(events).toEqual([])
+    // A terminal overlay still opens there (its pty lives in main; browsers draw it).
+    track(m.open(W1, terminal(), 'cli'))
+    expect(m.infos(W1).map((i) => i.kind)).toEqual(['terminal'])
+  })
+
+  it('the desktop opens a url overlay as before', () => {
+    track(manager({ server: false }).open(W1, url(), 'cli'))
+    track(manager().open(W2, url(), 'cli'))
+    expect(views.created.map((v) => v.windowId)).toEqual([W1, W2])
   })
 })
 

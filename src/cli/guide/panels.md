@@ -39,7 +39,7 @@ load, the strip shows the title's first letter.
 
 - With web access a panel can be open in a browser as well as the desktop, one page per view. What a browser view cannot
   do: `WebContentsView` features (`ctx.webview`, url overlays) show "available on the desktop", and `ctx.files.reveal` /
-  `openWithSystem` are refused. A page knows it is in a browser view from `ccPanel.view.remote` (below) and can hide
+  `openWithSystem` are refused. In server mode they are refused for every caller (no view is made, see `ccc guide api`). A page knows it is in a browser view from `ccPanel.view.remote` (below) and can hide
   such items. See `ccc guide api` (`ctx.panels.post` `{ view }`).
 
 ## `ccPanel`

@@ -912,27 +912,27 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/host-api.test.ts`, `webview-manager.test.ts`, `overlay-manager.test.ts`, `pty-env.test.ts`,
   `test/e2e/server-mode.spec.ts`
 
-- [ ] `ctx.files.reveal` and `openWithSystem` are refused by main's `server`, whatever the origin: `desktopOnly` refuses
+- [x] `ctx.files.reveal` and `openWithSystem` are refused by main's `server`, whatever the origin: `desktopOnly` refuses
       only a call with a remote origin view, a hint that lapses after 10 s, so a timer or a plugin command would reach
       `shell.showItemInFolder` or `shell.openPath` on the server
-- [ ] no `WebContentsView` in server mode, whoever asks. The design's line is marked "inferred", so the refusal sits
+- [x] no `WebContentsView` in server mode, whoever asks. The design's line is marked "inferred", so the refusal sits
       where a view is made, in `WebviewManager`, not only at `ctx.webview`'s open call: it covers the hidden page's own
       layout asking for a webview panel's view (the shell page's channels, `index.ts:2105-2108`) and the bundled browser
       plugin's `ctx.webview.navigate` at activation (`plugins/browser/src/host.ts:48`), which gets "not available in
       server mode" and must not fail the plugin's activation. URL overlays are refused at their open call with the same
       text. Browsers keep the placeholder
-- [ ] the browser plugin says it once: one line in its skill or its command's reply, that the panel is not available
+- [x] the browser plugin says it once: one line in its skill or its command's reply, that the panel is not available
       in server mode, so Claude does not send the person to a panel that shows a placeholder
-- [ ] `isStrippedVar`: `CLAUDE_CODE_OAUTH_TOKEN` becomes an exact-name exception, with a comment naming the boot-without-
+- [x] `isStrippedVar`: `CLAUDE_CODE_OAUTH_TOKEN` becomes an exact-name exception, with a comment naming the boot-without-
       login setup (§9.10); every other `CLAUDE_CODE_*` is still stripped, in the login-shell capture too
-- [ ] the guide says each refusal in the same change; if `src/sdk/types.ts` changed, copy it to the example and run
+- [x] the guide says each refusal in the same change; if `src/sdk/types.ts` changed, copy it to the example and run
       `npm run build:example` in the same change
-- [ ] write tests: both file calls refused in server mode from a view, a timer and a plugin command, and unchanged on
+- [x] write tests: both file calls refused in server mode from a view, a timer and a plugin command, and unchanged on
       the desktop; no view created in server mode for a webview panel asked by `ctx.webview`, by the shell page's
       channel or for a URL overlay; the token passes and every other `CLAUDE_CODE_*` does not
-- [ ] e2e, server mode with bundled plugins on (`env: { CC_COCKPIT_NO_BUNDLED: '' }`): the Browser panel shows the
+- [x] e2e, server mode with bundled plugins on (`env: { CC_COCKPIT_NO_BUNDLED: '' }`): the Browser panel shows the
       placeholder, main made no view (a test hook counts them), the browser plugin is active, main alive
-- [ ] run tests, `npm run test:plugins` and `npm run test:e2e` (`server-mode`, `webview-panel`, `browser-plugin`,
+- [x] run tests, `npm run test:plugins` and `npm run test:e2e` (`server-mode`, `webview-panel`, `browser-plugin`,
       `files-menu`, `tabs`) - must pass before next task
 
 ### Task 24: Plugin OAuth by pasting the failed redirect [model: opus]

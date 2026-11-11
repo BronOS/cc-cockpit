@@ -192,7 +192,9 @@ export interface OverlayManagerOptions {
   /**
    * Server mode (design-web.md §9.8): the desktop view is the hidden page, never a measured view of a
    * terminal overlay, so it never sizes the pty nor answers its queries; with no browser sizing the
-   * overlay nobody answers (the program's query times out, as with no terminal at all).
+   * overlay nobody answers (the program's query times out, as with no terminal at all). A url
+   * overlay is refused at its open (§9.9): its page is a native view, which nobody on the server can
+   * see and a browser cannot show.
    */
   server?: boolean
   /**
@@ -268,6 +270,9 @@ export interface DiscussSessions {
 export type OverlayButtonClick =
   | { source: 'opener'; buttonId: string }
   | { source: 'type'; pluginId: string; buttonId: string }
+
+/** What opening a url overlay gets in server mode (design-web.md §9.9): no native view is made. */
+export const URL_OVERLAY_SERVER_REFUSAL = 'overlay: url overlays are not available in server mode'
 
 /** Limits on what a caller may put in a spec. Generous for real use, small enough for IPC. */
 export const MAX_URL_LENGTH = 8192
@@ -554,6 +559,8 @@ export class OverlayManager {
     view?: ViewId
   ): Promise<OverlayResult> {
     const parsed = parseOverlaySpec(spec)
+    // By main's own flag, before anything is created (whoever opens it: the CLI, a plugin, a menu).
+    if (parsed.kind === 'url' && this.options.server === true) throw new Error(URL_OVERLAY_SERVER_REFUSAL)
     // Before anything is created: no program, no view, no stack for a window that is gone.
     if (!this.options.isWindowOpen(windowId)) throw new Error('overlay: the window is gone')
     const id = randomUUID()

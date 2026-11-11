@@ -30,12 +30,23 @@ export interface PtyEnvOptions {
 }
 
 /**
+ * The one `CLAUDE_CODE_*` name a child keeps: the long-lived token `claude setup-token` makes. A
+ * server run from boot (the systemd unit's environment file, design-web.md §9.10) sets it in main's
+ * environment so Claude tabs start signed in with no interactive login. It is an account
+ * credential, not a nested-session marker, so passing it on does not make `claude` refuse to start.
+ * An exact name, never a prefix: every other `CLAUDE_CODE_*` is still stripped.
+ */
+const KEPT_CLAUDE_VAR = 'CLAUDE_CODE_OAUTH_TOKEN'
+
+/**
  * Variables that must not leak into a child:
  * - `CLAUDECODE` and `CLAUDE_CODE_*`: a cockpit started from inside a Claude session would
- *   otherwise make `claude` refuse to start as a nested session.
+ *   otherwise make `claude` refuse to start as a nested session. Except KEPT_CLAUDE_VAR.
  * - `ELECTRON_*`: `ELECTRON_RUN_AS_NODE` would turn any Electron app run in a tab into plain Node.
+ * Applied to whatever env a child is built from: the login-shell capture or its process.env fallback.
  */
 export function isStrippedVar(name: string): boolean {
+  if (name === KEPT_CLAUDE_VAR) return false
   return name === 'CLAUDECODE' || name.startsWith('CLAUDE_CODE_') || name.startsWith('ELECTRON_')
 }
 

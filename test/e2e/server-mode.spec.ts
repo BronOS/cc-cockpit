@@ -850,6 +850,58 @@ test('server mode: a new device and a newer release are stdout lines, listed in 
   }
 })
 
+// design-web.md §9.9: no WebContentsView in server mode, whoever asks. The bundled browser plugin's
+// home page navigate at activation is refused and the plugin stays active; the browser shows the
+// panel's placeholder while the hidden page has the same panel open in the shared layout; `ccc
+// browser open` and `ccc overlay --url` from a Claude tab say why. Main made no native view at all.
+test('server mode: no web view or url overlay is made; the Browser panel is a placeholder and the browser plugin is active', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer({
+    env: { CC_COCKPIT_NO_BUNDLED: '' },
+    settings: { pluginSettings: { 'cockpit.browser': { home: 'http://127.0.0.1:9/' } } }
+  })
+  const { cockpit } = server
+  const none = { urlOverlays: 0, webviews: 0 }
+  await expect
+    .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
+      timeout: 20_000
+    })
+    .toBe('active')
+  // Its home page was asked for at activation and refused (ctx.log, the plugin's own file).
+  const pluginLog = join(cockpit.dataDir, 'logs', 'cockpit.browser.log')
+  await expect.poll(() => (existsSync(pluginLog) ? readFileSync(pluginLog, 'utf8') : ''), { timeout: 10_000 }).toContain('not available in server mode')
+  expect(await cockpit.hook('nativeViewsMade')).toEqual(none)
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const section = page.locator('section.panel[aria-label="Browser"]')
+    if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    await expect(section.getByRole('status')).toHaveText('Browser: not available in server mode.')
+    // The layout is shared: the hidden page has the panel open too, and reports its placement.
+    await expect(cockpit.page.locator('section.panel[aria-label="Browser"]')).toBeVisible({ timeout: 15_000 })
+
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await browser.waitForTerminalText('FAKE-CLAUDE banner')
+    await page.locator('.terminal-view:not([hidden]) .xterm').click()
+    await page.keyboard.type('/ccc browser open http://127.0.0.1:9/')
+    await page.keyboard.press('Enter')
+    await browser.waitForTerminalText('FAKE-CLAUDE ccc exit=1 out="" err="webview.navigate: web views are not available in server mode\\n"')
+    await page.keyboard.type('/ccc overlay --url https://example.com/')
+    await page.keyboard.press('Enter')
+    await browser.waitForTerminalText('FAKE-CLAUDE ccc exit=1 out="" err="ccc: overlay: url overlays are not available in server mode\\n"')
+
+    expect(await cockpit.hook('nativeViewsMade')).toEqual(none)
+    expect(await cockpit.hook<unknown[]>('overlays', cockpit.projectDir)).toEqual([])
+    expect((await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state).toBe('active')
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
 test('server mode: a second launch from a desktop is ignored by the server; its box answered Stop ends the server cleanly', async () => {
   test.setTimeout(90_000)
   server = await launchServer()

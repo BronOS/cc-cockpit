@@ -37,6 +37,12 @@
 //
 // Who may drive a view is decided by the caller (host-api.ts): the panel must be one of the asking
 // host's plugin's declared webview panels, in the host's own window. Here the owner names the view.
+//
+// Server mode (design-web.md §9.9): no view at all, whoever asks. The refusal sits here, where a
+// view is made, not only at ctx.webview's open call: the hidden page's layout is the browsers'
+// layout (§5.1), so a webview panel open in a browser is "open" on the hidden page too, and the
+// bundled browser plugin navigates at activation. A view made there would be a whole Chromium page
+// on the server nobody can see; the browsers draw the panel's placeholder instead.
 import { randomBytes } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
 import { splitChord } from '../../shared/keys'
@@ -203,7 +209,12 @@ export interface WebviewManagerDeps {
   /** Clock of the window.open budget (tests pin it); default Date.now. */
   now?(): number
   log?: (message: string) => void
+  /** main's server flag (server-mode.ts): true refuses every navigate, so no view is ever made. */
+  server?: boolean
 }
+
+/** What a navigate gets in server mode (the browser plugin's `ccc browser open` passes it on). */
+export const WEBVIEW_SERVER_REFUSAL = 'webview.navigate: web views are not available in server mode'
 
 /** The session partition of a plugin's webviews in a project: in memory, shared with nothing else. */
 export function webviewPartition(projectId: string, pluginId: string): string {
@@ -280,6 +291,8 @@ export class WebviewManager {
    * (Electron has no error page): current() carries the error, the toolbar shows it.
    */
   async navigate(owner: WebviewOwner, target: unknown, onNavigate?: (page: WebviewPage) => void): Promise<void> {
+    // Before the target is resolved: nothing of the request is looked at, not even the file system.
+    if (this.deps.server === true) throw new Error(WEBVIEW_SERVER_REFUSAL)
     const gen = this.generation(owner.windowId, owner.pluginId)
     const seqKey = keyOf(owner.windowId, owner.pluginId, owner.panelId)
     const seq = (this.navSeq.get(seqKey) ?? 0) + 1
@@ -439,6 +452,8 @@ export class WebviewManager {
   }
 
   private recordFor(owner: WebviewOwner): ViewRecord {
+    // The one place a view is made: a later caller that skips navigate's check still makes none.
+    if (this.deps.server === true) throw new Error(WEBVIEW_SERVER_REFUSAL)
     const key = keyOf(owner.windowId, owner.pluginId, owner.panelId)
     const existing = this.records.get(key)
     if (existing && existing.owner.projectId === owner.projectId) return existing

@@ -55,6 +55,12 @@ exports.activate = (ctx) => {
   the command palette, a dialog, settings or an overlay up. It comes back where the panel is.
 - Keys typed into the page stay with the page, except the app's own chords with Cmd, Ctrl or Alt
   (new tab, toggle a zone, the palette, ...), which run in the app as if typed there.
+- With web access a browser view shows a placeholder in the panel ("available on the desktop"):
+  the view is a native layer of the desktop window. In server mode (the app on a server with no
+  display, used only from browsers) there is no view at all: `navigate` rejects with "not available
+  in server mode", `current()` stays empty and `back`, `forward` and `reload` do nothing. Catch the
+  rejection (a navigate at activation must not fail your plugin) and tell the person where the page
+  is instead.
 
 ## Local files
 

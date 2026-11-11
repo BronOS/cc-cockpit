@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildPtyEnv } from '../../src/main/env/pty-env'
+import { buildPtyEnv, isStrippedVar } from '../../src/main/env/pty-env'
+import { ENV_BEGIN_MARKER, ENV_END_MARKER, loadLoginEnv } from '../../src/main/env/login-env'
 
 const login = { PATH: '/usr/bin:/bin', HOME: '/home/u', LANG: 'en_US.UTF-8' }
 
@@ -35,6 +36,47 @@ describe('buildPtyEnv', () => {
     expect(env).not.toHaveProperty('ELECTRON_NO_ATTACH_CONSOLE')
     expect(env.CLAUDE_CONFIG_DIR).toBe('/keep')
     expect(env.MY_ELECTRON_X).toBe('keep')
+  })
+
+  // design-web.md §9.10: a server run from boot signs Claude tabs in with `claude setup-token`'s
+  // token in main's environment. That one exact name passes; every other CLAUDE_CODE_* is stripped.
+  it('keeps CLAUDE_CODE_OAUTH_TOKEN, by its exact name only', () => {
+    const env = buildPtyEnv(
+      {
+        ...login,
+        CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x',
+        CLAUDE_CODE_OAUTH_TOKEN_X: 'drop',
+        CLAUDE_CODE_OAUTH: 'drop',
+        CLAUDE_CODE_SSE_PORT: '1234',
+        CLAUDE_CODE_ENTRYPOINT: 'cli'
+      },
+      { binDir: '/b', tab: { tabId: 't1', token: 'tok' } }
+    )
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-x')
+    for (const name of ['CLAUDE_CODE_OAUTH_TOKEN_X', 'CLAUDE_CODE_OAUTH', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_ENTRYPOINT']) {
+      expect(env).not.toHaveProperty(name)
+    }
+    expect(isStrippedVar('CLAUDE_CODE_OAUTH_TOKEN')).toBe(false)
+    expect(isStrippedVar('CLAUDE_CODE_OAUTH_TOKEN ')).toBe(true)
+    expect(isStrippedVar('CLAUDE_CODE_')).toBe(true)
+  })
+
+  it('the token passes from the login-shell capture and from its process.env fallback alike', async () => {
+    const base = { ...login, SHELL: '/bin/zsh', CLAUDE_CODE_OAUTH_TOKEN: 'from-main', CLAUDE_CODE_ENTRYPOINT: 'cli' }
+    // The login shell inherits main's env, so its capture carries the token (and the other names).
+    const captured = await loadLoginEnv(base, {
+      spawner: async () => ({
+        code: 0,
+        stdout: `\0${ENV_BEGIN_MARKER}\0PATH=/usr/bin\0CLAUDE_CODE_OAUTH_TOKEN=from-main\0CLAUDE_CODE_SSE_PORT=9\0${ENV_END_MARKER}\0`
+      }),
+      log: () => {}
+    })
+    const failed = await loadLoginEnv(base, { spawner: async () => ({ code: 1, stdout: '' }), log: () => {} })
+    for (const loginEnv of [captured, failed]) {
+      const env = buildPtyEnv(loginEnv, { binDir: '/b' })
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('from-main')
+      expect(Object.keys(env).filter((k) => k.startsWith('CLAUDE_CODE_'))).toEqual(['CLAUDE_CODE_OAUTH_TOKEN'])
+    }
   })
 
   it('adds tab vars only when given, and drops stale inherited ones', () => {

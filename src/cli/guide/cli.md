@@ -24,7 +24,8 @@ stderr).
 - `ccc overlay --terminal -- <argv...>` runs a program in an overlay above the window and waits;
   stdout is the result as JSON (`{"kind":"exit","code":0}`, `{"kind":"value",...}` or
   `{"kind":"dismissed"}`).
-- `ccc overlay --url <http(s) url>` shows a web page in an overlay.
+- `ccc overlay --url <http(s) url>` shows a web page in an overlay. Not in server mode (exit 1,
+  "not available in server mode"): give the person the URL instead.
 - `ccc overlay --html <file>` shows a local html file (read once, shown through a privileged
   scheme) and returns what the page answers with.
 - `ccc sessions [--json]` lists the Claude tabs of every window and their status.

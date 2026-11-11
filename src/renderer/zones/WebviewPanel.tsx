@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { PanelInfo, WebviewPageInfo } from '../../shared/ipc'
 import { PlacementReporter } from './placement-reporter'
 import { layersUp, onLayersChange } from './shell-layers'
-import { isWebShell } from '../shell-kind'
+import { isServerView, isWebShell } from '../shell-kind'
 import { BackGlyph, ExternalGlyph, ForwardGlyph, ReloadGlyph } from '../window-icons'
 
 const NO_PAGE: WebviewPageInfo = { url: '', title: '' }
@@ -51,12 +51,13 @@ function step(panelKey: string, which: 'back' | 'forward' | 'reload'): void {
  */
 export function WebviewPanel(props: { info: PanelInfo }): React.JSX.Element {
   // The page is a native view on the host's window: a browser view has nothing to show it with
-  // (design-web.md §6.1), and must not report a placement for it either.
+  // (design-web.md §6.1), and must not report a placement for it either. A server has no desktop to
+  // send the person to, and main makes no view there at all (§9.9): the text says so (a UI hint).
   if (isWebShell()) {
     return (
       <div className="panel-body webview-panel" data-panel-body={props.info.panelKey}>
         <p className="desktop-only-note" role="status">
-          {props.info.title}: available on the desktop.
+          {props.info.title}: {isServerView() ? 'not available in server mode.' : 'available on the desktop.'}
         </p>
       </div>
     )

@@ -17,8 +17,10 @@ import {
   OPEN_WINDOW_MS,
   webviewPartition,
   WebviewLoadError,
+  WEBVIEW_SERVER_REFUSAL,
   WebviewManager,
   type WebviewEvents,
+  type WebviewManagerDeps,
   type WebviewOwner,
   type WebviewPage,
   type WebviewView
@@ -60,6 +62,8 @@ let openWindows: Set<number>
 let tokenCount: number
 let clock: number
 let manager: WebviewManager
+/** What `manager` was made with: a test makes another manager from it (server mode). */
+let managerDeps: WebviewManagerDeps
 
 const WIN = 7
 const owner = (panelId = 'view', pluginId = 'a.one', windowId = WIN, projectId = 'P1'): WebviewOwner => ({
@@ -91,7 +95,7 @@ beforeEach(() => {
   openWindows = new Set([WIN, 8])
   tokenCount = 0
   clock = 1_000_000
-  manager = new WebviewManager({
+  managerDeps = {
     views: {
       create: (windowId, partition, events) => {
         const view: FakeView = {
@@ -141,7 +145,8 @@ beforeEach(() => {
     newToken: () => `t${String(++tokenCount).padStart(32, '0')}`,
     now: () => clock,
     log: () => {}
-  })
+  }
+  manager = new WebviewManager(managerDeps)
 })
 
 afterEach(() => {
@@ -958,6 +963,81 @@ describe('HostApi webview requests', () => {
     await expect(call('webview.navigate', { pluginId: 'a.one', panelId: 'view', target: 'https://example.com/' })).rejects.toThrow(
       /stopping/
     )
+  })
+})
+
+// design-web.md §9.9: no WebContentsView in server mode, whoever asks. The refusal is the manager's,
+// where a view is made: ctx.webview's navigate (the browser plugin's at activation too), and the shell
+// page's channels (webviews.placement / step / current, registerWebviewHandlers passes them straight
+// to these methods), which the hidden page sends for a webview panel the shared layout has open.
+describe('server mode: no web view is made', () => {
+  let server: WebviewManager
+  beforeEach(() => {
+    server = new WebviewManager({ ...managerDeps, server: true })
+  })
+
+  it('refuses every navigate, a URL and a file alike, and makes no view', async () => {
+    await expect(server.navigate(owner(), 'https://example.com/')).rejects.toThrow(WEBVIEW_SERVER_REFUSAL)
+    await expect(server.navigate(owner(), join(proj, 'mock.html'))).rejects.toThrow(WEBVIEW_SERVER_REFUSAL)
+    // Not a load error: the host refunds the navigate budget for it (host-api.ts).
+    await expect(server.navigate(owner(), 'https://example.com/')).rejects.not.toBeInstanceOf(WebviewLoadError)
+    expect(views).toEqual([])
+    expect(server.has(WIN, 'a.one', 'view')).toBe(false)
+  })
+
+  it("the hidden page's channels for an open webview panel make no view and read an empty page", async () => {
+    server.setPlacement(WIN, 'a.one', 'view', { bounds: { x: 0, y: 0, width: 800, height: 600 }, visible: true })
+    server.back(owner())
+    server.forward(owner())
+    server.reload(owner())
+    expect(server.current(owner())).toEqual({ url: '', title: '' })
+    server.setWindowCovered(WIN, true)
+    server.setWindowCovered(WIN, false)
+    server.resetWindow(WIN)
+    // A navigate after the placement report still makes none.
+    await expect(server.navigate(owner(), 'https://example.com/')).rejects.toThrow(WEBVIEW_SERVER_REFUSAL)
+    expect(views).toEqual([])
+    expect(server.isShown(WIN, 'a.one', 'view')).toBe(false)
+  })
+
+  it('the desktop (server false or absent) makes the view as before', async () => {
+    await new WebviewManager({ ...managerDeps, server: false }).navigate(owner(), 'https://example.com/')
+    await manager.navigate(owner('view', 'a.one', 8), 'https://example.com/')
+    expect(views.map((v) => v.windowId)).toEqual([WIN, 8])
+  })
+
+  it('ctx.webview.navigate through HostApi is refused with the text, never rate limited, and makes no view', async () => {
+    const api = new HostApi(
+      {
+        listSessions: () => [],
+        session: () => undefined,
+        send: () => {
+          throw new Error('unused')
+        },
+        onSessionsChange: () => () => {},
+        openTab: async () => {
+          throw new Error('unused')
+        },
+        setBadge: () => true,
+        openOverlay: async () => {
+          throw new Error('unused')
+        },
+        secrets: unusedSecrets,
+        oauth: unusedOAuth,
+        webview: server,
+        log: () => {}
+      },
+      { projectId: 'P1', windowId: WIN, projectDir: proj, plugins: [{ id: 'a.one', dir: proj, panels: ['view'], webviewPanels: ['view'] }] },
+      () => {}
+    )
+    const params = { pluginId: 'a.one', panelId: 'view', target: 'https://example.com/' }
+    // Past the budget: each refusal is refunded, so a plugin retrying never sees the rate error.
+    for (let i = 0; i <= MAX_NAVIGATES_PER_WINDOW; i++) {
+      await expect(Promise.resolve().then(() => api.handlers['webview.navigate']!(params))).rejects.toThrow(/not available in server mode/)
+    }
+    expect(await api.handlers['webview.current']!({ pluginId: 'a.one', panelId: 'view' })).toEqual({ url: '', title: '' })
+    expect(views).toEqual([])
+    api.dispose()
   })
 })
 

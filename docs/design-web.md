@@ -799,7 +799,10 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   or a plugin command would reach `shell.showItemInFolder` or `shell.openPath` on the server.
 - **Browser panel, URL overlays**: `ctx.webview` and URL overlays are refused at the open call in server mode ("not
   available in server mode"), so main never makes a `WebContentsView` for the hidden page's layout (inferred: the
-  layout is shared, §5.1, so it otherwise would); browsers show the placeholder.
+  layout is shared, §5.1, so it otherwise would); browsers show the placeholder ("not available in server mode").
+  Built: the webview refusal sits in `WebviewManager` (`navigate` and where a view is made), so every asker is
+  covered, the bundled browser plugin's home navigate at activation included (logged, the plugin stays active); the
+  URL overlay refusal in `OverlayManager.start`. Both by main's `server`, never a payload.
 - **Plugin OAuth** (`ctx.oauth`): main's `startLoopback` (`oauth/oauth.ts:150`) owns `127.0.0.1:<random>/callback`,
   one pending sign-in per plugin, on the server, so the redirect fails in the browser. The auth URL goes out as a link
   notice; the notice has a box where the person pastes the failed URL, and main settles the pending sign-in in-process

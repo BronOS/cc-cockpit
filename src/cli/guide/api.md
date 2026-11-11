@@ -151,10 +151,12 @@ with full Node access.
   file is served read-only with the files next to it); `back(panelId)`, `forward(panelId)`,
   `reload(panelId)`; `current(panelId)` resolves `{ url, title }`; `onNavigate(panelId, fn)`
   hears every page the view commits and returns a disposer. Any other panel id throws; at most
-  60 navigations a minute.
+  60 navigations a minute. In server mode `navigate` rejects with "not available in server mode"
+  and no view is made (a browser shows the panel's placeholder): catch it, at activation too.
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
-  the result. The plugin's overlays close when it stops: its host stops, or the plugin is reloaded
+  the result. In server mode a `url` overlay rejects with "not available in server mode" (its page
+  would be a native view on the server); use `ctx.openExternal` there. The plugin's overlays close when it stops: its host stops, or the plugin is reloaded
   (a linked folder changed), disabled, updated or uninstalled; `result` resolves as
   `{ kind: 'dismissed' }` in the old copy and the new copy starts with none. At most 3 open and 10 per minute. Every kind takes `size?: 'default' | 'large' | 'full'`:
   a centered dialog at 75 % of the window, about 90 %, or the whole window below the top bar with a
@@ -374,6 +376,8 @@ with full Node access.
   act on the host's screen. A panel, slot, overlay or settings page reads `ccPanel.view.remote`
   (`true` in a browser view, set by the app's shell, `ccc guide panels`) to leave such items out of
   its menus there. A UI hint only: do not rely on it for security; main refuses the call either way.
+  In server mode (the app on a server with no display, used only from browsers) both always reject,
+  whatever started the call (a click, a timer, a `ccc` command): the server has no screen.
   `trash` works from a browser view: while one is attached (and always in server mode) the question
   is asked on every view of the window, and the first answer counts.
 

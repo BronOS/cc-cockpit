@@ -846,11 +846,22 @@ function start(server: boolean): void {
   // The overlay stack of every project window. Terminal overlays get the login env like tabs do,
   // with the overlay's own window token (minted by the manager; never a session token: an
   // overlay's program is not a Claude tab) and the socket while main listens on it.
+  // Native views main made (url overlays, webview panels), for the test hook `nativeViewsMade`: in
+  // server mode both stay 0 (design-web.md §9.9). Counted at the factories, so no path is missed.
+  const nativeViewsMade = { urlOverlays: 0, webviews: 0 }
+  const urlViewFactory = new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId }))
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
-    // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8).
+    // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8),
+    // and a url overlay is refused at its open (§9.9).
     server,
-    views: new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId })),
+    views: {
+      create: (windowId, url, onChord, onGone, onLoaded) => {
+        nativeViewsMade.urlOverlays++
+        return urlViewFactory.create(windowId, url, onChord, onGone, onLoaded)
+      },
+      focusWindow: (windowId) => urlViewFactory.focusWindow(windowId)
+    },
     // main's own table, not BrowserWindow.fromId: the picker is a window too, and a closing
     // project window leaves this table before onProjectClosed runs closeWindow.
     isWindowOpen: (windowId) => windows.projectWindows().some((w) => w.windowId === windowId),
@@ -1010,14 +1021,23 @@ function start(server: boolean): void {
   // requests gets 503s, other projects' and plugins' pages are not affected. Per partition
   // (project x webview plugin), forgotten when the partition's last view goes (partitionClosed).
   const previewBudgets = new PreviewBudgets()
+  const webviewFactory = new ElectronWebviewFactory((partition, url, method) =>
+    servePreviewRequest(url, method, {
+      folderOf: (token) => webviews.previewFolder(partition, token),
+      budget: previewBudgets.of(partition),
+      log: warnLog
+    })
+  )
   const webviews: WebviewManager = new WebviewManager({
-    views: new ElectronWebviewFactory((partition, url, method) =>
-      servePreviewRequest(url, method, {
-        folderOf: (token) => webviews.previewFolder(partition, token),
-        budget: previewBudgets.of(partition),
-        log: warnLog
-      })
-    ),
+    // Counted for the test hook `nativeViewsMade` (server mode must make none).
+    views: {
+      create: (windowId, partition, events) => {
+        nativeViewsMade.webviews++
+        return webviewFactory.create(windowId, partition, events)
+      }
+    },
+    // No view at all in server mode, whoever asks (design-web.md §9.9): the browsers show a placeholder.
+    server,
     partitionClosed: (partition) => previewBudgets.drop(partition),
     // A page's window.open, for the view's window (no browser view asked: a page did).
     openExternal: (url, windowId) => {
@@ -1353,7 +1373,9 @@ function start(server: boolean): void {
       openExternal,
       // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
       // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
-      systemFiles
+      systemFiles,
+      // In server mode reveal and openWithSystem are refused whatever the origin (design-web.md §9.9).
+      server
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin
@@ -2630,6 +2652,8 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // How many url overlay views and webview panel views main made this run (server mode: none).
+          nativeViewsMade: () => ({ ...nativeViewsMade }),
           // Crash the renderer of the window showing `projectId` (the hidden page in server mode), as a
           // real crash would: the server-mode e2e checks it is reloaded and the window stays.
           crashPage: (projectId: string) => {

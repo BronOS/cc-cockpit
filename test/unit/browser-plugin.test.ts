@@ -174,6 +174,34 @@ describe('browser host', () => {
     expect(await run('url')).toEqual({ stdout: 'http://localhost:5173/\tfailed to load: ERR_CONNECTION_REFUSED (-102)\n' })
   })
 
+  // design-web.md §9.9: in server mode main makes no view; the plugin must still activate, and its
+  // command passes main's text on so Claude does not send the person to an empty panel.
+  it('server mode: a refused home navigate does not fail activation; open exits 1 with the text and shows nothing', async () => {
+    const calls: string[] = []
+    const warnings: string[] = []
+    let handler: CliHandler | undefined
+    const refusal = 'webview.navigate: web views are not available in server mode'
+    const ctx = {
+      settings: { project: {}, app: { home: 'https://example.com/' } },
+      log: { info: () => {}, error: () => {}, warn: (...a: unknown[]) => void warnings.push(a.join(' ')) },
+      webview: {
+        navigate: async () => {
+          throw new Error(refusal)
+        },
+        current: async () => ({ url: '', title: '' })
+      },
+      panels: { show: (p: string) => void calls.push(`show ${p}`) },
+      cli: { register: (_n: string, h: CliHandler) => ((handler = h), () => {}) }
+    }
+    expect(() => activate(ctx as never)).not.toThrow()
+    expect(handler).toBeDefined()
+    await expect.poll(() => warnings.join()).toContain('not available in server mode')
+    const run = async (...argv: string[]) => await handler!(argv, { cwd: '/w', stdin: '' } as never)
+    expect(await run('open', 'http://localhost:5173/')).toEqual({ stderr: `${refusal}\n`, code: 1 })
+    expect(await run('url')).toEqual({ stdout: 'blank\n' })
+    expect(calls).toEqual([])
+  })
+
   it('loads an http(s) home on start and ignores any other value', () => {
     expect(setup('https://example.com/').calls).toEqual(['navigate view https://example.com/'])
     const bad = setup('javascript:alert(1)')

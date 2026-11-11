@@ -487,6 +487,11 @@ export interface HostApiDeps {
    */
   openExternal?(url: string, target: OpenTarget): Promise<void>
   /**
+   * main's server flag (server-mode.ts): true refuses ctx.files.reveal and openWithSystem whatever
+   * started the call (design-web.md §9.9). Absent: the desktop.
+   */
+  server?: boolean
+  /**
    * ctx.files.reveal / openWithSystem / trash (main/files/system-files.ts SystemFiles): `caller` is
    * this host's scope, `path` the plugin's, checked there. `trash` resolves false when the person
    * said no; `signal` closes its dialog when the host goes. Without it the three are refused.
@@ -1532,8 +1537,13 @@ export class HostApi {
    * Refuses a request that came from a remote view (design-web.md §6.1): the file manager and the
    * default app open on the host's screen, which the person in a browser cannot see. Thrown before the
    * budget is spent. The view is the one main knows (originOf), never a payload field.
+   *
+   * In server mode (§9.9) refused by main's flag alone, whatever the origin: the origin view is a hint
+   * that lapses after 10 s and is absent for a timer or a plugin command, so a check on it alone would
+   * let such a call reach shell.showItemInFolder or shell.openPath on a server with no screen.
    */
   private desktopOnly(meta: RpcMeta | undefined, method: string, what: string): void {
+    if (this.deps.server === true) throw new Error(`${method}: ${what} is not available in server mode (the server has no screen)`)
     if (this.originOf(meta) !== undefined) throw new Error(`${method}: ${what} happens on the host's screen; do it on the desktop`)
   }
 
