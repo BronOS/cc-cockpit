@@ -777,6 +777,26 @@ describe('server mode: WebAccessService start and first lines (design-web.md §9
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+  it('a link that cannot be given says so in server terms (ccc web), the desktop keeps its Settings wording', async () => {
+    stored = { enabled: true, mode: 'link', bind: '0.0.0.0' }
+    const server = make(true)
+    await server.apply()
+    expect(await server.link()).toEqual({ ok: false, reason: expect.stringMatching(/^web access is not listening.*`ccc web status` says why$/) })
+    expect(server.addDevice()).toEqual({ ok: false, reason: expect.stringMatching(/^web access is not listening/) })
+    stored = { enabled: true, mode: 'password' }
+    await server.apply()
+    expect(server.addDevice()).toEqual({ ok: false, reason: 'links work only in the access-link mode: `ccc web mode link` switches to it' })
+    server.dispose()
+    stored = { enabled: false }
+    const desktop = make(false)
+    await desktop.apply()
+    expect(await desktop.link()).toEqual({ ok: false, reason: expect.stringMatching(/^Turn web access on first/) })
+    stored = { enabled: true, mode: 'password' }
+    await desktop.apply()
+    expect(desktop.addDevice()).toEqual({ ok: false, reason: 'Links work only in the access-link mode.' })
+    desktop.dispose()
+  })
+
   it('a fresh data dir: on, link mode, loopback; the "turned on" line on the first start only', async () => {
     const first = await startOnce({ tty: false })
     expect(webAccessOf(stored)).toMatchObject({ enabled: true, mode: 'link', bind: '127.0.0.1', port: 7330 })

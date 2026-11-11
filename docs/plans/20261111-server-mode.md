@@ -631,30 +631,30 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/cli-web.test.ts`, `socket-server.test.ts`, `protocol.test.ts`, `cli-args.test.ts`,
   `cli-client.test.ts`, `cli-commands.test.ts`, `cli-guide.test.ts`, `web-access-service.test.ts`
 
-- [ ] server mode only, each refused elsewhere with "use Settings › Web access": `ccc web link [--regenerate]` (made on
+- [x] server mode only, each refused elsewhere with "use Settings › Web access": `ccc web link [--regenerate]` (made on
       first use; regenerate kills it and its devices) and `ccc web add-device` (one-time, 10 minutes)
-- [ ] `ccc web password`: from stdin, never argv (argv shows in `ps`); on a TTY a no-echo prompt read before the 40 s
+- [x] `ccc web password`: from stdin, never argv (argv shows in `ps`); on a TTY a no-echo prompt read before the 40 s
       deadline starts; stdin capped; the hash through the existing off-thread scrypt. The password travels only in the
       request's args over the private socket: never in argv, an error text, a reply or any log
-- [ ] `ccc web mode link|password|none`: `confirm` refused; `none` prints §9.12's shared-server warning
-- [ ] `ccc web set [--bind] [--port] [--origin] [--host]... [--tls-cert --tls-key | --no-tls] [--confirm
+- [x] `ccc web mode link|password|none`: `confirm` refused; `none` prints §9.12's shared-server warning
+- [x] `ccc web set [--bind] [--port] [--origin] [--host]... [--tls-cert --tls-key | --no-tls] [--confirm
       none-network|plain-http]` through the same `applyWebAccessPatch` as the settings page (➕ from Task 7: `--confirm`
       may be given twice, once per risk; start prints `ccc web set --bind <bind> --confirm none-network --confirm
       plain-http` when both are unconfirmed, `serverConfirmCommand` in `web/settings.ts`): a §4.3 risk is refused with
       its confirm text printed (`WEB_RISK_TEXT`) and applies only with its `--confirm`; no regexes in the parsing. The
       CLI makes `--tls-cert` and `--tls-key` absolute against its own cwd, as it does `--project`, and main refuses a
       relative one (main's cwd means nothing to the caller)
-- [ ] each of the five handlers is registered in `web-handlers.ts` under its name from `HOST_ONLY_COMMANDS` and refuses
+- [x] each of the five handlers is registered in `web-handlers.ts` under its name from `HOST_ONLY_COMMANDS` and refuses
       a caller that is not tokenless itself; the drift test of Task 11 covers them
-- [ ] `web-access.log` gets each change as made from the server shell, never a secret; the guide text in `cli.md` covers
+- [x] `web-access.log` gets each change as made from the server shell, never a secret; the guide text in `cli.md` covers
       the new subcommands in the same change
-- [ ] write tests: each command in server mode and its refusal outside; each of the five run with a session token and
+- [x] write tests: each command in server mode and its refusal outside; each of the five run with a session token and
       with a window token, refused before its handler with the host-only text (`socket-server.test.ts`), and nothing
       minted, printed or changed; the password absent from argv, every error text, the reply and every log; a relative
       TLS path refused by main and made absolute by the CLI; a risk without `--confirm` refused with the text and the
       record unchanged; `confirm` mode and turning off refused; a link is usable once. The smoke script signs in with
       `ccc web add-device` (a `POST /auth/link`, 200)
-- [ ] run tests, the smoke script and `npm run test:e2e` (`cli`, `socket`, `plugin-cli`) - must pass before next task
+- [x] run tests, the smoke script and `npm run test:e2e` (`cli`, `socket`, `plugin-cli`) - must pass before next task
 
 ### Task 13: Server-mode e2e: `ccc web` sign-in, stop and start, secrets [model: sonnet]
 

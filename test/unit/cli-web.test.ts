@@ -1,25 +1,36 @@
-// `ccc web` part 1 (server-mode plan Task 11, design-web.md §9.4): the host-only handlers of
+// `ccc web` (server-mode plan Tasks 11 and 12, design-web.md §9.4): the host-only handlers of
 // main/socket/web-handlers.ts called directly and over a real socket, the status that never carries
 // a secret, the desktop's narrowing, the drift between the handlers and HOST_ONLY_COMMANDS, and the
-// CLI side (the request each subcommand sends, what it prints, "not running" as exit 1).
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+// CLI side (the request each subcommand sends, what it prints, "not running" as exit 1). Part 2:
+// link, add-device, password, mode and set, through the real WebAccessService too (a link usable
+// once, a risk refused with its text and the record unchanged, the password in no log or reply).
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { buildRequest, NOT_RUNNING, run, runCommand, type Output } from '../../src/cli/client'
+import { parseArgs } from '../../src/cli/args'
+import { buildRequest, NOT_RUNNING, readStdinCapped, run, runCommand, type Output } from '../../src/cli/client'
 import { formatWebStatus } from '../../src/cli/web-format'
+import { readHidden, readPassword } from '../../src/cli/web-password'
 import { fakeSecretStore, KEYFILE_PREFIX, unreadableCounts, type SecretStore } from '../../src/main/secrets/secret-store'
 import { SocketServer, type Caller, type Handler } from '../../src/main/socket/socket-server'
-import { DESKTOP_REFUSAL, registerWebHandlers, webHandlers, type WebHandlerDeps } from '../../src/main/socket/web-handlers'
+import {
+  confirmNeededText,
+  DESKTOP_REFUSAL,
+  registerWebHandlers,
+  SHELL_REVOKE_REASON,
+  webHandlers,
+  type WebHandlerDeps
+} from '../../src/main/socket/web-handlers'
 import { connect } from '../../src/main/socket/transport'
 import { AccessLog } from '../../src/main/web/access-log'
-import { WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
+import { SERVER_NONE_WARNING, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import type { GatewayStatus } from '../../src/main/web/gateway'
 import { PasswordHasher } from '../../src/main/web/password'
-import { storedWebAccess } from '../../src/main/web/settings'
+import { listenPlanOf, SERVER_NO_CONFIRM_MODE, SERVER_ONLY_WAY_IN, serverConfirmCommand, storedWebAccess } from '../../src/main/web/settings'
 import {
   encodeReply,
   encodeRequest,
@@ -32,7 +43,7 @@ import {
   type Request
 } from '../../src/shared/protocol'
 import type { WebAccessSettings } from '../../src/shared/types'
-import type { WebCliStatus } from '../../src/shared/web-access'
+import { WEB_RISK_TEXT, type WebCliStatus } from '../../src/shared/web-access'
 
 const POSIX = process.platform !== 'win32'
 const TOKEN = 'c'.repeat(64)
@@ -73,8 +84,37 @@ function recorder(server: boolean): WebHandlerDeps & { calls: string[] } {
     },
     stop: () => {
       calls.push('stop')
+    },
+    link: async (regenerate) => {
+      calls.push(regenerate ? 'regenerate' : 'link')
+      return { ok: true, link: 'http://127.0.0.1:7330/#t=LINK' }
+    },
+    addDevice: () => {
+      calls.push('addDevice')
+      return { ok: true, link: 'http://127.0.0.1:7330/#t=ONCE', expiresAt: 600_000 }
+    },
+    setPassword: async (password) => {
+      calls.push(`setPassword ${password.length}`)
+      return { ok: true }
+    },
+    set: async (patch) => {
+      calls.push(`set ${JSON.stringify(patch)}`)
+      return { ...VIEW }
+    },
+    logShell: (detail) => {
+      calls.push(`log ${detail}`)
     }
   }
+}
+
+/** What WebAccessService.set answers after a change (only its shape matters here). */
+const VIEW = {
+  form: { enabled: true, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const, certPath: '', keyPath: '' },
+  network: false,
+  gateway: STATUS.gateway,
+  devices: [],
+  risks: [],
+  passwordSet: false
 }
 
 const NOT_HOST: Caller[] = [
@@ -207,22 +247,44 @@ describe('web handlers over the real socket', () => {
     expect(deps.calls).toEqual([])
   })
 
-  it('tokenless: status, revoke and stop answer; the five of Task 12 are unknown commands', async () => {
+  it('tokenless: every one of the eight answers in server mode', async () => {
     const deps = await serve(true)
     expect(await ask({ cmd: 'web.status' })).toEqual({ id: 1, ok: true, result: STATUS })
     expect(await ask({ cmd: 'web.revoke', args: { id: 'dev-1' } })).toEqual({ id: 1, ok: true, result: { revoked: 1 } })
     expect(await ask({ cmd: 'web.stop' })).toEqual({ id: 1, ok: true, result: { stopping: true } })
-    for (const cmd of ['web.link', 'web.add-device', 'web.password', 'web.mode', 'web.set']) {
-      expect(await ask({ cmd }), cmd).toEqual({ id: 1, ok: false, error: `unknown command: ${cmd}` })
-    }
-    expect(deps.calls).toEqual(['status', 'revoke dev-1', 'stop'])
+    expect(await ask({ cmd: 'web.link' })).toMatchObject({ ok: true, result: { link: 'http://127.0.0.1:7330/#t=LINK' } })
+    expect(await ask({ cmd: 'web.add-device' })).toMatchObject({ ok: true, result: { link: 'http://127.0.0.1:7330/#t=ONCE', expiresAt: 600_000 } })
+    expect(await ask({ cmd: 'web.password', args: { password: 'hunter2hunter2' } })).toMatchObject({ ok: true, result: { set: true, mode: 'link' } })
+    expect(await ask({ cmd: 'web.mode', args: { mode: 'password' } })).toMatchObject({ ok: true, result: { mode: 'password' } })
+    expect(await ask({ cmd: 'web.set', args: { port: 7400 } })).toMatchObject({ ok: true, result: STATUS })
+    expect(deps.calls.filter((c) => !c.startsWith('log '))).toEqual([
+      'status',
+      'revoke dev-1',
+      'stop',
+      'link',
+      'addDevice',
+      'setPassword 14',
+      'status',
+      'set {"mode":"password"}',
+      'set {"port":7400}',
+      'status'
+    ])
   })
 
-  it('outside server mode only status and revoke are answered', async () => {
+  it('outside server mode only status and revoke are answered; the rest say "use Settings › Web access" and do nothing', async () => {
     const deps = await serve(false)
     expect(await ask({ cmd: 'web.status' })).toMatchObject({ ok: true })
     expect(await ask({ cmd: 'web.revoke', args: { all: true } })).toMatchObject({ ok: true, result: { revoked: 3 } })
-    expect(await ask({ cmd: 'web.stop' })).toEqual({ id: 1, ok: false, error: DESKTOP_REFUSAL })
+    for (const [cmd, args] of [
+      ['web.stop', {}],
+      ['web.link', { regenerate: true }],
+      ['web.add-device', {}],
+      ['web.password', { password: 'hunter2hunter2' }],
+      ['web.mode', { mode: 'none' }],
+      ['web.set', { bind: '0.0.0.0', confirm: ['none-network', 'plain-http'] }]
+    ] as const) {
+      expect(await ask({ cmd, args }), cmd).toEqual({ id: 1, ok: false, error: DESKTOP_REFUSAL })
+    }
     expect(deps.calls).toEqual(['status', 'revokeAll'])
   })
 })
@@ -448,5 +510,469 @@ describe('ccc web: the CLI', () => {
     expect(text).toContain("access link: stored by the other mode's secret store: regenerate it")
     expect(text).toContain('password: made under a replaced key file: set it again')
     expect(text).toContain('devices: none signed in')
+  })
+})
+
+describe('ccc web part 2 (server-mode plan Task 12): the handlers called directly', () => {
+  it('link, regenerate and add-device answer the link and log the command, never the link', async () => {
+    const deps = recorder(true)
+    const h = webHandlers(deps)
+    expect(await h['web.link']!({}, HOST)).toEqual({ link: 'http://127.0.0.1:7330/#t=LINK' })
+    expect(await h['web.link']!({ regenerate: true }, HOST)).toEqual({ link: 'http://127.0.0.1:7330/#t=LINK' })
+    expect(h['web.add-device']!({}, HOST)).toEqual({ link: 'http://127.0.0.1:7330/#t=ONCE', expiresAt: 600_000 })
+    expect(deps.calls).toEqual(['link', 'log ccc web link', 'regenerate', 'log ccc web link --regenerate', 'addDevice', 'log ccc web add-device'])
+    await expect(Promise.resolve().then(() => h['web.link']!({ regenerate: 'yes' }, HOST))).rejects.toThrow(/regenerate is true or absent/)
+    expect(() => h['web.add-device']!({ name: 'x' }, HOST)).toThrow(/unexpected field/)
+  })
+
+  it('a link that cannot be made says why; a regenerate is logged all the same (it took access back)', async () => {
+    const deps = recorder(true)
+    deps.link = async () => ({ ok: false, reason: 'links work only in the access-link mode' })
+    deps.addDevice = () => ({ ok: false, reason: 'web access is not listening' })
+    const h = webHandlers(deps)
+    await expect(Promise.resolve().then(() => h['web.link']!({}, HOST))).rejects.toThrow('web link: links work only in the access-link mode')
+    await expect(Promise.resolve().then(() => h['web.link']!({ regenerate: true }, HOST))).rejects.toThrow(/web link:/)
+    expect(() => h['web.add-device']!({}, HOST)).toThrow('web add-device: web access is not listening')
+    expect(deps.calls).toEqual(['log ccc web link --regenerate'])
+  })
+
+  it('password: text within the cap only, the reason never quotes it, the log line names the command only', async () => {
+    const deps = recorder(true)
+    const h = webHandlers(deps)
+    for (const args of [{}, { password: '' }, { password: 7 }, { password: 'x'.repeat(1025) }, { password: 'hunter2hunter2', extra: 1 }]) {
+      await expect(Promise.resolve().then(() => h['web.password']!(args, HOST)), JSON.stringify(args).slice(0, 40)).rejects.toThrow(/web password/)
+    }
+    expect(deps.calls).toEqual([])
+    const failing = recorder(true)
+    failing.setPassword = async () => ({ ok: false, reason: 'the password needs at least 8 characters' })
+    const err = await Promise.resolve()
+      .then(() => webHandlers(failing)['web.password']!({ password: 'short1' }, HOST))
+      .catch((e: unknown) => String(e))
+    expect(err).toContain('web password: the password needs at least 8 characters')
+    expect(err).not.toContain('short1')
+    expect(failing.calls).toEqual([])
+    expect(await h['web.password']!({ password: 'hunter2hunter2' }, HOST)).toEqual({ set: true, mode: 'link' })
+    expect(deps.calls).toEqual(['setPassword 14', 'log ccc web password', 'status'])
+    expect(deps.calls.join(' ')).not.toContain('hunter2')
+  })
+
+  it('mode: link, password and none through set; none carries the shared-server warning; confirm is refused with the reason', async () => {
+    const deps = recorder(true)
+    const h = webHandlers(deps)
+    expect(await h['web.mode']!({ mode: 'link' }, HOST)).toEqual({ mode: 'link' })
+    expect(await h['web.mode']!({ mode: 'none', confirm: ['none-network'] }, HOST)).toEqual({ mode: 'none', warning: SERVER_NONE_WARNING })
+    expect(SERVER_NONE_WARNING).toContain('every user of this machine')
+    await expect(Promise.resolve().then(() => h['web.mode']!({ mode: 'confirm' }, HOST))).rejects.toThrow(SERVER_NO_CONFIRM_MODE)
+    for (const args of [{}, { mode: 'open' }, { mode: 'none', confirm: ['all'] }, { mode: 'none', confirm: 'none-network' }, { mode: 'link', enabled: false }]) {
+      await expect(Promise.resolve().then(() => h['web.mode']!(args, HOST)), JSON.stringify(args)).rejects.toThrow(/web mode/)
+    }
+    expect(deps.calls).toEqual([
+      'set {"mode":"link"}',
+      'log ccc web mode link',
+      'set {"mode":"none","confirm":["none-network"]}',
+      'log ccc web mode none --confirm none-network'
+    ])
+  })
+
+  it('set: only the patch fields, TLS paths absolute, at least one field; enabled and mode are not settable here', async () => {
+    const deps = recorder(true)
+    const set = webHandlers(deps)['web.set']!
+    for (const args of [
+      {},
+      { enabled: false },
+      { mode: 'none' },
+      { bind: '0.0.0.0', confirmed: ['none-network'] },
+      { tls: { certPath: 'cert.pem', keyPath: '/k.pem' } },
+      { tls: { certPath: '/c.pem', keyPath: '../k.pem' } },
+      { tls: { certPath: '/c.pem' } },
+      { tls: 'yes' },
+      { confirm: ['everything'] }
+    ]) {
+      await expect(Promise.resolve().then(() => set(args, HOST)), JSON.stringify(args)).rejects.toThrow(/web set/)
+    }
+    expect(deps.calls).toEqual([])
+    expect(await set({ bind: '0.0.0.0', port: 7400, hosts: ['box'], externalOrigin: '', tls: null, confirm: ['plain-http', 'plain-http'] }, HOST)).toEqual(STATUS)
+    expect(await set({ tls: { certPath: '/etc/c.pem', keyPath: '/etc/k.pem' } }, HOST)).toEqual(STATUS)
+    expect(deps.calls).toEqual([
+      'set {"bind":"0.0.0.0","port":7400,"externalOrigin":"","hosts":["box"],"tls":null,"confirm":["plain-http"]}',
+      'log ccc web set --bind --port --origin --host --no-tls --confirm plain-http',
+      'status',
+      'set {"tls":{"certPath":"/etc/c.pem","keyPath":"/etc/k.pem"}}',
+      'log ccc web set --tls-cert/--tls-key',
+      'status'
+    ])
+  })
+
+  it('a change that needs a confirm is refused with the confirm text and the flags that give it, nothing logged', async () => {
+    const deps = recorder(true)
+    deps.set = async () => ({ needsConfirm: ['none-network', 'plain-http'] })
+    const err = await Promise.resolve()
+      .then(() => webHandlers(deps)['web.set']!({ bind: '0.0.0.0' }, HOST))
+      .catch((e: unknown) => (e as Error).message)
+    expect(err).toBe(confirmNeededText(['none-network', 'plain-http']))
+    expect(err).toContain(WEB_RISK_TEXT['none-network'].title)
+    expect(err).toContain(WEB_RISK_TEXT['plain-http'].paragraphs[0])
+    expect(err).toContain('run the same command with --confirm none-network --confirm plain-http')
+    expect(deps.calls).toEqual([])
+  })
+})
+
+describe('ccc web part 2 through the real WebAccessService (server mode)', () => {
+  let dir: string
+  let stored: Record<string, unknown>
+  let service: WebAccessService
+  let auth: WebAuth
+  let h: Record<string, Handler>
+  let logFile: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(POSIX ? '/tmp' : process.env.TEMP!, 'ccw-p2-'))
+    logFile = join(dir, 'logs', 'web-access.log')
+    const accessLog = new AccessLog({ filePath: logFile })
+    const devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog })
+    auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog, hasher: new PasswordHasher({ params: { N: 1024, r: 8, p: 1 } }), log: () => undefined })
+    stored = { enabled: true, mode: 'link', bind: '127.0.0.1', port: 7330, hosts: [] }
+    let status: GatewayStatus = { state: 'off' }
+    // As the real gateway: the settings' mode reaches WebAuth, and a refused plan does not listen.
+    const gateway: GatewayLike = {
+      apply: async (settings) => {
+        auth.setMode(settings.mode)
+        const plan = listenPlanOf(settings)
+        status = plan.ok ? { state: 'listening', bind: plan.bind, port: plan.port } : { state: 'refused', reason: plan.reason }
+        return status
+      },
+      status: () => status,
+      connections: () => new Map(),
+      disconnectDevice: () => 0,
+      onConnectionsChanged: () => () => undefined
+    }
+    service = new WebAccessService({
+      gateway,
+      auth,
+      read: () => stored,
+      write: (next) => {
+        stored = storedWebAccess(stored as Partial<WebAccessSettings>, next) as Record<string, unknown>
+      },
+      emit: () => undefined,
+      terminals: { start: () => undefined, drain: async () => undefined },
+      server: true
+    })
+    // Wired as main/index.ts does.
+    h = webHandlers({
+      server: true,
+      status: () => service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }),
+      revoke: (id) => service.revoke(id, SHELL_REVOKE_REASON),
+      revokeAll: () => service.revokeAll(SHELL_REVOKE_REASON),
+      stop: () => undefined,
+      link: (regenerate) => (regenerate ? service.regenerate() : service.link()),
+      addDevice: () => service.addDevice(),
+      setPassword: (password) => service.setPassword(password),
+      set: (patch) => service.set(patch),
+      logShell: (detail) => accessLog.write({ event: 'shell', detail })
+    })
+  })
+  afterEach(() => {
+    service.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const tokenOf = (link: string): string => new URL(link).hash.slice('#t='.length)
+  const call = async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => h[cmd]!(args, HOST)
+  const refusal = (cmd: string, args: Record<string, unknown> = {}): Promise<string> =>
+    Promise.resolve()
+      .then(() => h[cmd]!(args, HOST))
+      .then(
+        () => 'no refusal',
+        (e: unknown) => (e as Error).message
+      )
+  const logText = (): string => (existsSync(logFile) ? readFileSync(logFile, 'utf8') : '')
+
+  it('an add-device link signs in once; the access link is made on first use and a regenerate kills it and its devices', async () => {
+    await service.apply()
+    const once = (await call('web.add-device')) as { link: string; expiresAt: number }
+    expect(once.link.startsWith('http://127.0.0.1:7330/#t=')).toBe(true)
+    expect(await auth.signInWithToken({ token: tokenOf(once.link), name: 'Phone' })).toMatchObject({ ok: true })
+    expect(await auth.signInWithToken({ token: tokenOf(once.link), name: 'Thief' })).toMatchObject({ ok: false, status: 401 })
+
+    expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }).accessLink).toBe('unset')
+    const first = (await call('web.link')) as { link: string }
+    expect(((await call('web.link')) as { link: string }).link).toBe(first.link)
+    expect(await auth.signInWithToken({ token: tokenOf(first.link), name: 'Laptop' })).toMatchObject({ ok: true })
+    expect(auth.devices.list().map((d) => d.name).sort()).toEqual(['Laptop', 'Phone'])
+    const second = (await call('web.link', { regenerate: true })) as { link: string }
+    expect(second.link).not.toBe(first.link)
+    expect(await auth.signInWithToken({ token: tokenOf(first.link) })).toMatchObject({ ok: false, status: 401 })
+    // The one-time link's device stays: it never had the token.
+    expect(auth.devices.list().map((d) => d.name)).toEqual(['Phone'])
+
+    const log = logText()
+    for (const link of [once.link, first.link, second.link]) expect(log).not.toContain(tokenOf(link))
+    expect(log).toContain('"event":"shell","detail":"ccc web add-device"')
+    expect(log).toContain('"detail":"ccc web link --regenerate"')
+  })
+
+  it('no link when the gateway does not listen or the mode is not link, with server wording', async () => {
+    expect(await refusal('web.link')).toMatch(/web link: web access is not listening.*ccc web status/)
+    expect(await refusal('web.add-device')).toMatch(/not listening/)
+    stored = { ...stored, mode: 'password' }
+    await service.apply()
+    expect(await refusal('web.add-device')).toBe('web add-device: links work only in the access-link mode: `ccc web mode link` switches to it')
+  })
+
+  it('password: set off-thread, signs in after a mode switch; never in the reply, an error or the log', async () => {
+    await service.apply()
+    const password = 'Tr0ub4dor&3-secret'
+    expect(await refusal('web.mode', { mode: 'password' })).toBe('set a password first')
+    const short = await refusal('web.password', { password: 'abc' })
+    expect(short).toMatch(/at least 8 characters/)
+    expect(short).not.toContain('abc')
+    const reply = await call('web.password', { password })
+    expect(reply).toEqual({ set: true, mode: 'link' })
+    expect(await call('web.mode', { mode: 'password' })).toEqual({ mode: 'password' })
+    expect(stored.mode).toBe('password')
+    expect(await auth.signInWithPassword({ password, name: 'Phone' })).toMatchObject({ ok: true })
+    expect(JSON.stringify(reply)).not.toContain(password)
+    const log = logText()
+    expect(log).toContain('"detail":"ccc web password"')
+    expect(log).toContain('"event":"password","detail":"set"')
+    expect(log).toContain('"detail":"ccc web mode password"')
+    expect(log).not.toContain(password)
+    expect(readFileSync(join(dir, 'web-access.json'), 'utf8')).not.toContain(password)
+  })
+
+  it('confirm mode and turning off are refused, and the record is unchanged', async () => {
+    await service.apply()
+    const before = JSON.stringify(stored)
+    expect(await refusal('web.mode', { mode: 'confirm' })).toBe(SERVER_NO_CONFIRM_MODE)
+    expect(await refusal('web.set', { enabled: false })).toMatch(/web set: unexpected field "enabled"/)
+    // Even straight through the service (the Settings page's path), server mode refuses off.
+    await expect(service.set({ enabled: false })).rejects.toThrow(SERVER_ONLY_WAY_IN)
+    expect(JSON.stringify(stored)).toBe(before)
+  })
+
+  it('a §4.3 risk is refused with its text and the record unchanged, then applies with its --confirm', async () => {
+    await service.apply()
+    const before = JSON.stringify(stored)
+    const err = await refusal('web.set', { bind: '0.0.0.0' })
+    expect(err).toBe(confirmNeededText(['plain-http']))
+    expect(JSON.stringify(stored)).toBe(before)
+    const status = (await call('web.set', { bind: '0.0.0.0', confirm: ['plain-http'] })) as WebCliStatus
+    expect(stored).toMatchObject({ bind: '0.0.0.0', confirmed: ['plain-http'] })
+    expect(status.gateway).toMatchObject({ state: 'listening', bind: '0.0.0.0' })
+    // None on that bind brings in the other risk, which needs its own confirm.
+    expect(await refusal('web.mode', { mode: 'none' })).toBe(confirmNeededText(['none-network']))
+    expect(await call('web.mode', { mode: 'none', confirm: ['none-network'] })).toEqual({ mode: 'none', warning: SERVER_NONE_WARNING })
+    expect(stored).toMatchObject({ mode: 'none', confirmed: ['none-network', 'plain-http'] })
+  })
+
+  it('serverConfirmCommand applies a stored unconfirmed bind with both risks, as start prints it', async () => {
+    stored = { ...stored, bind: '0.0.0.0', mode: 'none' }
+    await service.apply()
+    expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }).gateway.state).toBe('refused')
+    const line = serverConfirmCommand(stored as unknown as WebAccessSettings) as string
+    expect(line).toBe('ccc web set --bind 0.0.0.0 --confirm none-network --confirm plain-http')
+    const parsed = parseArgs(line.split(' ').slice(1))
+    const request = buildRequest(parsed as Parameters<typeof buildRequest>[0], {}, CWD) as Request
+    const status = (await call(request.cmd, request.args)) as WebCliStatus
+    expect(status.gateway.state).toBe('listening')
+  })
+
+  it('TLS: a relative path is refused by main; the CLI sends absolute ones', async () => {
+    await service.apply()
+    const before = JSON.stringify(stored)
+    expect(await refusal('web.set', { tls: { certPath: 'c.pem', keyPath: 'k.pem' } })).toBe('web set: --tls-cert and --tls-key take absolute paths')
+    expect(JSON.stringify(stored)).toBe(before)
+    const request = buildRequest({ kind: 'web-set', tls: { cert: 'c.pem', key: '../keys/k.pem' }, confirm: [] }, {}, CWD) as Request
+    expect(request.args).toEqual({ tls: { certPath: '/work/dir/c.pem', keyPath: '/work/keys/k.pem' } })
+    await call(request.cmd, request.args)
+    expect(stored.tls).toEqual({ certPath: '/work/dir/c.pem', keyPath: '/work/keys/k.pem' })
+  })
+})
+
+describe('ccc web part 2: the CLI', () => {
+  let root: string
+  let sock: string
+  let servers: Server[]
+  let out: string
+  let err: string
+  const io: Output = {
+    stdout: (t) => void (out += t),
+    stderr: (t) => void (err += t)
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(POSIX ? '/tmp' : process.env.TEMP!, 'ccwc2-'))
+    sock = join(root, 's.sock')
+    servers = []
+    out = ''
+    err = ''
+  })
+  afterEach(() => {
+    for (const s of servers) s.close()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function fakeApp(answer: (r: Request) => { ok: true; result: unknown } | { ok: false; error: string }): Promise<Request[]> {
+    const seen: Request[] = []
+    const server = createServer((socket: Socket) => {
+      const framer = new LineFramer()
+      socket.on('data', (chunk: Buffer) => {
+        for (const line of framer.push(chunk)) {
+          const request = parseRequest(line)
+          seen.push(request)
+          socket.write(encodeReply({ id: request.id, ...answer(request) }))
+        }
+      })
+      socket.on('error', () => {})
+    })
+    servers.push(server)
+    return new Promise((resolve) => server.listen(sock, () => resolve(seen)))
+  }
+
+  /** A terminal stdin: keys arrive as `chunks` once raw mode is on; records the raw-mode switches. */
+  function fakeTty(chunks: string[]): Readable & { isTTY: boolean; raw: boolean[]; setRawMode(mode: boolean): void } {
+    const stream = new Readable({ read() {} }) as Readable & { isTTY: boolean; raw: boolean[]; setRawMode(mode: boolean): void }
+    stream.isTTY = true
+    stream.raw = []
+    stream.setRawMode = (mode) => {
+      stream.raw.push(mode)
+      if (mode) {
+        const next = chunks.shift()
+        if (next !== undefined) setTimeout(() => stream.emit('data', Buffer.from(next)), 0)
+      }
+    }
+    return stream
+  }
+
+  it('sends each new subcommand as its request, with no project', () => {
+    expect(buildRequest({ kind: 'web-link', regenerate: false }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.link', args: {} })
+    expect(buildRequest({ kind: 'web-link', regenerate: true }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.link', args: { regenerate: true } })
+    expect(buildRequest({ kind: 'web-add-device' }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.add-device', args: {} })
+    expect(buildRequest({ kind: 'web-password', password: 'pw-pw-pw-pw' }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.password', args: { password: 'pw-pw-pw-pw' } })
+    expect(buildRequest({ kind: 'web-mode', mode: 'none', confirm: ['none-network'] }, {}, CWD)).toEqual({
+      v: 1,
+      id: 1,
+      cmd: 'web.mode',
+      args: { mode: 'none', confirm: ['none-network'] }
+    })
+    expect(buildRequest({ kind: 'web-set', bind: '::', port: 7400, origin: '', hosts: ['a'], tls: null, confirm: ['plain-http'] }, { APP_TAB_TOKEN: TOKEN }, CWD)).toEqual({
+      v: 1,
+      id: 1,
+      cmd: 'web.set',
+      args: { bind: '::', port: 7400, externalOrigin: '', hosts: ['a'], tls: null, confirm: ['plain-http'] },
+      token: TOKEN
+    })
+  })
+
+  it('with the app not running each new subcommand prints "cc-cockpit is not running" and exits 1', async () => {
+    for (const argv of [['web', 'link'], ['web', 'add-device'], ['web', 'mode', 'link'], ['web', 'set', '--port', '7400'], ['web', 'password']]) {
+      out = ''
+      err = ''
+      expect(await run(argv, { CC_COCKPIT_SOCK: sock }, Readable.from(['pw-pw-pw-pw\n']), io, CWD), argv.join(' ')).toBe(1)
+      expect(out).toBe('')
+      expect(err).toBe(`ccc: ${NOT_RUNNING}\n`)
+    }
+  })
+
+  it('password from a pipe: one line, sent only in the request args; never in argv, stdout or stderr', async () => {
+    const password = 'pipe-Secret-123'
+    const seen = await fakeApp(() => ({ ok: true, result: { set: true, mode: 'link' } }))
+    expect(await run(['web', 'password'], { CC_COCKPIT_SOCK: sock }, Readable.from([`${password}\n`]), io, CWD)).toBe(0)
+    expect(seen.map((r) => [r.cmd, r.args])).toEqual([['web.password', { password }]])
+    expect(out).toBe('password set; sign-in is not by password yet: ccc web mode password switches to it\n')
+    expect(out + err).not.toContain(password)
+    for (const [input, message] of [
+      ['', 'no password on stdin'],
+      ['\n', 'no password on stdin'],
+      ['two\nlines\n', 'the password on stdin must be one line'],
+      ['x'.repeat(2000), 'the password on stdin is over 1100 bytes']
+    ] as const) {
+      out = ''
+      err = ''
+      expect(await run(['web', 'password'], { CC_COCKPIT_SOCK: sock }, Readable.from([input]), io, CWD), input.slice(0, 10)).toBe(1)
+      expect(err).toContain(`ccc: web password: ${message}`)
+      expect(err).not.toContain('lines')
+    }
+    expect(seen).toHaveLength(1)
+  })
+
+  it('password on a terminal: asked twice with echo off, Backspace honoured, nothing echoed; a mismatch sends nothing', async () => {
+    const seen = await fakeApp(() => ({ ok: true, result: { set: true, mode: 'password' } }))
+    const tty = fakeTty(['typed-pwX\u007f\u001b[A!\r', 'typed-pw!\r'])
+    expect(await run(['web', 'password'], { CC_COCKPIT_SOCK: sock }, tty, io, CWD)).toBe(0)
+    expect(seen.map((r) => r.args)).toEqual([{ password: 'typed-pw!' }])
+    expect(tty.raw).toEqual([true, false, true, false])
+    expect(err).toBe('New web access password: \nType it again: \n')
+    expect(out).toBe('password set\n')
+    err = ''
+    out = ''
+    expect(await run(['web', 'password'], { CC_COCKPIT_SOCK: sock }, fakeTty(['first-one\r', 'second-one\r']), io, CWD)).toBe(1)
+    expect(err).toContain('ccc: web password: the two passwords differ; nothing changed')
+    expect(err).not.toContain('first-one')
+    err = ''
+    expect(await run(['web', 'password'], { CC_COCKPIT_SOCK: sock }, fakeTty(['abc\u0003']), io, CWD)).toBe(1)
+    expect(err).toContain('ccc: web password: cancelled')
+    expect(seen).toHaveLength(1)
+  })
+
+  it('the prompt has a deadline of its own', async () => {
+    const tty = fakeTty([])
+    const read = await readHidden(tty, () => undefined, 'pw: ', 20, 256)
+    expect(read).toEqual({ error: 'no password typed within 0 minutes' })
+    expect(tty.raw).toEqual([true, false])
+    const pipe = await readPassword(new Readable({ read() {} }), () => undefined, { maxChars: 256, stdinTimeoutMs: 20, readCapped: readStdinCapped })
+    expect(pipe).toEqual({ error: 'stdin was not closed within 0 s' })
+  })
+
+  it('in a tab, web password reads nothing and gets the host-only refusal', async () => {
+    const seen = await fakeApp((r) => (r.token !== undefined ? { ok: false, error: HOST_ONLY_TEXT } : { ok: true, result: null }))
+    // A stdin that never ends: reading it would hang the test.
+    const never = new Readable({ read() {} })
+    expect(await run(['web', 'password'], { CC_COCKPIT_SOCK: sock, APP_TAB_TOKEN: TOKEN }, never, io, CWD)).toBe(1)
+    expect(err).toBe(`ccc: ${HOST_ONLY_TEXT}\n`)
+    expect(seen.map((r) => [r.cmd, r.args, r.token])).toEqual([['web.password', {}, TOKEN]])
+  })
+
+  it('prints a link alone on stdout, what it is on stderr; None its warning; set the address and the gateway; a confirm refusal whole', async () => {
+    await fakeApp((r) => {
+      switch (r.cmd) {
+        case 'web.link':
+        case 'web.add-device':
+          return { ok: true, result: { link: 'http://127.0.0.1:7330/#t=abc\u001b[2J' } }
+        case 'web.mode':
+          return { ok: true, result: { mode: 'none', warning: SERVER_NONE_WARNING } }
+        case 'web.set':
+          return r.args.confirm === undefined
+            ? { ok: false, error: confirmNeededText(['plain-http']) }
+            : { ok: true, result: { ...STATUS, bind: '0.0.0.0', port: 7400, gateway: { state: 'failed', reason: 'port 7400 is in use' } } }
+        default:
+          return { ok: false, error: 'unexpected' }
+      }
+    })
+    expect(await run(['web', 'link'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('http://127.0.0.1:7330/#t=abc [2J\n')
+    expect(err).toBe('')
+    out = ''
+    expect(await run(['web', 'link', '--regenerate'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(err).toContain('signed out')
+    out = ''
+    err = ''
+    expect(await run(['web', 'add-device'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('http://127.0.0.1:7330/#t=abc [2J\n')
+    expect(err).toBe('ccc: works once, expires in 10 minutes\n')
+    out = ''
+    err = ''
+    expect(await run(['web', 'mode', 'none'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('sign-in mode: none\n')
+    expect(err).toBe(`ccc: warning: ${SERVER_NONE_WARNING}\n`)
+    out = ''
+    err = ''
+    expect(await run(['web', 'set', '--bind', '0.0.0.0', '--port', '7400'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(1)
+    expect(out).toBe('')
+    expect(err).toBe(`ccc: ${confirmNeededText(['plain-http'])}\n`)
+    expect(err).toContain('\n\nto do it anyway, run the same command with --confirm plain-http')
+    err = ''
+    expect(await run(['web', 'set', '--bind', '0.0.0.0', '--port', '7400', '--confirm', 'plain-http'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('saved\naddress: 0.0.0.0:7400\ngateway: not listening: port 7400 is in use\n')
   })
 })

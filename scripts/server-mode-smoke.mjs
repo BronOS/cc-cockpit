@@ -24,7 +24,9 @@
 // 1 on its own, and no renderer process (a window, the picker's included) ever appeared in the run.
 // `ccc web` (§9.4): every run asks `<data>/bin/ccc web status --json` (server mode, listening on its
 // port) and checks a tab's token is refused with the host-only text; one run ends with `ccc web stop`
-// instead of SIGTERM, which must quit the same way (status 0, nothing left).
+// instead of SIGTERM, which must quit the same way (status 0, nothing left). The `--server` run (link
+// mode once start wrote it) also signs in through `ccc web add-device` (§9.4): the printed link's
+// `POST /auth/link` answers 200 once and 401 the second time, and a tab's token gets no link.
 // Exits 1 on any failure.
 import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
@@ -163,6 +165,38 @@ async function checkWebStatus(dataDir, env, port, failures) {
   }
 }
 
+/** The token of a `…/#t=<token>` link: the base64url characters after the marker. */
+function tokenAfter(text, at) {
+  let token = ''
+  for (const ch of text.slice(at + 3)) {
+    if (!/[A-Za-z0-9_-]/.test(ch)) break
+    token += ch
+  }
+  return token
+}
+
+/**
+ * `ccc web add-device` from a shell: one link on stdout, which signs in once (200, then 401). From a
+ * tab (any token) it is refused with the host-only text and prints no link.
+ */
+async function checkAddDevice(dataDir, env, port, failures) {
+  const fromTab = await ccc(dataDir, { ...env, APP_TAB_TOKEN: 'f'.repeat(64), CC_COCKPIT_SOCK: join(dataDir, 'app.sock') }, ['web', 'add-device'])
+  if (fromTab.code !== 1 || fromTab.stdout.includes('#t=') || !fromTab.stderr.includes('run `ccc web` from a shell on the server')) {
+    failures.push(`ccc web add-device with a tab token: exit ${fromTab.code}: ${fromTab.stderr.trim()}`)
+  }
+  const added = await ccc(dataDir, env, ['web', 'add-device'])
+  const at = added.stdout.indexOf('#t=')
+  if (added.code !== 0 || at < 0) {
+    failures.push(`ccc web add-device: exit ${added.code}: ${added.stderr.trim()}`)
+    return
+  }
+  const token = tokenAfter(added.stdout, at)
+  const first = await signInWithLink(port, token)
+  const second = await signInWithLink(port, token)
+  console.log(`   ccc web add-device: POST /auth/link ${first}, again ${second}`)
+  if (first !== 200 || second !== 401) failures.push(`ccc web add-device link answered ${first} then ${second} (expected 200, 401)`)
+}
+
 /** A `POST /auth/link` as the sign-in page sends it (Origin-checked, JSON). */
 async function signInWithLink(port, token) {
   const origin = `http://127.0.0.1:${port}`
@@ -271,7 +305,7 @@ function newRunEnv(port, webAccess) {
   return { base, dataDir, runtime, bus, env }
 }
 
-async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false }) {
+async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false, addDevice = false }) {
   const port = 20000 + Math.floor(Math.random() * 20000)
   const { base, dataDir, runtime, bus, env } = newRunEnv(port, webAccess)
   if (noExecve) env.CC_COCKPIT_NO_EXECVE = '1'
@@ -316,17 +350,14 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
     } else if (at < 0) {
       failures.push('no #t= line under a pty')
     } else {
-      let token = ''
-      for (const ch of out.slice(at + 3)) {
-        if (!/[A-Za-z0-9_-]/.test(ch)) break
-        token += ch
-      }
+      const token = tokenAfter(out, at)
       const first = await signInWithLink(port, token)
       const second = await signInWithLink(port, token)
       console.log(`   start link: POST /auth/link ${first}, again ${second}`)
       if (first !== 200 || second !== 401) failures.push(`start link answered ${first} then ${second} (expected 200, 401)`)
     }
     await checkWebStatus(dataDir, env, port, failures)
+    if (addDevice) await checkAddDevice(dataDir, env, port, failures)
     const termAt = Date.now()
     const how = stopWithCcc ? 'ccc web stop' : 'SIGTERM'
     if (stopWithCcc) {
@@ -377,7 +408,7 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
 
 const none = { enabled: true, mode: 'none' }
 const results = [
-  await run('--server', { flag: true, webAccess: { enabled: false, mode: 'confirm' } }),
+  await run('--server', { flag: true, webAccess: { enabled: false, mode: 'confirm' }, addDevice: true }),
   await run('detected (no flag)', { flag: false, webAccess: none })
 ]
 if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))

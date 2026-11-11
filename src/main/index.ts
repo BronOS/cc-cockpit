@@ -1595,7 +1595,9 @@ function start(server: boolean): void {
   })
 
   // `ccc web` (socket/web-handlers.ts, design-web.md §9.4): a shell on the server only (any token
-  // is refused, protocol.ts HOST_ONLY_COMMANDS); on the desktop only status and revoke. The stop
+  // is refused, protocol.ts HOST_ONLY_COMMANDS); on the desktop only status and revoke. The writes
+  // (link, add-device, password, mode, set) go through the same WebAccessService calls as the
+  // Settings page, with its `server` rules (no off, no desktop confirm). The stop
   // signals main itself as systemd does, a moment after the reply is written: the quit ends the
   // socket's connections, and the shell would otherwise see a dropped one instead of the answer.
   registerWebHandlers(socket, {
@@ -1612,7 +1614,12 @@ function start(server: boolean): void {
     revokeAll: () => webAccess.revokeAll(SHELL_REVOKE_REASON),
     stop: () => {
       setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100)
-    }
+    },
+    link: (regenerate) => (regenerate ? webAccess.regenerate() : webAccess.link()),
+    addDevice: () => webAccess.addDevice(),
+    setPassword: (password) => webAccess.setPassword(password),
+    set: (patch) => webAccess.set(patch),
+    logShell: (detail) => webAccessLog.write({ event: 'shell', detail })
   })
 
   // `ccc <plugin command> …` (plan B Task 5). The owner comes from the installer's index: only a

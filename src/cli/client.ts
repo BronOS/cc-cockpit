@@ -43,7 +43,9 @@ import { hookSocketPath } from './hook-socket'
 import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
 import { runStatusLine } from './statusline'
-import { formatWebStatus } from './web-format'
+import { formatWebSaved, formatWebStatus } from './web-format'
+import { readPassword } from './web-password'
+import { MAX_PASSWORD_LENGTH } from '../main/web/password'
 
 type Env = Record<string, string | undefined>
 
@@ -389,6 +391,34 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
     case 'web-stop':
       cmd = 'web.stop'
       break
+    case 'web-link':
+      cmd = 'web.link'
+      if (command.regenerate) args = { regenerate: true }
+      break
+    case 'web-add-device':
+      cmd = 'web.add-device'
+      break
+    case 'web-password':
+      // Only in the request's args over the private socket: never argv, never printed.
+      cmd = 'web.password'
+      if (command.password !== undefined) args = { password: command.password }
+      break
+    case 'web-mode':
+      cmd = 'web.mode'
+      args = command.confirm.length > 0 ? { mode: command.mode, confirm: command.confirm } : { mode: command.mode }
+      break
+    case 'web-set': {
+      // Field names are WebAccessPatch's; main's cwd means nothing to the caller, so TLS paths are
+      // made absolute here, as `--project` is (main refuses a relative one).
+      cmd = 'web.set'
+      if (command.bind !== undefined) args.bind = command.bind
+      if (command.port !== undefined) args.port = command.port
+      if (command.origin !== undefined) args.externalOrigin = command.origin
+      if (command.hosts !== undefined) args.hosts = command.hosts
+      if (command.tls !== undefined) args.tls = command.tls === null ? null : { certPath: abs(command.tls.cert), keyPath: abs(command.tls.key) }
+      if (command.confirm.length > 0) args.confirm = command.confirm
+      break
+    }
   }
   if ('error' in routing) return routing
   return { v: PROTOCOL_VERSION, id: 1, cmd, args, ...routing }
@@ -428,7 +458,7 @@ function roundTrip(socket: Socket, line: string, timeoutMs: number | undefined):
 export const NOT_RUNNING = 'cc-cockpit is not running'
 
 function isWebCommand(command: UserCommand): boolean {
-  return command.kind === 'web-status' || command.kind === 'web-revoke' || command.kind === 'web-stop'
+  return command.kind.startsWith('web-')
 }
 
 /**
@@ -733,6 +763,14 @@ export async function pluginHelp(env: Env): Promise<string> {
  * root-absolute URLs in the linked folder.
  */
 function resultWarnings(command: UserCommand, result: unknown): string {
+  // `ccc web mode none`: §9.12's shared-server warning, as main words it.
+  if (command.kind === 'web-mode') {
+    const warning = ((result ?? {}) as { warning?: unknown }).warning
+    return typeof warning === 'string' ? `ccc: warning: ${plainLine(warning)}\n` : ''
+  }
+  // A link on stdout alone (a script reads it); what it is goes to stderr.
+  if (command.kind === 'web-add-device') return 'ccc: works once, expires in 10 minutes\n'
+  if (command.kind === 'web-link' && command.regenerate) return 'ccc: the old link no longer works; the devices that signed in with it are signed out\n'
   if (command.kind !== 'plugin-link') return ''
   const warnings = ((result ?? {}) as { warnings?: unknown }).warnings
   return Array.isArray(warnings) ? warnings.map((w) => `ccc: warning: ${plainLine(w)}\n`).join('') : ''
@@ -767,6 +805,16 @@ function formatResult(command: UserCommand, result: unknown): string {
     return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
   }
   if (command.kind === 'web-stop') return 'cc-cockpit is stopping\n'
+  if (command.kind === 'web-link' || command.kind === 'web-add-device') {
+    const link = ((result ?? {}) as { link?: unknown }).link
+    return `${plainLine(link)}\n`
+  }
+  if (command.kind === 'web-password') {
+    const mode = ((result ?? {}) as { mode?: unknown }).mode
+    return mode === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
+  }
+  if (command.kind === 'web-mode') return `sign-in mode: ${plainLine(((result ?? {}) as { mode?: unknown }).mode)}\n`
+  if (command.kind === 'web-set') return formatWebSaved(result, plainLine)
   if (command.kind === 'sessions') {
     const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
     if (command.json) return `${JSON.stringify(list)}\n`
@@ -858,6 +906,18 @@ export async function run(
       case 'usage':
         out.stderr(`ccc: ${command.message}\n${USAGE}\n`)
         return 2
+      case 'web-password': {
+        // In a tab main refuses `ccc web` before any handler (HOST_ONLY_TEXT): nothing is asked or
+        // read there, and the refusal comes back for a request with no password in it.
+        if (env.APP_TAB_TOKEN) return await runCommand(command, env, cwd, out)
+        // Read before the request (and its deadline) starts: a person types at their own pace.
+        const read = await readPassword(stdin, out.stderr, { maxChars: MAX_PASSWORD_LENGTH, stdinTimeoutMs: STDIN_READ_TIMEOUT_MS, readCapped: readStdinCapped })
+        if ('error' in read) {
+          out.stderr(`ccc: web password: ${read.error}\n`)
+          return 1
+        }
+        return await runCommand({ ...command, password: read.password }, env, cwd, out)
+      }
       default:
         return await runCommand(command, env, cwd, out)
     }

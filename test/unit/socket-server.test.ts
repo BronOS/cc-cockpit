@@ -322,11 +322,12 @@ describe('requests', () => {
   // `ccc web` (design-web.md §9.4): a shell on the server only. Every one of the eight is refused
   // for any token with the same text, before a handler is looked up, so a tab cannot even tell
   // which have one; tokenless, the registered ones reach their handler as an anonymous caller and
-  // the rest are "unknown command".
+  // the rest are "unknown command". Task 12's five (link, add-device, password, mode, set) carry
+  // what a tab must never mint or change: their args (a password) never reach a handler either.
   it('refuses every HOST_ONLY_COMMANDS request that carries a token, with one text, whether or not it has a handler', async () => {
     const s = await started()
     let reached = 0
-    const registered = ['web.status', 'web.revoke', 'web.stop']
+    const registered = HOST_ONLY_COMMANDS.filter((cmd) => cmd !== 'web.set')
     for (const cmd of registered) {
       s.handle(cmd, (_a, caller) => {
         reached++
@@ -337,6 +338,7 @@ describe('requests', () => {
     for (const cmd of HOST_ONLY_COMMANDS) {
       for (const token of [TOKEN, WINDOW_TOKEN, 'f'.repeat(64)]) {
         expect(await c.request({ token, cmd }), `${cmd} ${token[0]}`).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
+        expect(await c.request({ token, cmd, args: { password: 'hunter2hunter2', mode: 'none' } }), cmd).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
         expect(await c.request({ token, cmd, project: '/known' }), cmd).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
       }
     }

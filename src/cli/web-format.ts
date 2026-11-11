@@ -90,3 +90,12 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
   for (const d of devices) lines.push(deviceLine(d, plain))
   return `${lines.join('\n')}\n`
 }
+
+/**
+ * `ccc web set` after a change was saved: the address and whether the gateway listens there now (a
+ * port in use or an unreadable certificate is saved all the same and shows here as the reason).
+ */
+export function formatWebSaved(result: unknown, plain: Plain): string {
+  const s = (result ?? {}) as Partial<WebCliStatus>
+  return `saved\naddress: ${hostPort(s.bind, s.port, plain)}\ngateway: ${gatewayLine(s.gateway, plain)}\n`
+}

@@ -81,6 +81,22 @@ stderr).
   server-mode app as SIGTERM does (open browser tabs reconnect when it is back). On the desktop only
   `status` and `revoke` are answered; the rest says "use Settings › Web access". When the app is
   not running `ccc web` prints "cc-cockpit is not running" and exits 1.
+- In server mode `ccc web` also hands out and changes sign-in, again only from a shell on the
+  server: `ccc web link [--regenerate]` prints the access link (made on first use; `--regenerate`
+  makes a new one and signs out every device that used the old); `ccc web add-device` prints a
+  one-time link that works once within 10 minutes. Each prints the link alone on stdout.
+  `ccc web password` sets the password from stdin (`echo ... | ccc web password`, one line), or on a
+  terminal asks twice with no echo; it never takes the password as an argument (argv shows in
+  `ps`). `ccc web mode link|password|none` switches the sign-in mode (`confirm` is refused: nobody
+  is at a desktop to answer it; password needs a password set first; `none` on a network address
+  takes `--confirm none-network`); `none` prints a warning:
+  everyone who can reach the address, every user of the server included, controls cc-cockpit.
+  `ccc web set [--bind <addr>] [--port <n>] [--origin <url>] [--host <name>]... [--tls-cert <pem>
+  --tls-key <pem> | --no-tls] [--confirm none-network|plain-http]...` changes where it listens, as
+  the Settings page does (`--origin ''` clears the origin; `--host` replaces the list; TLS paths are
+  taken against the current folder). No sign-in or plain http on a network address is refused with
+  the warning text until the same command is run with its `--confirm` (once per risk). Each change
+  is written to `web-access.log`, never a link or a password.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 - `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
   (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost

@@ -1,5 +1,6 @@
 // The web access log (design-web.md §4.1 "Log"): who signed in, connected, disconnected or was
-// revoked, when the auth mode changed, the password was set, and desktop-confirm requests.
+// revoked, when the auth mode changed, the password was set, desktop-confirm requests, and what was
+// changed from the server shell (`ccc web`).
 // `<data>/logs/web-access.log`, one JSON object per line, rotated at 1 MiB (`.1` keeps the previous file). Plugin logs share the folder, but a plugin id
 // always has a dot, so `web-access.log` can never be one of theirs.
 //
@@ -49,6 +50,12 @@ export type AccessEvent =
    * device that signed in with it. Never the link or its token.
    */
   | 'start-link'
+  /**
+   * A change made from the server shell (`ccc web link|add-device|password|mode|set`, design-web.md
+   * §9.4): the command and its flags (`ccc web set --bind --confirm plain-http`), never a link, a
+   * token or a password. The change's own entry (`mode`, `password`, `regenerate`) follows as usual.
+   */
+  | 'shell'
 
 export interface AccessEntry {
   event: AccessEvent

@@ -15,6 +15,8 @@
 // CORE_CLI_COMMANDS (src/shared/manifest.ts), the list main reserves against plugin command names.
 import { isHookEvent, type HookEvent } from '../shared/hooks'
 import { MAX_PLUGIN_CONFIG_EDITS, parseConfigValue, PLUGIN_CONFIG_SCOPES, type PluginConfigScope } from '../shared/plugin-config'
+import type { WebAccessRisk } from '../shared/types'
+import { WEB_RISK_ORDER } from '../shared/web-access'
 import {
   CLI_NAME_PATTERN,
   type CoreCliCommand,
@@ -77,6 +79,21 @@ export type Command =
   /** `ccc web revoke <device id>` (`id`) or `--all` (`all`), exactly one. */
   | { kind: 'web-revoke'; id?: string; all: boolean }
   | { kind: 'web-stop' }
+  /** `ccc web link [--regenerate]` (server mode only, main decides). */
+  | { kind: 'web-link'; regenerate: boolean }
+  | { kind: 'web-add-device' }
+  /**
+   * `ccc web password`: takes no argument (argv shows in `ps`); client.ts reads the password from
+   * stdin or a no-echo prompt and fills `password` in before the request.
+   */
+  | { kind: 'web-password'; password?: string }
+  /** `ccc web mode link|password|none [--confirm none-network]`; `confirm` is passed on for main to refuse with its reason. */
+  | { kind: 'web-mode'; mode: string; confirm: WebAccessRisk[] }
+  /**
+   * `ccc web set`: only the options given; `origin` '' clears the external origin, `tls` null is
+   * `--no-tls`. TLS paths stay as typed here; client.ts makes them absolute against its cwd.
+   */
+  | { kind: 'web-set'; bind?: string; port?: number; origin?: string; hosts?: string[]; tls?: { cert: string; key: string } | null; confirm: WebAccessRisk[] }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -229,7 +246,21 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
         text: ['web access: mode, address, secret store, devices. ccc web is', 'for a shell on the server, outside cc-cockpit']
       },
       { synopsis: ['web revoke <device id>|--all'], text: ['sign a device out (ids in ccc web status)'] },
-      { synopsis: ['web stop'], text: ['stop a server-mode cc-cockpit, as SIGTERM does'] }
+      { synopsis: ['web stop'], text: ['stop a server-mode cc-cockpit, as SIGTERM does'] },
+      { synopsis: ['web link [--regenerate]'], text: ['print the access link (server mode); --regenerate', 'replaces it and signs out its devices'] },
+      { synopsis: ['web add-device'], text: ['print a one-time link, valid 10 minutes (server mode)'] },
+      { synopsis: ['web password'], text: ['set the password from stdin, or a no-echo prompt on a', 'terminal; never as an argument (server mode)'] },
+      {
+        synopsis: ['web mode link|password|none [--confirm none-network]'],
+        text: ['switch the sign-in mode (server mode); none on a network', 'address needs its --confirm']
+      },
+      {
+        synopsis: [
+          'web set [--bind <addr>] [--port <n>] [--origin <url>] [--host <name>]...',
+          'web set [--tls-cert <pem> --tls-key <pem> | --no-tls] [--confirm none-network|plain-http]...'
+        ],
+        text: ['change where web access listens (server mode; the options', 'combine); a risky choice is refused with its text until', 'its --confirm is given']
+      }
     ]
   },
   help: {
@@ -460,12 +491,13 @@ function parseSession(rest: readonly string[]): Command {
 }
 
 /**
- * `ccc web status|revoke|stop` (server-mode plan Task 11). Each takes a fixed shape; anything else is
- * a usage error. A device id is passed as typed: main checks it against its own list.
+ * `ccc web status|revoke|stop|link|add-device|password|mode|set` (server-mode plan Tasks 11, 12). Each
+ * takes a fixed shape; anything else is a usage error. A device id, a bind or an origin is passed as
+ * typed: main checks it (`applyWebAccessPatch`). No regexes (the project rule for settings parsing).
  */
 function parseWeb(rest: readonly string[]): Command {
   const [sub, ...args] = rest
-  if (sub === undefined) return usage('web needs status, revoke or stop')
+  if (sub === undefined) return usage('web needs status, revoke, stop, link, add-device, password, mode or set')
   if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'web' }
   switch (sub) {
     case 'status':
@@ -483,10 +515,122 @@ function parseWeb(rest: readonly string[]): Command {
     }
     case 'stop':
       return args.length === 0 ? { kind: 'web-stop' } : usage('web stop takes no arguments')
+    case 'link':
+      if (args.length === 0) return { kind: 'web-link', regenerate: false }
+      if (args.length === 1 && args[0] === '--regenerate') return { kind: 'web-link', regenerate: true }
+      return usage('web link takes only --regenerate')
+    case 'add-device':
+      return args.length === 0 ? { kind: 'web-add-device' } : usage('web add-device takes no arguments')
+    case 'password':
+      // The argument is not echoed: it may well be the password, typed where it does not belong.
+      return args.length === 0 ? { kind: 'web-password' } : usage('web password takes no arguments: it reads the password from stdin (argv shows in ps)')
+    case 'mode':
+      return parseWebMode(args)
+    case 'set':
+      return parseWebSet(args)
     default:
       return usage(`unknown web command: ${sub}`)
   }
 }
+
+/** A `--confirm` value, or undefined for anything that is not one of the §4.3 risks. */
+function riskOf(value: string | undefined): WebAccessRisk | undefined {
+  return WEB_RISK_ORDER.find((r) => r === value)
+}
+
+/** `ccc web mode <mode> [--confirm <risk>]...`: the mode is checked by main (it refuses `confirm` with the reason). */
+function parseWebMode(args: readonly string[]): Command {
+  let mode: string | undefined
+  const confirm: WebAccessRisk[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (arg === '--confirm') {
+      const risk = riskOf(args[++i])
+      if (risk === undefined) return usage(`web mode: --confirm takes ${WEB_RISK_ORDER.join(' or ')}`)
+      if (!confirm.includes(risk)) confirm.push(risk)
+    } else if (arg.startsWith('-') || mode !== undefined) return usage('web mode takes link, password or none, and --confirm none-network')
+    else mode = arg
+  }
+  if (mode === undefined || !['link', 'password', 'none', 'confirm'].includes(mode)) return usage('web mode takes link, password or none')
+  return { kind: 'web-mode', mode, confirm }
+}
+
+/** A port as typed: digits only (no sign, no exponent, no spaces), checked against the range by main. */
+function portOf(value: string | undefined): number | undefined {
+  if (value === undefined || value === '' || value.length > 5) return undefined
+  for (const ch of value) if (ch < '0' || ch > '9') return undefined
+  return Number(value)
+}
+
+/**
+ * `ccc web set`: each option at most once except `--host` and `--confirm` (one per risk: start may
+ * print both, `serverConfirmCommand`). `--tls-cert` and `--tls-key` go together, never with `--no-tls`.
+ */
+function parseWebSet(args: readonly string[]): Command {
+  const out: Extract<Command, { kind: 'web-set' }> = { kind: 'web-set', confirm: [] }
+  const seen = new Set<string>()
+  let cert: string | undefined
+  let key: string | undefined
+  let noTls = false
+  const hosts: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (arg !== '--host' && arg !== '--confirm') {
+      if (seen.has(arg)) return usage(`web set: ${arg} given twice`)
+      seen.add(arg)
+    }
+    if (arg === '--no-tls') {
+      noTls = true
+      continue
+    }
+    const value = args[++i]
+    // An empty value is a value for --origin only (it clears the external origin).
+    if (value === undefined || (value === '' && arg !== '--origin')) {
+      return arg.startsWith('--') && SET_OPTIONS.includes(arg) ? usage(`web set: ${arg} needs a value`) : usage(`web set: unknown option ${arg}`)
+    }
+    switch (arg) {
+      case '--bind':
+        out.bind = value
+        break
+      case '--port': {
+        const port = portOf(value)
+        if (port === undefined) return usage('web set: --port takes a number')
+        out.port = port
+        break
+      }
+      case '--origin':
+        out.origin = value
+        break
+      case '--host':
+        hosts.push(value)
+        break
+      case '--tls-cert':
+        cert = value
+        break
+      case '--tls-key':
+        key = value
+        break
+      case '--confirm': {
+        const risk = riskOf(value)
+        if (risk === undefined) return usage(`web set: --confirm takes ${WEB_RISK_ORDER.join(' or ')}`)
+        if (!out.confirm.includes(risk)) out.confirm.push(risk)
+        break
+      }
+      default:
+        return usage(`web set: unknown option ${arg}`)
+    }
+  }
+  if ((cert === undefined) !== (key === undefined)) return usage('web set: --tls-cert and --tls-key go together')
+  if (noTls && cert !== undefined) return usage('web set: --no-tls goes without --tls-cert and --tls-key')
+  if (cert !== undefined && key !== undefined) out.tls = { cert, key }
+  else if (noTls) out.tls = null
+  if (hosts.length > 0) out.hosts = hosts
+  if (seen.size === 0 && hosts.length === 0 && out.confirm.length === 0) return usage('web set needs at least one option')
+  return out
+}
+
+/** The options of `ccc web set` that take a value. */
+const SET_OPTIONS: readonly string[] = ['--bind', '--port', '--origin', '--host', '--tls-cert', '--tls-key', '--confirm']
 
 /** `ccc panel show [--project <path>] <plugin>/<panel>`: the panel key is the plugin id, a slash, the manifest's panel id. */
 function parsePanel(rest: readonly string[]): Command {

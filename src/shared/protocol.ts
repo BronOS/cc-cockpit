@@ -82,9 +82,9 @@ export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 
  * shell tab's or a forged one, is refused in `identify` before a handler is looked up, with
  * HOST_ONLY_TEXT, and each handler (main/socket/web-handlers.ts) refuses every caller kind but the
  * tokenless one again. Projectless (no project is involved) and never in TOKENLESS_COMMANDS or
- * WINDOW_TOKEN_COMMANDS. All eight names are here from the start, those whose handler comes later
- * included (they answer "unknown command" to a tokenless caller until then), so a handler added
- * later can never be reached by a tab first.
+ * WINDOW_TOKEN_COMMANDS. All eight names were listed before the first handler existed, so no
+ * handler could ever be reached by a tab first; SocketServer.handle refuses a `web.*` handler whose
+ * name is not here.
  *
  * Not a boundary: a tab's process is the same OS user and can drop its token or edit app.json
  * itself (§9.12). It is there so a Claude session never reconfigures access, or prints the access

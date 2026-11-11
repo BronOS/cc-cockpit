@@ -73,6 +73,9 @@ export const SERVER_NONE_WARNING =
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
 const NOT_LISTENING = 'Turn web access on first: there is nothing to open the link on.'
 const NOT_LINK_MODE = 'Links work only in the access-link mode.'
+/** Server mode's wording (`ccc web link`, `ccc web add-device`): web access is always on there, so "turn it on" would mislead. */
+const SERVER_NOT_LISTENING = 'web access is not listening, so a link would open nothing; `ccc web status` says why'
+const SERVER_NOT_LINK_MODE = 'links work only in the access-link mode: `ccc web mode link` switches to it'
 
 export class WebAccessService {
   private readonly unsubscribe: Array<() => void> = []
@@ -341,8 +344,11 @@ export class WebAccessService {
   /** The origin a link points at, or the reply that says why there is no link. */
   private linkTarget(): string | WebLinkReply {
     const settings = this.settings()
-    if (this.deps.gateway.status().state !== 'listening' || !listenPlanOf(settings).ok) return { ok: false, reason: NOT_LISTENING }
-    if (settings.mode !== 'link') return { ok: false, reason: NOT_LINK_MODE }
+    const server = this.deps.server === true
+    if (this.deps.gateway.status().state !== 'listening' || !listenPlanOf(settings).ok) {
+      return { ok: false, reason: server ? SERVER_NOT_LISTENING : NOT_LISTENING }
+    }
+    if (settings.mode !== 'link') return { ok: false, reason: server ? SERVER_NOT_LINK_MODE : NOT_LINK_MODE }
     return linkOrigin(settings)
   }
 

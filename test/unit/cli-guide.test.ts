@@ -136,6 +136,12 @@ describe('guide drift guards', () => {
     expect(topic('cli')).toContain('ccc statusline')
   })
 
+  it('names every ccc web subcommand of USAGE in the cli topic', () => {
+    const subs = new Set([...USAGE.matchAll(/^ {2}ccc web (\S+)/gm)].map((m) => m[1] as string))
+    expect([...subs].sort()).toEqual(['add-device', 'link', 'mode', 'password', 'revoke', 'set', 'status', 'stop'])
+    for (const sub of subs) expect(topic('cli'), `ccc web ${sub}`).toContain(`ccc web ${sub}`)
+  })
+
   it('names every ctx member of src/sdk/types.ts in the api topic', () => {
     const src = readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8')
     const body = /export interface PluginContext \{([\s\S]*?)\n\}/.exec(src)?.[1] ?? ''
