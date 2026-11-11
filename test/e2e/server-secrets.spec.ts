@@ -116,7 +116,7 @@ test('server secrets: a password set from the shell is kept in the key file, sur
 
 test('server secrets: shell.trashItem with no session bus returns or fails cleanly, main survives', async () => {
   test.setTimeout(90_000)
-  server = await launchServer({ fakeSecrets: false })
+  server = await launchServer()
   const file = join(server.cockpit.projectDir, 'to-trash.txt')
   writeFileSync(file, 'x')
   expect(existsSync(file)).toBe(true)

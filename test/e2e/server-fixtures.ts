@@ -173,6 +173,8 @@ export function ccc(server: Server, args: string[], input?: string): Promise<Ccc
         resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, stdout, stderr })
       }
     )
+    // A ccc that exits before reading stdin (a password refused early) gives EPIPE; the spec must see its stderr, not crash.
+    child.stdin?.on('error', () => {})
     child.stdin?.end(input ?? '')
   })
 }
