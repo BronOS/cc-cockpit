@@ -1283,8 +1283,9 @@ describe('server mode: html overlays held by browsers only (design-web.md §9.8)
   it('with no browser attached the page waits, its posts kept, for the first browser to list the stack', async () => {
     const { m, toView } = serverManager()
     const { id, result } = open(m)
-    // Nobody holds it: no heldBy, and nothing reaches any view.
+    // Nobody holds it: no heldBy, `waiting` (no view draws the page), and nothing reaches any view.
     expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    expect(m.infos(W1)[0]?.waiting).toBe(true)
     m.post(W1, id, '"queued"')
     m.pageReady(W1, id, 'desktop:1')
     expect(m.result(W1, id, 'hidden', 'desktop:1')).toBe(false)
@@ -1296,6 +1297,7 @@ describe('server mode: html overlays held by browsers only (design-web.md §9.8)
     // The first browser lists the stack: it holds the page now, and the window's views are told.
     const listed = m.list(W1, 'web:3')
     expect(listed[0]).toMatchObject({ heldBy: { viewId: 'web:3', device: 'Laptop' }, loading: true })
+    expect(listed[0]).not.toHaveProperty('waiting')
     expect(lastStack(W1)[0]?.heldBy?.viewId).toBe('web:3')
     // A second browser listing later does not move it.
     m.list(W1, 'web:1')
@@ -1321,6 +1323,40 @@ describe('server mode: html overlays held by browsers only (design-web.md §9.8)
     m.list(W1, 'web:2')
     m.pageReady(W1, id, 'web:2')
     expect(messages(toView)).toEqual([['web:2', '"later"']])
+  })
+
+  it('a holder leaving while another browser has not listed yet: handed over once, no double delivery', () => {
+    const { m, toView } = serverManager()
+    browsers = ['web:1']
+    const { id } = open(m)
+    m.post(W1, id, '"q"')
+    // web:2 attached (browserViews) but has not listed; web:1 leaves.
+    browsers = ['web:1', 'web:2']
+    gone.add('web:1')
+    m.viewGone('web:1')
+    expect(m.infos(W1)[0]?.heldBy?.viewId).toBe('web:2')
+    // Its own list is a reload of a page it holds: the queue is delivered once, not twice.
+    m.list(W1, 'web:2')
+    m.pageReady(W1, id, 'web:2')
+    m.pageReady(W1, id, 'web:2')
+    expect(messages(toView)).toEqual([['web:2', '"q"']])
+  })
+
+  it('the opener closing a waiting overlay drops it: a later list finds nothing', async () => {
+    const { m, toView } = serverManager()
+    const { id, result } = open(m)
+    m.post(W1, id, '"never"')
+    expect(m.close(W1, id)).toBe(true)
+    await result
+    expect(m.list(W1, 'web:1')).toEqual([])
+    expect(toView).toEqual([])
+  })
+
+  it('the outbox stays bounded while the page waits for a browser', () => {
+    const { m } = serverManager()
+    const { id } = open(m)
+    for (let i = 0; i < MAX_QUEUED_OVERLAY_MESSAGES; i++) m.post(W1, id, String(i))
+    expect(() => m.post(W1, id, 'more')).toThrow('queue is full')
   })
 
   it('a browser may still take over; terminal overlays are never held', () => {

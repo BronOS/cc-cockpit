@@ -839,6 +839,12 @@ export type OverlayInfo = OverlayInfoBody & {
    * shows "Open on <device> — Take over" (`overlays.take`) instead of the page.
    */
   heldBy?: PageHolder
+  /**
+   * Server mode with no browser attached: nobody holds the html page yet (it waits for the first
+   * browser to list the stack), so no view draws it. Without it, an absent `heldBy` would read as
+   * "the desktop holds it" and the hidden window would run the page's code for nobody.
+   */
+  waiting?: true
 }
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */

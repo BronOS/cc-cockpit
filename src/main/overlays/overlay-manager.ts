@@ -749,6 +749,8 @@ export class OverlayManager {
     const info = { ...overlay.info }
     if (viewId !== undefined && isRemoteViewId(viewId)) info.heldBy = { viewId, device: this.options.deviceOf?.(viewId) ?? viewId }
     else delete info.heldBy
+    if (viewId === undefined) info.waiting = true
+    else delete info.waiting
     overlay.info = info
   }
 

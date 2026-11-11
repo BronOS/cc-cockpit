@@ -207,7 +207,7 @@ export function OverlayStack(props: {
               {overlay.kind === 'terminal' && (
                 <TerminalOverlay overlayId={overlay.id} active={active} sessions={terms} />
               )}
-              {overlay.kind === 'html' && elsewhere === undefined && (
+              {overlay.kind === 'html' && elsewhere === undefined && overlay.waiting !== true && (
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
               )}
               {elsewhere !== undefined && (
