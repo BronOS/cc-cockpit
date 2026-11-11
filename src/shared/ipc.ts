@@ -1479,6 +1479,14 @@ export interface IpcEventMap {
    */
   'app.linkNotice': { url: string; signIn?: string }
   /**
+   * A plugin's sign-in named by an `app.linkNotice`'s `signIn` is over, however it ended (server mode,
+   * design-web.md §9.9): sent to every browser view of its window. `finished` when the redirect brought a
+   * code (a paste in any view, or the loopback): the notice goes. Otherwise (timed out, the attempt
+   * limit, replaced, cancelled, the provider's refusal) the notice says the sign-in is over instead of
+   * keeping a box whose every paste is refused.
+   */
+  'oauth.signInEnded': { signIn: string; finished: boolean }
+  /**
    * A plugin's settings page moved (design-web.md §5.4): `viewId` and `device` name the view that
    * holds it now, both null when no view does (the page closed). A view showing the page that is
    * not the holder any more shows "Open on <device> — Take over" in its place.
@@ -1711,6 +1719,7 @@ export const EVENT_CHANNELS = [
   'trash.ask',
   'trash.settled',
   'app.linkNotice',
+  'oauth.signInEnded',
   'settingsPage.held',
   'project.updated',
   'projects.changed',
@@ -1818,6 +1827,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'trash.ask': 'yes',
   'trash.settled': 'yes',
   'app.linkNotice': 'yes',
+  'oauth.signInEnded': 'yes',
   'project.updated': 'yes',
 
   // Zones, commands, plugin panels, slots and settings pages: project work, per view from Task 17.

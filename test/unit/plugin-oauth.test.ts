@@ -522,6 +522,54 @@ describe('PluginOAuth.paste', () => {
     await expect(appWide).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
   })
 
+  it('onEnded tells of every end once, for the target: finished only when a code came', async () => {
+    const ended: { signIn: string; target: OpenTarget; finished: boolean }[] = []
+    const oauth = oauthWith({ loginTimeoutMs: 300, onEnded: (signIn, target, finished) => ended.push({ signIn, target, finished }) })
+    // A code, by paste.
+    const ok = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirectOf(0))).toBe(true)
+    await ok
+    expect(ended).toEqual([{ signIn: signInsOpened[0], target: TARGET, finished: true }])
+    // The attempt limit.
+    const limited = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(2))
+    const wrong = new URL(redirectOf(1))
+    wrong.searchParams.set('state', 'guess')
+    for (let i = 0; i < MAX_PASTE_ATTEMPTS; i++) oauth.paste(TARGET.windowId, signInsOpened[1], wrong.toString())
+    await expect(limited).rejects.toThrow('sign-in ended after')
+    // The provider's refusal, a timeout and a cancel.
+    const denied = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(3))
+    expect(oauth.paste(TARGET.windowId, signInsOpened[2], redirectOf(2, { error: 'access_denied' }))).toBe(true)
+    await expect(denied).rejects.toThrow('access_denied')
+    await expect(oauth.authorize(spec(), new AbortController().signal, 'app')).rejects.toThrow('timed out')
+    const controller = new AbortController()
+    const cancelled = oauth.authorize(spec(), controller.signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(5))
+    controller.abort()
+    await expect(cancelled).rejects.toThrow('cancelled')
+    expect(ended).toEqual([
+      { signIn: signInsOpened[0], target: TARGET, finished: true },
+      { signIn: signInsOpened[1], target: TARGET, finished: false },
+      { signIn: signInsOpened[2], target: TARGET, finished: false },
+      { signIn: signInsOpened[3], target: 'app', finished: false },
+      { signIn: signInsOpened[4], target: TARGET, finished: false }
+    ])
+  })
+
+  it('a throwing onEnded changes nothing of the sign-in’s outcome', async () => {
+    const oauth = oauthWith({
+      onEnded: () => {
+        throw new Error('no views')
+      }
+    })
+    const pending = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirectOf(0))).toBe(true)
+    await expect(pending).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
+  })
+
   it('a sign-in that is over (timed out, cancelled) is refused like an unknown one', async () => {
     const oauth = oauthWith({ loginTimeoutMs: 50 })
     await expect(oauth.authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('timed out')

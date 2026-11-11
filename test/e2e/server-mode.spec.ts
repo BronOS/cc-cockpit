@@ -14,7 +14,8 @@ import { WebSocket } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
-import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
+import { MAX_PASTE_ATTEMPTS } from '../../src/main/oauth/plugin-oauth'
+import { OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../src/shared/oauth-paste'
 import { FakeOAuthServer } from '../fakes/fake-oauth-server'
 import { launchCockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchProfiles, launchServer, secondLaunch, type Server } from './server-fixtures'
@@ -928,7 +929,7 @@ function makeTls(): { key: string; cert: string; certFile: string; dispose(): vo
   return { key: readFileSync(keyFile, 'utf8'), cert: readFileSync(certFile, 'utf8'), certFile, dispose: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-test('server mode: a plugin signs in by pasting the failed redirect in the browser; a wrong paste is refused', async () => {
+test('server mode: a plugin signs in by pasting the failed redirect in the browser; a wrong paste is refused, the attempt limit ends it', async () => {
   test.setTimeout(120_000)
   const tls = makeTls()
   const provider = await new FakeOAuthServer({ clientId: 'e2e-client', clientSecret: 'e2e-secret-31d9', tls: { key: tls.key, cert: tls.cert } }).start()
@@ -1010,6 +1011,31 @@ test('server mode: a plugin signs in by pasting the failed redirect in the brows
         ok: false,
         error: OAUTH_PASTE_REFUSED
       })
+
+      // A second sign-in ended by the attempt limit: the notice says it is over instead of keeping a box
+      // that refuses everything, and the plugin got the error.
+      rmSync(record)
+      await cockpit.hook('runPluginCommand', cockpit.projectDir, `${OAUTH_PLUGIN}/signin`)
+      await expect(notice).toBeVisible({ timeout: 15_000 })
+      const second = new URL(provider.authorize((await notice.getByRole('link').getAttribute('href'))!))
+      second.searchParams.set('state', 'not-the-state')
+      for (let i = 0; i < MAX_PASTE_ATTEMPTS; i++) {
+        await box.fill(second.toString())
+        await finish.click()
+        // Each answer before the next try; the last one ends the sign-in (checked below).
+        if (i < MAX_PASTE_ATTEMPTS - 1) {
+          await expect(finish).toBeEnabled()
+          await expect(notice.getByRole('alert')).toHaveText(OAUTH_PASTE_REFUSED)
+        }
+      }
+      await expect(notice.getByTestId('oauth-notice-ended')).toHaveText(OAUTH_SIGN_IN_OVER)
+      await expect(box).toHaveCount(0)
+      await expect.poll(() => existsSync(record), { timeout: 15_000 }).toBe(true)
+      expect((JSON.parse(readFileSync(record, 'utf8')) as { error?: string }).error).toContain(`sign-in ended after ${MAX_PASTE_ATTEMPTS}`)
+      // Its ✕ takes it down.
+      await notice.getByRole('button', { name: 'Dismiss sign-in' }).click()
+      await expect(notice).toHaveCount(0)
+
       // Nothing opened on the server, and the hidden page drew no notice.
       expect(await cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened)).toEqual([])
       await expect(cockpit.page.getByTestId('oauth-notice')).toHaveCount(0)

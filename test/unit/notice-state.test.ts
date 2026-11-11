@@ -7,6 +7,7 @@ import {
   canAllowLink,
   dropLinkAsk,
   dropUnseen,
+  endSignIn,
   linkNoticeAction,
   linkNoticeUrl,
   noteUnseen,
@@ -47,6 +48,22 @@ describe('oauthSignInOf / addSignIn', () => {
     let list = one
     for (let n = 2; n <= MAX_SIGN_IN_NOTICES + 2; n++) list = addSignIn(list, { url: 'https://a.example', signIn: id(n) })
     expect(list.map((x) => x.signIn)).toEqual(Array.from({ length: MAX_SIGN_IN_NOTICES }, (_, i) => id(i + 3)))
+  })
+  it('a sign-in that ended with a code loses its notice; one that ended otherwise is marked over', () => {
+    const list = [
+      { url: 'https://a.example', signIn: id(1) },
+      { url: 'https://b.example', signIn: id(2) }
+    ]
+    expect(endSignIn(list, id(1), true)).toEqual([list[1]])
+    const over = endSignIn(list, id(2), false)
+    expect(over).toEqual([list[0], { url: 'https://b.example', signIn: id(2), ended: true }])
+    expect(list[1]).not.toHaveProperty('ended')
+    // Already marked, or no such notice in this view: the same array.
+    expect(endSignIn(over, id(2), false)).toBe(over)
+    expect(endSignIn(list, id(9), true)).toBe(list)
+    expect(endSignIn(list, id(9), false)).toBe(list)
+    // A code after the mark (a paste answered late in another view) still takes it down.
+    expect(endSignIn(over, id(2), true)).toEqual([list[0]])
   })
 })
 

@@ -28,9 +28,12 @@
 // box where the person pastes the address the tab ended on, and `paste` settles the sign-in with it
 // in-process (`Loopback.paste`, the callback handler's own checks). The sign-in is looked up by that id
 // among the caller's window's only (the window the router bound the view to, never the pasted host or
-// port), so two plugins of one window waiting at once are told apart by it. MAX_PASTE_ATTEMPTS refused
-// pastes end the sign-in. Every refusal is the same `false` (the router answers OAUTH_PASTE_REFUSED),
-// and nothing logged names the address.
+// port), so two plugins of one window waiting at once are told apart by it. MAX_PASTE_ATTEMPTS pastes
+// the checks refuse end the sign-in (an unknown id, a non-string and an over-long text are refused
+// unread and not counted: they never reach the checks, and none can settle a sign-in). Every refusal
+// is the same `false` (the router answers OAUTH_PASTE_REFUSED), and nothing logged names the address.
+// When a sign-in ends, however it ends, `onEnded` tells the window's browsers (`oauth.signInEnded`), so
+// a notice whose sign-in is over says so instead of refusing every further paste alike.
 //
 // No `electron` import (main passes the openExternal adapter in): unit tests load this file in Node.
 import { isPlainObject } from '../../shared/guards'
@@ -128,6 +131,12 @@ export interface PluginOAuthOptions {
    * browsers in server mode, carrying `signIn` for the paste box).
    */
   openExternal(url: string, target: OpenTarget, extra: { signIn: string }): Promise<void>
+  /**
+   * The sign-in `signIn` (the id openExternal got) is over, any way it ended, for the same `target`:
+   * `finished` when the redirect brought a code. Main sends `oauth.signInEnded` to the window's browsers
+   * in server mode (index.ts). Called once per sign-in; a throw is ignored.
+   */
+  onEnded?(signIn: string, target: OpenTarget, finished: boolean): void
   fetch?: typeof fetch
   now?: () => number
   /** Test knobs (defaults LOGIN_TIMEOUT_MS, FETCH_TIMEOUT_MS). */
@@ -183,6 +192,7 @@ export class PluginOAuth implements PluginOAuthApi {
     const signIn = randomToken(16)
     this.pending.set(signIn, { windowId: target === 'app' ? undefined : target.windowId, loopback, refused: 0 })
     let code: string
+    let finished = false
     try {
       // A copy: the checked spec's URL is not ours to change. set(), not append(): a parameter of
       // the same name in the plugin's URL is replaced, so the code cannot be redirected elsewhere.
@@ -211,9 +221,15 @@ export class PluginOAuth implements PluginOAuthApi {
       // host-api.ts would keep the plugin's sign-in slot taken until the next one replaced it. A
       // browser that comes back before openExternal settles finishes the sign-in as usual.
       code = await Promise.race([opened.then(() => loopback.code), loopback.code])
+      finished = true
     } finally {
       this.pending.delete(signIn)
       loopback.close()
+      try {
+        this.options.onEnded?.(signIn, target, finished)
+      } catch {
+        // A notice left up is answered by the same refusal; the sign-in's own outcome stands.
+      }
     }
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
@@ -237,8 +253,8 @@ export class PluginOAuth implements PluginOAuthApi {
    * when it settled the sign-in `signIn` of `windowId` (main's binding of the caller, never the
    * payload): a code, which `authorize` then exchanges, or the provider's refusal. False for every
    * other case alike: not a string, too long, not an address, an unknown id, another window's, a
-   * sign-in already over, or an address the checks refuse; the last counts, and the
-   * MAX_PASTE_ATTEMPTS-th refused one ends the sign-in.
+   * sign-in already over, or an address the checks refuse. Only the last counts (the rest never reach
+   * the checks), and the MAX_PASTE_ATTEMPTS-th one ends the sign-in.
    */
   paste(windowId: number, signIn: unknown, text: unknown): boolean {
     if (!isSignInId(signIn) || typeof text !== 'string' || text.length > MAX_OAUTH_PASTE_LENGTH) return false

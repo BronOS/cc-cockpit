@@ -380,8 +380,18 @@ function start(server: boolean): void {
   if (otherStore !== null) warnLog(otherStore)
   const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: warnLog })
   // ctx.oauth (plugin-oauth.ts). The auth URL goes through the openExternal adapter (defined below
-  // with the view registry; a sign-in only starts once a host runs), for the window that asked.
-  const pluginOAuth = new PluginOAuth({ openExternal: (url, target, extra) => openExternal(url, target, extra), log: warnLog })
+  // with the view registry; a sign-in only starts once a host runs), for the window that asked. In
+  // server mode a sign-in's end reaches the window's browsers (every one: the notice may be in any), so
+  // its notice goes or says it is over; the desktop's browser views never get a sign-in notice.
+  const pluginOAuth = new PluginOAuth({
+    openExternal: (url, target, extra) => openExternal(url, target, extra),
+    onEnded: server
+      ? (signIn, target, finished) => {
+          views.toBrowserViews(target === 'app' ? 'all' : target.windowId, 'oauth.signInEnded', { signIn, finished })
+        }
+      : undefined,
+    log: warnLog
+  })
   const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
   // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).

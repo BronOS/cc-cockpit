@@ -814,8 +814,11 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   sign-in id per pending sign-in and the openExternal adapter puts it in `app.linkNotice` (`signIn`, server mode only),
   which the shell draws with the paste box; `oauth.paste` (`adapted`, `server && view.remote`) names that id and main looks
   it up among the bound window's sign-ins only. `checkCallback` (`oauth.ts`) is the one set of checks for the HTTP
-  handler and `Loopback.paste`. The pasted text is capped at 8 KiB, the fifth refused paste ends the sign-in, and every
-  refusal is the one `OAUTH_PASTE_REFUSED` (`shared/oauth-paste.ts`); the log counts refusals and never names the address.
+  handler and `Loopback.paste`. The pasted text is capped at 8 KiB, the fifth paste the checks refuse ends the sign-in (an
+  unknown id, a non-string or an over-long text is refused unread and not counted), and every refusal is the one
+  `OAUTH_PASTE_REFUSED` (`shared/oauth-paste.ts`); the log counts refusals and never names the address. However a sign-in
+  ends, `oauth.signInEnded` goes to the window's browsers: with a code the notice goes (in every view), otherwise (timeout,
+  the attempt limit, replaced, the provider's refusal) it says the sign-in is over in place of the box.
 
 ### 9.10 Claude login
 

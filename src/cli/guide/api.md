@@ -78,7 +78,7 @@ with full Node access.
   person pastes the address the tab ended on into the notice's box; the cockpit checks it as the
   loopback would and finishes the sign-in, making no request to it. A pasted address that is not
   this sign-in's answer is refused; the fifth refused one ends the sign-in (it rejects, as on a
-  timeout). The plugin code is the same in both modes.
+  timeout, and the notice says the sign-in is over). The plugin code is the same in both modes.
 
 ## Work
 

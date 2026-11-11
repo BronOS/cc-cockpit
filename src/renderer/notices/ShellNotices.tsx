@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
-import { MAX_OAUTH_PASTE_LENGTH, OAUTH_PASTE_REFUSED } from '../../shared/oauth-paste'
+import { MAX_OAUTH_PASTE_LENGTH, OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../shared/oauth-paste'
 import {
   addLinkAsk,
   addSharedAsk,
@@ -10,6 +10,7 @@ import {
   dropLinkAsk,
   dropSharedAsk,
   dropUnseen,
+  endSignIn,
   linkNoticeAction,
   nextTitleMark,
   noteUnseen,
@@ -120,11 +121,17 @@ function PageNotices(): React.JSX.Element | null {
  * the tab, so the link is shown to click. One open per event, never retried. The last notice only;
  * `noopener noreferrer` so the opened page learns nothing about this one. A plugin's OAuth sign-in in
  * server mode (`signIn` in the event, design-web.md §9.9) gets a notice of its own that stays until it
- * is finished or dismissed (OAuthSignIn).
+ * is finished or dismissed (OAuthSignIn); when main says the sign-in ended (`oauth.signInEnded`) it goes
+ * (a code came, from any view) or says the sign-in is over (endSignIn).
  */
 function LinkNotice(): React.JSX.Element | null {
   const [url, setUrl] = useState<string | undefined>(undefined)
   const [signIns, setSignIns] = useState<readonly OAuthSignInNotice[]>([])
+  useEffect(() => {
+    return window.cockpit.on('oauth.signInEnded', ({ signIn, finished }) => {
+      setSignIns((prev) => endSignIn(prev, signIn, finished === true))
+    })
+  }, [])
   useEffect(() => {
     return window.cockpit.on('app.linkNotice', (p) => {
       const signIn = oauthSignInOf(p)
@@ -179,7 +186,9 @@ function LinkNotice(): React.JSX.Element | null {
  * for the address its redirect ends on. That redirect goes to the server's own 127.0.0.1, which this
  * browser cannot reach, so the tab shows an error page whose address holds the answer; main settles
  * the sign-in with it (`oauth.paste`) and makes no request. A refusal shows main's one text, never the
- * address. Nothing here takes the focus: a key typed for Claude stays in the terminal.
+ * address. A sign-in main ended otherwise (`notice.ended`) shows that it is over in place of the box,
+ * so the person is not left pasting into one that refuses everything. Nothing here takes the focus: a
+ * key typed for Claude stays in the terminal.
  */
 function OAuthSignIn(props: { notice: OAuthSignInNotice; onGone: () => void }): React.JSX.Element {
   const { notice, onGone } = props
@@ -189,7 +198,7 @@ function OAuthSignIn(props: { notice: OAuthSignInNotice; onGone: () => void }): 
   const inputId = useId()
   const submit = (e: React.FormEvent): void => {
     e.preventDefault()
-    if (busy || text.trim() === '') return
+    if (busy || notice.ended === true || text.trim() === '') return
     setBusy(true)
     setError(undefined)
     window.cockpit
@@ -214,30 +223,38 @@ function OAuthSignIn(props: { notice: OAuthSignInNotice; onGone: () => void }): 
           ×
         </button>
       </div>
-      <label htmlFor={inputId} className="oauth-notice-help">
-        After you sign in, the tab ends on a page that does not load, at an address starting with http://127.0.0.1. Copy that whole
-        address and paste it here:
-      </label>
-      <div className="oauth-notice-row">
-        <input
-          id={inputId}
-          type="text"
-          className="oauth-notice-input"
-          value={text}
-          maxLength={MAX_OAUTH_PASTE_LENGTH}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <button type="submit" disabled={busy || text.trim() === ''}>
-          Finish sign-in
-        </button>
-      </div>
-      {error !== undefined ? (
-        <p className="oauth-notice-error" role="alert">
-          {error}
+      {notice.ended === true ? (
+        <p className="oauth-notice-help" role="status" data-testid="oauth-notice-ended">
+          {OAUTH_SIGN_IN_OVER}
         </p>
-      ) : null}
+      ) : (
+        <>
+          <label htmlFor={inputId} className="oauth-notice-help">
+            After you sign in, the tab ends on a page that does not load, at an address starting with http://127.0.0.1. Copy that
+            whole address and paste it here:
+          </label>
+          <div className="oauth-notice-row">
+            <input
+              id={inputId}
+              type="text"
+              className="oauth-notice-input"
+              value={text}
+              maxLength={MAX_OAUTH_PASTE_LENGTH}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <button type="submit" disabled={busy || text.trim() === ''}>
+              Finish sign-in
+            </button>
+          </div>
+          {error !== undefined ? (
+            <p className="oauth-notice-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </>
+      )}
     </form>
   )
 }

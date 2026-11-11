@@ -42,7 +42,7 @@ export function linkNoticeAction(payload: unknown, env: { webShell: boolean; act
  * provider's redirect ends on (`oauth.paste`); undefined for a plain link or a malformed id (then the
  * plain notice, linkNoticeAction).
  */
-export type OAuthSignInNotice = { url: string; signIn: string }
+export type OAuthSignInNotice = { url: string; signIn: string; ended?: true }
 
 export function oauthSignInOf(payload: unknown): OAuthSignInNotice | undefined {
   const url = linkNoticeUrl(payload)
@@ -60,6 +60,20 @@ export const MAX_SIGN_IN_NOTICES = 4
 export function addSignIn(list: readonly OAuthSignInNotice[], n: OAuthSignInNotice): readonly OAuthSignInNotice[] {
   if (list.some((x) => x.signIn === n.signIn)) return list
   return [...list, n].slice(-MAX_SIGN_IN_NOTICES)
+}
+
+/**
+ * `oauth.signInEnded`: a sign-in that brought a code (`finished`, pasted here or in another view) loses
+ * its notice; one that ended otherwise (timed out, the attempt limit, replaced, the provider's refusal)
+ * keeps it marked `ended`, which says so in place of the box. The same array when nothing changes (no
+ * such notice here, or already marked), so React skips the render.
+ */
+export function endSignIn(list: readonly OAuthSignInNotice[], signIn: string, finished: boolean): readonly OAuthSignInNotice[] {
+  const at = list.findIndex((n) => n.signIn === signIn)
+  if (at < 0) return list
+  if (finished) return list.filter((n) => n.signIn !== signIn)
+  if (list[at]!.ended === true) return list
+  return list.map((n, i) => (i === at ? { ...n, ended: true } : n))
 }
 
 /**

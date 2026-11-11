@@ -85,6 +85,11 @@ describe('REMOTE_CLASS drift', () => {
   })
 
   // The Move to Trash confirm (files/trash-asks.ts): a trash started from a browser is answered there.
+  // A sign-in's end (§9.9): main sends it to a window's browsers in server mode only, like app.linkNotice.
+  it.each(['app.linkNotice', 'oauth.signInEnded'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
+
   it.each(['trash.ask', 'trash.settled', 'trash.answer'])('%s is yes', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
   })
