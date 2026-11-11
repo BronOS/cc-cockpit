@@ -82,8 +82,14 @@ export async function openBrowser(url: string): Promise<WebBrowser> {
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue
     if (k.startsWith('CC_COCKPIT_') || k.startsWith('APP_TAB_') || k.startsWith('ELECTRON_')) continue
+    // The XDG base dirs follow HOME below: a developer's own XDG_CONFIG_HOME / XDG_CACHE_HOME would
+    // point Chromium's writes outside the temp profile again. XDG_RUNTIME_DIR stays (the display).
+    if (k === 'XDG_CONFIG_HOME' || k === 'XDG_CACHE_HOME' || k === 'XDG_DATA_HOME' || k === 'XDG_STATE_HOME') continue
     env[k] = v
   }
+  // userData alone is not every write: Chromium also writes under HOME (~/.pki's NSS database,
+  // ~/.cache), so HOME is the temp profile too, as the cockpit fixture's HOME is its temp dir.
+  env.HOME = profile
   const app = await electron.launch({ args: [BROWSER_MAIN, profile, url], env })
   let page: Page
   try {

@@ -629,7 +629,7 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Create: `test/e2e/web-access-terminal.spec.ts`, helpers to launch the app with web access on loopback
 - ➕ Helpers are `test/e2e/web-fixtures.ts` (`enableWebAccess`, `openBrowser`); the plain browser is Electron's own
-  Chromium started from `test/fixtures/web-browser/main.cjs` (no preload, sandboxed, its own temp profile), not
+  Chromium started from `test/fixtures/web-browser/main.cjs` (no preload, sandboxed renderer, its own temp profile and HOME), not
   Playwright's Chromium, which is a separate download the suite does not otherwise need
 
 - [x] sign in with the access link in a plain Chromium next to the Electron window
