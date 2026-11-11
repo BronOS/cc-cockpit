@@ -643,10 +643,17 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Create: `test/e2e/web-access-plugins.spec.ts` (launched with `env: { CC_COCKPIT_NO_BUNDLED: '' }` for the Sessions panel)
 
-- [ ] the Sessions panel in the browser and on the desktop; a click in the browser acts there only
-- [ ] an HTML overlay taken over by the browser; a close ask answered in the browser settles on the desktop
-- [ ] security end to end: wrong Origin, no cookie, revoked device closes the socket
-- [ ] run `npm run test:e2e` - must pass before next task
+- [x] the Sessions panel in the browser and on the desktop; a click in the browser acts there only
+- [x] an HTML overlay taken over by the browser; a close ask answered in the browser settles on the desktop
+- [x] security end to end: wrong Origin, no cookie, revoked device closes the socket
+- [x] run `npm run test:e2e` - must pass before next task
+- ➕ The e2e found that a tab one view created, closed, restarted or flagged was never told to the window's other
+  views (the desktop kept a tab the browser had closed). Fixed: `TabHandlerDeps.others` in `src/main/ipc/router.ts`
+  sends `tabs.added` (create, restart, flag, toggleFlag; merged by id and generation) or `tabs.removed` (close) to
+  every other view through the new `ViewRegistry.toOthers`; tests `test/unit/tab-list-mirror.test.ts`,
+  `view-registry.test.ts`, `ipc-router.test.ts`, and a browser-opens/closes-a-tab step in the e2e.
+  ⚠️ `tabs.reorder` is still not mirrored (no event carries the order; the other views keep their order until they
+  reload): a `tabs.moved` event is a follow-up for Task 31.
 
 ### Task 31: Verify acceptance criteria (final regression pass) [model: sonnet]
 

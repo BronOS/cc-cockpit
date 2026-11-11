@@ -135,6 +135,16 @@ export class ViewRegistry<P = unknown> {
     return sent
   }
 
+  /**
+   * Every view of one window but `except`: what one view did to the window's shared state (a tab
+   * it opened or closed) told to the others, while the acting view has it from its own reply.
+   */
+  toOthers(windowId: number, except: ViewId, channel: EventChannel, payload: unknown): void {
+    for (const [id, entry] of this.views) {
+      if (entry.windowId === windowId && id !== except) this.deliver(id, entry, channel, payload)
+    }
+  }
+
   /** One view only (per-view state: a selection, an answer). False when it is unknown or closed. */
   toView(viewId: ViewId, channel: EventChannel, payload: unknown): boolean {
     const entry = this.views.get(viewId)

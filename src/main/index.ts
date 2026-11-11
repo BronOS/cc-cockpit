@@ -2117,6 +2117,9 @@ function start(): void {
     list: (projectId) => tabs.list(projectId),
     viewAck: (viewId, tabId, count) => webConnections.ack(viewId, tabId, count),
     viewSelect: (viewId, tabId) => webConnections.select(viewId, tabId),
+    // A tab one view opened, restarted, flagged or closed, told to the window's other views (the
+    // desktop and the browsers show one tab strip, design-web.md §5.1).
+    others: (windowId, viewId, event) => views.toOthers(windowId, viewId, event.channel, event.payload),
     // A view's tab pane selection, for SessionInfo.active (the view that acted last,
     // tabs/view-selections.ts). Only a tab of the sender's project counts: anything else (a tab
     // closed while the message travelled, a foreign id) leaves it as it was.

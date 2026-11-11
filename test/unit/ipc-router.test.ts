@@ -717,6 +717,8 @@ describe('registerTabHandlers', () => {
     expect(calls).toEqual([
       ['attach', PROJECT_A, 1],
       ['create', PROJECT_B, { kind: 'claude', cwd: 'sub' }, 2],
+      // The closing tab's generation, for the window's other views (TabHandlerDeps.others).
+      ['list', PROJECT_A],
       ['close', PROJECT_A, 't1'],
       ['reorder', PROJECT_A, 't1', 2],
       ['rename', PROJECT_A, 't1', 'Mine'],
@@ -735,9 +737,13 @@ describe('registerTabHandlers', () => {
     await ipc.invoke('tabs.flag', 11, [{ tabId: 't1', flag: null }])
     await expect(ipc.invoke('tabs.toggleFlag', 11, [{ tabId: 't1', projectId: PROJECT_B }])).resolves.toBeNull()
     expect(calls).toEqual([
+      // Each followed by the tab as stored, announced to the window's other views.
       ['flag', PROJECT_B, 't1', { color: 'red', note: 'n' }],
+      ['list', PROJECT_B],
       ['flag', PROJECT_A, 't1', null],
-      ['toggleFlag', PROJECT_A, 't1']
+      ['list', PROJECT_A],
+      ['toggleFlag', PROJECT_A, 't1'],
+      ['list', PROJECT_A]
     ])
   })
 

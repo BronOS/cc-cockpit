@@ -67,6 +67,31 @@ describe('ViewRegistry', () => {
     expect(twoRemote.events.map((e) => e.payload)).toEqual(['b'])
   })
 
+  it("toOthers reaches the window's views but the acting one, never another window's or a closed view", () => {
+    const views = registry()
+    const desktop = new FakeSink()
+    const acting = new FakeSink()
+    const other = new FakeSink()
+    const closed = new FakeSink()
+    const elsewhere = new FakeSink()
+    views.addDesktop(1, desktop)
+    views.addRemote(1, remoteViewId(1), acting)
+    views.addRemote(1, remoteViewId(2), other)
+    views.addRemote(1, remoteViewId(3), closed)
+    views.addDesktop(2, elsewhere)
+    closed.closed = true
+    views.toOthers(1, 'web:1', 'tabs.removed', { tabId: 't1', gen: 1 })
+    expect(desktop.events).toEqual([{ channel: 'tabs.removed', payload: { tabId: 't1', gen: 1 } }])
+    expect(other.events).toHaveLength(1)
+    expect(acting.events).toEqual([])
+    expect(closed.events).toEqual([])
+    expect(elsewhere.events).toEqual([])
+    // From the desktop: every browser of the window, not the desktop.
+    views.toOthers(1, 'desktop:1', 'tabs.added', { id: 't2' })
+    expect(desktop.events).toHaveLength(1)
+    expect(acting.events.map((e) => e.channel)).toEqual(['tabs.added'])
+  })
+
   it('toAll reaches every view of every window (the picker too)', () => {
     const views = registry()
     const sinks = [new FakeSink(), new FakeSink(), new FakeSink()]

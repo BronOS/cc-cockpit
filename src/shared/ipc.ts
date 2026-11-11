@@ -1333,6 +1333,7 @@ export interface IpcEventMap {
   /**
    * main closed the tab on its own: its process `gen` exited cleanly and the `tabExit` setting
    * closes such tabs. Sent instead of `tabs.exit`; the tab is gone in main, as after `tabs.close`.
+   * Also how the window's other views hear of a `tabs.close` one view made (router.ts).
    */
   'tabs.removed': { tabId: string; gen: number }
   /** The update notice's state changed (a check found a release, a dismissal, the setting). Every window. */
@@ -1401,6 +1402,8 @@ export interface IpcEventMap {
    * bar. Not selected: it starts in `starting`, where a key the user meant for the tab they are
    * typing in could answer Claude's trust dialog. Only `ctx.sessions.open({ focus: true })`, a
    * plugin acting on the person's own click, follows it with a `tabs.select`.
+   * Also how the window's other views hear of a tab one view created, restarted or flagged
+   * (router.ts): the page merges it by id and generation, so a known tab is updated in place.
    */
   'tabs.added': TabInfo
   /**

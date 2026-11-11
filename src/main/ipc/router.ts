@@ -967,7 +967,17 @@ export interface TabHandlerDeps {
    */
   viewAck(viewId: ViewId, tabId: string, count: number): void
   viewSelect(viewId: ViewId, tabId: string): void
+  /**
+   * Tell the window's views other than `viewId` (ViewRegistry.toOthers): a tab one view created,
+   * restarted, flagged (`tabs.added`, merged by id and generation) or closed (`tabs.removed`). The
+   * acting view has it from its reply; without this the desktop and a browser keep different tab
+   * strips. Absent (unit tests of other handlers): nobody else is told.
+   */
+  others?(windowId: number, viewId: ViewId, event: TabListEvent): void
 }
+
+/** What `TabHandlerDeps.others` carries: the two tab-list events every page already understands. */
+export type TabListEvent = { channel: 'tabs.added'; payload: TabInfo } | { channel: 'tabs.removed'; payload: { tabId: string; gen: number } }
 
 /**
  * Tab handlers. Every one acts on `ctx.projectId`, the project main resolved from the sender;
@@ -975,6 +985,11 @@ export interface TabHandlerDeps {
  * so each field is type-checked here rather than trusted to match the declared type.
  */
 export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): void {
+  // The tab as main has it now, told to the window's other views (a change one view made).
+  const announce = (ctx: ProjectContext, view: { viewId: ViewId }, tabId: string): void => {
+    const tab = tabs.list(ctx.projectId).find((t) => t.id === tabId)
+    if (tab) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.added', payload: tab })
+  }
   // Attaching resets flow control (TabManager.attach), so call this once per page load only,
   // never to refresh the list after create/exit/reorder: with xterm saturated that would wipe
   // the unacked count and resume a paused PTY. Task 8 should take refreshes from tab events.
@@ -987,7 +1002,12 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
 
   router.handleProject('tabs.commands', (ctx) => tabs.commands(ctx.projectId))
 
-  router.handleProject('tabs.create', (ctx, payload) => {
+  router.handleProject('tabs.create', async (ctx, payload, view) => {
+    const tab = await createTab(ctx, payload)
+    if (tab) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.added', payload: tab })
+    return tab
+  })
+  const createTab = (ctx: ProjectContext, payload: unknown): TabInfo | null | Promise<TabInfo | null> => {
     const p = fields('tabs.create', payload)
     const kind = p.kind
     if (kind === 'command') {
@@ -1006,10 +1026,14 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     }
     // No prompt from the renderer: programmatic prompts come through sessions.open (Task 20).
     return tabs.create(ctx.projectId, cwd === undefined ? { kind } : { kind, cwd }, ctx.windowId)
-  })
+  }
 
-  router.handleProject('tabs.close', (ctx, payload) => {
-    tabs.close(ctx.projectId, tabIdOf('tabs.close', payload))
+  router.handleProject('tabs.close', (ctx, payload, view) => {
+    const tabId = tabIdOf('tabs.close', payload)
+    // Its generation before it goes: the other views drop only the process they hold or an older one.
+    const gen = tabs.list(ctx.projectId).find((t) => t.id === tabId)?.gen
+    tabs.close(ctx.projectId, tabId)
+    if (gen !== undefined) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.removed', payload: { tabId, gen } })
   })
 
   router.handleProject('tabs.reorder', (ctx, payload) => {
@@ -1029,17 +1053,27 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   // The person's flag: only from the shell page's top frame of the tab's own project window
   // (handleProject), the one way a flag is ever written. The patch is checked field by field in
   // main (shared/tab-flag.ts checkFlagPatch, through TabManager.setFlag).
-  router.handleProject('tabs.flag', (ctx, payload) => {
+  router.handleProject('tabs.flag', (ctx, payload, view) => {
     const p = fields('tabs.flag', payload)
     if (!('flag' in p)) throw new Error('tabs.flag: flag must be an object or null')
-    return tabs.flag(ctx.projectId, tabIdOf('tabs.flag', payload), p.flag)
+    const tabId = tabIdOf('tabs.flag', payload)
+    const flag = tabs.flag(ctx.projectId, tabId, p.flag)
+    announce(ctx, view, tabId)
+    return flag
   })
 
-  router.handleProject('tabs.toggleFlag', (ctx, payload) => tabs.toggleFlag(ctx.projectId, tabIdOf('tabs.toggleFlag', payload)))
+  router.handleProject('tabs.toggleFlag', (ctx, payload, view) => {
+    const tabId = tabIdOf('tabs.toggleFlag', payload)
+    const flag = tabs.toggleFlag(ctx.projectId, tabId)
+    announce(ctx, view, tabId)
+    return flag
+  })
 
-  router.handleProject('tabs.restart', (ctx, payload) =>
-    tabs.restart(ctx.projectId, tabIdOf('tabs.restart', payload), ctx.windowId)
-  )
+  router.handleProject('tabs.restart', async (ctx, payload, view) => {
+    const tab = await tabs.restart(ctx.projectId, tabIdOf('tabs.restart', payload), ctx.windowId)
+    tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.added', payload: tab })
+    return tab
+  })
 
   router.handleProject('tabs.input', (ctx, payload, view) => {
     const data = fields('tabs.input', payload).data
