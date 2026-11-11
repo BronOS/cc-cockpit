@@ -343,7 +343,8 @@ describe('toggling while a tab floods', () => {
     expect(text(a.page.t)).toBe(await truthText(a.id))
     expect(logs.some((l) => l.includes('stale'))).toBe(false)
     expect(workers[0]!.terminated).toBe(true)
-  })
+    // Floods ~1 MiB through a real xterm: past the 5 s default under coverage instrumentation.
+  }, 30_000)
 
   it('off while the desktop is behind: the tab stays held until the desktop is resynced, then goes back to it', async () => {
     const { m, open, truthText } = setup()

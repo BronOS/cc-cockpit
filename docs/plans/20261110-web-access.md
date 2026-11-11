@@ -657,10 +657,10 @@ remote client, a phone layout, headless server mode (design §9, §10).
 
 ### Task 31: Verify acceptance criteria (final regression pass) [model: sonnet]
 
-- [ ] verify every Overview item is implemented (live mirror, four modes, confirms, TLS, plugins unchanged)
-- [ ] with web access off, nothing listens and the desktop behaves as before (terminal ack path, panels, overlays)
-- [ ] run the full suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`, `npm run test:e2e`
-- [ ] run `npm run test:coverage` and check the new `src/main/web`, `views` and `terminals` code is covered
+- [x] verify every Overview item is implemented (live mirror, four modes, confirms, TLS, plugins unchanged)
+- [x] with web access off, nothing listens and the desktop behaves as before (terminal ack path, panels, overlays)
+- [x] run the full suite: `npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`, `npm run test:e2e`
+- [x] run `npm run test:coverage` and check the new `src/main/web`, `views` and `terminals` code is covered
 
 ### Task 32: [Final] Documentation [model: sonnet]
 
