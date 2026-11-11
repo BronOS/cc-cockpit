@@ -58,12 +58,13 @@ on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/20261111-s
   `main/webview/electron-webview.ts` (fake in `test/unit/webview-manager.test.ts`); `Notification` only in
   `main/notifications/electron-notification.ts` (logic and test backend in `notifier.ts`); `shell`'s file calls
   (`showItemInFolder`, `openPath`, `trashItem`, behind `ctx.files.reveal` / `openWithSystem` / `trash`) only in
-  `main/dialogs/electron-dialog.ts` (`dialog`: under Ozone headless a message box aborts main with SIGTRAP, so
-  server mode gets `serverDialogs`, where a box rejects, an open dialog is canceled and an error box is a log line;
-  logic in `dialogs.ts`) and `main/external/electron-open-external.ts` (`shell.openExternal`, behind
-  `createOpenExternal`: in server mode a link goes to browser views as a notice, never to the server's own browser), each
-  with a grep test (`no-direct-dialog.test.ts`, `no-direct-open-external.test.ts`), `shell`'s file calls (logic in `main/files/system-files.ts`, a recorder `SystemShell` in tests; the e2e replaces the
-  three `shell` members, as it does `shell.openExternal`); `safeStorage` is imported only by
+  `main/files/electron-shell.ts` (logic in `main/files/system-files.ts`, a recorder `SystemShell` in tests; the e2e replaces the
+  three `shell` members, as it does `shell.openExternal`); `dialog` only in `main/dialogs/electron-dialog.ts` (under Ozone
+  headless a message box aborts main with SIGTRAP, so server mode gets `serverDialogs`, where a box rejects, an open dialog is
+  canceled and an error box is a log line; logic in `dialogs.ts`) and `shell.openExternal` only in
+  `main/external/electron-open-external.ts` (behind `createOpenExternal`: in server mode a link goes to browser views as a
+  notice, never to the server's own browser), each with a grep test (`no-direct-dialog.test.ts`,
+  `no-direct-open-external.test.ts`); `safeStorage` is imported only by
   `main/index.ts` and reached through `main/secrets/secret-store.ts`. Do not import them elsewhere
   (rule stated in `main/index.ts`).
 - `CC_COCKPIT_DATA_DIR` overrides the data dir (default: Electron `userData`); tests always set it.
@@ -155,7 +156,9 @@ on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/20261111-s
   50 kept for `ccc web status`, plain text with no link and no plugin text, never logged with a mail subject.
 - Web e2e specs drive Electron's own Chromium as the "plain browser" (`test/fixtures/web-browser/main.cjs`, helpers in
   `test/e2e/web-fixtures.ts`: `enableWebAccess` on a random loopback port, retried on `failed`, and `openBrowser`); a spec that
-  needs plugin panels launches with `env: { CC_COCKPIT_NO_BUNDLED: '' }`.
+  needs plugin panels launches with `env: { CC_COCKPIT_NO_BUNDLED: '' }`. Server-mode specs use `launchServer`
+  (`test/e2e/server-fixtures.ts`: the headless switches passed directly, no display, no session bus, `ccc` run from the data
+  dir's wrapper); they never go through the re-exec, which only `scripts/server-mode-smoke.mjs` covers.
 - With web access on, a headless terminal mirror worker (`main/terminals/mirror-worker.ts`; `view-terminals.ts` for browser views) owns pty flow control and answers the
   program's terminal queries; views get numbered chunks and snapshots and resync from them, the desktop included. Do not add a
   second consumer of pty data or a reply path that bypasses the worker. Terminal size has one owner (last typer or "Fit to this

@@ -362,7 +362,9 @@ exit status kept), so a manual run stays in the terminal, Ctrl-C quits, and a un
 runtime cannot re-execute in place it starts a child and watches its parent instead, chosen at start with no change for
 you. It starts the web gateway and the CLI socket before any project opens; if either fails (the port is taken) it
 prints the reason and exits 1. Web access is turned on and said once ("turned web access on"); turning it off, and
-Desktop confirm, are refused (nobody could answer it). A stored risky setting with no confirm (a network bind with no
+Desktop confirm, are refused (nobody could answer it). The change is written to `app.json`, so a later desktop start on
+the same data dir (a desktop session started with no display variables, by a unit or over ssh, counts as a server run)
+finds web access on, listening on its stored address; turn it off in Settings › Web access there. A stored risky setting with no confirm (a network bind with no
 sign-in or plain http) is refused, never made safer: nothing listens, start prints the exact `ccc web set ... --confirm`
 line, and the app keeps running so you can run it.
 
@@ -546,7 +548,7 @@ ccc session note <text>                  add a note to this tab's Claude session
 ccc session steps <done>/<total>         set progress, e.g. 3/5 (inside a Claude tab)
 ccc overlay [--project <path>] --terminal -- <argv...> | --url <http(s) url> | --html <file>
 ccc sessions [--json]                    the Claude tabs of every window
-ccc notify <text>                        show a system notification
+ccc notify <text>                        show a system notification (server mode: an in-page notice in the browsers)
 ccc guide [topic]                        bundled docs for Claude and plugin authors (works offline)
 ccc guide types                          the plugin SDK types
 ccc plugin new|link|unlink|list|logs     the plugin dev loop (see `ccc guide dev-loop`)
@@ -555,13 +557,20 @@ ccc plugin config <id> [key=value...]    show or set a plugin's settings (never 
 ccc plugin config <id> --use-global <key>...   drop this project's override: the field uses the global value
 ccc panel show <plugin>/<panel>          reveal a plugin's panel in this project's window
 ccc <plugin command> ...                 commands plugins declare (`ccc help` lists them in a tab)
+ccc web status [--json] | revoke <id>|--all | stop     web access from a shell on the server, never from a cockpit tab
+ccc web link|add-device|password|mode|set              server mode only: sign-in and where it listens (see "Server mode")
 ```
 
+`ccc overlay --url` is refused in server mode (exit 1, "not available in server mode"): there is no desktop to draw the
+page on. `ccc notify` in server mode reaches the browsers with the caller's project open, or every browser when it names
+no project; one naming a project with no open window is dropped.
+
 `ccc overlay` prints the result as JSON. Exit codes: 2 for a usage error (message on stderr), 1 when
-the request is refused, 124 when a plugin command exceeds its 30 s limit (its output is capped at 256 KiB), the app closes the connection or never answers, or the command's stdin is not closed within 40 s (pipe the input or redirect `</dev/null`), 0 otherwise. A plugin that is reloading or still starting is waited for inside the 30 s, so a command right after an edit runs in the new copy (a call already running in the old copy ends with 1). Inside any cockpit tab (Claude, shell or
+the request is refused (and for `ccc web` when the app is not running), 124 when a plugin command exceeds its 30 s limit (its output is capped at 256 KiB), the app closes the connection or never answers, or the command's stdin is not closed within 40 s (pipe the input or redirect `</dev/null`), 0 otherwise. A plugin that is reloading or still starting is waited for inside the 30 s, so a command right after an edit runs in the new copy (a call already running in the old copy ends with 1). Inside any cockpit tab (Claude, shell or
 command) or terminal overlay the window is known from the environment; outside the app, pass
 `--project`. Only a Claude tab is a Claude session: `session note`/`steps` are refused elsewhere. When the app is not running `ccc`
-exits 0 silently, so it can never fail a Claude hook. On Linux the wrapper of an AppImage build
+exits 0 silently, so it can never fail a Claude hook; the exceptions are `guide` and `help`, which work offline, and
+`ccc web`, which prints "cc-cockpit is not running" and exits 1. On Linux the wrapper of an AppImage build
 works only while the app is running: the AppImage unpacks to a per-launch `/tmp/.mount_*` path,
 so the wrapper's target is gone once the app quits (it then exits 0 silently, as above).
 
@@ -675,8 +684,9 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   otherwise shows as a notice to click (a browser blocks a tab nobody clicked for); the host's own browser is not opened. Showing a file in the file
   manager or opening it with its default app is refused with a message (the Files menu leaves those two items out in a
   browser; a plugin page reads `ccPanel.view.remote`, a UI hint only), and a plugin's OAuth sign-in says to sign in
-  on the desktop. Moving a file to the Trash (confirmed in the window), notifications (they stay on the host) are the
-  same as on the desktop. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,
+  on the desktop. Notifications stay on the host, as on the desktop. While a browser is attached, Move to Trash
+  confirms in an in-page dialog on every place (first answer wins) and a browser may answer Move too: the Trash is
+  recoverable, and the person in the browser is often the one who asked; with none attached it is the native dialog. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,
   the confirm of `ccc plugin link` is an in-page dialog on every place (first answer wins); a browser can only Deny it
   (it says "Approve on the desktop"), Allow is the desktop's; with none attached it is the native dialog.
 - A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),

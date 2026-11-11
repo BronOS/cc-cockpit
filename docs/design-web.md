@@ -1,8 +1,8 @@
 # Web access (remote cockpit) — design draft
 
 Status: v1 implemented (2026-11-10, branch `feat/web-access`; plan `docs/plans/20261110-web-access.md`, phases 1 to 5 of §7).
-Revised after two architecture reviews. Server mode (§9, Linux, no display) is designed and ships with web access,
-not built yet; section 10 and the phone layout stay later. The code's own comments
+Revised after two architecture reviews. Server mode (§9, Linux, no display) is implemented and ships with web access
+(2026-11-11, plan `docs/plans/20261111-server-mode.md`); section 10 and the phone layout stay later. The code's own comments
 carry the finer points (`src/main/web/`, `src/main/views/`, `src/renderer/web/`); this document keeps the reasons.
 
 **What v1 implements:** the gateway (http + one WebSocket per view), the Host and Origin checks, the four sign-in modes
@@ -563,6 +563,8 @@ hang, so it needs the same work.
   "cc-cockpit runs in server mode on this machine (web access at <address>)", with Stop (`ccc web stop`) or Cancel.
   Without it, typing `cc-cockpit` on one's own desktop while a server run holds the data dir would seem to do nothing.
   `docs/features.md` says so.
+  Built: the second launch asks only when `app.json` has web access on (every server run writes it on, §9.2); with it
+  off the holder is a desktop and the launch quits at once, with no private profile and no wait, as before.
 - **Start order.** In server mode main awaits the gateway and the CLI socket before any window opens or tab restores
   (today `void webAccess.apply()` is not awaited and a socket that cannot start only logs, `index.ts:2569-2572`). Either
   failing (the port is taken) logs the reason and exits 1, so systemd shows the failure and retries without Claude
@@ -760,9 +762,15 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   read can be opened: no more than the shell a device already has. `ccc open <path>` and `cc-cockpit <path>` from a
   server shell open one too. A project whose folder is gone shows as missing; relink and forget from the browser wait
   for a later version (open the folder by its new path instead).
+  Built: the GET's recent list leaves out projects that have a window open (they are under the open ones), so a recent
+  row always means reopen; an open or reopen main refuses answers 400 with main's text (not a folder, not an absolute
+  path, not a recent project, folder missing), a throw inside main's open 500 with no text.
 - **Closing.** Close project in the browser shell: an in-page confirm in that view ("Close <name> for every device? Its
   tabs end."), then `projects.close` (`adapted`: a remote view only in server mode). Main closes the window as "Close
   for everyone" does; its views go back to the picker.
+  Built: an icon button in the browser's top bar before the gear (`renderer/web/CloseProject.tsx`), drawn only in a
+  server's view; the confirm is an `ApprovalDialog` (§9.6), and a view whose socket closes with the window-closed code
+  goes to the picker with `location.replace('/')`.
 - **No desktop picker, no quit.** In server mode `WindowManager` never makes the picker window (it would be invisible,
   and on Linux its close quits the app); with no project open the app keeps running with the gateway up until SIGTERM.
 - **The hidden page is a state of its own**, not Keep running's (§5.6), whose mark is undone by `remoteViewGone`,
@@ -770,7 +778,8 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   tab it is the only view of (`views/view-sizes.ts:183-185`):
   - it is never a measured view in `ViewSizes` (tabs and terminal overlays), so it never sizes a pty nor answers their
     queries; browsers own the size (§5.2). A pty keeps the size the last browser gave it; a tab no browser has sized
-    (new, or restarted overnight with none attached) gets 120x40;
+    (new, or restarted overnight with none attached) gets 120x40. Built: only tabs get 120x40; a terminal overlay no
+    browser has sized keeps its 80x24 spawn size;
   - `WindowManager` never calls `focus`, `show`, `hide` or `showPicker` in server mode;
   - a crash (`render-process-gone`) or a failed load reloads the page with a log line and never closes the window
     (today a failed load closes it, `electron-window-factory.ts` `finish`, which would end the project's tabs);
@@ -782,6 +791,10 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   which in server mode would show "Open on Desktop — Take over" in every browser. In server mode the holder is the
   window's last-acting browser view, else the first browser to list the overlay, never the hidden page; a holder that
   leaves passes it to another browser, and with none attached it waits for the first.
+  Built: "last-acting" is `ViewSelections`' order (selected or typed into a tab, §5.1) over the window's live browser
+  views; with none acted, the first attached live browser holds it (browsers already attached do not list again), and
+  only with no browser attached does it wait for the first `overlays.list`. `overlays.take` from the desktop view (the
+  hidden page) is refused in server mode.
 
 ### 9.9 Other desktop-only pieces
 
@@ -794,6 +807,8 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   tab is missed. New channels get their `REMOTE_CLASS`; `api.md` says what `ctx.notify` does in server mode, and
   `docs/features.md` that it does not reach a phone in a pocket. Plugin notification text is never logged (it carries
   mail subjects).
+  Built: `ccc notify` naming no project reaches every window's browsers; one naming a project with no open window, or a
+  folder with no project record, is dropped (never app-wide).
 - **Core notices** (a new device, the marketplace revocation notice, `index.ts:381`, the update notice) carry no plugin
   text: a stdout line each, listed in `ccc web status`, and the new device beside its `web-access.log` entry.
   Built as `notifications/core-notices.ts`: the desktop keeps its OS notification, server mode prints
