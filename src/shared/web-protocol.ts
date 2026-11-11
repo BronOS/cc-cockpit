@@ -261,6 +261,12 @@ export interface WebSnapshot {
    */
   trashAsks?: Array<IpcEventMap['trash.ask']>
   /**
+   * In-page notices still up (server mode, notifier.ts PageNoticeBackend.pendingFor: the window's and
+   * the app-wide ones, oldest first), replayed to the shell's `notices.show` listener like `closeAsks`;
+   * `notices.gone` takes them down. Absent (an older fixture, the desktop) reads as none.
+   */
+  notices?: Array<IpcEventMap['notices.show']>
+  /**
    * The app runs as a server (design-web.md §9, main's `server` flag): every signed-in view is the
    * owner and may Allow an approval (§9.6). A UI hint only, so the dialog offers Allow instead of
    * "Approve on the desktop": main decides who may answer from its own flag, never from this. Absent

@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { addLinkAsk, canAllowLink, dropLinkAsk, linkNoticeAction, linkNoticeUrl, type LinkAsk } from '../../src/renderer/notices/notice-state'
+import {
+  addLinkAsk,
+  canAllowLink,
+  dropLinkAsk,
+  dropUnseen,
+  linkNoticeAction,
+  linkNoticeUrl,
+  noteUnseen,
+  titleWithMark,
+  type LinkAsk
+} from '../../src/renderer/notices/notice-state'
 
 const ask = (n: number): LinkAsk => ({ requestId: `link-${n}`, id: 'x.p', name: 'P', path: '/p', caller: 'tab' })
 
@@ -52,5 +62,27 @@ describe('canAllowLink', () => {
     // A server's browser view is the owner (design-web.md §9.6); the hint never matters on the desktop.
     expect(canAllowLink(true, true)).toBe(true)
     expect(canAllowLink(false, false)).toBe(true)
+  })
+})
+
+// design-web.md §9.9: a notice that came while the browser tab was in the background is counted in
+// the tab's title until the tab is shown.
+describe('the title mark of unseen in-page notices', () => {
+  it('counts unseen notices in front of the page title, and leaves it alone with none', () => {
+    expect(titleWithMark('cc-cockpit', 0)).toBe('cc-cockpit')
+    expect(titleWithMark('cc-cockpit', 2)).toBe('(2) cc-cockpit')
+  })
+
+  it('a notice counts only when it came while the page was hidden, once, until it ends', () => {
+    const none: ReadonlySet<string> = new Set()
+    expect(noteUnseen(none, 'n1', false)).toBe(none)
+    const one = noteUnseen(none, 'n1', true)
+    expect([...one]).toEqual(['n1'])
+    // The bridge's replay and a live event may both carry it: the same set.
+    expect(noteUnseen(one, 'n1', true)).toBe(one)
+    const two = noteUnseen(one, 'n2', true)
+    expect(two.size).toBe(2)
+    expect([...dropUnseen(two, 'n1')]).toEqual(['n2'])
+    expect(dropUnseen(two, 'nope')).toBe(two)
   })
 })

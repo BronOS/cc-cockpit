@@ -139,6 +139,8 @@ export interface SnapshotSources {
   linkAsks: { pendingFor(windowId: number): WebSnapshot['linkAsks'] }
   /** A plain read of the window's pending Move to Trash confirms (TrashAsks.pendingFor). Absent: none. */
   trashAsks?: { pendingFor(windowId: number): NonNullable<WebSnapshot['trashAsks']> }
+  /** A plain read of the in-page notices for the window (PageNoticeBackend.pendingFor, server mode). Absent: none. */
+  notices?: { pendingFor(windowId: number): NonNullable<WebSnapshot['notices']> }
   /** Main's server-mode flag, passed on as `WebSnapshot.server` (a UI hint). Absent: false. */
   server?: boolean
 }
@@ -154,6 +156,7 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
     closeAsks: sources.closeAsks.pendingFor(windowId),
     linkAsks: sources.linkAsks.pendingFor(windowId),
     trashAsks: sources.trashAsks?.pendingFor(windowId) ?? [],
+    notices: sources.notices?.pendingFor(windowId) ?? [],
     server: sources.server === true
   }
 }
@@ -284,9 +287,12 @@ export class WebConnections {
  * What of an event (already `eventAllowed`) a remote view gets: the payload to send, or undefined to
  * send nothing. `webAccess.changed` is `adapted` (design-web.md §9.4): a server's browsers follow the
  * card live, but on the desktop web access is the desktop's alone, so a browser gets none of it; and
- * never a desktop-confirm request (`remoteIndicator`).
+ * never a desktop-confirm request (`remoteIndicator`). The chime and the in-page notices are `adapted`
+ * the same way (§9.9): a server's browsers get them, but on the desktop notifications and their sound
+ * stay on the host (§6.1), whatever sent the event.
  */
 export function remoteEvent(channel: EventChannel, payload: unknown, server: boolean): { payload: unknown } | undefined {
+  if (channel === 'notify.chime' || channel === 'notices.show' || channel === 'notices.gone') return server ? { payload } : undefined
   if (channel === 'webAccess.changed') {
     if (!server) return undefined
     return { payload: remoteIndicator(payload as WebAccessIndicator) }

@@ -15,6 +15,7 @@ import { MAX_NOTIFICATIONS_PER_WINDOW, NOTIFY_WINDOW_MS } from '../../src/main/p
 import {
   MAX_NOTIFY_ACTION_LABEL,
   MAX_NOTIFY_TEXT,
+  MAX_PAGE_NOTICES,
   MAX_NOTIFY_TITLE,
   NOTIFY_ACTION_WAIT_MS,
   NOTIFY_CHIME_INTERVAL_MS
@@ -249,6 +250,9 @@ describe('guide drift guards', () => {
       expect(text).toContain(`after ${NOTIFY_ACTION_WAIT_MS / 60_000} minutes`)
       expect(text).toContain(`one chime per ${NOTIFY_CHIME_INTERVAL_MS / 1000} s per window`)
     }
+    // Server mode's in-page notices (design-web.md §9.9): the queue cap, the one number of their own.
+    expect(api).toContain(`at most ${MAX_PAGE_NOTICES} notices per window`)
+    expect(design).toContain(`at most ${MAX_PAGE_NOTICES} per window`)
     expect(api).toContain(`at most ${MAX_NOTIFICATIONS_PER_WINDOW} a minute`)
     expect(design).toContain(`at most ${MAX_NOTIFICATIONS_PER_WINDOW} per minute`)
   })

@@ -859,25 +859,25 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/notifier.test.ts`, `notice-state.test.ts`, `notify-sound.test.ts`, `ipc-remote-class.test.ts`,
   `ipc-router.test.ts`, `cli-guide.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] in server mode `ctx.notify` and `ccc notify` go to an in-page notice through a `NoticeBackend`, so
+- [x] in server mode `ctx.notify` and `ccc notify` go to an in-page notice through a `NoticeBackend`, so
       `Notifier.wait` and the click action keep working. `ctx.notify`, and `ccc notify` from a tab or with `--project`,
       reach every browser view of that window; `ccc notify` with no project (it is projectless, `handlers.ts:126`)
       reaches every browser view of every window. Both through Task 4's `ViewRegistry` method. The desktop keeps its OS
       notifications (§6.1)
-- [ ] the text is plain text, cut by the limits `src/shared/notify.ts` already has (`MAX_NOTIFY_TEXT`,
+- [x] the text is plain text, cut by the limits `src/shared/notify.ts` already has (`MAX_NOTIFY_TEXT`,
       `MAX_NOTIFY_TITLE`, `MAX_NOTIFY_ACTION_LABEL`); the one new number, the queue cap per window, goes into that file,
       and `api.md` and `docs/design.md` state it (`cli-guide.test.ts:234` guards the limits)
-- [ ] a click goes through main with the view the router bound, for a notice main is showing in that view's window:
+- [x] a click goes through main with the view the router bound, for a notice main is showing in that view's window:
       refused for an unknown id, for another window's notice, and from a remote view on the desktop
-- [ ] the chime reaches browser views (`notify.chime` becomes `adapted`) and never the hidden page; the browser tab's
+- [x] the chime reaches browser views (`notify.chime` becomes `adapted`) and never the hidden page; the browser tab's
       title shows a mark while a notice is unseen
-- [ ] plugin notification text is never logged (it carries mail subjects)
-- [ ] `api.md` says what `ctx.notify` does in server mode, in the same change (drift tests); if `src/sdk/types.ts`
+- [x] plugin notification text is never logged (it carries mail subjects)
+- [x] `api.md` says what `ctx.notify` does in server mode, in the same change (drift tests); if `src/sdk/types.ts`
       changed, copy it to the example and run `npm run build:example` in the same change
-- [ ] write tests: plain text and the caps, the queue cap, `wait` and the click through the bound view, the three
+- [x] write tests: plain text and the caps, the queue cap, `wait` and the click through the bound view, the three
       refused clicks, where a projectless `ccc notify` goes, the chime to browser views and not the hidden page, no
       plugin text in any log; e2e: `ccc notify` shows in the browser and its click runs the action
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `plugin-ctx`, `cli`) - must pass before next task
+- [x] run tests and `npm run test:e2e` (`server-mode`, `plugin-ctx`, `cli`) - must pass before next task
 
 ### Task 22: Core notices in server mode [model: sonnet]
 

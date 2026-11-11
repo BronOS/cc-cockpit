@@ -24,7 +24,7 @@ const WINDOW: Caller = { kind: 'window', projectId: 'p1' }
 
 let dir: string
 let handlers: Map<string, Handler>
-let calls: { opened: string[]; notified: string[]; overlays: Array<{ windowId: number; spec: unknown; opener: string }> }
+let calls: { opened: string[]; notified: string[]; notifiedFor: Array<string | undefined>; overlays: Array<{ windowId: number; spec: unknown; opener: string }> }
 let registry: SessionRegistry
 let result: OverlayResult
 let windows: Record<string, number>
@@ -32,7 +32,7 @@ let windows: Record<string, number>
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cch-'))
   handlers = new Map()
-  calls = { opened: [], notified: [], overlays: [] }
+  calls = { opened: [], notified: [], notifiedFor: [], overlays: [] }
   result = { kind: 'exit', code: 0 }
   windows = { p1: 7 }
   registry = new SessionRegistry({
@@ -49,7 +49,10 @@ beforeEach(() => {
       if (p.includes('missing')) throw new Error('not a directory')
       calls.opened.push(p)
     },
-    notify: (t) => calls.notified.push(t),
+    notify: (t, projectId) => {
+      calls.notified.push(t)
+      calls.notifiedFor.push(projectId)
+    },
     sessions: registry,
     project: (id) => (id === 'p1' ? { name: 'alpha', path: '/proj' } : id === 'p2' ? { name: 'beta', path: '/other' } : undefined),
     windowIdOf: (id) => windows[id],
@@ -158,6 +161,17 @@ describe('notify', () => {
     await call('notify', { text: 'z'.repeat(MAX_NOTIFY_CHARS + 500) }, TAB)
     expect(calls.notified[0]).toBe('build done')
     expect(calls.notified[1]).toHaveLength(MAX_NOTIFY_CHARS)
+  })
+
+  // design-web.md §9.9: in server mode the in-page notice goes to the caller's project's window, and
+  // to every window when the call names none. The project is main's resolution, never an argument.
+  it("passes on the caller's project: a tab's, a window token's, --project's; none for a projectless call", async () => {
+    await call('notify', { text: 'a', projectId: 'p2' }, TAB)
+    await call('notify', { text: 'b' }, WINDOW)
+    await call('notify', { text: 'c' }, OUTSIDE)
+    await call('notify', { text: 'd', projectId: 'p1' }, ANON)
+    await call('notify', { text: 'e' }, { kind: 'project', path: '/new', projectId: undefined })
+    expect(calls.notifiedFor).toEqual(['p1', 'p1', 'p1', undefined, undefined])
   })
 
   it.each([[undefined], [''], ['   '], [7]])('refuses text %j', async (text) => {

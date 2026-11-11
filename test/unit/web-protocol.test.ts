@@ -100,7 +100,9 @@ describe('frames', () => {
     expect(invokeAllowed('tabs.data')).toBe(false)
     expect(eventAllowed('tabs.list')).toBe(false)
     expect(eventAllowed('tabs.data')).toBe(true)
-    expect(eventAllowed('notify.chime')).toBe(false)
+    expect(eventAllowed('window.state')).toBe(false)
+    // `adapted` since server mode (design-web.md §9.9): allowed here, dropped on the desktop by remoteEvent.
+    expect(eventAllowed('notify.chime')).toBe(true)
     for (const name of ['__proto__', 'toString', 'constructor', 'nope']) {
       expect(invokeAllowed(name)).toBe(false)
       expect(eventAllowed(name)).toBe(false)
@@ -485,6 +487,23 @@ describe('windowSnapshot leaves the desktop as it was', () => {
       closeAsks: { pendingFor: () => [] }, linkAsks: { pendingFor: () => [] }
     }
     expect(() => windowSnapshot(sources, { windowId: 1, projectId: 'p1' })).toThrow('project record is gone')
+  })
+
+  // design-web.md §9.9: a server's in-page notices still up are in `ready`, so a browser that joins
+  // later shows them; the desktop (no source) has none.
+  it('carries the window\'s in-page notices when main has some, none otherwise', () => {
+    const base = {
+      tabs: { list: () => [] },
+      layouts: { view: () => LAYOUT },
+      overlays: { infos: () => [] },
+      closeAsks: { pendingFor: () => [] },
+      linkAsks: { pendingFor: () => [] }
+    }
+    expect(windowSnapshot(base, { windowId: 1, projectId: 'p1' }).notices).toEqual([])
+    const pendingFor = vi.fn(() => [{ requestId: 'n1', title: 'Calendar', text: 'Standup', action: 'Join' }])
+    const snap = windowSnapshot({ ...base, notices: { pendingFor }, server: true }, { windowId: 7, projectId: 'p1' })
+    expect(pendingFor).toHaveBeenCalledWith(7)
+    expect(snap.notices).toEqual([{ requestId: 'n1', title: 'Calendar', text: 'Standup', action: 'Join' }])
   })
 })
 
@@ -1370,6 +1389,24 @@ describe('the web access card (server mode)', () => {
   it('remoteEvent passes every other event as it is', () => {
     expect(remoteEvent('layout.updated', { a: 1 }, false)).toEqual({ payload: { a: 1 } })
     expect(remoteEvent('webAccess.changed', { connected: 0 }, false)).toBeUndefined()
+  })
+
+  // design-web.md §9.9: notifications and their sound stay on the host on the desktop (§6.1), so a
+  // browser gets the chime and the in-page notices only from a server, whoever sent the event.
+  it.each(['notify.chime', 'notices.show', 'notices.gone'] as const)('remoteEvent passes %s to a browser only in server mode', (channel) => {
+    const payload = { requestId: 'n1', sound: 'builtin:chime', title: 't', text: 'x' }
+    expect(remoteEvent(channel, payload, false)).toBeUndefined()
+    expect(remoteEvent(channel, payload, true)).toEqual({ payload })
+  })
+
+  it('a desktop-mode browser gets no chime the desktop window rang; a server browser does', () => {
+    for (const server of [false, true]) {
+      const { connect, views, desktop } = setup({ server })
+      const ws = connect('p1')
+      views.toWindow(1, 'notify.chime', { sound: 'builtin:bell' })
+      expect(ws.frames('event')).toEqual(server ? [{ t: 'event', ch: 'notify.chime', p: { sound: 'builtin:bell' } }] : [])
+      expect(desktop.send).toHaveBeenCalledWith('notify.chime', { sound: 'builtin:bell' })
+    }
   })
 
   it('names the device behind a view while it is bound, and nobody once it is gone', () => {

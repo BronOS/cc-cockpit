@@ -504,6 +504,14 @@ with full Node access.
     reminder does `const { clicked } = await ctx.notify('Standup in 2 min', { title: 'Calendar', sound: true, action: { label: 'Join' } }); if (clicked) await ctx.openExternal(meetUrl)`
     (`openExternal` has its own limit, below). Do not await it inside a command or `ccc` handler
     with a time limit; keep the promise and act when it settles.
+  - In server mode (the app on a server with no display, used only from browsers) there is no OS
+    notification: the notice shows in the page of every browser that has the project open (never
+    on the server), as plain text with the same cuts, `title` and `action` as above; the action is a
+    button, and the first click or ✕ in any browser ends it there and in the others. `sound` rings in
+    those browsers. Main keeps at most 20 notices per window until each is clicked, dismissed or
+    timed out, so a browser that opens the project later still shows them; a newer one past that
+    ends the oldest as dismissed (`{ clicked: false }`). A background browser tab counts unseen
+    notices in its title. A browser that is closed (a phone in a pocket) gets nothing.
 - `ctx.openExternal(url)`: open a web page in the person's default browser, outside the app.
   `url` is http or https, at most 2048 characters, with no `user:pass@` in it; anything else
   rejects, and so does a call past 3 per 10 s per plugin and window. The app opens the normalized

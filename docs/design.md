@@ -992,6 +992,17 @@ logic (a test run swaps in a recording backend the e2e clicks through test hooks
   crash or the window closing closes all of them). Main does not focus the window on a click; the plugin
   decides what a click does (`ctx.openExternal`, with its own limit). Without an action the call resolves
   `{ clicked: false }` once shown, as `ctx.notify(text)` always did.
+- Server mode (design-web.md §9.9): no OS notification. `notifier.ts` `PageNoticeBackend` behind the same
+  `Notifier`, so `wait` and the action work unchanged: main sends `notices.show` to the browser views of
+  the plugin's window (`ViewRegistry.toBrowserViews`, never the hidden page; `ccc notify` naming no
+  project goes to every window's), plain text with the same cuts (the body cut at 500 characters, `ccc
+  notify`'s too). Main keeps at most 20 per window (and 20 app-wide) until each is clicked, dismissed or
+  timed out, replays them to a browser that joins (`ready`'s `notices`), and past the cap ends the oldest
+  as dismissed. The action button or ✕ in any view ends it for all (`notices.click` / `notices.dismiss`,
+  `adapted`: from a browser view of a server only, for a notice of the window main bound the view to,
+  never an id of another window's). The chime (`notify.chime`, `adapted`) goes to the same browser views
+  only; a background tab's title counts unseen notices. The text is never logged (it carries mail
+  subjects).
 
 **Plugin services**: one plugin offers a named API, others in the same project call it and listen to
 its events (`src/host/services.ts`, `src/shared/services.ts`). All plugins of a project run in one

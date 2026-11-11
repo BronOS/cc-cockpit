@@ -897,6 +897,33 @@ export function registerUpdateHandlers(router: IpcRouter, deps: UpdateHandlerDep
   router.handleWindow('updates.openRelease', (ctx, _payload, view) => deps.openRelease({ windowId: ctx.windowId, viewId: view.viewId }))
 }
 
+/** A server's in-page notices (notifier.ts PageNoticeBackend, design-web.md §9.9). */
+export interface NoticeHandlerDeps {
+  /** Main's server flag: in-page notices exist only then; on the desktop notices are the OS's. */
+  server: boolean
+  /** The action of a notice main shows in `windowId` (or app-wide); false for any other id. */
+  click(windowId: number, requestId: string): boolean
+  /** The ✕ of such a notice; false for any other id. */
+  dismiss(windowId: number, requestId: string): boolean
+}
+
+/**
+ * `adapted`: a click or ✕ from a browser view of a server, for a notice of the window main bound the
+ * view to (ctx), never one the payload names, so an id of another window's notice settles nothing.
+ * Refused outright on the desktop (a remote view there sees no notice, and the OS's are clicked on the
+ * host) and from the hidden page, which never shows one: a click there is nobody's.
+ */
+export function registerNoticeHandlers(router: IpcRouter, deps: NoticeHandlerDeps): void {
+  for (const channel of ['notices.click', 'notices.dismiss'] as const) {
+    router.handleProject(channel, (ctx, payload, view) => {
+      if (!deps.server || !view.remote) throw new Error(`${channel}: only a browser view of a server shows in-page notices`)
+      const { requestId } = fields(channel, payload)
+      if (typeof requestId !== 'string') throw new Error(`${channel}: requestId must be a string`)
+      return channel === 'notices.click' ? deps.click(ctx.windowId, requestId) : deps.dismiss(ctx.windowId, requestId)
+    })
+  }
+}
+
 /** The "Install ccc command" row of General (CccCommandInstaller, main/hooks/ccc-install.ts). */
 export interface CccCommandHandlerDeps {
   status(): CccCommandView | Promise<CccCommandView>

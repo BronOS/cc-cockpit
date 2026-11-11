@@ -10,6 +10,7 @@ import {
   registerSettingsPageHandlers,
   registerCccCommandHandlers,
   registerWebAccessHandlers,
+  registerNoticeHandlers,
   registerUpdateHandlers,
   registerProjectSettingsHandlers,
   registerSessionHandlers,
@@ -2157,6 +2158,59 @@ describe('registerOverlayHandlers', () => {
     for (const [channel, args] of bad) {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()
     }
+    expect(calls).toEqual([])
+  })
+})
+
+// design-web.md §9.9: a server's in-page notices are clicked and dismissed from a browser view, for a
+// notice of the window main bound the view to; the payload names only the notice.
+describe('notices.click / notices.dismiss', () => {
+  function notices(server: boolean) {
+    const { ipc, router } = setup()
+    const calls: string[] = []
+    registerNoticeHandlers(router, {
+      server,
+      click: (windowId, requestId) => {
+        calls.push(`click ${windowId} ${requestId}`)
+        return requestId === 'n1'
+      },
+      dismiss: (windowId, requestId) => {
+        calls.push(`dismiss ${windowId} ${requestId}`)
+        return requestId === 'n1'
+      }
+    })
+    return { ipc, router, calls }
+  }
+  const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId)
+
+  it('in server mode a browser view settles a notice of its own window, whatever window the payload names', async () => {
+    const { router, calls } = notices(true)
+    await expect(router.dispatch(webA(), 'notices.click', { requestId: 'n1', windowId: 2 })).resolves.toBe(true)
+    await expect(router.dispatch(webA('web:4'), 'notices.dismiss', { requestId: 'n1', projectId: PROJECT_B })).resolves.toBe(true)
+    // An unknown id (or another window's, which the backend refuses by the bound window) is false.
+    await expect(router.dispatch(webA(), 'notices.click', { requestId: 'other' })).resolves.toBe(false)
+    expect(calls).toEqual(['click 1 n1', 'dismiss 1 n1', 'click 1 other'])
+  })
+
+  it('refuses a remote view on the desktop, and the desktop page (the hidden page) in both modes', async () => {
+    for (const channel of ['notices.click', 'notices.dismiss']) {
+      const desktop = notices(false)
+      await expect(desktop.router.dispatch(webA(), channel, { requestId: 'n1' })).rejects.toThrow(/browser view of a server/)
+      for (const server of [true, false]) {
+        const { ipc, calls } = notices(server)
+        await expect(ipc.invoke(channel, 11, [{ requestId: 'n1' }])).rejects.toThrow(/browser view of a server/)
+        expect(calls).toEqual([])
+      }
+      expect(desktop.calls).toEqual([])
+    }
+  })
+
+  it('refuses a malformed payload and the picker', async () => {
+    const { ipc, router, calls } = notices(true)
+    for (const payload of [undefined, {}, { requestId: 5 }, 'n1']) {
+      await expect(router.dispatch(webA(), 'notices.click', payload)).rejects.toThrow(/notices\.click/)
+    }
+    await expect(ipc.invoke('notices.click', 13, [{ requestId: 'n1' }])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
   })
 })

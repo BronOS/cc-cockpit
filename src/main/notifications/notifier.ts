@@ -13,6 +13,12 @@
 // handler once the JS object is garbage collected, and a reminder clicked after a GC would then
 // never answer.
 //
+// In server mode (design-web.md §9.9) there is no screen on the host and Electron's notifier has no
+// session bus, so PageNoticeBackend below shows each notice in the browsers instead: an in-page
+// notice in every browser view of the notice's window (never the hidden page), kept by main until it
+// is clicked, dismissed, timed out or pushed out by the cap, so `wait` and the click work the same.
+// A notice's text is the plugin's (mail subjects, meeting titles): nothing here logs it.
+//
 // The chime (ChimeGate): an OS notification sound is unreliable (most Linux daemons play none,
 // macOS and Windows follow the person's per-app settings), so `sound: true` rings the person's
 // picked sound (the "Sound" setting: a built-in tone or an OS sound file, system-sounds.ts) in the
@@ -25,7 +31,15 @@
 // rings only when the app itself offers it now (a built-in, or a system file in a fresh listing,
 // system-sounds.ts), else the picked sound rings and main logs it once. So a plugin reaches no file
 // the Settings dropdown would not list, and a reminder never goes silent over a stale id.
-import { NOTIFY_ACTION_WAIT_MS, NOTIFY_CHIME_INTERVAL_MS, type CleanNotifyOptions } from '../../shared/notify'
+import { randomUUID } from 'node:crypto'
+import {
+  MAX_PAGE_NOTICES,
+  NOTIFY_ACTION_WAIT_MS,
+  NOTIFY_CHIME_INTERVAL_MS,
+  pageNoticeTexts,
+  type CleanNotifyOptions,
+  type PageNotice
+} from '../../shared/notify'
 import { parseSoundId } from '../../shared/notify-sound'
 import { warnLog } from '../warn-log'
 
@@ -39,6 +53,12 @@ export interface NoticeSpec {
   actionLabel?: string
   /** Stays on screen until clicked or dismissed (Linux, Windows `timeoutType: 'never'`). */
   persistent?: boolean
+  /**
+   * The project window it is for, main's record (the plugin host's window, the `ccc notify` caller's
+   * project): the in-page backend shows it in that window's browsers. Absent: app-wide. The OS
+   * backends ignore it.
+   */
+  windowId?: number
 }
 
 /** One shown notification, as the backend hands it out. */
@@ -128,15 +148,138 @@ export class Notifier {
   }
 }
 
-/** The OS notification for a plugin's request; `fallbackTitle` is what a title-less one shows. */
-export function pluginNoticeSpec(notice: PluginNotice, fallbackTitle: string): NoticeSpec {
+/**
+ * The notification for a plugin's request; `fallbackTitle` is what a title-less one shows, `windowId`
+ * the plugin host's window (main's record, never the request's).
+ */
+export function pluginNoticeSpec(notice: PluginNotice, fallbackTitle: string, windowId?: number): NoticeSpec {
   return {
+    ...(windowId !== undefined ? { windowId } : {}),
     title: notice.title ?? fallbackTitle,
     body: notice.text,
     // The app's own chime is the sound (ChimeGate); an OS sound on top would ring twice where
     // the platform plays one. Without `sound` nothing changes from before options existed.
     ...(notice.sound !== false ? { silent: true } : {}),
     ...(notice.action ? { actionLabel: notice.action.label, persistent: true } : {})
+  }
+}
+
+/** The ViewRegistry method the in-page backend uses (a recorder in unit tests). */
+export interface PageNoticeViews {
+  /** The browser views of one window or of every window, never a desktop view; how many took it. */
+  toBrowserViews(windowId: number | 'all', channel: 'notices.show' | 'notices.gone', payload: PageNotice | { requestId: string }): number
+}
+
+export interface PageNoticeBackendOptions {
+  views: PageNoticeViews
+  /** A new notice id; random by default (tests pass a counter). */
+  newId?: () => string
+  /** Notices kept per window, and app-wide (MAX_PAGE_NOTICES). */
+  cap?: number
+}
+
+interface PageEntry {
+  /** The window, or 'all' for an app-wide notice. */
+  target: number | 'all'
+  notice: PageNotice
+  click: (() => void)[]
+  close: (() => void)[]
+}
+
+/**
+ * The server-mode backend (file header): a notice is an event to the browser views of its window
+ * (`notices.show`), kept until it ends, replayed to a view that joins later (`pendingFor`, the `ready`
+ * snapshot), and ended for every view at once (`notices.gone`) by the first click or ✕, the Notifier's
+ * close (the wait timed out or the plugin went) or the cap. Clicks and dismissals come from the router
+ * with the window main bound the view to, never one a payload names.
+ */
+export class PageNoticeBackend implements NoticeBackend {
+  /** Shown notices by id; insertion order is oldest first (the cap's order and the replay's). */
+  private readonly shown = new Map<string, PageEntry>()
+  private readonly newId: () => string
+  private readonly cap: number
+
+  constructor(private readonly options: PageNoticeBackendOptions) {
+    this.newId = options.newId ?? randomUUID
+    this.cap = options.cap ?? MAX_PAGE_NOTICES
+  }
+
+  isSupported(): boolean {
+    return true
+  }
+
+  create(spec: NoticeSpec): NativeNotice {
+    const target = spec.windowId ?? 'all'
+    const entry: PageEntry = { target, notice: { requestId: this.newId(), ...pageNoticeTexts(spec) }, click: [], close: [] }
+    return {
+      show: () => this.show(entry),
+      // The Notifier's own end (the wait timed out, the plugin's ctx ended): no listener runs.
+      close: () => this.end(entry.notice.requestId, undefined),
+      onClick: (listener) => entry.click.push(listener),
+      onClose: (listener) => entry.close.push(listener)
+    }
+  }
+
+  /**
+   * The notices a view of `windowId` should show now: the window's and the app-wide ones, oldest
+   * first. A plain read (the `ready` snapshot), copies.
+   */
+  pendingFor(windowId: number): PageNotice[] {
+    const out: PageNotice[] = []
+    for (const e of this.shown.values()) if (e.target === windowId || e.target === 'all') out.push({ ...e.notice })
+    return out
+  }
+
+  /** A view of `windowId` clicked the notice's action. False for an unknown or ended id, or one not shown in that window. */
+  click(windowId: number, requestId: string): boolean {
+    return this.answer(windowId, requestId, 'click')
+  }
+
+  /** A view of `windowId` dismissed the notice (its ✕). False as for `click`. */
+  dismiss(windowId: number, requestId: string): boolean {
+    return this.answer(windowId, requestId, 'close')
+  }
+
+  /**
+   * The window closed: its own notices end as dismissed (a plugin's wait resolves `{ clicked: false }`
+   * now rather than at its timeout). App-wide ones stay for the other windows.
+   */
+  windowClosed(windowId: number): void {
+    for (const [id, e] of [...this.shown]) if (e.target === windowId) this.end(id, 'close')
+  }
+
+  /** Notices kept now (tests: the cap holds, nothing is left behind). */
+  get size(): number {
+    return this.shown.size
+  }
+
+  private show(entry: PageEntry): void {
+    const { requestId } = entry.notice
+    if (this.shown.has(requestId)) return
+    // Past the cap the oldest of the same target goes first, as a dismissal: the newest is the one
+    // the person most likely still cares about, and a plugin waiting on the old one is told.
+    const same = [...this.shown.values()].filter((e) => e.target === entry.target)
+    for (const old of same.slice(0, Math.max(0, same.length - this.cap + 1))) this.end(old.notice.requestId, 'close')
+    this.shown.set(requestId, entry)
+    // No browser attached yet is no failure: the notice waits for the first view's snapshot.
+    this.options.views.toBrowserViews(entry.target, 'notices.show', { ...entry.notice })
+  }
+
+  private answer(windowId: number, requestId: string, how: 'click' | 'close'): boolean {
+    const entry = this.shown.get(requestId)
+    if (!entry || (entry.target !== 'all' && entry.target !== windowId)) return false
+    this.end(requestId, how)
+    return true
+  }
+
+  /** Take a notice down everywhere, then run its `how` listeners (none for the Notifier's own close). */
+  private end(requestId: string, how: 'click' | 'close' | undefined): void {
+    const entry = this.shown.get(requestId)
+    if (!entry) return
+    this.shown.delete(requestId)
+    this.options.views.toBrowserViews(entry.target, 'notices.gone', { requestId })
+    if (how === undefined) return
+    for (const listener of entry[how]) listener()
   }
 }
 
@@ -147,6 +290,25 @@ export interface ChimeGateDeps {
   ring(windowId: number, sound: string): void
   intervalMs?: number
   now?: () => number
+}
+
+/** The ViewRegistry methods the chime goes out through (a recorder in unit tests). */
+export interface ChimeViews {
+  toWindow(windowId: number, channel: 'notify.chime', payload: { sound: string }): boolean
+  toBrowserViews(windowId: number, channel: 'notify.chime', payload: { sound: string }): number
+}
+
+/**
+ * Where a chime rings (ChimeGateDeps.ring): on the desktop every view of the window, where only the
+ * desktop page plays it (a browser view is dropped by web/connection.ts remoteEvent: the sound stays
+ * on the host, design-web.md §6.1); in server mode the window's browser views only, never the hidden
+ * page, which has nobody to hear it (§9.9).
+ */
+export function chimeRinger(server: boolean, views: ChimeViews): (windowId: number, sound: string) => void {
+  return (windowId, sound) => {
+    if (server) views.toBrowserViews(windowId, 'notify.chime', { sound })
+    else views.toWindow(windowId, 'notify.chime', { sound })
+  }
 }
 
 /** One chime per window per interval, only while the setting is on. */
@@ -235,7 +397,10 @@ export class RecordingNoticeBackend implements NoticeBackend {
   }
 
   create(spec: NoticeSpec): NativeNotice {
-    const entry = { record: { ...spec, open: false }, click: [] as (() => void)[], close: [] as (() => void)[] }
+    // What the OS would show: the window is for the in-page backend only, as the Electron one ignores it.
+    const shown: NoticeSpec = { ...spec }
+    delete shown.windowId
+    const entry = { record: { ...shown, open: false }, click: [] as (() => void)[], close: [] as (() => void)[] }
     return {
       show: () => {
         entry.record.open = true

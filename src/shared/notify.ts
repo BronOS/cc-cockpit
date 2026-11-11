@@ -22,6 +22,26 @@ export const MAX_NOTIFY_ACTION_LABEL = 40
 export const NOTIFY_ACTION_WAIT_MS = 10 * 60_000
 /** At most one chime per window in this long: ten plugins reminding at 09:00 make one sound. */
 export const NOTIFY_CHIME_INTERVAL_MS = 5_000
+/**
+ * In-page notices main keeps per window in server mode (design-web.md §9.9; notifier.ts
+ * PageNoticeBackend), and as many again for the app-wide ones (`ccc notify` naming no project): a
+ * notice stays until it is clicked, dismissed or timed out, so a browser that joins later still sees
+ * it, and the cap bounds what main holds and replays. A new one past the cap ends the oldest of its
+ * window as a dismissal would (`{ clicked: false }`).
+ */
+export const MAX_PAGE_NOTICES = 20
+
+/**
+ * One in-page notice as a browser view gets it (`notices.show`, the `ready` snapshot's `notices`).
+ * Plain text only: the page renders the strings as text, never as HTML.
+ */
+export interface PageNotice {
+  requestId: string
+  title: string
+  text: string
+  /** The action button's label; absent: the notice has only its ✕. */
+  action?: string
+}
 
 /**
  * Checked options; `sound` is always there: false (none), true (the app's sound) or the sound id a
@@ -45,6 +65,32 @@ export interface NotifyOutcome {
 function plain(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()
+}
+
+/** `text` with at most `max` characters, the last one an ellipsis when it was cut. */
+function cut(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
+/**
+ * The texts of an in-page notice as main sends them: each control character a space, except that the
+ * body keeps its line breaks (the page shows them, as an OS notification does); the body cut at
+ * MAX_NOTIFY_TEXT, the title at MAX_NOTIFY_TITLE and the label at MAX_NOTIFY_ACTION_LABEL. A plugin's
+ * request was already checked (parseNotifyOptions refuses a long title); `ccc notify` and the core
+ * notices were not, so the cut is applied to every notice here, once.
+ */
+export function pageNoticeTexts(spec: { title: string; body: string; actionLabel?: string }): Omit<PageNotice, 'requestId'> {
+  // eslint-disable-next-line no-control-regex
+  const body = spec.body.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' ').trim()
+  const out: Omit<PageNotice, 'requestId'> = {
+    title: cut(plain(spec.title), MAX_NOTIFY_TITLE) || 'cc-cockpit',
+    text: cut(body, MAX_NOTIFY_TEXT)
+  }
+  if (spec.actionLabel !== undefined) {
+    const label = cut(plain(spec.actionLabel), MAX_NOTIFY_ACTION_LABEL)
+    if (label !== '') out.action = label
+  }
+  return out
 }
 
 function fail(message: string): never {

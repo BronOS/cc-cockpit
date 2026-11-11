@@ -3940,6 +3940,64 @@ ul.settings-alert {
   font-size: 16px;
   line-height: 1;
 }
+/* A server's in-page notifications (ShellNotices PageNotices), newest last, over the content. */
+.page-notices {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: min(380px, calc(100vw - 32px));
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 119;
+}
+.page-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface, #222);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #444);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.page-notice-body {
+  flex: 1;
+  min-width: 0;
+}
+.page-notice-title {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.page-notice-text {
+  margin: 4px 0 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.page-notice-action {
+  flex: none;
+  padding: 4px 10px;
+  background: none;
+  color: inherit;
+  border: 1px solid var(--cc-border, #555);
+  border-radius: var(--cc-radius-sm, 4px);
+  cursor: pointer;
+}
+.page-notice-action:hover {
+  background: var(--cc-accent-soft, rgba(255, 255, 255, 0.08));
+}
+.page-notice-close {
+  flex: none;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
 .desktop-only-note {
   padding: 16px;
   opacity: 0.75;

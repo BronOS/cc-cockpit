@@ -2,13 +2,27 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
-import { addLinkAsk, addSharedAsk, canAllowLink, dropLinkAsk, dropSharedAsk, linkNoticeAction, type LinkAsk, type TrashAsk } from './notice-state'
+import {
+  addLinkAsk,
+  addSharedAsk,
+  canAllowLink,
+  dropLinkAsk,
+  dropSharedAsk,
+  dropUnseen,
+  linkNoticeAction,
+  noteUnseen,
+  titleWithMark,
+  type LinkAsk,
+  type PageNotice,
+  type TrashAsk
+} from './notice-state'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
  * (design-web.md §6.1): a clickable notice for a link the host would have opened in its browser,
- * the in-page confirm of `ccc plugin link` and the in-page Move to Trash confirm. All come from main
- * as events, so they work the same in the Electron window and in the web shell.
+ * the in-page confirm of `ccc plugin link`, the in-page Move to Trash confirm and a server's in-page
+ * notifications. All come from main as events, so they work the same in the Electron window and in
+ * the web shell.
  */
 export function ShellNotices(): React.JSX.Element {
   return (
@@ -16,7 +30,77 @@ export function ShellNotices(): React.JSX.Element {
       <LinkNotice />
       <LinkConfirm />
       <TrashConfirm />
+      <PageNotices />
     </>
+  )
+}
+
+/**
+ * `notices.show`: a plugin's ctx.notify or a `ccc notify` in server mode (design-web.md §9.9; main
+ * sends them to browser views only, so the hidden page and the desktop never draw one). Shared like an
+ * ask: the action button or the ✕ in any view ends the notice for all (`notices.gone`), main deciding
+ * by the window it bound this view to. The texts are plain text (React escapes them). Nothing here
+ * takes the keyboard focus: a key typed for Claude stays in the terminal. While some came with the tab
+ * in the background, the tab's title counts them (titleWithMark).
+ */
+function PageNotices(): React.JSX.Element | null {
+  const [notices, setNotices] = useState<readonly PageNotice[]>([])
+  const [unseen, setUnseen] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    const offShow = window.cockpit.on('notices.show', (notice) => {
+      setNotices((prev) => addSharedAsk(prev, notice))
+      setUnseen((prev) => noteUnseen(prev, notice.requestId, document.visibilityState === 'hidden'))
+    })
+    const offGone = window.cockpit.on('notices.gone', ({ requestId }) => {
+      setNotices((prev) => dropSharedAsk(prev, requestId))
+      setUnseen((prev) => dropUnseen(prev, requestId))
+    })
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') setUnseen((prev) => (prev.size === 0 ? prev : new Set()))
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      offShow()
+      offGone()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+  // The page's own title, read once: the mark is put on and taken off around it.
+  const baseTitle = useRef(document.title)
+  useEffect(() => {
+    document.title = titleWithMark(baseTitle.current, unseen.size)
+  }, [unseen])
+  useEffect(() => {
+    const base = baseTitle.current
+    return () => {
+      document.title = base
+    }
+  }, [])
+  if (notices.length === 0) return null
+  const end = (notice: PageNotice, channel: 'notices.click' | 'notices.dismiss'): void => {
+    setNotices((prev) => dropSharedAsk(prev, notice.requestId))
+    setUnseen((prev) => dropUnseen(prev, notice.requestId))
+    window.cockpit.invoke(channel, { requestId: notice.requestId }).catch(() => {})
+  }
+  return (
+    <section className="page-notices" aria-label="Notifications">
+      {notices.map((notice) => (
+        <div key={notice.requestId} className="page-notice" role="status" data-testid="page-notice">
+          <div className="page-notice-body">
+            <strong className="page-notice-title">{notice.title}</strong>
+            <p className="page-notice-text">{notice.text}</p>
+          </div>
+          {notice.action !== undefined ? (
+            <button type="button" className="page-notice-action" onClick={() => end(notice, 'notices.click')}>
+              {notice.action}
+            </button>
+          ) : null}
+          <button type="button" className="page-notice-close" aria-label="Dismiss notification" onClick={() => end(notice, 'notices.dismiss')}>
+            ×
+          </button>
+        </div>
+      ))}
+    </section>
   )
 }
 

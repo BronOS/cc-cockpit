@@ -56,6 +56,7 @@ import {
   registerCccCommandHandlers,
   registerWebAccessHandlers,
   registerProjectSettingsHandlers,
+  registerNoticeHandlers,
   registerUpdateHandlers,
   registerSettingsHandlers,
   registerServiceHandlers,
@@ -66,7 +67,7 @@ import {
 import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
 import { AppMenu, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'
-import { ChimeGate, Notifier, NotifySounds, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
+import { ChimeGate, chimeRinger, Notifier, NotifySounds, PageNoticeBackend, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
 import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
@@ -729,6 +730,8 @@ function start(server: boolean): void {
       closeAsks.windowClosed(windowId)
       linkAsks.windowClosed(windowId)
       trashAsks.windowClosed(windowId)
+      // Its in-page notices end as dismissed (server mode; a plugin waiting on one is told now).
+      pageNotices?.windowClosed(windowId)
     },
     // The folder went missing between the close and the new window (WindowManager logs it): the
     // project is closed after all. Its queued plan goes, as when a launch cannot open a window;
@@ -1169,11 +1172,16 @@ function start(server: boolean): void {
     )
     return check.ok ? { ok: true, project: check.project, app: check.app } : check
   }
-  // `ccc notify`, ctx.notify and the revocation notice (notifications/notifier.ts). e2e: recorded
-  // instead of put on the developer's screen, and clicked through the test hooks.
-  const recordedNotices = testRun ? new RecordingNoticeBackend() : undefined
-  const notifier = new Notifier(recordedNotices ?? new ElectronNoticeBackend())
-  const showNotification = (text: string, title = 'cc-cockpit'): void => notifier.show({ title, body: text })
+  // `ccc notify`, ctx.notify and the revocation notice (notifications/notifier.ts). In server mode
+  // an in-page notice in the browsers (design-web.md §9.9), in a test run too, so the e2e drives the
+  // real one; on the desktop the OS's, recorded in a test run instead of put on the developer's
+  // screen, and clicked through the test hooks.
+  const pageNotices = server ? new PageNoticeBackend({ views }) : undefined
+  const recordedNotices = testRun && !server ? new RecordingNoticeBackend() : undefined
+  const notifier = new Notifier(pageNotices ?? recordedNotices ?? new ElectronNoticeBackend())
+  /** A core or `ccc notify` notice; `windowId` places an in-page one (server mode), the OS ignores it. */
+  const showNotification = (text: string, title = 'cc-cockpit', windowId?: number): void =>
+    notifier.show({ title, body: text, ...(windowId !== undefined ? { windowId } : {}) })
   /** Windows a chime was sent to and the sound id it rang, oldest first, in a test run only. */
   const chimesRung: { windowId: number; sound: string }[] = []
   // The OS sound folders the "Sound" setting can pick from (system-sounds.ts): fixed per platform,
@@ -1183,12 +1191,14 @@ function start(server: boolean): void {
   // app setting and to one per window per NOTIFY_CHIME_INTERVAL_MS. The window is the host's (main's
   // record), never one a plugin named.
   const chimeEnabled = (): boolean => notificationSoundsOf(registry.app.data.notificationSounds)
+  const ringChime = chimeRinger(server, views)
   const chimes = new ChimeGate({
     enabled: chimeEnabled,
     ring: (windowId, sound) => {
       if (testRun) chimesRung.push({ windowId, sound })
       // A checked id (NotifySounds); a system one's bytes the page asks for (`notify.soundData`).
-      sendToWindow(windowId, 'notify.chime', { sound })
+      // In server mode the browsers ring it, never the hidden page (design-web.md §9.9).
+      ringChime(windowId, sound)
     }
   })
   // Which sound: the picked one for `sound: true`, a plugin's own id only when the app offers it now.
@@ -1253,7 +1263,7 @@ function start(server: boolean): void {
       if (notice.sound !== false && chimeEnabled()) {
         void notifySounds.resolve(notice.sound, source.pluginId).then((sound) => chimes.ring(source.windowId, sound))
       }
-      const spec = pluginNoticeSpec(notice, `cc-cockpit: ${source.pluginId}`)
+      const spec = pluginNoticeSpec(notice, `cc-cockpit: ${source.pluginId}`, source.windowId)
       if (!notice.action) notifier.show(spec)
       else return notifier.wait(spec, signal)
     },
@@ -1711,7 +1721,9 @@ function start(server: boolean): void {
     openPath: (path) => {
       windows.openPath(path)
     },
-    notify: (text) => showNotification(text),
+    // The caller's project window places an in-page notice (server mode); none (a projectless call,
+    // or a project with no window open) is app-wide. The OS notification on the desktop ignores it.
+    notify: (text, projectId) => showNotification(text, 'cc-cockpit', projectId === undefined ? undefined : windows.windowIdOf(projectId)),
     sessions,
     project: (projectId) => {
       const project = registry.get(projectId)
@@ -2265,6 +2277,12 @@ function start(server: boolean): void {
     actorOf: (viewId) => webConnections.actorOf(viewId),
     ...(server ? { secrets: webSecretsStatus } : {})
   })
+  // A server's in-page notices: clicked or dismissed from a browser view, for its own window's.
+  registerNoticeHandlers(router, {
+    server,
+    click: (windowId, requestId) => pageNotices?.click(windowId, requestId) ?? false,
+    dismiss: (windowId, requestId) => pageNotices?.dismiss(windowId, requestId) ?? false
+  })
   registerUpdateHandlers(router, {
     state: updateState,
     setEnabled: (value) => {
@@ -2486,7 +2504,7 @@ function start(server: boolean): void {
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
-    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, server }, ctx),
+    snapshot: (ctx) => windowSnapshot({ tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, server }, ctx),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),

@@ -1,11 +1,12 @@
 // The state behind ShellNotices.tsx, DOM-free so unit tests run it in plain Node (the renderer has no
-// component harness): which link a notice may show, and the queues of pending `ccc plugin link` and
-// Move to Trash asks.
+// component harness): which link a notice may show, the queues of pending `ccc plugin link` and
+// Move to Trash asks, and a server's in-page notices with the browser tab's title mark.
 
 import type { IpcEventMap } from '../../shared/ipc'
 
 export type LinkAsk = IpcEventMap['links.ask']
 export type TrashAsk = IpcEventMap['trash.ask']
+export type PageNotice = IpcEventMap['notices.show']
 
 /**
  * The address an `app.linkNotice` may show, or undefined. Only an http(s) address becomes a link:
@@ -65,4 +66,30 @@ export function dropSharedAsk<A extends { requestId: string }>(asks: readonly A[
  */
 export function canAllowLink(webShell: boolean, serverView = false): boolean {
   return !webShell || serverView
+}
+
+/**
+ * The browser tab's title while in-page notices are unseen (design-web.md §9.9): a notice that came
+ * while the tab was in the background would be missed, so the title counts them, `(2) cc-cockpit`,
+ * until the tab is shown again. `base` is the page's own title; zero unseen leaves it as it is.
+ */
+export function titleWithMark(base: string, unseen: number): string {
+  return unseen > 0 ? `(${unseen}) ${base}` : base
+}
+
+/**
+ * The unseen notice ids after a `notices.show`: it counts only when the page is hidden now (one shown
+ * on a visible page was seen). The same set when nothing changes, so React skips the render.
+ */
+export function noteUnseen(unseen: ReadonlySet<string>, requestId: string, hidden: boolean): ReadonlySet<string> {
+  if (!hidden || unseen.has(requestId)) return unseen
+  return new Set([...unseen, requestId])
+}
+
+/** A notice that ended (clicked or dismissed anywhere, timed out) is no longer unseen. */
+export function dropUnseen(unseen: ReadonlySet<string>, requestId: string): ReadonlySet<string> {
+  if (!unseen.has(requestId)) return unseen
+  const next = new Set(unseen)
+  next.delete(requestId)
+  return next
 }

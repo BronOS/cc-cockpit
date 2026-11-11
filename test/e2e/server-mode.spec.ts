@@ -385,6 +385,62 @@ test('server mode: Move to Trash from Files is confirmed in the browser; the res
   }
 })
 
+// plan Task 21 (design-web.md §9.9): with no OS notifier, `ccc notify` and ctx.notify are in-page
+// notices in the browsers, never on the hidden page: one shown before any browser attached waits for
+// the first, the chime rings there, and a click on a plugin notice's action resolves its ctx.notify.
+const HOST_CTX = join(__dirname, '..', 'fixtures', 'plugins', 'host-ctx')
+
+test('server mode: ccc notify and ctx.notify are in-page notices in the browser; a click runs the action', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer()
+  const { cockpit } = server
+  // No browser yet: the notice waits in main.
+  expect((await ccc(server, ['notify', 'build finished'])).code).toBe(0)
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const notices = page.getByTestId('page-notice')
+    const early = notices.filter({ hasText: 'build finished' })
+    await expect(early).toBeVisible()
+    await expect(early).toContainText('cc-cockpit')
+    // The chime as this browser hears it (the hidden page's is checked below).
+    await page.evaluate(() => {
+      const w = window as unknown as { __chimes: string[] }
+      w.__chimes = []
+      window.cockpit.on('notify.chime', (p) => w.__chimes.push(p.sound))
+    })
+
+    // ctx.notify from a plugin: plain notices, one with a sound, one with an action that waits.
+    await cockpit.hook('linkPlugin', HOST_CTX)
+    await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.hostctx')
+    const reminder = notices.filter({ hasText: 'Standup in 2 min' })
+    await expect(reminder).toBeVisible({ timeout: 20_000 })
+    await expect(reminder).toContainText('Calendar')
+    await expect(notices.filter({ hasText: 'hello from the fixture plugin' })).toContainText('cc-cockpit: test.hostctx')
+    await expect(notices.filter({ hasText: 'chime please' })).toContainText('Fixture reminder')
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __chimes: string[] }).__chimes)).toEqual(['builtin:bell'])
+    // Nothing reached an OS notifier, and nothing was drawn on the hidden page.
+    expect(await cockpit.hook<unknown[]>('notifications')).toEqual([])
+    await expect(cockpit.page.getByTestId('page-notice')).toHaveCount(0)
+
+    // The ✕ ends a notice; the action resolves the plugin's call with a click.
+    await early.getByRole('button', { name: 'Dismiss notification' }).click()
+    await expect(early).toHaveCount(0)
+    const clickFile = join(cockpit.root, 'home', 'notify-click.json')
+    expect(existsSync(clickFile)).toBe(false)
+    await reminder.getByRole('button', { name: 'Join' }).click()
+    await expect.poll(() => existsSync(clickFile)).toBe(true)
+    expect(JSON.parse(readFileSync(clickFile, 'utf8'))).toEqual({ clicked: true })
+    await expect(reminder).toHaveCount(0)
+    // A click for an id main does not show answers false; the browser cannot settle one that is gone.
+    expect(await page.evaluate(() => window.cockpit.invoke('notices.click', { requestId: 'nope' }))).toBe(false)
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
 // plan Task 19 (design-web.md §9.8): an html overlay with no browser origin is held by a browser, never
 // by the hidden page. One opened while no browser is attached waits and goes to the first to join;
 // `ccc overlay` from a Claude tab goes to the browser that typed it. Neither shows "Take over", and

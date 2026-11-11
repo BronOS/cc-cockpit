@@ -862,6 +862,27 @@ describe('pending trash asks', () => {
   })
 })
 
+// design-web.md §9.9: a server's in-page notices, the same way: one shown before the shell mounted shows.
+describe('pending in-page notices', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
+  const notice = (n: number): Record<string, unknown> => ({ requestId: `n${n}`, title: 'Calendar', text: `Standup ${n}`, action: 'Join' })
+
+  it('hands ready’s list and early events to a late notices.show listener, minus gone and malformed ones', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    const plain = { requestId: 'n4', title: 'cc-cockpit', text: 'build done' }
+    const bad = [{ requestId: 'n8', title: 't', text: 5 }, { requestId: 'n9', title: 't', text: 'x', action: 1 }]
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, notices: [notice(1), notice(2), plain, ...bad] } })
+    s.serverSend({ t: 'event', ch: 'notices.gone', p: { requestId: 'n2' } })
+    s.serverSend({ t: 'event', ch: 'notices.show', p: notice(3) })
+    const got: unknown[] = []
+    anyApi(r.api).on('notices.show', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([notice(1), plain, notice(3)])
+  })
+})
+
 describe('pending close asks', () => {
   const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
 

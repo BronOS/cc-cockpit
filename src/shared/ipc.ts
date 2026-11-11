@@ -21,6 +21,7 @@ import type { FlagPatch, TabFlag } from './tab-flag'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
+import type { PageNotice } from './notify'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
@@ -1133,6 +1134,15 @@ export interface IpcInvokeMap {
    * a file that is gone, or one that changed since it was listed. The page then plays the Chime.
    */
   'notify.soundData': { req: { id: string }; res: NotificationSoundData | null }
+  /**
+   * A click on an in-page notice's action (`notices.show`, server mode only, design-web.md §9.9): the
+   * plugin's `ctx.notify` resolves `{ clicked: true }`. Settles only a notice main is showing in the
+   * sender's own window (or app-wide); false for an unknown, settled or another window's id. Refused
+   * (an error) for the desktop page and for any view on the desktop, where notices are the OS's.
+   */
+  'notices.click': { req: { requestId: string }; res: boolean }
+  /** The ✕ of an in-page notice: as the person dismissing an OS notification (`{ clicked: false }`). Checked as `notices.click`. */
+  'notices.dismiss': { req: { requestId: string }; res: boolean }
   /** Hide the side zones when the terminal gets narrow, or never (AppSettings.zoneAutoHide). Every window follows. */
   'settings.zoneAutoHideSet': { req: { value: boolean }; res: void }
   /** The terminal's minimum width for the zone auto-hide (AppSettings.minTerminalWidth). Every window follows. */
@@ -1409,6 +1419,15 @@ export interface IpcEventMap {
    * app's sounds (notifier.ts NotifySounds). A system id's bytes come from `notify.soundData`.
    */
   'notify.chime': { sound: string }
+  /**
+   * An in-page notice (`ctx.notify`, `ccc notify`, server mode only: notifier.ts PageNoticeBackend,
+   * design-web.md §9.9), to the browser views of its window (every window for an app-wide one), never
+   * the hidden page. Shared like an ask: the first click or ✕ in any view ends it, and `notices.gone`
+   * takes it down in the others. Plain text, cut by main to the ctx.notify limits (shared/notify.ts).
+   */
+  'notices.show': PageNotice
+  /** A `notices.show` is over (clicked or dismissed in some view, timed out, pushed out by the cap). */
+  'notices.gone': { requestId: string }
   /** This window's view of the Claude tabs (see SessionsSnapshot); throttled to 10 per second. */
   'sessions.snapshot': SessionsSnapshot
   /**
@@ -1597,6 +1616,8 @@ export const INVOKE_CHANNELS = [
   'settings.notificationSoundOptions',
   'settings.notificationSoundSet',
   'notify.soundData',
+  'notices.click',
+  'notices.dismiss',
   'settings.zoneAutoHideSet',
   'settings.minTerminalWidthSet',
   'settings.confirmTabClose',
@@ -1667,6 +1688,8 @@ export const EVENT_CHANNELS = [
   'webAccess.changed',
   'prefs.changed',
   'notify.chime',
+  'notices.show',
+  'notices.gone',
   'sessions.snapshot',
   'sessions.closeAsk',
   'sessions.closeSettled',
@@ -1855,10 +1878,17 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settings.notificationSoundsSet': 'yes',
   'settings.notificationSoundOptions': 'yes',
   'settings.notificationSoundSet': 'yes',
-  // Notifications and their sound stay on the host (§6.1): a remote view never gets the chime. The
-  // bytes are only for a sound preview in Settings, answered by the caller main bound (Task 25).
-  'notify.chime': 'no',
+  // On the desktop notifications and their sound stay on the host (§6.1): a remote view never gets
+  // the chime (web/connection.ts remoteEvent drops it). In server mode there is no host screen, so the
+  // chime and the in-page notices go to the browser views only (§9.9), and a notice is clicked or
+  // dismissed from the browser view main bound, for a notice of its own window. The bytes are for the
+  // chime and a sound preview in Settings, answered by the caller main bound (Task 25).
+  'notify.chime': 'adapted',
   'notify.soundData': 'adapted',
+  'notices.show': 'adapted',
+  'notices.gone': 'adapted',
+  'notices.click': 'adapted',
+  'notices.dismiss': 'adapted',
   'settings.zoneAutoHideSet': 'yes',
   'settings.minTerminalWidthSet': 'yes',
   'settings.confirmTabClose': 'yes',

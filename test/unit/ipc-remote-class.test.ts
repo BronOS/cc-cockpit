@@ -71,7 +71,13 @@ describe('REMOTE_CLASS drift', () => {
     'webAccess.changed',
     'settings.webDeviceRevoke',
     'settings.webDevicesRevokeAll',
-    'settings.webDeviceDisconnect'
+    'settings.webDeviceDisconnect',
+    // A server's in-page notices and the chime (§9.9): the browsers only, and only from a server.
+    'notify.chime',
+    'notices.show',
+    'notices.gone',
+    'notices.click',
+    'notices.dismiss'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })

@@ -15,7 +15,9 @@
 //     window and grants nothing more.
 //   - open: names a folder on purpose (that is its job); main's registry validates it.
 //   - sessions / notify: act on no single project. The socket is the user's own, so `sessions`
-//     lists every window's tabs (plugins never reach this socket).
+//     lists every window's tabs (plugins never reach this socket). `notify` passes on the caller's
+//     project when it has one (a tab's token or `--project`): in server mode the in-page notice goes
+//     to that project's window, and a call naming none to every window (design-web.md §9.9).
 //   - plugin.cli*: the caller's project (a tab's, or the one `--project` named). The owning plugin
 //     is looked up by name in main's index (the clash rules leave at most one valid owner), and
 //     must be enabled in that project; the host manager then checks it runs in the window.
@@ -56,8 +58,11 @@ export interface CliSessions {
 export interface CliHandlerOptions {
   /** Open the folder as a project, or focus its window. Throws for a path that is not a folder. */
   openPath(path: string): void
-  /** A system notification with this text. */
-  notify(text: string): void
+  /**
+   * A notification with this text. `projectId`: the caller's project as main resolved it (a tab's
+   * token, `--project`), absent for a projectless call or a folder with no project record.
+   */
+  notify(text: string, projectId?: string): void
   sessions: CliSessions
   /** The display name and folder of a project, for the `sessions` listing. */
   project(projectId: string): { name: string; path: string } | undefined
@@ -124,10 +129,11 @@ export function stepsHandler(options: Pick<CliHandlerOptions, 'sessions'>): Hand
 }
 
 export function notifyHandler(options: Pick<CliHandlerOptions, 'notify'>): Handler {
-  return (args) => {
+  return (args, caller) => {
     if (typeof args.text !== 'string' || args.text.trim() === '') throw new Error('notify needs text')
     const text = args.text.trim()
-    options.notify(text.length > MAX_NOTIFY_CHARS ? `${text.slice(0, MAX_NOTIFY_CHARS - 1)}…` : text)
+    const projectId = caller.kind === 'anonymous' ? undefined : caller.projectId
+    options.notify(text.length > MAX_NOTIFY_CHARS ? `${text.slice(0, MAX_NOTIFY_CHARS - 1)}…` : text, projectId)
     return null
   }
 }

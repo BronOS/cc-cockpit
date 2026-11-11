@@ -6,7 +6,8 @@
 //   (shell-kind.ts, marked below before anything renders);
 // - zone sizes and collapsed zones are this browser's own (zones/view-geometry.ts);
 // - nothing is drawn until main answers `ready` (the bridge rejects calls before that);
-// - no chime: notifications and their sound stay on the host (design §6.1);
+// - the chime only in server mode: on the desktop notifications and their sound stay on the host
+//   (design §6.1) and main never sends a browser `notify.chime`; a server's browsers ring it (§9.9);
 // - after a reconnect (a fresh `ready`, a new view), theme and prefs are read again and the shell is
 //   mounted afresh, so whatever changed while away is drawn from main's current state, not patched
 //   from missed events (no resume in v1, design §3);
@@ -24,6 +25,7 @@ import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { loadTerminalFont } from '../tabs/terminal-font'
 import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
+import { startChime } from '../notify/chime'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
@@ -177,6 +179,9 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     }
   })
   window.cockpit = bridge.api
+  // ctx.notify's `sound` in server mode (main sends it to a server's browsers only, web/connection.ts
+  // remoteEvent). A browser may hold the sound back until the person has touched the page.
+  startChime()
   window.addEventListener('pagehide', () => bridge.close())
   // Closing the socket on pagehide makes the page eligible for the back/forward cache; a page
   // restored from it has a closed bridge that still says `ready`. Start over from a fresh load.

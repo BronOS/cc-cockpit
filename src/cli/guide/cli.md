@@ -28,7 +28,9 @@ stderr).
 - `ccc overlay --html <file>` shows a local html file (read once, shown through a privileged
   scheme) and returns what the page answers with.
 - `ccc sessions [--json]` lists the Claude tabs of every window and their status.
-- `ccc notify <text>` shows a system notification.
+- `ccc notify <text>` shows a system notification. In server mode it is an in-page notice in the
+  browsers instead: those with the caller's project open (a tab's, or `--project`), or every
+  browser when it names no project.
 - `ccc [--project <path>] <plugin command> [args...]` runs a command a plugin enabled in this
   project adds. `ccc help` inside a tab lists them; `ccc <plugin command> --help` (a leading `--help` or `-h`; the plugin never receives it) prints its usage
   without running it. Main answers an unknown command, a plugin that is not enabled here or not

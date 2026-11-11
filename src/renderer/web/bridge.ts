@@ -32,7 +32,9 @@
 //   mounts, which is after `ready` (and again after each reconnect's remount), so without this a
 //   view joining mid-ask would never show the dialog. The `ccc plugin link` confirm (`links.ask` /
 //   `links.settled`, `ready`'s `linkAsks`, main/plugins/link-asks.ts) and the Move to Trash confirm
-//   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) are the same (SHARED_ASKS).
+//   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) are the same (SHARED_ASKS),
+//   and so are a server's in-page notices (`notices.show` / `notices.gone`, `notices`,
+//   main/notifications/notifier.ts PageNoticeBackend): one shown before the shell mounted still shows.
 //
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
@@ -161,6 +163,15 @@ function trashAskOf(value: unknown): Record<string, unknown> | undefined {
   return { requestId: v.requestId, path: v.path, kind: v.kind, pluginId: v.pluginId }
 }
 
+/** A `notices.show` from main (an event or `ready`'s list), checked; undefined when malformed. */
+function noticeOf(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  if (typeof v.requestId !== 'string' || typeof v.title !== 'string' || typeof v.text !== 'string') return undefined
+  if (v.action !== undefined && typeof v.action !== 'string') return undefined
+  return { requestId: v.requestId, title: v.title, text: v.text, ...(typeof v.action === 'string' ? { action: v.action } : {}) }
+}
+
 /**
  * The shared asks the bridge keeps for a late subscriber (see the top of the file): the event that
  * opens one, the one that settles it, `ready`'s list and the checker of an item.
@@ -168,12 +179,13 @@ function trashAskOf(value: unknown): Record<string, unknown> | undefined {
 const SHARED_ASKS: ReadonlyArray<{
   ask: string
   settled: string
-  field: 'closeAsks' | 'linkAsks' | 'trashAsks'
+  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'notices'
   parse(value: unknown): { requestId: string } | undefined
 }> = [
   { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', parse: closeAskOf },
   { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', parse: (v) => linkAskOf(v) as { requestId: string } | undefined },
-  { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', parse: (v) => trashAskOf(v) as { requestId: string } | undefined }
+  { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', parse: (v) => trashAskOf(v) as { requestId: string } | undefined },
+  { ask: 'notices.show', settled: 'notices.gone', field: 'notices', parse: (v) => noticeOf(v) as { requestId: string } | undefined }
 ]
 
 /** Main's paths, checked: string prefixes under the gateway's own paths only, else none. */
