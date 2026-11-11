@@ -326,6 +326,33 @@ describe('one-time "add a device" link', () => {
   })
 })
 
+describe("server mode's start link (design-web.md §9.3)", () => {
+  it('logs that it was issued and the sign-in that used it, never the link or its token', async () => {
+    const a = auth()
+    const { link } = a.addDeviceLink(ORIGIN, { start: true })
+    const token = tokenOf(link)
+    const res = await a.signInWithToken({ token, name: 'Phone' })
+    if (!res.ok) throw new Error('setup')
+    expect(await a.signInWithToken({ token, name: 'Late' })).toMatchObject({ ok: false, status: 401 })
+    const entries = accessLog.recent().filter((e) => e.event === 'start-link')
+    expect(entries.map((e) => e.detail)).toEqual(['issued', 'used'])
+    expect(entries[1]).toMatchObject({ device: res.device.id, name: 'Phone' })
+    const file = readFileSync(join(dir, 'logs', 'web-access.log'), 'utf8')
+    expect(file).toContain('"start-link"')
+    expect(file).not.toContain(token)
+    expect(file).not.toContain('#t=')
+  })
+
+  it('a desktop "Add a device" link logs nothing of the kind, and replaces a pending start link', async () => {
+    const a = auth()
+    const start = tokenOf(a.addDeviceLink(ORIGIN, { start: true }).link)
+    const desktop = tokenOf(a.addDeviceLink(ORIGIN).link)
+    expect(await a.signInWithToken({ token: start })).toMatchObject({ ok: false, status: 401 })
+    expect(await a.signInWithToken({ token: desktop })).toMatchObject({ ok: true })
+    expect(accessLog.recent().filter((e) => e.event === 'start-link').map((e) => e.detail)).toEqual(['issued'])
+  })
+})
+
 describe('authorize', () => {
   it('None: in without a cookie as the anonymous device; a real cookie still names its device', async () => {
     const a = auth()

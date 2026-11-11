@@ -18,7 +18,15 @@ import type {
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
 import type { GatewayStatus } from './gateway'
-import { applyWebAccessPatch, isLoopbackBind, listenPlanOf, webAccessOf, webAccessRisks } from './settings'
+import {
+  applyWebAccessPatch,
+  isLoopbackBind,
+  listenPlanOf,
+  serverConfirmCommand,
+  serverStartSettings,
+  webAccessOf,
+  webAccessRisks
+} from './settings'
 
 /** The part of the gateway this needs (a fake in tests). */
 export interface GatewayLike {
@@ -44,7 +52,21 @@ export interface WebAccessServiceDeps {
    * once the desktops have all their output (mirror.ts header); it never rejects.
    */
   terminals: { start(): void; drain(): Promise<void> }
+  /**
+   * Main's `server` flag for the run (server-mode.ts): a change may not turn web access off or pick
+   * desktop confirm (settings.ts `applyWebAccessPatch`), and start writes and prints what runs.
+   */
+  server?: boolean
 }
+
+/** stdout, once, when server mode wrote web access on (design-web.md §9.2). */
+export const SERVER_TURNED_ON_LINE = 'server mode: turned web access on in app.json'
+/**
+ * §9.12: on a shared server every local user reaches 127.0.0.1, so None hands the account to all of
+ * them (and, on a network bind given its confirm, to the network too).
+ */
+export const SERVER_NONE_WARNING =
+  'no sign-in: anyone who can reach this address, every user of this machine included, controls cc-cockpit as you'
 
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
 const NOT_LISTENING = 'Turn web access on first: there is nothing to open the link on.'
@@ -136,7 +158,7 @@ export class WebAccessService {
    */
   async set(patch: WebAccessPatch): Promise<WebAccessSetReply> {
     const current = this.settings()
-    const result = applyWebAccessPatch(current, patch)
+    const result = applyWebAccessPatch(current, patch, { server: this.deps.server === true })
     if (!result.ok) {
       if (result.needsConfirm) return { needsConfirm: result.needsConfirm }
       throw new Error(result.error)
@@ -151,6 +173,59 @@ export class WebAccessService {
     await this.applySettings(settings)
     this.changed()
     return this.view()
+  }
+
+  /**
+   * Server mode at start, before `apply` (design-web.md §9.2): writes web access on, and the link
+   * mode over a stored desktop confirm, to `app.json`. Returns the line to print, only when it wrote
+   * something (so a second start prints nothing). The record written is what runs: no overlay.
+   */
+  serverStart(): string | undefined {
+    if (this.deps.server !== true) return undefined
+    const next = serverStartSettings(this.settings())
+    if (next === undefined) return undefined
+    this.deps.write(next)
+    return SERVER_TURNED_ON_LINE
+  }
+
+  /**
+   * Server mode's first lines on stdout, after `apply` (design-web.md §9.2, §9.3). Listening: the
+   * address (the external origin when set, else the listen address), then by mode: in link mode a
+   * one-time add-device link only when stdout is a terminal (`tty`), else the command that makes
+   * one, so no live link reaches the journal or a log shipper; password mode only the address; None
+   * the shared-server warning. A refused stored setting: the reason and, for an unconfirmed §4.3
+   * risk, the exact `ccc web set` line that applies it (the app runs on so `ccc web` can fix it).
+   * The gateway failing: its reason. Always last the wrapper's path, as the ccc offer is skipped in
+   * server mode. Never a link off a terminal, outside link mode, or when nothing listens.
+   */
+  serverStartLines(options: { tty: boolean; wrapperPath: string }): string[] {
+    if (this.deps.server !== true) return []
+    const settings = this.settings()
+    const plan = listenPlanOf(settings)
+    const status = this.deps.gateway.status()
+    const lines: string[] = []
+    if (!plan.ok) {
+      lines.push(`server mode: web access is not listening: ${plan.reason}`)
+      const command = serverConfirmCommand(settings)
+      if (command !== undefined) lines.push(`to listen anyway, run: ${command}`)
+    } else if (status.state !== 'listening') {
+      lines.push(`server mode: web access is not listening: ${status.state === 'off' ? 'web access is off' : status.reason}`)
+    } else {
+      const origin = linkOrigin(settings)
+      lines.push(`cc-cockpit server mode: web access on ${origin}`)
+      if (settings.mode === 'link') {
+        if (options.tty) {
+          const { link } = this.deps.auth.addDeviceLink(origin, { start: true })
+          lines.push(`Add a device (works once, expires in 10 minutes): ${link}`)
+        } else {
+          lines.push('add a device: ccc web add-device')
+        }
+      } else if (settings.mode === 'none') {
+        lines.push(SERVER_NONE_WARNING)
+      }
+    }
+    lines.push(`ccc for a shell on this server: ${options.wrapperPath}`)
+    return lines
   }
 
   /** Reads the stored settings again and applies them (start-up). */

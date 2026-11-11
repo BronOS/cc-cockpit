@@ -258,6 +258,17 @@ function shown(raw: unknown): string {
   return JSON.stringify(String(raw).slice(0, 80))
 }
 
+export interface PatchOptions {
+  /** Main's `server` flag for the run (server-mode.ts): turning off and desktop confirm are refused. */
+  server?: boolean
+}
+
+/** Why server mode refuses turning web access off (design-web.md §9.2). */
+export const SERVER_ONLY_WAY_IN = 'server mode: web access is the only way in'
+/** Why server mode refuses the desktop-confirm mode (design-web.md §9.2). */
+export const SERVER_NO_CONFIRM_MODE =
+  'server mode: desktop confirm needs someone at this computer to answer each request, and there is no desktop; use link, password or none'
+
 /**
  * The settings after a change from the Settings page (`settings.webAccessSet`). Unlike `webAccessOf`
  * (tolerant of a hand-edited file) this is strict: a wrong value is refused with the reason, and
@@ -273,7 +284,7 @@ function shown(raw: unknown): string {
  * confirm: confirms exist only while web access is on, so turning it on again, weeks later or a
  * minute later, always asks for the risks it brings (a risk saved while off included).
  */
-export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown): PatchResult {
+export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown, options: PatchOptions = {}): PatchResult {
   if (!isPlainObject(patch)) return { ok: false, error: 'the change must be an object' }
   for (const key of Object.keys(patch)) {
     if (!(PATCH_KEYS as readonly string[]).includes(key)) return { ok: false, error: `unknown field ${shown(key)}` }
@@ -341,6 +352,14 @@ export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown):
       next.tls = { certPath, keyPath }
     }
   }
+  // Server mode (design-web.md §9.2): web access is how the person reaches the app at all, and
+  // nobody sits at a desktop to answer a desktop-confirm request (every browser would wait 2 min and
+  // fail, spike). Decided on the result, not the patch: a hand-edited `confirm` met mid-run is
+  // refused on the next change too, with the reason, instead of being carried along.
+  if (options.server === true) {
+    if (!next.enabled) return { ok: false, error: SERVER_ONLY_WAY_IN }
+    if (next.mode === 'confirm') return { ok: false, error: SERVER_NO_CONFIRM_MODE }
+  }
   let given: WebAccessRisk[] = []
   if ('confirm' in patch) {
     const raw = patch['confirm']
@@ -387,4 +406,40 @@ export function storedWebAccess(previous: Partial<WebAccessSettings> | undefined
   if (next.confirmed !== undefined) stored.confirmed = [...next.confirmed]
   else delete stored.confirmed
   return stored
+}
+
+/**
+ * What server mode writes at start (design-web.md §9.2), or undefined when the record already runs
+ * as it must: web access on, and the access-link mode in place of desktop confirm (nobody could
+ * answer it). Written to `app.json` rather than overlaid in memory, so `ccc web set` and
+ * `applyWebAccessPatch` work on the record that runs. Nothing else changes: a risky bind or origin
+ * stays as typed and is refused by `listenPlanOf` like any other unconfirmed risk, never made safer.
+ *
+ * Turning it on drops the confirms: they exist only while web access is on (`applyWebAccessPatch`
+ * gives a file that is off none), so a confirm left in a record that was off does not open a
+ * network bind here either; the start prints the line that gives it (`serverConfirmCommand`).
+ */
+export function serverStartSettings(current: WebAccessSettings): WebAccessSettings | undefined {
+  if (current.enabled && current.mode !== 'confirm') return undefined
+  const next: WebAccessSettings = { ...current, hosts: [...current.hosts] }
+  if (!current.enabled) {
+    next.enabled = true
+    delete next.confirmed
+  }
+  if (next.mode === 'confirm') next.mode = 'link'
+  return next
+}
+
+/**
+ * The `ccc web set` line that applies these settings' unconfirmed §4.3 risks, built from the stored
+ * record (design-web.md §9.2): the bind it has and one `--confirm` per risk, in WEB_RISK_ORDER.
+ * Undefined when nothing is waiting for a confirm (or the bind itself is refused: no confirm helps).
+ * The bind goes as it is stored, an IP address or `localhost` (`isBindAddress`), so it needs no
+ * quoting for a shell.
+ */
+export function serverConfirmCommand(settings: WebAccessSettings): string | undefined {
+  if (!isBindAddress(settings.bind)) return undefined
+  const missing = webAccessRiskIds(settings).filter((r) => settings.confirmed?.includes(r) !== true)
+  if (missing.length === 0) return undefined
+  return ['ccc web set --bind', settings.bind, ...missing.map((r) => `--confirm ${r}`)].join(' ')
 }

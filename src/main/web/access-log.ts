@@ -44,6 +44,11 @@ export type AccessEvent =
   | 'password'
   /** A desktop-confirm request: asked (by a browser), denied or expired. Its code is never logged. */
   | 'confirm'
+  /**
+   * Server mode's start link (design-web.md §9.3): `issued` when start printed it, `used` with the
+   * device that signed in with it. Never the link or its token.
+   */
+  | 'start-link'
 
 export interface AccessEntry {
   event: AccessEvent

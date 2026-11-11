@@ -15,13 +15,17 @@
 // the update check off). It waits for <data>/app.sock, checks the pid it started is still the app's
 // (the exec runs), gets `GET /` 200 from the gateway, sends SIGTERM to that first pid only, checks the
 // exit status, and after exit counts the live processes of the run (its session: the app is started
-// as a session leader; zombies not counted): none. Runs: `--server`; no flag at all (detected);
-// CC_COCKPIT_NO_EXECVE=1 (the fallback's spawnSync child and parent watch, `out/` only).
+// as a session leader; zombies not counted): none. Runs: `--server` (stdout a pipe, web access stored
+// off in desktop-confirm mode: start writes it on in link mode, says so, prints the address and no
+// `#t=` link); no flag at all (detected, None); CC_COCKPIT_NO_EXECVE=1 (the fallback's spawnSync child
+// and parent watch, `out/` only); `--server` under a pty (node-pty), link mode: the one-time `#t=` line
+// appears, and a `POST /auth/link` with it answers 200 once and 401 the second time (design-web.md §9.3).
 // Exits 1 on any failure.
 import { spawn } from 'node:child_process'
+import pty from 'node-pty'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { constants as osConstants, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -86,7 +90,55 @@ function cmdline(pid) {
   }
 }
 
-async function run(name, { flag, noExecve }) {
+/**
+ * Starts the app as a session leader: a child process with stdout a pipe, or under a pty (node-pty
+ * makes its child a session leader too). The same shape either way: pid, the output so far, exit.
+ */
+function launch(exe, args, env, underPty) {
+  const proc = { pid: 0, out: '', exit: undefined, exited: undefined }
+  if (underPty) {
+    const term = pty.spawn(exe, args, { env, cols: 200, rows: 50, cwd: env.HOME })
+    proc.pid = term.pid
+    term.onData((d) => (proc.out += d))
+    proc.exited = new Promise((r) =>
+      term.onExit(({ exitCode, signal }) => {
+        // node-pty gives a signal as its number (0 for none); `os.constants` names it.
+        proc.exit = { code: signal ? null : exitCode, signal: signal ? signalName(signal) : null }
+        r(proc.exit)
+      })
+    )
+    return proc
+  }
+  const child = spawn(exe, args, { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  proc.pid = child.pid
+  child.stdout.on('data', (d) => (proc.out += d))
+  child.stderr.on('data', () => {})
+  proc.exited = new Promise((r) =>
+    child.on('exit', (code, signal) => {
+      proc.exit = { code, signal }
+      r(proc.exit)
+    })
+  )
+  return proc
+}
+
+function signalName(n) {
+  for (const [name, value] of Object.entries(osConstants.signals)) if (value === n) return name
+  return String(n)
+}
+
+/** A `POST /auth/link` as the sign-in page sends it (Origin-checked, JSON). */
+async function signInWithLink(port, token) {
+  const origin = `http://127.0.0.1:${port}`
+  const res = await fetch(`${origin}/auth/link`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, name: 'smoke' })
+  })
+  return res.status
+}
+
+async function run(name, { flag, noExecve, underPty = false, webAccess }) {
   const base = mkdtempSync(join(tmpdir(), 'ccc-server-smoke-'))
   const dataDir = join(base, 'data')
   const home = join(base, 'home')
@@ -104,7 +156,7 @@ async function run(name, { flag, noExecve }) {
       keyOverrides: {},
       pluginSettings: {},
       updateCheck: false,
-      webAccess: { enabled: true, bind: '127.0.0.1', port, mode: 'none', hosts: [] } })
+      webAccess: { bind: '127.0.0.1', port, hosts: [], ...webAccess } })
   )
   const bus = 'unix:path=/nonexistent/bus'
   // Built from nothing, so no DISPLAY, WAYLAND_DISPLAY, CC_COCKPIT_SOCK, APP_TAB_*, CLAUDE_CODE_* or
@@ -123,21 +175,16 @@ async function run(name, { flag, noExecve }) {
   }
   if (noExecve) env.CC_COCKPIT_NO_EXECVE = '1'
   const args = [...command.args, ...(flag ? ['--server'] : [])]
-  console.log(`\n== ${name}: ${[command.exe, ...args].join(' ')}`)
+  console.log(`\n== ${name}: ${[command.exe, ...args].join(' ')}${underPty ? ' (under a pty)' : ''}`)
   console.log(`   DBUS_SESSION_BUS_ADDRESS=${bus} XDG_RUNTIME_DIR=${runtime}`)
 
   const started = Date.now()
-  const child = spawn(command.exe, args, { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  const child = launch(command.exe, args, env, underPty)
   const sid = child.pid
-  let out = ''
-  child.stdout.on('data', (d) => (out += d))
-  child.stderr.on('data', () => {})
-  const exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })))
-  let exit
-  child.on('exit', (code, signal) => (exit = { code, signal }))
+  const exited = child.exited
   const failures = []
   try {
-    await until('the CLI socket', START_MS, () => exit === undefined && existsSync(join(dataDir, 'app.sock')))
+    await until('the CLI socket', START_MS, () => child.exit === undefined && existsSync(join(dataDir, 'app.sock')))
     console.log(`   socket after ${Date.now() - started} ms`)
     const argv = cmdline(child.pid)
     if (noExecve) {
@@ -155,6 +202,29 @@ async function run(name, { flag, noExecve }) {
       }
     })
     if (status !== 200) failures.push(`GET / answered ${status}`)
+    // The first lines (design-web.md §9.2, §9.3): the wrapper's path comes last, after the gateway.
+    await until('the first lines', START_MS, () => child.out.includes('ccc for a shell on this server:'))
+    const out = child.out
+    if (!out.includes(`web access on http://127.0.0.1:${port}`)) failures.push('stdout has no address line')
+    if (webAccess.enabled === false && !out.includes('server mode: turned web access on in app.json')) {
+      failures.push('no "turned web access on" line for a stored off')
+    }
+    const at = out.indexOf('#t=')
+    if (!underPty) {
+      if (at >= 0) failures.push('a #t= link reached a pipe')
+    } else if (at < 0) {
+      failures.push('no #t= line under a pty')
+    } else {
+      let token = ''
+      for (const ch of out.slice(at + 3)) {
+        if (!/[A-Za-z0-9_-]/.test(ch)) break
+        token += ch
+      }
+      const first = await signInWithLink(port, token)
+      const second = await signInWithLink(port, token)
+      console.log(`   start link: POST /auth/link ${first}, again ${second}`)
+      if (first !== 200 || second !== 401) failures.push(`start link answered ${first} then ${second} (expected 200, 401)`)
+    }
     const termAt = Date.now()
     process.kill(child.pid, 'SIGTERM')
     const result = await Promise.race([exited, sleep(QUIT_MS).then(() => undefined)])
@@ -171,6 +241,11 @@ async function run(name, { flag, noExecve }) {
       return pids.length === 0 ? [] : undefined
     }).catch(() => processesOf(sid))
     if (left.length > 0) failures.push(`live processes left: ${left.join(' ')}`)
+    // After the quit: app.json is saved debounced, and flushed at quit.
+    if (webAccess.enabled === false) {
+      const written = JSON.parse(readFileSync(join(dataDir, 'app.json'), 'utf8')).webAccess
+      if (written.enabled !== true || written.mode !== 'link') failures.push(`app.json not written on: ${JSON.stringify(written)}`)
+    }
   } catch (err) {
     failures.push(err.message)
   } finally {
@@ -183,12 +258,20 @@ async function run(name, { flag, noExecve }) {
     }
     rmSync(base, { recursive: true, force: true })
   }
-  for (const line of out.split('\n').filter((l) => l.trim() !== '')) console.log(`   stdout: ${line}`)
+  // The start link is used up (or was never made) by now; shown all the same only in its masked form.
+  for (const line of child.out.split('\n').filter((l) => l.trim() !== '')) {
+    console.log(`   stdout: ${line.trimEnd().replace(/#t=[A-Za-z0-9_-]+/, '#t=…')}`)
+  }
   if (failures.length > 0) for (const f of failures) console.log(`   FAIL: ${f}`)
   else console.log('   ok')
   return failures.length === 0
 }
 
-const results = [await run('--server', { flag: true }), await run('detected (no flag)', { flag: false })]
-if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true }))
+const none = { enabled: true, mode: 'none' }
+const results = [
+  await run('--server', { flag: true, webAccess: { enabled: false, mode: 'confirm' } }),
+  await run('detected (no flag)', { flag: false, webAccess: none })
+]
+if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))
+results.push(await run('--server under a pty, link mode', { flag: true, underPty: true, webAccess: { enabled: true, mode: 'link' } }))
 process.exit(results.every(Boolean) ? 0 : 1)

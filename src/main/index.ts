@@ -1498,8 +1498,13 @@ function start(server: boolean): void {
       })
     },
     emit: (indicator) => views.toAll('webAccess.changed', indicator),
-    terminals: terminalMirror
+    terminals: terminalMirror,
+    server
   })
+  // Server mode (design-web.md §9.2): web access is the only way in, so start writes it on (and the
+  // link mode over desktop confirm, which nobody could answer) to app.json, and says so once.
+  const turnedOn = webAccess.serverStart()
+  if (turnedOn !== undefined) console.log(turnedOn)
   const socket = new SocketServer({
     path: sock,
     fallbackDir: fallbackSocketDir(tmpdir(), uid),
@@ -2671,8 +2676,14 @@ function start(server: boolean): void {
       // without a socket, and its tabs get no CC_COCKPIT_SOCK (see the TabManager `sock` above).
       await socket.start()
       updateChecker.start()
-      // Not awaited: a port in use only logs, and no window waits for the gateway.
-      void webAccess.apply()
+      // Not awaited: a port in use only logs, and no window waits for the gateway. In server mode
+      // the first lines follow it (the address, a one-time link on a terminal, the wrapper's path;
+      // design-web.md §9.3); empty on the desktop.
+      void webAccess.apply().then(() => {
+        for (const line of webAccess.serverStartLines({ tty: process.stdout.isTTY === true, wrapperPath: paths.cccWrapper })) {
+          console.log(line)
+        }
+      })
       // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
       // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
       // build/ sits two levels above out/main. A missing file only leaves the default icon.

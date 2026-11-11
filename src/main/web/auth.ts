@@ -291,7 +291,8 @@ export class WebAuth {
   private readonly now: () => number
   private readonly log: (message: string) => void
   private currentMode: WebAccessMode | undefined
-  private once: { hash: string; expiresAt: number } | undefined
+  /** The one-time token's hash; `start` when server mode printed it at start (design-web.md §9.3). */
+  private once: { hash: string; expiresAt: number; start: boolean } | undefined
   /** Token creation and regeneration (and setting the password) one at a time: two Show clicks must not make two tokens. */
   private tokenQueue: Promise<unknown> = Promise.resolve()
   private readonly hasher: PasswordHasher
@@ -410,11 +411,18 @@ export class WebAuth {
     })
   }
 
-  /** A one-time "add a device" link, valid 10 minutes; it replaces the previous one. */
-  addDeviceLink(origin: string): { link: string; expiresAt: number } {
+  /**
+   * A one-time "add a device" link, valid 10 minutes; it replaces the previous one. `start`: the
+   * link server mode prints once at start on a terminal (design-web.md §9.3). The log records that
+   * one was issued and, later, which device used it, never the link: a start link someone else used
+   * first then shows up as a device the person does not know.
+   */
+  addDeviceLink(origin: string, options: { start?: boolean } = {}): { link: string; expiresAt: number } {
     const token = randomSecret()
     const expiresAt = this.now() + ADD_DEVICE_TTL_MS
-    this.once = { hash: hashSecret(token), expiresAt }
+    const start = options.start === true
+    this.once = { hash: hashSecret(token), expiresAt, start }
+    if (start) this.accessLog.write({ event: 'start-link', detail: 'issued' })
     return { link: this.link(origin, token), expiresAt }
   }
 
@@ -458,7 +466,10 @@ export class WebAuth {
     if (!added) return { ok: false, status: 503, error: 'too many devices; revoke some on the desktop' }
     // Used up only now that it let a device in; synchronous since the check, so no other attempt
     // can have used it in between.
-    if (isOnce) this.once = undefined
+    if (isOnce) {
+      if (once?.start === true) this.accessLog.write({ event: 'start-link', device: added.device.id, name: added.device.name, detail: 'used' })
+      this.once = undefined
+    }
     return { ok: true, device: added.device, cookie: added.cookie }
   }
 

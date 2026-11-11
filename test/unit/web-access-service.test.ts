@@ -1,18 +1,30 @@
 // Settings › General › Web access, main's side (plan Task 9): the strict change validation
 // (settings.ts `applyWebAccessPatch`), the risk rule for the warning badge, and the service that stores
 // a change, applies it to the gateway and answers the page (access-service.ts).
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
-import { WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
+import { SERVER_NONE_WARNING, SERVER_TURNED_ON_LINE, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { PasswordHasher } from '../../src/main/web/password'
 import type { GatewayStatus } from '../../src/main/web/gateway'
-import { applyWebAccessPatch, DEFAULT_WEB_ACCESS, listenPlanOf, storedWebAccess, webAccessOf, webAccessRiskIds, webAccessRisks } from '../../src/main/web/settings'
+import {
+  applyWebAccessPatch,
+  DEFAULT_WEB_ACCESS,
+  listenPlanOf,
+  SERVER_NO_CONFIRM_MODE,
+  SERVER_ONLY_WAY_IN,
+  serverConfirmCommand,
+  serverStartSettings,
+  storedWebAccess,
+  webAccessOf,
+  webAccessRiskIds,
+  webAccessRisks
+} from '../../src/main/web/settings'
 import type { WebAccessSettings } from '../../src/shared/types'
 import type { WebAccessIndicator, WebAccessSetReply, WebAccessView } from '../../src/shared/web-access'
 
@@ -637,5 +649,225 @@ describe('WebAccessService', () => {
       expect(service.indicator().warning).toMatch(/Sign-in is off/)
       expect(service.view().risks.length).toBeGreaterThan(0)
     })
+  })
+})
+
+describe('server mode: applyWebAccessPatch (design-web.md §9.2)', () => {
+  const on = { ...base, enabled: true }
+  const server = { server: true }
+
+  it('refuses turning web access off and the desktop-confirm mode, with the reason, only in server mode', () => {
+    expect(applyWebAccessPatch(on, { enabled: false }, server)).toEqual({ ok: false, error: SERVER_ONLY_WAY_IN })
+    expect(applyWebAccessPatch(on, { mode: 'confirm' }, server)).toEqual({ ok: false, error: SERVER_NO_CONFIRM_MODE })
+    expect(SERVER_NO_CONFIRM_MODE).toMatch(/no desktop/)
+    // The desktop keeps both.
+    expect(applyWebAccessPatch(on, { enabled: false })).toMatchObject({ ok: true, value: { enabled: false } })
+    expect(applyWebAccessPatch(on, { mode: 'confirm' }, { server: false })).toMatchObject({ ok: true, value: { mode: 'confirm' } })
+  })
+
+  it('takes the other modes, and None on loopback needs no confirm', () => {
+    for (const mode of ['link', 'password', 'none'] as const) {
+      expect(applyWebAccessPatch(on, { mode }, server)).toMatchObject({ ok: true, value: { mode } })
+    }
+    expect(applyWebAccessPatch(on, { mode: 'none', bind: '127.0.0.1' }, server)).toMatchObject({ ok: true })
+  })
+
+  it('the §4.3 confirms apply to network binds as on the desktop', () => {
+    expect(applyWebAccessPatch(on, { bind: '0.0.0.0' }, server)).toMatchObject({ ok: false, needsConfirm: ['plain-http'] })
+    expect(applyWebAccessPatch(on, { mode: 'none', bind: '10.0.0.4' }, server)).toMatchObject({
+      ok: false,
+      needsConfirm: ['none-network', 'plain-http']
+    })
+    const r = applyWebAccessPatch(on, { bind: '0.0.0.0', confirm: ['plain-http'] }, server)
+    expect(r).toMatchObject({ ok: true, value: { bind: '0.0.0.0', confirmed: ['plain-http'] } })
+  })
+})
+
+describe('server mode: what start writes (design-web.md §9.2)', () => {
+  it('writes web access on and link over desktop confirm; nothing when it already runs so', () => {
+    expect(serverStartSettings(base)).toEqual({ ...base, enabled: true })
+    expect(serverStartSettings({ ...base, mode: 'confirm' })).toEqual({ ...base, enabled: true, mode: 'link' })
+    expect(serverStartSettings({ ...base, enabled: true, mode: 'confirm' })).toEqual({ ...base, enabled: true, mode: 'link' })
+    for (const mode of ['link', 'password', 'none'] as const) expect(serverStartSettings({ ...base, enabled: true, mode })).toBeUndefined()
+  })
+
+  it('never makes a risky setting safer, and a confirm left in a record that was off confirms nothing', () => {
+    const off = { ...base, bind: '0.0.0.0', mode: 'none' as const, confirmed: ['none-network', 'plain-http'] as WebAccessSettings['confirmed'] }
+    const next = serverStartSettings(off)
+    expect(next).toEqual({ ...base, enabled: true, bind: '0.0.0.0', mode: 'none' })
+    expect(listenPlanOf(next as WebAccessSettings).ok).toBe(false)
+    // Already on and confirmed: the confirms stay with it.
+    const confirmed = { ...base, enabled: true, bind: '0.0.0.0', confirmed: ['plain-http'] as WebAccessSettings['confirmed'] }
+    expect(serverStartSettings(confirmed)).toBeUndefined()
+  })
+
+  it('builds the ccc web set line for the unconfirmed risks from the stored record, and that line applies them', () => {
+    expect(serverConfirmCommand({ ...base, enabled: true })).toBeUndefined()
+    expect(serverConfirmCommand({ ...base, enabled: true, bind: '0.0.0.0' })).toBe('ccc web set --bind 0.0.0.0 --confirm plain-http')
+    const both = { ...base, enabled: true, bind: '10.0.0.4', mode: 'none' as const }
+    expect(serverConfirmCommand(both)).toBe('ccc web set --bind 10.0.0.4 --confirm none-network --confirm plain-http')
+    expect(serverConfirmCommand({ ...both, confirmed: ['none-network'] })).toBe('ccc web set --bind 10.0.0.4 --confirm plain-http')
+    // An http proxy origin on a network name: the bind stays loopback and only the confirm is new.
+    expect(serverConfirmCommand({ ...base, enabled: true, externalOrigin: 'http://box.lan' })).toBe('ccc web set --bind 127.0.0.1 --confirm plain-http')
+    // A bind no confirm can fix has no line.
+    expect(serverConfirmCommand({ ...base, enabled: true, bind: 'box.lan' })).toBeUndefined()
+    // What the line asks for, as `ccc web set` will send it (Task 12), listens.
+    const r = applyWebAccessPatch(both, { bind: '10.0.0.4', confirm: ['none-network', 'plain-http'] }, { server: true })
+    expect(r.ok && listenPlanOf(r.value).ok).toBe(true)
+  })
+})
+
+describe('server mode: WebAccessService start and first lines (design-web.md §9.2, §9.3)', () => {
+  let dir: string
+  let stored: unknown
+  let accessLog: AccessLog
+  let auth: WebAuth
+  let status: GatewayStatus
+  const WRAPPER = '/data/bin/ccc'
+
+  /** A gateway that refuses as the real one does (listenPlanOf), or fails when told to. */
+  function make(server: boolean, fail?: string): WebAccessService {
+    const gateway: GatewayLike = {
+      async apply(settings) {
+        const plan = listenPlanOf(settings)
+        if (!settings.enabled) status = { state: 'off' }
+        else if (!plan.ok) status = { state: 'refused', reason: plan.reason }
+        else if (fail !== undefined) status = { state: 'failed', reason: fail }
+        else status = { state: 'listening', bind: settings.bind, port: settings.port }
+        auth.setMode(settings.mode)
+        return status
+      },
+      status: () => status,
+      connections: () => new Map(),
+      disconnectDevice: () => 0,
+      onConnectionsChanged: () => () => undefined
+    }
+    return new WebAccessService({
+      gateway,
+      auth,
+      read: () => stored,
+      write: (next) => {
+        stored = storedWebAccess(stored as Partial<WebAccessSettings> | undefined, next)
+      },
+      emit: () => undefined,
+      terminals: { start: () => undefined, drain: async () => undefined },
+      server
+    })
+  }
+
+  /** One start as main runs it: the write, the apply, the lines. */
+  async function startOnce(options: { server?: boolean; tty: boolean; fail?: string }): Promise<string[]> {
+    const service = make(options.server ?? true, options.fail)
+    const lines: string[] = []
+    const turnedOn = service.serverStart()
+    if (turnedOn !== undefined) lines.push(turnedOn)
+    await service.apply()
+    lines.push(...service.serverStartLines({ tty: options.tty, wrapperPath: WRAPPER }))
+    service.dispose()
+    return lines
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ccc-web-server-'))
+    stored = undefined
+    status = { state: 'off' }
+    accessLog = new AccessLog({ filePath: join(dir, 'logs', 'web-access.log') })
+    const devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog })
+    auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog, log: () => undefined })
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('a fresh data dir: on, link mode, loopback; the "turned on" line on the first start only', async () => {
+    const first = await startOnce({ tty: false })
+    expect(webAccessOf(stored)).toMatchObject({ enabled: true, mode: 'link', bind: '127.0.0.1', port: 7330 })
+    expect(first.filter((l) => l === SERVER_TURNED_ON_LINE)).toHaveLength(1)
+    expect(first[0]).toBe(SERVER_TURNED_ON_LINE)
+    const second = await startOnce({ tty: false })
+    expect(second).not.toContain(SERVER_TURNED_ON_LINE)
+    expect(second).toEqual(['cc-cockpit server mode: web access on http://127.0.0.1:7330', 'add a device: ccc web add-device', `ccc for a shell on this server: ${WRAPPER}`])
+  })
+
+  it('writes a stored off and a stored desktop confirm, keeping every other field', async () => {
+    stored = { enabled: false, mode: 'confirm', port: 8123, hosts: ['box.lan'], somethingElse: 1 }
+    const lines = await startOnce({ tty: false })
+    expect(lines[0]).toBe(SERVER_TURNED_ON_LINE)
+    expect(stored).toMatchObject({ enabled: true, mode: 'link', port: 8123, hosts: ['box.lan:8123'], somethingElse: 1 })
+  })
+
+  it('the desktop writes and prints nothing', async () => {
+    stored = { enabled: false, mode: 'confirm' }
+    const service = make(false)
+    expect(service.serverStart()).toBeUndefined()
+    expect(stored).toEqual({ enabled: false, mode: 'confirm' })
+    expect(service.serverStartLines({ tty: true, wrapperPath: WRAPPER })).toEqual([])
+    service.dispose()
+  })
+
+  it('a turn-off or desktop confirm from a change is refused through the service in server mode', async () => {
+    const service = make(true)
+    service.serverStart()
+    await expect(service.set({ enabled: false })).rejects.toThrow(SERVER_ONLY_WAY_IN)
+    await expect(service.set({ mode: 'confirm' })).rejects.toThrow(/desktop confirm/)
+    expect(webAccessOf(stored)).toMatchObject({ enabled: true, mode: 'link' })
+    service.dispose()
+  })
+
+  it('on a terminal in link mode: a one-time link that works once; off a terminal none', async () => {
+    const lines = await startOnce({ tty: true })
+    const linkLine = lines.find((l) => l.includes('#t='))
+    expect(linkLine).toMatch(/^Add a device \(works once, expires in 10 minutes\): http:\/\/127\.0\.0\.1:7330\/#t=[A-Za-z0-9_-]{43}$/)
+    const token = (linkLine ?? '').split('#t=')[1] ?? ''
+    expect(await auth.signInWithToken({ token, name: 'Phone' })).toMatchObject({ ok: true, device: { mode: 'add' } })
+    expect(await auth.signInWithToken({ token })).toMatchObject({ ok: false, status: 401 })
+    // The log says a start link was issued and used, never the link.
+    expect(accessLog.recent().filter((e) => e.event === 'start-link').map((e) => e.detail)).toEqual(['issued', 'used'])
+    expect(readFileSync(join(dir, 'logs', 'web-access.log'), 'utf8')).not.toContain(token)
+    expect((await startOnce({ tty: false })).some((l) => l.includes('#t='))).toBe(false)
+  })
+
+  it('points at the external origin when one is set', async () => {
+    stored = { enabled: true, externalOrigin: 'https://box.tailnet.ts.net' }
+    const lines = await startOnce({ tty: true })
+    expect(lines[0]).toBe('cc-cockpit server mode: web access on https://box.tailnet.ts.net')
+    expect(lines[1]).toMatch(/: https:\/\/box\.tailnet\.ts\.net\/#t=/)
+  })
+
+  it('password mode prints the address; None the address and the shared-server warning; neither a link', async () => {
+    stored = { enabled: true, mode: 'password' }
+    expect(await startOnce({ tty: true })).toEqual(['cc-cockpit server mode: web access on http://127.0.0.1:7330', `ccc for a shell on this server: ${WRAPPER}`])
+    stored = { enabled: true, mode: 'none' }
+    const none = await startOnce({ tty: true })
+    expect(none).toEqual(['cc-cockpit server mode: web access on http://127.0.0.1:7330', SERVER_NONE_WARNING, `ccc for a shell on this server: ${WRAPPER}`])
+    expect(SERVER_NONE_WARNING).toMatch(/every user of this machine/)
+    expect(accessLog.recent().some((e) => e.event === 'start-link')).toBe(false)
+  })
+
+  it('a stored unconfirmed risk: refused, the reason and the exact line, no link, the record unchanged', async () => {
+    stored = { enabled: true, bind: '0.0.0.0', mode: 'link' }
+    const before = JSON.stringify(stored)
+    const lines = await startOnce({ tty: true })
+    expect(status.state).toBe('refused')
+    expect(lines).toEqual([
+      expect.stringMatching(/^server mode: web access is not listening: plain http on a network address/),
+      'to listen anyway, run: ccc web set --bind 0.0.0.0 --confirm plain-http',
+      `ccc for a shell on this server: ${WRAPPER}`
+    ])
+    expect(JSON.stringify(stored)).toBe(before)
+    expect(lines.some((l) => l.includes('#t='))).toBe(false)
+    expect(accessLog.recent()).toEqual([])
+  })
+
+  it('a record that was off with a risk is turned on, then refused with its line: never made safer', async () => {
+    stored = { enabled: false, bind: '10.0.0.4', mode: 'none', confirmed: ['none-network', 'plain-http'] }
+    const lines = await startOnce({ tty: true })
+    expect(lines[0]).toBe(SERVER_TURNED_ON_LINE)
+    expect(lines).toContain('to listen anyway, run: ccc web set --bind 10.0.0.4 --confirm none-network --confirm plain-http')
+    expect(stored).toMatchObject({ enabled: true, bind: '10.0.0.4', mode: 'none' })
+    expect(stored).not.toHaveProperty('confirmed')
+  })
+
+  it('the gateway failing (a port in use): the reason, no link', async () => {
+    const lines = await startOnce({ tty: true, fail: 'port 7330 is in use' })
+    expect(lines).toEqual([SERVER_TURNED_ON_LINE, 'server mode: web access is not listening: port 7330 is in use', `ccc for a shell on this server: ${WRAPPER}`])
   })
 })

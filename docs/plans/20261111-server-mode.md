@@ -484,28 +484,28 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
   `src/main/web/auth.ts`, `src/main/web/access-log.ts`, `src/main/index.ts`, `scripts/server-mode-smoke.mjs`
 - Modify: `test/unit/web-access-service.test.ts`, `web-auth.test.ts`, `web-gateway.test.ts` (the settings cases)
 
-- [ ] at start in server mode a stored `enabled: false` is written `true` and a stored `confirm` mode is written `link`,
+- [x] at start in server mode a stored `enabled: false` is written `true` and a stored `confirm` mode is written `link`,
       and stdout says so once ("server mode: turned web access on in app.json"); no overlay, the stored record is what runs
-- [ ] `applyWebAccessPatch` in server mode refuses the `confirm` mode with its reason (nobody can answer the request)
+- [x] `applyWebAccessPatch` in server mode refuses the `confirm` mode with its reason (nobody can answer the request)
       and turning web access off ("server mode: web access is the only way in"); None on loopback needs no confirm and
       the §4.3 confirms apply to network binds as on the desktop
-- [ ] a stored risky setting without its confirm is refused as v1 does, never rewritten to something safer: nothing
+- [x] a stored risky setting without its confirm is refused as v1 does, never rewritten to something safer: nothing
       listens, start prints the reason and the exact line that applies it (`ccc web set --bind ... --confirm ...`, built
       from the stored record), and the app keeps running
-- [ ] the first lines: the address (the external origin when set, else the listen address); on a TTY in link mode a
+- [x] the first lines: the address (the external origin when set, else the listen address); on a TTY in link mode a
       one-time add-device link (`addDeviceLink`: used once, 10 minutes, only its hash in memory, never on disk);
       otherwise "add a device: `ccc web add-device`"; password mode the address; None the address and §9.12's warning
       (every local user reaches loopback); then the wrapper's path (`<data>/bin/ccc`)
-- [ ] `web-access.log` records that a start link was issued and the sign-in that used it, never the link
-- [ ] write tests: the two start writes and the one line; a fresh data dir (enabled, link mode, loopback, the "turned
+- [x] `web-access.log` records that a start link was issued and the sign-in that used it, never the link
+- [x] write tests: the two start writes and the one line; a fresh data dir (enabled, link mode, loopback, the "turned
       web access on" line on the first start and not on the second); `confirm` and off refused only in server mode; the
       refused stored risk with its exact line and the record unchanged; the link printed only for a TTY in link mode: no
       link on a TTY in password mode or in None, none off a TTY, none when the stored setting is refused and nothing
       listens; no token in the log
-- [ ] the smoke script: with stdout a pipe its output has the address and no `#t=`; one more run under a pty (node-pty,
+- [x] the smoke script: with stdout a pipe its output has the address and no `#t=`; one more run under a pty (node-pty,
       a dependency; `script -qfc` if its build does not load in plain Node): the `#t=` line appears, a `POST /auth/link`
-      with it answers 200 once and is refused the second time
-- [ ] run tests, the smoke script and `npm run test:e2e` (`web-access-settings`: `applyWebAccessPatch` is the desktop
+      with it answers 200 once and is refused the second time (node-pty loads in plain Node: used, 200 then 401)
+- [x] run tests, the smoke script and `npm run test:e2e` (`web-access-settings`: `applyWebAccessPatch` is the desktop
       settings page's too) - must pass before next task
 
 ### Task 8: Start order and stop [model: opus]
@@ -637,7 +637,9 @@ task only takes the hidden page out of the set of views that may own a size or a
       request's args over the private socket: never in argv, an error text, a reply or any log
 - [ ] `ccc web mode link|password|none`: `confirm` refused; `none` prints §9.12's shared-server warning
 - [ ] `ccc web set [--bind] [--port] [--origin] [--host]... [--tls-cert --tls-key | --no-tls] [--confirm
-      none-network|plain-http]` through the same `applyWebAccessPatch` as the settings page: a §4.3 risk is refused with
+      none-network|plain-http]` through the same `applyWebAccessPatch` as the settings page (➕ from Task 7: `--confirm`
+      may be given twice, once per risk; start prints `ccc web set --bind <bind> --confirm none-network --confirm
+      plain-http` when both are unconfirmed, `serverConfirmCommand` in `web/settings.ts`): a §4.3 risk is refused with
       its confirm text printed (`WEB_RISK_TEXT`) and applies only with its `--confirm`; no regexes in the parsing. The
       CLI makes `--tls-cert` and `--tls-key` absolute against its own cwd, as it does `--project`, and main refuses a
       relative one (main's cwd means nothing to the caller)
