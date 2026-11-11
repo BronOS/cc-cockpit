@@ -145,6 +145,9 @@ desktop, a Files "Download" item, more than one person.
   specs never use the queued test dialogs for the link, trash and close paths: those fakes hid the crash. Existing e2e
   specs keep passing, and every task that edits an always-on desktop path names the specs of its exit gate: Tasks 1, 3
   to 12 and 14 to 24 (Tasks 2, 13 and 25 run the whole suite)
+  The existing specs need a display (window tests, a window manager; CI does not run them), so a display-less Linux shell
+  would detect server mode and re-exec them headless: run `npm run test:e2e` from a desktop session. Task 2's harness
+  removes `DISPLAY` only for `launchServer`, never for the existing launches.
 
 ## Progress Tracking
 
