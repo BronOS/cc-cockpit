@@ -1664,7 +1664,14 @@ describe('registerWebAccessHandlers', () => {
   function webAccessSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
-    const view = { form: { enabled: false, port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const }, bind: '127.0.0.1', gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false }
+    const view = {
+      form: { enabled: false, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: [], mode: 'link' as const, certPath: '', keyPath: '' },
+      network: false,
+      gateway: { state: 'off' as const },
+      devices: [],
+      risks: [],
+      passwordSet: false
+    }
     registerWebAccessHandlers(router, {
       view: () => (calls.push(['view']), view),
       set: async (patch) => (calls.push(['set', patch]), view),

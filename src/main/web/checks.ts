@@ -15,7 +15,7 @@
 // No regexes (the spike had two): names go through settings.ts (URL, net.isIP).
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { NetworkInterfaceInfo } from 'node:os'
-import { isLoopbackBind } from './settings'
+import { isLoopbackBind, isWildcardBind } from './settings'
 import { OVERLAY_PAGES_PATH, PLUGIN_PAGES_PATH } from '../../shared/web-protocol'
 
 export interface HostListInput {
@@ -37,10 +37,13 @@ export function allowedHosts({ bind, port, hosts, externalOrigin, interfaces, ho
   // (a 127.0.0.1 bind does not answer on ::1, so that one is only ever a refused connection).
   const out = new Set<string>([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`])
   const b = bind.toLowerCase()
-  if (b !== 'localhost' && b !== '::1') out.add(`${b}:${port}`)
+  // A wildcard (0.0.0.0, ::) is not a name a browser should use: a page reaching `0.0.0.0` lands on
+  // this machine from any site ("0.0.0.0 day"), so it stays out of the list; the machine's own
+  // addresses below are what a browser on the LAN types. An IPv6 address is bracketed, as in a Host.
+  if (b !== 'localhost' && b !== '::1' && !isWildcardBind(b)) out.add(b.includes(':') ? `[${b}]:${port}` : `${b}:${port}`)
   if (!isLoopbackBind(bind)) {
-    // A network bind (plan Task 28): the machine's own addresses and mDNS name, as the spike proved
-    // on the LAN. IPv4 only: an IPv6 Host needs brackets and zone ids; the person can list one.
+    // A network bind: the machine's own addresses and mDNS name, as the spike proved on the LAN.
+    // IPv4 only: an IPv6 Host needs brackets and zone ids; the person can list one.
     for (const list of Object.values(interfaces ?? {})) {
       for (const addr of list ?? []) {
         if (addr.family === 'IPv4' && !addr.internal) out.add(`${addr.address}:${port}`)
@@ -66,7 +69,7 @@ export function checkHost(hostHeader: string | undefined, allowed: ReadonlySet<s
 }
 
 export interface OriginRule {
-  /** The scheme the gateway itself serves (`http` until TLS, plan Task 28). */
+  /** The scheme the gateway itself serves: `https` with TLS settings, else `http`. */
   scheme: 'http' | 'https'
   /** The proxy's origin when one is in front (settings.ts externalOriginOf). */
   externalOrigin?: string

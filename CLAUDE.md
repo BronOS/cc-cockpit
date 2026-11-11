@@ -16,7 +16,8 @@ is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checke
 
 ## Commands
 
-- `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright; the OAuth spec needs `openssl` on PATH).
+- `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
+  gateway's TLS unit tests (`web-gateway.test.ts`) need `openssl` on PATH.
 - `npm run typecheck`, `npm run lint`.
 - `npm run build` (runs `build:hello`, `build:browser` and `build:reviewer` first), `npm run build:hello` (rebuild after editing
   `plugins/hello`; the dist is committed), `npm run build:reviewer` (bundles the overlay page of `plugins/reviewer` into the committed `overlay/review.bundle.js`; the reviewer, editor, files and sessions hosts are plain JS, with no build), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its

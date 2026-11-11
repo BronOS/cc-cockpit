@@ -611,15 +611,18 @@ remote client, a phone layout, headless server mode (design §9, §10).
 **Files:**
 - Modify: `src/main/web/settings.ts`, `src/main/web/gateway.ts`, the settings UI, a confirm dialog in the renderer
 - Modify: their tests
+- ➕ Also: `src/main/web/{access-service,auth,checks}.ts`, `src/shared/{web-access,types,ipc}.ts`, `src/main/index.ts`,
+  `src/main/ipc/router.ts`, `src/renderer/settings/RiskConfirmDialog.tsx` (new), `test/e2e/web-access-settings.spec.ts`,
+  `docs/features.md`, `CLAUDE.md` (openssl for the TLS unit tests)
 
-- [ ] lift Task 4's loopback-only rule: a non-loopback bind is allowed with TLS (cert and key paths) or after the
+- [x] lift Task 4's loopback-only rule: a non-loopback bind is allowed with TLS (cert and key paths) or after the
       plain-http confirm; external origin for a proxy in front
-- [ ] the §4.3 confirms with the design's text: None on a non-loopback address, any mode over plain http on a
+- [x] the §4.3 confirms with the design's text: None on a non-loopback address, any mode over plain http on a
       non-loopback address; the warning badge while on
-- [ ] None mode says in the UI that revoke has no effect; Host and Origin still apply
-- [ ] write tests: each risky choice requires the confirm, a refused confirm leaves loopback, the TLS server serves
+- [x] None mode says in the UI that revoke has no effect; Host and Origin still apply
+- [x] write tests: each risky choice requires the confirm, a refused confirm leaves loopback, the TLS server serves
       https, None on the LAN after the confirm
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 29: e2e part 1: sign-in and terminal mirror [model: opus]
 

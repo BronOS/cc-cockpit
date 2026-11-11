@@ -9,6 +9,7 @@ import type {
   WebAccessIndicator,
   WebActionReply,
   WebAccessPatch,
+  WebAccessSetReply,
   WebAccessView,
   WebDeviceView,
   WebGatewayView,
@@ -17,7 +18,7 @@ import type {
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
 import type { GatewayStatus } from './gateway'
-import { applyWebAccessPatch, listenPlanOf, webAccessOf, webAccessRisks } from './settings'
+import { applyWebAccessPatch, isLoopbackBind, listenPlanOf, webAccessOf, webAccessRisks } from './settings'
 
 /** The part of the gateway this needs (a fake in tests). */
 export interface GatewayLike {
@@ -33,7 +34,7 @@ export interface WebAccessServiceDeps {
   auth: WebAuth
   /** `app.json` › `webAccess` as stored (untrusted: a user-writable file). */
   read(): unknown
-  /** Stores the next settings; only the editable fields are passed (the bind and TLS stay as stored). */
+  /** Stores the next settings (every field the page edits, and the confirmed risks). */
   write(next: WebAccessSettings): void
   /** Tells the desktop windows (`webAccess.changed`). */
   emit(indicator: WebAccessIndicator): void
@@ -93,12 +94,15 @@ export class WebAccessService {
     return {
       form: {
         enabled: settings.enabled,
+        bind: settings.bind,
         port: settings.port,
         externalOrigin: settings.externalOrigin ?? '',
         hosts: settings.hosts,
-        mode: settings.mode
+        mode: settings.mode,
+        certPath: settings.tls?.certPath ?? '',
+        keyPath: settings.tls?.keyPath ?? ''
       },
-      bind: settings.bind,
+      network: !isLoopbackBind(settings.bind),
       gateway,
       devices,
       // A risky choice that is refused (nothing listens) is no risk: the badge is for what is live.
@@ -124,13 +128,19 @@ export class WebAccessService {
 
   /**
    * Validates, stores and applies a change; throws the reason (an Error the settings page shows)
-   * when the change is invalid, and then nothing changed. A change the gateway cannot act on (the
-   * port is taken) is stored all the same and shows as the gateway's `failed` state in the view.
+   * when the change is invalid, and then nothing changed. A change that brings in a §4.3 risk not
+   * confirmed answers `needsConfirm` and stores nothing either: the page shows the confirm and sends
+   * the change again with `confirm`, and a cancelled confirm leaves everything as it was. A change
+   * the gateway cannot act on (the port is taken, a certificate unreadable) is stored all the same
+   * and shows as the gateway's `failed` state in the view.
    */
-  async set(patch: WebAccessPatch): Promise<WebAccessView> {
+  async set(patch: WebAccessPatch): Promise<WebAccessSetReply> {
     const current = this.settings()
     const result = applyWebAccessPatch(current, patch)
-    if (!result.ok) throw new Error(result.error)
+    if (!result.ok) {
+      if (result.needsConfirm) return { needsConfirm: result.needsConfirm }
+      throw new Error(result.error)
+    }
     // With no password, the password mode lets nobody in: the page sets one first (setPassword).
     if (result.value.mode === 'password' && current.mode !== 'password' && !this.deps.auth.hasPassword()) {
       throw new Error('set a password first')

@@ -44,8 +44,9 @@ describe('webAccessOf', () => {
     expect(webAccessOf({ port: 65535 }).port).toBe(65535)
   })
 
-  it('keeps a network bind as typed (refused later), lowercased and trimmed', () => {
+  it('keeps a network bind as typed (refused later unless confirmed), lowercased and trimmed', () => {
     expect(webAccessOf({ bind: ' 0.0.0.0 ' }).bind).toBe('0.0.0.0')
+    expect(webAccessOf({ bind: '[FD00::4]' }).bind).toBe('fd00::4')
     expect(webAccessOf({ bind: 'LocalHost' }).bind).toBe('localhost')
     expect(webAccessOf({ bind: '  ' }).bind).toBe('127.0.0.1')
   })
@@ -55,6 +56,8 @@ describe('webAccessOf', () => {
     expect(webAccessOf({ mode: 'toString' }).mode).toBe('link')
     expect(webAccessOf({ tls: { certPath: '/c.pem', keyPath: '/k.pem' } }).tls).toEqual({ certPath: '/c.pem', keyPath: '/k.pem' })
     expect(webAccessOf({ tls: { certPath: '/c.pem', keyPath: '' } }).tls).toBeUndefined()
+    // A relative path would follow the app's working folder: read as no TLS.
+    expect(webAccessOf({ tls: { certPath: 'c.pem', keyPath: '/k.pem' } }).tls).toBeUndefined()
     expect(webAccessOf({ externalOrigin: 'https://Box.Tail1234.ts.net/' }).externalOrigin).toBe('https://box.tail1234.ts.net')
   })
 
@@ -103,16 +106,27 @@ describe('listenPlanOf', () => {
     }
   })
 
-  it('refuses every network bind until TLS and the confirms exist', () => {
-    for (const bind of ['0.0.0.0', '::', '192.168.1.20', 'devbox.local', '128.0.0.1', '127.0.0.1.evil.example', '1.127.0.0']) {
+  it('refuses a network bind over plain http that was never confirmed (plan Task 28: TLS or the confirm)', () => {
+    for (const bind of ['0.0.0.0', '::', '192.168.1.20', '128.0.0.1', '1.127.0.0']) {
       const plan = listenPlanOf(on({ bind }))
       expect(plan.ok, bind).toBe(false)
-      if (!plan.ok) expect(plan.reason).toContain('loopback only')
+      if (!plan.ok) expect(plan.reason).toContain('needs a certificate, or the confirm')
+      expect(listenPlanOf(on({ bind, confirmed: ['plain-http'] })).ok, bind).toBe(true)
+      expect(listenPlanOf(on({ bind, tls: { certPath: '/c.pem', keyPath: '/k.pem' } })).ok, bind).toBe(true)
     }
   })
 
-  it('refuses a plain-http external origin on a network name, allows https and loopback http', () => {
+  it('refuses a bind that is a name, not an address, whatever is confirmed', () => {
+    for (const bind of ['devbox.local', '127.0.0.1.evil.example', 'localhost.evil.example']) {
+      const plan = listenPlanOf(on({ bind, confirmed: ['plain-http'], tls: { certPath: '/c.pem', keyPath: '/k.pem' } }))
+      expect(plan.ok, bind).toBe(false)
+      if (!plan.ok) expect(plan.reason).toContain('not an IP address')
+    }
+  })
+
+  it('refuses a plain-http external origin on a network name unless confirmed, allows https and loopback http', () => {
     expect(listenPlanOf(on({ externalOrigin: 'http://box.lan' })).ok).toBe(false)
+    expect(listenPlanOf(on({ externalOrigin: 'http://box.lan', confirmed: ['plain-http'] })).ok).toBe(true)
     expect(listenPlanOf(on({ externalOrigin: 'https://box.ts.net' }))).toMatchObject({ ok: true, externalOrigin: 'https://box.ts.net' })
     expect(listenPlanOf(on({ externalOrigin: 'http://localhost:8080' })).ok).toBe(true)
   })
@@ -149,9 +163,13 @@ describe('allowedHosts / checkHost', () => {
     expect(checkHost(undefined, hosts)).toBeUndefined()
   })
 
-  it('adds the machine’s addresses and mDNS name only for a network bind (plan Task 28)', () => {
+  it('adds the machine’s addresses and mDNS name only for a network bind, never the wildcard itself (plan Task 28)', () => {
     const hosts = allowedHosts({ bind: '0.0.0.0', port: 1, hosts: [], interfaces: INTERFACES, hostname: 'mac.local' })
-    expect([...hosts].sort()).toEqual(['0.0.0.0:1', '127.0.0.1:1', '192.168.1.20:1', '[::1]:1', 'localhost:1', 'mac.local:1'])
+    expect([...hosts].sort()).toEqual(['127.0.0.1:1', '192.168.1.20:1', '[::1]:1', 'localhost:1', 'mac.local:1'])
+    expect(allowedHosts({ bind: '::', port: 1, hosts: [], interfaces: INTERFACES, hostname: 'mac' }).has(':::1')).toBe(false)
+    // One address of the machine: that one, as a browser writes it (an IPv6 one in brackets).
+    expect(allowedHosts({ bind: '10.0.0.4', port: 1, hosts: [] }).has('10.0.0.4:1')).toBe(true)
+    expect(allowedHosts({ bind: 'fd00::4', port: 1, hosts: [] }).has('[fd00::4]:1')).toBe(true)
   })
 })
 
@@ -173,6 +191,12 @@ describe('checkOrigin', () => {
     expect(checkOrigin('http://127.0.0.1:7777/', '127.0.0.1:7777', rule)).toBe(false)
     expect(checkOrigin('', '127.0.0.1:7777', rule)).toBe(false)
     expect(checkOrigin(undefined, '127.0.0.1:7777', rule)).toBe(false)
+  })
+
+  it('over TLS, wants the https page origin and refuses the http one', () => {
+    const tls = { scheme: 'https' as const }
+    expect(checkOrigin('https://192.168.1.20:7777', '192.168.1.20:7777', tls)).toBe(true)
+    expect(checkOrigin('http://192.168.1.20:7777', '192.168.1.20:7777', tls)).toBe(false)
   })
 
   it('takes the external origin behind a proxy while Host is loopback', () => {

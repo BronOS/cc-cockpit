@@ -19,6 +19,10 @@ import {
   indicatorTitle,
   isDirty,
   modeNeedsPassword,
+  NONE_MODE_NOTE,
+  NONE_REVOKE_NOTE,
+  confirmedPatch,
+  confirmsNeeded,
   MODE_CHANGE_KEEPS_DEVICES,
   modeHelp,
   modeOptions,
@@ -27,13 +31,13 @@ import {
   qrText,
   revealFrom
 } from '../../src/renderer/settings/web-access-model'
-import type { WebAccessForm } from '../../src/shared/web-access'
+import { WEB_RISK_TEXT, type WebAccessForm } from '../../src/shared/web-access'
 
 const TOKEN = 'T0kenT0kenT0kenT0kenT0kenT0kenT0kenT0kenT0k'
 const LINK = `http://127.0.0.1:7330/#t=${TOKEN}`
 const NOW = 1_700_000_000_000
 
-const form: WebAccessForm = { enabled: true, port: 7330, externalOrigin: '', hosts: ['box.local:7330'], mode: 'link' }
+const form: WebAccessForm = { enabled: true, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: ['box.local:7330'], mode: 'link', certPath: '', keyPath: '' }
 
 describe('Show hides the link by default', () => {
   it('prints the mask, never the token, until a reply has been revealed', () => {
@@ -83,7 +87,7 @@ describe('the address form', () => {
 
   it('is clean until something differs, and an untouched draft makes an empty patch', () => {
     const draft = draftOf(form)
-    expect(draft).toEqual({ port: '7330', externalOrigin: '', hosts: 'box.local' })
+    expect(draft).toEqual({ bind: '127.0.0.1', port: '7330', externalOrigin: '', hosts: 'box.local', certPath: '', keyPath: '' })
     expect(patchOf(form, draft)).toEqual({ patch: {} })
     expect(isDirty(form, draft)).toBe(false)
   })
@@ -97,6 +101,16 @@ describe('the address form', () => {
     expect(patchOf(form, { ...draftOf(form), hosts: '' })).toEqual({ patch: { hosts: [] } })
   })
 
+  it('sends the bind and the certificate (plan Task 28); both paths emptied clears TLS', () => {
+    expect(patchOf(form, { ...draftOf(form), bind: ' 0.0.0.0 ' })).toEqual({ patch: { bind: '0.0.0.0' } })
+    expect(patchOf(form, { ...draftOf(form), certPath: '/c.pem', keyPath: '/k.pem' })).toEqual({ patch: { tls: { certPath: '/c.pem', keyPath: '/k.pem' } } })
+    // One path alone is sent as it is: main says which one is missing.
+    expect(patchOf(form, { ...draftOf(form), certPath: '/c.pem' })).toEqual({ patch: { tls: { certPath: '/c.pem', keyPath: '' } } })
+    const withTls = { ...form, certPath: '/c.pem', keyPath: '/k.pem' }
+    expect(patchOf(withTls, { ...draftOf(withTls), certPath: ' ', keyPath: '' })).toEqual({ patch: { tls: null } })
+    expect(patchOf(withTls, draftOf(withTls))).toEqual({ patch: {} })
+  })
+
   it('refuses a port that is not a whole number before sending anything', () => {
     for (const port of ['', ' ', 'abc', '80.5', '1e2x']) {
       expect(patchOf(form, { ...draftOf(form), port })).toEqual({ error: 'The port must be a whole number.' })
@@ -104,6 +118,34 @@ describe('the address form', () => {
     }
     // A number outside the range is main's to refuse, with its own words.
     expect(patchOf(form, { ...draftOf(form), port: '80' })).toEqual({ patch: { port: 80 } })
+  })
+})
+
+describe('the §4.3 confirms (plan Task 28)', () => {
+  it('a needsConfirm reply asks, a page reply does not', () => {
+    expect(confirmsNeeded({ needsConfirm: ['none-network', 'plain-http'] })).toEqual(['none-network', 'plain-http'])
+    const page = { form, network: false, gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false }
+    expect(confirmsNeeded(page)).toBeUndefined()
+  })
+
+  it('the change goes again with the confirms added, the rest unchanged', () => {
+    expect(confirmedPatch({ bind: '0.0.0.0' }, ['plain-http'])).toEqual({ bind: '0.0.0.0', confirm: ['plain-http'] })
+    expect(confirmedPatch({ mode: 'none', confirm: ['plain-http'] }, ['none-network', 'plain-http'])).toEqual({ mode: 'none', confirm: ['plain-http', 'none-network'] })
+  })
+
+  it('the None texts say revoke has no effect and that Host and Origin still apply', () => {
+    expect(NONE_MODE_NOTE).toContain('Revoke has no effect')
+    expect(NONE_MODE_NOTE).toContain('Host and Origin checks still apply')
+    expect(NONE_REVOKE_NOTE).toContain('Revoke has no effect')
+  })
+
+  it('the None-on-a-network confirm says plainly what anyone could do (design §4.3 text)', () => {
+    const t = WEB_RISK_TEXT['none-network']
+    expect(t.title).toBe('Anyone who can reach this address controls this computer.')
+    const body = t.paragraphs.join(' ')
+    for (const part of ['read and type in your terminals', 'run Claude with your account', 'plugin accounts', 'go around the proxy']) expect(body).toContain(part)
+    expect(t.accept).toBe('I understand, turn off sign-in')
+    expect(WEB_RISK_TEXT['plain-http'].paragraphs.join(' ')).toContain('readable text')
   })
 })
 

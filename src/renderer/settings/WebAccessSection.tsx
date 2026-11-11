@@ -1,11 +1,14 @@
 import { useEffect, useId, useState } from 'react'
-import type { WebAccessMode } from '../../shared/types'
+import type { WebAccessMode, WebAccessRisk } from '../../shared/types'
 import type { WebAccessPatch, WebAccessView, WebDeviceView } from '../../shared/web-access'
 import { qrOf } from './qr'
+import { RiskConfirmDialog } from './RiskConfirmDialog'
 import { Empty, Group, Row, Select, Switch } from './ui'
 import { useAction, type Action } from './use-action'
 import { useLoaded } from './use-loaded'
 import {
+  confirmedPatch,
+  confirmsNeeded,
   deviceDetail,
   displayedLink,
   draftOf,
@@ -16,6 +19,8 @@ import {
   modeHelp,
   modeNeedsPassword,
   modeOptions,
+  NONE_MODE_NOTE,
+  NONE_REVOKE_NOTE,
   passwordDraftProblem,
   patchOf,
   qrText,
@@ -59,7 +64,9 @@ export function WebAccessSection(): React.JSX.Element {
         {error && <p role="alert" className="settings-alert">{error}</p>}
         {view.data && <WebAccessCard data={view.data} busy={busy} run={run} reload={reload} />}
       </Group>
-      {view.data && <Devices devices={view.data.devices} busy={busy} run={run} reload={reload} now={now} />}
+      {view.data && (
+        <Devices devices={view.data.devices} noSignIn={view.data.form.mode === 'none'} busy={busy} run={run} reload={reload} now={now} />
+      )}
     </>
   )
 }
@@ -77,8 +84,15 @@ function WebAccessCard(props: {
   // Picked the password mode with no password set: main refuses the switch, so the password rows ask
   // for one first and switch after it is saved. Cleared by any other pick.
   const [pendingPassword, setPendingPassword] = useState(false)
+  // A change main answered with `needsConfirm` (design-web.md §4.3): nothing is saved until every
+  // risk in it is confirmed, then the same change goes again with `confirm`.
+  const [ask, setAsk] = useState<{ patch: WebAccessPatch; risks: WebAccessRisk[] } | null>(null)
   const save = (value: WebAccessPatch): void => {
-    void run('web-access', () => window.cockpit.invoke('settings.webAccessSet', { value })).then(reload)
+    void run('web-access', () => window.cockpit.invoke('settings.webAccessSet', { value })).then((reply) => {
+      const risks = reply && confirmsNeeded(reply)
+      if (risks) setAsk({ patch: value, risks })
+      reload()
+    })
   }
   const pickMode = (mode: WebAccessMode): void => {
     if (modeNeedsPassword(mode, data.passwordSet)) {
@@ -91,6 +105,15 @@ function WebAccessCard(props: {
   const shownMode = pendingPassword ? 'password' : form.mode
   return (
     <>
+      {ask && (
+        <RiskConfirmDialog
+          risks={ask.risks}
+          onAnswer={(accepted) => {
+            setAsk(null)
+            if (accepted) save(confirmedPatch(ask.patch, ask.risks))
+          }}
+        />
+      )}
       {data.risks.length > 0 && (
         <div role="alert" className="settings-alert" data-testid="web-access-risks">
           {data.risks.map((r) => (
@@ -109,9 +132,18 @@ function WebAccessCard(props: {
           htmlFor={`${id}-enabled`}
           help={
             <>
-              Listens on {data.bind}, so only this computer can reach it directly; to use it from a phone or
-              another computer, put a proxy that publishes it (Tailscale Serve, an SSH tunnel) in front and enter
-              its address below.
+              {data.network ? (
+                <>
+                  Listens on {form.bind}, so other devices on the network reach it directly
+                  {form.certPath !== '' ? ' over https.' : ', over plain http.'}
+                </>
+              ) : (
+                <>
+                  Listens on {form.bind}, so only this computer can reach it directly; to use it from a phone or
+                  another computer, put a proxy that publishes it (Tailscale Serve, an SSH tunnel) in front and
+                  enter its address below, or listen on the network.
+                </>
+              )}
               {(gateway.state === 'refused' || gateway.state === 'failed') && (
                 <span className="warn"> Not listening: {gateway.reason}.</span>
               )}
@@ -160,10 +192,7 @@ function WebAccessCard(props: {
           />
         )}
         {form.mode === 'none' && !pendingPassword && (
-          <Row
-            label="No sign-in"
-            help="Anyone who can reach the address controls this computer. Host and Origin checks still apply. Use it only behind a proxy that signs people in."
-          />
+          <Row label="No sign-in" help={NONE_MODE_NOTE} />
         )}
       </div>
     </>
@@ -188,7 +217,7 @@ function AddressForm(props: {
   const [draft, setDraft] = useState<WebAccessDraft>(() => draftOf(form))
   // Follow main's copy when it changes (another window, a refused save): adjusted while rendering.
   // Only the address fields: a toggle or the sign-in select changes the rest of `form` and must not drop an unsaved edit.
-  const savedKey = JSON.stringify([form.port, form.externalOrigin, form.hosts])
+  const savedKey = JSON.stringify([form.bind, form.port, form.externalOrigin, form.hosts, form.certPath, form.keyPath])
   const [seen, setSeen] = useState(savedKey)
   if (seen !== savedKey) {
     setSeen(savedKey)
@@ -207,6 +236,20 @@ function AddressForm(props: {
   }
   return (
     <>
+      <Row
+        label="Listen on"
+        htmlFor={`${id}-bind`}
+        help="127.0.0.1: this computer only (a proxy can publish it). 0.0.0.0: every network this computer is on, so a phone on the same Wi-Fi can open it; or one of this computer's addresses for that network only. On a network, without a certificate or with no sign-in, you are asked to confirm first."
+      >
+        <input
+          id={`${id}-bind`}
+          type="text"
+          value={draft.bind}
+          spellCheck={false}
+          disabled={props.busy !== null}
+          onChange={(e) => setDraft({ ...draft, bind: e.target.value })}
+        />
+      </Row>
       <Row label="Port" htmlFor={`${id}-port`} help="The port on this computer. 1024 to 65535.">
         <input
           id={`${id}-port`}
@@ -218,9 +261,35 @@ function AddressForm(props: {
         />
       </Row>
       <Row
+        className="web-access-tls"
+        label="Certificate"
+        htmlFor={`${id}-cert`}
+        help="For https: the full path of a certificate file (PEM, with its chain) and of its key file, such as the ones tailscale cert or mkcert writes. Empty: plain http. Read when web access starts, so a renewed certificate takes effect after turning it off and on."
+      >
+        <input
+          id={`${id}-cert`}
+          type="text"
+          aria-label="Certificate file"
+          value={draft.certPath}
+          placeholder="/path/to/cert.pem"
+          spellCheck={false}
+          disabled={props.busy !== null}
+          onChange={(e) => setDraft({ ...draft, certPath: e.target.value })}
+        />
+        <input
+          type="text"
+          aria-label="Key file"
+          value={draft.keyPath}
+          placeholder="/path/to/key.pem"
+          spellCheck={false}
+          disabled={props.busy !== null}
+          onChange={(e) => setDraft({ ...draft, keyPath: e.target.value })}
+        />
+      </Row>
+      <Row
         label="External address"
         htmlFor={`${id}-origin`}
-        help="Where browsers reach this through a proxy, such as https://box.tailnet.ts.net. Empty: only this computer's own address. Plain http is refused for any name but this computer."
+        help="Where browsers reach this through a proxy, or the name the certificate is for, such as https://box.tailnet.ts.net. Empty: this computer's own addresses. Plain http on any name but this computer asks you to confirm first."
       >
         <input
           id={`${id}-origin`}
@@ -459,6 +528,8 @@ function LinkDisplay(props: { reveal: LinkReveal; now: number; label: string }):
 
 function Devices(props: {
   devices: WebDeviceView[]
+  /** None is on: Revoke keeps nobody out, and the list says so. */
+  noSignIn: boolean
   busy: string | null
   run: Action['run']
   reload: () => void
@@ -497,6 +568,11 @@ function Devices(props: {
       }
     >
       <div className="settings-card" data-testid="web-access-devices">
+        {props.noSignIn && (
+          <p className="settings-alert warn inset" data-testid="web-access-none-revoke">
+            {NONE_REVOKE_NOTE}
+          </p>
+        )}
         {devices.length === 0 ? (
           <Empty>No device has signed in.</Empty>
         ) : (

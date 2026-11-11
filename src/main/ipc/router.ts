@@ -42,7 +42,7 @@ import type { PluginServicesView } from '../../shared/services'
 import type { TabFlag } from '../../shared/tab-flag'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
-import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebActionReply, WebLinkReply } from '../../shared/web-access'
+import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from '../../shared/web-access'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
@@ -881,7 +881,7 @@ export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHa
  */
 export interface WebAccessHandlerDeps {
   view(): WebAccessView
-  set(patch: WebAccessPatch): Promise<WebAccessView>
+  set(patch: WebAccessPatch): Promise<WebAccessSetReply>
   link(): Promise<WebLinkReply>
   regenerate(): Promise<WebLinkReply>
   addDevice(): WebLinkReply

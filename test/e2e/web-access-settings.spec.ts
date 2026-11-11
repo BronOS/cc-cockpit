@@ -3,6 +3,9 @@
 // device in the list and the top bar, Disconnect closes it, Revoke signs it out.
 // Plan Task 27: the password mode asks for a password before it switches; a desktop-confirm request
 // shows as a card in the window, never answered by Enter, allowed only with the browser's code.
+// Plan Task 28: a network bind over plain http, and None on a network address, open the §4.3
+// confirm; Cancel (or Esc) leaves loopback. The confirm is never accepted here: a test never listens
+// on a network address.
 import { request } from 'node:http'
 import { WebSocket } from 'ws'
 import type { CockpitApi } from '../../src/shared/ipc'
@@ -165,4 +168,60 @@ test('web access sign-in modes: a password before the switch, a desktop confirm 
   const allowed = await post(port, '/auth/confirm/poll', { ticket })
   expect(JSON.parse(allowed.body)).toMatchObject({ state: 'allowed', device: { name: 'Test tablet' } })
   expect(allowed.cookie).toContain('ccc_device=')
+})
+
+test('web access network binds: the §4.3 confirms, and a cancelled one leaves loopback', async ({ cockpit }) => {
+  test.setTimeout(60_000)
+  const { page } = cockpit
+  const port = 20000 + Math.floor(Math.random() * 20000)
+  const settings = page.getByRole('dialog', { name: 'Settings' })
+  const confirm = page.getByTestId('web-access-risk-confirm')
+  const saved = (): Promise<{ bind: string; enabled: boolean; mode: string }> =>
+    page.evaluate(async () => (await (window as unknown as { cockpit: CockpitApi }).cockpit.invoke('settings.webAccess')).form)
+
+  await page.keyboard.press('ControlOrMeta+,')
+  await expect(settings).toBeVisible()
+  await settings.getByLabel('Port', { exact: true }).fill(String(port))
+  await settings.getByRole('button', { name: 'Save' }).click()
+  await expect(settings.getByLabel('Port', { exact: true })).toHaveValue(String(port))
+  const enabled = settings.getByRole('checkbox', { name: 'Allow browsers to connect' })
+  await enabled.click()
+  await expect(settings.getByText(`listening on port ${port}`)).toBeVisible()
+
+  // Plain http on every network: the confirm says what it means; Cancel has the focus, so Enter keeps loopback.
+  const bind = settings.getByLabel('Listen on', { exact: true })
+  await bind.fill('0.0.0.0')
+  await settings.getByRole('button', { name: 'Save' }).click()
+  await expect(confirm).toBeVisible()
+  await expect(confirm).toHaveAttribute('data-risk', 'plain-http')
+  await expect(confirm).toContainText('unencrypted')
+  await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(confirm).toHaveCount(0)
+  expect(await saved()).toMatchObject({ bind: '127.0.0.1', enabled: true })
+  await expect(settings.getByText(`listening on port ${port}`)).toBeVisible()
+  await expect(page.locator('header.top-strip .web-access-chip.warn')).toHaveCount(0)
+
+  // None on a network address (with TLS, so only that risk), chosen while off: turning on asks with
+  // the design's words; Esc cancels and web access stays off.
+  await enabled.click()
+  await expect(enabled).not.toBeChecked()
+  await settings.getByLabel('Certificate file').fill('/nonexistent/cert.pem')
+  await settings.getByLabel('Key file').fill('/nonexistent/key.pem')
+  await settings.getByRole('button', { name: 'Save' }).click()
+  await expect(settings.getByLabel('Listen on', { exact: true })).toHaveValue('0.0.0.0')
+  await expect(confirm).toHaveCount(0)
+  await settings.getByRole('combobox', { name: 'Sign-in' }).selectOption('none')
+  await expect(settings.getByText('Revoke has no effect in this mode')).toBeVisible()
+  await expect(settings.getByTestId('web-access-none-revoke')).toBeVisible()
+  await enabled.click()
+  await expect(confirm).toBeVisible()
+  await expect(confirm).toHaveAttribute('data-risk', 'none-network')
+  await expect(confirm.getByRole('heading')).toHaveText('Anyone who can reach this address controls this computer.')
+  await expect(confirm).toContainText('run Claude with your account')
+  await expect(confirm.getByRole('button', { name: 'I understand, turn off sign-in' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(confirm).toHaveCount(0)
+  expect(await saved()).toMatchObject({ bind: '0.0.0.0', enabled: false, mode: 'none' })
+  await expect(enabled).not.toBeChecked()
 })

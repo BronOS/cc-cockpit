@@ -4,7 +4,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
 import { createServer, type AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
+import { tmpdir, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
@@ -117,6 +117,19 @@ describe('helpers', () => {
     expect(linkOrigin({ bind: '127.0.0.1', port: 7330 })).toBe('http://127.0.0.1:7330')
     expect(linkOrigin({ bind: '::1', port: 7330 })).toBe('http://[::1]:7330')
     expect(linkOrigin({ bind: '127.0.0.1', port: 7330, externalOrigin: 'https://box.ts.net' })).toBe('https://box.ts.net')
+  })
+
+  it('links are https over TLS, and name a LAN address for a wildcard bind (plan Task 28)', () => {
+    const tls = { certPath: '/c.pem', keyPath: '/k.pem' }
+    const lan = (): NodeJS.Dict<NetworkInterfaceInfo[]> => ({
+      lo: [{ address: '127.0.0.1', family: 'IPv4', internal: true, netmask: '', mac: '', cidr: null }],
+      wlan0: [{ address: '192.168.1.20', family: 'IPv4', internal: false, netmask: '', mac: '', cidr: null }]
+    })
+    expect(linkOrigin({ bind: '192.168.1.20', port: 7330, tls })).toBe('https://192.168.1.20:7330')
+    expect(linkOrigin({ bind: '0.0.0.0', port: 7330 }, lan)).toBe('http://192.168.1.20:7330')
+    expect(linkOrigin({ bind: '::', port: 7330, tls }, lan)).toBe('https://192.168.1.20:7330')
+    expect(linkOrigin({ bind: '0.0.0.0', port: 7330 }, () => ({}))).toBe('http://127.0.0.1:7330')
+    expect(linkOrigin({ bind: '0.0.0.0', port: 7330, tls, externalOrigin: 'https://box.lan:7330' }, lan)).toBe('https://box.lan:7330')
   })
 })
 

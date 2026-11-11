@@ -1,11 +1,19 @@
-// Web access gateway skeleton (main/web/gateway.ts, plan Task 4): off costs nothing, loopback only,
-// and the always-on Host / Origin checks, CSP and no-store on every request and upgrade.
+// Web access gateway skeleton (main/web/gateway.ts, plan Task 4): off costs nothing, network binds
+// only with TLS or the §4.3 confirm (plan Task 28), and the always-on Host / Origin checks, CSP and
+// no-store on every request and upgrade.
+//
+// The TLS tests make a throwaway self-signed certificate for 127.0.0.1 with `openssl` (as the OAuth
+// e2e spec does) and trust it only in their own requests (`ca`). Nothing here binds an address other
+// than loopback: a network bind is only ever refused.
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { checkServerIdentity, type PeerCertificate } from 'node:tls'
 import { createServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
@@ -13,7 +21,7 @@ import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
-import { CLOSE } from '../../src/shared/web-protocol'
+import { CLOSE, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
 
 /** A port nothing listens on right now (the OS's pick, always above 1024). */
@@ -80,7 +88,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: ReturnType<typeof vi.fn>; logs: string[] } {
+function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: ReturnType<typeof vi.fn>; logs: string[]; auth: WebAuth } {
   const logs: string[] = []
   const loadWs = vi.fn(async (): Promise<WsModule> => wsModule)
   const dir = mkdtempSync(join(tmpdir(), 'ccc-gw-'))
@@ -90,7 +98,7 @@ function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: Return
   const auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog })
   const gw = new WebGateway({ log: (m) => logs.push(m), loadWs, auth, accessLog, shellDir: writeFakeShellDir(join(dir, 'shell')), ...over })
   gateway = gw
-  return { gw, loadWs, logs }
+  return { gw, loadWs, logs, auth }
 }
 
 /**
@@ -204,23 +212,144 @@ describe('start and stop with the setting', () => {
   })
 })
 
-describe('loopback only', () => {
-  it('refuses a network bind: nothing listens, ws is not loaded, the log says why', async () => {
+describe('network binds need TLS or the confirm (plan Task 28)', () => {
+  it('refuses a network bind never confirmed (a hand edit): nothing listens, ws is not loaded, the log says why', async () => {
     const port = await freePort()
     const { gw, loadWs, logs } = make()
     for (const bind of ['0.0.0.0', '192.168.1.20', '::']) {
-      const status = await gw.apply(webAccessOf({ enabled: true, port, bind }))
+      // mode link: None on a network address would need its own confirm too.
+      const status = await gw.apply(webAccessOf({ enabled: true, port, bind, mode: 'link' }))
       expect(status.state, bind).toBe('refused')
       expect(gw.address()).toBeUndefined()
     }
+    // None on a network address with TLS but without its confirm: refused as well.
+    const none = await gw.apply(webAccessOf({ enabled: true, port, bind: '0.0.0.0', mode: 'none', tls: { certPath: '/c.pem', keyPath: '/k.pem' } }))
+    expect(none).toEqual({ state: 'refused', reason: expect.stringMatching(/no sign-in on a network address needs the confirm/) })
     expect(loadWs).not.toHaveBeenCalled()
-    expect(logs.join('\n')).toContain('loopback only')
+    expect(logs.join('\n')).toContain('needs a certificate, or the confirm')
   })
 
-  it('a network bind after a loopback one stops the listener', async () => {
+  it('an unconfirmed network bind after a loopback one stops the listener', async () => {
     const { gw, port } = await listening()
     expect((await gw.apply(webAccessOf({ enabled: true, port, bind: '0.0.0.0' }))).state).toBe('refused')
     expect(gw.address()).toBeUndefined()
+  })
+})
+
+describe('TLS (plan Task 28)', () => {
+  let certDir: string
+  let tls: { certPath: string; keyPath: string }
+  let ca: string
+  beforeAll(() => {
+    certDir = mkdtempSync(join(tmpdir(), 'ccc-gw-tls-'))
+    tls = { certPath: join(certDir, 'cert.pem'), keyPath: join(certDir, 'key.pem') }
+    // argv only; -nodes: an unencrypted key (no passphrase prompt); piped so a failure says why.
+    execFileSync(
+      'openssl',
+      ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', tls.keyPath, '-out', tls.certPath, '-days', '1',
+        '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1'],
+      { stdio: 'pipe' }
+    )
+    ca = readFileSync(tls.certPath, 'utf8')
+  })
+  afterAll(() => rmSync(certDir, { recursive: true, force: true }))
+
+  /** An https request that trusts only the test's certificate. */
+  function https(port: number, opts: { method?: string; path?: string; headers?: Record<string, string>; body?: string }): Promise<Answer> {
+    return new Promise((resolve, reject) => {
+      // The certificate is checked against the address connected to, not the Host header a test sends.
+      const target = { host: '127.0.0.1', port, method: opts.method ?? 'GET', path: opts.path ?? '/', headers: opts.headers ?? {}, ca, checkServerIdentity: (_: string, cert: PeerCertificate) => checkServerIdentity('127.0.0.1', cert) }
+      const req = httpsRequest(target, (res) => {
+        let body = ''
+        res.on('data', (d: Buffer) => (body += d.toString()))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }))
+      })
+      req.on('error', reject)
+      req.end(opts.body)
+    })
+  }
+
+  it('the TLS server serves https: the page with https frame origins, and no plain http on that port', async () => {
+    const port = await freePort()
+    const { gw, logs } = make()
+    expect(await gw.apply(webAccessOf({ enabled: true, port, mode: 'none', tls }))).toEqual({ state: 'listening', bind: '127.0.0.1', port })
+    const host = `127.0.0.1:${port}`
+    const res = await https(port, { headers: { Host: host } })
+    expect(res.status).toBe(200)
+    expect(res.body).toBe(FAKE_SHELL_HTML)
+    expect(String(res.headers['content-security-policy'])).toContain(`frame-src https://${host}/p/`)
+    expect(logs.join('\n')).toContain(`listening on https://127.0.0.1:${port}`)
+    // The Host check still comes first.
+    expect((await https(port, { headers: { Host: `evil.example:${port}` } })).status).toBe(403)
+    // Plain http to the TLS port gets no page.
+    await expect(http(port, { headers: { Host: host } })).rejects.toThrow()
+  })
+
+  it('over TLS the Origin is the https page: the http one is refused, the https one reaches the handler', async () => {
+    const port = await freePort()
+    const { gw } = make()
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'none', tls }))
+    const host = `127.0.0.1:${port}`
+    const handler = vi.fn((ws: wsModule.WebSocket) => ws.close())
+    gw.setSocketHandler(handler)
+    const open = (origin: string): Promise<'open' | 'refused'> =>
+      new Promise((resolve) => {
+        const client = new wsModule.WebSocket(`wss://${host}/ws`, { origin, ca })
+        client.on('open', () => {
+          client.close()
+          resolve('open')
+        })
+        client.on('unexpected-response', () => resolve('refused'))
+        client.on('error', () => resolve('refused'))
+      })
+    expect(await open(`http://${host}`)).toBe('refused')
+    expect(handler).not.toHaveBeenCalled()
+    expect(await open(`https://${host}`)).toBe('open')
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('a sign-in over TLS sets a Secure device cookie', async () => {
+    const port = await freePort()
+    const { gw, auth } = make()
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'link', tls }))
+    const host = `127.0.0.1:${port}`
+    const link = await auth.accessLink(`https://${host}`)
+    if (!link.ok) throw new Error('no link')
+    const token = link.link.split('#t=')[1]
+    const res = await https(port, {
+      method: 'POST',
+      path: SIGN_IN_LINK_PATH,
+      headers: { Host: host, Origin: `https://${host}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, name: 'Phone' })
+    })
+    expect(res.status).toBe(200)
+    const cookie = String(res.headers['set-cookie'])
+    expect(cookie).toContain('HttpOnly')
+    expect(cookie).toContain('; Secure')
+  })
+
+  it('turning TLS on and off at the same address swaps the listener', async () => {
+    const { gw, port } = await listening()
+    const before = (gw as unknown as { server: unknown }).server
+    expect((await gw.apply(webAccessOf({ enabled: true, port, mode: 'none', tls }))).state).toBe('listening')
+    expect((gw as unknown as { server: unknown }).server).not.toBe(before)
+    expect((await https(port, { headers: { Host: `127.0.0.1:${port}` } })).status).toBe(200)
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'none' }))
+    expect((await http(port, { headers: { Host: `127.0.0.1:${port}` } })).status).toBe(200)
+  })
+
+  it('a missing or malformed certificate fails the start with the reason, and nothing listens', async () => {
+    const port = await freePort()
+    const { gw } = make()
+    const missing = await gw.apply(webAccessOf({ enabled: true, port, mode: 'none', tls: { ...tls, certPath: join(certDir, 'nope.pem') } }))
+    expect(missing).toEqual({ state: 'failed', reason: `cannot read the certificate ${join(certDir, 'nope.pem')}: ENOENT` })
+    expect(gw.address()).toBeUndefined()
+    const junk = join(certDir, 'junk.pem')
+    writeFileSync(junk, 'not a certificate')
+    const bad = await gw.apply(webAccessOf({ enabled: true, port, mode: 'none', tls: { certPath: junk, keyPath: tls.keyPath } }))
+    expect(bad.state).toBe('failed')
+    expect(gw.address()).toBeUndefined()
+    await expect(http(port, { headers: { Host: `127.0.0.1:${port}` } })).rejects.toThrow(/ECONNREFUSED/)
   })
 })
 

@@ -32,8 +32,9 @@
 //    limiter); the person sees each one on the desktop and can deny it, and nothing gets in.
 //    Polls are not limited: the ticket is 256 random bits, compared in constant time.
 //  - None: no sign-in; whoever passes the Host and Origin checks is in, as the anonymous device
-//    `NONE_DEVICE`. Loopback only for now (listenPlanOf refuses every network bind until Task 28
-//    adds the §4.3 confirm). A device cookie from before still names its device.
+//    `NONE_DEVICE`. On a network address only after the §4.3 confirm (settings.ts listenPlanOf).
+//    Revoke means nothing here (anyone can come back), so there is no record to revoke. A device
+//    cookie from before still names its device.
 //
 // Failed attempts are slowed, never locked out (a lockout lets anyone who can reach the address
 // keep the person out) and never keyed by peer address (behind `tailscale serve` every peer is
@@ -49,6 +50,7 @@
 // Origin check does (checks.ts). The cookie is never rotated (devices.ts says why); its Max-Age is
 // the browser's cap, and the server's 30-day sliding expiry decides.
 import { randomBytes, randomInt } from 'node:crypto'
+import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import type { WebAccessMode } from '../../shared/types'
 import type { WebActionReply, WebConfirmAsk } from '../../shared/web-access'
 import type { WebConfirmPoll } from '../../shared/web-protocol'
@@ -56,6 +58,7 @@ import type { SecretStore } from '../secrets/secret-store'
 import type { AccessLog } from './access-log'
 import { DeviceStore, deviceName as deviceNameOf, hashSecret, matchesHash, randomSecret, type DeviceSignIn, type WebDevice } from './devices'
 import { MAX_PASSWORD_LENGTH, PasswordHasher, passwordProblem } from './password'
+import { isWildcardBind } from './settings'
 
 export const DEVICE_COOKIE = 'ccc_device'
 /** Chrome's cap on a cookie's lifetime; the device's own 30-day sliding expiry is what counts. */
@@ -100,17 +103,35 @@ export function cookieValues(header: string | undefined, name: string): string[]
 
 /** The `Set-Cookie` value for a device cookie, flags by the origin the page is under. */
 export function deviceCookie(value: string, origin: string): string {
-  // Secure on https only: a browser drops a Secure cookie set over plain http, and plain http on a
-  // network address exists only behind the §4.3 confirm (Task 28). Loopback http: no Secure (§4.1).
+  // Secure on https only (TLS on the gateway, or a proxy's https origin): a browser drops a Secure
+  // cookie set over plain http, and plain http on a network address exists only behind the §4.3
+  // confirm, which must still sign in. Loopback http: no Secure (§4.1).
   const secure = origin.toLowerCase().startsWith('https:')
   return `${DEVICE_COOKIE}=${value}; Path=/; Max-Age=${COOKIE_MAX_AGE_S}; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`
 }
 
-/** The origin links point at: the external origin (a proxy), else the gateway's own address. */
-export function linkOrigin(settings: { bind: string; port: number; externalOrigin?: string }): string {
+function firstLanAddress(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>): string | undefined {
+  for (const list of Object.values(interfaces)) {
+    const found = list?.find((addr) => addr.family === 'IPv4' && !addr.internal)
+    if (found) return found.address
+  }
+  return undefined
+}
+
+/**
+ * The origin links point at: the external origin (a proxy, or the name a certificate is for), else
+ * the gateway's own address, https when it serves TLS. A wildcard bind (0.0.0.0, ::) is no address a
+ * browser can open: the link names the machine's first LAN IPv4 address (one the Host list allows,
+ * checks.ts), or loopback when it has none.
+ */
+export function linkOrigin(
+  settings: { bind: string; port: number; externalOrigin?: string; tls?: unknown },
+  interfaces: () => NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces
+): string {
   if (settings.externalOrigin !== undefined) return settings.externalOrigin
-  const host = settings.bind.includes(':') ? `[${settings.bind}]` : settings.bind
-  return `http://${host}:${settings.port}`
+  const address = isWildcardBind(settings.bind) ? (firstLanAddress(interfaces()) ?? '127.0.0.1') : settings.bind
+  const host = address.includes(':') ? `[${address}]` : address
+  return `${settings.tls !== undefined ? 'https' : 'http'}://${host}:${settings.port}`
 }
 
 export interface AttemptLimiterOptions {

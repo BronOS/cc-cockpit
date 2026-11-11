@@ -3,15 +3,22 @@
 // `app.json` is user-writable, so `webAccessOf` is tolerant field by field: a damaged field reads
 // as its default and a bad host entry is dropped, never costing the rest. What is *refused* is
 // decided by `listenPlanOf`, separately: a refused plan means nothing listens, with a reason for
-// the log (and later the settings page). It is never rewritten to something safer behind the
-// person's back: a bind they typed as 0.0.0.0 silently becoming 127.0.0.1 would look like web
-// access working "except from the phone", with no hint why.
+// the log and the settings page. It is never rewritten to something safer behind the person's
+// back: a bind they typed as 0.0.0.0 silently becoming 127.0.0.1 would look like web access
+// working "except from the phone", with no hint why.
 //
-// No regexes anywhere here (the project rule for anything parsing settings): host names and
+// Network binds (plan Task 28, design §4.3): any address is allowed, but the two dangerous choices
+// (no sign-in on a network address, plain http on one) listen only once the person confirmed them
+// on the settings page (`confirmed`, set by `applyWebAccessPatch` from a confirmed change). A risk
+// in the file that was never confirmed (a hand edit) is refused like any other bad setting.
+//
+// No regexes in what is new here (the project rule for anything parsing settings): host names and
 // origins go through WHATWG `URL`, addresses through `net.isIP`.
 import { isIP } from 'node:net'
+import { isAbsolute } from 'node:path'
 import { isPlainObject } from '../../shared/guards'
-import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
+import type { WebAccessMode, WebAccessRisk, WebAccessSettings } from '../../shared/types'
+import { WEB_RISK_ORDER, WEB_RISK_TEXT } from '../../shared/web-access'
 
 /** Unprivileged ports only: below 1024 needs root on Linux, and port 80 would drop out of Host headers. */
 export const WEB_PORT_RANGE = { min: 1024, max: 65535 } as const
@@ -48,6 +55,41 @@ export function isLoopbackHost(host: string): boolean {
 /** Whether listening on `bind` keeps the gateway on this machine. */
 export function isLoopbackBind(bind: string): boolean {
   return isLoopbackHost(bind)
+}
+
+/**
+ * A bind the gateway may listen on: an IP address, or `localhost` (listened on as 127.0.0.1,
+ * gateway.ts). Never another name: what a name resolves to is the resolver's choice, so the address
+ * that listens would not be the one the settings and the Host list say.
+ */
+export function isBindAddress(bind: string): boolean {
+  return bind === 'localhost' || isIP(bind) !== 0
+}
+
+/** Every address of the machine (`0.0.0.0`, `::`): the link then names one of its LAN addresses. */
+export function isWildcardBind(bind: string): boolean {
+  return bind === '0.0.0.0' || bind === '::'
+}
+
+/** A bind as stored: trimmed, lowercased, an IPv6 address without the brackets a URL would give it. */
+function bindOf(raw: string): string {
+  const b = raw.trim().toLowerCase()
+  return b.startsWith('[') && b.endsWith(']') ? b.slice(1, -1) : b
+}
+
+/** Far above any real path; a cap so a hand-edited file stays cheap. */
+const MAX_TLS_PATH = 4096
+
+/** A certificate or key path: absolute (a relative one would follow the app's working folder). */
+function tlsPathOf(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const path = raw.trim()
+  if (path === '' || path.length > MAX_TLS_PATH || path.includes('\0') || !isAbsolute(path)) return undefined
+  return path
+}
+
+function isRisk(value: unknown): value is WebAccessRisk {
+  return WEB_RISK_ORDER.includes(value as WebAccessRisk)
 }
 
 /** Characters no Host entry can hold; a URL would accept some of them as path, user or query. */
@@ -105,7 +147,7 @@ export function externalOriginOf(raw: unknown): string | undefined {
 export function webAccessOf(stored: unknown): WebAccessSettings {
   const s = isPlainObject(stored) ? stored : {}
   const port = isWebPort(s['port']) ? s['port'] : DEFAULT_WEB_PORT
-  const bind = typeof s['bind'] === 'string' && s['bind'].trim() !== '' ? s['bind'].trim().toLowerCase().replace(/^\[(.*)\]$/, '$1') : DEFAULT_WEB_BIND
+  const bind = typeof s['bind'] === 'string' && s['bind'].trim() !== '' ? bindOf(s['bind']) : DEFAULT_WEB_BIND
   const hosts: string[] = []
   if (Array.isArray(s['hosts'])) {
     for (const raw of s['hosts'].slice(0, MAX_WEB_HOSTS)) {
@@ -117,43 +159,82 @@ export function webAccessOf(stored: unknown): WebAccessSettings {
   const out: WebAccessSettings = { enabled: s['enabled'] === true, bind, port, hosts, mode }
   const origin = externalOriginOf(s['externalOrigin'])
   if (origin !== undefined) out.externalOrigin = origin
+  // A damaged TLS entry (a relative path, one file missing) reads as none: plain http, which on a
+  // network bind is a risk never confirmed, so it is refused rather than served unencrypted.
   const tls = s['tls']
-  if (isPlainObject(tls) && typeof tls['certPath'] === 'string' && typeof tls['keyPath'] === 'string' && tls['certPath'] && tls['keyPath']) {
-    out.tls = { certPath: tls['certPath'], keyPath: tls['keyPath'] }
+  if (isPlainObject(tls)) {
+    const certPath = tlsPathOf(tls['certPath'])
+    const keyPath = tlsPathOf(tls['keyPath'])
+    if (certPath !== undefined && keyPath !== undefined) out.tls = { certPath, keyPath }
   }
+  if (Array.isArray(s['confirmed'])) {
+    const confirmed = WEB_RISK_ORDER.filter((r) => (s['confirmed'] as unknown[]).includes(r))
+    if (confirmed.length > 0) out.confirmed = confirmed
+  }
+  return out
+}
+
+/**
+ * The §4.3 risks of these settings, whether or not they are on or confirmed: no sign-in on a
+ * network address, and plain http on one (a network bind with no TLS, or a proxy's `http:` origin on
+ * a network name, where the browser's leg crosses the network unencrypted). In WEB_RISK_ORDER.
+ */
+export function webAccessRiskIds(settings: WebAccessSettings): WebAccessRisk[] {
+  const out: WebAccessRisk[] = []
+  const network = !isLoopbackBind(settings.bind)
+  if (settings.mode === 'none' && network) out.push('none-network')
+  const origin = settings.externalOrigin !== undefined ? new URL(settings.externalOrigin) : undefined
+  const proxyHttp = origin !== undefined && origin.protocol === 'http:' && !isLoopbackHost(origin.hostname)
+  if ((network && settings.tls === undefined) || proxyHttp) out.push('plain-http')
   return out
 }
 
 /** What the gateway listens on and accepts, or why it does not listen. */
 export type ListenPlan =
-  | { ok: true; bind: string; port: number; externalOrigin?: string; hosts: string[] }
+  | {
+      ok: true
+      bind: string
+      port: number
+      externalOrigin?: string
+      hosts: string[]
+      /** Present: https with these files (read when the listener starts, gateway.ts). */
+      tls?: { certPath: string; keyPath: string }
+    }
   | { ok: false; reason: string }
 
+/** Why a risk that was never confirmed keeps the gateway from listening. */
+const UNCONFIRMED: Record<WebAccessRisk, string> = {
+  'none-network': 'no sign-in on a network address needs the confirm in Settings › General › Web access',
+  'plain-http': 'plain http on a network address needs a certificate, or the confirm in Settings › General › Web access'
+}
+
 /**
- * Whether these settings may listen. Until plan Task 28 adds TLS and the §4.3 confirms, only a
- * loopback bind is allowed (a proxy on this machine, `tailscale serve`, can still publish it), and
- * an external origin over plain http on a network name is refused too: it means the browser's
- * leg travels unencrypted across the network, which needs the same confirm.
+ * Whether these settings may listen. Any IP address may be bound; a loopback one keeps the gateway on
+ * this machine (a proxy here, `tailscale serve`, can still publish it). The §4.3 risks listen only
+ * once confirmed (`confirmed`, from the settings page): plain http on a network address (a network
+ * bind with no TLS, or an `http:` external origin on a network name), and no sign-in on one.
  */
 export function listenPlanOf(settings: WebAccessSettings): ListenPlan {
   if (!settings.enabled) return { ok: false, reason: 'web access is off' }
-  if (!isLoopbackBind(settings.bind)) {
-    return { ok: false, reason: `web access listens on loopback only for now; ${JSON.stringify(settings.bind.slice(0, 80))} is a network address` }
+  if (!isBindAddress(settings.bind)) {
+    return { ok: false, reason: `${JSON.stringify(settings.bind.slice(0, 80))} is not an IP address to listen on` }
   }
-  if (settings.externalOrigin !== undefined) {
-    const url = new URL(settings.externalOrigin)
-    if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
-      return { ok: false, reason: `the external origin ${settings.externalOrigin} is plain http on a network name; use https` }
-    }
+  for (const risk of webAccessRiskIds(settings)) {
+    if (!settings.confirmed?.includes(risk)) return { ok: false, reason: UNCONFIRMED[risk] }
   }
   const plan: ListenPlan = { ok: true, bind: settings.bind, port: settings.port, hosts: settings.hosts }
   if (settings.externalOrigin !== undefined) plan.externalOrigin = settings.externalOrigin
+  if (settings.tls !== undefined) plan.tls = { ...settings.tls }
   return plan
 }
 
-export type PatchResult = { ok: true; value: WebAccessSettings } | { ok: false; error: string }
+/**
+ * A change's outcome. `needsConfirm`: the change brings in §4.3 risks the person has not confirmed;
+ * nothing changed, and the page asks, then sends the same change again with `confirm`.
+ */
+export type PatchResult = { ok: true; value: WebAccessSettings } | { ok: false; error: string; needsConfirm?: WebAccessRisk[] }
 
-const PATCH_KEYS = ['enabled', 'port', 'externalOrigin', 'hosts', 'mode'] as const
+const PATCH_KEYS = ['enabled', 'bind', 'port', 'externalOrigin', 'hosts', 'mode', 'tls', 'confirm'] as const
 
 /** A host entry as the error message shows it: the person's text, cut short and on one line. */
 function shown(raw: unknown): string {
@@ -164,8 +245,14 @@ function shown(raw: unknown): string {
  * The settings after a change from the Settings page (`settings.webAccessSet`). Unlike `webAccessOf`
  * (tolerant of a hand-edited file) this is strict: a wrong value is refused with the reason, and
  * nothing changes, so the page can say what to fix instead of quietly saving a default. Only the
- * fields in the patch change; the bind and TLS paths are not editable here (plan Task 28), and the
- * hosts follow the port: an entry that named the old port moves to the new one.
+ * fields in the patch change, and the hosts follow the port: an entry that named the old port moves
+ * to the new one.
+ *
+ * The §4.3 confirms: a change that leaves web access on with a risk that was not confirmed before
+ * (and is not in the patch's `confirm`) is refused with `needsConfirm`, so a cancelled confirm leaves
+ * every setting as it was (a loopback bind stays loopback). A risk the change removes loses its
+ * confirm, so choosing it again asks again. Turning off never needs one: a risk saved while off is
+ * stored unconfirmed and asked for when web access is turned on.
  */
 export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown): PatchResult {
   if (!isPlainObject(patch)) return { ok: false, error: 'the change must be an object' }
@@ -213,24 +300,69 @@ export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown):
     // Password needs a password set first: access-service.ts checks that (it has the credentials).
     next.mode = mode
   }
+  if ('bind' in patch) {
+    const raw = patch['bind']
+    const bind = typeof raw === 'string' && raw.length <= 100 ? bindOf(raw) : ''
+    if (!isBindAddress(bind)) {
+      return { ok: false, error: `${shown(raw)} is not an IP address; use 127.0.0.1 (this computer only), 0.0.0.0 (every network) or one of this computer's addresses` }
+    }
+    next.bind = bind
+  }
+  if ('tls' in patch) {
+    const raw = patch['tls']
+    if (raw === null) {
+      delete next.tls
+    } else {
+      if (!isPlainObject(raw)) return { ok: false, error: 'the certificate must be a certificate file and a key file' }
+      const certPath = tlsPathOf(raw['certPath'])
+      const keyPath = tlsPathOf(raw['keyPath'])
+      if (certPath === undefined || keyPath === undefined) {
+        return { ok: false, error: 'give the full path (starting with /) of both the certificate file and its key file' }
+      }
+      next.tls = { certPath, keyPath }
+    }
+  }
+  let given: WebAccessRisk[] = []
+  if ('confirm' in patch) {
+    const raw = patch['confirm']
+    if (!Array.isArray(raw) || !raw.every(isRisk)) return { ok: false, error: 'confirm must be a list of risks' }
+    given = raw
+  }
+  // Only a confirm of a risk the settings still have carries over (a stale entry in a hand-edited
+  // file confirms nothing).
+  const before = webAccessRiskIds(current).filter((r) => current.confirmed?.includes(r))
+  const risks = webAccessRiskIds(next)
+  const missing = risks.filter((r) => !before.includes(r) && !given.includes(r))
+  if (next.enabled && missing.length > 0) {
+    return { ok: false, error: `confirm first: ${missing.map((r) => WEB_RISK_TEXT[r].title).join(' ')}`, needsConfirm: missing }
+  }
+  const confirmed = risks.filter((r) => before.includes(r) || given.includes(r))
+  if (confirmed.length > 0) next.confirmed = confirmed
+  else delete next.confirmed
   return { ok: true, value: next }
 }
 
 /**
- * Plain-words risks of these settings (design-web.md §4.3), for the desktop's warning badge: None on
- * an address other than loopback, and any mode over plain http on one. Both are refused by
- * `listenPlanOf` until plan Task 28 lifts the refusal with the confirm, so while that holds this is
- * empty for every setting that listens; it is kept as the one rule for the badge, never a copy.
+ * Plain-words risks of these settings (design-web.md §4.3), for the desktop's warning badge and the
+ * settings page while they listen: None on an address other than loopback, and any mode over plain
+ * http on one. The one rule for the badge (webAccessRiskIds), never a copy.
  */
 export function webAccessRisks(settings: WebAccessSettings): string[] {
-  const risks: string[] = []
-  const network = !isLoopbackBind(settings.bind)
-  if (settings.mode === 'none' && network) {
-    risks.push('Sign-in is off on a network address: anyone who can reach it controls this computer.')
-  }
-  const proxyHttp = settings.externalOrigin !== undefined && new URL(settings.externalOrigin).protocol === 'http:' && !isLoopbackHost(new URL(settings.externalOrigin).hostname)
-  if ((network && settings.tls === undefined) || proxyHttp) {
-    risks.push('Plain http on a network: the access link, passwords and everything you type can be read by others on it.')
-  }
-  return risks
+  return webAccessRiskIds(settings).map((r) => WEB_RISK_TEXT[r].badge)
+}
+
+/**
+ * `app.json` › `webAccess` after a saved change: every field the page edits, an optional one the
+ * change cleared (the external origin, TLS, the confirms) removed from the file, and anything else
+ * the file holds kept as it is.
+ */
+export function storedWebAccess(previous: Partial<WebAccessSettings> | undefined, next: WebAccessSettings): Partial<WebAccessSettings> {
+  const stored: Partial<WebAccessSettings> = { ...previous, enabled: next.enabled, bind: next.bind, port: next.port, hosts: next.hosts, mode: next.mode }
+  if (next.externalOrigin !== undefined) stored.externalOrigin = next.externalOrigin
+  else delete stored.externalOrigin
+  if (next.tls !== undefined) stored.tls = { ...next.tls }
+  else delete stored.tls
+  if (next.confirmed !== undefined) stored.confirmed = [...next.confirmed]
+  else delete stored.confirmed
+  return stored
 }

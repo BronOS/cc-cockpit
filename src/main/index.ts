@@ -156,6 +156,7 @@ import { DeviceStore } from './web/devices'
 import { openProjectEntries, WebConnections, windowSnapshot } from './web/connection'
 import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
+import { storedWebAccess } from './web/settings'
 import { WebGateway } from './web/gateway'
 import { PluginPages } from './web/plugin-pages'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
@@ -1387,11 +1388,7 @@ function start(): void {
     read: () => registry.app.data.webAccess,
     write: (next) => {
       registry.app.update((a) => {
-        // Only the editable fields; the stored bind and TLS paths stay as the file has them.
-        const stored: NonNullable<typeof a.webAccess> = { ...a.webAccess, enabled: next.enabled, port: next.port, hosts: next.hosts, mode: next.mode }
-        if (next.externalOrigin !== undefined) stored.externalOrigin = next.externalOrigin
-        else delete stored.externalOrigin
-        a.webAccess = stored
+        a.webAccess = storedWebAccess(a.webAccess, next)
       })
     },
     emit: (indicator) => views.toAll('webAccess.changed', indicator),

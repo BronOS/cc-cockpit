@@ -10,7 +10,11 @@
 //    (anything but GET/HEAD; sign-in posts come with plan Task 5). On loopback this, not
 //    SameSite, is what keeps another localhost page out (checks.ts says why).
 //  - The web shell's CSP and `Cache-Control: no-store` on every answer.
-//  - Loopback binds only (settings.ts listenPlanOf) until TLS and the §4.3 confirms (Task 28).
+//  - Any IP address may be bound; the §4.3 risks (plain http or no sign-in on a network address)
+//    only once confirmed on the settings page (settings.ts listenPlanOf). With TLS settings the
+//    listener is https (the certificate and key are read when it starts, so a renewed certificate
+//    takes effect on the next start: off and on, or a restart), and the Origin rule, the frame
+//    origins and the cookie's Secure follow its scheme.
 // Behind those, sign-in (auth.ts, plan Tasks 5 and 27): the web shell (`/` and `/assets/…`,
 // shell-files.ts, plan Task 8) and the sign-in routes (link, password, desktop confirm) are open,
 // everything else (the upgrade first, the project list) needs a device (`WebAuth.authorize`: the
@@ -25,8 +29,9 @@
 // cross-site and carry no cookie, so its path token is the credential. They get their own headers
 // (never the shell's CSP or X-Frame-Options: the shell frames them). Their tokens die with the
 // device (revoke, expiry), with None mode for the anonymous device, and when the gateway stops.
-import { open, type FileHandle } from 'node:fs/promises'
+import { open, readFile, type FileHandle } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import type { AddressInfo } from 'node:net'
 import { hostname, networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
@@ -48,7 +53,7 @@ import {
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
 import { deviceCookie, type SignInResult, type WebAuth } from './auth'
-import { allowedHosts, checkHost, checkOrigin, webShellCsp } from './checks'
+import { allowedHosts, checkHost, checkOrigin, webShellCsp, type OriginRule } from './checks'
 import type { WebDevice } from './devices'
 import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
 import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
@@ -82,7 +87,7 @@ export interface GatewayDeps {
   accessLog: AccessLog
   /** Loads `ws`; tests count the calls. Default: a dynamic import, the only one in main. */
   loadWs?: () => Promise<WsModule>
-  /** os.networkInterfaces / os.hostname, read only for a network bind (Task 28). */
+  /** os.networkInterfaces / os.hostname, read only for a network bind. */
   interfaces?: () => ReturnType<typeof networkInterfaces>
   hostname?: () => string
   /**
@@ -99,9 +104,9 @@ export interface GatewayDeps {
 
 export type GatewayStatus =
   | { state: 'off' }
-  /** Enabled, but the settings may not listen (a network bind before Task 28); nothing listens. */
+  /** Enabled, but the settings may not listen (a §4.3 risk not confirmed); nothing listens. */
   | { state: 'refused'; reason: string }
-  /** Enabled and allowed, but listening failed (port in use, `ws` missing); nothing listens. */
+  /** Enabled and allowed, but listening failed (port in use, `ws` missing, a certificate unreadable); nothing listens. */
   | { state: 'failed'; reason: string }
   | { state: 'listening'; bind: string; port: number }
 
@@ -155,6 +160,20 @@ function readBody(req: IncomingMessage, max: number): Promise<string | undefined
   })
 }
 
+/** Whether two plans name the same TLS files (both none counts as the same). */
+function sameTls(a: OkPlan, b: OkPlan): boolean {
+  return a.tls?.certPath === b.tls?.certPath && a.tls?.keyPath === b.tls?.keyPath
+}
+
+/** A certificate or key file's PEM text; the error names the file, as the settings page shows it. */
+async function readPem(path: string, what: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch (err) {
+    throw new Error(`cannot read the ${what} ${path}: ${(err as NodeJS.ErrnoException).code ?? errorText(err)}`, { cause: err })
+  }
+}
+
 function refuseUpgrade(socket: Duplex, status: string): void {
   // The socket may already be gone (the client hung up); writing to it then must not throw.
   if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
@@ -162,7 +181,7 @@ function refuseUpgrade(socket: Duplex, status: string): void {
 }
 
 export class WebGateway {
-  private server: Server | undefined
+  private server: Server | HttpsServer | undefined
   private wss: WebSocketServer | undefined
   private plan: OkPlan | undefined
   private hosts: ReadonlySet<string> = new Set()
@@ -271,7 +290,9 @@ export class WebGateway {
       if (this.current.state === 'refused') this.deps.log(`web access: not listening: ${plan.reason}`)
       return this.current
     }
-    if (this.server && this.plan && this.plan.bind === plan.bind && this.plan.port === plan.port) {
+    // Same address and the same TLS files: keep the listener (open sockets stay). Turning TLS on or
+    // off, or naming other files, needs a new listener of the other kind (or a new certificate).
+    if (this.server && this.plan && this.plan.bind === plan.bind && this.plan.port === plan.port && sameTls(this.plan, plan)) {
       const before = this.plan
       this.use(plan)
       // Sockets were accepted under the old Host list and origin rule and are not tagged with them;
@@ -293,7 +314,7 @@ export class WebGateway {
       return this.current
     }
     this.current = { state: 'listening', bind: plan.bind, port: plan.port }
-    this.deps.log(`web access: listening on http://${plan.bind.includes(':') ? `[${plan.bind}]` : plan.bind}:${plan.port}`)
+    this.deps.log(`web access: listening on ${this.scheme()}://${plan.bind.includes(':') ? `[${plan.bind}]` : plan.bind}:${plan.port}`)
     return this.current
   }
 
@@ -321,15 +342,25 @@ export class WebGateway {
     })
   }
 
-  private listen(plan: OkPlan, ws: WsModule): Promise<void> {
+  /** The scheme the gateway serves now: https while listening with TLS. */
+  private scheme(): 'http' | 'https' {
+    return this.plan?.tls !== undefined ? 'https' : 'http'
+  }
+
+  private async listen(plan: OkPlan, ws: WsModule): Promise<void> {
+    // Read before anything is set up, so an unreadable file fails the start with its name and
+    // nothing half made is left. A malformed PEM throws from createServer (createSecureContext),
+    // which fails the start the same way.
+    const tls = plan.tls ? { cert: await readPem(plan.tls.certPath, 'certificate'), key: await readPem(plan.tls.keyPath, 'key') } : undefined
     this.use(plan)
     this.wss = new ws.WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
-    const server = createServer((req, res) => this.request(req, res))
+    const handle = (req: IncomingMessage, res: ServerResponse): void => this.request(req, res)
+    const server = tls ? createHttpsServer(tls, handle) : createServer(handle)
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(req, socket, head))
     // A client error (a malformed request line) is answered by Node; never let it reach the app.
     server.on('clientError', (_err, socket: Duplex) => refuseUpgrade(socket, '400 Bad Request'))
     this.server = server
-    return new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       server.once('error', reject)
       // `localhost` resolves through the resolver (often ::1 only, or something else on an odd host);
       // bind the literal loopback address so the listener is what the log and allow-list say.
@@ -389,7 +420,7 @@ export class WebGateway {
 
   /** The origins the shell page may be loaded under, for the CSP's frame-src. */
   private frameOrigins(host: string): string[] {
-    const own = `http://${host}`
+    const own = `${this.scheme()}://${host}`
     return this.plan?.externalOrigin !== undefined ? [own, this.plan.externalOrigin] : [own]
   }
 
@@ -606,8 +637,9 @@ export class WebGateway {
     this.json(res, host, answer.status, answer.body, answer.cookie === undefined ? {} : { 'Set-Cookie': deviceCookie(answer.cookie, origin) })
   }
 
-  private originRule(): { scheme: 'http'; externalOrigin?: string } {
-    return this.plan?.externalOrigin !== undefined ? { scheme: 'http', externalOrigin: this.plan.externalOrigin } : { scheme: 'http' }
+  private originRule(): OriginRule {
+    const scheme = this.scheme()
+    return this.plan?.externalOrigin !== undefined ? { scheme, externalOrigin: this.plan.externalOrigin } : { scheme }
   }
 
   private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {

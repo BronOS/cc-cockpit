@@ -435,6 +435,14 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   can be set. Desktop confirm: one browser can wait at a time (another is told to try again; anyone who can reach the
   address can keep that one place taken, each time showing as a request to deny), and a request is gone after 2
   minutes or three wrong codes. The request card shows in every project window, not in the project picker window.
+- Web access listens on 127.0.0.1 by default. Another address (0.0.0.0 for every network, or one of the computer's
+  own) can be set in Settings; over plain http, or with no sign-in, it asks to confirm first (Cancel keeps the
+  address as it was), and the top bar shows a warning while it is on. A bind or a sign-in mode edited by hand in
+  `app.json` that was never confirmed does not listen. With a certificate and key file it serves https; the files are
+  read when web access starts, so a renewed certificate takes effect after turning web access off and on (or a
+  restart). The bind is an IP address, never a name. Listening on 0.0.0.0, the link names the computer's first LAN
+  IPv4 address; for a certificate made for a name, enter that name as the external address. With no sign-in, Revoke
+  has no effect (anyone who can reach the address comes back in).
 - Web access keeps a headless copy of each terminal in a worker. If that worker crashes or hangs, it is restarted with
   blank copies: a terminal that resyncs before its program redraws (a desktop page reload, a view that fell behind)
   shows a blank screen until Claude redraws, and a shell tab until it prints again. After three restarts within a

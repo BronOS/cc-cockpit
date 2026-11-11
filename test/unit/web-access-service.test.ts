@@ -12,11 +12,17 @@ import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { PasswordHasher } from '../../src/main/web/password'
 import type { GatewayStatus } from '../../src/main/web/gateway'
-import { applyWebAccessPatch, DEFAULT_WEB_ACCESS, webAccessOf, webAccessRisks } from '../../src/main/web/settings'
+import { applyWebAccessPatch, DEFAULT_WEB_ACCESS, listenPlanOf, storedWebAccess, webAccessOf, webAccessRiskIds, webAccessRisks } from '../../src/main/web/settings'
 import type { WebAccessSettings } from '../../src/shared/types'
-import type { WebAccessIndicator } from '../../src/shared/web-access'
+import type { WebAccessIndicator, WebAccessSetReply, WebAccessView } from '../../src/shared/web-access'
 
 const base: WebAccessSettings = { ...DEFAULT_WEB_ACCESS, hosts: [] }
+
+/** The page a saved change answers with; a `needsConfirm` reply fails the test. */
+function pageOf(reply: WebAccessSetReply): WebAccessView {
+  if ('needsConfirm' in reply) throw new Error(`asked to confirm ${reply.needsConfirm.join(', ')}`)
+  return reply
+}
 
 function patched(patch: unknown, from: WebAccessSettings = base): WebAccessSettings {
   const r = applyWebAccessPatch(from, patch)
@@ -34,7 +40,6 @@ describe('applyWebAccessPatch (settings validation)', () => {
   it('changes only the fields in the patch', () => {
     const next = patched({ enabled: true })
     expect(next).toEqual({ ...base, enabled: true })
-    // The bind and TLS paths are not editable here.
     const withBind = { ...base, bind: '127.0.0.2', tls: { certPath: '/c', keyPath: '/k' } }
     expect(patched({ port: 8000 }, withBind)).toMatchObject({ bind: '127.0.0.2', tls: { certPath: '/c', keyPath: '/k' }, port: 8000 })
   })
@@ -71,8 +76,8 @@ describe('applyWebAccessPatch (settings validation)', () => {
   })
 
   it('refuses unknown fields and a non-object, and a wrong type for enabled', () => {
-    expect(refused({ bind: '0.0.0.0' })).toMatch(/unknown field "bind"/)
-    expect(refused({ tls: {} })).toMatch(/unknown field/)
+    expect(refused({ confirmed: ['plain-http'] })).toMatch(/unknown field "confirmed"/)
+    expect(refused({ certPath: '/c' })).toMatch(/unknown field/)
     expect(refused('x')).toMatch(/must be an object/)
     expect(refused(null)).toMatch(/must be an object/)
     expect(refused([])).toMatch(/must be an object/)
@@ -83,6 +88,117 @@ describe('applyWebAccessPatch (settings validation)', () => {
     const r = applyWebAccessPatch(base, { enabled: true, port: 22 })
     expect(r.ok).toBe(false)
     expect(base.enabled).toBe(false)
+  })
+})
+
+describe('network binds, TLS and the §4.3 confirms (plan Task 28)', () => {
+  const TLS = { certPath: '/etc/cc/cert.pem', keyPath: '/etc/cc/key.pem' }
+
+  /** The risks a change asks to confirm; fails when it was saved or refused for another reason. */
+  function asks(patch: unknown, from: WebAccessSettings = base): string[] {
+    const r = applyWebAccessPatch(from, patch)
+    if (r.ok || r.needsConfirm === undefined) throw new Error(r.ok ? 'expected a confirm' : r.error)
+    return r.needsConfirm
+  }
+
+  it('takes an IP address or localhost to listen on, never a name', () => {
+    expect(patched({ bind: ' 0.0.0.0 ', confirm: ['plain-http'] }).bind).toBe('0.0.0.0')
+    expect(patched({ bind: '[::1]' }).bind).toBe('::1')
+    expect(patched({ bind: 'LOCALHOST' }).bind).toBe('localhost')
+    expect(patched({ bind: '192.168.1.20' }).bind).toBe('192.168.1.20')
+    for (const bad of ['devbox.local', '127.0.0.1.evil.example', '', 'http://0.0.0.0', 7, 'x'.repeat(200)]) {
+      expect(refused({ bind: bad }), String(bad)).toMatch(/not an IP address/)
+    }
+  })
+
+  it('takes certificate and key paths only as full paths, both; null clears them', () => {
+    expect(patched({ tls: { certPath: ' /c.pem ', keyPath: '/k.pem' } }).tls).toEqual({ certPath: '/c.pem', keyPath: '/k.pem' })
+    expect('tls' in patched({ tls: null }, { ...base, tls: TLS })).toBe(false)
+    for (const bad of [{ certPath: 'cert.pem', keyPath: '/k' }, { certPath: '/c' }, { certPath: '/c', keyPath: '' }, { certPath: '/c\0x', keyPath: '/k' }]) {
+      expect(refused({ tls: bad }), JSON.stringify(bad)).toMatch(/full path/)
+    }
+    expect(refused({ tls: '/c' })).toMatch(/certificate file and a key file/)
+  })
+
+  it('names the risks of a setting: no sign-in on a network address, plain http on one', () => {
+    expect(webAccessRiskIds(base)).toEqual([])
+    expect(webAccessRiskIds({ ...base, mode: 'none' })).toEqual([])
+    expect(webAccessRiskIds({ ...base, bind: '0.0.0.0' })).toEqual(['plain-http'])
+    expect(webAccessRiskIds({ ...base, bind: '0.0.0.0', tls: TLS })).toEqual([])
+    expect(webAccessRiskIds({ ...base, bind: '0.0.0.0', tls: TLS, mode: 'none' })).toEqual(['none-network'])
+    expect(webAccessRiskIds({ ...base, bind: '10.0.0.4', mode: 'none' })).toEqual(['none-network', 'plain-http'])
+    expect(webAccessRiskIds({ ...base, externalOrigin: 'http://box.lan' })).toEqual(['plain-http'])
+    expect(webAccessRiskIds({ ...base, externalOrigin: 'https://box.lan' })).toEqual([])
+  })
+
+  it('each risky choice made while on needs its confirm; nothing changes until it is given', () => {
+    const on = { ...base, enabled: true }
+    expect(asks({ bind: '0.0.0.0' }, on)).toEqual(['plain-http'])
+    expect(asks({ enabled: true, bind: '192.168.1.20' })).toEqual(['plain-http'])
+    expect(asks({ externalOrigin: 'http://box.lan' }, on)).toEqual(['plain-http'])
+    const lanTls = patched({ bind: '0.0.0.0', tls: TLS }, on)
+    expect(lanTls.confirmed).toBeUndefined()
+    expect(asks({ mode: 'none' }, lanTls)).toEqual(['none-network'])
+    // Both at once: both are asked, and confirming one of them is not enough.
+    expect(asks({ bind: '10.0.0.4', mode: 'none' }, on)).toEqual(['none-network', 'plain-http'])
+    expect(asks({ bind: '10.0.0.4', mode: 'none', confirm: ['none-network'] }, on)).toEqual(['plain-http'])
+    expect(on.bind).toBe('127.0.0.1')
+  })
+
+  it('a confirmed change is saved with its confirm, which carries over to the next change while the risk stays', () => {
+    const on = { ...base, enabled: true }
+    const lan = patched({ bind: '0.0.0.0', confirm: ['plain-http'] }, on)
+    expect(lan).toMatchObject({ bind: '0.0.0.0', confirmed: ['plain-http'] })
+    expect(patched({ port: 8000 }, lan).confirmed).toEqual(['plain-http'])
+    // Removing the risk drops its confirm, so choosing it again asks again.
+    const back = patched({ bind: '127.0.0.1' }, lan)
+    expect(back.confirmed).toBeUndefined()
+    expect(asks({ bind: '0.0.0.0' }, back)).toEqual(['plain-http'])
+    // So does TLS: plain http is no longer the case, and dropping the certificate later asks.
+    const tls = patched({ tls: TLS }, lan)
+    expect(tls.confirmed).toBeUndefined()
+    expect(asks({ tls: null }, tls)).toEqual(['plain-http'])
+  })
+
+  it('a confirm of a risk the setting does not have is not stored; a stale one in the file confirms nothing', () => {
+    expect(patched({ port: 8000, confirm: ['none-network', 'plain-http'] }).confirmed).toBeUndefined()
+    const stale = { ...base, enabled: true, confirmed: ['plain-http' as const] }
+    expect(asks({ bind: '0.0.0.0' }, stale)).toEqual(['plain-http'])
+    expect(refused({ confirm: ['root'] })).toMatch(/list of risks/)
+    expect(refused({ confirm: 'plain-http' })).toMatch(/list of risks/)
+  })
+
+  it('turning off never asks; a risk saved while off is asked for when turning on', () => {
+    const lan = patched({ bind: '0.0.0.0', confirm: ['plain-http'] }, { ...base, enabled: true })
+    const off = patched({ enabled: false, mode: 'none' }, lan)
+    expect(off).toMatchObject({ enabled: false, mode: 'none', confirmed: ['plain-http'] })
+    expect(asks({ enabled: true }, off)).toEqual(['none-network'])
+    const offLan = patched({ bind: '10.0.0.4' })
+    expect(offLan.confirmed).toBeUndefined()
+    expect(asks({ enabled: true }, offLan)).toEqual(['plain-http'])
+  })
+
+  it('listens on a network address only with TLS or the confirm; a hand-edited risk is refused', () => {
+    const plan = (over: object): ReturnType<typeof listenPlanOf> => listenPlanOf(webAccessOf({ enabled: true, ...over }))
+    expect(plan({ bind: '0.0.0.0' })).toEqual({ ok: false, reason: expect.stringMatching(/plain http on a network address needs a certificate, or the confirm/) })
+    expect(plan({ bind: '0.0.0.0', confirmed: ['plain-http'] })).toMatchObject({ ok: true, bind: '0.0.0.0' })
+    expect(plan({ bind: '0.0.0.0', tls: TLS })).toMatchObject({ ok: true, bind: '0.0.0.0', tls: TLS })
+    expect(plan({ bind: '0.0.0.0', tls: TLS, mode: 'none' })).toEqual({ ok: false, reason: expect.stringMatching(/no sign-in on a network address needs the confirm/) })
+    expect(plan({ bind: '0.0.0.0', tls: TLS, mode: 'none', confirmed: ['none-network'] })).toMatchObject({ ok: true })
+    expect(plan({ externalOrigin: 'http://box.lan' }).ok).toBe(false)
+    expect(plan({ externalOrigin: 'http://box.lan', confirmed: ['plain-http'] }).ok).toBe(true)
+    // A relative certificate path reads as no TLS: plain http, never confirmed, refused.
+    expect(plan({ bind: '0.0.0.0', tls: { certPath: 'cert.pem', keyPath: '/k' } }).ok).toBe(false)
+    expect(plan({ bind: 'devbox.local', confirmed: ['plain-http'] })).toEqual({ ok: false, reason: expect.stringMatching(/not an IP address/) })
+    // Unknown entries in the file are dropped.
+    expect(webAccessOf({ confirmed: ['plain-http', 'root', 7] }).confirmed).toEqual(['plain-http'])
+  })
+
+  it('stores every edited field and removes the cleared ones from the file', () => {
+    const next = { ...base, enabled: true, bind: '0.0.0.0', tls: TLS, confirmed: ['none-network' as const], mode: 'none' as const }
+    expect(storedWebAccess({ port: 1, extra: 1 } as Partial<WebAccessSettings>, next)).toEqual({ ...next, extra: 1 })
+    const cleared = storedWebAccess(next, { ...base })
+    expect('tls' in cleared || 'confirmed' in cleared || 'externalOrigin' in cleared).toBe(false)
   })
 })
 
@@ -165,12 +281,9 @@ describe('WebAccessService', () => {
       gateway,
       auth,
       read: () => stored,
+      // What main's index.ts does.
       write: (next) => {
-        // What main's index.ts does: only the editable fields, a cleared origin removed.
-        const s: Record<string, unknown> = { ...(stored as object | undefined), enabled: next.enabled, port: next.port, hosts: next.hosts, mode: next.mode }
-        if (next.externalOrigin !== undefined) s['externalOrigin'] = next.externalOrigin
-        else delete s['externalOrigin']
-        stored = s
+        stored = storedWebAccess(stored as Partial<WebAccessSettings> | undefined, next)
       },
       emit: (i) => indicators.push(i)
     })
@@ -182,7 +295,8 @@ describe('WebAccessService', () => {
 
   it('is off with the defaults and shows no devices', () => {
     const v = service.view()
-    expect(v.form).toEqual({ enabled: false, port: 7330, externalOrigin: '', hosts: [], mode: 'link' })
+    expect(v.form).toEqual({ enabled: false, bind: '127.0.0.1', port: 7330, externalOrigin: '', hosts: [], mode: 'link', certPath: '', keyPath: '' })
+    expect(v.network).toBe(false)
     expect(v.gateway).toEqual({ state: 'off' })
     expect(v.devices).toEqual([])
     expect(v.risks).toEqual([])
@@ -227,7 +341,7 @@ describe('WebAccessService', () => {
     await withTerminals.set({ enabled: false })
     expect(calls).toEqual(['gateway false', 'drain'])
     calls.length = 0
-    // A stored setting the gateway refuses (a network bind before Task 28) runs no worker either.
+    // A stored setting the gateway refuses (a network bind never confirmed) runs no worker either.
     stored = { enabled: true, bind: '0.0.0.0' }
     await withTerminals.apply()
     expect(calls).toEqual(['gateway true', 'drain'])
@@ -249,7 +363,7 @@ describe('WebAccessService', () => {
   })
 
   it('stores a change, applies it to the gateway and answers with the new view', async () => {
-    const v = await service.set({ enabled: true, port: 8123, hosts: ['box.local'] })
+    const v = pageOf(await service.set({ enabled: true, port: 8123, hosts: ['box.local'] }))
     expect(stored).toMatchObject({ enabled: true, port: 8123, hosts: ['box.local:8123'] })
     expect(applied).toHaveLength(1)
     expect(applied[0]).toMatchObject({ enabled: true, port: 8123 })
@@ -271,9 +385,58 @@ describe('WebAccessService', () => {
       status = { state: 'failed', reason: 'EADDRINUSE' }
       return status
     }
-    const v = await service.set({ enabled: true })
+    const v = pageOf(await service.set({ enabled: true }))
     expect(webAccessOf(stored).enabled).toBe(true)
     expect(v.gateway).toEqual({ state: 'failed', reason: 'EADDRINUSE' })
+  })
+
+  describe('the §4.3 confirms (plan Task 28)', () => {
+    it('a refused or cancelled confirm leaves loopback: nothing is stored and the gateway is not touched', async () => {
+      expect(await service.set({ enabled: true, bind: '0.0.0.0' })).toEqual({ needsConfirm: ['plain-http'] })
+      expect(stored).toBeUndefined()
+      expect(applied).toEqual([])
+      expect(service.view().form.bind).toBe('127.0.0.1')
+      // Already on, on loopback: the same, and it stays listening there.
+      await service.set({ enabled: true })
+      applied.length = 0
+      expect(await service.set({ bind: '192.168.1.20' })).toEqual({ needsConfirm: ['plain-http'] })
+      expect(webAccessOf(stored).bind).toBe('127.0.0.1')
+      expect(applied).toEqual([])
+    })
+
+    it('plain http on the LAN after the confirm: stored, applied, and the warning badge is on', async () => {
+      const v = pageOf(await service.set({ enabled: true, bind: '0.0.0.0', confirm: ['plain-http'] }))
+      expect(stored).toMatchObject({ bind: '0.0.0.0', confirmed: ['plain-http'] })
+      expect(applied.at(-1)).toMatchObject({ bind: '0.0.0.0', confirmed: ['plain-http'] })
+      expect(listenPlanOf(applied.at(-1) as WebAccessSettings).ok).toBe(true)
+      expect(v.network).toBe(true)
+      expect(v.risks).toEqual([expect.stringMatching(/Plain http on a network/)])
+      expect(service.indicator().warning).toMatch(/Plain http on a network/)
+    })
+
+    it('None on the LAN after the confirm (with TLS): listens, and the badge says anyone can get in', async () => {
+      const tls = { certPath: '/etc/cc/cert.pem', keyPath: '/etc/cc/key.pem' }
+      expect(await service.set({ enabled: true, bind: '0.0.0.0', tls, mode: 'none' })).toEqual({ needsConfirm: ['none-network'] })
+      expect(stored).toBeUndefined()
+      const v = pageOf(await service.set({ enabled: true, bind: '0.0.0.0', tls, mode: 'none', confirm: ['none-network'] }))
+      expect(v.form).toMatchObject({ bind: '0.0.0.0', mode: 'none', certPath: tls.certPath, keyPath: tls.keyPath })
+      expect(listenPlanOf(applied.at(-1) as WebAccessSettings)).toMatchObject({ ok: true, bind: '0.0.0.0', tls })
+      expect(service.indicator().warning).toMatch(/Sign-in is off on a network address/)
+      expect(service.indicator().warning).not.toMatch(/Plain http/)
+    })
+
+    it('the badge shows only while listening: a refused risk is no live risk', async () => {
+      stored = { enabled: true, bind: '0.0.0.0' }
+      status = { state: 'refused', reason: 'not confirmed' }
+      expect(service.view().risks).toEqual([])
+      expect(service.indicator().warning).toBeUndefined()
+    })
+
+    it('a link over TLS is https', async () => {
+      await service.set({ enabled: true, tls: { certPath: '/c.pem', keyPath: '/k.pem' } })
+      const reply = await service.link()
+      expect(reply.ok && reply.link).toMatch(/^https:\/\/127\.0\.0\.1:7330\/#t=/)
+    })
   })
 
   it('emits the indicator after a change', async () => {
@@ -339,7 +502,7 @@ describe('WebAccessService', () => {
       expect(service.view().passwordSet).toBe(true)
       // Nothing of the password or its hash reaches the view.
       expect(JSON.stringify(service.view())).not.toMatch(/correct horse|scrypt/)
-      const v = await service.set({ enabled: true, mode: 'password' })
+      const v = pageOf(await service.set({ enabled: true, mode: 'password' }))
       expect(v.form.mode).toBe('password')
     })
 

@@ -20,7 +20,7 @@ import type { FlagPatch, TabFlag } from './tab-flag'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
-import type { WebAccessIndicator, WebAccessPatch, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
+import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -1138,8 +1138,11 @@ export interface IpcInvokeMap {
   // remote view can never read the access link or the device list, or widen its own access.
   /** The web access settings, the gateway's state, the devices and the risks of the current choices. */
   'settings.webAccess': { req: void; res: WebAccessView }
-  /** Change the fields present in the patch; refused as a whole (an Error with the reason) when one is invalid. */
-  'settings.webAccessSet': { req: { value: WebAccessPatch }; res: WebAccessView }
+  /**
+   * Change the fields present in the patch; refused as a whole (an Error with the reason) when one is
+   * invalid, and answered `needsConfirm` (nothing saved) when it brings in a §4.3 risk not confirmed.
+   */
+  'settings.webAccessSet': { req: { value: WebAccessPatch }; res: WebAccessSetReply }
   /** The access link (made on first use); only while the gateway listens in the link mode. */
   'settings.webAccessLink': { req: void; res: WebLinkReply }
   /** A new access link: the old one and every device that signed in with it stop working. */

@@ -1,10 +1,11 @@
 // The logic of Settings › General › Web access and the top bar's indicator, apart from the React that
 // draws them (the unit tests run in plain Node, so what is worth testing lives here). DOM-free.
-import type { WebAccessMode } from '../../shared/types'
+import type { WebAccessMode, WebAccessRisk } from '../../shared/types'
 import type {
   WebAccessForm,
   WebAccessIndicator,
   WebAccessPatch,
+  WebAccessSetReply,
   WebConfirmAsk,
   WebDeviceView,
   WebLinkReply
@@ -89,25 +90,43 @@ export function hostsFromText(text: string): string[] {
 
 /** What the person has typed, as the fields the page holds as text. */
 export interface WebAccessDraft {
+  bind: string
   port: string
   externalOrigin: string
   hosts: string
+  certPath: string
+  keyPath: string
 }
 
 export function draftOf(form: WebAccessForm): WebAccessDraft {
-  return { port: String(form.port), externalOrigin: form.externalOrigin, hosts: hostsText(form.hosts, form.port) }
+  return {
+    bind: form.bind,
+    port: String(form.port),
+    externalOrigin: form.externalOrigin,
+    hosts: hostsText(form.hosts, form.port),
+    certPath: form.certPath,
+    keyPath: form.keyPath
+  }
 }
 
 /**
  * The change a Save sends: only fields that differ from the saved form. `error` when the port is not a
  * whole number (the rest is main's to judge: it owns the rules, and its message is shown as it is).
- * Empty patch (`{}`): nothing to save.
+ * Empty patch (`{}`): nothing to save. Both certificate fields emptied clears TLS (`tls: null`); one
+ * of them changed sends both, and main says when one is missing.
  */
 export function patchOf(form: WebAccessForm, draft: WebAccessDraft): { patch: WebAccessPatch } | { error: string } {
   const patch: WebAccessPatch = {}
   const portText = draft.port.trim()
   const port = Number(portText)
   if (portText === '' || !Number.isInteger(port)) return { error: 'The port must be a whole number.' }
+  const bind = draft.bind.trim()
+  if (bind !== form.bind) patch.bind = bind
+  const certPath = draft.certPath.trim()
+  const keyPath = draft.keyPath.trim()
+  if (certPath !== form.certPath || keyPath !== form.keyPath) {
+    patch.tls = certPath === '' && keyPath === '' ? null : { certPath, keyPath }
+  }
   // Hosts are compared as the page shows them: the saved list carries the port the person did not type.
   if (port !== form.port) patch.port = port
   const origin = draft.externalOrigin.trim()
@@ -142,6 +161,29 @@ const MODE_TEXT: Record<WebAccessMode, { label: string; help: string }> = {
     label: 'No sign-in',
     help: 'Whoever reaches the address is in. Meant for a proxy that already signs people in (Tailscale, Cloudflare Access, oauth2-proxy); keep cc-cockpit on this computer behind it.'
   }
+}
+
+/**
+ * What the None mode's own row says (design-web.md §4.2): what still protects (the Host and Origin
+ * checks stop other web pages and foreign names), and what does not: with no sign-in there is nobody
+ * to sign out, so Revoke keeps no one out.
+ */
+export const NONE_MODE_NOTE =
+  'Anyone who can reach the address controls this computer. Revoke has no effect in this mode: a browser that is revoked or disconnected comes straight back without signing in. Host and Origin checks still apply, so other web pages and unknown names stay out. Use it only behind a proxy that signs people in.'
+
+/** The devices list's note while None is on: Revoke there does not lock anyone out. */
+export const NONE_REVOKE_NOTE = 'Sign-in is off, so Revoke has no effect: anyone who can reach the address comes back in. Pick another sign-in to keep browsers out.'
+
+/** Whether the page has to ask the §4.3 confirms before main takes the change (nothing was saved). */
+export function confirmsNeeded(reply: WebAccessSetReply): WebAccessRisk[] | undefined {
+  return 'needsConfirm' in reply ? reply.needsConfirm : undefined
+}
+
+/** The same change again, now carrying the confirms the person gave (and any it already had). */
+export function confirmedPatch(patch: WebAccessPatch, risks: readonly WebAccessRisk[]): WebAccessPatch {
+  const confirm = [...(patch.confirm ?? [])]
+  for (const r of risks) if (!confirm.includes(r)) confirm.push(r)
+  return { ...patch, confirm }
 }
 
 /** The mode dropdown's entries, in the design's order. */

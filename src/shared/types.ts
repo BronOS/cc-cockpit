@@ -280,8 +280,8 @@ export interface AppSettings {
   /**
    * Web access (design-web.md §4): the gateway that serves the cockpit to a browser. Off unless
    * `enabled` is exactly `true`. The file is user-writable, so main reads it field by field
-   * (main/web/settings.ts `webAccessOf`): a damaged field reads as its default, and a bind that
-   * would listen on the network is refused (nothing listens), never quietly moved to loopback.
+   * (main/web/settings.ts `webAccessOf`): a damaged field reads as its default, and a network bind
+   * whose §4.3 risk was never confirmed is refused (nothing listens), never quietly moved to loopback.
    */
   webAccess?: Partial<WebAccessSettings>
 }
@@ -289,10 +289,20 @@ export interface AppSettings {
 /** How a browser signs in (design-web.md §4.2); every mode ends in the same device cookie. */
 export type WebAccessMode = 'link' | 'password' | 'confirm' | 'none'
 
+/**
+ * A dangerous choice that needs the person's confirm (design-web.md §4.3): `none-network` is no
+ * sign-in on an address other than loopback, `plain-http` is any mode over plain http on one (a
+ * network bind with no TLS, or an `http:` external origin on a network name).
+ */
+export type WebAccessRisk = 'none-network' | 'plain-http'
+
 /** `app.json` › `webAccess` once read (main/web/settings.ts `webAccessOf`, defaults applied). */
 export interface WebAccessSettings {
   enabled: boolean
-  /** The address to listen on. Loopback only until TLS and the §4.3 confirms exist (plan Task 28). */
+  /**
+   * The address to listen on: an IP address or `localhost`. Loopback keeps it on this machine; any
+   * other address is the network, allowed with TLS or after the plain-http confirm (§4.3).
+   */
   bind: string
   port: number
   /**
@@ -303,8 +313,15 @@ export interface WebAccessSettings {
   /** Extra Host names the person allows (`name` or `name:port`), normalised to `host:port`. */
   hosts: string[]
   mode: WebAccessMode
-  /** Certificate and key files for https on a network bind (plan Task 28); unused before that. */
+  /** Certificate and key files (PEM, absolute paths): present, the gateway serves https. */
   tls?: { certPath: string; keyPath: string }
+  /**
+   * The §4.3 risks the person confirmed, set only by a confirmed change on the settings page and
+   * kept only while the risk is still there (a change that removes it drops it, so coming back asks
+   * again). A risk of the settings not listed here is refused (nothing listens): a hand-edited bind
+   * of 0.0.0.0 never listens on the network without the confirm.
+   */
+  confirmed?: WebAccessRisk[]
 }
 
 /**
