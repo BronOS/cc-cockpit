@@ -46,7 +46,8 @@ import {
   type ClientFrame,
   type ReadyFrame,
   type WebPagePaths,
-  type WebSnapshot
+  type WebSnapshot,
+  utf8Length
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
 import { PortRelay, type ChannelLike } from './port-relay'
@@ -270,24 +271,6 @@ export function decodeServerJson(text: string): unknown {
     if (typeof b64 !== 'string' || b64.length % 4 !== 0 || !BASE64.test(b64)) return value
     return base64ToBytes(b64)
   })
-}
-
-/** UTF-8 size of a frame, without building the encoded bytes (MAX_FRAME_BYTES check). */
-export function utf8Length(text: string): number {
-  let n = 0
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i)
-    if (c < 0x80) n += 1
-    else if (c < 0x800) n += 2
-    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
-      const d = text.charCodeAt(i + 1)
-      if (d >= 0xdc00 && d <= 0xdfff) {
-        n += 4
-        i++
-      } else n += 3
-    } else n += 3
-  }
-  return n
 }
 
 const defaultTimers: Timers = {

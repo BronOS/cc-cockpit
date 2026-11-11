@@ -71,6 +71,7 @@ import { realPathOf } from '../projects/registry'
 import { callCli } from './cli-call'
 import { HostApi, type HostApiDeps } from './host-api'
 import type { OverlayTypeButtons } from '../overlays/overlay-manager'
+import { warnLog } from '../warn-log'
 
 /** Time a window's host gets to run every plugin's deactivate() before it is killed. */
 export const DEACTIVATE_GRACE_MS = 5_000
@@ -469,7 +470,7 @@ export class HostManager {
   private nextCliCall = 1
 
   constructor(private readonly deps: HostManagerDeps) {
-    this.log = deps.log ?? ((m) => console.warn(m))
+    this.log = deps.log ?? warnLog
     this.activateTimeoutMs = deps.activateTimeoutMs ?? ACTIVATE_TIMEOUT_MS
   }
 

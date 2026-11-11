@@ -46,8 +46,21 @@ export interface WebPagePaths {
   overlays: string
 }
 
-/** A `cc-overlay://` host is a UUID minted by main (overlay-manager.ts). */
-const OVERLAY_HOST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/**
+ * Whether `id` is an overlay id: a lowercase UUID as main mints them (overlay-manager.ts
+ * randomUUID), the `cc-overlay://` host and the `/o/<token>/<id>/` segment. A length and charset
+ * loop, not a regex: the gateway's path parsing uses none (web/plugin-pages.ts).
+ */
+export function isOverlayId(id: string): boolean {
+  if (id.length !== 36) return false
+  for (let i = 0; i < 36; i++) {
+    const c = id.charCodeAt(i)
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      if (c !== 0x2d) return false
+    } else if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66))) return false
+  }
+  return true
+}
 
 /**
  * The HTTP path a desktop page URL is served at for this view: `cc-plugin://<id>/<rest>` under the
@@ -65,7 +78,7 @@ export function webPageUrl(src: string, paths: WebPagePaths | undefined): string
     return `${paths.plugins[id]}${rest}`
   }
   const overlay = /^cc-overlay:\/\/([^/?#]+)\/$/.exec(src)
-  if (overlay && OVERLAY_HOST.test(overlay[1] ?? '') && paths.overlays !== '') return `${paths.overlays}${overlay[1]}/`
+  if (overlay && isOverlayId(overlay[1] ?? '') && paths.overlays !== '') return `${paths.overlays}${overlay[1]}/`
   return undefined
 }
 
@@ -109,6 +122,29 @@ export interface WebProjectEntry {
  * frames before sending (connection.ts), and the bridge checks an invoke before sending it.
  */
 export const MAX_FRAME_BYTES = 4 * 1024 * 1024
+
+/**
+ * UTF-8 size of a frame without building the encoded bytes: the bridge's MAX_FRAME_BYTES check.
+ * Main counts with the native Buffer.byteLength (web/protocol.ts frameBytes, on every frame it
+ * sends); the two must agree, a lone surrogate counting 3 (the U+FFFD it is sent as), so the cap is
+ * the same on both ends (web-bridge.test.ts compares them).
+ */
+export function utf8Length(text: string): number {
+  let n = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const d = text.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        n += 4
+        i++
+      } else n += 3
+    } else n += 3
+  }
+  return n
+}
 
 /** Close codes main uses (4000-4999 is the application range of RFC 6455). */
 export const CLOSE = Object.freeze({

@@ -95,7 +95,11 @@ export function decodeJson(text: string): unknown {
   })
 }
 
-/** UTF-8 size of an encoded frame, for the MAX_FRAME_BYTES check. */
+/**
+ * UTF-8 size of an encoded frame, for the MAX_FRAME_BYTES check. Native (every frame main sends
+ * passes here, up to 4 MiB); the bridge's shared utf8Length counts the same, lone surrogates
+ * included (web-bridge.test.ts).
+ */
 export function frameBytes(text: string): number {
   return Buffer.byteLength(text, 'utf8')
 }

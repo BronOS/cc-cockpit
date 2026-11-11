@@ -59,6 +59,7 @@ import type { AccessLog } from './access-log'
 import { DeviceStore, deviceName as deviceNameOf, hashSecret, matchesHash, randomSecret, type DeviceSignIn, type WebDevice } from './devices'
 import { MAX_PASSWORD_LENGTH, PasswordHasher, passwordProblem } from './password'
 import { isWildcardBind } from './settings'
+import { warnLog } from '../warn-log'
 
 export const DEVICE_COOKIE = 'ccc_device'
 /** Chrome's cap on a cookie's lifetime; the device's own 30-day sliding expiry is what counts. */
@@ -308,7 +309,7 @@ export class WebAuth {
     this.hasher = options.hasher ?? new PasswordHasher()
     this.notify = options.notify ?? (() => undefined)
     this.now = options.now ?? Date.now
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /** Called when the desktop-confirm request comes, is answered, collected or lapses (the desktop redraws it). */

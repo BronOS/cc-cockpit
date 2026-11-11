@@ -43,6 +43,7 @@ import { splitChord } from '../../shared/keys'
 import { MAX_URL_LENGTH, overlayUrlOf, type ViewBounds } from '../overlays/overlay-manager'
 import { PREVIEW_SCHEME, PREVIEW_TOKEN_PATTERN } from './preview-protocol'
 import { defaultTempRoots, resolveWebviewTarget } from './webview-target'
+import { warnLog } from '../warn-log'
 
 /**
  * Folders one view keeps a token for. A browser plugin showing file after file adds one per new
@@ -265,7 +266,7 @@ export class WebviewManager {
   private readonly log: (message: string) => void
 
   constructor(private readonly deps: WebviewManagerDeps) {
-    this.log = deps.log ?? ((m) => console.warn(m))
+    this.log = deps.log ?? warnLog
   }
 
   /**

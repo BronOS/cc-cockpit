@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MAX_QUEUED_MESSAGES, READY_MESSAGE } from '../../sdk/panel-core'
+import { isPlainObject } from '../../shared/guards'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { isPluginPage, overlayMessageOf, overlayResultOf } from '../plugins/frame-messages'
 import { frameTarget, PluginFrame } from '../plugins/PluginFrame'
@@ -17,12 +18,12 @@ interface ResultMessage {
 }
 
 function isResult(data: unknown): data is ResultMessage {
-  return typeof data === 'object' && data !== null && (data as { type?: unknown }).type === 'result'
+  return isPlainObject(data) && data.type === 'result'
 }
 
 /** The type of a message (an object with a string `type`), else undefined. */
 function typeOf(data: unknown): unknown {
-  return typeof data === 'object' && data !== null ? (data as { type?: unknown }).type : undefined
+  return isPlainObject(data) ? data.type : undefined
 }
 
 /** The page has drawn (`ccPanel.ready()`, or `{ type: 'ready' }` on an inline page's port): its loader goes. */

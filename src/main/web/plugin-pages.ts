@@ -50,16 +50,28 @@
 import { randomBytes } from 'node:crypto'
 import { overlayPageHeaders } from '../overlays/overlay-manager'
 import { pluginCsp, servePluginRequest } from '../plugins/plugin-protocol'
-import { OVERLAY_PAGES_PATH, PLUGIN_PAGES_PATH, type WebPagePaths } from '../../shared/web-protocol'
+import { isOverlayId, OVERLAY_PAGES_PATH, PLUGIN_PAGES_PATH, type WebPagePaths } from '../../shared/web-protocol'
 
 /** The token key of a device's inline overlays; never a plugin id (the manifest's id rule has no `@`). */
 const OVERLAY_KEY = '@overlays'
 
-/** A token: 24 random bytes, base64url (32 characters). Anything else is not looked up. */
-const TOKEN_RE = /^[A-Za-z0-9_-]{32}$/
+/** A token's length: 24 random bytes, base64url. */
+const TOKEN_LENGTH = 32
 
-/** A `cc-overlay://` host: a UUID (overlay-manager.ts mints them with randomUUID). */
-const OVERLAY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/**
+ * Whether a path segment is a token's shape (32 base64url characters); anything else is not looked
+ * up. A length and charset loop, as checks.ts: the gateway's path parsing uses no regex.
+ */
+function isTokenShape(token: string): boolean {
+  if (token.length !== TOKEN_LENGTH) return false
+  for (let i = 0; i < token.length; i++) {
+    const c = token.charCodeAt(i)
+    const ok =
+      (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || (c >= 0x30 && c <= 0x39) || c === 0x2d || c === 0x5f
+    if (!ok) return false
+  }
+  return true
+}
 
 /** The prefix a plugin token serves: `/p/<token>/<pluginId>/`. */
 function pluginPrefix(token: string, pluginId: string): string {
@@ -228,7 +240,7 @@ export class PluginPages {
   }
 
   private owner(token: string | undefined): { deviceId: string; key: string } | undefined {
-    return token !== undefined && TOKEN_RE.test(token) ? this.tokens.lookup(token) : undefined
+    return token !== undefined && isTokenShape(token) ? this.tokens.lookup(token) : undefined
   }
 
   private async servePlugin(path: string, method: string, origins: readonly string[]): Promise<PageAnswer> {
@@ -288,7 +300,7 @@ export class PluginPages {
     if (parts.length !== 5 || parts[4] !== '') return pageNotFound()
     const owner = this.owner(parts[2])
     const overlayId = parts[3] ?? ''
-    if (!owner || owner.key !== OVERLAY_KEY || !OVERLAY_ID_RE.test(overlayId)) return pageNotFound()
+    if (!owner || owner.key !== OVERLAY_KEY || !isOverlayId(overlayId)) return pageNotFound()
     const page = this.deps.overlayPage(overlayId)
     // Open, and in a window the device has a view of: another window's overlay id is not enough.
     if (!page || !this.deps.deviceViews(owner.deviceId).some((v) => v.windowId === page.windowId)) return pageNotFound()

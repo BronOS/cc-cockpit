@@ -48,6 +48,7 @@ import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
 import type { SenderContext } from '../windows/window-manager'
 import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
+import { warnLog } from '../warn-log'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
 export interface IpcEventLike {
@@ -195,7 +196,7 @@ export class IpcRouter {
     ipc: IpcMainLike,
     resolveSender: (senderId: number) => SenderContext | undefined,
     isAppPage: (url: string) => boolean,
-    log: (message: string) => void = (m) => console.warn(m),
+    log: (message: string) => void = warnLog,
     isOpenProjectWindow: (windowId: number, projectId: string) => boolean = () => false
   ) {
     this.ipc = ipc

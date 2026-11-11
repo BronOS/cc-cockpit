@@ -16,6 +16,7 @@ import { fitBounds, sanitizeBounds, type Rect } from './window-bounds'
 import { OPAQUE_LOOK, type ProjectWindowLook } from './window-chrome'
 import type { ViewRegistry, ViewSink } from '../views/view-registry'
 import type { AskClose, CloseChoice } from './close-dialog'
+import { warnLog } from '../warn-log'
 
 export type { Rect } from './window-bounds'
 
@@ -549,7 +550,7 @@ export class WindowManager {
   }
 
   private logLine(message: string): void {
-    const log = this.options.log ?? ((m: string) => console.warn(m))
+    const log = this.options.log ?? warnLog
     log(message)
   }
 
@@ -597,7 +598,7 @@ export class WindowManager {
         orphan?.close()
         return
       } catch (err) {
-        const log = this.options.log ?? ((m: string) => console.warn(m))
+        const log = this.options.log ?? warnLog
         log(`cannot reopen ${reopenPath}: ${errorText(err)}`)
         this.options.onReopenFailed?.(projectId)
       }

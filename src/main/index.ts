@@ -167,6 +167,7 @@ import {
   WindowManager,
   type SecondInstanceData
 } from './windows/window-manager'
+import { warnLog } from './warn-log'
 
 // Apply the CC_COCKPIT_DATA_DIR override FIRST: before `requestSingleInstanceLock()` and before
 // `ready`. The single-instance lock file and Electron's own state (caches, cookies, the Local
@@ -232,10 +233,10 @@ function start(): void {
   // the registry (forget drops secret project settings) and the installer (uninstall drops the
   // plugin's secrets) both clean up in it.
   const secretStore = selectSecretStore(process.env, app.isPackaged, () => safeStorageSecretStore(safeStorage))
-  const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: (m) => console.warn(m) })
+  const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: warnLog })
   // ctx.oauth (plugin-oauth.ts). A lambda, not `shell.openExternal` itself: looked up at each
   // sign-in, so the e2e's recorder that replaces it after launch is what runs (no real browser).
-  const pluginOAuth = new PluginOAuth({ openExternal: (url) => shell.openExternal(url), log: (m) => console.warn(m) })
+  const pluginOAuth = new PluginOAuth({ openExternal: (url) => shell.openExternal(url), log: warnLog })
   const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
   // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).
@@ -358,7 +359,7 @@ function start(): void {
     previewFetcher: testPreviewFetcher(createPreviewFetcher(), testRun),
     // From the index, not the installer: loadCache below asks before the installer exists.
     authorities: () => pluginIndex.list().flatMap((p) => (p.marketplace !== undefined ? [p.marketplace] : [])),
-    log: (m) => console.warn(m),
+    log: warnLog,
     onRefreshed: () => void plugins.applyRevocations().catch((err: unknown) => console.error('applying revocations failed', err))
   })
   marketplace.loadCache()
@@ -809,7 +810,7 @@ function start(): void {
       servePreviewRequest(url, method, {
         folderOf: (token) => webviews.previewFolder(partition, token),
         budget: previewBudgets.of(partition),
-        log: (m) => console.warn(m)
+        log: warnLog
       })
     ),
     partitionClosed: (partition) => previewBudgets.drop(partition),
@@ -847,7 +848,7 @@ function start(): void {
       sendToWindow(owner.windowId, 'webviews.navigated', { panelKey: `${owner.pluginId}/${owner.panelId}`, ...page }),
     isWindowOpen: (windowId) => windows.projectWindows().some((w) => w.windowId === windowId),
     homeDir: () => homedir(),
-    log: (m) => console.warn(m)
+    log: warnLog
   })
   // Keys typed into a window's own page can come from an html overlay's iframe, which the shell
   // UI's key handler never sees (a sandboxed frame's events stay in the frame). So main resolves
@@ -997,13 +998,13 @@ function start(): void {
     appSound: () => notificationSoundOf(registry.app.data.notificationSound),
     systemHas: (id) => systemSounds.has(id)
   })
-  const pluginLogs = new PluginLogWriter({ dir: paths.logsDir, log: (m) => console.warn(m) })
+  const pluginLogs = new PluginLogWriter({ dir: paths.logsDir, log: warnLog })
   // ctx.appStorage (app-storage.ts): one store for the whole app, so the hosts of every window
   // share it and main applies their calls one at a time. Flushed on quit (will-quit).
-  const appStorage = new AppStorage({ dataDir, log: (m) => console.warn(m) })
+  const appStorage = new AppStorage({ dataDir, log: warnLog })
   // The account's plan usage from the Claude tabs' status lines (`statusline` socket command below),
   // for ctx.sessions.rateLimits; every host hears a change, at most one per 2 s.
-  const rateLimits = new RateLimitsStore({ log: (m) => console.warn(m) })
+  const rateLimits = new RateLimitsStore({ log: warnLog })
   // One plugin host (utilityProcess) per project window.
   const hosts = new HostManager({
     factory: new ElectronHostProcessFactory(),
@@ -1149,7 +1150,7 @@ function start(): void {
     revalidate: (id) => claudePluginsBuilds.revalidated(id, () => plugins.revalidate(id)),
     reload: (id, problem) => hosts.devReload(id, problem),
     watch: createFolderWatcher(),
-    log: (m) => console.warn(m)
+    log: warnLog
   })
   // Panel MessagePorts: one channel per panel page, host end to the project's host (tagged from
   // main's records), renderer end to the window that asked. Electron's MessageChannelMain is only
@@ -1230,7 +1231,7 @@ function start(): void {
     createWorker: nodeMirrorWorker(join(__dirname, 'mirror-worker.js')),
     // OSC 10/11/12 colour queries are answered from the app theme's terminal palette.
     colors: () => themes.current().xterm,
-    log: (m) => console.warn(m)
+    log: warnLog
   })
   // Each view's selected tab and the project's active tab, the selection of the view that acted
   // last (design-web.md §5.1). Functions: `tabs` is defined just below.
@@ -1371,10 +1372,10 @@ function start(): void {
     overlayPage: (overlayId) => overlays.inlinePage(overlayId),
     // out/sdk/panel.js, as the cc-plugin: handler serves it.
     sdkFile: join(__dirname, '../sdk/panel.js'),
-    log: (m) => console.warn(m)
+    log: warnLog
   })
   const webGateway = new WebGateway({
-    log: (m) => console.warn(m),
+    log: warnLog,
     auth: webAuth,
     accessLog: webAccessLog,
     pages: pluginPages,
@@ -1432,7 +1433,7 @@ function start(): void {
         if (event === 'SessionStart' && sessionId !== undefined) {
           // `source` tells an interactive `/resume` (a stored conversation, stays resumable) from
           // `/clear` (an empty one); a non-string counts as neither.
-          const source = typeof payload === 'object' && payload !== null ? (payload as { source?: unknown }).source : undefined
+          const source = isPlainObject(payload) ? payload.source : undefined
           tabs.sessionStarted(tabId, sessionId, typeof source === 'string' ? source : undefined)
         }
         if (event === 'UserPromptSubmit') tabs.sessionPrompted(tabId)
@@ -2218,7 +2219,7 @@ function start(): void {
       // A plugin close every remaining view declined ends now (close-asks.ts).
       closeAsks.viewGone()
     },
-    log: (m) => console.warn(m)
+    log: warnLog
   })
   webGateway.setSocketHandler((ws, _req, device) => {
     webConnections.accept(ws, device)
@@ -2555,7 +2556,7 @@ function start(): void {
           pluginDir: servedPluginDir,
           // out/sdk/panel.js, built next to out/main/index.js (electron.vite.config.ts).
           sdkFile: join(__dirname, '../sdk/panel.js'),
-          log: (m) => console.warn(m)
+          log: warnLog
         })
       )
       appMenu.refresh()

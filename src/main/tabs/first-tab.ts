@@ -19,6 +19,7 @@
 //    window open: a page reload, or the user closing the last tab (by hand or by a clean exit),
 //    never brings a tab back.
 import { errorText } from '../../shared/error-text'
+import { warnLog } from '../warn-log'
 
 export interface FirstTabOptions {
   /** The app setting, read at decision time (claudeTabOnOpenOf applied). */
@@ -41,7 +42,7 @@ export class FirstTab {
   private readonly log: (message: string) => void
 
   constructor(private readonly options: FirstTabOptions) {
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /**

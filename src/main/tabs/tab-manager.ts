@@ -26,6 +26,7 @@ import type { TokenOwner } from '../socket/socket-server'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { TerminalSizes } from './terminal-sizes'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
+import { warnLog } from '../warn-log'
 
 /**
  * A new PTY starts at this size; the renderer sends the real one (`tabs.resize`) as soon as
@@ -368,7 +369,7 @@ export class TabManager {
 
   constructor(options: TabManagerOptions) {
     this.options = options
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
     this.pty = new PtyService({
       backend: options.backend,
       sink: {

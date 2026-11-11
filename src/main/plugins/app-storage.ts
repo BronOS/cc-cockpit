@@ -34,6 +34,7 @@ import {
 } from '../../shared/plugin-storage'
 import { pluginAppDataDir, STORAGE_FILE_NAME } from '../paths'
 import { JsonFile, type FsOps, type Versioned } from '../store/json-file'
+import { warnLog } from '../warn-log'
 
 const WHAT = 'appStorage'
 
@@ -75,7 +76,7 @@ export class AppStorage implements AppStorageApi {
   private readonly log: (message: string) => void
 
   constructor(private readonly options: AppStorageOptions) {
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   get(pluginId: string, key: unknown): { value: JsonValue } | null {

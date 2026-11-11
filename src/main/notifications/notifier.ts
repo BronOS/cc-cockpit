@@ -27,6 +27,7 @@
 // the Settings dropdown would not list, and a reminder never goes silent over a stale id.
 import { NOTIFY_ACTION_WAIT_MS, NOTIFY_CHIME_INTERVAL_MS, type CleanNotifyOptions } from '../../shared/notify'
 import { parseSoundId } from '../../shared/notify-sound'
+import { warnLog } from '../warn-log'
 
 /** What the OS is asked to show. */
 export interface NoticeSpec {
@@ -66,7 +67,7 @@ export class Notifier {
 
   constructor(
     private readonly backend: NoticeBackend,
-    private readonly log: (message: string) => void = (m) => console.warn(m)
+    private readonly log: (message: string) => void = warnLog
   ) {}
 
   /** Show and forget. A backend that throws is logged: a notice never breaks its caller. */
@@ -208,7 +209,7 @@ export class NotifySounds {
     const key = `${pluginId}\n${sound}`
     if (!this.logged.has(key) && this.logged.size < MAX_LOGGED_SOUNDS) {
       this.logged.add(key)
-      const log = this.deps.log ?? ((m: string) => console.warn(m))
+      const log = this.deps.log ?? warnLog
       // The id as JSON: one line, whatever the plugin put in it.
       log(`notification sound ${JSON.stringify(sound.slice(0, 200))} of plugin ${pluginId} is not one the app offers now; the app's sound rings instead`)
     }

@@ -14,6 +14,7 @@
 import { errorText } from '../../shared/error-text'
 import { sameRateLimits } from '../../shared/rate-limits'
 import type { RateLimits, RateLimitWindow } from '../../sdk/types'
+import { warnLog } from '../warn-log'
 
 /** At most one change event per this many ms. */
 export const RATE_LIMITS_EVENT_INTERVAL_MS = 2_000
@@ -37,7 +38,7 @@ export class RateLimitsStore {
   constructor(options: RateLimitsStoreOptions = {}) {
     this.interval = options.intervalMs ?? RATE_LIMITS_EVENT_INTERVAL_MS
     this.now = options.now ?? Date.now
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /** The latest windows, or null before the first report. A copy: callers cannot change the store. */

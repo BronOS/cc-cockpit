@@ -40,6 +40,7 @@ import {
   startLoopback,
   type TokenResponse
 } from './oauth'
+import { warnLog } from '../warn-log'
 
 export const MAX_CLIENT_ID_LENGTH = 500
 const MAX_CLIENT_SECRET_LENGTH = 4096
@@ -132,7 +133,7 @@ export class PluginOAuth implements PluginOAuthApi {
   constructor(private readonly options: PluginOAuthOptions) {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.now = options.now ?? Date.now
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /**

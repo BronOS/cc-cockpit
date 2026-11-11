@@ -209,6 +209,7 @@ import { resolveCwd } from '../tabs/tab-manager'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
 import { pluginFileUrl } from './plugin-protocol'
 import { resolveInside } from './validate'
+import { warnLog } from '../warn-log'
 
 /** ctx.sessions.send per plugin: at most this many texts per window. The gate's queue cap (50) also holds. */
 export const SEND_WINDOW_MS = 60_000
@@ -753,7 +754,7 @@ export class HostApi {
     private readonly call?: (method: string, params: unknown, options?: { timeoutMs?: number }) => Promise<unknown>
   ) {
     this.interval = deps.sessionsIntervalMs ?? SESSIONS_EVENT_INTERVAL_MS
-    this.log = deps.log ?? ((m) => console.warn(m))
+    this.log = deps.log ?? warnLog
     this.unsubscribe = deps.onSessionsChange((change) => this.sessionsChanged(change))
     this.unsubscribeRateLimits = deps.onRateLimitsChange?.((rateLimits) => this.rateLimitsChanged(rateLimits))
   }

@@ -78,6 +78,7 @@ import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from 
 import { isSettingsPageScope, settingsPagePortKey } from '../../shared/settings-page'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
 import type { SlotFrameRecord } from '../layout/layout-service'
+import { warnLog } from '../warn-log'
 
 /** Two entangled ends; P is Electron's MessagePortMain in the app, a fake in tests. */
 export interface PanelChannel<P> {
@@ -174,7 +175,7 @@ export class PanelPortHub<P> {
   private nextPageId = 1
 
   constructor(private readonly deps: PanelPortDeps<P>) {
-    this.log = deps.log ?? ((m) => console.warn(m))
+    this.log = deps.log ?? warnLog
     this.now = deps.now ?? Date.now
   }
 

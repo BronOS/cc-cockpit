@@ -23,6 +23,7 @@ import { errorText } from '../../shared/error-text'
 import type { SkillContribution } from '../../shared/manifest'
 import { readSkillFiles } from '../plugins/skill-files'
 import coreSkill from './core-skill.md?raw'
+import { warnLog } from '../warn-log'
 
 /** The Claude plugin name of `core/`; its skill is listed to Claude as `cc-cockpit:cc-cockpit`. */
 export const CORE_PLUGIN_NAME = 'cc-cockpit'
@@ -102,7 +103,7 @@ export class ClaudePlugins {
 
   constructor(options: ClaudePluginsOptions) {
     this.options = options
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
     this.ready = new Promise<void>((resolve) => {
       this.resolveReady = resolve
     })

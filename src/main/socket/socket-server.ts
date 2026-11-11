@@ -33,6 +33,7 @@ import {
   type Request
 } from '../../shared/protocol'
 import { connect, listen } from './transport'
+import { warnLog } from '../warn-log'
 
 /**
  * What a token belongs to, as main's tables say (SocketServerOptions.resolveToken). `session`: a
@@ -124,7 +125,7 @@ export class SocketServer {
   private boundIno: number | undefined
 
   constructor(private readonly options: SocketServerOptions) {
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /** Register the handler for `cmd`. One per command; a second registration is a bug. */

@@ -91,6 +91,7 @@ import {
   type ToWorker,
   WORKER_MARK
 } from './mirror-protocol'
+import { warnLog } from '../warn-log'
 
 export type { MirrorItem, MirrorSnapshot, MirrorState } from './mirror-protocol'
 
@@ -347,7 +348,7 @@ export class TerminalMirror implements TerminalTap {
   private readonly now: () => number
 
   constructor(private readonly options: TerminalMirrorOptions) {
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
     this.now = options.now ?? Date.now
   }
 

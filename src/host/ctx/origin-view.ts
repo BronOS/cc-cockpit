@@ -3,8 +3,9 @@
 // change. Ported from spike 2 (branch `spike/web-plugin-panel`), with the bound the spike lacked.
 //
 // The host runs each page-message listener (a panel's `ctx.panels.onMessage`, a slot's
-// `onMessage`) inside `dispatchInView(view, …)`, and host/index.ts adds `currentView()` to every
-// RPC request the plugin makes (rpc.ts `view`). AsyncLocalStorage follows the listener's awaits,
+// `onMessage`) inside `dispatchInView(view, …)`, and host/index.ts wraps its RPC call in
+// `carryView`, which adds `currentView()` to every request the plugin makes (rpc.ts `view`;
+// `currentView` is exported for the unit tests). AsyncLocalStorage follows the listener's awaits,
 // so `await ctx.sessions.focus(id)` after an `await` still knows its view.
 //
 // The bound. AsyncLocalStorage also follows everything the listener STARTS: in the spike a

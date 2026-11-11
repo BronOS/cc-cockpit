@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, watch as fsWatch, statSync, promises as fs, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { errorText, toError } from '../../shared/error-text'
+import { warnLog } from '../warn-log'
 
 export const DEBOUNCE_MS = 300
 export const POLL_INTERVAL_MS = 2000
@@ -110,7 +111,7 @@ export class DevWatcher {
 
   constructor(private readonly deps: DevWatcherDeps) {
     this.debounceMs = deps.debounceMs ?? DEBOUNCE_MS
-    this.log = deps.log ?? ((m) => console.warn(m))
+    this.log = deps.log ?? warnLog
   }
 
   /** Ids with an open watcher (tests and diagnostics). */

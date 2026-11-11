@@ -51,6 +51,7 @@ import {
   type PluginState
 } from './plugin-index'
 import { insideReadProblemText, loadManifest, readInside } from './validate'
+import { warnLog } from '../warn-log'
 
 // ---------------------------------------------------------------------------------------------
 // git runner
@@ -242,7 +243,7 @@ export class PluginInstaller {
     this.runGit = options.runGit ?? defaultGitRunner
     this.gitTimeoutMs = options.gitTimeoutMs ?? GIT_TIMEOUT_MS
     this.reloadHosts = options.reloadHosts ?? (async () => {})
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   list(): InstalledPlugin[] {

@@ -10,6 +10,7 @@
 import * as nodeFs from 'node:fs'
 import { join } from 'node:path'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
+import { warnLog } from '../warn-log'
 
 export const MAX_PLUGIN_LOG_BYTES = 5 * 1024 * 1024
 
@@ -45,7 +46,7 @@ export class PluginLogWriter {
     this.maxBytes = options.maxBytes ?? MAX_PLUGIN_LOG_BYTES
     this.fs = options.fs ?? nodeFs
     this.now = options.now ?? Date.now
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /** Append one line (`text` is already a single line). Never throws; a failure is logged. */

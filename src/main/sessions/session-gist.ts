@@ -19,6 +19,7 @@
 // come from main's own entries.
 import { errorText } from '../../shared/error-text'
 import type { SessionChange, SessionRegistry } from './session-registry'
+import { warnLog } from '../warn-log'
 
 export const GIST_MIN_GAP_MS = 60_000
 export const GIST_MAX_CONCURRENT = 2
@@ -61,7 +62,7 @@ export class SessionGist {
     this.minGap = options.minGapMs ?? GIST_MIN_GAP_MS
     this.maxConcurrent = options.maxConcurrent ?? GIST_MAX_CONCURRENT
     this.now = options.now ?? Date.now
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
     this.unsubscribe = options.sessions.onChange((change) => this.onChange(change))
   }
 

@@ -17,6 +17,7 @@
 import { errorText } from '../../shared/error-text'
 import type { EventChannel } from '../../shared/ipc'
 import { desktopViewId, type ViewId } from '../../shared/views'
+import { warnLog } from '../warn-log'
 
 /** One view's way out: a desktop window's webContents, or a remote view's socket. */
 export interface ViewSink<P = unknown> {
@@ -181,7 +182,7 @@ export class ViewRegistry<P = unknown> {
   }
 
   private logLine(message: string): void {
-    const log = this.options.log ?? ((m: string) => console.warn(m))
+    const log = this.options.log ?? warnLog
     log(message)
   }
 }

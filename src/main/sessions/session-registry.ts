@@ -23,6 +23,7 @@ import * as gate from './send-gate'
 import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SendOrigin, type SessionEntry } from './status-reducer'
 import { isPersonInput } from './terminal-reports'
 import { cleanTitle, TitleParser } from './terminal-title'
+import { warnLog } from '../warn-log'
 
 /** The longest gist kept (the gist run asks for ~80 characters; a chatty answer is cut). */
 export const MAX_GIST_CHARS = 160
@@ -110,7 +111,7 @@ export class SessionRegistry {
     this.interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
     this.deliveringTimeout = options.deliveringTimeoutMs ?? gate.DELIVERING_TIMEOUT_MS
     this.settleMs = options.settleMs ?? gate.SESSION_START_SETTLE_MS
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /**

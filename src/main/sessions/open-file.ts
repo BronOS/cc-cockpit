@@ -27,6 +27,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { errorText } from '../../shared/error-text'
 import { resolveInside } from '../plugins/validate'
 import type { DiffTab } from './open-diff'
+import { warnLog } from '../warn-log'
 
 /** ctx.files.open's path, at most this long: far above any real project path (PATH_MAX is 4096). */
 export const MAX_OPEN_PATH_LENGTH = 4096
@@ -130,7 +131,7 @@ export async function routeOpenFile(
   }
   const tab = owned()
   if (!tab) return false
-  const log = deps.log ?? ((m) => console.warn(m))
+  const log = deps.log ?? warnLog
   let pluginId: string | null = null
   try {
     pluginId = await deps.handler(caller.projectId)
@@ -234,7 +235,7 @@ export async function routeProjectFile(
   const projectDir = deps.projectPath(caller.projectId)
   if (projectDir === undefined) throw new Error('the project is gone')
   const rel = await resolveProjectFile(projectDir, path)
-  const log = deps.log ?? ((m) => console.warn(m))
+  const log = deps.log ?? warnLog
   let pluginId: string | null = null
   try {
     pluginId = await deps.handler(caller.projectId)

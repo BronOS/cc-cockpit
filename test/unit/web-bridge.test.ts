@@ -2,10 +2,18 @@
 // A fake socket and fake time drive it; the frames it sends are read back with main's own parser
 // (main/web/protocol.ts), so the two ends' codecs are checked against each other.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { decodeJson, encodeFrame, parseClientFrame } from '../../src/main/web/protocol'
+import { decodeJson, encodeFrame, frameBytes, parseClientFrame } from '../../src/main/web/protocol'
 import type { CockpitApi, EventChannel, InvokeChannel } from '../../src/shared/ipc'
 import { EVENT_CHANNELS, INVOKE_CHANNELS, remoteAllowed } from '../../src/shared/ipc'
-import { CLOSE, MAX_FRAME_BYTES, PROTOCOL_VERSION, WS_PATH, type ServerFrame, type WebSnapshot } from '../../src/shared/web-protocol'
+import {
+  CLOSE,
+  MAX_FRAME_BYTES,
+  PROTOCOL_VERSION,
+  utf8Length,
+  WS_PATH,
+  type ServerFrame,
+  type WebSnapshot
+} from '../../src/shared/web-protocol'
 import {
   createWebBridge,
   decodeServerJson,
@@ -16,7 +24,6 @@ import {
   reconnectDelay,
   socketUrl,
   UNREACHABLE,
-  utf8Length,
   type BridgeStatus,
   type SocketLike,
   type Timers,
@@ -177,9 +184,10 @@ describe('codec', () => {
     }
   })
 
-  it('counts UTF-8 bytes as Buffer does', () => {
-    for (const s of ['', 'abc', 'é', '€', '😀', 'a\ud800b', '\udc00', 'x😀é€'.repeat(50)]) {
-      expect(utf8Length(s)).toBe(Buffer.byteLength(s, 'utf8'))
+  it("counts UTF-8 bytes as main's frameBytes does, lone surrogates included", () => {
+    for (const s of ['', 'abc', 'é', '€', '😀', 'a\ud800b', '\udc00', '\ud800', 'x\udbff', 'x😀é€'.repeat(50)]) {
+      expect(utf8Length(s)).toBe(frameBytes(s))
+      expect(utf8Length(s)).toBe(new TextEncoder().encode(s).length)
     }
   })
 

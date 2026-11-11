@@ -44,6 +44,7 @@ import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
 import { dataPaths } from '../paths'
 import { JsonFile, type FsOps } from '../store/json-file'
 import type { SecretStore } from './secret-store'
+import { warnLog } from '../warn-log'
 
 export const SECRET_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 /** Per value, in UTF-8 bytes (what the keychain encrypts), not UTF-16 code units. */
@@ -137,7 +138,7 @@ export class PluginSecrets implements PluginSecretsApi {
 
   constructor(options: PluginSecretsOptions) {
     this.store = options.store
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
     this.file = new JsonFile<SecretsFileData>({
       filePath: dataPaths(options.dataDir).secretsJson,
       defaults: () => ({ schemaVersion: 1, plugins: {} }),

@@ -70,6 +70,8 @@ import { PtyService } from '../pty/pty-service'
 import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
+import { ViewSizes } from '../views/view-sizes'
+import { warnLog } from '../warn-log'
 
 /** `type`, `buttons`, `ready` and `discuss` of every kind (shared/overlay-buttons.ts). */
 type OverlayBase = { title?: string; size?: OverlaySize } & CleanOverlayExtras
@@ -418,16 +420,6 @@ interface Overlay {
   discussPrimary?: boolean
   /** A Send is under way: a second one is refused until it ends. */
   discussing: boolean
-  /**
-   * A terminal overlay's size as each view last measured it, and the view whose size the pty has
-   * (design-web.md §5.2 "Size", the tab rule made simple): the first view to report sizes it, and
-   * the person typing in another view moves it there. Without this a phone and the desktop showing
-   * the same TUI (revdiff) resized the pty on every fit or rotation, each over the other. Hidden
-   * views follow the tab rule (terminal-sizes.ts): they never take the size unless they are the
-   * overlay's only view, and a hidden sizer hands it to the visible view active last (`at`).
-   */
-  sizes?: Map<ViewId, { cols: number; rows: number; at: number }>
-  sizer?: ViewId
 }
 
 /** A click's key in `running`. */
@@ -445,19 +437,26 @@ export class OverlayManager {
   private readonly options: OverlayManagerOptions
   private readonly log: (message: string) => void
   /**
-   * Views hidden now (a minimized or hidden-kept window, a background browser tab: the same
-   * `tabs.visibility` marks TabManager gets). A hidden renderer is throttled, so its xterm answers
-   * queries late: it must not size, and so not answer, while a visible view can.
+   * A terminal overlay's size as each view last measured it, and the view whose size the pty has
+   * (design-web.md §5.2 "Size"): the tab rule (views/view-sizes.ts, shared with TerminalSizes) with
+   * the take on the person's key at once, no debounce. The first view to report sizes it, and the
+   * person typing in another view moves it there. Without this a phone and the desktop showing the
+   * same TUI (revdiff) resized the pty on every fit or rotation, each over the other. Hidden views
+   * (a minimized or hidden-kept window, a background browser tab: the same `tabs.visibility` marks
+   * TabManager gets) never take the size unless they are the overlay's only view, and a hidden
+   * sizer hands it to the visible view active last: a hidden renderer is throttled, so its xterm
+   * answers queries late, and it must not size, and so not answer, while a visible view can.
    */
-  private readonly hiddenViews = new Set<ViewId>()
-  /** Activity order of the views' size reports and keys, for the hidden sizer's fallback. */
-  private sizeClock = 0
+  private readonly sizes = new ViewSizes<string>({
+    apply: (overlayId, cols, rows) => this.pty.resize(overlayId, cols, rows),
+    debounceMs: 0
+  })
   /** Discuss's New session budget, per window. */
   private readonly discussSessions = new DiscussSessionBudget()
 
   constructor(options: OverlayManagerOptions) {
     this.options = options
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
     this.pty = new PtyService({
       backend: options.backend,
       sink: {
@@ -671,13 +670,14 @@ export class OverlayManager {
    */
   viewGone(viewId: ViewId): void {
     // A desktop view goes with its window (whose overlays close with it): only its hidden mark here.
-    this.hiddenViews.delete(viewId)
-    if (!isRemoteViewId(viewId)) return
+    if (!isRemoteViewId(viewId)) {
+      this.sizes.forgetHidden(viewId)
+      return
+    }
+    // A departed sizer's size goes to the visible view active last (the desktop, when it is the only one left).
+    this.sizes.viewGone(viewId)
     const touched = new Set<number>()
     for (const overlay of this.byId.values()) {
-      overlay.sizes?.delete(viewId)
-      // The size goes to the visible view active last (the desktop, when it is the only one left).
-      if (overlay.sizer === viewId) this.sizeFallback(overlay)
       if (overlay.holder !== viewId) continue
       this.hold(overlay, desktopViewId(overlay.windowId))
       this.reloading(overlay)
@@ -828,30 +828,18 @@ export class OverlayManager {
   input(windowId: number, overlayId: string, data: string, viewId: ViewId = desktopViewId(windowId)): void {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind !== 'terminal') return
-    const answerer = overlay.sizer ?? desktopViewId(windowId)
+    const answerer = this.sizes.sizerOf(overlay.id) ?? desktopViewId(windowId)
     const rest = viewId === answerer ? data : stripQueryReplies(data)
     if (rest.length > 0) this.pty.write(overlay.id, rest)
-    const size = overlay.sizes?.get(viewId)
-    if (!size || !isPersonInput(rest)) return
-    size.at = ++this.sizeClock
-    if (overlay.sizer !== viewId && !this.hiddenViews.has(viewId)) this.sizeFrom(overlay, viewId, size)
+    // A view that measured the overlay and is visible takes the size at once (debounce 0).
+    if (isPersonInput(rest)) this.sizes.typed(overlay.id, viewId)
   }
 
   /** A view measured a terminal overlay: remembered; the pty takes it when that view sizes it (input). */
   resize(windowId: number, overlayId: string, cols: number, rows: number, viewId: ViewId = desktopViewId(windowId)): void {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind !== 'terminal') return
-    overlay.sizes ??= new Map()
-    const size = { cols, rows, at: ++this.sizeClock }
-    overlay.sizes.set(viewId, size)
-    if (overlay.sizer === viewId) {
-      if (this.canSize(overlay, viewId)) this.sizeFrom(overlay, viewId, size)
-      return
-    }
-    // Nobody (allowed to) sizes it: a new overlay, or a hidden sizer and now a second view measured.
-    if ((overlay.sizer === undefined || !this.sizesNow(overlay, overlay.sizer)) && this.canSize(overlay, viewId)) {
-      this.sizeFrom(overlay, viewId, size)
-    }
+    this.sizes.report(overlay.id, viewId, cols, rows)
   }
 
   /**
@@ -860,55 +848,7 @@ export class OverlayManager {
    * takes them when no visible view has them.
    */
   viewVisible(viewId: ViewId, visible: boolean): void {
-    if (visible === !this.hiddenViews.has(viewId)) return
-    if (visible) this.hiddenViews.delete(viewId)
-    else this.hiddenViews.add(viewId)
-    for (const overlay of this.byId.values()) {
-      if (overlay.info.kind !== 'terminal' || !overlay.sizes) continue
-      if (!visible) {
-        if (overlay.sizer === viewId) this.sizeFallback(overlay)
-        continue
-      }
-      const size = overlay.sizes.get(viewId)
-      if (size && (overlay.sizer === undefined || !this.sizesNow(overlay, overlay.sizer))) this.sizeFrom(overlay, viewId, size)
-    }
-  }
-
-  private sizeFrom(overlay: Overlay, viewId: ViewId, size: { cols: number; rows: number }): void {
-    overlay.sizer = viewId
-    this.pty.resize(overlay.id, size.cols, size.rows)
-  }
-
-  /** The view sizes the overlay now: it measured it and may size (TerminalSizes.sizes). */
-  private sizesNow(overlay: Overlay, viewId: ViewId): boolean {
-    return overlay.sizes?.has(viewId) === true && this.canSize(overlay, viewId)
-  }
-
-  /** A visible view may size; a hidden one only as the overlay's only measured view (web access off). */
-  private canSize(overlay: Overlay, viewId: ViewId): boolean {
-    if (!this.hiddenViews.has(viewId)) return true
-    return overlay.sizes?.size === 1 && overlay.sizes.has(viewId)
-  }
-
-  /**
-   * The sizer left or was hidden: the visible view active last sizes (and answers); a lone hidden
-   * view still does; else nobody, and the answerer is the desktop until a view sizes it again.
-   */
-  private sizeFallback(overlay: Overlay): void {
-    let next: ViewId | undefined
-    let at = -1
-    for (const [viewId, size] of overlay.sizes ?? []) {
-      if (this.hiddenViews.has(viewId) || size.at <= at) continue
-      next = viewId
-      at = size.at
-    }
-    if (next === undefined && overlay.sizes?.size === 1) next = overlay.sizes.keys().next().value
-    const size = next === undefined ? undefined : overlay.sizes?.get(next)
-    if (next === undefined || !size) {
-      overlay.sizer = undefined
-      return
-    }
-    this.sizeFrom(overlay, next, size)
+    this.sizes.visible(viewId, visible)
   }
 
   /** The desktop page's ack (the router takes no other view's): the overlay's flow control. */
@@ -1345,7 +1285,10 @@ export class OverlayManager {
     }
     // A program still running is asked to end; its exit then finds no overlay and is dropped.
     // One that is still there after the grace period is killed outright (PtyService.terminate).
-    if (overlay.info.kind === 'terminal') this.pty.terminate(overlay.id)
+    if (overlay.info.kind === 'terminal') {
+      this.sizes.forget(overlay.id)
+      this.pty.terminate(overlay.id)
+    }
     if (overlay.view) {
       try {
         overlay.view.destroy()

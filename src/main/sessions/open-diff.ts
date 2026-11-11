@@ -11,6 +11,7 @@ import { errorText } from '../../shared/error-text'
 import { liveChildren } from '../child-registry'
 import { MAX_TITLE_LENGTH, type OverlaySpec } from '../overlays/overlay-manager'
 import { diffArgv, type LsFiles, type LsFilesResult } from './diff-argv'
+import { warnLog } from '../warn-log'
 
 /** The tab fields the check reads (a SessionEntry has them; tests pass plain objects). */
 export interface DiffTab {
@@ -51,7 +52,7 @@ export async function openDiff(
   const key = `${caller.windowId}\0${tabId}\0${file}`
   if (options.shown.has(key)) return true
   options.shown.add(key)
-  const log = options.log ?? ((m) => console.warn(m))
+  const log = options.log ?? warnLog
   let opened: Promise<unknown>
   try {
     // diffArgv never rejects: a failed probe falls back to less.

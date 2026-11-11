@@ -24,6 +24,7 @@ import type { ProjectView, TabKind, TabRecord } from '../shared/types'
 import type { ProjectRegistry } from './projects/registry'
 import { SESSION_ID } from './tabs/claude-argv'
 import { isPluginCommand, isPluginId, resolveCwd, type AnyTabCommand } from './tabs/tab-manager'
+import { warnLog } from './warn-log'
 
 /** One tab to start, as TabManager.restoreTab takes it. */
 export interface RestoredTab {
@@ -202,7 +203,7 @@ export class TabRestorer {
   private readonly log: (message: string) => void
 
   constructor(private readonly options: TabRestorerOptions) {
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /** Tabs to start when this project's renderer first attaches. Replaces an earlier plan. */

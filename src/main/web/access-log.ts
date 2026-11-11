@@ -21,6 +21,7 @@
 // past the window, or `flush` at quit).
 import * as nodeFs from 'node:fs'
 import { dirname } from 'node:path'
+import { warnLog } from '../warn-log'
 
 const MAX_ACCESS_LOG_BYTES = 1024 * 1024
 /** Entries kept in memory for the desktop's view. */
@@ -106,7 +107,7 @@ export class AccessLog {
     this.maxBytes = options.maxBytes ?? MAX_ACCESS_LOG_BYTES
     this.fs = options.fs ?? nodeFs
     this.now = options.now ?? Date.now
-    this.log = options.log ?? ((m) => console.warn(m))
+    this.log = options.log ?? warnLog
   }
 
   /** Appends one entry. Never throws: a failed write is logged and the entry stays in the ring. */

@@ -4,6 +4,7 @@
 // HTML, the SDK at both URLs, inline overlays while open, and the gateway serving these paths
 // before its cookie check. What a real browser does with the headers was proved by the spike
 // (scripts/web-spike-panel-probe.mjs on spike/web-plugin-panel).
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createServer, type AddressInfo } from 'node:net'
@@ -26,7 +27,8 @@ import {
   type PluginPagesDeps
 } from '../../src/main/web/plugin-pages'
 import { webAccessOf } from '../../src/main/web/settings'
-import { webPageUrl, type WebPagePaths } from '../../src/shared/web-protocol'
+import { rootAbsoluteUrls } from '../../src/shared/root-absolute-urls'
+import { isOverlayId, webPageUrl, type WebPagePaths } from '../../src/shared/web-protocol'
 import { markWebShell, resetShellKindForTest } from '../../src/renderer/shell-kind'
 import { resetPagePathsForTest, setPagePaths, shellPageUrl } from '../../src/renderer/web/page-paths'
 
@@ -311,6 +313,67 @@ describe('plugin files', () => {
     expect(rewriteRootUrls('<a href="//h/x"><a href="/\\h"><a href="x"><a href="https://h/x">', '/p/')).toBe(
       '<a href="//h/x"><a href="/\\h"><a href="x"><a href="https://h/x">'
     )
+  })
+  // Two regexes describe "a root-absolute src/href": the rewriter here and the warning of `ccc plugin
+  // link` (shared/root-absolute-urls.ts). Every URL the rewriter rewrites must be warned about (a
+  // page that relies on the rewrite still works on the desktop only by luck of the prefix), and the
+  // only URLs warned about yet left alone are the documented fail-closed ones. A change to one regex
+  // that the other does not follow fails here.
+  it('the plugin check warns about every URL the rewrite touches, and about exactly the fail-closed rest', () => {
+    const rewritten = [
+      '<script src="/x.js">',
+      "<link href='/a.css'>",
+      '<img src=/i.png>',
+      '<img src=" /sp.png">',
+      "<a HREF = '/x'>",
+      '<a\nhref="/n">',
+      '<a\thref="/t">',
+      '<script src="/__sdk/panel.js">'
+    ]
+    const failClosed = [
+      '<img/src="/slash.png">',
+      '<img src="&#47;e.png">',
+      '<img src="&#x2F;f.png">',
+      '<img src="&sol;g.png">',
+      '<img srcset="a.png 1x, /b.png 2x">',
+      '<video poster="/p.png">',
+      '<form action="/submit">',
+      '<img data-src="/lazy.png">'
+    ]
+    const neither = [
+      '<a href="//h/x">',
+      '<a href="/\\h">',
+      '<a href="x">',
+      '<a href="./x">',
+      '<a href="https://h/x">',
+      '<a href="#top">',
+      '<a data-href="/x">'
+    ]
+    for (const html of [...rewritten, ...failClosed, ...neither]) {
+      const touched = rewriteRootUrls(html, '/p/T/a.b/') !== html
+      const warned = rootAbsoluteUrls('html', html).length > 0
+      const kind = rewritten.includes(html) ? 'rewritten' : failClosed.includes(html) ? 'failClosed' : 'neither'
+      expect({ html, touched, warned }).toEqual({ html, touched: kind === 'rewritten', warned: kind !== 'neither' })
+    }
+  })
+})
+
+describe('isOverlayId', () => {
+  it('takes the UUIDs main mints and nothing else', () => {
+    expect(isOverlayId(randomUUID())).toBe(true)
+    expect(isOverlayId('0a1b2c3d-4e5f-6789-abcd-ef0123456789')).toBe(true)
+    for (const bad of [
+      '',
+      '0A1B2C3D-4E5F-6789-ABCD-EF0123456789',
+      '0a1b2c3d-4e5f-6789-abcd-ef012345678',
+      '0a1b2c3d-4e5f-6789-abcd-ef01234567890',
+      '0a1b2c3d4e5f-6789-abcd-ef0123456789-',
+      '0a1b2c3d-4e5f-6789-abcd-ef012345678g',
+      '../../../../../../../../../../../..',
+      '0a1b2c3d_4e5f_6789_abcd_ef0123456789'
+    ]) {
+      expect(isOverlayId(bad), bad).toBe(false)
+    }
   })
 })
 
