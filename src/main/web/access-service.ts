@@ -228,7 +228,11 @@ export class WebAccessService {
     return lines
   }
 
-  /** Reads the stored settings again and applies them (start-up). */
+  /**
+   * Reads the stored settings again and applies them (start-up). The gateway's state after it is what
+   * server mode's start order reads (server-start.ts): `failed` (the port is taken) ends the run with
+   * status 1, `refused` (an unconfirmed stored risk) does not.
+   */
   apply(): Promise<GatewayStatus> {
     return this.applySettings(this.settings())
   }

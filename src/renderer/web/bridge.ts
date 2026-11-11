@@ -201,7 +201,10 @@ export const READY_TIMEOUT_MS = 10_000
 /**
  * Close codes after which retrying cannot help (CLOSE, shared/web-protocol.ts), with what the
  * person is told. Everything else (a network drop, a restart of the app, a refused upgrade,
- * `tooLarge`, which is defined as "reconnect to a fresh snapshot") is retried.
+ * `tooLarge`, which is defined as "reconnect to a fresh snapshot") is retried. So is
+ * `CLOSE.serverStop` on purpose: a server mode stop (systemd, an update, a reboot) comes back by
+ * itself, so the page shows the host as away and reconnects, where a desktop quit (`appQuit`) waits
+ * for a person and says "Reload this page".
  */
 const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
   [CLOSE.noProject, 'This project is not open on the host.'],

@@ -1259,3 +1259,16 @@ describe('html overlays held by one view', () => {
     expect(overlays.infos(1)[0]?.loading).toBe(true)
   })
 })
+
+describe('CLOSE', () => {
+  it('every code is distinct and in the application range, the server stop included', () => {
+    const codes = Object.values(CLOSE)
+    expect(new Set(codes).size).toBe(codes.length)
+    for (const code of codes) {
+      expect(code).toBeGreaterThanOrEqual(4000)
+      expect(code).toBeLessThanOrEqual(4999)
+    }
+    // A server stop is its own code, never appQuit's: the bridge retries one and not the other.
+    expect(CLOSE.serverStop).not.toBe(CLOSE.appQuit)
+  })
+})

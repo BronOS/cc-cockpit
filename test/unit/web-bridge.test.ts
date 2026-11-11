@@ -695,6 +695,26 @@ describe('drops and reconnect', () => {
     }
   )
 
+  it('a server stop is not final: away, retried with backoff, and a restarted server is reached again', () => {
+    // design-web.md §9.1: systemd restarts, updates and reboots come back by themselves, so the open
+    // browser tabs must too, unlike a desktop quit (appQuit, final above).
+    const r = rig()
+    connect(r)
+    r.last().serverClose(CLOSE.serverStop)
+    expect(r.bridge.status()).toEqual({ state: 'away', retryAt: r.timers.t + 500, attempt: 1 })
+    r.timers.advance(500)
+    expect(r.sockets).toHaveLength(2)
+    // Still down: the wait doubles, as for any drop.
+    r.last().serverClose(1006)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 2, retryAt: r.timers.t + 1000 })
+    r.timers.advance(1000)
+    const s3 = r.last()
+    expect(r.sockets).toHaveLength(3)
+    s3.open()
+    s3.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:2', snapshot: SNAPSHOT })
+    expect(r.bridge.status()).toMatchObject({ state: 'ready', view: 'web:2' })
+  })
+
   it('close() rejects calls, closes the socket and never reconnects', async () => {
     const r = rig()
     const s = connect(r)

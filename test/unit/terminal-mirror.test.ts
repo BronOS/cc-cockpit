@@ -87,12 +87,31 @@ describe('off', () => {
     expect(m.backlog('t1')).toBe(0)
   })
 
+  it('stop() resolves once the worker thread ended (a failed server start waits for it), and never rejects', async () => {
+    const m = mirror()
+    // No worker: resolves at once.
+    await expect(m.stop()).resolves.toBeUndefined()
+    m.start()
+    let end: (() => void) | undefined
+    workers[0]!.terminate = () => new Promise<void>((r) => (end = r))
+    let done = false
+    const stopped = m.stop().then(() => (done = true))
+    await new Promise((r) => setImmediate(r))
+    expect(done).toBe(false)
+    end!()
+    await stopped
+    expect(done).toBe(true)
+    m.start()
+    workers[1]!.terminate = () => Promise.reject(new Error('gone'))
+    await expect(m.stop()).resolves.toBeUndefined()
+  })
+
   it('stop() ends the worker, forgets every tab and a later start begins fresh', async () => {
     const m = mirror()
     m.start()
     m.spawned('t1', 80, 24)
     m.data('t1', 'x')
-    m.stop()
+    void m.stop()
     expect(workers[0]!.terminated).toBe(true)
     expect(m.running).toBe(false)
     expect(m.seq('t1')).toBeUndefined()

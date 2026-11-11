@@ -450,7 +450,7 @@ export class TerminalMirror implements TerminalTap {
         const deadline = setTimeout(() => {
           const left = [...this.tabs.keys()]
           if (left.length > 0) this.log(`terminal mirror: turning off, tabs ${left.join(', ')} not resynced in time`)
-          this.stop()
+          void this.stop()
         }, this.options.drainMs ?? DRAIN_MS)
         deadline.unref?.()
         this.draining = { poll, deadline, done: [] }
@@ -465,8 +465,13 @@ export class TerminalMirror implements TerminalTap {
     return this.draining !== null
   }
 
-  /** End the worker and forget every tab (the app quits, a drain is over). */
-  stop(): void {
+  /**
+   * End the worker and forget every tab (the app quits, a drain is over). Resolves once the worker's
+   * thread is gone: server mode's failed start (server-start.ts) waits for it before quitting, because
+   * a process that exits while the worker is still bootstrapping crashes in Node's loader (SIGSEGV,
+   * Electron 45.1.0) instead of exiting with its status.
+   */
+  stop(): Promise<void> {
     const worker = this.worker
     this.worker = null
     this.failed = false
@@ -477,8 +482,12 @@ export class TerminalMirror implements TerminalTap {
     this.releaseAll()
     this.tabs.clear()
     this.closedSeqs.clear()
-    void worker?.terminate()
+    const ended = worker?.terminate()
     this.endDrain()
+    return Promise.resolve(ended).then(
+      () => undefined,
+      () => undefined
+    )
   }
 
   /** Told after the worker restarted: every tab's copy is blank from its current seq on. */
@@ -690,7 +699,7 @@ export class TerminalMirror implements TerminalTap {
       // with their sockets already; a late one finds the tab no longer held), the pty is the desktop's.
       if (settled) this.closed(tabId)
     }
-    if (this.tabs.size === 0) this.stop()
+    if (this.tabs.size === 0) void this.stop()
   }
 
   /** The drain is over (stopped, or called off by `start`): its timers go, its callers are told. */
@@ -1033,7 +1042,7 @@ export class TerminalMirror implements TerminalTap {
     this.log(`terminal mirror worker ended (${reason})`)
     if (this.draining) {
       // Turning off anyway: no new worker for the few tabs still waiting; they are released as they are.
-      this.stop()
+      void this.stop()
       return
     }
     // The old worker's silence is not the new one's: the check starts over with it.

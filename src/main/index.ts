@@ -151,6 +151,7 @@ import { serverDialogs, type Dialogs } from './dialogs/dialogs'
 import { systemOpenExternal } from './external/electron-open-external'
 import { createOpenExternal, type OpenExternal, type OpenTarget } from './external/open-external'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
+import { runStartOrder } from './server-start'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
 import { settingsGearOf } from '../shared/settings-gear'
@@ -519,6 +520,8 @@ function start(server: boolean): void {
   )
   // Set on before-quit: from then on closing windows is not the user ending their tabs.
   let quitting = false
+  // Set when server mode's start order failed (server-start.ts): will-quit ends the run with status 1.
+  let startFailed = false
   // ctx.files.reveal / openWithSystem / trash (files/system-files.ts): `shell` through its adapter,
   // and the Move to Trash confirm as a sheet on the project's window; in a test run the dialog is
   // QueuedTrashConfirm, driven by the `answerTrash` and `trashDialogs` hooks, and the e2e replaces
@@ -2626,8 +2629,10 @@ function start(server: boolean): void {
     restorer.freeze()
     windows.beginQuit()
     // Every browser view is told the app quit (bridge.ts shows it and stops retrying), before the
-    // windows close: each would otherwise close its views as "the window was closed".
-    webConnections.endAll(CLOSE.appQuit, 'app quit')
+    // windows close: each would otherwise close its views as "the window was closed". A server's
+    // stop (SIGTERM from systemd, `ccc web stop`) is not final: the bridge retries it, so the open
+    // browser tabs come back after a restart, an update or a reboot (design-web.md §9.1).
+    webConnections.endAll(server ? CLOSE.serverStop : CLOSE.appQuit, server ? 'server stop' : 'app quit')
   })
   app.on('will-quit', () => {
     updateChecker.stop()
@@ -2644,7 +2649,7 @@ function start(server: boolean): void {
     void socket.stop()
     webAccess.dispose()
     void webGateway.stop()
-    terminalMirror.stop()
+    void terminalMirror.stop()
     sessionGist.dispose()
     rateLimits.dispose()
     sessions.dispose()
@@ -2656,6 +2661,8 @@ function start(server: boolean): void {
     webAccessLog.flush()
     // After hosts.disposeAll(): no host is left to write after this.
     appStorage.flush()
+    // Last, after the socket's synchronous unlink and every flush: Electron's own quit ends with 0.
+    if (startFailed) app.exit(1)
   })
   app.on('activate', () => windows.activate())
   // The menu's accelerator is the focused project's (AppMenu). A blur passes the window that is
@@ -2671,87 +2678,101 @@ function start(server: boolean): void {
   app
     .whenReady()
     .then(async () => {
-      // Before the first window, so the first Claude tab already has a live socket to report
-      // to. Milliseconds (the stale probe is capped at 500 ms); false only logs: the app runs
-      // without a socket, and its tabs get no CC_COCKPIT_SOCK (see the TabManager `sock` above).
-      await socket.start()
-      updateChecker.start()
-      // Not awaited: a port in use only logs, and no window waits for the gateway. In server mode
-      // the first lines follow it (the address, a one-time link on a terminal, the wrapper's path;
-      // design-web.md §9.3); empty on the desktop.
-      void webAccess.apply().then(() => {
-        for (const line of webAccess.serverStartLines({ tty: process.stdout.isTTY === true, wrapperPath: paths.cccWrapper })) {
-          console.log(line)
-        }
-      }).catch((err) => {
-        // A bad stored origin or a failed device link must not become an unhandled rejection
-        // after the gateway is already up; the lines are a courtesy.
-        console.error('server start lines not printed:', errorText(err))
+      // server-start.ts has the order. The socket first, so the first Claude tab already has a live
+      // socket to report to (milliseconds; the stale probe is capped at 500 ms; on the desktop false
+      // only logs and its tabs get no CC_COCKPIT_SOCK, see the TabManager `sock` above). In server
+      // mode the gateway is awaited too and either failing exits 1 before any window opens; the
+      // first lines follow the gateway (the address, a one-time link on a terminal, the wrapper's
+      // path; design-web.md §9.3), and are empty on the desktop.
+      await runStartOrder({
+        server,
+        startSocket: () => socket.start(),
+        applyWebAccess: () => webAccess.apply(),
+        printLines: () => {
+          for (const line of webAccess.serverStartLines({ tty: process.stdout.isTTY === true, wrapperPath: paths.cccWrapper })) {
+            console.log(line)
+          }
+        },
+        log: (line) => console.error(line),
+        fail: () => {
+          // A quit, so will-quit unlinks the socket and flushes app.json (serverStart's write), then
+          // exits 1 there: Electron's own quit would end with status 0. The terminal mirror's worker
+          // (started with the gateway, access-service.ts) is ended first and waited for: exiting while
+          // it still bootstraps crashes the process (SIGSEGV) instead of giving systemd status 1.
+          startFailed = true
+          void terminalMirror.stop().then(() => app.quit())
+        },
+        open: openAtStart
       })
-      // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
-      // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
-      // build/ sits two levels above out/main. A missing file only leaves the default icon.
-      if (!app.isPackaged && process.platform === 'darwin') {
-        try {
-          app.dock?.setIcon(join(__dirname, '..', '..', 'build', 'icon.png'))
-        } catch (err) {
-          console.error('dev dock icon not set:', errorText(err))
-        }
-      }
-      // Deny every browser permission and device by default: the shell page's own top frame gets
-      // only what it uses (the installed-font list of Settings › Terminal), nothing it embeds gets
-      // anything (windows/permissions.ts has the inventory and why). Both the request and the
-      // check handler: Chromium asks the check handler for a permission's state first (a "no"
-      // there ends queryLocalFonts() before any request; navigator.permissions.query reads it).
-      // Here because the default session exists only once the app is ready; before the first
-      // window, so no page asks first.
-      lockDownSession(session.defaultSession, isAppPage)
-      handleOverlayScheme((url) => overlays.pageHtml(url))
-      handlePluginScheme((url, method) =>
-        servePluginRequest(url, method, {
-          pluginDir: servedPluginDir,
-          // out/sdk/panel.js, built next to out/main/index.js (electron.vite.config.ts).
-          sdkFile: join(__dirname, '../sdk/panel.js'),
-          log: warnLog
-        })
-      )
-      appMenu.refresh()
-      // Reopen the windows that were open at last quit; their saved tabs start when each
-      // window's renderer attaches. A project whose folder is gone gets no window: the picker
-      // offers relink or forget. Then a folder named on the command line (an already restored
-      // one is just focused).
-      const launch = planLaunch(
-        registry.openIds().flatMap((id) => {
-          const project = registry.get(id)
-          return project ? [project] : []
-        }),
-        pluginAvailable
-      )
-      // A missing project can only be relinked or forgotten from the picker's recent list. One
-      // that fell out of that list (it holds 20) could never be removed and would open the
-      // picker on every launch, so it is dropped from the open list; its record stays.
-      const recentIds = new Set(registry.recent().map((p) => p.id))
-      for (const project of launch.missing) {
-        if (!recentIds.has(project.id)) registry.markClosed(project.id)
-      }
-      launch.missing = launch.missing.filter((p) => recentIds.has(p.id))
-      // Restore is launch-only: a project whose folder was missing now keeps its saved tabs
-      // until it is relinked or forgotten; opening it later in the session starts it empty.
-      for (const { project, tabs: saved } of launch.open) {
-        restorer.queue(project.id, saved)
-        try {
-          windows.openPath(project.path)
-        } catch (err) {
-          restorer.discard(project.id)
-          console.error(`cannot reopen ${project.path}`, err)
-        }
-      }
-      openFromArgv(process.argv, process.cwd())
-      // Last, so a window opened above does not close it (opening a project closes the picker).
-      if (launch.missing.length > 0 || windows.projectWindowCount === 0) windows.showPicker()
     })
     .catch((err: unknown) => {
       console.error('startup failed', err)
       app.quit()
     })
+
+  /** The rest of the start, once the order allows it: windows and their restored tabs. */
+  function openAtStart(): void {
+    updateChecker.start()
+    // A packaged app takes its icon from the bundle (electron-builder.yml › mac.icon); `npm run
+    // dev` runs the stock Electron.app, whose dock shows Electron's icon unless told otherwise.
+    // build/ sits two levels above out/main. A missing file only leaves the default icon.
+    if (!app.isPackaged && process.platform === 'darwin') {
+      try {
+        app.dock?.setIcon(join(__dirname, '..', '..', 'build', 'icon.png'))
+      } catch (err) {
+        console.error('dev dock icon not set:', errorText(err))
+      }
+    }
+    // Deny every browser permission and device by default: the shell page's own top frame gets
+    // only what it uses (the installed-font list of Settings › Terminal), nothing it embeds gets
+    // anything (windows/permissions.ts has the inventory and why). Both the request and the
+    // check handler: Chromium asks the check handler for a permission's state first (a "no"
+    // there ends queryLocalFonts() before any request; navigator.permissions.query reads it).
+    // Here because the default session exists only once the app is ready; before the first
+    // window, so no page asks first.
+    lockDownSession(session.defaultSession, isAppPage)
+    handleOverlayScheme((url) => overlays.pageHtml(url))
+    handlePluginScheme((url, method) =>
+      servePluginRequest(url, method, {
+        pluginDir: servedPluginDir,
+        // out/sdk/panel.js, built next to out/main/index.js (electron.vite.config.ts).
+        sdkFile: join(__dirname, '../sdk/panel.js'),
+        log: warnLog
+      })
+    )
+    appMenu.refresh()
+    // Reopen the windows that were open at last quit; their saved tabs start when each
+    // window's renderer attaches. A project whose folder is gone gets no window: the picker
+    // offers relink or forget. Then a folder named on the command line (an already restored
+    // one is just focused).
+    const launch = planLaunch(
+      registry.openIds().flatMap((id) => {
+        const project = registry.get(id)
+        return project ? [project] : []
+      }),
+      pluginAvailable
+    )
+    // A missing project can only be relinked or forgotten from the picker's recent list. One
+    // that fell out of that list (it holds 20) could never be removed and would open the
+    // picker on every launch, so it is dropped from the open list; its record stays.
+    const recentIds = new Set(registry.recent().map((p) => p.id))
+    for (const project of launch.missing) {
+      if (!recentIds.has(project.id)) registry.markClosed(project.id)
+    }
+    launch.missing = launch.missing.filter((p) => recentIds.has(p.id))
+    // Restore is launch-only: a project whose folder was missing now keeps its saved tabs
+    // until it is relinked or forgotten; opening it later in the session starts it empty.
+    for (const { project, tabs: saved } of launch.open) {
+      restorer.queue(project.id, saved)
+      try {
+        windows.openPath(project.path)
+      } catch (err) {
+        restorer.discard(project.id)
+        console.error(`cannot reopen ${project.path}`, err)
+      }
+    }
+    openFromArgv(process.argv, process.cwd())
+    // Last, so a window opened above does not close it (opening a project closes the picker).
+    if (launch.missing.length > 0 || windows.projectWindowCount === 0) windows.showPicker()
+  }
 }

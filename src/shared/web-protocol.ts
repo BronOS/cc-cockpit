@@ -168,6 +168,12 @@ export const CLOSE = Object.freeze({
    * the background would read as "host unreachable", which is for a host asleep or off the network.
    */
   appQuit: 4504,
+  /**
+   * Server mode stopped (SIGTERM from systemd, `ccc web stop`; design-web.md §9.1). Retried with
+   * backoff, unlike `appQuit`: a server comes back by itself (a restart, an update, a reboot), and the
+   * page shows the host as away meanwhile.
+   */
+  serverStop: 4505,
   /** The snapshot could not be built (the project record went away mid-handshake). */
   failed: 4500,
   /**

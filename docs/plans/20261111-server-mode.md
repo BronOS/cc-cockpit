@@ -516,17 +516,17 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
   `src/shared/web-protocol.ts` (`CLOSE`), `src/renderer/web/bridge.ts` (`:211`, `:377`),
   `scripts/server-mode-smoke.mjs`, `test/unit/web-bridge.test.ts`, `web-protocol.test.ts`
 
-- [ ] in server mode main awaits the CLI socket and the gateway before any window opens or tab restores; either failing
+- [x] in server mode main awaits the CLI socket and the gateway before any window opens or tab restores; either failing
       (the port is taken, the socket cannot start) logs the reason and exits 1, so systemd retries without Claude tabs
       resuming and being killed on each try. A stored setting the gateway refuses (Task 7) is not a failure
-- [ ] the desktop start is unchanged: the socket's false only logs and the gateway is not awaited
-- [ ] a server stop (SIGTERM, `ccc web stop` later) closes every view with a new non-final close code instead of
+- [x] the desktop start is unchanged: the socket's false only logs and the gateway is not awaited
+- [x] a server stop (SIGTERM, `ccc web stop` later) closes every view with a new non-final close code instead of
       `CLOSE.appQuit`; the bridge retries it with backoff and shows the host as away, so open browser tabs come back
       after a restart, an update or a reboot. A desktop quit keeps `CLOSE.appQuit` and its "Reload this page"
-- [ ] the smoke script gains a case: the port already taken, expect exit status 1 and that no window opened first
-- [ ] write tests: the order (socket, gateway, then windows), each failure exits 1 before a window, a refused setting
+- [x] the smoke script gains a case: the port already taken, expect exit status 1 and that no window opened first
+- [x] write tests: the order (socket, gateway, then windows), each failure exits 1 before a window, a refused setting
       does not exit; the bridge retries the new code and still stops on `appQuit` and `turnedOff`
-- [ ] run tests, the smoke script and `npm run test:e2e` (`server-mode`, `restore`, `web-access-terminal`,
+- [x] run tests, the smoke script and `npm run test:e2e` (`server-mode`, `restore`, `web-access-terminal`,
       `web-access-settings`: the desktop start and quit) - must pass before next task
 
 ### Task 9: The hidden page: lifetime [model: opus]

@@ -20,8 +20,11 @@
 // `#t=` link); no flag at all (detected, None); CC_COCKPIT_NO_EXECVE=1 (the fallback's spawnSync child
 // and parent watch, `out/` only); `--server` under a pty (node-pty), link mode: the one-time `#t=` line
 // appears, and a `POST /auth/link` with it answers 200 once and 401 the second time (design-web.md §9.3).
+// One more run with the port already taken (design-web.md §9.1 "Start order"): the app exits with status
+// 1 on its own, and no renderer process (a window, the picker's included) ever appeared in the run.
 // Exits 1 on any failure.
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import pty from 'node-pty'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -138,7 +141,67 @@ async function signInWithLink(port, token) {
   return res.status
 }
 
-async function run(name, { flag, noExecve, underPty = false, webAccess }) {
+/** A TCP listener on a random loopback port, so the app's gateway finds it taken. */
+async function takePort() {
+  const blocker = createServer(() => {})
+  await new Promise((r, j) => blocker.once('error', j).listen(0, '127.0.0.1', r))
+  return { port: blocker.address().port, close: () => new Promise((r) => blocker.close(r)) }
+}
+
+/**
+ * The port is taken: the run must end by itself with status 1, and no renderer (a project window or
+ * the picker) may have started first. Processes are polled until the exit; a renderer lives as long
+ * as its window, far longer than one poll.
+ */
+async function runPortTaken() {
+  const taken = await takePort()
+  const env = newRunEnv(taken.port, { enabled: true, mode: 'none' })
+  const args = [...command.args, '--server']
+  console.log(`\n== --server, port ${taken.port} already taken: ${[command.exe, ...args].join(' ')}`)
+  const child = launch(command.exe, args, env.env, false)
+  const sid = child.pid
+  const failures = []
+  let renderer = false
+  try {
+    const result = await Promise.race([
+      child.exited,
+      (async () => {
+        const deadline = Date.now() + START_MS
+        while (child.exit === undefined && Date.now() < deadline) {
+          if (processesOf(sid).some((pid) => cmdline(pid).includes('--type=renderer'))) renderer = true
+          await sleep(20)
+        }
+        return child.exit
+      })()
+    ])
+    if (!result) failures.push(`still running ${START_MS} ms after start with the port taken`)
+    else {
+      console.log(`   exited: code ${result.code}, signal ${result.signal}`)
+      if (result.code !== 1) failures.push(`exit status ${result.code} (signal ${result.signal}), expected 1`)
+    }
+    if (renderer) failures.push('a renderer (a window) started before the exit')
+    if (existsSync(join(env.dataDir, 'app.sock'))) failures.push('app.sock left behind')
+  } catch (err) {
+    failures.push(err.message)
+  } finally {
+    for (const pid of processesOf(sid)) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // already gone
+      }
+    }
+    await taken.close()
+    rmSync(env.base, { recursive: true, force: true })
+  }
+  for (const line of child.out.split('\n').filter((l) => l.trim() !== '')) console.log(`   stdout: ${line.trimEnd()}`)
+  if (failures.length > 0) for (const f of failures) console.log(`   FAIL: ${f}`)
+  else console.log('   ok')
+  return failures.length === 0
+}
+
+/** A temp data dir, HOME and runtime dir with app.json pre-written, and the env built from nothing. */
+function newRunEnv(port, webAccess) {
   const base = mkdtempSync(join(tmpdir(), 'ccc-server-smoke-'))
   const dataDir = join(base, 'data')
   const home = join(base, 'home')
@@ -146,7 +209,6 @@ async function run(name, { flag, noExecve, underPty = false, webAccess }) {
   mkdirSync(dataDir, { mode: 0o700 })
   mkdirSync(home)
   mkdirSync(runtime, { mode: 0o700 })
-  const port = 20000 + Math.floor(Math.random() * 20000)
   writeFileSync(
     join(dataDir, 'app.json'),
     JSON.stringify({
@@ -173,6 +235,12 @@ async function run(name, { flag, noExecve, underPty = false, webAccess }) {
     env.CC_COCKPIT_TEST = '1'
     env.CC_COCKPIT_MARKETPLACE_URLS = ''
   }
+  return { base, dataDir, runtime, bus, env }
+}
+
+async function run(name, { flag, noExecve, underPty = false, webAccess }) {
+  const port = 20000 + Math.floor(Math.random() * 20000)
+  const { base, dataDir, runtime, bus, env } = newRunEnv(port, webAccess)
   if (noExecve) env.CC_COCKPIT_NO_EXECVE = '1'
   const args = [...command.args, ...(flag ? ['--server'] : [])]
   console.log(`\n== ${name}: ${[command.exe, ...args].join(' ')}${underPty ? ' (under a pty)' : ''}`)
@@ -274,4 +342,5 @@ const results = [
 ]
 if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))
 results.push(await run('--server under a pty, link mode', { flag: true, underPty: true, webAccess: { enabled: true, mode: 'link' } }))
+results.push(await runPortTaken())
 process.exit(results.every(Boolean) ? 0 : 1)
