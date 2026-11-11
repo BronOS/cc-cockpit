@@ -1346,6 +1346,45 @@ describe('exactly one result', () => {
     m.viewGone('web:1')
     expect(pty.resizes).toEqual([[120, 40], [30, 50], [130, 40], [30, 50], [130, 40]])
   })
+
+  it("only the sizing view answers a terminal overlay's queries: the others' replies are stripped, their keys pass", () => {
+    const m = manager()
+    void m.open(W1, terminal(['revdiff']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    const da1 = '\x1b[?62;22c'
+    const osc11 = '\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\'
+    m.resize(W1, id, 120, 40)
+    m.resize(W1, id, 50, 30, 'web:1')
+    // Both views' xterms answer DA1 and OSC 11 at start: only the desktop's (the sizer) reaches the pty.
+    m.input(W1, id, da1 + osc11)
+    m.input(W1, id, da1 + osc11, 'web:1')
+    expect(pty.writes).toEqual([da1 + osc11])
+    // A browser's late reply glued to a key keeps the key.
+    m.input(W1, id, osc11 + 'j', 'web:1')
+    expect(pty.writes).toEqual([da1 + osc11, 'j'])
+    // The browser typed, so it sizes the overlay and answers now; the desktop's replies are stripped, its focus report passes.
+    m.input(W1, id, da1, 'web:1')
+    m.input(W1, id, da1)
+    m.input(W1, id, '\x1b[I')
+    expect(pty.writes).toEqual([da1 + osc11, 'j', da1, '\x1b[I'])
+    // Back to the desktop when the browser leaves.
+    m.viewGone('web:1')
+    m.input(W1, id, da1)
+    expect(pty.writes).toEqual([da1 + osc11, 'j', da1, '\x1b[I', da1])
+  })
+
+  it('a terminal overlay with the desktop as its only view gets its input as it is (web access off)', () => {
+    const m = manager()
+    void m.open(W1, terminal(['cat']), 'test')
+    const pty = backend.last
+    const id = m.infos(W1)[0]!.id
+    // Before any measure, and after: the desktop answers.
+    m.input(W1, id, '\x1b[1;1R')
+    m.resize(W1, id, 80, 24)
+    m.input(W1, id, '\x1b[?62;22c')
+    expect(pty.writes).toEqual(['\x1b[1;1R', '\x1b[?62;22c'])
+  })
 })
 
 // design-next §3.4: the overlay is on the stack at once and `loading` until its body is ready.

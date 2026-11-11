@@ -67,7 +67,7 @@ import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { composeDiscuss, DiscussSessionBudget } from './discuss'
 import { PtyService } from '../pty/pty-service'
-import { isPersonInput } from '../sessions/terminal-reports'
+import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 
@@ -804,13 +804,25 @@ export class OverlayManager {
   /**
    * The user typing into a terminal overlay, in `viewId`. The person's input (not a focus, mouse or
    * query report) from a view that has measured the overlay gives the pty that view's size.
+   *
+   * Query replies: every view with the shell loaded parses the overlay's output in its own xterm,
+   * and each xterm answers the program's queries (DA1, CPR, DECRQM, OSC 10/11 colours) by itself.
+   * Only one view may answer, or the program gets two replies to one query and reads the second
+   * (late, from a background browser tab) as typed keys: `62;22c` at a readline prompt, OSC 11
+   * letters in a bubbletea TUI. Tabs have main answer instead (tab-manager.ts viewInput); an
+   * overlay has no headless copy, so the view whose size the pty has answers (a CPR then matches the
+   * size), the desktop's until a view sizes it, and every other view's replies are stripped
+   * (terminal-reports.ts stripQueryReplies; focus and mouse reports and keys pass). With web access
+   * off the desktop is the only view and always answers, so its input goes as it is.
    */
   input(windowId: number, overlayId: string, data: string, viewId: ViewId = desktopViewId(windowId)): void {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind !== 'terminal') return
-    this.pty.write(overlay.id, data)
+    const answerer = overlay.sizer ?? desktopViewId(windowId)
+    const rest = viewId === answerer ? data : stripQueryReplies(data)
+    if (rest.length > 0) this.pty.write(overlay.id, rest)
     const size = overlay.sizes?.get(viewId)
-    if (size && overlay.sizer !== viewId && isPersonInput(data)) this.sizeFrom(overlay, viewId, size)
+    if (size && overlay.sizer !== viewId && isPersonInput(rest)) this.sizeFrom(overlay, viewId, size)
   }
 
   /** A view measured a terminal overlay: remembered; the pty takes it when that view sizes it (input). */

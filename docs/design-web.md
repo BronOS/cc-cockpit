@@ -248,7 +248,9 @@ joined mid-run shows only output from the join on (it redraws on the view's resi
   and views get a size event. When the sizing view leaves, the size falls back to a remaining visible view. Only the
   person's typing counts: a focus or mouse report, or a view's own reply to a query, takes nothing. A terminal
   overlay keeps a size per view too: the first view to measure it sizes it, typing in another view moves it there
-  at once, and its flow control is the desktop page's acks alone.
+  at once, and its flow control is the desktop page's acks alone. With no headless copy to answer for it, only the
+  view that sizes an overlay (the desktop's until another takes it) answers its queries; the other views' replies are
+  stripped from their input as for tabs.
 - **Input from any view.** Input is the person's: it sets `typed` like desktop typing, and the send gate applies
   unchanged. Two views typing at once interleave, as two keyboards on one machine would; each view shows which
   device typed last in a tab. Turn-taking is a multi-user concern (§10).
