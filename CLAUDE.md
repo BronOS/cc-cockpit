@@ -14,9 +14,9 @@ The real-work redesign (component stylesheet, slots, overlay toolbar, settings p
 previews, Inbox v2 with inbox-feed v2) is designed in `docs/design-next.md` and `cc-cockpit-inbox/docs/design-v2.md`; its plan
 is `docs/plans/completed/20261104-redesign-inbox-v2.md`. Plugin pages are checked against `ccc guide style` (`src/cli/guide/style.md`).
 Web access v1 (the app in a plain browser: live mirror views over one WebSocket each, sign-in modes, devices) is implemented;
-design in `docs/design-web.md`, plan in `docs/plans/20261110-web-access.md`, user docs in `docs/features.md` ("Web access").
+design in `docs/design-web.md`, plan in `docs/plans/completed/20261110-web-access.md`, user docs in `docs/features.md` ("Web access").
 Server mode (Linux, no display, browsers only: `--server`, the key file, `ccc web`, approvals in the browser) is implemented
-on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/20261111-server-mode.md`, user docs in `docs/features.md`
+on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/20261111-server-mode.md`, user docs in `docs/features.md`
 ("Server mode"). Only the unpacked build was run; the AppImage, the deb on a real server and the systemd unit were not.
 
 ## Commands

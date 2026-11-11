@@ -1015,7 +1015,7 @@ task only takes the hidden page out of the set of views that may own a size or a
       committed with this plan); `docs/design.md` points at it. `examples/plugin/sdk/types.ts` was copied by the tasks
       that changed `src/sdk/types.ts`; only the push to the public repo is left (Post-Completion)
 - [x] run tests (guide drift, the workflow and packaging tests) - must pass
-- [ ] move this plan to `docs/plans/completed/` (left to the orchestrator)
+- [x] move this plan to `docs/plans/completed/` (left to the orchestrator)
 
 ## Post-Completion
 

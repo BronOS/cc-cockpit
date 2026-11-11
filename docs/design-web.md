@@ -1,8 +1,8 @@
 # Web access (remote cockpit) — design draft
 
-Status: v1 implemented (2026-11-10, branch `feat/web-access`; plan `docs/plans/20261110-web-access.md`, phases 1 to 5 of §7).
+Status: v1 implemented (2026-11-10, branch `feat/web-access`; plan `docs/plans/completed/20261110-web-access.md`, phases 1 to 5 of §7).
 Revised after two architecture reviews. Server mode (§9, Linux, no display) is implemented and ships with web access
-(2026-11-11, plan `docs/plans/20261111-server-mode.md`); section 10 and the phone layout stay later. The code's own comments
+(2026-11-11, plan `docs/plans/completed/20261111-server-mode.md`); section 10 and the phone layout stay later. The code's own comments
 carry the finer points (`src/main/web/`, `src/main/views/`, `src/renderer/web/`); this document keeps the reasons.
 
 **What v1 implements:** the gateway (http + one WebSocket per view), the Host and Origin checks, the four sign-in modes
@@ -484,7 +484,7 @@ proxy.
 
 ## 9. Server mode
 
-Status: implemented 2026-11-11 (plan `docs/plans/20261111-server-mode.md`), from a spike (Electron 45.1, Linux, no
+Status: implemented 2026-11-11 (plan `docs/plans/completed/20261111-server-mode.md`), from a spike (Electron 45.1, Linux, no
 keyring) and revised after review. Linux only in this phase. Run so far: the unpacked build, headless, by
 `scripts/server-mode-smoke.mjs` (also with the network off), and the e2e suite with the harness's direct switches. Not
 run: the AppImage on a stock Ubuntu Server, the deb and the systemd unit on a real server, Tailscale (§9.1 "Installs",
