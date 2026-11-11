@@ -114,6 +114,12 @@ export interface WebConnectionDeps {
    * none (every plugin frame and image stays empty).
    */
   pagePaths?(deviceId: string): WebPagePaths
+  /**
+   * The browser's colour scheme from `hello` (ThemeService.viewJoined), once the view is bound and
+   * before `ready`. Must not send the view anything: `ready` is its first frame. `dark` undefined:
+   * not reported.
+   */
+  viewScheme?(viewId: ViewId, dark: boolean | undefined): void
   /** The view is gone (TabManager.viewGone): the tabs it sized fall back to a remaining view. */
   viewGone?(viewId: ViewId): void
   /**
@@ -372,7 +378,7 @@ export class WebConnection {
     if (frame.t === 'hello') {
       // Exactly once: a second hello would be an attempt to rebind (another project) mid-connection.
       if (this.caller) return this.close(CLOSE.badFrame, 'hello twice')
-      return this.hello(frame.v, frame.project)
+      return this.hello(frame.v, frame.project, frame.dark)
     }
     if (!this.caller) return this.close(CLOSE.badFrame, 'hello first')
     if (frame.t === 'port.msg') return this.ports?.fromPage(frame.key, frame.nonce, frame.m)
@@ -380,7 +386,7 @@ export class WebConnection {
     this.invoke(this.caller, frame.id, frame.ch, frame.p)
   }
 
-  private hello(version: number, projectId: string): void {
+  private hello(version: number, projectId: string, dark?: boolean): void {
     clearTimeout(this.helloTimer)
     if (version !== PROTOCOL_VERSION) return this.close(CLOSE.version, 'protocol version')
     const windowId = this.deps.windowIdOf(projectId)
@@ -427,6 +433,14 @@ export class WebConnection {
     }
     this.caller = caller
     this.ports = ports
+    // After `caller` is set, so `gone` drops it again (viewGone runs only for a bound view); before
+    // `ready`, so the view's first `theme.get` answers by its own appearance. A throw costs the view
+    // only its scheme (it gets the OS rule), never the connection.
+    try {
+      this.deps.viewScheme?.(this.viewId, dark)
+    } catch (err) {
+      this.deps.log(`web access: view ${this.viewId} colour scheme failed: ${errorText(err)}`)
+    }
     // Joined tab by tab as the view selects them; nothing is sent before `ready` (a select is an invoke).
     this.terminals = new ViewTerminals({
       mirror: this.deps.mirror,

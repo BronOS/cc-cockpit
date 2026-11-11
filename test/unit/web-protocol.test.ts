@@ -67,6 +67,10 @@ describe('frames', () => {
 
   it('parses hello and invoke, and names what is wrong with anything else', () => {
     expect(parseClientFrame('{"t":"hello","v":1,"project":"p1","extra":true}')).toEqual({ t: 'hello', v: 1, project: 'p1' })
+    // The browser's colour scheme (design-web.md §5.7): a boolean or nothing, never a refusal.
+    expect(parseClientFrame('{"t":"hello","v":1,"project":"p1","dark":true}')).toEqual({ t: 'hello', v: 1, project: 'p1', dark: true })
+    expect(parseClientFrame('{"t":"hello","v":1,"project":"p1","dark":false}')).toEqual({ t: 'hello', v: 1, project: 'p1', dark: false })
+    expect(parseClientFrame('{"t":"hello","v":1,"project":"p1","dark":"yes"}')).toEqual({ t: 'hello', v: 1, project: 'p1' })
     expect(parseClientFrame('{"t":"invoke","id":3,"ch":"tabs.list","p":{"$bytes":"AA=="},"projectId":"other"}')).toEqual({
       t: 'invoke',
       id: 3,
@@ -158,6 +162,7 @@ function setup(
     mirror?: TerminalSource
     hasTab?: (projectId: string, tabId: string) => boolean
     viewGone?: (viewId: string) => void
+    viewScheme?: (viewId: string, dark: boolean | undefined) => void
     pagePaths?: (deviceId: string) => WebPagePaths
     server?: boolean
   } = {}
@@ -194,6 +199,7 @@ function setup(
     mirror: over.mirror ?? { join: () => undefined },
     hasTab: over.hasTab ?? (() => false),
     ...(over.viewGone ? { viewGone: over.viewGone } : {}),
+    ...(over.viewScheme ? { viewScheme: over.viewScheme } : {}),
     ...(over.pagePaths ? { pagePaths: over.pagePaths } : {}),
     ...(over.server !== undefined ? { server: over.server } : {}),
     log: (m) => logs.push(m),
@@ -251,6 +257,30 @@ describe('handshake', () => {
     expect(ws.closedWith).toEqual({ code: CLOSE.failed, reason: 'view behind' })
     expect(views.viewsOf(1)).toEqual(['desktop:1'])
     expect(logs.some((l) => l.includes('unsent, closed to resync'))).toBe(true)
+  })
+
+  it("hello's colour scheme is recorded for the bound view before ready, with nothing sent before ready", () => {
+    const seen: Array<[string, boolean | undefined, number]> = []
+    // The socket is made after the rig, so the recorder reads it through a holder.
+    const held: { ws?: FakeWs } = {}
+    const { conns } = setup({ viewScheme: (viewId, dark) => seen.push([viewId, dark, held.ws?.sent.length ?? -1]) })
+    const ws = new FakeWs()
+    held.ws = ws
+    conns.accept(ws, DEVICE)
+    ws.feed({ t: 'hello', v: PROTOCOL_VERSION, project: 'p1', dark: true })
+    expect(seen).toEqual([['web:1', true, 0]])
+    expect(ws.sent.map((f) => f.t)).toEqual(['ready'])
+    // A browser that did not report: undefined (the OS rule); a refused hello records nothing.
+    const quiet = new FakeWs()
+    conns.accept(quiet, DEVICE)
+    quiet.feed({ t: 'hello', v: PROTOCOL_VERSION, project: 'p1' })
+    const refused = new FakeWs()
+    conns.accept(refused, DEVICE)
+    refused.feed({ t: 'hello', v: PROTOCOL_VERSION, project: 'p9', dark: true })
+    expect(seen.map(([id, dark]) => [id, dark])).toEqual([
+      ['web:1', true],
+      ['web:2', undefined]
+    ])
   })
 
   it('an event right after hello comes after ready, never before it', () => {

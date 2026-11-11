@@ -102,6 +102,29 @@ describe('ViewRegistry', () => {
     for (const s of sinks) expect(s.events).toEqual([{ channel: 'theme.changed', payload: { kind: 'dark' } }])
   })
 
+  it('toEach gives every view its own payload and skips a view whose payload is undefined', () => {
+    const views = registry()
+    const desk = new FakeSink()
+    const picker = new FakeSink()
+    const web = new FakeSink()
+    const closed = new FakeSink()
+    views.addDesktop(1, desk)
+    views.addDesktop(9, picker)
+    views.addRemote(1, remoteViewId(2), web)
+    views.addRemote(1, remoteViewId(3), closed)
+    closed.closed = true
+    const asked: string[] = []
+    views.toEach('theme.changed', (id) => {
+      asked.push(id)
+      return id === 'desktop:9' ? undefined : { for: id }
+    })
+    expect(desk.events).toEqual([{ channel: 'theme.changed', payload: { for: 'desktop:1' } }])
+    expect(web.events).toEqual([{ channel: 'theme.changed', payload: { for: 'web:2' } }])
+    expect(picker.events).toEqual([])
+    expect(closed.events).toEqual([])
+    expect(asked).toContain('desktop:9')
+  })
+
   it('toBrowserViews reaches the browser views of one window or of all, never a desktop view, and counts them', () => {
     const views = registry()
     const desk1 = new FakeSink()

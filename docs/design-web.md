@@ -102,7 +102,8 @@ Handlers that need view state (selection, overlay answers, terminal size) get `v
 ### 2.2 View registry instead of webContents
 
 Every event main sends goes through `ViewRegistry`: `toProject`, `toWindow`, `toView`, `toAll` (today's
-`getAllWindows()` broadcasts), and `postPort` (today's `webContents.postMessage`). A desktop view wraps its
+`getAllWindows()` broadcasts), `toEach` (one payload per view: the theme, §5.7), and `postPort` (today's
+`webContents.postMessage`). A desktop view wraps its
 `webContents`; a remote view wraps its WebSocket. A lint rule (or a grep test) forbids `webContents.send` and
 `getAllWindows()` outside the registry, so a new event cannot skip remote views.
 
@@ -252,7 +253,8 @@ Claude tab); the tabs that attach brings are announced to the other views as `ta
   mid-sequence answers busy and is asked again; no answer within 3 s, a page that was behind, or none at all: the
   copy starts blank, as before (`mirror.ts` "Seeding").
 - **Main answers terminal queries.** The headless terminal's own replies to DSR and DA go to the pty; OSC 10/11
-  (colours) are answered from the theme. Query replies from every view are stripped in main. Mouse and focus reports
+  (colours) are answered from the theme of the view that typed in the tab last, else the view sizing it, else the
+  desktop's (§5.7: views can differ, a program gets one answer). Query replies from every view are stripped in main. Mouse and focus reports
   pass from any view (a second view can click and scroll in a TUI). This also stops Claude's startup queries timing
   out when no view is awake.
 - **Size.** Main remembers each view's size. The pty takes a view's size only when that view explicitly takes the
@@ -381,6 +383,32 @@ show "host unreachable" and reconnect.
   `CLOSE.appQuit` (4504), final in the bridge, before the windows close (each would otherwise send `windowClosed`).
 - Server mode (§9) never shows, hides or focuses its window (§9.8), and its stop closes views with a code the bridge
   retries (§9.1).
+
+### 5.7 Theme per view
+
+The theme pick is app-wide, but "follow the system" (no pick) is per view: the system is the screen the view is on.
+The desktop page (and server mode's hidden page) follows Electron's `nativeTheme`; a browser view follows its own
+`prefers-color-scheme`. Before, main pushed one theme to every view, so a server (no OS appearance, so light) painted
+every dark browser light, and a phone took the desktop's appearance.
+
+- The browser reports its scheme in `hello` (`dark`, optional; a non-boolean reads as not reported) and on every
+  `matchMedia` change as `theme.scheme` (`adapted`: main takes it only from a view it bound as remote, never by the
+  payload; a desktop call is ignored). `ThemeService` keeps it per view id and drops it with the view. Recorded at
+  `hello` with no event (`ready` is the first frame), so the view's first `theme.get` already answers by its scheme.
+- Resolution: a pick (a plugin theme included) for every view; else the built-in of the view's reported kind; else
+  (desktop, a browser that did not report) the OS rule. The hint can only choose between the two built-ins for that one
+  view: it cannot reach the desktop's theme or another view's.
+- `theme.get` (`adapted`) answers by the calling view. `theme.changed` (`adapted`) goes per view through
+  `ViewRegistry.toEach`, only to the views whose theme moved: a pick change, a plugin theme change, a `nativeTheme`
+  change (the desktop and unreported browsers) or one view's scheme change (that view).
+- Followers: plugin panels, slots and html overlays get the theme from the shell page they sit in, so they follow the
+  view. Settings › Appearance's "Showing ..." names the calling view's theme. App-level readers stay on the OS rule:
+  the `BrowserWindow`'s background before its page paints (a desktop window). `ctx.themes` only sets, never reads.
+- Terminal colour queries (§5.2) have one answer per tab: the theme of the view that typed there last (`typedBy`,
+  the same owner idea as the size), else the view sizing it, else the OS rule.
+- Before the first theme: the web shell's stylesheet (render-blocking) paints the built-ins' background and text by
+  `prefers-color-scheme`, and the page applies the built-in of the browser's scheme at once, so "Connecting...", the
+  sign-in and the picker pages (which never get a theme from main) match the browser too.
 
 ## 6. Native features
 

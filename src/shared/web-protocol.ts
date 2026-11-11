@@ -282,7 +282,13 @@ export interface WebSnapshot {
   server?: boolean
 }
 
-export type HelloFrame = { t: 'hello'; v: number; project: string }
+/**
+ * `dark`: the browser's `prefers-color-scheme` now (design-web.md §5.7), so the view's first
+ * `theme.get` already answers by its own appearance; later changes go as `theme.scheme`. Only picks
+ * between the two built-ins for this view when nothing is picked. Absent (or not a boolean): not
+ * reported, the OS rule applies.
+ */
+export type HelloFrame = { t: 'hello'; v: number; project: string; dark?: boolean }
 export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
 
 /**

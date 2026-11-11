@@ -365,8 +365,16 @@ export interface CoreHandlerDeps {
    * (design-web.md §6.1), never the host's browser in server mode.
    */
   openExternal(url: string, target: OpenTarget): void | Promise<void>
-  /** The theme every window shows now (app-wide, never per project). */
-  currentTheme(): Theme
+  /**
+   * The theme `viewId` shows now (ThemeService.forView): the pick for every view, else by the view's
+   * own screen. Never per project.
+   */
+  currentTheme(viewId: ViewId): Theme
+  /**
+   * A browser view's reported `prefers-color-scheme` (ThemeService.setViewScheme). Called only for a
+   * remote view; absent: ignored.
+   */
+  setViewScheme?(viewId: ViewId, dark: boolean): void
   /** The app settings the shell page applies itself (AppearanceService.prefs), defaults applied. */
   shellPrefs(): ShellPrefs
   /** The project's commands with keys resolved (main's registry + the user's overrides). */
@@ -483,8 +491,20 @@ export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): 
     await deps.openExternal(url, { windowId: ctx.windowId, viewId: view.viewId })
   })
 
-  // Read-only and app-wide: any of our windows may ask. Changes arrive as `theme.changed`.
-  router.handleWindow('theme.get', () => deps.currentTheme())
+  // Read-only: any of our windows may ask. `adapted`: answered for the view main bound to the call
+  // (a browser's own appearance with no pick, design-web.md §5.7), never by the payload. Changes
+  // arrive as `theme.changed`, per view.
+  router.handleWindow('theme.get', (_ctx, _payload, view) => deps.currentTheme(view.viewId))
+  // `adapted`: a browser view's own appearance. Taken only from a remote view (`view.remote`, main's
+  // binding): the desktop page follows nativeTheme, and a desktop call is ignored rather than
+  // refused (the shared shell code may report from either). It can only pick between the two
+  // built-ins for this one view.
+  router.handleWindow('theme.scheme', (_ctx, payload, view) => {
+    const dark = fields('theme.scheme', payload).dark
+    if (typeof dark !== 'boolean') throw new Error('theme.scheme: dark must be a boolean')
+    if (!view.remote) return
+    deps.setViewScheme?.(view.viewId, dark)
+  })
   // Same shape: app-wide and read-only; the picker loads the same page and asks too. Changes
   // arrive as `prefs.changed`.
   router.handleWindow('prefs.get', () => deps.shellPrefs())
@@ -765,7 +785,8 @@ export interface ProjectSettingsHandlerDeps {
   movePanel(projectId: string, panelKey: unknown, zone: unknown): void
   /** Set or clear the project's colour (ProjectSettingsService.setColor checks the value). */
   setProjectColor(projectId: string, value: unknown): ProjectColor | null
-  appearance(projectId: string): AppearanceView
+  /** `viewId`: the calling view, whose theme "Showing ..." names (it differs per screen with no pick). */
+  appearance(projectId: string, viewId: ViewId): AppearanceView
   setTheme(id: unknown): void
   setKey(projectId: string, commandId: unknown, chord: unknown): void
   setTabExit(value: unknown): void
@@ -813,7 +834,7 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   router.handleProject('settings.projectColorSet', (ctx, payload) =>
     deps.setProjectColor(ctx.projectId, fields('settings.projectColorSet', payload).value)
   )
-  router.handleProject('settings.appearance', (ctx) => deps.appearance(ctx.projectId))
+  router.handleProject('settings.appearance', (ctx, _payload, view) => deps.appearance(ctx.projectId, view.viewId))
   router.handleProject('settings.themeSet', (_ctx, payload) => {
     deps.setTheme(fields('settings.themeSet', payload).id)
   })

@@ -225,10 +225,13 @@ export interface TerminalMirrorOptions {
   drainMs?: number
   drainPollMs?: number
   /**
-   * The terminal palette of the app theme now (ThemeService.current().xterm): what an OSC 10/11/12
-   * colour query is answered from, read at each query so a theme change applies at once.
+   * The terminal palette an OSC 10/11/12 colour query on `tabId` is answered from, read at each query
+   * so a theme change applies at once. With views on different themes (a browser's own appearance,
+   * design-web.md §5.7) there is one answer per tab, and main picks the view whose terminal the
+   * program is talking to: the one that typed last there, else the one sizing it, else the desktop's
+   * rule (index.ts). The worker stays the only reply path.
    */
-  colors?: () => XtermTheme | undefined
+  colors?: (tabId: string) => XtermTheme | undefined
   /** The worker's scrollback (nodeMirrorWorker): the most a desktop's screen is asked for. */
   scrollback?: number
   screenTimeoutMs?: number
@@ -1043,7 +1046,7 @@ export class TerminalMirror implements TerminalTap {
         if (!this.tabs.has(message.tabId) || !THEME_KEY[message.ident]) return
         let theme: XtermTheme | undefined
         try {
-          theme = this.options.colors?.()
+          theme = this.options.colors?.(message.tabId)
         } catch (err) {
           this.log(`terminal mirror: theme colours failed: ${err instanceof Error ? err.message : String(err)}`)
         }

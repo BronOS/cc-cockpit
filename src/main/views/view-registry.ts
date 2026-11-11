@@ -167,9 +167,22 @@ export class ViewRegistry<P = unknown> {
     return reached
   }
 
-  /** Every view of every window, the picker included (app-wide state: theme, prefs, updates). */
+  /** Every view of every window, the picker included (app-wide state: prefs, updates; the theme is per view, `toEach`). */
   toAll(channel: EventChannel, payload: unknown): void {
     for (const [id, entry] of this.views) this.deliver(id, entry, channel, payload)
+  }
+
+  /**
+   * Every view of every window, each with its own payload: `payloadOf(viewId)` answers per view, and
+   * undefined sends that view nothing. For app-wide state that resolves per view (the theme with no
+   * pick follows each browser's own appearance, theme-service.ts), where `toAll` would send one value
+   * to every screen.
+   */
+  toEach(channel: EventChannel, payloadOf: (viewId: ViewId) => unknown): void {
+    for (const [id, entry] of this.views) {
+      const payload = payloadOf(id)
+      if (payload !== undefined) this.deliver(id, entry, channel, payload)
+    }
   }
 
   /**

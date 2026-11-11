@@ -4,7 +4,8 @@
 // Task 7) mirrors it.
 //
 // Frames (shared asks settle through an ordinary event, `sessions.closeSettled`):
-//   client -> main  { t: 'hello', v, project }        once, first; binds the view to that window
+//   client -> main  { t: 'hello', v, project, dark? } once, first; binds the view to that window
+//                                                     (`dark`: the browser's colour scheme, §5.7)
 //                   { t: 'invoke', id, ch, p }        an IPC invoke, answered by a `result`
 //                   { t: 'port.msg', key, nonce, m }  a panel page's message, for its port's host end
 //                   { t: 'port.close', key, nonce }   the page's port ended (its frame unloaded)
@@ -121,7 +122,9 @@ export function parseClientFrame(text: string): ClientFrame | { error: string } 
   if (f.t === 'hello') {
     if (typeof f.v !== 'number' || !Number.isSafeInteger(f.v)) return { error: 'bad hello' }
     if (typeof f.project !== 'string' || f.project === '' || f.project.length > MAX_PROJECT_ID) return { error: 'bad hello' }
-    return { t: 'hello', v: f.v, project: f.project }
+    // `dark` is optional and only a boolean counts: anything else is read as not reported (the OS
+    // rule), not a bad frame, since it can only choose a built-in for this one view.
+    return typeof f.dark === 'boolean' ? { t: 'hello', v: f.v, project: f.project, dark: f.dark } : { t: 'hello', v: f.v, project: f.project }
   }
   if (f.t === 'invoke') {
     if (typeof f.id !== 'number' || !Number.isSafeInteger(f.id) || f.id < 0) return { error: 'bad invoke id' }

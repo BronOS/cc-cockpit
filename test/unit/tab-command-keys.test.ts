@@ -139,7 +139,7 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
     const r = rig()
     let keysChanged = 0
     const appearance = new AppearanceService({
-      themes: { list: () => [], current: () => ({ id: 'x' }) as never, selected: () => undefined, setActive: () => {} },
+      themes: { list: () => [], forView: () => ({ id: 'x' }) as never, selected: () => undefined, setActive: () => {} },
       commands: r.registry,
       platform: 'darwin',
       overrides: {

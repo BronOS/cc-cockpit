@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { BUILTIN_THEMES, ThemeService } from '../../src/main/themes/theme-service'
 import {
@@ -9,6 +11,7 @@ import {
   type ThemeRoot
 } from '../../src/renderer/theme/theme-store'
 import { isColor, validateTheme, type Theme } from '../../src/shared/theme'
+import { desktopViewId, remoteViewId, type ViewId } from '../../src/shared/views'
 
 const valid = {
   id: 'solar',
@@ -135,6 +138,12 @@ describe('applyTheme', () => {
   })
 })
 
+/** The desktop view's share of a change (the tests below the per-view block have no browser views). */
+function recordDesktop(themeOf: (viewId: ViewId) => Theme | undefined, changes: Theme[]): void {
+  const t = themeOf(desktopViewId(1))
+  if (t) changes.push(t)
+}
+
 describe('ThemeService', () => {
   function service(opts: { theme?: string; dark?: boolean } = {}): {
     svc: ThemeService
@@ -151,7 +160,7 @@ describe('ThemeService', () => {
     }
     const changes: Theme[] = []
     const os = { dark: opts.dark ?? false }
-    const svc = new ThemeService({ settings, isDark: () => os.dark, onChange: (t) => changes.push(t) })
+    const svc = new ThemeService({ settings, isDark: () => os.dark, onChange: (themeOf) => recordDesktop(themeOf, changes) })
     return { svc, settings, changes, os }
   }
 
@@ -303,5 +312,147 @@ describe('ThemeService', () => {
     expect(() => svc.register({ ...valid, id: 'dark' })).toThrow(/already in use/)
     svc.register(valid)
     expect(() => svc.register(valid)).toThrow(/already in use/)
+  })
+})
+
+describe('ThemeService per view (design-web.md §5.7)', () => {
+  const DESKTOP = desktopViewId(1)
+  const PHONE = remoteViewId(1)
+  const LAPTOP = remoteViewId(2)
+  const QUIET = remoteViewId(3) // a browser that never reported its scheme
+
+  function rig(opts: { theme?: string; dark?: boolean } = {}) {
+    const settings = { data: { theme: opts.theme } as { theme?: string }, save: () => {} }
+    const os = { dark: opts.dark ?? false }
+    // Each change as the ids it reached and the theme each got, over a fixed set of live views.
+    const pushes: Array<Record<string, string>> = []
+    const svc = new ThemeService({
+      settings,
+      isDark: () => os.dark,
+      onChange: (themeOf) => {
+        const reached: Record<string, string> = {}
+        for (const id of [DESKTOP, PHONE, LAPTOP, QUIET]) {
+          const t = themeOf(id)
+          if (t) reached[id] = t.id
+        }
+        pushes.push(reached)
+      }
+    })
+    return { svc, os, pushes }
+  }
+
+  it('with no pick each browser gets the built-in of its own scheme; the desktop and an unreported browser the OS', () => {
+    const { svc, pushes } = rig({ dark: false })
+    svc.viewJoined(PHONE, true)
+    svc.viewJoined(LAPTOP, false)
+    expect(svc.forView(DESKTOP).id).toBe('light')
+    expect(svc.forView(PHONE).id).toBe('dark')
+    expect(svc.forView(LAPTOP).id).toBe('light')
+    expect(svc.forView(QUIET).id).toBe('light')
+    expect(svc.forView(undefined).id).toBe('light')
+    // Joining sends nothing: `ready` must be the view's first frame, and its theme.get reads it.
+    expect(pushes).toEqual([])
+  })
+
+  it('a pick wins for every view, whatever each reported', () => {
+    const { svc } = rig({ theme: 'light', dark: true })
+    svc.viewJoined(PHONE, true)
+    for (const id of [DESKTOP, PHONE, QUIET]) expect(svc.forView(id).id).toBe('light')
+    svc.register(valid)
+    svc.setActive('solar')
+    for (const id of [DESKTOP, PHONE, LAPTOP]) expect(svc.forView(id).id).toBe('solar')
+  })
+
+  it('a desktop view cannot report a scheme: the host keeps following nativeTheme', () => {
+    const { svc, pushes } = rig({ dark: false })
+    svc.viewJoined(DESKTOP, true)
+    svc.setViewScheme(DESKTOP, true)
+    svc.setViewScheme('web:not-a-view', true)
+    expect(svc.forView(DESKTOP).id).toBe('light')
+    expect(pushes).toEqual([])
+  })
+
+  it("a browser's scheme change reaches that view only, and only when its theme moves", () => {
+    const { svc, pushes } = rig({ dark: false })
+    svc.viewJoined(PHONE, false)
+    svc.setViewScheme(PHONE, true)
+    expect(pushes).toEqual([{ [PHONE]: 'dark' }])
+    svc.setViewScheme(PHONE, true) // unchanged
+    expect(pushes).toHaveLength(1)
+    // A browser reporting for the first time with what it already shows: nothing to send.
+    svc.setViewScheme(QUIET, false)
+    expect(pushes).toHaveLength(1)
+    // Under a pick the scheme moves nothing.
+    svc.setActive('light')
+    pushes.length = 0
+    svc.setViewScheme(PHONE, false)
+    svc.setViewScheme(PHONE, true)
+    expect(pushes).toEqual([])
+  })
+
+  it('the OS turning dark reaches the desktop and unreported browsers, not a browser with its own scheme', () => {
+    const { svc, os, pushes } = rig({ dark: false })
+    svc.viewJoined(PHONE, false)
+    os.dark = true
+    svc.refresh()
+    expect(pushes).toEqual([{ [DESKTOP]: 'dark', [LAPTOP]: 'dark', [QUIET]: 'dark' }])
+    // LAPTOP above had not reported; once it has, it is its own.
+    svc.viewJoined(LAPTOP, true)
+    os.dark = false
+    svc.refresh()
+    expect(pushes[1]).toEqual({ [DESKTOP]: 'light', [QUIET]: 'light' })
+  })
+
+  it('a pick change reaches exactly the views whose theme moved', () => {
+    const { svc, pushes } = rig({ dark: false })
+    svc.viewJoined(PHONE, true)
+    svc.setActive('dark')
+    // PHONE already showed dark.
+    expect(pushes).toEqual([{ [DESKTOP]: 'dark', [LAPTOP]: 'dark', [QUIET]: 'dark' }])
+    svc.setActive(undefined)
+    expect(pushes[1]).toEqual({ [DESKTOP]: 'light', [LAPTOP]: 'light', [QUIET]: 'light' })
+    svc.register(valid)
+    svc.setActive('solar')
+    expect(pushes[2]).toEqual({ [DESKTOP]: 'solar', [PHONE]: 'solar', [LAPTOP]: 'solar', [QUIET]: 'solar' })
+    // A plugin theme update under the pick reaches everyone; its removal falls back per view.
+    svc.update('solar', { ...valid, vars: { '--cc-bg': '#111111' } })
+    expect(Object.keys(pushes[3]!)).toHaveLength(4)
+    svc.unregister('solar')
+    expect(pushes[4]).toEqual({ [DESKTOP]: 'light', [PHONE]: 'dark', [LAPTOP]: 'light', [QUIET]: 'light' })
+  })
+
+  it('a gone view forgets its scheme (a reconnect is a new view and reports again)', () => {
+    const { svc } = rig({ dark: false })
+    svc.viewJoined(PHONE, true)
+    svc.viewGone(PHONE)
+    expect(svc.forView(PHONE).id).toBe('light')
+  })
+
+  it('terminal colour queries follow the view that typed last, else the sizer, else the OS rule', () => {
+    const { svc } = rig({ dark: false })
+    svc.viewJoined(PHONE, true)
+    svc.viewJoined(LAPTOP, false)
+    expect(svc.forTerminal(PHONE, LAPTOP).id).toBe('dark')
+    expect(svc.forTerminal(LAPTOP, PHONE).id).toBe('light')
+    expect(svc.forTerminal(undefined, PHONE).id).toBe('dark')
+    expect(svc.forTerminal(DESKTOP, PHONE).id).toBe('light')
+    expect(svc.forTerminal(undefined, undefined).id).toBe('light')
+    svc.setActive('dark')
+    expect(svc.forTerminal(LAPTOP, undefined).id).toBe('dark')
+  })
+})
+
+describe('web shell colours before the first theme (web.css)', () => {
+  it("are the built-ins' background and text, light by default and dark under prefers-color-scheme: dark", () => {
+    const css = readFileSync(join(__dirname, '../../src/renderer/web/web.css'), 'utf8')
+    const [light, dark] = ['light', 'dark'].map((kind) => BUILTIN_THEMES.find((t) => t.kind === kind)!)
+    const darkAt = css.indexOf('@media (prefers-color-scheme: dark)')
+    expect(darkAt).toBeGreaterThan(0)
+    const before = css.slice(0, darkAt)
+    const inDark = css.slice(darkAt)
+    expect(before).toContain(`background: var(--cc-bg, ${light!.vars['--cc-bg']});`)
+    expect(before).toContain(`color: var(--cc-fg, ${light!.vars['--cc-fg']});`)
+    expect(inDark).toContain(`background: var(--cc-bg, ${dark!.vars['--cc-bg']});`)
+    expect(inDark).toContain(`color: var(--cc-fg, ${dark!.vars['--cc-fg']});`)
   })
 })

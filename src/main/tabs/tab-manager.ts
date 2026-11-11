@@ -822,9 +822,18 @@ export class TabManager {
     }
   }
 
-  /** The view whose size the tab's pty has (tests, diagnostics). */
+  /** The view whose size the tab's pty has (tests, diagnostics, the terminal colour answer in index.ts). */
   sizerOf(tabId: string): ViewId | undefined {
     return this.sizes.sizerOf(tabId)
+  }
+
+  /**
+   * The view the person last typed in on the tab (TabInfo.typedBy's view), undefined when nobody
+   * typed or that view left. Main's own record, keyed by main's tab id: the mirror's OSC colour
+   * answers follow that view's theme (ThemeService.forTerminal).
+   */
+  typedByView(tabId: string): ViewId | undefined {
+    return this.byId.get(tabId)?.typedBy?.viewId
   }
 
   /**

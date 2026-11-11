@@ -145,6 +145,7 @@ import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDe
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
 import { ThemeService } from './themes/theme-service'
+import type { XtermTheme } from '../shared/theme'
 import { FirstTab } from './tabs/first-tab'
 import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
@@ -458,7 +459,9 @@ function start(server: boolean): void {
   // a clickable notice in a browser view, and in server mode never the host's browser. The OS opener
   // looks shell.openExternal up at each call, so the e2e's recorder that replaces it is what runs.
   const openExternal: OpenExternal = createOpenExternal({ server, system: systemOpenExternal, views, log: warnLog })
-  // App-wide: one theme for every window. The OS appearance only matters until the user picks one.
+  // App-wide pick, resolved per view: the OS appearance only matters until the user picks one, and
+  // then it is each view's own screen (a browser reports its `prefers-color-scheme`, design-web.md
+  // §5.7). Each view is sent its own theme, and only a view whose theme moved (`toEach`).
   const themes = new ThemeService({
     settings: {
       get data() {
@@ -467,7 +470,7 @@ function start(server: boolean): void {
       save: () => registry.app.save()
     },
     isDark: () => nativeTheme.shouldUseDarkColors,
-    onChange: (theme) => views.toAll('theme.changed', theme)
+    onChange: (themeOf) => views.toEach('theme.changed', themeOf)
   })
   nativeTheme.on('updated', () => themes.refresh())
   // Installed plugins: their themes register now; the user's active plugin theme comes back as
@@ -1453,8 +1456,11 @@ function start(server: boolean): void {
   // The worker is the build's out/main/mirror-worker.js, next to this file (electron.vite.config.ts).
   const terminalMirror = new TerminalMirror({
     createWorker: nodeMirrorWorker(join(__dirname, 'mirror-worker.js')),
-    // OSC 10/11/12 colour queries are answered from the app theme's terminal palette.
-    colors: () => themes.current().xterm,
+    // OSC 10/11/12 colour queries are answered from the terminal palette of the view the person
+    // typed in last there, else the view sizing it, else the OS rule (ThemeService.forTerminal):
+    // with views on different appearances one view's theme has to answer. `tabs` is defined below;
+    // a query comes only once a tab runs.
+    colors: (tabId): XtermTheme => themes.forTerminal(tabs.typedByView(tabId), tabs.sizerOf(tabId)).xterm,
     log: warnLog
   })
   // Each view's selected tab and the project's active tab, the selection of the view that acted
@@ -1953,7 +1959,10 @@ function start(server: boolean): void {
     // The router already checked the scheme (webUrlOf) and bound the caller's window and view; main
     // is the only place a link leaves the app.
     openExternal,
-    currentTheme: () => themes.current(),
+    // Per view: the pick, else the calling view's screen (a browser's own appearance).
+    currentTheme: (viewId) => themes.forView(viewId),
+    // Only a remote view reaches it (the router checks `view.remote`; ThemeService checks the id too).
+    setViewScheme: (viewId, dark) => themes.setViewScheme(viewId, dark),
     // `appearance` is built below; start() runs to its end before any IPC message is handled.
     shellPrefs: () => appearance.prefs(),
     commands: (projectId) => commands.view(projectId),
@@ -2344,7 +2353,7 @@ function start(server: boolean): void {
       projectSettings.saveSettings(projectId, pluginId, values, secrets),
     movePanel: (projectId, panelKey, zone) => projectSettings.movePanel(projectId, panelKey, zone),
     setProjectColor: (projectId, value) => projectSettings.setColor(projectId, value),
-    appearance: (projectId) => appearance.view(projectId),
+    appearance: (projectId, viewId) => appearance.view(projectId, viewId),
     setTheme: (id) => appearance.setTheme(id),
     setKey: (projectId, commandId, chord) => appearance.setKey(projectId, commandId, chord),
     setTabExit: (value) => appearance.setTabExit(value),
@@ -2555,9 +2564,13 @@ function start(server: boolean): void {
     // A browser left: the tabs it sized fall back to a remaining visible view (terminal-sizes.ts).
     // Its slot instances and the settings page it held end too (panel-ports.ts viewGone).
     // The project's active tab goes back to a remaining view's selection (view-selections.ts).
+    // Recorded at `hello`, before `ready` and with no event: the view's first `theme.get` answers by
+    // its own appearance, so a dark browser never paints the light built-in first.
+    viewScheme: (viewId, dark) => themes.viewJoined(viewId, dark),
     viewGone: (viewId) => {
       tabs.viewGone(viewId)
       panelPorts.viewGone(viewId)
+      themes.viewGone(viewId)
       // The html overlay pages it held go back to the desktop view (overlay-manager.ts).
       overlays.viewGone(viewId)
       selections.viewGone(viewId)

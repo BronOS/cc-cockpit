@@ -210,6 +210,33 @@ describe('handshake', () => {
     expect(r.bridge.snapshot()).toEqual(SNAPSHOT)
   })
 
+  it("hello carries the browser's colour scheme as it is at each connect (design-web.md §5.7)", () => {
+    const timers = new FakeTimers()
+    const sockets: FakeSocket[] = []
+    let dark = true
+    const bridge = createWebBridge({
+      url: 'ws://x/ws',
+      project: 'p1',
+      timers,
+      dark: () => dark,
+      createSocket: (url) => {
+        const s = new FakeSocket(url)
+        sockets.push(s)
+        return s
+      }
+    })
+    bridges.push(bridge)
+    sockets[0]!.open()
+    expect(sockets[0]!.frames()).toEqual([{ t: 'hello', v: PROTOCOL_VERSION, project: 'p1', dark: true }])
+    sockets[0]!.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: SNAPSHOT })
+    // The screen turned light while away: the reconnect's hello says so.
+    dark = false
+    sockets[0]!.serverClose(1006)
+    timers.advance(500)
+    sockets[1]!.open()
+    expect(sockets[1]!.frames()).toEqual([{ t: 'hello', v: PROTOCOL_VERSION, project: 'p1', dark: false }])
+  })
+
   it('ignores a ready of another protocol version and a second ready', () => {
     const r = rig()
     const s = r.last()

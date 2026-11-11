@@ -176,6 +176,16 @@ describe('theme', () => {
     expect(r.service.view(P).current).toBe('dark')
   })
 
+  it("names the asking view's theme: a browser on a light screen shows light under a dark host (design-web.md §5.7)", () => {
+    const r = rig()
+    r.state.dark = true
+    r.themes.viewJoined('web:4', false)
+    expect(r.service.view(P, 'web:4').current).toBe('light')
+    expect(r.service.view(P, 'desktop:1').current).toBe('dark')
+    r.service.setTheme('dark')
+    expect(r.service.view(P, 'web:4').current).toBe('dark')
+  })
+
   it('picks a theme and goes back to following the OS with null', () => {
     const r = rig()
     r.service.setTheme('dark')

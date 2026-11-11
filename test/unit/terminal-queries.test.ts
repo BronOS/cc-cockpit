@@ -273,6 +273,40 @@ describe('the worker side', () => {
     expect(replies).toEqual(['a x', `a ${ESC}]11;rgb:0000/0000/0000${ST}`])
     mirror.stop()
   })
+
+  it("answers each tab's colour query from the palette main picks for that tab (design-web.md §5.7)", () => {
+    const replies: string[] = []
+    const asked: string[] = []
+    let listener: (m: FromWorker) => void = () => undefined
+    const mirror = new TerminalMirror({
+      createWorker: () => ({
+        post: () => undefined,
+        onMessage: (l) => (listener = l),
+        onExit: () => undefined,
+        terminate: () => undefined
+      }),
+      log: (m) => logs.push(m),
+      // A browser on a dark screen typed last in `a`; `b` follows the light desktop.
+      colors: (tabId) => {
+        asked.push(tabId)
+        return tabId === 'a' ? { background: '#101010' } : { background: '#fafafa' }
+      }
+    })
+    mirror.bindFlow({
+      take: () => undefined,
+      ack: () => undefined,
+      release: () => undefined,
+      reply: (tabId, data) => replies.push(`${tabId} ${data}`)
+    })
+    mirror.start()
+    mirror.spawned('a', 80, 24)
+    mirror.spawned('b', 80, 24)
+    listener({ t: 'color', tabId: 'a', ident: 11 })
+    listener({ t: 'color', tabId: 'b', ident: 11 })
+    expect(asked).toEqual(['a', 'b'])
+    expect(replies).toEqual([`a ${ESC}]11;rgb:1010/1010/1010${ST}`, `b ${ESC}]11;rgb:fafa/fafa/fafa${ST}`])
+    mirror.stop()
+  })
 })
 
 describe('colours', () => {

@@ -37,6 +37,7 @@ import { notificationSoundOf, parseSoundId } from '../../shared/notify-sound'
 import type { Theme } from '../../shared/theme'
 import type { TerminalFont } from '../../shared/terminal-font'
 import type { TabCloseSide, TabExitBehavior } from '../../shared/types'
+import type { ViewId } from '../../shared/views'
 import type { BlurSupport, WindowBackground } from '../../shared/window-background'
 import { MIN_TERMINAL_WIDTH_RANGE, minTerminalWidthOf, zoneAutoHideOf } from '../../shared/zone-auto-hide'
 import type { CommandRegistry } from '../commands/command-registry'
@@ -57,7 +58,8 @@ const WAYS_IN = ['app.openSettings', 'palette.open']
 export interface AppearanceDeps {
   themes: {
     list(): Theme[]
-    current(): Theme
+    /** The theme one view shows (ThemeService.forView): with no pick it differs per screen. */
+    forView(viewId: ViewId | undefined): Theme
     selected(): string | undefined
     setActive(id: string | undefined): void
   }
@@ -193,11 +195,15 @@ export function tabCloseSideOf(stored: unknown): TabCloseSide {
 export class AppearanceService {
   constructor(private readonly deps: AppearanceDeps) {}
 
-  view(projectId: string): AppearanceView {
+  /**
+   * `viewId`: the asking view. "Showing ..." names that view's theme, since with no pick a browser
+   * shows the built-in of its own appearance, not the desktop's (design-web.md §5.7). Absent: the OS rule.
+   */
+  view(projectId: string, viewId?: ViewId): AppearanceView {
     return {
       themes: this.deps.themes.list().map((t) => ({ id: t.id, name: t.name, kind: t.kind })),
       selected: this.deps.themes.selected() ?? null,
-      current: this.deps.themes.current().id,
+      current: this.deps.themes.forView(viewId).id,
       keys: this.deps.commands.bindings(projectId),
       tabExit: tabExitOf(this.deps.tabExit.get()),
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),

@@ -900,8 +900,17 @@ export interface IpcInvokeMap {
   'updates.dismiss': { req: { version: string }; res: void }
   /** Open the release page main built for the available version. Takes no URL: main opens its own. */
   'updates.openRelease': { req: void; res: void }
-  /** The active theme (app-wide). The renderer applies it on :root and to every terminal. */
+  /**
+   * The theme this view shows (the pick, else by the view's screen: the desktop's OS appearance, a
+   * browser view's own `prefers-color-scheme` once reported). The renderer applies it on :root and to
+   * every terminal.
+   */
   'theme.get': { req: void; res: Theme }
+  /**
+   * A browser view's `prefers-color-scheme` changed (it is sent at `hello` first). Only chooses which
+   * built-in this view gets when nothing is picked; ignored from a desktop view.
+   */
+  'theme.scheme': { req: { dark: boolean }; res: void }
   /** The app settings the shell page applies itself (ShellPrefs). Changes arrive as `prefs.changed`. */
   'prefs.get': { req: void; res: ShellPrefs }
 
@@ -1418,7 +1427,10 @@ export interface IpcEventMap {
   'updates.changed': UpdateState
   /** Connected devices or a risky choice changed (desktop windows only; never sent to a remote view). */
   'webAccess.changed': WebAccessIndicator
-  /** The active theme changed (a pick, the OS appearance, a plugin theme added or removed). */
+  /**
+   * This view's theme changed (a pick, the OS appearance or the browser's, a plugin theme added or
+   * removed). Per view: each view gets its own resolved theme, and only when it moved.
+   */
   'theme.changed': Theme
   /** An app setting the shell page applies itself changed (Settings › General or Appearance). */
   'prefs.changed': ShellPrefs
@@ -1581,6 +1593,7 @@ export const INVOKE_CHANNELS = [
   'updates.dismiss',
   'updates.openRelease',
   'theme.get',
+  'theme.scheme',
   'prefs.get',
   'sessions.list',
   'sessions.cancelQueued',
@@ -1807,8 +1820,14 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // Opens main's release URL in the host's browser: a notice in a remote view, like openExternal.
   'updates.openRelease': 'adapted',
 
-  'theme.get': 'yes',
-  'theme.changed': 'yes',
+  // The theme with no pick follows each view's own screen (design-web.md §5.7): `theme.get` answers
+  // by the view main bound to the call and `theme.changed` is sent per view. `theme.scheme` is a
+  // browser's own appearance; main takes it only from a remote view (`view.remote`, never the
+  // payload), and it can only choose between the two built-ins for that one view, never the
+  // desktop's theme or another view's.
+  'theme.get': 'adapted',
+  'theme.changed': 'adapted',
+  'theme.scheme': 'adapted',
   'prefs.get': 'yes',
   'prefs.changed': 'yes',
 

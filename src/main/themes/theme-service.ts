@@ -7,11 +7,20 @@
 // light or dark by the OS appearance. The stored id is kept in the second case, so the theme
 // comes back when the plugin does.
 //
+// Per view (design-web.md §5.7 "Theme per view"): "follow the OS" means the appearance of the screen
+// the view is on. The desktop page (and server mode's hidden page) follows Electron's nativeTheme;
+// a browser view reports its own `prefers-color-scheme` (at `hello` and on every change, channel
+// `theme.scheme`), and with no pick it gets the built-in of that kind. Before, one app-wide theme
+// went to every view, so a headless server (no OS appearance: nativeTheme says light) painted every
+// dark browser light, and a phone took the desktop's appearance. The hint only chooses between the
+// two built-ins for that one view: a pick (a plugin theme included) still wins everywhere.
+//
 // Pure Node: the OS appearance and the broadcast come in as functions.
 import darkJson from '../../themes/dark.json'
 import lightJson from '../../themes/light.json'
 import { isPlainObject } from '../../shared/guards'
 import { validateTheme, type Theme } from '../../shared/theme'
+import { isRemoteViewId, type ViewId } from '../../shared/views'
 
 export interface ThemeSettings {
   data: { theme?: string }
@@ -20,11 +29,22 @@ export interface ThemeSettings {
 
 export interface ThemeServiceOptions {
   settings: ThemeSettings
-  /** The OS is in dark mode. */
+  /** The OS is in dark mode (the desktop's appearance; a browser view reports its own). */
   isDark: () => boolean
-  /** The effective theme changed: broadcast it to every window. */
-  onChange: (theme: Theme) => void
+  /**
+   * The effective theme changed for some views: `themeOf(viewId)` is that view's new theme, or
+   * undefined when its theme is unchanged (it is sent nothing). Called synchronously; main walks its
+   * views with it (ViewRegistry.toEach), so each view gets exactly its own theme.
+   */
+  onChange: (themeOf: (viewId: ViewId) => Theme | undefined) => void
 }
+
+/**
+ * The three ways a view can resolve with no pick: the OS rule (the desktop, and a browser that has
+ * not reported), or a browser's reported dark or light. With a pick all three are the pick.
+ */
+type SchemeKey = 'os' | 'dark' | 'light'
+const SCHEME_KEYS: readonly SchemeKey[] = ['os', 'dark', 'light']
 
 function builtin(json: unknown): Theme {
   const result = validateTheme(json)
@@ -67,10 +87,17 @@ function sameTheme(a: Theme, b: Theme): boolean {
 
 export class ThemeService {
   private readonly contributed = new Map<string, Theme>()
-  private last: Theme
+  /** What each scheme key resolved to at the last refresh, to tell which views a change reaches. */
+  private last: Record<SchemeKey, Theme>
+  /**
+   * Browser views' reported `prefers-color-scheme`, by view id. Remote ids only (`setViewScheme`
+   * refuses the rest); an entry goes with its view (`viewGone`), so the map is bounded by the
+   * gateway's connection cap.
+   */
+  private readonly schemes = new Map<ViewId, 'dark' | 'light'>()
 
   constructor(private readonly options: ThemeServiceOptions) {
-    this.last = this.current()
+    this.last = this.resolveAll()
   }
 
   list(): Theme[] {
@@ -82,13 +109,61 @@ export class ThemeService {
     return this.options.settings.data.theme
   }
 
-  /** The theme to show now. */
+  /**
+   * The theme by the OS rule: the pick, else the built-in of the OS appearance. What the desktop
+   * page shows, and what app-level readers with no view use.
+   */
   current(): Theme {
-    const wanted = this.options.settings.data.theme
-    const picked = wanted === undefined ? undefined : this.find(wanted)
-    if (picked) return picked
-    const kind = this.options.isDark() ? 'dark' : 'light'
-    return BUILTIN_THEMES.find((t) => t.kind === kind) ?? BUILTIN_THEMES[0]!
+    return this.resolve('os')
+  }
+
+  /**
+   * The theme one view shows: the pick, else for a browser view that reported its appearance the
+   * built-in of that kind, else the OS rule (`current`). Undefined (no view: a tab nobody typed in)
+   * is the OS rule too.
+   */
+  forView(viewId: ViewId | undefined): Theme {
+    return this.resolve(viewId === undefined ? 'os' : this.keyOf(viewId))
+  }
+
+  /**
+   * A browser view joined (at `hello`, before `ready`) with its appearance: recorded with no event,
+   * since the view has not read its theme yet (its first `theme.get` answers by it) and nothing may
+   * reach its socket before `ready`. A desktop id is ignored: only a browser reports.
+   */
+  viewJoined(viewId: ViewId, dark: boolean | undefined): void {
+    if (dark === undefined || !isRemoteViewId(viewId)) return
+    this.schemes.set(viewId, dark ? 'dark' : 'light')
+  }
+
+  /**
+   * A browser view's appearance changed (`theme.scheme`): that view alone is sent its theme, when the
+   * change moves it (with a pick nothing does). A desktop id is ignored (the router already drops a
+   * call from a desktop view; this is the second check): the desktop follows nativeTheme, and a page
+   * must not be able to repaint the host's window.
+   */
+  setViewScheme(viewId: ViewId, dark: boolean): void {
+    if (!isRemoteViewId(viewId)) return
+    const before = this.forView(viewId)
+    this.schemes.set(viewId, dark ? 'dark' : 'light')
+    const after = this.forView(viewId)
+    if (after !== before) this.options.onChange((id) => (id === viewId ? after : undefined))
+  }
+
+  /**
+   * The theme a tab's terminal colour queries (OSC 10/11/12, answered by the mirror worker) are
+   * answered from. One answer per tab while views may differ: the view that typed there last (the
+   * program is talking to that person's screen; the same owner idea as the terminal's size), else
+   * the view sizing it (a tab nobody typed in yet: the browser that opened it, in server mode), else
+   * the OS rule.
+   */
+  forTerminal(typedBy: ViewId | undefined, sizer: ViewId | undefined): Theme {
+    return this.forView(typedBy ?? sizer)
+  }
+
+  /** The view is gone (its socket closed): its reported appearance goes with it. */
+  viewGone(viewId: ViewId): void {
+    this.schemes.delete(viewId)
   }
 
   /**
@@ -147,12 +222,36 @@ export class ThemeService {
     this.refresh()
   }
 
-  /** Re-evaluate (OS appearance changed, registry changed) and broadcast when the result differs. */
+  /**
+   * Re-evaluate (OS appearance changed, registry changed) and tell the views whose theme moved. Only
+   * those: the OS turning dark under a pick sends nothing, and it reaches the desktop and unreported
+   * browsers but not a browser that reported its own appearance.
+   */
   refresh(): void {
-    const next = this.current()
-    if (next === this.last) return
+    const next = this.resolveAll()
+    const moved = new Set(SCHEME_KEYS.filter((k) => next[k] !== this.last[k]))
     this.last = next
-    this.options.onChange(next)
+    if (moved.size === 0) return
+    this.options.onChange((viewId) => {
+      const key = this.keyOf(viewId)
+      return moved.has(key) ? next[key] : undefined
+    })
+  }
+
+  private keyOf(viewId: ViewId): SchemeKey {
+    return this.schemes.get(viewId) ?? 'os'
+  }
+
+  private resolve(key: SchemeKey): Theme {
+    const wanted = this.options.settings.data.theme
+    const picked = wanted === undefined ? undefined : this.find(wanted)
+    if (picked) return picked
+    const kind = key === 'os' ? (this.options.isDark() ? 'dark' : 'light') : key
+    return BUILTIN_THEMES.find((t) => t.kind === kind) ?? BUILTIN_THEMES[0]!
+  }
+
+  private resolveAll(): Record<SchemeKey, Theme> {
+    return { os: this.resolve('os'), dark: this.resolve('dark'), light: this.resolve('light') }
   }
 
   private find(id: string): Theme | undefined {

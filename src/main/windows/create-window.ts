@@ -32,7 +32,9 @@ export function createWindow(options: BrowserWindowConstructorOptions, openLink:
     show: false,
     // Painted before the renderer has applied the theme (it asks main first), so a dark-OS user
     // does not see a white window flash. Read from the built-in of the OS kind, so a retuned
-    // --cc-bg cannot leave a differently coloured frame showing for the first paint.
+    // --cc-bg cannot leave a differently coloured frame showing for the first paint. App-level on
+    // purpose (design-web.md §5.7): a BrowserWindow is the desktop's own screen, which follows
+    // nativeTheme; a browser view's first paint is web.css's, by its own prefers-color-scheme.
     backgroundColor: builtinBackground(nativeTheme.shouldUseDarkColors ? 'dark' : 'light'),
     ...options,
     webPreferences: {

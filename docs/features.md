@@ -334,7 +334,9 @@ Host and Origin checks, the device cookie and the log (sign-ins and revokes, nev
 **What a browser does differently** (the table is design-web.md §6.1): a link opens as a notice you click, not in a new
 tab by itself; notifications and sounds stay on the host; "Reveal in the file manager" and "Open with the system" are
 refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; the Browser panel and URL overlays
-show "available on the desktop"; window controls, full screen and the update notice are not shown. On a computer with no display (server mode) the approvals move to the browser: see Server mode below. A terminal has one
+show "available on the desktop"; window controls, full screen and the update notice are not shown. With no theme
+picked ("Follow the system"), each browser shows the light or dark built-in of its own system setting, not the
+computer's; a picked theme is the same everywhere. On a computer with no display (server mode) the approvals move to the browser: see Server mode below. A terminal has one
 size for all places (the one that typed, clicked, selected its tab or was brought to the front last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
 open in one place at a time, with Take over on the others.
 
@@ -449,6 +451,8 @@ both as under Web access above. A LAN bind works with the same confirms.
   desktop asks for them again (a secret field shows "stored in the other mode", the access link cannot be shown until it
   is regenerated, the password must be set again; signed-in devices stay signed in), and the same in the other
   direction. Nothing moves between the keychain and the key file.
+- With no theme picked, each browser follows its own light or dark setting (the server has none, and used to paint
+  every browser light); a picked theme applies to all of them.
 - The window is never seen. Its page is kept hidden and never sizes a terminal: a terminal keeps the size the last
   browser gave it, and a new tab no browser has sized starts at 120x40. A crash of the hidden page reloads it with a
   log line. With no project open the app stays up with the gateway; it never shows a picker or quits on its own.
@@ -651,7 +655,8 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   stays paced by the desktop until it has caught up, so it is not resynced from that copy. Turning it off closes the browsers with a notice and waits
   up to 5 seconds for a desktop tab that fell behind to be resynced before it ends the copies.
 - While web access is on, the app itself answers a program's terminal queries (cursor position, device attributes,
-  modes, the foreground, background and cursor colours from the app theme) and the terminals' own answers are dropped.
+  modes, the foreground, background and cursor colours from the theme of the place that typed in the tab last, else
+  the one sizing it, else the computer's) and the terminals' own answers are dropped.
   Palette colour queries (OSC 4) go unanswered then, a see-through window reports the theme's background rather than
   the transparent one, and Shift+F3 / Ctrl+F3 (the same bytes as a cursor position reply) do not reach the program.
   A query the program sends in the moment web access is switched on or off can go unanswered.

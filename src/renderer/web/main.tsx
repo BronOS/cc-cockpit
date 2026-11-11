@@ -13,7 +13,11 @@
 //   from missed events (no resume in v1, design §3);
 // - while away, a "host unreachable" notice sits over the last state, which stays visible but
 //   whose calls fail until the socket is back; once the new `ready` is in, it is taken down before
-//   the resync, so it never acts on the new view (bridge.ts shellToDraw).
+//   the resync, so it never acts on the new view (bridge.ts shellToDraw);
+// - the theme with no pick follows this browser's own `prefers-color-scheme`, not the host's OS
+//   (design-web.md §5.7): reported at `hello` and on every change (`theme.scheme`). Until main's
+//   theme arrives (and on the sign-in and picker pages, which never get one) the page shows the
+//   built-in of the browser's scheme, and web.css paints that background before any script runs.
 import { StrictMode, useEffect, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WebAccessMode } from '../../shared/types'
@@ -23,6 +27,9 @@ import { setPrefs, startPrefs } from '../prefs/prefs-store'
 import { armLoadTake, isServerView, markWebShell, setOwnView, setServerHint } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
+import { validateTheme } from '../../shared/theme'
+import darkJson from '../../themes/dark.json'
+import lightJson from '../../themes/light.json'
 import { loadTerminalFont } from '../tabs/terminal-font'
 import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { startChime } from '../notify/chime'
@@ -38,6 +45,32 @@ import './web.css'
 document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
 // Before anything renders: TabsPane, App and the zones read it when they mount.
 markWebShell(document.documentElement)
+
+/** This browser's colour scheme (design-web.md §5.7). Absent in an engine with no matchMedia: not reported. */
+const darkQuery = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : undefined
+/** Main's theme reaches this page (the shell started): from then on main decides, never the page. */
+let themeFromMain = false
+
+/**
+ * The built-in of the browser's scheme, until main's theme arrives: the same one main gives this view
+ * with no pick, so a dark browser's "Connecting...", sign-in and picker pages are dark too. Checked
+ * like any theme (a broken build file is skipped, leaving web.css's fallback colours).
+ */
+function applyBuiltin(): void {
+  const result = validateTheme(darkQuery?.matches === true ? darkJson : lightJson)
+  if (result.ok) applyTheme(result.theme, document.documentElement)
+}
+applyBuiltin()
+darkQuery?.addEventListener('change', (ev) => {
+  if (!themeFromMain) {
+    applyBuiltin()
+    return
+  }
+  // Main answers with `theme.changed` when this moves the view's theme (not under a pick). A call
+  // that fails (the host away, before `ready`) is dropped: the next `hello` carries the scheme of
+  // that moment.
+  window.cockpit.invoke('theme.scheme', { dark: ev.matches }).catch(() => undefined)
+})
 
 /**
  * The project this page shows, from `?project=<id>`. Only a request: main binds the view to the
@@ -163,6 +196,8 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
   const bridge = createWebBridge({
     url: socketUrl(location, WS_PATH),
     project,
+    // Read at each `hello`: the view's first `theme.get` already answers by this browser's scheme.
+    ...(darkQuery ? { dark: () => darkQuery.matches } : {}),
     // The DOM WebSocket's handler types name its own event classes; the bridge reads `data`,
     // `code` and `reason` only.
     createSocket: (url) => new WebSocket(url) as unknown as SocketLike,
@@ -179,6 +214,7 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     }
   })
   window.cockpit = bridge.api
+  themeFromMain = true
   // ctx.notify's `sound` in server mode (main sends it to a server's browsers only, web/connection.ts
   // remoteEvent). A browser may hold the sound back until the person has touched the page.
   startChime()

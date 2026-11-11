@@ -49,7 +49,8 @@ load, the strip shows the title's first letter.
   queued.
 - `ccPanel.onMessage(listener)`: hear what the host sends with `ctx.panels.post`. Returns an
   unsubscribe function.
-- `ccPanel.theme.current`: the app's current theme `{ kind, vars }`; the CSS variables are
+- `ccPanel.theme.current`: the theme the page's screen shows `{ kind, vars }` (with no theme picked,
+  a browser's own light or dark, not the desktop's); the CSS variables are
   already set on `:root` (and `color-scheme` is `kind`), so style with `var(--...)`.
   `ccPanel.theme.onChange(listener)` fires on every change. The shell sends the theme in a
   message after the page loads, so the first paint can come before it.

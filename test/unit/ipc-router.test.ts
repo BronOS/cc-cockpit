@@ -585,10 +585,32 @@ describe('core handlers', () => {
     await expect(ipc.invoke('commands.run', 11, [{ id: 'a.one/nope' }])).rejects.toThrow('unknown command: a.one/nope')
   })
 
-  it('theme.get answers every window kind with the current theme', async () => {
-    const { ipc } = core()
+  it('theme.get answers every window kind, for the calling view (design-web.md §5.7)', async () => {
+    const asked: string[] = []
+    const { ipc, router } = core({
+      currentTheme: (viewId) => {
+        asked.push(viewId)
+        return viewId.startsWith('web:') ? BUILTIN_THEMES[1]! : BUILTIN_THEMES[0]!
+      }
+    })
     await expect(ipc.invoke('theme.get', 11)).resolves.toBe(BUILTIN_THEMES[0])
     await expect(ipc.invoke('theme.get', 13)).resolves.toBe(BUILTIN_THEMES[0])
+    // A browser view of window 1: answered by main's binding, never a view named in the payload.
+    const caller = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    await expect(router.dispatch(caller, 'theme.get', { viewId: 'desktop:1' })).resolves.toBe(BUILTIN_THEMES[1])
+    expect(asked).toEqual(['desktop:1', 'desktop:3', 'web:5'])
+  })
+
+  it('theme.scheme is taken from a remote view only, and only as a boolean', async () => {
+    const schemes: Array<[string, boolean]> = []
+    const { ipc, router } = core({ setViewScheme: (viewId, dark) => schemes.push([viewId, dark]) })
+    const caller = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    await router.dispatch(caller, 'theme.scheme', { dark: true, viewId: 'web:9' })
+    // The desktop page follows nativeTheme: its report is ignored, not an error.
+    await expect(ipc.invoke('theme.scheme', 11, [{ dark: true }])).resolves.toBeUndefined()
+    await expect(router.dispatch(caller, 'theme.scheme', { dark: 'yes' })).rejects.toThrow(/dark must be a boolean/)
+    await expect(router.dispatch(caller, 'theme.scheme', undefined)).rejects.toThrow(/bad payload/)
+    expect(schemes).toEqual([['web:5', true]])
   })
 
   it('prefs.get answers every window kind with the shell prefs', async () => {
@@ -1593,7 +1615,8 @@ describe('registerProjectSettingsHandlers', () => {
       ['setPluginEnabled', PROJECT_B, 'a.b', true],
       ['saveProjectPluginSettings', PROJECT_B, 'a.b', { x: 1 }, { token: null }],
       ['movePanel', PROJECT_A, 'core/sessions', 'left'],
-      ['appearance', PROJECT_B],
+      // The calling view: "Showing ..." names that view's theme (design-web.md §5.7).
+      ['appearance', PROJECT_B, 'desktop:2'],
       ['setKey', PROJECT_A, 'tab.close', 'Cmd+Y']
     ])
   })

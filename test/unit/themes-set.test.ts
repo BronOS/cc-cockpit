@@ -7,6 +7,7 @@ import { HostContexts } from '../../src/host/ctx'
 import { HostApi, MAX_THEME_SET_BYTES, MAX_THEME_SETS_PER_WINDOW, type HostApiDeps, type HostScope } from '../../src/main/plugins/host-api'
 import { ThemeService } from '../../src/main/themes/theme-service'
 import type { Theme } from '../../src/shared/theme'
+import { desktopViewId } from '../../src/shared/views'
 import { hostSpec } from '../fakes/host-spec'
 import { unusedOAuth, unusedSecrets } from '../fakes/unused-host-services'
 
@@ -25,7 +26,11 @@ function themeService(active?: string): { themes: ThemeService; changes: Theme[]
   const themes = new ThemeService({
     settings: { data: active === undefined ? {} : { theme: active }, save: () => {} },
     isDark: () => false,
-    onChange: (t) => changes.push(t)
+    onChange: (themeOf) => {
+      // No browser views here: the desktop's theme is the one that changed.
+      const t = themeOf(desktopViewId(1))
+      if (t) changes.push(t)
+    }
   })
   themes.register({ ...file, id: 'acme.dusk/dusk' })
   themes.register({ ...file, id: 'acme.other/dusk', name: 'Other dusk' })

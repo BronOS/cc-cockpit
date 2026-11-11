@@ -112,6 +112,12 @@ export interface WebBridgeOptions {
   url: string
   /** The project this page shows; main binds the view to the window that has it open. */
   project: string
+  /**
+   * The browser's `prefers-color-scheme` is dark, read at each `hello` (design-web.md §5.7): main
+   * then answers this view's first `theme.get` by it, and a reconnect carries the value of that
+   * moment. Absent: not reported (main's OS rule).
+   */
+  dark?(): boolean
   createSocket(url: string): SocketLike
   timers?: Timers
   /** Delay before reconnect attempt n (1-based); default `reconnectDelay`. */
@@ -629,7 +635,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     }, readyTimeoutMs)
     s.onopen = () => {
       if (s !== socket) return
-      s.send(encodeClientFrame({ t: 'hello', v: PROTOCOL_VERSION, project: options.project }))
+      const dark = options.dark?.()
+      s.send(encodeClientFrame({ t: 'hello', v: PROTOCOL_VERSION, project: options.project, ...(dark === undefined ? {} : { dark }) }))
     }
     s.onmessage = (ev) => onFrame(s, ev.data)
     s.onclose = (ev) => dropped(s, ev.code)

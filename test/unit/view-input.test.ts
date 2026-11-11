@@ -149,6 +149,10 @@ describe('the last-typed device per tab', () => {
     tabs.viewGone('web:4')
     expect(typed).toEqual([{ tabId: a.id, viewId: null, device: null }])
     expect(tabs.list(P).map((t) => t.typedBy)).toEqual([undefined, { viewId: 'web:5', device: '<b>tablet</b>' }])
+    // What the terminal colour answer reads (ThemeService.forTerminal): main's own record by tab id.
+    expect(tabs.typedByView(a.id)).toBeUndefined()
+    expect(tabs.typedByView(b.id)).toBe('web:5')
+    expect(tabs.typedByView('no-such-tab')).toBeUndefined()
     tabs.viewGone('web:4')
     expect(typed).toHaveLength(1)
   })

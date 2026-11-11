@@ -1,4 +1,23 @@
 /* The web shell's own bits (main.tsx): the "host unreachable" notice and the start-up states. */
+
+/* Before any theme is applied (this sheet is a render-blocking <link>, the script is not): the
+   built-ins' background and text by the browser's own scheme, so a dark browser does not flash white
+   before main's theme, which with no pick follows that same scheme (design-web.md §5.7). The
+   colours are the built-ins' --cc-bg and --cc-fg (src/themes/*.json; theme.test.ts keeps
+   them equal). An applied theme sets the variables and color-scheme inline on :root and wins. */
+:root {
+  color-scheme: light dark;
+}
+body {
+  background: var(--cc-bg, #faf8f6);
+  color: var(--cc-fg, #2a2523);
+}
+@media (prefers-color-scheme: dark) {
+  body {
+    background: var(--cc-bg, #1a1817);
+    color: var(--cc-fg, #ece6e1);
+  }
+}
 .web-unreachable {
   position: fixed;
   top: 8px;
