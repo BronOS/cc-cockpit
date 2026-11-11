@@ -5,7 +5,7 @@
 // first answer from any of them wins, main tells the others it is settled (`links.settled`), and a
 // view joining mid-ask finds it in its `ready` snapshot. With no remote view attached the native
 // dialog (link-dialog.ts) is used as before, so a desktop-only person sees no change. In server mode
-// it is always the shared ask (chooseLinkConfirm).
+// it is always the shared ask (chooseAsk, asks/shared-asks.ts).
 //
 // Who may Allow (plan Task 25, review; design-web.md §9.6): a linked plugin runs with full access to
 // the host. On the desktop, §6.1 keeps plugin linking off remote views ("do it on the desktop"): a
@@ -87,26 +87,4 @@ export class LinkAsks {
   get size(): number {
     return this.core.size
   }
-}
-
-/**
- * The confirm `ccc plugin link` uses: the shared in-page ask when the window has a browser view
- * attached, else the native dialog. Decided per call from the live view list, so a browser that
- * joins while a native dialog is up is not shown a second one (the desktop's sheet stays the
- * answer for that request).
- *
- * In server mode always the shared ask (design-web.md §9.6): the native dialog aborts main under
- * Ozone headless, and a test run's queued fake (the `native` passed in a test run) would answer what
- * the browser should. With no browser attached the hidden page takes the ask, so it waits there for
- * a browser to join (`ready.linkAsks`) or runs out.
- */
-export function chooseLinkConfirm(options: {
-  /** Main's server-mode flag for the run. */
-  server?: boolean
-  hasRemoteView(windowId: number): boolean
-  shared: (windowId: number, info: LinkDialogInfo, signal?: AbortSignal) => Promise<boolean>
-  native: (windowId: number, info: LinkDialogInfo, signal?: AbortSignal) => Promise<boolean>
-}): (windowId: number, info: LinkDialogInfo, signal?: AbortSignal) => Promise<boolean> {
-  return (windowId, info, signal) =>
-    options.server === true || options.hasRemoteView(windowId) ? options.shared(windowId, info, signal) : options.native(windowId, info, signal)
 }

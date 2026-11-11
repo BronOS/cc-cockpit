@@ -10,7 +10,7 @@
 import { statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { errorText } from '../../shared/error-text'
-import type { ProjectRegistry } from '../projects/registry'
+import { ProjectRefusal, type ProjectRegistry } from '../projects/registry'
 import type { ProjectView, WindowBounds } from '../../shared/types'
 import { fitBounds, sanitizeBounds, type Rect } from './window-bounds'
 import { OPAQUE_LOOK, type ProjectWindowLook } from './window-chrome'
@@ -267,7 +267,7 @@ export class WindowManager {
    */
   openRecent(id: string): ProjectView {
     const entry = this.options.registry.recent().find((p) => p.id === id)
-    if (!entry) throw new Error('not a recent project')
+    if (!entry) throw new ProjectRefusal('not a recent project')
     return this.openPath(entry.path)
   }
 
@@ -504,7 +504,7 @@ export class WindowManager {
     }
     if (view.missing) {
       // A window for a folder that is not there would start tabs in a nonexistent cwd.
-      throw new Error(`project folder is missing: ${view.path}`)
+      throw new ProjectRefusal(`project folder is missing: ${view.path}`)
     }
     const projectId = view.id
     const look = this.options.projectWindowLook?.() ?? OPAQUE_LOOK
@@ -647,7 +647,8 @@ export class WindowManager {
     const state = this.reloads.get(handle)
     // A pause already running: the crash and the failed load of one reload are one event.
     if (state?.cancel) return
-    const now = (this.options.now ?? Date.now)()
+    const clock = this.options.now ?? Date.now
+    const now = clock()
     const delay =
       state && now - state.at < PAGE_RELOAD_RESET_MS ? Math.min(state.delay * 2, PAGE_RELOAD_MAX_MS) : PAGE_RELOAD_FIRST_MS
     this.logLine(`the hidden page of ${name} ${what}: reloading in ${delay / 1000} s`)
@@ -655,7 +656,7 @@ export class WindowManager {
     const next: PageReload = { delay, at: state?.at ?? now }
     next.cancel = setTimer(() => {
       next.cancel = undefined
-      next.at = (this.options.now ?? Date.now)()
+      next.at = clock()
       if (this.quitting || this.projects.get(projectId) !== handle) return
       handle.reload()
     }, delay)

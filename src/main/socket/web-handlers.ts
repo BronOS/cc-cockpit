@@ -31,11 +31,16 @@ import {
   type WebAccessSetReply,
   type WebActionReply,
   type WebCliRevokeResult,
+  type WebCliNotice,
   type WebCliStatus,
   SERVER_NONE_WARNING,
-  type WebLinkReply
+  type WebLinkReply,
+  type WebSecretsStatus,
+  WEB_SHELL_MODES
 } from '../../shared/web-access'
-import { MAX_PASSWORD_LENGTH } from '../web/password'
+import type { AccessLog } from '../web/access-log'
+import type { WebAccessService } from '../web/access-service'
+import { MAX_PASSWORD_BYTES, MAX_PASSWORD_LENGTH } from '../web/password'
 import { SERVER_NO_CONFIRM_MODE } from '../web/settings'
 import type { Caller, Handler } from './socket-server'
 
@@ -72,6 +77,45 @@ export interface WebHandlerDeps {
   set(patch: WebAccessPatch): Promise<WebAccessSetReply>
   /** One `web-access.log` line for a change made from the shell: what changed, never a secret. */
   logShell(detail: string): void
+}
+
+/**
+ * How long `web.stop` waits before it quits: the reply is written first, since the quit ends the
+ * socket's connections and the shell would otherwise see a dropped one instead of the answer.
+ */
+export const STOP_AFTER_REPLY_MS = 100
+
+/**
+ * The handlers' deps as main wires them (index.ts; cli-web.test.ts runs the same wiring): every
+ * write through the WebAccessService calls the Settings page makes, with its `server` rules (no
+ * off, no desktop confirm); revocations carry SHELL_REVOKE_REASON; `stop` quits (`quit`, SIGTERM to
+ * main itself) STOP_AFTER_REPLY_MS after it answered.
+ */
+export function webHandlerDeps(input: {
+  server: boolean
+  access: Pick<WebAccessService, 'cliStatus' | 'revoke' | 'revokeAll' | 'link' | 'regenerate' | 'addDevice' | 'setPassword' | 'set'>
+  /** This run's secret store as status shows it (index.ts `webSecretsStatus`). */
+  secrets: () => Promise<WebSecretsStatus>
+  /** The core notices of this run (core-notices.ts). */
+  notices: () => WebCliNotice[]
+  accessLog: Pick<AccessLog, 'write'>
+  quit: () => void
+  setTimer?: (fn: () => void, ms: number) => void
+}): WebHandlerDeps {
+  const { access } = input
+  const setTimer = input.setTimer ?? ((fn: () => void, ms: number): void => void setTimeout(fn, ms))
+  return {
+    server: input.server,
+    status: async () => access.cliStatus(await input.secrets(), input.notices()),
+    revoke: (id) => access.revoke(id, { reason: SHELL_REVOKE_REASON }),
+    revokeAll: () => access.revokeAll({ reason: SHELL_REVOKE_REASON }),
+    stop: () => setTimer(input.quit, STOP_AFTER_REPLY_MS),
+    link: (regenerate) => (regenerate ? access.regenerate() : access.link()),
+    addDevice: () => access.addDevice(),
+    setPassword: (password) => access.setPassword(password),
+    set: (patch) => access.set(patch),
+    logShell: (detail) => input.accessLog.write({ event: 'shell', detail })
+  }
 }
 
 /** What `web.mode` answers; `warning` is §9.12's shared-server text for None. */
@@ -193,7 +237,7 @@ export function webAddDeviceHandler(deps: Pick<WebHandlerDeps, 'server' | 'addDe
 
 /**
  * `{ password }`, read by the CLI from stdin or a no-echo prompt. The length cap before hashing is the
- * sign-in route's (code units, four per character at most); passwordProblem says the rest. Answers the
+ * sign-in route's (MAX_PASSWORD_BYTES code units); passwordProblem says the rest. Answers the
  * mode, so the CLI can say when the password is not what signs people in yet.
  */
 export function webPasswordHandler(deps: Pick<WebHandlerDeps, 'server' | 'setPassword' | 'status' | 'logShell'>): Handler {
@@ -202,7 +246,7 @@ export function webPasswordHandler(deps: Pick<WebHandlerDeps, 'server' | 'setPas
     serverOnly(deps)
     onlyKeys(args, ['password'], 'web password')
     const password = args.password
-    if (typeof password !== 'string' || password.length === 0 || password.length > MAX_PASSWORD_LENGTH * 4) {
+    if (typeof password !== 'string' || password.length === 0 || password.length > MAX_PASSWORD_BYTES) {
       throw new Error(`web password: give a password of at most ${MAX_PASSWORD_LENGTH} characters on stdin`)
     }
     const reply = await deps.setPassword(password)
@@ -213,18 +257,16 @@ export function webPasswordHandler(deps: Pick<WebHandlerDeps, 'server' | 'setPas
   }
 }
 
-/** The modes `ccc web mode` switches to; desktop confirm is refused with its reason (nobody could answer it). */
-const SHELL_MODES = ['link', 'password', 'none'] as const
-
 /** `{ mode, confirm? }`: through the Settings page's change path; None on a network bind takes `--confirm none-network`. */
 export function webModeHandler(deps: Pick<WebHandlerDeps, 'server' | 'set' | 'logShell'>): Handler {
   return async (args, caller): Promise<WebCliModeResult> => {
     hostOnly(caller)
     serverOnly(deps)
     onlyKeys(args, ['mode', 'confirm'], 'web mode')
+    // Desktop confirm is refused with its reason (nobody could answer it); the CLI passes it on for this.
     if (args.mode === 'confirm') throw new Error(SERVER_NO_CONFIRM_MODE)
-    const mode = SHELL_MODES.find((m) => m === args.mode)
-    if (mode === undefined) throw new Error(`web mode takes ${SHELL_MODES.join(', ')}`)
+    const mode = WEB_SHELL_MODES.find((m) => m === args.mode)
+    if (mode === undefined) throw new Error(`web mode takes ${WEB_SHELL_MODES.join(', ')}`)
     const confirm = risksOf(args.confirm, 'web mode')
     await applyPatch(deps, confirm.length > 0 ? { mode, confirm } : { mode })
     deps.logShell(['ccc web mode', mode, ...confirm.map((r) => `--confirm ${r}`)].join(' '))

@@ -16,7 +16,7 @@
 import { isHookEvent, type HookEvent } from '../shared/hooks'
 import { MAX_PLUGIN_CONFIG_EDITS, parseConfigValue, PLUGIN_CONFIG_SCOPES, type PluginConfigScope } from '../shared/plugin-config'
 import type { WebAccessRisk } from '../shared/types'
-import { WEB_RISK_ORDER } from '../shared/web-access'
+import { WEB_RISK_ORDER, WEB_SHELL_MODES } from '../shared/web-access'
 import {
   CLI_NAME_PATTERN,
   type CoreCliCommand,
@@ -251,7 +251,7 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       { synopsis: ['web add-device'], text: ['print a one-time link, valid 10 minutes (server mode)'] },
       { synopsis: ['web password'], text: ['set the password from stdin, or a no-echo prompt on a', 'terminal; never as an argument (server mode)'] },
       {
-        synopsis: ['web mode link|password|none [--confirm none-network]'],
+        synopsis: [`web mode ${WEB_SHELL_MODES.join('|')} [--confirm none-network]`],
         text: ['switch the sign-in mode (server mode); none on a network', 'address needs its --confirm']
       },
       {
@@ -539,6 +539,9 @@ function riskOf(value: string | undefined): WebAccessRisk | undefined {
 }
 
 /** `ccc web mode <mode> [--confirm <risk>]...`: the mode is checked by main (it refuses `confirm` with the reason). */
+/** `link, password or none`, for the usage texts. */
+const WEB_MODES_TEXT = `${WEB_SHELL_MODES.slice(0, -1).join(', ')} or ${WEB_SHELL_MODES[WEB_SHELL_MODES.length - 1]}`
+
 function parseWebMode(args: readonly string[]): Command {
   let mode: string | undefined
   const confirm: WebAccessRisk[] = []
@@ -548,10 +551,11 @@ function parseWebMode(args: readonly string[]): Command {
       const risk = riskOf(args[++i])
       if (risk === undefined) return usage(`web mode: --confirm takes ${WEB_RISK_ORDER.join(' or ')}`)
       if (!confirm.includes(risk)) confirm.push(risk)
-    } else if (arg.startsWith('-') || mode !== undefined) return usage('web mode takes link, password or none, and --confirm none-network')
+    } else if (arg.startsWith('-') || mode !== undefined) return usage(`web mode takes ${WEB_MODES_TEXT}, and --confirm none-network`)
     else mode = arg
   }
-  if (mode === undefined || !['link', 'password', 'none', 'confirm'].includes(mode)) return usage('web mode takes link, password or none')
+  // `confirm` goes on to main, which refuses it with its reason (WEB_SHELL_MODES says why).
+  if (mode === undefined || (mode !== 'confirm' && !WEB_SHELL_MODES.some((m) => m === mode))) return usage(`web mode takes ${WEB_MODES_TEXT}`)
   return { kind: 'web-mode', mode, confirm }
 }
 

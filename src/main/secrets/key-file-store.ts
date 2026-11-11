@@ -32,6 +32,8 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import * as nodeFs from 'node:fs'
 import { FAKE_PREFIX, KEYFILE_PREFIX, SecretStoreError, STORED_BY_KEYCHAIN, type SecretStore } from './secret-store'
+import { ownerOnlyMode } from '../paths'
+import { warnLog } from '../warn-log'
 
 /** The key's length: AES-256. */
 export const KEY_FILE_BYTES = 32
@@ -142,7 +144,7 @@ function readKeyFile(fs: KeyFileFs, path: string, uid: number | undefined): Load
     const st = fs.fstatSync(fd)
     if (!st.isFile()) return { reason: `the key file ${path} is not a regular file` }
     if (uid !== undefined && st.uid !== uid) return { reason: `the key file ${path} is not owned by this user` }
-    if ((st.mode & 0o077) !== 0) {
+    if (!ownerOnlyMode(st.mode)) {
       const mode = (st.mode & 0o777).toString(8).padStart(3, '0')
       return {
         reason: `the key file ${path} is open to group or others (mode ${mode}); it must be 600`
@@ -259,7 +261,7 @@ export function keyFileSecretStore(options: KeyFileStoreOptions): KeyFileSecretS
   const fs: KeyFileFs = { ...(nodeFs as unknown as KeyFileFs), ...options.fs }
   const uid = options.uid ?? process.getuid?.()
   const random = options.random ?? randomBytes
-  const log = options.log ?? ((m: string) => console.warn(m))
+  const log = options.log ?? warnLog
   const path = options.path
 
   const load = (): Loaded => {

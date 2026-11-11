@@ -17,6 +17,18 @@ import { OPEN_FILE_PICK } from '../../shared/services'
 import { slotTypeOfPickKey } from '../../shared/slots'
 import type { AppSettings, ProjectRecord, ProjectView } from '../../shared/types'
 
+/**
+ * A refusal that says what is wrong with the request itself (not a directory, not a recent project,
+ * the folder is missing), so it may be shown to whoever asked, a remote device included
+ * (web/open-project.ts). Any other error may carry fs messages with data-dir paths and is not shown.
+ */
+export class ProjectRefusal extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ProjectRefusal'
+  }
+}
+
 /** How many entries `recentProjects` keeps; the picker never shows more than this. */
 export const MAX_RECENT_PROJECTS = 20
 
@@ -100,7 +112,7 @@ export class ProjectRegistry {
       this.touchRecent(existing.data.id)
       return this.view(existing.data)
     }
-    if (!isDirectory(real)) throw new Error(`not a directory: ${path}`)
+    if (!isDirectory(real)) throw new ProjectRefusal(`not a directory: ${path}`)
     const record = this.createRecord(this.freeId(real), real)
     this.touchRecent(record.data.id)
     return this.view(record.data)
@@ -140,7 +152,7 @@ export class ProjectRegistry {
     const file = this.load(id)
     if (!file) throw new Error(`unknown project: ${id}`)
     const real = realPathOf(newPath)
-    if (!isDirectory(real)) throw new Error(`not a directory: ${newPath}`)
+    if (!isDirectory(real)) throw new ProjectRefusal(`not a directory: ${newPath}`)
     const other = this.findByRealPath(real)
     if (other && other.data.id !== id) {
       throw new Error(`that folder is already a project (${other.data.id})`)

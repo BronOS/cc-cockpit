@@ -9,12 +9,11 @@
 // The password is only ever returned to the caller: never written to stdout or stderr, never in an
 // error text (each names the rule, not the value).
 import type { Readable } from 'node:stream'
+import { MAX_PASSWORD_BYTES } from '../main/web/password'
+import { readStdinBounded } from './stdin-read'
 
-/** client.ts's `readStdinCapped`, passed in (this file is imported by client.ts). */
-export type ReadCapped = (stream: Readable, cap: number) => Promise<{ text: string; truncated: boolean; error?: string }>
-
-/** Most bytes read from a pipe: 256 characters (main's limit) of up to four bytes, and a newline. */
-export const MAX_PASSWORD_STDIN_BYTES = 1100
+/** Most bytes read from a pipe: main's raw cap and a line end (`\r\n`). */
+export const MAX_PASSWORD_STDIN_BYTES = MAX_PASSWORD_BYTES + 2
 /** How long the no-echo prompt waits for each of its two answers. */
 export const PROMPT_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -108,7 +107,7 @@ export function readHidden(input: TtyInput, write: (text: string) => void, promp
 export async function readPassword(
   stdin: Readable,
   stderr: (text: string) => void,
-  options: { maxChars: number; stdinTimeoutMs: number; promptTimeoutMs?: number; readCapped: ReadCapped }
+  options: { maxChars: number; stdinTimeoutMs: number; promptTimeoutMs?: number }
 ): Promise<PasswordRead> {
   const input = stdin as TtyInput
   if (input.isTTY === true) {
@@ -120,14 +119,8 @@ export async function readPassword(
     if ('error' in again) return again
     return again.password === first.password ? first : { error: 'the two passwords differ; nothing changed' }
   }
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const read = await Promise.race([
-    options.readCapped(stdin, MAX_PASSWORD_STDIN_BYTES),
-    new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => resolve(undefined), options.stdinTimeoutMs)
-    })
-  ]).finally(() => clearTimeout(timer))
-  if (read === undefined) return { error: `stdin was not closed within ${Math.round(options.stdinTimeoutMs / 1000)} s` }
+  const read = await readStdinBounded(stdin, MAX_PASSWORD_STDIN_BYTES, options.stdinTimeoutMs)
+  if ('timedOut' in read) return { error: `stdin was not closed within ${Math.round(options.stdinTimeoutMs / 1000)} s` }
   if (read.error !== undefined) return { error: `reading stdin failed: ${read.error}` }
   if (read.truncated) return { error: `the password on stdin is over ${MAX_PASSWORD_STDIN_BYTES} bytes` }
   let text = read.text

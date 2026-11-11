@@ -9,7 +9,9 @@
 // does. No regexes (CLAUDE.md, the gateway's parsing). Pure Node, for unit tests.
 import { stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
+import { errorText } from '../../shared/error-text'
 import type { WebOpenProjectReply, WebOpenProjectRequest } from '../../shared/web-protocol'
+import { ProjectRefusal } from '../projects/registry'
 
 /** Longer than any path the OS takes (PATH_MAX is 4096 on Linux); the body cap bounds it anyway. */
 export const MAX_OPEN_PATH = 4096
@@ -50,14 +52,14 @@ async function isDirectoryNow(path: string): Promise<boolean> {
 }
 
 /**
- * The registry's own refusals say what is wrong with the request; any other error (a record write
- * failing, EACCES/EIO) carries fs messages with data-dir paths a device is not otherwise shown, so
- * it is logged and answered generically.
+ * The text a device is answered with for a failed open. A ProjectRefusal (the registry's and the
+ * window manager's own refusals) says what is wrong with the request; any other error (a record
+ * write failing, EACCES/EIO) carries fs messages with data-dir paths a device is not otherwise
+ * shown, so it is logged and answered generically.
  */
-function errorText(err: unknown, deps: OpenProjectDeps, what: string): string {
-  const text = err instanceof Error ? err.message : String(err)
-  if (text.startsWith('not a directory') || text.startsWith('project folder is missing') || text === 'not a recent project') return text
-  deps.log?.(`web access: ${what} failed: ${text}`)
+function deviceFacingError(err: unknown, deps: OpenProjectDeps, what: string): string {
+  if (err instanceof ProjectRefusal) return err.message
+  deps.log?.(`web access: ${what} failed: ${errorText(err)}`)
   return `${what} failed`
 }
 
@@ -68,7 +70,7 @@ export async function openProjectFromWeb(request: WebOpenProjectRequest, deps: O
       return { id: deps.openRecent(request.reopen).id }
     } catch (err) {
       // A missing folder says so (openView's text); an id not in the list says only that.
-      return { error: errorText(err, deps, 'reopening the project') }
+      return { error: deviceFacingError(err, deps, 'reopening the project') }
     }
   }
   // Relative to what? main's cwd means nothing to the browser, so only an absolute path is taken.
@@ -80,6 +82,6 @@ export async function openProjectFromWeb(request: WebOpenProjectRequest, deps: O
   try {
     return { id: deps.openPath(path).id }
   } catch (err) {
-    return { error: errorText(err, deps, 'opening the project') }
+    return { error: deviceFacingError(err, deps, 'opening the project') }
   }
 }

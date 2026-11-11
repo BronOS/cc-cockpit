@@ -52,7 +52,7 @@ import type {
   WebLinkReply,
   WebSecretsStatus
 } from '../../shared/web-access'
-import { remoteIndicator } from '../../shared/web-access'
+import { remoteIndicator, REMOTE_SECRETS_UNAVAILABLE_TEXT } from '../../shared/web-access'
 import type { AccessActor } from '../web/access-log'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
@@ -1032,7 +1032,7 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
       // absolute path): a browser gets only that a cert is set and a path-free reason, so the
       // server user's home path does not reach a lost phone. The desktop keeps the full view.
       out.form = { ...out.form, certPath: out.form.certPath === '' ? '' : 'set', keyPath: out.form.keyPath === '' ? '' : 'set' }
-      if (out.secrets && out.secrets.unavailable !== null) out.secrets = { ...out.secrets, unavailable: 'the secret store cannot be opened (see the server log)' }
+      if (out.secrets && out.secrets.unavailable !== null) out.secrets = { ...out.secrets, unavailable: REMOTE_SECRETS_UNAVAILABLE_TEXT }
     }
     return out
   })
@@ -1043,13 +1043,13 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
   router.handleProject('settings.webDeviceDisconnect', (_ctx, payload, view) => {
     gate('settings.webDeviceDisconnect', view)
     const by = actor('settings.webDeviceDisconnect', view)
-    const id = (payload as { id?: unknown } | undefined)?.id
+    const id = isPlainObject(payload) ? payload.id : undefined
     return by ? deps.disconnect(id, by) : deps.disconnect(id)
   })
   router.handleProject('settings.webDeviceRevoke', (_ctx, payload, view) => {
     gate('settings.webDeviceRevoke', view)
     const by = actor('settings.webDeviceRevoke', view)
-    const id = (payload as { id?: unknown } | undefined)?.id
+    const id = isPlainObject(payload) ? payload.id : undefined
     return by ? deps.revoke(id, { by }) : deps.revoke(id)
   })
   router.handleProject('settings.webDevicesRevokeAll', (_ctx, _payload, view) => {
@@ -1064,7 +1064,6 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
   })
   router.handleProject('webAccess.confirmAnswer', (_ctx, payload) => deps.answerConfirm(payload))
 }
-
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */
 export function summary(view: ProjectView): ProjectSummary {

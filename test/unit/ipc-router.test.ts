@@ -35,7 +35,7 @@ import { ServiceChoices } from '../../src/main/plugins/service-choices'
 import type { ServicePlugin, ServicesStatus } from '../../src/shared/services'
 import { defaultLayout } from '../../src/shared/layout'
 import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
-import type { WebAccessIndicator, WebAccessView } from '../../src/shared/web-access'
+import { REMOTE_SECRETS_UNAVAILABLE_TEXT, type WebAccessIndicator, type WebAccessView } from '../../src/shared/web-access'
 import type { ProjectView } from '../../src/shared/types'
 import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
 
@@ -1926,6 +1926,7 @@ describe('registerWebAccessHandlers', () => {
       const remote = (await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webAccess', undefined)) as WebAccessView
       expect(JSON.stringify(remote)).not.toContain('/home/x')
       expect(remote.form.certPath).not.toBe('')
+      expect(remote.secrets?.unavailable).toBe(REMOTE_SECRETS_UNAVAILABLE_TEXT)
       const local = (await ipc.invoke('settings.webAccess', 11)) as WebAccessView
       expect(local.form.certPath).toBe('/home/x/c.pem')
       expect(local.secrets?.unavailable).toBe(unavailable)

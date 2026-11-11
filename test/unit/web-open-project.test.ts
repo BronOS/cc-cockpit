@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { ProjectRefusal } from '../../src/main/projects/registry'
 import { MAX_OPEN_PATH, openProjectFromWeb, parseOpenProjectBody, type OpenProjectDeps } from '../../src/main/web/open-project'
 
 describe('parseOpenProjectBody', () => {
@@ -49,8 +50,8 @@ describe('openProjectFromWeb', () => {
       },
       openRecent: (id) => {
         calls.push(`reopen ${id}`)
-        if (id === 'gone') throw new Error('project folder is missing: /old/gone')
-        if (id !== 'r1') throw new Error('not a recent project')
+        if (id === 'gone') throw new ProjectRefusal('project folder is missing: /old/gone')
+        if (id !== 'r1') throw new ProjectRefusal('not a recent project')
         return { id: 'r1' }
       }
     }
@@ -96,10 +97,18 @@ describe('openProjectFromWeb', () => {
     const refused: OpenProjectDeps = {
       ...deps,
       openPath: () => {
-        throw new Error('not a directory: /x')
+        throw new ProjectRefusal('not a directory: /x')
       }
     }
     expect(await openProjectFromWeb({ open: join(root, 'app') }, refused)).toEqual({ error: 'not a directory: /x' })
+    // Decided by the error's class, never its wording: a plain error with the same text is generic.
+    const lookalike: OpenProjectDeps = {
+      ...deps,
+      openPath: () => {
+        throw new Error('not a directory: /data/projects/x.json')
+      }
+    }
+    expect(await openProjectFromWeb({ open: join(root, 'app') }, lookalike)).toEqual({ error: 'opening the project failed' })
   })
 
   it('reopens by id through the recent list only; an unknown id and a missing folder say so', async () => {

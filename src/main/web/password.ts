@@ -46,6 +46,12 @@ export const DEFAULT_MAX_CONCURRENT = 2
 export const MIN_PASSWORD_LENGTH = 8
 /** A cap so a sign-in body cannot make scrypt hash megabytes; far above any real password. */
 export const MAX_PASSWORD_LENGTH = 256
+/**
+ * The raw cap before anything is normalised or hashed, in UTF-16 code units (a string's `length`)
+ * or UTF-8 bytes alike: a character takes four at most in either. The sign-in route, `web.password`
+ * and the CLI's stdin read all stop there; passwordProblem then counts characters.
+ */
+export const MAX_PASSWORD_BYTES = MAX_PASSWORD_LENGTH * 4
 
 /** Node's `crypto.scrypt`, callback form: runs on the libuv thread pool, never on main's thread. */
 export const nodeScrypt: ScryptFn = (password, salt, keylen, options) =>

@@ -9,15 +9,16 @@
 // Pure Node, no Electron: this is bundled into out/cli/index.js and started by the wrapper as
 // `ELECTRON_RUN_AS_NODE=1 electron out/cli/index.js`. It imports `socketPath()` (paths.ts) so the
 // CLI and main compute the same path, and the `connect` transport.
-import { lstatSync } from 'node:fs'
 import type { Socket } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
-import { dataPaths, defaultDataDir, fallbackSocketDir, resolveDataDir, socketPath } from '../main/paths'
+import { dataPaths, defaultDataDir, fallbackSocketDir, isPrivateDir, resolveDataDir, socketPath } from '../main/paths'
 import { connect } from '../main/socket/transport'
 import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
+import { isPlainObject } from '../shared/guards'
+import { ADD_DEVICE_EXPIRES_TEXT } from '../shared/web-access'
 import {
   encodeRequest,
   LineFramer,
@@ -44,6 +45,7 @@ import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
 import { runStatusLine } from './statusline'
 import { formatWebSaved, formatWebStatus } from './web-format'
+import { readStdinBounded, readStdinCapped } from './stdin-read'
 import { readPassword } from './web-password'
 import { MAX_PASSWORD_LENGTH } from '../main/web/password'
 
@@ -84,56 +86,6 @@ export function resolveSocketPath(env: Env, system: SystemInputs = systemInputs(
   const fallbackDir = fallbackSocketDir(system.tmpdir, uid)
   if (dirname(path) === fallbackDir && !isPrivateDir(fallbackDir, system.uid)) return undefined
   return path
-}
-
-/** lstat (a symlink planted in a shared tmpdir does not count): a directory, ours, mode 0700-ish. */
-function isPrivateDir(dir: string, uid: number | undefined): boolean {
-  try {
-    const st = lstatSync(dir)
-    if (!st.isDirectory()) return false
-    if (uid !== undefined && st.uid !== uid) return false
-    return (st.mode & 0o077) === 0
-  } catch {
-    return false
-  }
-}
-
-/**
- * Read at most `cap` bytes of `stream`. `truncated` is true when more was available: the text is
- * then cut off (possibly mid-character) and is not worth parsing. Resolves on end, close or error;
- * the caller's own deadline covers a stream that never ends. On an error `error` holds its
- * message and `text` is only what arrived before it: a hook still goes out with that (it must
- * never fail), but a plugin command refuses to run on a partial payload (runPlugin).
- */
-export function readStdinCapped(
-  stream: Readable,
-  cap: number = STDIN_CAP_BYTES
-): Promise<{ text: string; truncated: boolean; error?: string }> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = []
-    let size = 0
-    let done = false
-    const finish = (truncated: boolean, error?: unknown): void => {
-      if (done) return
-      done = true
-      stream.off('data', onData)
-      stream.pause()
-      const text = Buffer.concat(chunks).subarray(0, cap).toString('utf8')
-      resolve(error === undefined ? { text, truncated } : { text, truncated, error: errorText(error) })
-    }
-    const onData = (chunk: Buffer | string): void => {
-      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
-      chunks.push(buf)
-      size += buf.length
-      if (size > cap) finish(true)
-    }
-    stream.on('data', onData)
-    stream.once('end', () => finish(false))
-    stream.once('close', () => finish(false))
-    // An error is followed by `close`, never preceded by it (stream.destroy(err) emits both in
-    // that order), so a failed read is never taken for a clean end.
-    stream.once('error', (err: unknown) => finish(false, err ?? new Error('read failed')))
-  })
 }
 
 /**
@@ -215,7 +167,7 @@ export async function runHook(
       else socket = s
       return s
     })
-    const [input, connected] = await Promise.all([readStdinCapped(stdin), connecting])
+    const [input, connected] = await Promise.all([readStdinCapped(stdin, STDIN_CAP_BYTES), connecting])
     if (over) return
     await sendAndForget(connected, buildHookRequestLine(event, token, input))
   })().catch(() => {
@@ -684,16 +636,10 @@ export async function runPlugin(
     // One byte over the cap is enough to know: the encoded size is never below the raw one.
     // Bounded like the call itself: an open pipe nobody closes (a tool runner that leaves stdin
     // attached, `sleep 999 | ccc …`) would otherwise keep `ccc` waiting forever with no output,
-    // the one unbounded wait left after friction round 1, Task 2. The timer goes once the read is
-    // over; on a timeout the process exits right after, so the abandoned read does not matter.
-    let stdinTimer: ReturnType<typeof setTimeout> | undefined
-    const read = await Promise.race([
-      readStdinCapped(stdin, MAX_CLI_IO_BYTES),
-      new Promise<undefined>((resolve) => {
-        stdinTimer = setTimeout(() => resolve(undefined), STDIN_READ_TIMEOUT_MS)
-      })
-    ]).finally(() => clearTimeout(stdinTimer))
-    if (read === undefined) {
+    // the one unbounded wait left after friction round 1, Task 2. On a timeout the process exits
+    // right after, so the abandoned read does not matter.
+    const read = await readStdinBounded(stdin, MAX_CLI_IO_BYTES, STDIN_READ_TIMEOUT_MS)
+    if ('timedOut' in read) {
       out.stderr(
         `ccc: ${command.name}: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`
       )
@@ -765,15 +711,20 @@ export async function pluginHelp(env: Env): Promise<string> {
 function resultWarnings(command: UserCommand, result: unknown): string {
   // `ccc web mode none`: §9.12's shared-server warning, as main words it.
   if (command.kind === 'web-mode') {
-    const warning = ((result ?? {}) as { warning?: unknown }).warning
+    const warning = field(result, 'warning')
     return typeof warning === 'string' ? `ccc: warning: ${plainLine(warning)}\n` : ''
   }
   // A link on stdout alone (a script reads it); what it is goes to stderr.
-  if (command.kind === 'web-add-device') return 'ccc: works once, expires in 10 minutes\n'
+  if (command.kind === 'web-add-device') return `ccc: ${ADD_DEVICE_EXPIRES_TEXT}\n`
   if (command.kind === 'web-link' && command.regenerate) return 'ccc: the old link no longer works; the devices that signed in with it are signed out\n'
   if (command.kind !== 'plugin-link') return ''
   const warnings = ((result ?? {}) as { warnings?: unknown }).warnings
   return Array.isArray(warnings) ? warnings.map((w) => `ccc: warning: ${plainLine(w)}\n`).join('') : ''
+}
+
+/** One field of a reply's result; undefined when the result is no object (an older or broken app). */
+function field(result: unknown, key: string): unknown {
+  return isPlainObject(result) ? result[key] : undefined
 }
 
 /** What a command prints on success. Only `overlay` and `sessions` have a result worth showing. */
@@ -801,19 +752,17 @@ function formatResult(command: UserCommand, result: unknown): string {
   }
   if (command.kind === 'web-status') return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
   if (command.kind === 'web-revoke') {
-    const revoked = ((result ?? {}) as { revoked?: unknown }).revoked
+    const revoked = field(result, 'revoked')
     return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
   }
   if (command.kind === 'web-stop') return 'cc-cockpit is stopping\n'
   if (command.kind === 'web-link' || command.kind === 'web-add-device') {
-    const link = ((result ?? {}) as { link?: unknown }).link
-    return `${plainLine(link)}\n`
+    return `${plainLine(field(result, 'link'))}\n`
   }
   if (command.kind === 'web-password') {
-    const mode = ((result ?? {}) as { mode?: unknown }).mode
-    return mode === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
+    return field(result, 'mode') === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
   }
-  if (command.kind === 'web-mode') return `sign-in mode: ${plainLine(((result ?? {}) as { mode?: unknown }).mode)}\n`
+  if (command.kind === 'web-mode') return `sign-in mode: ${plainLine(field(result, 'mode'))}\n`
   if (command.kind === 'web-set') return formatWebSaved(result, plainLine)
   if (command.kind === 'sessions') {
     const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
@@ -911,7 +860,7 @@ export async function run(
         // read there, and the refusal comes back for a request with no password in it.
         if (env.APP_TAB_TOKEN) return await runCommand(command, env, cwd, out)
         // Read before the request (and its deadline) starts: a person types at their own pace.
-        const read = await readPassword(stdin, out.stderr, { maxChars: MAX_PASSWORD_LENGTH, stdinTimeoutMs: STDIN_READ_TIMEOUT_MS, readCapped: readStdinCapped })
+        const read = await readPassword(stdin, out.stderr, { maxChars: MAX_PASSWORD_LENGTH, stdinTimeoutMs: STDIN_READ_TIMEOUT_MS })
         if ('error' in read) {
           out.stderr(`ccc: web password: ${read.error}\n`)
           return 1

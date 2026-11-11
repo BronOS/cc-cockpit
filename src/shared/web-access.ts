@@ -93,6 +93,22 @@ export const WEB_RISK_TEXT: Record<WebAccessRisk, WebRiskText> = {
 export const SERVER_NONE_WARNING =
   'no sign-in: anyone who can reach this address, every user of this machine included, controls cc-cockpit as you'
 
+/**
+ * The sign-in modes `ccc web mode` switches to (server mode only): every mode but desktop confirm,
+ * which nobody could answer there. The CLI passes `confirm` on all the same, so main refuses it
+ * with its reason (web-handlers.ts `webModeHandler`, SERVER_NO_CONFIRM_MODE).
+ */
+export const WEB_SHELL_MODES = ['link', 'password', 'none'] as const satisfies readonly WebAccessMode[]
+
+/** What a one-time add-device link is good for (auth.ts ADD_DEVICE_TTL_MS), as the start line and `ccc web add-device` say it. */
+export const ADD_DEVICE_EXPIRES_TEXT = 'works once, expires in 10 minutes'
+
+/**
+ * The secret store's failure as a server's browser card shows it: the real reason names the key
+ * file's absolute path (the server user's home), which a lost phone must not get.
+ */
+export const REMOTE_SECRETS_UNAVAILABLE_TEXT = 'the secret store cannot be opened (see the server log)'
+
 /** The order confirms are asked in when one change brings both: the worse one first. */
 export const WEB_RISK_ORDER: readonly WebAccessRisk[] = ['none-network', 'plain-http']
 

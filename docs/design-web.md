@@ -709,14 +709,14 @@ settings fields, OAuth tokens) are off (spike).
 
 In server mode every signed-in browser view may give the answers v1 keeps on the desktop. On the desktop v1's rule
 stays: a remote view may only Deny.
-- **`ccc plugin link`.** `chooseLinkConfirm` (`plugins/link-asks.ts`) always takes the shared ask, and `LinkAsks.answer`
+- **`ccc plugin link`.** `chooseAsk` (`asks/shared-asks.ts`) always takes the shared ask, and `LinkAsks.answer`
   accepts an Allow from a view main counts as owner (`!view.remote || server`, never from the payload). With no browser
   attached the ask waits (the hidden page takes it, so it is not "no view"); a browser that joins finds it in
   `ready.linkAsks`; 5 min, then Deny, as now. The dialog drops "Approve on the desktop".
 - **Trash confirm** (`ctx.files.trash`). A shared ask like the link's: `TrashAsks` (`main/files/trash-asks.ts`,
   `trash.ask` / `trash.answer` / `trash.settled`, class `yes`, pending ones in `ready`), first answer wins, 5 min then
   "not moved". The shared-ask core moves out of `LinkAsks` into one class both use. The desktop takes it too while a
-  browser is attached, as `chooseLinkConfirm` does, so a trash started from a browser no longer waits on a native box
+  browser is attached, by the same `chooseAsk`, so a trash started from a browser no longer waits on a native box
   nobody there can see; with no browser, its native confirm.
 - **Devices.** A browser may Revoke and Disconnect devices: a signed-in device already has a shell, so neither adds
   power, and a lost phone is the case where no SSH is at hand. `settings.webDeviceRevoke`, `webDevicesRevokeAll` and

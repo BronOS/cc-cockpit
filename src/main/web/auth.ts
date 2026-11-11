@@ -57,7 +57,7 @@ import type { WebConfirmPoll } from '../../shared/web-protocol'
 import { storedValueState, type SecretStore } from '../secrets/secret-store'
 import type { AccessLog } from './access-log'
 import { DeviceStore, deviceName as deviceNameOf, hashSecret, matchesHash, randomSecret, type DeviceSignIn, type WebDevice } from './devices'
-import { MAX_PASSWORD_LENGTH, PasswordHasher, passwordProblem } from './password'
+import { MAX_PASSWORD_BYTES, PasswordHasher, passwordProblem } from './password'
 import { isWildcardBind } from './settings'
 import { warnLog } from '../warn-log'
 
@@ -511,7 +511,7 @@ export class WebAuth {
     const fields = fieldsOf(body)
     const password = fields?.['password']
     // Raw length, before normalising: a cap on what reaches scrypt (NFC can only grow it a little).
-    if (typeof password !== 'string' || password.length === 0 || password.length > MAX_PASSWORD_LENGTH * 4) {
+    if (typeof password !== 'string' || password.length === 0 || password.length > MAX_PASSWORD_BYTES) {
       return { ok: false, status: 400, error: 'no password' }
     }
     const result = await this.limiter.run(() => this.checkPassword(password, fields?.['name'], cancelled), cancelled)

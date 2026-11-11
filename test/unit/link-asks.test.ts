@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { chooseLinkConfirm, LINK_ASK_MS, LinkAsks, type LinkAskInfo } from '../../src/main/plugins/link-asks'
+import { chooseAsk } from '../../src/main/asks/shared-asks'
+import { LINK_ASK_MS, LinkAsks, type LinkAskInfo } from '../../src/main/plugins/link-asks'
 import type { LinkDialogInfo } from '../../src/main/plugins/link-request'
 
 const INFO: LinkDialogInfo = { id: 'x.p', name: 'P', path: '/home/me/p', caller: 'tab' }
@@ -108,11 +109,12 @@ describe('LinkAsks (the shared in-page link confirm)', () => {
   })
 })
 
-describe('chooseLinkConfirm', () => {
+describe('chooseAsk (link)', () => {
   it('uses the shared ask while a browser view is attached and the native dialog otherwise', async () => {
     let remote = false
     const calls: string[] = []
-    const confirm = chooseLinkConfirm({
+    const confirm = chooseAsk({
+      server: false,
       hasRemoteView: () => remote,
       shared: async () => (calls.push('shared'), true),
       native: async () => (calls.push('native'), false)
@@ -186,10 +188,10 @@ describe('LinkAsks in server mode', () => {
   })
 })
 
-describe('chooseLinkConfirm in server mode', () => {
+describe('chooseAsk (link) in server mode', () => {
   it('always takes the shared ask, never the native dialog (nor a test run’s queued fake)', async () => {
     const calls: string[] = []
-    const confirm = chooseLinkConfirm({
+    const confirm = chooseAsk({
       server: true,
       hasRemoteView: () => false,
       shared: async () => (calls.push('shared'), false),

@@ -12,7 +12,7 @@ import {
   launchSocketPath,
   losingLaunchAsks,
   storedWebAccessOn,
-  pidAlive,
+  loseLaunch,
   privateLaunchProfile,
   runSecondLaunch,
   SECOND_LAUNCH_ANSWER_ENV,
@@ -24,7 +24,8 @@ import {
   socketAsk,
   sweepLaunchProfiles,
   testBoxAnswer,
-  type BoxAnswer
+  type BoxAnswer,
+  type LoseLaunchDeps
 } from '../../src/main/second-launch'
 import { decideServerMode } from '../../src/main/server-mode'
 import { fallbackSocketDir } from '../../src/main/paths'
@@ -407,9 +408,107 @@ describe('sweepLaunchProfiles', () => {
     expect(readdirSync(dir)).toEqual([`${LAUNCH_PROFILE_PREFIX}100-aaa`])
     expect(() => sweepLaunchProfiles({ dir: join(dir, 'missing'), uid, alive: () => false })).not.toThrow()
   })
+})
 
-  it('pidAlive: this process lives, a pid past the max does not', () => {
-    expect(pidAlive(process.pid)).toBe(true)
-    expect(pidAlive(2 ** 30)).toBe(false)
+describe('loseLaunch (the losing launch, as index.ts wires it)', () => {
+  let root: string
+  let dataDir: string
+  let tmp: string
+  let server: Server | undefined
+  let peers: Socket[] = []
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'ccc-lose-'))
+    dataDir = join(root, 'data')
+    tmp = join(root, 'tmp')
+    mkdirSync(dataDir)
+    mkdirSync(tmp)
+  })
+  afterEach(async () => {
+    for (const sock of peers) sock.destroy()
+    peers = []
+    await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
+    server = undefined
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function run(overrides: Partial<LoseLaunchDeps> = {}) {
+    const calls: string[] = []
+    const exits: Array<() => void> = []
+    let quit!: () => void
+    const quitted = new Promise<void>((r) => (quit = r))
+    loseLaunch({
+      platform: 'linux',
+      display: true,
+      dataDir,
+      env: {},
+      uid: process.getuid?.(),
+      pid: 4242,
+      tmpdir: tmp,
+      testRun: true,
+      setPath: (name, path) => calls.push(`${name}=${path}`),
+      onExit: (fn) => exits.push(fn),
+      showBox: async () => {
+        calls.push('box')
+        return 1
+      },
+      quit: () => {
+        calls.push('quit')
+        quit()
+      },
+      log: (line) => calls.push(`log ${line}`),
+      ...overrides
+    })
+    return { calls, exits, quitted }
+  }
+
+  const webAccessOn = (): void => writeFileSync(join(dataDir, 'app.json'), JSON.stringify({ webAccess: { enabled: true } }))
+
+  it('web access off (or no app.json): quits at once, with no private profile', () => {
+    const { calls } = run()
+    expect(calls).toEqual(['quit'])
+    expect(readdirSync(tmp)).toEqual([])
+  })
+
+  it('no display, or not Linux: quits at once even with web access on', () => {
+    webAccessOn()
+    expect(run({ display: false }).calls).toEqual(['quit'])
+    expect(run({ platform: 'darwin' }).calls).toEqual(['quit'])
+  })
+
+  it('sweeps gone launches, moves to a private profile, asks the socket, quits; the profile goes at exit', async () => {
+    webAccessOn()
+    // A gone launch's leftover (a pid past the max: no such process).
+    mkdirSync(join(tmp, `${LAUNCH_PROFILE_PREFIX}${String(2 ** 30)}-old`))
+    const { calls, exits, quitted } = run()
+    await quitted
+    const profile = readdirSync(tmp)
+    expect(profile).toHaveLength(1)
+    expect(profile[0]?.startsWith(`${LAUNCH_PROFILE_PREFIX}4242-`)).toBe(true)
+    const dir = join(tmp, profile[0]!)
+    // Nothing listens on <data>/app.sock: no box, a plain quit.
+    expect(calls).toEqual([`userData=${dir}`, `sessionData=${dir}`, 'quit'])
+    for (const fn of exits) fn()
+    expect(readdirSync(tmp)).toEqual([])
+  })
+
+  it('a server holder: the env answers the box in a test run, and Stop is sent', async () => {
+    webAccessOn()
+    const seen: string[] = []
+    server = createServer({ allowHalfOpen: true }, (sock) => {
+      peers.push(sock)
+      sock.on('data', (d) => {
+        const cmd = parseRequest(d.toString().trim()).cmd
+        seen.push(cmd)
+        const result = cmd === 'web.status' ? status(true) : { stopping: true }
+        sock.write(`${JSON.stringify({ id: 1, ok: true, result })}\n`)
+      })
+      sock.on('error', () => {})
+    })
+    await new Promise<void>((r) => server!.listen(join(dataDir, 'app.sock'), () => r()))
+    const { calls, quitted } = run({ env: { [SECOND_LAUNCH_ANSWER_ENV]: 'stop' } })
+    await quitted
+    expect(seen).toEqual(['web.status', 'web.stop'])
+    expect(calls).not.toContain('box')
+    expect(calls.at(-1)).toBe('quit')
   })
 })

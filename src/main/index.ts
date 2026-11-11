@@ -23,7 +23,7 @@ import {
   session,
   type OpenDialogOptions
 } from 'electron'
-import { accessSync, constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -90,11 +90,12 @@ import { HostManager, hostPluginSource, type HostPlugin, type HostPluginSource, 
 import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
-import { chooseLinkConfirm, LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
+import { LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
-import { chooseTrashConfirm, TrashAsks } from './files/trash-asks'
+import { TrashAsks } from './files/trash-asks'
+import { chooseAsk } from './asks/shared-asks'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
@@ -139,7 +140,7 @@ import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
 import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
-import { registerWebHandlers, SHELL_REVOKE_REASON } from './socket/web-handlers'
+import { registerWebHandlers, webHandlerDeps } from './socket/web-handlers'
 import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
 import { createReleaseFetcher, UpdateChecker } from './updates/update-check'
@@ -156,23 +157,7 @@ import { serverDialogs, type Dialogs } from './dialogs/dialogs'
 import { systemOpenExternal } from './external/electron-open-external'
 import { createOpenExternal, type OpenExternal, type OpenTarget } from './external/open-external'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
-import {
-  boxAnswerOf,
-  handleSecondInstance,
-  LAUNCH_PROFILE_PREFIX,
-  launchHasDisplay,
-  launchSocketPath,
-  losingLaunchAsks,
-  pidAlive,
-  privateLaunchProfile,
-  runSecondLaunch,
-  SECOND_LAUNCH_ASK_MS,
-  serverBoxOptions,
-  socketAsk,
-  storedWebAccessOn,
-  sweepLaunchProfiles,
-  testBoxAnswer
-} from './second-launch'
+import { handleSecondInstance, launchHasDisplay, loseLaunch } from './second-launch'
 import { runStartOrder } from './server-start'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -251,29 +236,25 @@ const serverRun = serverStart({
   decision,
   lock: () => app.requestSingleInstanceLock(launch),
   release: () => app.releaseSingleInstanceLock(),
-  quit: () => {
-    const webAccessOn = storedWebAccessOn(() => readFileSync(dataPaths(dataDir).appJson, 'utf8'))
-    if (!losingLaunchAsks({ platform: process.platform, display: launchDisplay, webAccessOn })) {
-      app.quit()
-      return
-    }
-    // Off the holder's profile before anything is awaited (second-launch.ts privateLaunchProfile);
-    // with no private dir the launch quits at once, as before server mode.
-    sweepLaunchProfiles({ dir: tmpdir(), uid: process.getuid?.(), alive: pidAlive })
-    const profile = privateLaunchProfile({
-      makeDir: () => mkdtempSync(join(tmpdir(), `${LAUNCH_PROFILE_PREFIX}${String(process.pid)}-`)),
+  quit: () =>
+    loseLaunch({
+      platform: process.platform,
+      display: launchDisplay,
+      dataDir,
+      env: process.env,
+      uid: process.getuid?.(),
+      pid: process.pid,
+      tmpdir: tmpdir(),
+      testRun: isTestRun(process.env, app.isPackaged),
       setPath: (name, path) => app.setPath(name, path),
       onExit: (fn) => process.once('exit', fn),
-      remove: (dir) => rmSync(dir, { recursive: true, force: true })
-    })
-    if (profile === undefined) {
-      app.quit()
-      return
-    }
-    loseToHolder()
-      .catch((err: unknown) => console.error('second launch failed', err))
-      .finally(() => app.quit())
-  },
+      showBox: async (options) => {
+        await app.whenReady()
+        return (await electronDialogs().showMessageBox(undefined, options)).response
+      },
+      quit: () => app.quit(),
+      log: warnLog
+    }),
   print: (line) => console.log(line),
   exit: (code) => process.exit(code),
   executable: (exe) => {
@@ -305,30 +286,15 @@ if (serverRun.run) {
         timer.unref()
         return { stop: () => clearInterval(timer) }
       },
-      quit: () => process.kill(process.pid, 'SIGTERM')
+      quit: quitLikeSigterm
     })
   }
   start(serverRun.server)
 }
 
-/**
- * The losing launch with a display (design-web.md §9.1, second-launch.ts): ask the holder's socket
- * for `web.status` (2 s, no token); a server's answer gets a native box with Stop or Cancel, through
- * the dialog adapter (a desktop process: it has a screen). In a test run the env answers the box.
- */
-async function loseToHolder(): Promise<void> {
-  const path = launchSocketPath({ dataDir, env: process.env, uid: process.getuid?.(), tmpdir: tmpdir() })
-  if (path === undefined) return
-  await runSecondLaunch({
-    ask: (cmd) => socketAsk(path, cmd, SECOND_LAUNCH_ASK_MS),
-    testAnswer: testBoxAnswer(process.env, isTestRun(process.env, app.isPackaged)),
-    box: async (message) => {
-      await app.whenReady()
-      const { response } = await electronDialogs().showMessageBox(undefined, serverBoxOptions(message))
-      return boxAnswerOf(response)
-    },
-    log: (line) => console.error(line)
-  })
+/** Quits as systemd's stop does: main sends itself SIGTERM, so it takes the one shutdown path. */
+function quitLikeSigterm(): void {
+  process.kill(process.pid, 'SIGTERM')
 }
 
 /**
@@ -616,7 +582,7 @@ function start(server: boolean): void {
   // Set when server mode's start order failed (server-start.ts): will-quit ends the run with status 1.
   let startFailed = false
   // ctx.files.reveal / openWithSystem / trash (files/system-files.ts): `shell` through its adapter.
-  // The Move to Trash confirm (files/trash-asks.ts chooseTrashConfirm): in server mode, or on the
+  // The Move to Trash confirm (asks/shared-asks.ts chooseAsk): in server mode, or on the
   // desktop while a browser view is attached, an in-page shared ask on every view of the window
   // (first answer wins, `trash.settled` to the others, 5 min then not moved); otherwise the native
   // box as a sheet on the project's window, which in a test run is QueuedTrashConfirm, driven by the
@@ -632,7 +598,7 @@ function start(server: boolean): void {
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     shell: electronSystemShell,
-    confirmTrash: chooseTrashConfirm({
+    confirmTrash: chooseAsk({
       server,
       hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
       shared: trashAsks.ask,
@@ -1683,7 +1649,7 @@ function start(server: boolean): void {
               openProjectFromWeb(request, {
                 openPath: (path) => windows.openPath(path),
                 openRecent: (id) => windows.openRecent(id),
-                log: (line) => console.error(line)
+                log: warnLog
               })
           }
         }
@@ -1802,23 +1768,19 @@ function start(server: boolean): void {
   // `ccc web` (socket/web-handlers.ts, design-web.md §9.4): a shell on the server only (any token
   // is refused, protocol.ts HOST_ONLY_COMMANDS); on the desktop only status and revoke. The writes
   // (link, add-device, password, mode, set) go through the same WebAccessService calls as the
-  // Settings page, with its `server` rules (no off, no desktop confirm). The stop
-  // signals main itself as systemd does, a moment after the reply is written: the quit ends the
-  // socket's connections, and the shell would otherwise see a dropped one instead of the answer.
-  registerWebHandlers(socket, {
-    server,
-    status: async () => webAccess.cliStatus(await webSecretsStatus(), coreNotices.list()),
-    revoke: (id) => webAccess.revoke(id, { reason: SHELL_REVOKE_REASON }),
-    revokeAll: () => webAccess.revokeAll({ reason: SHELL_REVOKE_REASON }),
-    stop: () => {
-      setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100)
-    },
-    link: (regenerate) => (regenerate ? webAccess.regenerate() : webAccess.link()),
-    addDevice: () => webAccess.addDevice(),
-    setPassword: (password) => webAccess.setPassword(password),
-    set: (patch) => webAccess.set(patch),
-    logShell: (detail) => webAccessLog.write({ event: 'shell', detail })
-  })
+  // Settings page, with its `server` rules (no off, no desktop confirm). The stop signals main
+  // itself as systemd does, a moment after the reply is written (webHandlerDeps).
+  registerWebHandlers(
+    socket,
+    webHandlerDeps({
+      server,
+      access: webAccess,
+      secrets: webSecretsStatus,
+      notices: () => coreNotices.list(),
+      accessLog: webAccessLog,
+      quit: quitLikeSigterm
+    })
+  )
 
   // `ccc <plugin command> …` (plan B Task 5). The owner comes from the installer's index: only a
   // valid plugin counts, and the clash rules (installer.ts) leave at most one valid owner per name.
@@ -1839,7 +1801,7 @@ function start(server: boolean): void {
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     inspectLink: (path) => plugins.inspectLink(path),
     // Server mode: never the native dialog (it aborts main under Ozone headless) nor the queued fake.
-    confirmLink: chooseLinkConfirm({
+    confirmLink: chooseAsk({
       server,
       hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
       shared: (windowId, info, signal) => linkAsks.ask(windowId, info, signal),
@@ -2682,7 +2644,7 @@ function start(server: boolean): void {
           },
           // The three calls of the Dialogs main wired, with no queued fake in the way (the server-mode
           // e2e: the same calls on Electron's `dialog` abort main under Ozone headless). The error box's
-          // log line is caught by wrapping console.error for the call.
+          // log line (warnLog, the default log of serverDialogs) is caught by wrapping console.warn for the call.
           dialogProbe: async () => {
             const box = await dialogs.showMessageBox(undefined, { message: 'probe' }).then(
               () => 'resolved',
@@ -2690,12 +2652,12 @@ function start(server: boolean): void {
             )
             const open = await dialogs.showOpenDialog(undefined, { properties: ['openDirectory'] })
             const logged: string[] = []
-            const original = console.error
-            console.error = (...args: unknown[]) => logged.push(args.map(String).join(' '))
+            const original = console.warn
+            console.warn = (...args: unknown[]) => logged.push(args.map(String).join(' '))
             try {
               dialogs.showErrorBox('probe title', 'probe content')
             } finally {
-              console.error = original
+              console.warn = original
             }
             return { box, open, logged }
           },

@@ -10,9 +10,9 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseArgs } from '../../src/cli/args'
-import { buildRequest, NOT_RUNNING, readStdinCapped, run, runCommand, type Output } from '../../src/cli/client'
+import { buildRequest, NOT_RUNNING, run, runCommand, type Output } from '../../src/cli/client'
 import { formatWebStatus } from '../../src/cli/web-format'
-import { PROMPT_TIMEOUT_MS, readHidden, readPassword } from '../../src/cli/web-password'
+import { MAX_PASSWORD_STDIN_BYTES, PROMPT_TIMEOUT_MS, readHidden, readPassword } from '../../src/cli/web-password'
 import { fakeSecretStore, KEYFILE_PREFIX, unreadableCounts, type SecretStore } from '../../src/main/secrets/secret-store'
 import { SocketServer, type Caller, type Handler } from '../../src/main/socket/socket-server'
 import {
@@ -20,6 +20,8 @@ import {
   DESKTOP_REFUSAL,
   registerWebHandlers,
   SHELL_REVOKE_REASON,
+  STOP_AFTER_REPLY_MS,
+  webHandlerDeps,
   webHandlers,
   type WebHandlerDeps
 } from '../../src/main/socket/web-handlers'
@@ -194,6 +196,55 @@ describe('the drift between the web handlers and HOST_ONLY_COMMANDS', () => {
   })
 })
 
+describe("webHandlerDeps (main's wiring)", () => {
+  it('revokes with the shell reason, passes the secrets and notices to status, and quits a moment after stop', async () => {
+    const calls: unknown[] = []
+    const timers: Array<{ fn: () => void; ms: number }> = []
+    let quits = 0
+    const access = {
+      cliStatus: (secrets: unknown, notices: unknown) => (calls.push(['status', secrets, notices]), { mode: 'link' }),
+      revoke: (id: unknown, how: unknown) => (calls.push(['revoke', id, how]), true),
+      revokeAll: (how: unknown) => (calls.push(['revokeAll', how]), 2),
+      link: async () => (calls.push(['link']), { ok: true, link: 'l' }),
+      regenerate: async () => (calls.push(['regenerate']), { ok: true, link: 'r' }),
+      addDevice: () => ({ ok: true, link: 'a' }),
+      setPassword: async () => ({ ok: true }),
+      set: async () => ({})
+    } as unknown as Parameters<typeof webHandlerDeps>[0]['access']
+    const secrets = { store: 'fake', unavailable: null, otherMode: 0, replaced: 0 } as const
+    const notice = { at: 1, kind: 'update', text: 'x' } as const
+    const lines: unknown[] = []
+    const deps = webHandlerDeps({
+      server: true,
+      access,
+      secrets: async () => secrets,
+      notices: () => [notice],
+      accessLog: { write: (entry) => void lines.push(entry) },
+      quit: () => void quits++,
+      setTimer: (fn, ms) => void timers.push({ fn, ms })
+    })
+    await deps.status()
+    deps.revoke('dev1')
+    deps.revokeAll()
+    await deps.link(false)
+    await deps.link(true)
+    deps.logShell('ccc web mode link')
+    expect(calls).toEqual([
+      ['status', secrets, [notice]],
+      ['revoke', 'dev1', { reason: SHELL_REVOKE_REASON }],
+      ['revokeAll', { reason: SHELL_REVOKE_REASON }],
+      ['link'],
+      ['regenerate']
+    ])
+    expect(lines).toEqual([{ event: 'shell', detail: 'ccc web mode link' }])
+    deps.stop()
+    expect(quits).toBe(0)
+    expect(timers.map((t) => t.ms)).toEqual([STOP_AFTER_REPLY_MS])
+    timers[0]?.fn()
+    expect(quits).toBe(1)
+  })
+})
+
 describe('web handlers over the real socket', () => {
   let root: string
   let sock: string
@@ -341,7 +392,7 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
     const once = auth.addDeviceLink('https://box.example').link
 
     const secrets = { store: 'keyfile' as const, unavailable: null, otherMode: 2, replaced: 1 }
-    const view = service.cliStatus(secrets)
+    const view = service.cliStatus(secrets, [])
     expect(view).toEqual({
       server: true,
       enabled: true,
@@ -379,11 +430,11 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
 
     // Refused and failed: the reason, and the stored desktop off.
     status = { state: 'failed', reason: 'port 7330 is in use' }
-    expect(service.cliStatus(secrets).gateway).toEqual({ state: 'failed', reason: 'port 7330 is in use' })
+    expect(service.cliStatus(secrets, []).gateway).toEqual({ state: 'failed', reason: 'port 7330 is in use' })
     // The core notices main kept ride along as given (none by default).
     const notice = { kind: 'update' as const, text: 'A new cc-cockpit version is available: 1.2.3 (running 1.0.0)', at: 5 }
     expect(service.cliStatus(secrets, [notice]).notices).toEqual([notice])
-    expect(service.cliStatus(secrets).notices).toEqual([])
+    expect(service.cliStatus(secrets, []).notices).toEqual([])
     service.dispose()
   })
 
@@ -683,19 +734,17 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
       terminals: { start: () => undefined, drain: async () => undefined },
       server: true
     })
-    // Wired as main/index.ts does.
-    h = webHandlers({
-      server: true,
-      status: () => service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }),
-      revoke: (id) => service.revoke(id, { reason: SHELL_REVOKE_REASON }),
-      revokeAll: () => service.revokeAll({ reason: SHELL_REVOKE_REASON }),
-      stop: () => undefined,
-      link: (regenerate) => (regenerate ? service.regenerate() : service.link()),
-      addDevice: () => service.addDevice(),
-      setPassword: (password) => service.setPassword(password),
-      set: (patch) => service.set(patch),
-      logShell: (detail) => accessLog.write({ event: 'shell', detail })
-    })
+    // Wired as main/index.ts does (webHandlerDeps).
+    h = webHandlers(
+      webHandlerDeps({
+        server: true,
+        access: service,
+        secrets: () => Promise.resolve({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }),
+        notices: () => [],
+        accessLog,
+        quit: () => undefined
+      })
+    )
   })
   afterEach(() => {
     service.dispose()
@@ -720,7 +769,7 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
     expect(await auth.signInWithToken({ token: tokenOf(once.link), name: 'Phone' })).toMatchObject({ ok: true })
     expect(await auth.signInWithToken({ token: tokenOf(once.link), name: 'Thief' })).toMatchObject({ ok: false, status: 401 })
 
-    expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }).accessLink).toBe('unset')
+    expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }, []).accessLink).toBe('unset')
     const first = (await call('web.link')) as { link: string }
     expect(((await call('web.link')) as { link: string }).link).toBe(first.link)
     expect(await auth.signInWithToken({ token: tokenOf(first.link), name: 'Laptop' })).toMatchObject({ ok: true })
@@ -794,7 +843,7 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
   it('serverConfirmCommand applies a stored unconfirmed bind with both risks, as start prints it', async () => {
     stored = { ...stored, bind: '0.0.0.0', mode: 'none' }
     await service.apply()
-    expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }).gateway.state).toBe('refused')
+    expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }, []).gateway.state).toBe('refused')
     const line = serverConfirmCommand(stored as unknown as WebAccessSettings) as string
     expect(line).toBe('ccc web set --bind 0.0.0.0 --confirm none-network --confirm plain-http')
     const parsed = parseArgs(line.split(' ').slice(1))
@@ -911,7 +960,7 @@ describe('ccc web part 2: the CLI', () => {
       ['', 'no password on stdin'],
       ['\n', 'no password on stdin'],
       ['two\nlines\n', 'the password on stdin must be one line'],
-      ['x'.repeat(2000), 'the password on stdin is over 1100 bytes']
+      ['x'.repeat(2000), `the password on stdin is over ${MAX_PASSWORD_STDIN_BYTES} bytes`]
     ] as const) {
       out = ''
       err = ''
@@ -945,7 +994,7 @@ describe('ccc web part 2: the CLI', () => {
     vi.useFakeTimers()
     try {
       const tty = fakeTty([])
-      const pending = readPassword(tty, () => undefined, { maxChars: 256, stdinTimeoutMs: 20, readCapped: readStdinCapped })
+      const pending = readPassword(tty, () => undefined, { maxChars: 256, stdinTimeoutMs: 20 })
       await vi.advanceTimersByTimeAsync(PROMPT_TIMEOUT_MS - 1)
       expect(tty.raw).toEqual([true])
       await vi.advanceTimersByTimeAsync(1)
@@ -954,7 +1003,7 @@ describe('ccc web part 2: the CLI', () => {
     } finally {
       vi.useRealTimers()
     }
-    const pipe = await readPassword(new Readable({ read() {} }), () => undefined, { maxChars: 256, stdinTimeoutMs: 20, readCapped: readStdinCapped })
+    const pipe = await readPassword(new Readable({ read() {} }), () => undefined, { maxChars: 256, stdinTimeoutMs: 20 })
     expect(pipe).toEqual({ error: 'stdin was not closed within 0 s' })
   })
 

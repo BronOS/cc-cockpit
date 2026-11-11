@@ -1,10 +1,11 @@
 // The in-page Move to Trash confirm (main/files/trash-asks.ts, plan Task 16): the shared-ask rules
 // (first answer wins, the timeout, pending ones for a joining view, another window refused) and the
-// choice between it and the native box (chooseTrashConfirm). The router half (the sender's window,
+// choice between it and the native box (chooseAsk). The router half (the sender's window,
 // the payload's shape) is in ipc-router.test.ts and web-protocol.test.ts.
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { chooseAsk } from '../../src/main/asks/shared-asks'
 import type { ConfirmTrash, TrashDialogInfo } from '../../src/main/files/system-files'
-import { chooseTrashConfirm, TRASH_ASK_MS, TrashAsks, type TrashAskInfo } from '../../src/main/files/trash-asks'
+import { TRASH_ASK_MS, TrashAsks, type TrashAskInfo } from '../../src/main/files/trash-asks'
 
 const INFO: TrashDialogInfo = { path: 'src/a.ts', kind: 'file', pluginId: 'cockpit.files' }
 
@@ -96,12 +97,12 @@ describe('TrashAsks', () => {
   })
 })
 
-describe('chooseTrashConfirm', () => {
+describe('chooseAsk (trash)', () => {
   function choose(server: boolean, remote: boolean) {
     const calls: string[] = []
     const shared: ConfirmTrash = async () => (calls.push('shared'), true)
     const native: ConfirmTrash = async () => (calls.push('native'), true)
-    const confirm = chooseTrashConfirm({ server, hasRemoteView: () => remote, shared, native })
+    const confirm = chooseAsk({ server, hasRemoteView: () => remote, shared, native })
     return { confirm, calls }
   }
 
@@ -127,7 +128,8 @@ describe('chooseTrashConfirm', () => {
   it('decides per call from the live view list', async () => {
     let remote = false
     const calls: string[] = []
-    const confirm = chooseTrashConfirm({
+    const confirm = chooseAsk({
+      server: false,
       hasRemoteView: () => remote,
       shared: async () => (calls.push('shared'), false),
       native: async () => (calls.push('native'), false)
@@ -141,7 +143,7 @@ describe('chooseTrashConfirm', () => {
   it('passes the window, the info and the signal through', async () => {
     const shared = vi.fn<ConfirmTrash>(async () => true)
     const signal = new AbortController().signal
-    await chooseTrashConfirm({ server: true, hasRemoteView: () => false, shared, native: async () => false })(7, INFO, signal)
+    await chooseAsk({ server: true, hasRemoteView: () => false, shared, native: async () => false })(7, INFO, signal)
     expect(shared).toHaveBeenCalledWith(7, INFO, signal)
   })
 })

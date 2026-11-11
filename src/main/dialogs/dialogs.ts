@@ -14,6 +14,7 @@
 // No Electron value import: only option types, so unit tests load this file in plain Node. `W` is the
 // parent window type (BrowserWindow on the desktop) so logic modules never name it.
 import type { MessageBoxOptions, MessageBoxReturnValue, OpenDialogOptions, OpenDialogReturnValue } from 'electron'
+import { warnLog } from '../warn-log'
 
 export interface Dialogs<W = unknown> {
   /** A native message box; `parent` makes it a sheet on that window. */
@@ -33,7 +34,7 @@ export class ServerDialogError extends Error {
 }
 
 /** The dialogs of a server-mode process: nothing ever reaches Electron's `dialog`. */
-export function serverDialogs(log: (message: string) => void = (m) => console.error(m)): Dialogs {
+export function serverDialogs(log: (message: string) => void = warnLog): Dialogs {
   return {
     showMessageBox: (_parent, options) => Promise.reject(new ServerDialogError(options.title ?? options.message.split('\n')[0] ?? '')),
     showOpenDialog: () => Promise.resolve({ canceled: true, filePaths: [] }),

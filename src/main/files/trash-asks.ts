@@ -9,7 +9,7 @@
 //   - in server mode always this ask (never the native box, never a test run's queued fake): with no
 //     browser attached the hidden page takes it and it waits for one (5 min);
 //   - on the desktop while a browser is attached, this ask, on every view (the desktop page too);
-//   - on the desktop with no browser, the native box as before (chooseTrashConfirm).
+//   - on the desktop with no browser, the native box as before (chooseAsk, asks/shared-asks.ts).
 //
 // Who may answer: any view of the window main bound the call to (the router passes the sender's
 // window, never one from the payload). Unlike a plugin link, a trash is not something only the
@@ -70,21 +70,4 @@ export class TrashAsks {
   get size(): number {
     return this.core.size
   }
-}
-
-/**
- * The confirm ctx.files.trash uses, decided per call from the live view list (the same rule as
- * chooseLinkConfirm): the shared ask in server mode or while the window has a browser view attached,
- * else the native box (or, in a test run on the desktop, the queued fake standing in for it). A
- * browser joining while a native box is up is not shown a second one: that box stays the answer.
- */
-export function chooseTrashConfirm(options: {
-  /** Main's server-mode flag for the run. */
-  server?: boolean
-  hasRemoteView(windowId: number): boolean
-  shared: ConfirmTrash
-  native: ConfirmTrash
-}): ConfirmTrash {
-  return (windowId, info, signal) =>
-    options.server === true || options.hasRemoteView(windowId) ? options.shared(windowId, info, signal) : options.native(windowId, info, signal)
 }

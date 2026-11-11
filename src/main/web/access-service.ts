@@ -18,7 +18,7 @@ import type {
   WebLinkReply,
   WebSecretsStatus
 } from '../../shared/web-access'
-import { SERVER_NONE_WARNING, type WebCliNotice } from '../../shared/web-access'
+import { ADD_DEVICE_EXPIRES_TEXT, SERVER_NONE_WARNING, type WebCliNotice } from '../../shared/web-access'
 import type { AccessActor, AccessEntry } from './access-log'
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
@@ -165,7 +165,7 @@ export class WebAccessService {
    * stdout lines, core-notices.ts). Built only from views that hold no secret: never a link, a token,
    * a hash or a stored value.
    */
-  cliStatus(secrets: WebSecretsStatus, notices: WebCliNotice[] = []): WebCliStatus {
+  cliStatus(secrets: WebSecretsStatus, notices: WebCliNotice[]): WebCliStatus {
     const settings = this.settings()
     const credentials = this.deps.auth.credentialStates()
     return {
@@ -267,7 +267,7 @@ export class WebAccessService {
       if (settings.mode === 'link') {
         if (options.tty) {
           const { link } = this.deps.auth.addDeviceLink(origin, { start: true })
-          lines.push(`Add a device (works once, expires in 10 minutes): ${link}`)
+          lines.push(`Add a device (${ADD_DEVICE_EXPIRES_TEXT}): ${link}`)
         } else {
           lines.push('add a device: ccc web add-device')
         }

@@ -5,6 +5,7 @@
 // load this file. The Electron-specific part (where userData lives, `app.setPath`) stays in
 // `src/main/index.ts`, which passes the userData base in as an argument.
 import { createHash } from 'node:crypto'
+import { lstatSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /** Env var that moves the whole data dir (tests, dev instances). */
@@ -139,6 +140,28 @@ export function pluginAppDataDir(dataDir: string, pluginId: string): string {
  */
 export function fallbackSocketDir(tmpdir: string, uid: number | string): string {
   return join(tmpdir, `ccc-${uid}`)
+}
+
+/** No group or other permission bits: a dir or file only its owner reaches (the fallback dir, the key file). */
+export function ownerOnlyMode(mode: number): boolean {
+  return (mode & 0o077) === 0
+}
+
+/**
+ * Whether `dir` is ours alone: lstat (a symlink planted in a shared tmpdir does not count), a real
+ * directory, owned by `uid` (when known), `ownerOnlyMode`. The CLI and a losing launch ask it of the
+ * fallback socket dir before they talk to a socket there: on a shared /tmp another user could listen
+ * in a dir they made. The socket server makes the same checks with a reason for each (socket-server.ts).
+ */
+export function isPrivateDir(dir: string, uid: number | undefined): boolean {
+  try {
+    const st = lstatSync(dir)
+    if (!st.isDirectory()) return false
+    if (uid !== undefined && st.uid !== uid) return false
+    return ownerOnlyMode(st.mode)
+  } catch {
+    return false
+  }
 }
 
 /**

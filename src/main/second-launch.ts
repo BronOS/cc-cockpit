@@ -19,12 +19,14 @@
 // paths.ts's `socketPath()`, never src/cli/client.ts. Pure Node (no Electron value import): the box
 // and the exit are passed in, so unit tests load this file in plain Node.
 import type { MessageBoxOptions } from 'electron'
-import { lstatSync, readdirSync, rmSync } from 'node:fs'
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
+import { errorText } from '../shared/error-text'
 import { encodeRequest, LineFramer, parseReply, PROTOCOL_VERSION, type Reply } from '../shared/protocol'
 import { isPlainObject } from '../shared/guards'
-import { fallbackSocketDir, socketPath } from './paths'
+import { dataPaths, fallbackSocketDir, isPrivateDir, socketPath } from './paths'
+import { pidAlive } from './pty/exit-drain'
 import type { ServerDecision } from './server-mode'
 import { plainText } from './web/access-log'
 
@@ -146,16 +148,6 @@ export function privateLaunchProfile(deps: LaunchProfileDeps): string | undefine
   return dir
 }
 
-/** Whether a pid names a live process (EPERM: alive, someone else's). */
-export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
 /**
  * Removes the private profile dirs (`privateLaunchProfile`) earlier losing launches left in `dir`: only
  * ours (a real directory, our uid) and only when the pid in the name is gone, so a launch still
@@ -196,7 +188,6 @@ export function testBoxAnswer(env: Record<string, string | undefined>, testRun: 
 
 /** Longest address text shown in the box: the answer comes from another process (made plain, `plainText`). */
 const MAX_ADDRESS = 200
-
 
 /**
  * The address of a `web.status` result that says server mode, or undefined for any other answer
@@ -259,14 +250,7 @@ export function launchSocketPath(input: {
   const path = socketPath(input.dataDir, input.env, uid, input.tmpdir)
   const fallback = fallbackSocketDir(input.tmpdir, uid)
   if (dirname(path) !== fallback) return path
-  try {
-    const st = lstatSync(fallback)
-    if (!st.isDirectory()) return undefined
-    if (input.uid !== undefined && st.uid !== input.uid) return undefined
-    return (st.mode & 0o077) === 0 ? path : undefined
-  } catch {
-    return undefined
-  }
+  return isPrivateDir(fallback, input.uid) ? path : undefined
 }
 
 /**
@@ -338,4 +322,72 @@ export async function runSecondLaunch(deps: SecondLaunchDeps): Promise<'none' | 
     if (reply?.ok !== true) deps.log(`cc-cockpit: could not stop the server: ${reply?.ok === false ? reply.error : 'no answer'}`)
   }
   return answer
+}
+
+export interface LoseLaunchDeps {
+  platform: string
+  /** Whether this launch has a display (`launchHasDisplay`). */
+  display: boolean
+  /** The data dir main resolved at start: `app.json` is read and the socket computed from it. */
+  dataDir: string
+  env: Record<string, string | undefined>
+  uid: number | undefined
+  pid: number
+  tmpdir: string
+  /** `isTestRun`: only then does the env answer the box (`testBoxAnswer`). */
+  testRun: boolean
+  /** `app.setPath`, for the private profile. */
+  setPath: LaunchProfileDeps['setPath']
+  /** Runs `fn` when the process exits (the private profile's removal). */
+  onExit: LaunchProfileDeps['onExit']
+  /** Shows the native box once the app is ready (the dialog adapter) and answers its response index. */
+  showBox: (options: MessageBoxOptions) => Promise<number>
+  /** `app.quit()`: called exactly once, when the launch is done. */
+  quit: () => void
+  log: (line: string) => void
+}
+
+/**
+ * The whole of a launch that lost the single-instance lock (index.ts `serverStart`'s `quit`). With no
+ * display, off Linux, or with web access off in `app.json` it quits at once, as before server mode.
+ * Otherwise it sweeps earlier launches' profiles, moves off the holder's profile before anything is
+ * awaited (`privateLaunchProfile`; with no private dir it quits at once), asks the holder's socket
+ * (`runSecondLaunch`) and quits when that is over, whatever happened. Never throws.
+ */
+export function loseLaunch(deps: LoseLaunchDeps): void {
+  const webAccessOn = storedWebAccessOn(() => readFileSync(dataPaths(deps.dataDir).appJson, 'utf8'))
+  if (!losingLaunchAsks({ platform: deps.platform, display: deps.display, webAccessOn })) {
+    deps.quit()
+    return
+  }
+  sweepLaunchProfiles({ dir: deps.tmpdir, uid: deps.uid, alive: pidAlive })
+  const profile = privateLaunchProfile({
+    makeDir: () => mkdtempSync(join(deps.tmpdir, `${LAUNCH_PROFILE_PREFIX}${String(deps.pid)}-`)),
+    setPath: deps.setPath,
+    onExit: deps.onExit,
+    remove: (dir) => rmSync(dir, { recursive: true, force: true })
+  })
+  if (profile === undefined) {
+    deps.quit()
+    return
+  }
+  askHolder(deps)
+    .catch((err: unknown) => deps.log(`second launch failed: ${errorText(err)}`))
+    .finally(() => deps.quit())
+}
+
+/**
+ * The losing launch with a display: ask the holder's socket for `web.status` (2 s, no token); a
+ * server's answer gets the native box with Stop or Cancel (a desktop process: it has a screen). In
+ * a test run the env answers the box.
+ */
+async function askHolder(deps: LoseLaunchDeps): Promise<void> {
+  const path = launchSocketPath({ dataDir: deps.dataDir, env: deps.env, uid: deps.uid, tmpdir: deps.tmpdir })
+  if (path === undefined) return
+  await runSecondLaunch({
+    ask: (cmd) => socketAsk(path, cmd, SECOND_LAUNCH_ASK_MS),
+    testAnswer: testBoxAnswer(deps.env, deps.testRun),
+    box: async (message) => boxAnswerOf(await deps.showBox(serverBoxOptions(message))),
+    log: deps.log
+  })
 }

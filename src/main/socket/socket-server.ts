@@ -38,6 +38,7 @@ import {
 } from '../../shared/protocol'
 import { connect, listen } from './transport'
 import { warnLog } from '../warn-log'
+import { ownerOnlyMode } from '../paths'
 
 /**
  * What a token belongs to, as main's tables say (SocketServerOptions.resolveToken). `session`: a
@@ -376,7 +377,7 @@ export class SocketServer {
     let problem: string | undefined
     if (!st.isDirectory()) problem = 'is not a directory'
     else if (uid !== undefined && st.uid !== uid) problem = `is owned by uid ${st.uid}, not ${uid}`
-    else if ((st.mode & 0o077) !== 0) problem = `has mode ${(st.mode & 0o777).toString(8)}, want 700`
+    else if (!ownerOnlyMode(st.mode)) problem = `has mode ${(st.mode & 0o777).toString(8)}, want 700`
     if (problem) {
       this.log(`socket: refusing fallback dir ${dir}: it ${problem}; no CLI socket this run`)
       return false

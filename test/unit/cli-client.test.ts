@@ -13,12 +13,12 @@ import {
   STDIN_CAP_BYTES,
   buildHookRequestLine,
   hookSocketPath,
-  readStdinCapped,
   resolveSocketPath,
   run,
   runHook,
   type SystemInputs
 } from '../../src/cli/client'
+import { readStdinBounded, readStdinCapped } from '../../src/cli/stdin-read'
 import { fallbackSocketDir } from '../../src/main/paths'
 import { LineFramer, MAX_LINE_BYTES, parseRequest, type Request } from '../../src/shared/protocol'
 
@@ -289,18 +289,31 @@ describe('readStdinCapped', () => {
 
   it('resolves on a stream error', async () => {
     const stream = new PassThrough()
-    const pending = readStdinCapped(stream)
+    const pending = readStdinCapped(stream, STDIN_CAP_BYTES)
     stream.destroy(new Error('EBADF'))
     expect(await pending).toEqual({ text: '', truncated: false, error: 'EBADF' })
   })
 
   it('reports an error after partial input, not a clean end', async () => {
     const stream = new PassThrough()
-    const pending = readStdinCapped(stream)
+    const pending = readStdinCapped(stream, STDIN_CAP_BYTES)
     stream.write('{"partial":')
     await new Promise((r) => setImmediate(r))
     stream.destroy(new Error('EIO: i/o error, read'))
     expect(await pending).toEqual({ text: '{"partial":', truncated: false, error: 'EIO: i/o error, read' })
+  })
+})
+
+describe('readStdinBounded', () => {
+  it('answers the read when the stream ends in time', async () => {
+    expect(await readStdinBounded(stdinOf('ok'), 100, 1000)).toEqual({ text: 'ok', truncated: false })
+  })
+
+  it('answers timedOut for a stream nobody closes', async () => {
+    const stream = new PassThrough()
+    stream.write('half')
+    expect(await readStdinBounded(stream, 100, 20)).toEqual({ timedOut: true })
+    stream.destroy()
   })
 })
 

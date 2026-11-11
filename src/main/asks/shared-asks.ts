@@ -115,3 +115,26 @@ export class SharedAsks<Info extends object, Answer> {
     }
   }
 }
+
+/**
+ * Which confirm a window's ask goes to, decided per call from the live view list: the shared in-page
+ * ask in server mode or while the window has a browser view attached, else `native` (the desktop's
+ * box as a sheet, or in a test run on the desktop the queued fake standing in for it). One rule for
+ * `ccc plugin link` (LinkAsks) and ctx.files.trash (TrashAsks).
+ *
+ * A browser joining while a native box is up is not shown a second one: that box stays the answer
+ * for the request. In server mode always shared (design-web.md §9.6): the native dialog aborts main
+ * under Ozone headless, and a test run's queued fake would answer what the browser should. With no
+ * browser attached the hidden page takes the ask, so it waits there for a browser to join (`ready`)
+ * or runs out.
+ */
+export function chooseAsk<Info, Answer>(options: {
+  /** Main's server-mode flag for the run. */
+  server: boolean
+  hasRemoteView(windowId: number): boolean
+  shared: (windowId: number, info: Info, signal?: AbortSignal) => Promise<Answer>
+  native: (windowId: number, info: Info, signal?: AbortSignal) => Promise<Answer>
+}): (windowId: number, info: Info, signal?: AbortSignal) => Promise<Answer> {
+  return (windowId, info, signal) =>
+    options.server || options.hasRemoteView(windowId) ? options.shared(windowId, info, signal) : options.native(windowId, info, signal)
+}
