@@ -335,22 +335,29 @@ checks before the call. A failed `execve` aborts the process (SIGABRT, no except
 Right after Task 1, so Tasks 3, 4, 9 and 10 can each drive the real hidden page: the spike found its faults only by
 driving, and this is the first time Playwright meets a `--ozone-platform=headless` process.
 
-- [ ] `launchServer`: the app started with the switches directly (`--server --ozone-platform=headless --disable-gpu
+- [x] `launchServer`: the app started with the switches directly (`--server --ozone-platform=headless --disable-gpu
       --password-store=basic`), because the re-exec replaces the image Playwright launched and drops its inspector
       connection; no `--server-parent` marker, so the parent watch is never armed. `DISPLAY` and `WAYLAND_DISPLAY`
       removed from the app's env only (the browser fixture keeps its display), no session bus (a dead
       `DBUS_SESSION_BUS_ADDRESS`, a temp `XDG_RUNTIME_DIR`), Linux only (skipped elsewhere), a project folder on argv
-- [ ] **plan-time check**: Playwright's Electron launch against an Ozone headless process (the launch resolves, the
+- [x] **plan-time check**: Playwright's Electron launch against an Ozone headless process (the launch resolves, the
       test hooks on `__ccTest` answer). Record it here; if it cannot attach, `launchServer` starts the process itself
       and specs use the browser fixture, `ccc` and the gateway only, and the later tasks' hook steps are reworded
-- [ ] sign in with mode None on loopback from a pre-written `app.json` (web access on, a random loopback port, mode
+      **Result (2026-11-11, `out/`): it attaches.** `_electron.launch` resolves, `firstWindow()` is the hidden page
+      (the project shell, `.tabs-pane` waits as on the desktop, `page.evaluate` over `window.cockpit` answers), the
+      hooks on `__ccTest` answer (`serverMode()` true) and `app.evaluate` sees `ozone-platform=headless` with no
+      `DISPLAY`/`WAYLAND_DISPLAY`. So `launchServer` is `launchCockpit` with extra args, extra `app.json` fields and the
+      display variables set to undefined (Playwright drops them); the later tasks' hook steps stand as written
+- [x] sign in with mode None on loopback from a pre-written `app.json` (web access on, a random loopback port, mode
       None), as the smoke script does: server mode does not turn web access on by itself before Task 7, and
       `ccc web add-device` does not exist before Task 12
-- [ ] the "main is alive" helper (the pid lives and `GET /` answers 200), called at the end of every server spec from
+- [x] the "main is alive" helper (the pid lives and `GET /` answers 200), called at the end of every server spec from
       here on
-- [ ] the first spec: a terminal tab's output and input in the browser, main alive
-- [ ] existing e2e specs still pass
-- [ ] run `npm run test:e2e` - must pass before next task
+- [x] the first spec: a terminal tab's output and input in the browser, main alive
+- [x] existing e2e specs still pass (2026-11-11 run: 232 passed; `window-bounds.spec.ts`'s two specs fail here with
+      and without this change, under a tiling window manager that sets the bounds itself, and `zone-auto-hide.spec.ts:85`
+      failed once and passed on reruns; none touches the server harness)
+- [x] run `npm run test:e2e` - must pass before next task
 
 ### Task 3: Dialog adapter [model: sonnet]
 

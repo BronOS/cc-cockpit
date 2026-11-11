@@ -14,6 +14,9 @@
 //   CC_COCKPIT_MARKETPLACE_URLS=''  no marketplace index (the default index is not fetched either), so no spec reaches the network
 //   CC_COCKPIT_NO_BUNDLED=1  no bundled plugins (browser specs opt out through LaunchOptions.env)
 //
+// A variable set to undefined in LaunchOptions.env is removed from the app's env, inherited or not
+// (Playwright drops undefined values): server-fixtures.ts removes DISPLAY and WAYLAND_DISPLAY that way.
+//
 // A fresh data dir starts with `app.json` › `claudeTabOnOpen: false` (LaunchOptions.claudeTabOnOpen):
 // the app's default opens a Claude tab in a project that opens empty, and most specs build their
 // tabs from an empty window and count them or the fake's runs. Likewise `confirmTabClose: false`
@@ -84,6 +87,16 @@ export interface LaunchOptions {
    * Default false (see the header); true leaves the app's own default (on). Ignored on a relaunch (`root`).
    */
   zoneAutoHide?: boolean
+  /**
+   * Extra command-line arguments for the app, before the project folder (server mode's switches,
+   * server-fixtures.ts). Every one is a dash-prefixed word, which projectPathFromArgv skips.
+   */
+  args?: string[]
+  /**
+   * More `app.json` fields for a fresh data dir, merged over the ones above (server mode's
+   * pre-written web access). Ignored on a relaunch (`root`).
+   */
+  settings?: Record<string, unknown>
 }
 
 export async function launchCockpit(
@@ -101,6 +114,7 @@ export async function launchCockpit(
     if (options.claudeTabOnOpen !== true) settings.claudeTabOnOpen = false
     if (options.confirmTabClose !== true) settings.confirmTabClose = false
     if (options.zoneAutoHide !== true) settings.zoneAutoHide = false
+    Object.assign(settings, options.settings)
     if (Object.keys(settings).length > 1) writeFileSync(join(dataDir, 'app.json'), JSON.stringify(settings))
   }
   // mkdtemp under /var/folders is a symlink to /private/var on macOS; the app resolves real paths.
@@ -122,7 +136,7 @@ export async function launchCockpit(
   }
   const app = await electron.launch({
     // argv[1] is the app path, so the project folder is the THIRD entry (projectPathFromArgv).
-    args: [join(REPO, 'out/main/index.js'), ...(options.folderArg === false ? [] : [realProject])],
+    args: [join(REPO, 'out/main/index.js'), ...(options.args ?? []), ...(options.folderArg === false ? [] : [realProject])],
     cwd: REPO,
     env: {
       ...inherited,

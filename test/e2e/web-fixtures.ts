@@ -63,6 +63,18 @@ export async function enableWebAccess(cockpit: Cockpit): Promise<WebAccessOn> {
   throw new Error('web access never listened: five random ports were taken')
 }
 
+/**
+ * The browser's picker lists the open projects; this clicks the one with `projectId` and waits until
+ * its web shell shows (the address names the project). `origin` is the gateway's.
+ */
+export async function openProjectInBrowser(browser: WebBrowser, origin: string, projectId: string): Promise<void> {
+  const { page } = browser
+  const href = `?project=${encodeURIComponent(projectId)}`
+  await page.getByRole('list', { name: 'Open projects' }).locator(`a[href="${href}"]`).click()
+  await expect(page).toHaveURL(`${origin}/${href}`)
+  await page.locator('.tabs-pane').waitFor()
+}
+
 export interface WebBrowser {
   app: ElectronApplication
   /** The browser's one page (the web shell, once the URL loads). */
