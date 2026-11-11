@@ -5,13 +5,17 @@
 //
 // Markers are printed by shell arithmetic (`echo srv-$((40+2))` prints srv-42), so the command line
 // echoed back never contains the text a step waits for: only the shell's output does.
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test, type Locator } from '@playwright/test'
 import { WebSocket } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
+import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
+import { FakeOAuthServer } from '../fakes/fake-oauth-server'
 import { launchCockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchProfiles, launchServer, secondLaunch, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
@@ -899,6 +903,125 @@ test('server mode: no web view or url overlay is made; the Browser panel is a pl
     await expectMainAlive(server)
   } finally {
     await browser.close()
+  }
+})
+
+// plan Task 24 (design-web.md §9.9): a plugin's ctx.oauth sign-in on a server. The provider's page is a
+// link notice in the browser with a box; the redirect to the server's loopback "fails" (the spec plays
+// the provider with test/fakes/fake-oauth-server.ts and never follows it), and the address it ended on,
+// pasted into the box, finishes the sign-in in main with no request to it. The fake provider is https
+// with a throwaway certificate the app trusts through NODE_EXTRA_CA_CERTS, as in plugin-oauth.spec.ts.
+const HOST_OAUTH = join(__dirname, '..', 'fixtures', 'plugins', 'host-oauth')
+const OAUTH_PLUGIN = 'test.hostoauth'
+
+/** A key and a one-day self-signed certificate for IP 127.0.0.1, in a fresh temp dir (`openssl`, argv only). */
+function makeTls(): { key: string; cert: string; certFile: string; dispose(): void } {
+  const dir = mkdtempSync(join(tmpdir(), 'ccc-e2e-tls-'))
+  const keyFile = join(dir, 'key.pem')
+  const certFile = join(dir, 'cert.pem')
+  execFileSync(
+    'openssl',
+    ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyFile, '-out', certFile, '-days', '1',
+      '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1'],
+    { stdio: 'pipe' }
+  )
+  return { key: readFileSync(keyFile, 'utf8'), cert: readFileSync(certFile, 'utf8'), certFile, dispose: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('server mode: a plugin signs in by pasting the failed redirect in the browser; a wrong paste is refused', async () => {
+  test.setTimeout(120_000)
+  const tls = makeTls()
+  const provider = await new FakeOAuthServer({ clientId: 'e2e-client', clientSecret: 'e2e-secret-31d9', tls: { key: tls.key, cert: tls.cert } }).start()
+  try {
+    server = await launchServer({ env: { NODE_EXTRA_CA_CERTS: tls.certFile } })
+    const { cockpit } = server
+    // A link that reached the server's own opener would land here.
+    await cockpit.app.evaluate(({ shell }) => {
+      const g = globalThis as { __opened?: string[] }
+      g.__opened = []
+      shell.openExternal = (url: string) => {
+        g.__opened!.push(url)
+        return Promise.resolve()
+      }
+    })
+    const browser = await openBrowser(`${server.origin}/`)
+    try {
+      const { page } = browser
+      await openProjectInBrowser(browser, server.origin, server.projectId)
+      // The sign-in ids the notices carry, for the second paste below (the page shows none).
+      await page.evaluate(() => {
+        const w = window as unknown as { __signIns: string[] }
+        w.__signIns = []
+        window.cockpit.on('app.linkNotice', (p) => {
+          if (p.signIn !== undefined) w.__signIns.push(p.signIn)
+        })
+      })
+
+      await cockpit.hook('linkPlugin', HOST_OAUTH)
+      const saved = await cockpit.hook<{ ok: boolean }>(
+        'savePluginProjectSettings',
+        cockpit.projectDir,
+        OAUTH_PLUGIN,
+        { authUrl: provider.authUrl, tokenUrl: provider.tokenUrl, clientId: 'e2e-client' },
+        { clientSecret: 'e2e-secret-31d9' }
+      )
+      expect(saved).toMatchObject({ ok: true })
+      await cockpit.hook('enablePlugin', cockpit.projectDir, OAUTH_PLUGIN)
+      await expect
+        .poll(async () => (await cockpit.hook<{ id: string }[]>('pluginCommands', cockpit.projectDir)).map((c) => c.id), { timeout: 20_000 })
+        .toContain(`${OAUTH_PLUGIN}/signin`)
+
+      // Started with no browser origin (a plugin command): every browser of the window gets the notice.
+      await cockpit.hook('runPluginCommand', cockpit.projectDir, `${OAUTH_PLUGIN}/signin`)
+      const notice = page.getByTestId('oauth-notice')
+      await expect(notice).toBeVisible({ timeout: 15_000 })
+      const authUrl = await notice.getByRole('link').getAttribute('href')
+      expect(new URL(authUrl!).origin).toBe('https://auth.fake.test')
+      // The provider's consent, then its redirect to the server's loopback, never followed here.
+      const redirect = provider.authorize(authUrl!)
+      expect(redirect).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/callback\?/)
+      const box = notice.getByRole('textbox')
+      const finish = notice.getByRole('button', { name: 'Finish sign-in' })
+
+      // A wrong state: refused with the one text, which does not echo the address; the sign-in waits on.
+      const wrong = new URL(redirect)
+      wrong.searchParams.set('state', 'not-the-state')
+      await box.fill(wrong.toString())
+      await finish.click()
+      await expect(notice.getByRole('alert')).toHaveText(OAUTH_PASTE_REFUSED)
+      expect(provider.tokenRequests).toEqual([])
+
+      // The real address finishes it: the notice goes, the plugin got and refreshed its tokens.
+      await box.fill(redirect)
+      await finish.click()
+      await expect(notice).toHaveCount(0)
+      const record = join(cockpit.root, 'home', 'host-oauth.json')
+      await expect.poll(() => existsSync(record), { timeout: 15_000 }).toBe(true)
+      const seen = JSON.parse(readFileSync(record, 'utf8')) as { accessToken?: string; refreshedAccessToken?: string; error?: string }
+      expect(seen.error).toBeUndefined()
+      expect(seen.accessToken).toMatch(/^access-/)
+      expect(seen.refreshedAccessToken).toMatch(/^access-/)
+      expect(provider.tokenRequests.map((r) => r.grant_type)).toEqual(['authorization_code', 'refresh_token'])
+
+      // A second paste of the same address, after the settle: the same refusal.
+      const [signIn] = await page.evaluate(() => (window as unknown as { __signIns: string[] }).__signIns)
+      expect(signIn).toBeDefined()
+      expect(await page.evaluate((p) => window.cockpit.invoke('oauth.paste', p), { signIn: signIn!, url: redirect })).toEqual({
+        ok: false,
+        error: OAUTH_PASTE_REFUSED
+      })
+      // Nothing opened on the server, and the hidden page drew no notice.
+      expect(await cockpit.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened)).toEqual([])
+      await expect(cockpit.page.getByTestId('oauth-notice')).toHaveCount(0)
+      await expectMainAlive(server)
+    } finally {
+      await browser.close()
+    }
+  } finally {
+    await server?.close()
+    server = undefined
+    await provider.stop()
+    tls.dispose()
   }
 })
 

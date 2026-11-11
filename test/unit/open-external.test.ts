@@ -11,9 +11,13 @@ import { remoteViewId } from '../../src/shared/views'
 /** A view's sink that records the link notices it got. */
 class Sink implements ViewSink {
   urls: string[] = []
+  /** Every link notice's whole payload, in order. */
+  payloads: unknown[] = []
   closed = false
   send(channel: string, payload: unknown): void {
-    if (channel === 'app.linkNotice') this.urls.push((payload as { url: string }).url)
+    if (channel !== 'app.linkNotice') return
+    this.urls.push((payload as { url: string }).url)
+    this.payloads.push(payload)
   }
   isClosed(): boolean {
     return this.closed
@@ -99,6 +103,14 @@ describe('openExternal adapter on the desktop', () => {
     expect(system).toEqual([])
   })
 
+  it('a sign-in id never reaches the OS browser nor a browser view on the desktop (no paste box there)', async () => {
+    const open = adapter(false)
+    await open(URL_A, { windowId: 1 }, { signIn: 'S'.repeat(22) })
+    await open(URL_A, { windowId: 1, viewId: 'web:1' }, { signIn: 'S'.repeat(22) })
+    expect(system).toEqual([URL_A])
+    expect(w.web1.payloads).toEqual([{ url: URL_A }])
+  })
+
   it('passes the OS opener\'s failure on', async () => {
     const open = createOpenExternal({ server: false, system: () => Promise.reject(new Error('no handler')), views: w.views, log: () => {} })
     await expect(open(URL_A, 'app')).rejects.toThrow('no handler')
@@ -182,6 +194,8 @@ describe("a plugin's sign-in URL in server mode", () => {
     await expect.poll(() => w.web3.urls.length).toBe(1)
     expect(new URL(w.web3.urls[0]!).origin).toBe('https://auth.example')
     expect(notices()).toEqual({ web3: w.web3.urls })
+    // The notice carries the sign-in's id, for its paste box (design-web.md §9.9).
+    expect(w.web3.payloads[0]).toEqual({ url: w.web3.urls[0], signIn: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/) })
     expect(system).toEqual([])
     controller.abort()
     await expect(pending).rejects.toThrow('cancelled')

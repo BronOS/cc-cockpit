@@ -71,7 +71,14 @@ with full Node access.
   KiB, at most 100 keys. The `setting:` prefix is reserved.
 - `ctx.oauth.authorize(spec)` and `ctx.oauth.refresh(spec, refreshToken)`: authorization code +
   PKCE through the system browser and a loopback redirect. `spec` is `{ authUrl, tokenUrl,
-  clientId, clientSecret?, scopes }`; both URLs must be https.
+  clientId, clientSecret?, scopes }`; both URLs must be https. Called for a browser view of the
+  desktop app (web access), `authorize` rejects ("sign in on the desktop"). In server mode it works
+  from anywhere, the same call: the provider's page is a link notice in the window's browsers (the
+  one that asked, else all of them), the redirect to the server's 127.0.0.1 fails there, and the
+  person pastes the address the tab ended on into the notice's box; the cockpit checks it as the
+  loopback would and finishes the sign-in, making no request to it. A pasted address that is not
+  this sign-in's answer is refused; the fifth refused one ends the sign-in (it rejects, as on a
+  timeout). The plugin code is the same in both modes.
 
 ## Work
 

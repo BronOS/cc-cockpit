@@ -11,6 +11,7 @@ import {
   registerCccCommandHandlers,
   registerWebAccessHandlers,
   registerNoticeHandlers,
+  registerOAuthPasteHandlers,
   registerUpdateHandlers,
   registerProjectSettingsHandlers,
   registerSessionHandlers,
@@ -36,6 +37,7 @@ import { defaultLayout } from '../../src/shared/layout'
 import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
 import type { WebAccessIndicator, WebAccessView } from '../../src/shared/web-access'
 import type { ProjectView } from '../../src/shared/types'
+import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
 
 type Listener = (event: IpcEventLike, ...args: unknown[]) => unknown
 
@@ -2211,6 +2213,63 @@ describe('notices.click / notices.dismiss', () => {
       await expect(router.dispatch(webA(), 'notices.click', payload)).rejects.toThrow(/notices\.click/)
     }
     await expect(ipc.invoke('notices.click', 13, [{ requestId: 'n1' }])).rejects.toThrow(/not a project window/)
+    expect(calls).toEqual([])
+  })
+})
+
+// design-web.md §9.9: a plugin's OAuth sign-in in server mode is settled by the failed redirect's
+// address pasted in a browser view, for a sign-in of the window main bound the view to.
+describe('oauth.paste', () => {
+  function paste(server: boolean, settles = true) {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerOAuthPasteHandlers(router, {
+      server,
+      paste: (windowId, signIn, url) => {
+        calls.push([windowId, signIn, url])
+        return settles
+      }
+    })
+    return { ipc, router, calls }
+  }
+  const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId)
+  const PASTE = { signIn: 'S'.repeat(22), url: 'http://127.0.0.1:4100/callback?state=s&code=c' }
+  const REFUSED = { ok: false, error: OAUTH_PASTE_REFUSED }
+
+  it('in server mode a browser view pastes for its own window, whatever window the payload names', async () => {
+    const { router, calls } = paste(true)
+    await expect(router.dispatch(webA(), 'oauth.paste', { ...PASTE, windowId: 2, projectId: PROJECT_B })).resolves.toEqual({ ok: true })
+    expect(calls).toEqual([[1, PASTE.signIn, PASTE.url]])
+    // PluginOAuth's refusal (unknown or another window's id, a wrong address) is the one text.
+    const refusing = paste(true, false)
+    await expect(refusing.router.dispatch(webA(), 'oauth.paste', PASTE)).resolves.toEqual(REFUSED)
+  })
+
+  it('answers a remote view on the desktop and the desktop page in both modes with the same refusal, reaching nothing', async () => {
+    const desktop = paste(false)
+    await expect(desktop.router.dispatch(webA(), 'oauth.paste', PASTE)).resolves.toEqual(REFUSED)
+    expect(desktop.calls).toEqual([])
+    for (const server of [true, false]) {
+      const { ipc, calls } = paste(server)
+      await expect(ipc.invoke('oauth.paste', 11, [PASTE])).resolves.toEqual(REFUSED)
+      expect(calls).toEqual([])
+    }
+  })
+
+  it('passes a malformed payload on unread (PluginOAuth refuses it) and never echoes the address', async () => {
+    const { router, calls } = paste(true, false)
+    for (const payload of [undefined, 'x', [PASTE], { signIn: 5, url: PASTE.url }]) {
+      const answer = await router.dispatch(webA(), 'oauth.paste', payload)
+      expect(answer).toEqual(REFUSED)
+      expect(JSON.stringify(answer)).not.toContain('127.0.0.1')
+    }
+    expect(calls.map((c) => c[0])).toEqual([1, 1, 1, 1])
+    expect(calls[0]).toEqual([1, undefined, undefined])
+  })
+
+  it('refuses the picker', async () => {
+    const { ipc, calls } = paste(true)
+    await expect(ipc.invoke('oauth.paste', 13, [PASTE])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
   })
 })

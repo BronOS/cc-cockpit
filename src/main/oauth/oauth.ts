@@ -21,6 +21,10 @@
 //      closes after that, after 5 minutes, or on cancel (`close()` or the abort signal). The page
 //      it serves is fixed text: nothing from the query is reflected (no XSS in a page served
 //      from 127.0.0.1).
+//   4. In server mode (design-web.md §9.9) the person's browser is not on this machine, so the
+//      redirect fails there and the person pastes the address it ended on: `Loopback.paste` runs
+//      the same checks (`checkCallback`, shared with the HTTP handler) on that address and settles
+//      the login in-process. No request is made, so a pasted address cannot point anything anywhere.
 //
 // No `electron` import: unit tests load this file in plain Node.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -109,8 +113,15 @@ export interface Loopback {
   redirectUri: string
   /** The authorization code, or an OAuthError (provider error, timeout, cancel). */
   code: Promise<string>
-  /** Stop waiting (the code promise rejects with "cancelled" if still pending). */
-  close(): void
+  /**
+   * Settle the login with an address the person pasted (step 4): `checkCallback` on it, as the HTTP
+   * handler does on a request. 'settled' when it ended the login (a code, or the provider's error),
+   * 'refused' when it did not (a wrong origin, path or state; the login keeps waiting) or the login
+   * is over. Never logs or returns the address.
+   */
+  paste(url: URL): 'settled' | 'refused'
+  /** Stop waiting (the code promise rejects with `error`, "cancelled" by default, if still pending). */
+  close(error?: OAuthError): void
 }
 
 export interface LoopbackOptions {
@@ -146,6 +157,41 @@ function single(params: URLSearchParams, name: string): string | undefined {
   return all.length === 1 ? all[0] : undefined
 }
 
+/**
+ * What an address that came back to the loopback means for the login: the one set of checks for a
+ * request to the HTTP server and for a pasted address (step 4).
+ *   - `ignored`: not this login's answer (another origin, another path, a missing or wrong state); the
+ *     login keeps waiting. `status` is the HTTP answer for a request.
+ *   - `code`: the provider's code (one, non-empty, at most MAX_CODE_LENGTH).
+ *   - `failed`: the provider's answer, ending the login: its `error` (named only when it matches
+ *     ERROR_CODE) or no usable code.
+ * `origin` is the loopback's own (`http://127.0.0.1:<port>`): checked here too, so a request line in
+ * absolute form naming another host is not taken either. The state is compared in constant time.
+ */
+export type CallbackCheck =
+  | { kind: 'ignored'; status: number; reason: 'origin' | 'path' | 'state' }
+  | { kind: 'code'; code: string }
+  | { kind: 'failed'; error: OAuthError; status: number }
+
+export function checkCallback(url: URL, expected: { origin: string; state: string }): CallbackCheck {
+  if (url.origin !== expected.origin) return { kind: 'ignored', status: 400, reason: 'origin' }
+  if (url.pathname !== CALLBACK_PATH) return { kind: 'ignored', status: 404, reason: 'path' }
+  const state = single(url.searchParams, 'state')
+  if (state === undefined || !safeEqual(state, expected.state)) return { kind: 'ignored', status: 400, reason: 'state' }
+  // From here the address is the provider's answer to this login: it ends the login.
+  const error = url.searchParams.get('error')
+  if (error !== null) {
+    const known = ERROR_CODE.test(error) ? error : undefined
+    const reason = known !== undefined ? ` (${known})` : ''
+    return { kind: 'failed', status: 200, error: new OAuthError(`the provider refused the sign-in${reason}`, known) }
+  }
+  const value = single(url.searchParams, 'code')
+  if (value === undefined || value === '' || value.length > MAX_CODE_LENGTH) {
+    return { kind: 'failed', status: 400, error: new OAuthError('the provider sent no authorization code') }
+  }
+  return { kind: 'code', code: value }
+}
+
 /** Starts the loopback server; resolves once it listens (its port is then known). */
 export async function startLoopback(options: LoopbackOptions): Promise<Loopback> {
   const log = options.log ?? (() => {})
@@ -162,6 +208,7 @@ export async function startLoopback(options: LoopbackOptions): Promise<Loopback>
 
   const server = createServer()
   let port = 0
+  const origin = (): string => `http://127.0.0.1:${port}`
   let timer: ReturnType<typeof setTimeout> | undefined = undefined
   // Any web page can make the browser hit /callback?state=x in a loop for the whole login
   // window: the first one is logged, the rest only counted (one total line at shutdown).
@@ -196,30 +243,21 @@ export async function startLoopback(options: LoopbackOptions): Promise<Loopback>
     if (req.method !== 'GET') return respond(res, 405, 'Method not allowed.')
     let url: URL
     try {
-      url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`)
+      url = new URL(req.url ?? '/', origin())
     } catch {
       return respond(res, 400, 'Bad request.')
     }
-    if (url.pathname !== CALLBACK_PATH) return respond(res, 404, 'Not found.')
-    const state = single(url.searchParams, 'state')
-    if (state === undefined || !safeEqual(state, options.state)) {
-      if (++wrongStates === 1) log('oauth: ignored a callback request with a missing or wrong state')
-      return respond(res, 400, 'Bad request.')
+    const check = checkCallback(url, { origin: origin(), state: options.state })
+    if (check.kind === 'ignored') {
+      if (check.reason === 'state' && ++wrongStates === 1) log('oauth: ignored a callback request with a missing or wrong state')
+      return respond(res, check.status, check.status === 404 ? 'Not found.' : 'Bad request.')
     }
-    // From here the request is the provider's answer to this login: it ends the login.
-    const error = url.searchParams.get('error')
-    if (error !== null) {
-      const reason = ERROR_CODE.test(error) ? ` (${error})` : ''
-      respond(res, 200, PAGE_FAILED, true)
-      return settle({ error: new OAuthError(`the provider refused the sign-in${reason}`, ERROR_CODE.test(error) ? error : undefined) }, res)
-    }
-    const value = single(url.searchParams, 'code')
-    if (value === undefined || value === '' || value.length > MAX_CODE_LENGTH) {
-      respond(res, 400, PAGE_FAILED, true)
-      return settle({ error: new OAuthError('the provider sent no authorization code') }, res)
+    if (check.kind === 'failed') {
+      respond(res, check.status, PAGE_FAILED, true)
+      return settle({ error: check.error }, res)
     }
     respond(res, 200, PAGE_DONE, true)
-    settle({ code: value }, res)
+    settle({ code: check.code }, res)
   })
 
   await new Promise<void>((resolve, reject) => {
@@ -240,9 +278,16 @@ export async function startLoopback(options: LoopbackOptions): Promise<Loopback>
   else options.signal?.addEventListener('abort', onAbort, { once: true })
 
   return {
-    redirectUri: `http://127.0.0.1:${port}${CALLBACK_PATH}`,
+    redirectUri: `${origin()}${CALLBACK_PATH}`,
     code,
-    close: () => settle({ error: new OAuthError('sign-in was cancelled') })
+    paste: (url) => {
+      if (settled) return 'refused'
+      const check = checkCallback(url, { origin: origin(), state: options.state })
+      if (check.kind === 'ignored') return 'refused'
+      settle(check.kind === 'code' ? { code: check.code } : { error: check.error })
+      return 'settled'
+    },
+    close: (error) => settle({ error: error ?? new OAuthError('sign-in was cancelled') })
   }
 }
 

@@ -9,10 +9,12 @@ import { HostContexts } from '../../src/host/ctx'
 import { PluginLoader } from '../../src/host/loader'
 import { MAX_TOKEN_RESPONSE_BYTES, OAuthError } from '../../src/main/oauth/oauth'
 import type { OpenTarget } from '../../src/main/external/open-external'
+import { MAX_OAUTH_PASTE_LENGTH } from '../../src/shared/oauth-paste'
 import {
   checkOAuthSpec,
   checkRefreshToken,
   MAX_CLIENT_ID_LENGTH,
+  MAX_PASTE_ATTEMPTS,
   MAX_SCOPES,
   PluginOAuth,
   type CheckedOAuthSpec,
@@ -42,6 +44,8 @@ let server: FakeOAuthServer
 let opened: string[]
 /** The target openExternal got with each URL. */
 let openedFor: OpenTarget[]
+/** The sign-in id openExternal got with each URL (what the notice's paste box names). */
+let signInsOpened: string[]
 /** Called with each URL openExternal gets (default: nothing; a test plays the browser itself). */
 let onOpen: (url: string) => void
 
@@ -53,9 +57,10 @@ const toFake: typeof fetch = (input, init) => fetch(String(input instanceof Requ
 
 function oauthWith(options: Partial<PluginOAuthOptions> = {}): PluginOAuth {
   return new PluginOAuth({
-    openExternal: async (url, target) => {
+    openExternal: async (url, target, extra) => {
       opened.push(url)
       openedFor.push(target)
+      signInsOpened.push(extra.signIn)
       onOpen(url)
     },
     fetch: toFake,
@@ -96,6 +101,7 @@ beforeEach(async () => {
   server = await new FakeOAuthServer({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }).start()
   opened = []
   openedFor = []
+  signInsOpened = []
   onOpen = () => {}
 })
 
@@ -367,6 +373,165 @@ describe('PluginOAuth.authorize', () => {
     server.delayMs = 500
     void browseOnOpen()
     await expect(oauthWith({ fetchTimeoutMs: 50 }).authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('did not answer in time')
+  })
+})
+
+// Server mode (design-web.md §9.9): the redirect fails in the person's browser, which pastes the
+// address it ended on into the sign-in's notice; main settles the sign-in in-process by its id, for
+// the caller's own window only, and makes no request but the token exchange.
+describe('PluginOAuth.paste', () => {
+  /** The address the provider's redirect ends on for the sign-in opened `n`-th (consent played by the fake). */
+  const redirectOf = (n: number, override: { state?: string; error?: string } = {}): string => server.authorize(opened[n]!, override)
+
+  /** fetch through the fake, recording every URL fetched. */
+  function recordingFetch(): { fetch: typeof fetch; urls: string[] } {
+    const urls: string[] = []
+    return {
+      urls,
+      fetch: (input, init) => {
+        urls.push(String(input instanceof Request ? input.url : input))
+        return toFake(input, init)
+      }
+    }
+  }
+
+  it('the notice gets a fresh sign-in id; the right address settles it and only the token exchange is fetched', async () => {
+    const rec = recordingFetch()
+    const global = vi.spyOn(globalThis, 'fetch')
+    const oauth = oauthWith({ fetch: rec.fetch })
+    const pending = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    expect(signInsOpened[0]).toMatch(/^[A-Za-z0-9_-]{22}$/)
+    const redirect = redirectOf(0)
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], `  ${redirect}\n`)).toBe(true)
+    await expect(pending).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
+    // No request to the pasted address (nor anywhere but the token endpoint), from main's fetch or any other.
+    expect(rec.urls).toEqual([httpsTokenUrl()])
+    expect(global.mock.calls.map((c) => String(c[0]))).not.toContain(redirect)
+    expect(global.mock.calls.every((c) => !String(c[0]).startsWith('http://127.0.0.1:') || String(c[0]).endsWith('/token'))).toBe(true)
+    global.mockRestore()
+    // The loopback is closed, and a second paste of the same address is refused.
+    await expect(fetch(redirect)).rejects.toThrow()
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirect)).toBe(false)
+    // A second sign-in gets another id.
+    void oauth.authorize(spec(), new AbortController().signal, TARGET).catch(() => {})
+    await vi.waitFor(() => expect(signInsOpened).toHaveLength(2))
+    expect(signInsOpened[1]).not.toBe(signInsOpened[0])
+  })
+
+  it('refuses a wrong origin, path or state, too long a text and no address alike; the sign-in keeps waiting', async () => {
+    const oauth = oauthWith()
+    const pending = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    const id = signInsOpened[0]!
+    const good = new URL(redirectOf(0))
+    const port = Number(good.port)
+    const wrongState = new URL(good)
+    wrongState.searchParams.set('state', 'not-the-state')
+    for (const text of [
+      good.toString().replace('127.0.0.1', 'localhost'),
+      good.toString().replace(`:${port}/`, `:${port + 1}/`),
+      good.toString().replace('/callback', '/callback2'),
+      wrongState.toString()
+    ]) {
+      expect(oauth.paste(TARGET.windowId, id, text)).toBe(false)
+    }
+    // Refused unread, not counted: these never reach the checks.
+    expect(oauth.paste(TARGET.windowId, id, `${good.toString()}&pad=${'x'.repeat(MAX_OAUTH_PASTE_LENGTH)}`)).toBe(false)
+    expect(oauth.paste(TARGET.windowId, id, 42)).toBe(false)
+    expect(server.tokenRequests).toEqual([])
+    // Four refused so far (the limit is MAX_PASTE_ATTEMPTS): the right one still finishes it.
+    expect(oauth.paste(TARGET.windowId, id, good.toString())).toBe(true)
+    await expect(pending).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
+  })
+
+  it('a pasted provider error or an oversized code ends the sign-in with the loopback’s own error', async () => {
+    const oauth = oauthWith()
+    const denied = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirectOf(0, { error: 'access_denied' }))).toBe(true)
+    await expect(denied).rejects.toThrow('the provider refused the sign-in (access_denied)')
+    const big = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(2))
+    const url = new URL(redirectOf(1))
+    url.searchParams.set('code', 'c'.repeat(5000))
+    expect(oauth.paste(TARGET.windowId, signInsOpened[1], url.toString())).toBe(true)
+    await expect(big).rejects.toThrow('the provider sent no authorization code')
+    expect(server.tokenRequests).toEqual([])
+  })
+
+  it(`ends the sign-in at the ${MAX_PASTE_ATTEMPTS}th refused paste; every later paste is refused`, async () => {
+    const lines: string[] = []
+    const oauth = oauthWith({ log: (m) => lines.push(m) })
+    const pending = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    const id = signInsOpened[0]!
+    const good = redirectOf(0)
+    const wrong = new URL(good)
+    wrong.searchParams.set('state', 'guess')
+    for (let i = 0; i < MAX_PASTE_ATTEMPTS; i++) expect(oauth.paste(TARGET.windowId, id, wrong.toString())).toBe(false)
+    await expect(pending).rejects.toThrow(`sign-in ended after ${MAX_PASTE_ATTEMPTS} pasted addresses`)
+    expect(oauth.paste(TARGET.windowId, id, good)).toBe(false)
+    expect(server.tokenRequests).toEqual([])
+    // Counted in the log, never the address, its code or its state.
+    expect(lines).toHaveLength(MAX_PASTE_ATTEMPTS)
+    const state = new URL(good).searchParams.get('state')!
+    const code = new URL(good).searchParams.get('code')!
+    for (const line of lines) {
+      expect(line).not.toContain('127.0.0.1')
+      expect(line).not.toContain(state)
+      expect(line).not.toContain(code)
+      expect(line).not.toContain('guess')
+    }
+  })
+
+  it('two sign-ins of one window are each settled by their own id, never by the address’s port', async () => {
+    const oauth = oauthWith()
+    const a = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    const b = oauth.authorize(spec({ scopes: ['other'] }), new AbortController().signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(2))
+    const [idA, idB] = signInsOpened as [string, string]
+    const redirectA = redirectOf(0)
+    const redirectB = redirectOf(1)
+    // A's address under B's id (and B's under A's) is refused: B's loopback has another port and state.
+    expect(oauth.paste(TARGET.windowId, idB, redirectA)).toBe(false)
+    expect(oauth.paste(TARGET.windowId, idA, redirectB)).toBe(false)
+    expect(oauth.paste(TARGET.windowId, idB, redirectB)).toBe(true)
+    expect(oauth.paste(TARGET.windowId, idA, redirectA)).toBe(true)
+    const [ta, tb] = await Promise.all([a, b])
+    expect(ta.accessToken).not.toBe(tb.accessToken)
+  })
+
+  it('refuses another window’s sign-in, an unknown id, a malformed id and a sign-in tied to no window', async () => {
+    const oauth = oauthWith()
+    const pending = oauth.authorize(spec(), new AbortController().signal, TARGET)
+    const appWide = oauth.authorize(spec(), new AbortController().signal, 'app')
+    await vi.waitFor(() => expect(opened).toHaveLength(2))
+    const redirect = redirectOf(0)
+    expect(oauth.paste(TARGET.windowId + 1, signInsOpened[0], redirect)).toBe(false)
+    expect(oauth.paste(TARGET.windowId, 'A'.repeat(22), redirect)).toBe(false)
+    for (const id of [undefined, 7, '', 'short', 'x'.repeat(65), 'has space in it 12345']) {
+      expect(oauth.paste(TARGET.windowId, id, redirect)).toBe(false)
+    }
+    expect(oauth.paste(TARGET.windowId, signInsOpened[1], redirectOf(1))).toBe(false)
+    // None of those counted against it, or touched it: its own window's paste settles it.
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirect)).toBe(true)
+    await expect(pending).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
+    // The desktop's way still works for the one tied to no window: the browser comes back to the loopback.
+    expect((await fetch(redirectOf(1))).status).toBe(200)
+    await expect(appWide).resolves.toMatchObject({ accessToken: expect.stringMatching(/^access-/) })
+  })
+
+  it('a sign-in that is over (timed out, cancelled) is refused like an unknown one', async () => {
+    const oauth = oauthWith({ loginTimeoutMs: 50 })
+    await expect(oauth.authorize(spec(), new AbortController().signal, TARGET)).rejects.toThrow('timed out')
+    expect(oauth.paste(TARGET.windowId, signInsOpened[0], redirectOf(0))).toBe(false)
+    const controller = new AbortController()
+    const cancelled = oauthWith().authorize(spec(), controller.signal, TARGET)
+    await vi.waitFor(() => expect(opened).toHaveLength(2))
+    controller.abort()
+    await expect(cancelled).rejects.toThrow('cancelled')
+    expect(oauth.paste(TARGET.windowId, signInsOpened[1], redirectOf(1))).toBe(false)
   })
 })
 

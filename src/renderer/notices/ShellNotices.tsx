@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
+import { MAX_OAUTH_PASTE_LENGTH, OAUTH_PASTE_REFUSED } from '../../shared/oauth-paste'
 import {
   addLinkAsk,
   addSharedAsk,
@@ -12,6 +13,9 @@ import {
   linkNoticeAction,
   nextTitleMark,
   noteUnseen,
+  oauthSignInOf,
+  addSignIn,
+  type OAuthSignInNotice,
   type LinkAsk,
   type PageNotice,
   type TitleMark,
@@ -114,12 +118,29 @@ function PageNotices(): React.JSX.Element | null {
  * not this screen). While the click that asked for it still counts as the person's (transient
  * activation, linkNoticeAction) the link opens in a new tab at once; otherwise a browser would block
  * the tab, so the link is shown to click. One open per event, never retried. The last notice only;
- * `noopener noreferrer` so the opened page learns nothing about this one.
+ * `noopener noreferrer` so the opened page learns nothing about this one. A plugin's OAuth sign-in in
+ * server mode (`signIn` in the event, design-web.md §9.9) gets a notice of its own that stays until it
+ * is finished or dismissed (OAuthSignIn).
  */
 function LinkNotice(): React.JSX.Element | null {
   const [url, setUrl] = useState<string | undefined>(undefined)
+  const [signIns, setSignIns] = useState<readonly OAuthSignInNotice[]>([])
   useEffect(() => {
     return window.cockpit.on('app.linkNotice', (p) => {
+      const signIn = oauthSignInOf(p)
+      if (signIn !== undefined) {
+        // A plugin's sign-in (server mode): opened at once like any link while the click counts, and
+        // its notice stays either way, since the box is where the sign-in ends.
+        if (isWebShell() && navigator.userActivation?.isActive === true) {
+          try {
+            window.open(signIn.url, '_blank', 'noopener,noreferrer')
+          } catch {
+            // The link is in the notice.
+          }
+        }
+        setSignIns((prev) => addSignIn(prev, signIn))
+        return
+      }
       const action = linkNoticeAction(p, {
         webShell: isWebShell(),
         // Absent in an older browser: no way to know, so the notice.
@@ -138,14 +159,99 @@ function LinkNotice(): React.JSX.Element | null {
       setUrl(action.url)
     })
   }, [])
-  if (url === undefined) return null
+  const gone = (signIn: string): void => setSignIns((prev) => prev.filter((n) => n.signIn !== signIn))
+  return (
+    <>
+      {signIns.length > 0 ? (
+        <section className="oauth-notices" aria-label="Plugin sign-ins">
+          {signIns.map((n) => (
+            <OAuthSignIn key={n.signIn} notice={n} onGone={() => gone(n.signIn)} />
+          ))}
+        </section>
+      ) : null}
+      {url !== undefined ? <PlainLinkNotice url={url} onGone={() => setUrl(undefined)} /> : null}
+    </>
+  )
+}
+
+/**
+ * A plugin's OAuth sign-in in a server's browser (design-web.md §9.9): the provider's page, then a box
+ * for the address its redirect ends on. That redirect goes to the server's own 127.0.0.1, which this
+ * browser cannot reach, so the tab shows an error page whose address holds the answer; main settles
+ * the sign-in with it (`oauth.paste`) and makes no request. A refusal shows main's one text, never the
+ * address. Nothing here takes the focus: a key typed for Claude stays in the terminal.
+ */
+function OAuthSignIn(props: { notice: OAuthSignInNotice; onGone: () => void }): React.JSX.Element {
+  const { notice, onGone } = props
+  const [text, setText] = useState('')
+  const [error, setError] = useState<string | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+  const inputId = useId()
+  const submit = (e: React.FormEvent): void => {
+    e.preventDefault()
+    if (busy || text.trim() === '') return
+    setBusy(true)
+    setError(undefined)
+    window.cockpit
+      .invoke('oauth.paste', { signIn: notice.signIn, url: text })
+      .then(
+        (answer) => {
+          if (answer.ok) onGone()
+          else setError(answer.error)
+        },
+        () => setError(OAUTH_PASTE_REFUSED)
+      )
+      .finally(() => setBusy(false))
+  }
+  return (
+    <form className="oauth-notice" role="group" aria-label="Plugin sign-in" data-testid="oauth-notice" onSubmit={submit}>
+      <div className="oauth-notice-head">
+        <span className="link-notice-text">A plugin asks you to sign in:</span>
+        <a href={notice.url} target="_blank" rel="noopener noreferrer" className="link-notice-link">
+          {notice.url}
+        </a>
+        <button type="button" className="link-notice-close" aria-label="Dismiss sign-in" onClick={onGone}>
+          ×
+        </button>
+      </div>
+      <label htmlFor={inputId} className="oauth-notice-help">
+        After you sign in, the tab ends on a page that does not load, at an address starting with http://127.0.0.1. Copy that whole
+        address and paste it here:
+      </label>
+      <div className="oauth-notice-row">
+        <input
+          id={inputId}
+          type="text"
+          className="oauth-notice-input"
+          value={text}
+          maxLength={MAX_OAUTH_PASTE_LENGTH}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <button type="submit" disabled={busy || text.trim() === ''}>
+          Finish sign-in
+        </button>
+      </div>
+      {error !== undefined ? (
+        <p className="oauth-notice-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </form>
+  )
+}
+
+/** A plain link's notice (see LinkNotice): clicked or dismissed, it goes. */
+function PlainLinkNotice(props: { url: string; onGone: () => void }): React.JSX.Element {
+  const { url, onGone } = props
   return (
     <div className="link-notice" role="status">
       <span className="link-notice-text">A link wants to open:</span>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="link-notice-link" onClick={() => setUrl(undefined)}>
+      <a href={url} target="_blank" rel="noopener noreferrer" className="link-notice-link" onClick={onGone}>
         {url}
       </a>
-      <button type="button" className="link-notice-close" aria-label="Dismiss" onClick={() => setUrl(undefined)}>
+      <button type="button" className="link-notice-close" aria-label="Dismiss" onClick={onGone}>
         ×
       </button>
     </div>

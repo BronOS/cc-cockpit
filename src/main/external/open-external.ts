@@ -25,13 +25,25 @@ import { warnLog } from '../warn-log'
  */
 export type OpenTarget = { windowId: number; viewId?: ViewId } | 'app'
 
+/**
+ * What a link may carry besides its address. `signIn`: the id of a plugin's pending OAuth sign-in
+ * (oauth/plugin-oauth.ts), put in the notice in server mode only, where it gives the notice its box
+ * for the failed redirect's address (design-web.md §9.9). The desktop's system browser never sees it.
+ */
+export interface OpenExtra {
+  signIn?: string
+}
+
 /** Opens `url` (already checked http(s)) for `target`; rejects when it was refused. */
-export type OpenExternal = (url: string, target: OpenTarget) => Promise<void>
+export type OpenExternal = (url: string, target: OpenTarget, extra?: OpenExtra) => Promise<void>
+
+/** `app.linkNotice`'s payload (shared/ipc.ts). */
+export type LinkNoticePayload = { url: string; signIn?: string }
 
 /** The ViewRegistry methods the adapter uses (a fake in unit tests). */
 export interface LinkViews {
-  toView(viewId: ViewId, channel: 'app.linkNotice', payload: { url: string }): boolean
-  toBrowserViews(windowId: number | 'all', channel: 'app.linkNotice', payload: { url: string }): number
+  toView(viewId: ViewId, channel: 'app.linkNotice', payload: LinkNoticePayload): boolean
+  toBrowserViews(windowId: number | 'all', channel: 'app.linkNotice', payload: LinkNoticePayload): number
 }
 
 export interface OpenExternalOptions {
@@ -61,7 +73,7 @@ export function urlForLog(url: string): string {
 
 export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
   const log = options.log ?? warnLog
-  return async (url, target) => {
+  return async (url, target, extra) => {
     const asking = target !== 'app' && target.viewId !== undefined && isRemoteViewId(target.viewId) ? target.viewId : undefined
     if (!options.server) {
       // v1 (design-web.md §6.1): the host's browser is not a browser view's screen. A view that is gone
@@ -76,9 +88,10 @@ export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
     // Server mode. Only the asking view when a browser asked: another device of the person may be on
     // the same window, and a link it did not ask for would open there at once (a click's activation).
     // Its view gone means its person left; the link is refused rather than sent to another screen.
+    const payload: LinkNoticePayload = extra?.signIn !== undefined ? { url, signIn: extra.signIn } : { url }
     let reached: number
-    if (asking !== undefined) reached = options.views.toView(asking, 'app.linkNotice', { url }) ? 1 : 0
-    else reached = options.views.toBrowserViews(target === 'app' ? 'all' : target.windowId, 'app.linkNotice', { url })
+    if (asking !== undefined) reached = options.views.toView(asking, 'app.linkNotice', payload) ? 1 : 0
+    else reached = options.views.toBrowserViews(target === 'app' ? 'all' : target.windowId, 'app.linkNotice', payload)
     if (reached > 0) return
     log(`open external: ${NO_BROWSER_TEXT}; not opened: ${urlForLog(url)}`)
     throw new Error(NO_BROWSER_TEXT)

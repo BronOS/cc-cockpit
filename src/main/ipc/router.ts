@@ -61,6 +61,8 @@ import type { SenderContext } from '../windows/window-manager'
 import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 import type { OpenTarget } from '../external/open-external'
 import { warnLog } from '../warn-log'
+import { OAUTH_PASTE_REFUSED, type OAuthPasteAnswer } from '../../shared/oauth-paste'
+import { isPlainObject } from '../../shared/guards'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
 export interface IpcEventLike {
@@ -922,6 +924,30 @@ export function registerNoticeHandlers(router: IpcRouter, deps: NoticeHandlerDep
       return channel === 'notices.click' ? deps.click(ctx.windowId, requestId) : deps.dismiss(ctx.windowId, requestId)
     })
   }
+}
+
+/** A plugin's OAuth sign-in settled by a pasted address (oauth/plugin-oauth.ts, design-web.md §9.9). */
+export interface OAuthPasteHandlerDeps {
+  /** Main's server flag: the paste box exists only then; on the desktop the loopback gets the redirect. */
+  server: boolean
+  /** PluginOAuth.paste: true when it settled the sign-in `signIn` of `windowId`; the payload's fields unchecked. */
+  paste(windowId: number, signIn: unknown, url: unknown): boolean
+}
+
+/**
+ * `adapted`: a paste from a browser view of a server, for a sign-in of the window main bound the view
+ * to (ctx), never one the payload names. Everything else gets the same answer as a wrong address
+ * (OAUTH_PASTE_REFUSED, never the address): a remote view on the desktop (where `ctx.oauth` from a
+ * browser is refused anyway, and the redirect reaches the loopback), the desktop page in either mode
+ * (it shows no box), a malformed payload. Answered, not thrown, so no error line carries the payload.
+ */
+export function registerOAuthPasteHandlers(router: IpcRouter, deps: OAuthPasteHandlerDeps): void {
+  const refused: OAuthPasteAnswer = { ok: false, error: OAUTH_PASTE_REFUSED }
+  router.handleProject('oauth.paste', (ctx, payload, view): OAuthPasteAnswer => {
+    if (!deps.server || !view.remote) return refused
+    const { signIn, url } = isPlainObject(payload) ? payload : {}
+    return deps.paste(ctx.windowId, signIn, url) ? { ok: true } : refused
+  })
 }
 
 /** The "Install ccc command" row of General (CccCommandInstaller, main/hooks/ccc-install.ts). */

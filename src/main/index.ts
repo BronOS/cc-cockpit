@@ -57,6 +57,7 @@ import {
   registerWebAccessHandlers,
   registerProjectSettingsHandlers,
   registerNoticeHandlers,
+  registerOAuthPasteHandlers,
   registerUpdateHandlers,
   registerSettingsHandlers,
   registerServiceHandlers,
@@ -380,7 +381,7 @@ function start(server: boolean): void {
   const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: warnLog })
   // ctx.oauth (plugin-oauth.ts). The auth URL goes through the openExternal adapter (defined below
   // with the view registry; a sign-in only starts once a host runs), for the window that asked.
-  const pluginOAuth = new PluginOAuth({ openExternal: (url, target) => openExternal(url, target), log: warnLog })
+  const pluginOAuth = new PluginOAuth({ openExternal: (url, target, extra) => openExternal(url, target, extra), log: warnLog })
   const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
   // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).
@@ -2334,6 +2335,12 @@ function start(server: boolean): void {
     server,
     click: (windowId, requestId) => pageNotices?.click(windowId, requestId) ?? false,
     dismiss: (windowId, requestId) => pageNotices?.dismiss(windowId, requestId) ?? false
+  })
+  // A plugin's OAuth sign-in in server mode: the failed redirect's address pasted in a browser view,
+  // for a sign-in of that view's own window (plugin-oauth.ts).
+  registerOAuthPasteHandlers(router, {
+    server,
+    paste: (windowId, signIn, url) => pluginOAuth.paste(windowId, signIn, url)
   })
   registerUpdateHandlers(router, {
     state: updateState,

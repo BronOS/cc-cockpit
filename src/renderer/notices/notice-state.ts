@@ -3,6 +3,7 @@
 // Move to Trash asks, and a server's in-page notices with the browser tab's title mark.
 
 import type { IpcEventMap } from '../../shared/ipc'
+import { isSignInId } from '../../shared/oauth-paste'
 
 export type LinkAsk = IpcEventMap['links.ask']
 export type TrashAsk = IpcEventMap['trash.ask']
@@ -33,6 +34,32 @@ export function linkNoticeAction(payload: unknown, env: { webShell: boolean; act
   const url = linkNoticeUrl(payload)
   if (url === undefined) return { kind: 'none' }
   return env.webShell && env.activationActive ? { kind: 'open', url } : { kind: 'notice', url }
+}
+
+/**
+ * A plugin's OAuth sign-in in a server's browser (design-web.md §9.9): an `app.linkNotice` whose
+ * `signIn` names main's pending sign-in. Its notice keeps the link and adds a box for the address the
+ * provider's redirect ends on (`oauth.paste`); undefined for a plain link or a malformed id (then the
+ * plain notice, linkNoticeAction).
+ */
+export type OAuthSignInNotice = { url: string; signIn: string }
+
+export function oauthSignInOf(payload: unknown): OAuthSignInNotice | undefined {
+  const url = linkNoticeUrl(payload)
+  const signIn: unknown = (payload as { signIn?: unknown } | null | undefined)?.signIn
+  return url !== undefined && isSignInId(signIn) ? { url, signIn } : undefined
+}
+
+/** At most this many sign-in notices at once (one pending sign-in per plugin; a few plugins at most). */
+export const MAX_SIGN_IN_NOTICES = 4
+
+/**
+ * A sign-in notice joins once, by id (the same array when it is there); past the cap the oldest goes,
+ * its sign-in long since replaced or timed out (a paste for it is refused like any other).
+ */
+export function addSignIn(list: readonly OAuthSignInNotice[], n: OAuthSignInNotice): readonly OAuthSignInNotice[] {
+  if (list.some((x) => x.signIn === n.signIn)) return list
+  return [...list, n].slice(-MAX_SIGN_IN_NOTICES)
 }
 
 /**

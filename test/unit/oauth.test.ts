@@ -5,6 +5,7 @@
 import { request, ServerResponse } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  checkCallback,
   httpsUrl,
   MAX_TOKEN_RESPONSE_BYTES,
   OAuthError,
@@ -147,6 +148,86 @@ describe('loopback server', () => {
     lb2.close()
     await expect(lb2.code).rejects.toThrow('cancelled')
     await expect(raw(portOf(lb2.redirectUri), '/callback?state=s&code=c')).rejects.toThrow()
+  })
+
+  it('close() with an error ends the login with that error', async () => {
+    const lb = await startLoopback({ state: 's' })
+    lb.close(new OAuthError('ended for a reason'))
+    await expect(lb.code).rejects.toThrow('ended for a reason')
+  })
+})
+
+// Server mode (design-web.md §9.9): the address the redirect ended on, pasted, settles the login
+// in-process with the HTTP handler's own checks (checkCallback).
+describe('checkCallback', () => {
+  const expected = { origin: 'http://127.0.0.1:4100', state: 'the-state' }
+  const check = (url: string) => checkCallback(new URL(url), expected)
+
+  it('takes the code from the loopback origin, /callback and the one right state', () => {
+    expect(check('http://127.0.0.1:4100/callback?state=the-state&code=c1')).toEqual({ kind: 'code', code: 'c1' })
+  })
+
+  it('ignores another origin, path or state: the login keeps waiting', () => {
+    for (const url of [
+      'http://127.0.0.1:4101/callback?state=the-state&code=c',
+      'http://localhost:4100/callback?state=the-state&code=c',
+      'https://127.0.0.1:4100/callback?state=the-state&code=c',
+      'http://evil.example/callback?state=the-state&code=c'
+    ]) {
+      expect(check(url)).toMatchObject({ kind: 'ignored', reason: 'origin' })
+    }
+    expect(check('http://127.0.0.1:4100/callbac?state=the-state&code=c')).toEqual({ kind: 'ignored', status: 404, reason: 'path' })
+    expect(check('http://127.0.0.1:4100/callback/?state=the-state&code=c')).toMatchObject({ reason: 'path' })
+    for (const q of ['state=wrong&code=c', 'code=c', 'state=the-state&state=the-state&code=c', 'state=&code=c']) {
+      expect(check(`http://127.0.0.1:4100/callback?${q}`)).toEqual({ kind: 'ignored', status: 400, reason: 'state' })
+    }
+  })
+
+  it('ends the login on the provider error (named only when plain) and on no, an empty or an oversized code', () => {
+    const named = check('http://127.0.0.1:4100/callback?state=the-state&error=access_denied')
+    expect(named).toMatchObject({ kind: 'failed', status: 200 })
+    expect(named.kind === 'failed' && named.error.code).toBe('access_denied')
+    const odd = check(`http://127.0.0.1:4100/callback?state=the-state&error=${encodeURIComponent('<b>x</b>')}`)
+    expect(odd.kind === 'failed' && odd.error.message).toBe('the provider refused the sign-in')
+    for (const q of ['', '&code=', `&code=${'x'.repeat(4097)}`, '&code=a&code=b']) {
+      const r = check(`http://127.0.0.1:4100/callback?state=the-state${q}`)
+      expect(r.kind === 'failed' && r.error.message).toBe('the provider sent no authorization code')
+    }
+  })
+})
+
+describe('Loopback.paste', () => {
+  it('settles with the right address, makes no request, and closes the server', async () => {
+    const lb = await startLoopback({ state: 's' })
+    const port = portOf(lb.redirectUri)
+    expect(lb.paste(new URL(`${lb.redirectUri}?state=wrong&code=c`))).toBe('refused')
+    expect(lb.paste(new URL(`http://127.0.0.1:${port + 1}/callback?state=s&code=c`))).toBe('refused')
+    expect(lb.paste(new URL(`http://127.0.0.1:${port}/other?state=s&code=c`))).toBe('refused')
+    // Still waiting: the server answers the real redirect's checks as before.
+    expect((await raw(port, '/callback?state=wrong&code=c')).status).toBe(400)
+    expect(lb.paste(new URL(`${lb.redirectUri}?state=s&code=pasted-code`))).toBe('settled')
+    await expect(lb.code).resolves.toBe('pasted-code')
+    await expect.poll(() => raw(port, '/callback?state=s&code=c').then(() => 'open', () => 'closed')).toBe('closed')
+    // Over: a second paste, even the right one, is refused.
+    expect(lb.paste(new URL(`${lb.redirectUri}?state=s&code=again`))).toBe('refused')
+  })
+
+  it('a pasted provider error or an oversized code ends the login as the HTTP handler does', async () => {
+    const denied = await startLoopback({ state: 's' })
+    expect(denied.paste(new URL(`${denied.redirectUri}?state=s&error=access_denied`))).toBe('settled')
+    await expect(denied.code).rejects.toThrow('the provider refused the sign-in (access_denied)')
+    const big = await startLoopback({ state: 's' })
+    expect(big.paste(new URL(`${big.redirectUri}?state=s&code=${'x'.repeat(5000)}`))).toBe('settled')
+    await expect(big.code).rejects.toThrow('the provider sent no authorization code')
+  })
+
+  it('logs nothing for a paste (the caller counts refusals without the address)', async () => {
+    const lines: string[] = []
+    const lb = await startLoopback({ state: 's', log: (m) => lines.push(m) })
+    lb.paste(new URL(`${lb.redirectUri}?state=wrong&code=c`))
+    lb.paste(new URL(`${lb.redirectUri}?state=s&code=c`))
+    await lb.code
+    expect(lines).toEqual([])
   })
 })
 

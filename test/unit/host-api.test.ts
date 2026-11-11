@@ -2266,6 +2266,23 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     expect(authorizes).toBe(0)
   })
 
+  // design-web.md §9.9: in server mode every sign-in is a browser's (a link notice with the paste box),
+  // so a browser origin goes through to PluginOAuth, with that view as the notice's target.
+  it('oauth.authorize from a browser view runs in server mode, for this host’s window and that view', async () => {
+    const targets: unknown[] = []
+    deps.oauth = { ...unusedOAuth, authorize: async (_spec, _signal, target) => (targets.push(target), { accessToken: 't' } as never) }
+    deps.viewWindow = (viewId) => viewWindows[viewId]
+    deps.server = true
+    const spec = { authUrl: 'https://idp.example/auth', tokenUrl: 'https://idp.example/token', clientId: 'c', scopes: ['s'] }
+    await expect(hostWithMeta()('oauth.authorize', { pluginId: 'a.one', spec }, { view: 'web:1' })).resolves.toEqual({ accessToken: 't' })
+    // A view of another window is no origin of this host's (the hint is dropped): the window's browsers.
+    await expect(hostWithMeta()('oauth.authorize', { pluginId: 'a.one', spec }, { view: 'web:2' })).resolves.toEqual({ accessToken: 't' })
+    expect(targets).toEqual([
+      { windowId: WIN_A, viewId: 'web:1' },
+      { windowId: WIN_A, viewId: undefined }
+    ])
+  })
+
   it('ignores every view hint when main cannot check views', async () => {
     const focused: unknown[][] = []
     deps.focusTab = (...args) => {

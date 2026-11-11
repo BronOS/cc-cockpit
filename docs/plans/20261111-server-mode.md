@@ -945,24 +945,24 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/oauth.test.ts`, `plugin-oauth.test.ts`, `ipc-remote-class.test.ts`, `ipc-router.test.ts`,
   `test/e2e/server-mode.spec.ts` (with `test/fakes/fake-oauth-server.ts`)
 
-- [ ] in server mode `ctx.oauth` from a browser is allowed: the auth URL goes out as a link notice (Task 4, to the
+- [x] in server mode `ctx.oauth` from a browser is allowed: the auth URL goes out as a link notice (Task 4, to the
       window and origin view `PluginOAuth` got with the sign-in) that has a box where the person pastes the failed URL.
       On the desktop a remote view still gets "sign in on the desktop"
-- [ ] main mints an id for each pending sign-in and sends it with the notice. A paste names that id, and main looks it
+- [x] main mints an id for each pending sign-in and sends it with the notice. A paste names that id, and main looks it
       up among the pending sign-ins of the caller's window only (the view the router bound), never by the pasted host
       or port: two plugins of one window that each wait are told apart by it. One pending sign-in per plugin as today
-- [ ] main settles the pending sign-in in-process with the callback handler's own checks, shared with the HTTP handler:
+- [x] main settles the pending sign-in in-process with the callback handler's own checks, shared with the HTTP handler:
       the origin equals the pending one, the path is `/callback`, one `state` compared in constant time, the code's
       length, the error code's pattern. No request is made
-- [ ] attempts are limited, the pasted text is capped, and every refusal has the same text and never echoes the URL
-- [ ] `api.md` says how a sign-in works in server mode, in the same change; if `src/sdk/types.ts` changed, copy it to
-      the example and run `npm run build:example` in the same change
-- [ ] write tests: a wrong origin, path or `state`, an oversize code, the attempt limit, no request made (a fetch
+- [x] attempts are limited, the pasted text is capped, and every refusal has the same text and never echoes the URL
+- [x] `api.md` says how a sign-in works in server mode, in the same change; if `src/sdk/types.ts` changed, copy it to
+      the example and run `npm run build:example` in the same change (types.ts unchanged, no build:example)
+- [x] write tests: a wrong origin, path or `state`, an oversize code, the attempt limit, no request made (a fetch
       recorder), two pending sign-ins of one window settled each by its own id, no URL in errors or logs, the desktop
       unchanged; refused with the same text: no pending sign-in, a second paste after a settle, a paste from a remote
       view on the desktop, an id of another window's sign-in, an unknown id; e2e: a plugin signs in against the fake
       OAuth server by pasting the redirect in the browser
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `plugin-oauth`) - must pass before next task
+- [x] run tests and `npm run test:e2e` (`server-mode`, `plugin-oauth`) - must pass before next task
 
 ### Task 25: Verify acceptance criteria (final regression pass) [model: sonnet]
 

@@ -22,6 +22,16 @@
 // Error messages carry at most the provider's `error` code (`invalid_grant`): never a token, a
 // code, a client secret, a URL (it may hold a secret in its query) or a response body.
 //
+// Server mode (design-web.md §9.9): the loopback is on the server, so the provider's redirect fails
+// in the person's browser. Each pending sign-in gets an id main mints, sent with the auth URL's link
+// notice (the openExternal adapter puts it in `app.linkNotice` in server mode only); the notice has a
+// box where the person pastes the address the tab ended on, and `paste` settles the sign-in with it
+// in-process (`Loopback.paste`, the callback handler's own checks). The sign-in is looked up by that id
+// among the caller's window's only (the window the router bound the view to, never the pasted host or
+// port), so two plugins of one window waiting at once are told apart by it. MAX_PASTE_ATTEMPTS refused
+// pastes end the sign-in. Every refusal is the same `false` (the router answers OAUTH_PASTE_REFUSED),
+// and nothing logged names the address.
+//
 // No `electron` import (main passes the openExternal adapter in): unit tests load this file in Node.
 import { isPlainObject } from '../../shared/guards'
 import type { OpenTarget } from '../external/open-external'
@@ -39,9 +49,11 @@ import {
   randomToken,
   readLimited,
   startLoopback,
+  type Loopback,
   type TokenResponse
 } from './oauth'
 import { warnLog } from '../warn-log'
+import { isSignInId, MAX_OAUTH_PASTE_LENGTH } from '../../shared/oauth-paste'
 
 export const MAX_CLIENT_ID_LENGTH = 500
 const MAX_CLIENT_SECRET_LENGTH = 4096
@@ -113,9 +125,9 @@ export interface PluginOAuthOptions {
   /**
    * Opens the auth URL for the window that asked (main: the openExternal adapter,
    * external/open-external.ts: the system browser on the desktop, a link notice in that window's
-   * browsers in server mode).
+   * browsers in server mode, carrying `signIn` for the paste box).
    */
-  openExternal(url: string, target: OpenTarget): Promise<void>
+  openExternal(url: string, target: OpenTarget, extra: { signIn: string }): Promise<void>
   fetch?: typeof fetch
   now?: () => number
   /** Test knobs (defaults LOGIN_TIMEOUT_MS, FETCH_TIMEOUT_MS). */
@@ -131,10 +143,23 @@ export interface PluginOAuthApi {
   refresh(spec: CheckedOAuthSpec, refreshToken: string, signal?: AbortSignal): Promise<OAuthTokens>
 }
 
+/** Refused pastes for one sign-in before it is ended (a typo or two, a wrong tab; never a guessing run). */
+export const MAX_PASTE_ATTEMPTS = 5
+
+/** A sign-in waiting for its redirect, as `paste` finds it. */
+interface PendingSignIn {
+  /** The window it is for; undefined for one tied to no window, which no paste can name. */
+  windowId: number | undefined
+  loopback: Loopback
+  refused: number
+}
+
 export class PluginOAuth implements PluginOAuthApi {
   private readonly fetch: typeof fetch
   private readonly now: () => number
   private readonly log: (message: string) => void
+  /** Sign-in id -> its pending sign-in, from the loopback's start to its end (any way it ends). */
+  private readonly pending = new Map<string, PendingSignIn>()
 
   constructor(private readonly options: PluginOAuthOptions) {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
@@ -153,6 +178,10 @@ export class PluginOAuth implements PluginOAuthApi {
     const { verifier, challenge } = pkcePair()
     const state = randomToken(32)
     const loopback = await startLoopback({ state, timeoutMs: this.options.loginTimeoutMs ?? LOGIN_TIMEOUT_MS, signal, log: this.log })
+    // Minted for every sign-in (the desktop's loopback never needs it, and main's router refuses a
+    // paste there); random, so an id seen by one window says nothing about another's.
+    const signIn = randomToken(16)
+    this.pending.set(signIn, { windowId: target === 'app' ? undefined : target.windowId, loopback, refused: 0 })
     let code: string
     try {
       // A copy: the checked spec's URL is not ours to change. set(), not append(): a parameter of
@@ -173,7 +202,7 @@ export class PluginOAuth implements PluginOAuthApi {
       // a test double) gets the same fixed message as a rejection, never its own text.
       const url = authUrl.toString()
       const opened = Promise.resolve()
-        .then(() => this.options.openExternal(url, target))
+        .then(() => this.options.openExternal(url, target, { signIn }))
         .catch(() => {
           throw new OAuthError('could not open the system browser for the sign-in')
         })
@@ -183,6 +212,7 @@ export class PluginOAuth implements PluginOAuthApi {
       // browser that comes back before openExternal settles finishes the sign-in as usual.
       code = await Promise.race([opened.then(() => loopback.code), loopback.code])
     } finally {
+      this.pending.delete(signIn)
       loopback.close()
     }
     const body = new URLSearchParams({
@@ -200,6 +230,38 @@ export class PluginOAuth implements PluginOAuthApi {
       if (signal.aborted) throw cancelled()
       throw err
     }
+  }
+
+  /**
+   * The person pasted the address a sign-in's redirect ended on (server mode, see the header). True
+   * when it settled the sign-in `signIn` of `windowId` (main's binding of the caller, never the
+   * payload): a code, which `authorize` then exchanges, or the provider's refusal. False for every
+   * other case alike: not a string, too long, not an address, an unknown id, another window's, a
+   * sign-in already over, or an address the checks refuse; the last counts, and the
+   * MAX_PASTE_ATTEMPTS-th refused one ends the sign-in.
+   */
+  paste(windowId: number, signIn: unknown, text: unknown): boolean {
+    if (!isSignInId(signIn) || typeof text !== 'string' || text.length > MAX_OAUTH_PASTE_LENGTH) return false
+    const entry = this.pending.get(signIn)
+    if (entry === undefined || entry.windowId !== windowId) return false
+    let url: URL | undefined
+    try {
+      url = new URL(text.trim())
+    } catch {
+      url = undefined
+    }
+    if (url !== undefined && entry.loopback.paste(url) === 'settled') {
+      this.pending.delete(signIn)
+      return true
+    }
+    entry.refused++
+    // Counted, never the address: it may carry a code meant for this sign-in, typed in the wrong box.
+    this.log(`oauth: refused a pasted sign-in address (${entry.refused} of ${MAX_PASTE_ATTEMPTS})`)
+    if (entry.refused >= MAX_PASTE_ATTEMPTS) {
+      this.pending.delete(signIn)
+      entry.loopback.close(new OAuthError(`sign-in ended after ${MAX_PASTE_ATTEMPTS} pasted addresses that did not finish it`))
+    }
+    return false
   }
 
   /** A fresh access token for `refreshToken`. No scope is sent: the grant keeps its own. */

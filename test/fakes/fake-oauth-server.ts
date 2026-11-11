@@ -1,5 +1,6 @@
 // A fake OAuth 2.0 provider for ctx.oauth (test/unit/plugin-oauth.test.ts over plain http,
-// test/e2e/plugin-oauth.spec.ts over https). Real HTTP on 127.0.0.1 (port 0), nothing leaves the machine:
+// test/e2e/plugin-oauth.spec.ts and server-mode.spec.ts over https). Real HTTP on 127.0.0.1
+// (port 0), nothing leaves the machine:
 //   - `authorize(authUrl)` plays the provider's consent page: it reads the URL the app handed to
 //     `openExternal`, remembers the PKCE challenge and redirect_uri, mints a code and returns the
 //     redirect the browser would follow. `browse(authUrl)` also follows it, like the browser.

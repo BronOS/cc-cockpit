@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   addLinkAsk,
+  addSignIn,
+  MAX_SIGN_IN_NOTICES,
+  oauthSignInOf,
   canAllowLink,
   dropLinkAsk,
   dropUnseen,
@@ -23,6 +26,27 @@ describe('linkNoticeUrl', () => {
     }
     expect(linkNoticeUrl(undefined)).toBeUndefined()
     expect(linkNoticeUrl(null)).toBeUndefined()
+  })
+})
+
+// design-web.md §9.9: a plugin's OAuth sign-in in a server's browser is a link notice with a paste box.
+describe('oauthSignInOf / addSignIn', () => {
+  const id = (n: number): string => `sign-in-id-${String(n).padStart(11, '0')}`
+  it('takes an http(s) link with a well-formed sign-in id only; else the plain link notice', () => {
+    expect(oauthSignInOf({ url: 'https://idp.example/auth?x=1', signIn: id(1) })).toEqual({ url: 'https://idp.example/auth?x=1', signIn: id(1) })
+    expect(oauthSignInOf({ url: 'https://idp.example/auth' })).toBeUndefined()
+    for (const signIn of [42, '', 'short', 'x'.repeat(65), 'has spaces in it 12345', '<b>not-an-id</b>xxxx']) {
+      expect(oauthSignInOf({ url: 'https://idp.example/auth', signIn })).toBeUndefined()
+    }
+    expect(oauthSignInOf({ url: 'javascript:alert(1)', signIn: id(1) })).toBeUndefined()
+    expect(oauthSignInOf(undefined)).toBeUndefined()
+  })
+  it('joins once by id and keeps the newest few', () => {
+    const one = addSignIn([], { url: 'https://a.example', signIn: id(1) })
+    expect(addSignIn(one, { url: 'https://a.example', signIn: id(1) })).toBe(one)
+    let list = one
+    for (let n = 2; n <= MAX_SIGN_IN_NOTICES + 2; n++) list = addSignIn(list, { url: 'https://a.example', signIn: id(n) })
+    expect(list.map((x) => x.signIn)).toEqual(Array.from({ length: MAX_SIGN_IN_NOTICES }, (_, i) => id(i + 3)))
   })
 })
 

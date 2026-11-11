@@ -488,7 +488,8 @@ export interface HostApiDeps {
   openExternal?(url: string, target: OpenTarget): Promise<void>
   /**
    * main's server flag (server-mode.ts): true refuses ctx.files.reveal and openWithSystem whatever
-   * started the call (design-web.md §9.9). Absent: the desktop.
+   * started the call, and lets ctx.oauth.authorize run for a browser view (design-web.md §9.9).
+   * Absent: the desktop.
    */
   server?: boolean
   /**
@@ -2066,9 +2067,14 @@ export class HostApi {
     this.alive()
     const { pluginId, spec } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'oauth.authorize')
-    // The sign-in opens the host's browser and waits on a loopback redirect to the host: a person in
-    // a browser view cannot complete it (design-web.md §6.1). Before the budget is spent.
-    if (this.originOf(meta) !== undefined) throw new Error('oauth.authorize: sign in on the desktop (this needs the host\'s browser)')
+    // On the desktop the sign-in opens the host's browser and waits on a loopback redirect to the
+    // host: a person in a browser view cannot complete it (design-web.md §6.1). Before the budget is
+    // spent. In server mode (§9.9) every sign-in is a browser's: the auth URL is a link notice there
+    // with a box for the failed redirect's address (plugin-oauth.ts), so a browser origin is allowed,
+    // by main's flag, never anything the call carries.
+    if (this.deps.server !== true && this.originOf(meta) !== undefined) {
+      throw new Error('oauth.authorize: sign in on the desktop (this needs the host\'s browser)')
+    }
     // Everything that can be refused is refused before the budget is spent and a browser opens.
     const checked = this.checked('oauth.authorize', () => checkOAuthSpec(spec))
     // Synchronous up to the authorize call below: the entry is set before the host's next message

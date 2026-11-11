@@ -810,6 +810,12 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   constant time, the code's length, the error code's pattern). No request is made, so there is nothing to forge
   toward. Main picks the pending sign-in from the caller's window, never from the pasted host or port; PKCE keeps a URL
   read on the wire useless; attempts are limited, and errors never echo the URL.
+  Built: `ctx.oauth.authorize` from a browser origin is allowed by main's `server` (`host-api.ts`); `PluginOAuth` mints a
+  sign-in id per pending sign-in and the openExternal adapter puts it in `app.linkNotice` (`signIn`, server mode only),
+  which the shell draws with the paste box; `oauth.paste` (`adapted`, `server && view.remote`) names that id and main looks
+  it up among the bound window's sign-ins only. `checkCallback` (`oauth.ts`) is the one set of checks for the HTTP
+  handler and `Loopback.paste`. The pasted text is capped at 8 KiB, the fifth refused paste ends the sign-in, and every
+  refusal is the one `OAUTH_PASTE_REFUSED` (`shared/oauth-paste.ts`); the log counts refusals and never names the address.
 
 ### 9.10 Claude login
 

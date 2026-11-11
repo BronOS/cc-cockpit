@@ -22,6 +22,7 @@ import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
+import type { OAuthPasteAnswer } from './oauth-paste'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
@@ -1143,6 +1144,15 @@ export interface IpcInvokeMap {
   'notices.click': { req: { requestId: string }; res: boolean }
   /** The ✕ of an in-page notice: as the person dismissing an OS notification (`{ clicked: false }`). Checked as `notices.click`. */
   'notices.dismiss': { req: { requestId: string }; res: boolean }
+  /**
+   * A plugin's OAuth sign-in in server mode (design-web.md §9.9): the address the provider's redirect
+   * ended on, pasted into the sign-in's link notice (`app.linkNotice` with `signIn`). Main looks the
+   * sign-in up by `signIn` among the sender's own window's (the window it bound the view to) and
+   * settles it in-process with the loopback's own checks, making no request. Every refusal (the
+   * desktop, the hidden page, an unknown or another window's id, a wrong address, the attempt limit)
+   * is the same OAUTH_PASTE_REFUSED, which never echoes the address.
+   */
+  'oauth.paste': { req: { signIn: string; url: string }; res: OAuthPasteAnswer }
   /** Hide the side zones when the terminal gets narrow, or never (AppSettings.zoneAutoHide). Every window follows. */
   'settings.zoneAutoHideSet': { req: { value: boolean }; res: void }
   /** The terminal's minimum width for the zone auto-hide (AppSettings.minTerminalWidth). Every window follows. */
@@ -1463,9 +1473,11 @@ export interface IpcEventMap {
   /**
    * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
    * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
-   * Sent only to the view that asked; `url` is http(s), checked by main.
+   * Sent only to the view that asked; `url` is http(s), checked by main. In server mode a link with no
+   * asking view goes to every browser view of its window, and a plugin's OAuth sign-in carries `signIn`
+   * (§9.9): the notice then has a box for the address the redirect ended on (`oauth.paste`).
    */
-  'app.linkNotice': { url: string }
+  'app.linkNotice': { url: string; signIn?: string }
   /**
    * A plugin's settings page moved (design-web.md §5.4): `viewId` and `device` name the view that
    * holds it now, both null when no view does (the page closed). A view showing the page that is
@@ -1618,6 +1630,7 @@ export const INVOKE_CHANNELS = [
   'notify.soundData',
   'notices.click',
   'notices.dismiss',
+  'oauth.paste',
   'settings.zoneAutoHideSet',
   'settings.minTerminalWidthSet',
   'settings.confirmTabClose',
@@ -1889,6 +1902,9 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'notices.gone': 'adapted',
   'notices.click': 'adapted',
   'notices.dismiss': 'adapted',
+  // A plugin's OAuth sign-in settled by the failed redirect's address (§9.9): a server's browser views
+  // only, decided by main's flag and `view.remote`, for a sign-in of the window main bound the view to.
+  'oauth.paste': 'adapted',
   'settings.zoneAutoHideSet': 'yes',
   'settings.minTerminalWidthSet': 'yes',
   'settings.confirmTabClose': 'yes',
