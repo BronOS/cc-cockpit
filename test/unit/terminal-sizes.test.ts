@@ -9,7 +9,7 @@ import { TabManager } from '../../src/main/tabs/tab-manager'
 import { TAKE_DEBOUNCE_MS, TerminalSizes } from '../../src/main/tabs/terminal-sizes'
 import { DesktopFlow } from '../../src/main/terminals/desktop-flow'
 import type { MirrorView } from '../../src/main/terminals/mirror'
-import { drawAt } from '../../src/renderer/tabs/terminal-draw'
+import { drawAt, MIN_DRAW_SCALE } from '../../src/renderer/tabs/terminal-draw'
 import type { EventChannel, IpcEventMap } from '../../src/shared/ipc'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
@@ -83,6 +83,21 @@ describe('TerminalSizes', () => {
     sizes.visible(D, false)
     expect(sizes.take('t', D)).toBe(false)
     expect(applied).toEqual(['t 120x40', 't 50x30'])
+  })
+
+  it('a focus or click take (tabs.fit) wins at once over a pending typing take; a hidden view cannot take', () => {
+    const { sizes, applied } = policy()
+    sizes.report('t', D, 120, 40)
+    sizes.report('t', W, 50, 30)
+    sizes.report('t', W2, 90, 30)
+    sizes.typed('t', W)
+    expect(sizes.take('t', W2)).toBe(true)
+    vi.advanceTimersByTime(TAKE_DEBOUNCE_MS)
+    expect(sizes.sizerOf('t')).toBe(W2)
+    expect(applied).toEqual(['t 120x40', 't 90x30'])
+    sizes.visible(D, false)
+    expect(sizes.take('t', D)).toBe(false)
+    expect(sizes.sizerOf('t')).toBe(W2)
   })
 
   it('falls back to the remaining visible view active last when the sizer leaves', () => {
@@ -422,12 +437,30 @@ describe('DesktopFlow: a resync carries the sizes', () => {
 })
 
 describe('drawAt: the page draws at the pty size', () => {
+  const none = { cropCols: false, cropRows: false }
   it('scales a larger pty down to the pane, letterboxes a smaller one, offers a fit when they differ', () => {
-    expect(drawAt(undefined, { cols: 80, rows: 24 })).toEqual({ scale: 1, fit: false })
-    expect(drawAt({ cols: 80, rows: 24 }, undefined)).toEqual({ scale: 1, fit: false })
-    expect(drawAt({ cols: 80, rows: 24 }, { cols: 80, rows: 24 })).toEqual({ scale: 1, fit: false })
-    expect(drawAt({ cols: 160, rows: 48 }, { cols: 80, rows: 24 })).toEqual({ scale: 1, fit: true })
-    expect(drawAt({ cols: 40, rows: 24 }, { cols: 80, rows: 24 })).toEqual({ scale: 0.5, fit: true })
-    expect(drawAt({ cols: 80, rows: 12 }, { cols: 40, rows: 24 })).toEqual({ scale: 0.5, fit: true })
+    expect(drawAt(undefined, { cols: 80, rows: 24 })).toEqual({ scale: 1, fit: false, ...none })
+    expect(drawAt({ cols: 80, rows: 24 }, undefined)).toEqual({ scale: 1, fit: false, ...none })
+    expect(drawAt({ cols: 80, rows: 24 }, { cols: 80, rows: 24 })).toEqual({ scale: 1, fit: false, ...none })
+    expect(drawAt({ cols: 160, rows: 48 }, { cols: 80, rows: 24 })).toEqual({ scale: 1, fit: true, ...none })
+    expect(drawAt({ cols: 60, rows: 24 }, { cols: 80, rows: 24 })).toEqual({ scale: 0.75, fit: true, ...none })
+    expect(drawAt({ cols: 80, rows: 18 }, { cols: 40, rows: 24 })).toEqual({ scale: 0.75, fit: true, ...none })
+  })
+
+  it(`never scales below MIN_DRAW_SCALE (${MIN_DRAW_SCALE}): the grid is cropped in the direction that does not fit`, () => {
+    expect(drawAt({ cols: 70, rows: 24 }, { cols: 100, rows: 24 })).toEqual({ scale: 0.7, fit: true, ...none })
+    expect(drawAt({ cols: 45, rows: 24 }, { cols: 100, rows: 24 })).toEqual({
+      scale: MIN_DRAW_SCALE,
+      fit: true,
+      cropCols: true,
+      cropRows: false
+    })
+    expect(drawAt({ cols: 100, rows: 10 }, { cols: 100, rows: 40 })).toEqual({
+      scale: MIN_DRAW_SCALE,
+      fit: true,
+      cropCols: false,
+      cropRows: true
+    })
+    expect(drawAt({ cols: 10, rows: 5 }, { cols: 100, rows: 40 })).toMatchObject({ cropCols: true, cropRows: true })
   })
 })

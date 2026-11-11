@@ -249,7 +249,12 @@ Claude tab); the tabs that attach brings are announced to the other views as `ta
   terminal (typing after another view typed, after a short debounce, or a "fit to this screen" action), not on every
   resize, so phone and desktop typing in turn do not redraw Claude each time. The headless terminal resizes with it
   and views get a size event. When the sizing view leaves, the size falls back to a remaining visible view. Only the
-  person's typing counts: a focus or mouse report, or a view's own reply to a query, takes nothing. A terminal
+  person's typing counts as input: a focus or mouse report, or a view's own reply to a query, takes nothing. A view's
+  page also takes the size as "fit" does, at once, when the person presses the pointer in the pane, focuses the
+  terminal, or brings the window (after it was left) or the page (visibility) back to the front while the terminal is
+  the active tab; programmatic focus (start, restore, tab activation) never takes, and a view already sizing sends
+  nothing (`TerminalSession.takeSize`). A view that follows draws the grid scaled down to its pane, but never below
+  `MIN_DRAW_SCALE` (0.7, `terminal-draw.ts`); past that the pane scrolls, kept at the bottom and the cursor. A terminal
   overlay keeps a size per view too: the first view to measure it sizes it, typing in another view moves it there
   at once, and its flow control is the desktop page's acks alone. With no headless copy to answer for it, only the
   view that sizes an overlay (the desktop's until another takes it) answers its queries; the other views' replies are

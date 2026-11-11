@@ -984,6 +984,11 @@ iframe:focus-visible {
      the pty's size, scaled down (a smaller font) or letterboxed; nothing spills. */
   overflow: hidden;
 }
+/* Below MIN_DRAW_SCALE (terminal-draw.ts) the grid is cropped: the pane scrolls both ways and is
+   kept at the bottom and the cursor (terminal-session.ts). */
+.terminal-host.terminal-crop {
+  overflow: auto;
+}
 /* "Fit to this screen" (terminal-session.ts): over the terminal while it has another view's size. */
 .terminal-fit {
   position: absolute;

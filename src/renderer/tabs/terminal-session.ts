@@ -59,6 +59,14 @@ const FIT_BUTTON_DELAY_MS = 400
 /** The smallest font a scaled-down terminal is drawn with (xterm cannot measure a cell smaller). */
 const MIN_SCALED_FONT_PX = 4
 
+/**
+ * Whether this window was ever left (blurred) since the page loaded: a window `focus` before that
+ * is the window being shown at start or restore, not the person coming back to it, and must not
+ * take a terminal's size (two side-by-side windows would otherwise ping-pong at every launch).
+ */
+let windowLeft = false
+let watchingBlur = false
+
 /** ESC c: full reset (screen, scrollback, modes), parsed in order with the writes before it. */
 const RIS = '\x1bc'
 
@@ -92,7 +100,13 @@ export class TerminalSession {
   private fitButton: HTMLButtonElement | undefined
   private fitTimer: ReturnType<typeof setTimeout> | undefined
   private renderWatch: { dispose(): void } | undefined
+  /** Keeps the cursor in view while the grid is cropped (layout). */
+  private cursorWatch: { dispose(): void } | undefined
   private disposed = false
+  /** Set while this.focus() runs: a programmatic focus (tab activation, start, restore) never takes. */
+  private focusing = false
+  /** The window and page listeners of the take on focus, removed on dispose. */
+  private readonly offTakeListeners: () => void
   private readonly offTheme: () => void
   private readonly offPrefs: () => void
   /** The font last asked for (applied once it has loaded), and which ask is the latest. */
@@ -141,6 +155,7 @@ export class TerminalSession {
     // must neither type it nor swallow it, so the window's key handler gets it. Everything else
     // (including Escape with no overlay open) is the terminal's.
     this.term.attachCustomKeyEventHandler((event) => commandForEvent(event) === undefined)
+    this.offTakeListeners = this.listenForTakes()
     this.term.onData((data) => {
       // The user typing or pasting; main ignores it for an exited tab.
       this.io.input(data)
@@ -175,13 +190,65 @@ export class TerminalSession {
     else if (data.length > 0) this.term.write(data, () => this.io.ack(data.length))
   }
 
+  /**
+   * The person moved to this view's terminal: it takes the pty's size, as "Fit to this screen" does
+   * (design-web.md §5.2 "Size"). Only while another view sizes the pty (`ptySize`): with web access
+   * off, or while this view sizes it, nothing is sent and the terminal keeps fitting at once.
+   */
+  private takeSize(): void {
+    if (this.disposed || !this.ptySize || !this.io.fit || !this.shown()) return
+    this.io.fit()
+  }
+
+  /** Attached to a pane that is laid out (the active tab: an inactive one is display:none). */
+  private shown(): boolean {
+    const el = this.container
+    return el !== undefined && el.isConnected && el.clientWidth > 0 && el.clientHeight > 0
+  }
+
+  /**
+   * Takes on real gestures only: a pointer press in the pane, a focus of the terminal that this
+   * class did not start (Tab key, a click), the window focused after it was left, the page shown
+   * again. Programmatic focus (this.focus(), tab activation at start or restore) never takes.
+   */
+  private listenForTakes(): () => void {
+    if (!watchingBlur) {
+      // Once for the page, on the first terminal (no listener for a page with none).
+      watchingBlur = true
+      window.addEventListener('blur', () => (windowLeft = true))
+    }
+    const onWindowFocus = (): void => {
+      if (windowLeft) this.takeSize()
+    }
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') this.takeSize()
+    }
+    window.addEventListener('focus', onWindowFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', onWindowFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }
+
+  private readonly onPointerDown = (): void => this.takeSize()
+
+  private readonly onTermFocus = (): void => {
+    if (!this.focusing) this.takeSize()
+  }
+
   /** Show the terminal in `container`; safe to call again with a new container (a remount). */
   attach(container: HTMLElement): void {
     if (this.disposed) return
     this.observer?.disconnect()
+    this.container?.removeEventListener('pointerdown', this.onPointerDown, true)
     this.container = container
     if (this.term.element) container.appendChild(this.term.element)
     else this.term.open(container)
+    // Capture: xterm handles the press on its own elements first otherwise.
+    container.addEventListener('pointerdown', this.onPointerDown, true)
+    this.term.textarea?.removeEventListener('focus', this.onTermFocus)
+    this.term.textarea?.addEventListener('focus', this.onTermFocus)
     // Fires once on observe and again whenever the pane is resized or un-hidden (a hidden tab is
     // display:none, 0x0, and cannot be measured).
     this.observer = new ResizeObserver(() => this.refit())
@@ -190,6 +257,8 @@ export class TerminalSession {
   }
 
   detach(): void {
+    this.container?.removeEventListener('pointerdown', this.onPointerDown, true)
+    this.container?.classList.remove('terminal-crop')
     this.observer?.disconnect()
     this.observer = undefined
     this.container = undefined
@@ -202,7 +271,13 @@ export class TerminalSession {
   }
 
   focus(): void {
-    if (!this.disposed) this.term.focus()
+    if (this.disposed) return
+    this.focusing = true
+    try {
+      this.term.focus()
+    } finally {
+      this.focusing = false
+    }
   }
 
   /**
@@ -277,13 +352,24 @@ export class TerminalSession {
   private layout(): void {
     const el = this.term.element
     if (!el) return
-    const { scale, fit } = drawAt(this.ownSize, this.ptySize)
+    const { scale, fit, cropCols, cropRows } = drawAt(this.ownSize, this.ptySize)
     // Scaled by the font size, not a CSS transform: xterm maps a click with the element's scaled
     // bounding box but unscaled cell metrics, so every mouse coordinate would be off by the scale.
     // term.resize keeps cols x rows, so the pty-sized grid just gets smaller cells.
     const fontSize = scale < 1 ? Math.max(MIN_SCALED_FONT_PX, this.baseFontSize * scale) : this.baseFontSize
     if (this.term.options.fontSize !== fontSize) this.term.options.fontSize = fontSize
     const container = this.container
+    // Below MIN_DRAW_SCALE the grid overflows the pane: it scrolls (terminal-crop), kept at the
+    // bottom and the cursor, where Claude Code's prompt is.
+    const crop = cropCols || cropRows
+    container?.classList.toggle('terminal-crop', crop)
+    if (crop && !this.cursorWatch) {
+      this.cursorWatch = this.term.onCursorMove(() => this.keepCursorInView())
+    } else if (!crop && this.cursorWatch) {
+      this.cursorWatch.dispose()
+      this.cursorWatch = undefined
+    }
+    if (crop) requestAnimationFrame(() => this.keepCursorInView(true))
     if (!fit || !this.io.fit || !container) {
       clearTimeout(this.fitTimer)
       this.fitTimer = undefined
@@ -297,6 +383,24 @@ export class TerminalSession {
       this.fitTimer = undefined
       if (!this.disposed && drawAt(this.ownSize, this.ptySize).fit) this.showFit()
     }, FIT_BUTTON_DELAY_MS)
+  }
+
+  /** While cropped: scroll the pane so the cursor's cell (and, `bottom`, the last row) is in view. */
+  private keepCursorInView(bottom = false): void {
+    const pane = this.container
+    const el = this.term.element
+    if (this.disposed || !pane || !el || !pane.classList.contains('terminal-crop')) return
+    const cellW = el.scrollWidth / this.term.cols
+    const cellH = el.scrollHeight / this.term.rows
+    if (!(cellW > 0) || !(cellH > 0)) return
+    const buf = this.term.buffer.active
+    const x = buf.cursorX * cellW
+    const y = buf.cursorY * cellH
+    if (bottom) pane.scrollTop = pane.scrollHeight
+    else if (y + cellH > pane.scrollTop + pane.clientHeight) pane.scrollTop = y + cellH - pane.clientHeight
+    else if (y < pane.scrollTop) pane.scrollTop = y
+    if (x + cellW > pane.scrollLeft + pane.clientWidth) pane.scrollLeft = x + cellW * 4 - pane.clientWidth
+    else if (x < pane.scrollLeft) pane.scrollLeft = Math.max(0, x - cellW * 4)
   }
 
   private showFit(): void {
@@ -314,7 +418,10 @@ export class TerminalSession {
       })
       this.fitButton = button
     }
-    if (this.fitButton.parentElement !== container) container.appendChild(this.fitButton)
+    // In the pane's parent (the tab's view) when it has one: the pane scrolls while cropped, and
+    // the button must stay in its corner.
+    const parent = container.parentElement ?? container
+    if (this.fitButton.parentElement !== parent) parent.appendChild(this.fitButton)
     this.fitButton.hidden = false
   }
 
@@ -326,6 +433,9 @@ export class TerminalSession {
     this.detach()
     clearTimeout(this.fitTimer)
     this.renderWatch?.dispose()
+    this.cursorWatch?.dispose()
+    this.offTakeListeners()
+    this.fitButton?.remove()
     this.term.dispose()
   }
 }

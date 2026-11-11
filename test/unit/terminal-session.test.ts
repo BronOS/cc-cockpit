@@ -102,19 +102,35 @@ interface FakeTerm {
 
 function session() {
   const resized: Array<[number, number]> = []
+  let fits = 0
   const s = new TerminalSession('t1', {
     input: () => undefined,
     ack: () => undefined,
     resize: (cols, rows) => resized.push([cols, rows]),
-    fit: () => undefined
+    fit: () => fits++
   })
-  const container = { clientWidth: 800, clientHeight: 600, appendChild: () => undefined } as unknown as HTMLElement
+  const target = new EventTarget()
+  const container = Object.assign(target, {
+    clientWidth: 800,
+    clientHeight: 600,
+    isConnected: true,
+    parentElement: null,
+    appendChild: () => undefined,
+    classList: { toggle: () => undefined, remove: () => undefined, contains: () => false }
+  }) as unknown as HTMLElement
   s.attach(container)
-  return { s, term: s.term as unknown as FakeTerm, resized }
+  return { s, term: s.term as unknown as FakeTerm, resized, container, fits: () => fits }
 }
 
 let observers: Array<() => void> = []
+const fakeWindow = new EventTarget()
+const fakeDocument = Object.assign(new EventTarget(), { visibilityState: 'visible' })
+vi.stubGlobal('window', fakeWindow)
+vi.stubGlobal('document', fakeDocument)
 beforeEach(() => {
+  vi.stubGlobal('window', fakeWindow)
+  vi.stubGlobal('document', fakeDocument)
+  vi.stubGlobal('requestAnimationFrame', () => 0)
   pane.cols = 120
   pane.rows = 40
   observers = []
@@ -170,5 +186,39 @@ describe('TerminalSession sizes', () => {
     expect([term.cols, term.rows]).toEqual([130, 42])
     drag(110, 35)
     expect([term.cols, term.rows]).toEqual([110, 35])
+  })
+})
+
+describe('TerminalSession takes the size on interaction', () => {
+  it('a press in the pane or the page shown again takes while another view sizes the pty; never while this view sizes it', () => {
+    const { s, container, fits } = session()
+    // This view sizes the pty (web access off: the desktop always): nothing is sent.
+    container.dispatchEvent(new Event('pointerdown'))
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    expect(fits()).toBe(0)
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    container.dispatchEvent(new Event('pointerdown'))
+    expect(fits()).toBe(1)
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    expect(fits()).toBe(2)
+  })
+
+  it('a window focus takes only after the window was left (not the focus it gets at start)', () => {
+    const { s, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    // The module's blur flag is shared by every session: a fresh module would start unset, but
+    // an earlier test may have blurred; this test blurs itself and checks the take after it.
+    fakeWindow.dispatchEvent(new Event('blur'))
+    fakeWindow.dispatchEvent(new Event('focus'))
+    expect(fits()).toBe(1)
+  })
+
+  it('a hidden pane (an inactive tab) never takes', () => {
+    const { s, container, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    Object.assign(container, { clientWidth: 0, clientHeight: 0 })
+    container.dispatchEvent(new Event('pointerdown'))
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    expect(fits()).toBe(0)
   })
 })
