@@ -59,6 +59,8 @@ export interface DataPaths {
   claudePluginsDir: string
   /** Plugin secrets (`ctx.secrets`, secret settings fields), encrypted values only. */
   secretsJson: string
+  /** Server mode's key for those secrets (secrets/key-file-store.ts, design-web.md §9.5); never made on the desktop. */
+  secretKey: string
   /** Web access devices and the access link's token record (main/web/devices.ts). */
   webAccessJson: string
   binDir: string
@@ -80,6 +82,7 @@ export function dataPaths(dataDir: string): DataPaths {
     hooksJson: join(dataDir, 'hooks.json'),
     claudePluginsDir: join(dataDir, 'claude-plugins'),
     secretsJson: join(dataDir, 'secrets.json'),
+    secretKey: join(dataDir, 'secret.key'),
     webAccessJson: join(dataDir, 'web-access.json'),
     binDir: join(dataDir, 'bin'),
     cccWrapper: join(dataDir, 'bin', 'ccc'),

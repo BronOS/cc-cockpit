@@ -433,26 +433,26 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
 - Modify: `src/main/secrets/secret-store.ts` (`selectSecretStore` gets `server`), `src/main/paths.ts` (the key file's
   path), `src/main/index.ts` (`:235`), `test/unit/secret-store.test.ts`
 
-- [ ] `key-file-store.ts` (node `crypto` and `fs`, no Electron), one more `SecretStore`: the key is made on first start
+- [x] `key-file-store.ts` (node `crypto` and `fs`, no Electron), one more `SecretStore`: the key is made on first start
       with `O_CREAT | O_EXCL` and mode 0600 at open, never chmod after, never made again over an existing file; opened
       with `O_NOFOLLOW | O_NONBLOCK` (a FIFO at the path would block a plain `open` for ever) and checked by `fstat` on
       that descriptor; refused with the reason when it is not a regular file, not the user's, readable by group or
       others, or not 32 bytes
-- [ ] an existing file that fails a check is left untouched, never replaced: the store is unavailable with the reason,
+- [x] an existing file that fails a check is left untouched, never replaced: the store is unavailable with the reason,
       as a missing keychain is on the desktop
-- [ ] values are AES-256-GCM with a random 96-bit IV, stored as `KEYFILE-V1:` + base64(iv, tag, ciphertext)
-- [ ] a new key made while `KEYFILE-V1:` values exist (a restored backup, a deleted key file): start logs it with the
+- [x] values are AES-256-GCM with a random 96-bit IV, stored as `KEYFILE-V1:` + base64(iv, tag, ciphertext)
+- [x] a new key made while `KEYFILE-V1:` values exist (a restored backup, a deleted key file): start logs it with the
       count, those values answer "the key file was replaced: enter it again", and the count is kept for `ccc web status`
-- [ ] the mode decides the store: `selectSecretStore` returns the key file in server mode and the keychain on the
+- [x] the mode decides the store: `selectSecretStore` returns the key file in server mode and the keychain on the
       desktop (which keeps refusing `basic_text`); a test run's fake store keeps its place. Each store refuses the
       other's values with "stored by server mode's key file: enter it again here" (or "by the desktop's keychain"), and
       start logs how many stored values belong to the other store
-- [ ] write tests in plain Node in a temp dir: made 0600 with `O_EXCL`; a symlink, a FIFO (the open returns, refused),
+- [x] write tests in plain Node in a temp dir: made 0600 with `O_EXCL`; a symlink, a FIFO (the open returns, refused),
       a directory, a wider mode, another owner (an injected `fstat`) and a wrong length refused, each with the file
       left as it was and the store unavailable with its reason; round trip; one changed byte fails the tag; the
       replaced-key count and text; each store refuses the other's; server mode always picks the key file, the desktop
       never does
-- [ ] run tests and `npm run test:e2e` (`plugin-secrets`, `web-access-settings`: `selectSecretStore` at `index.ts:235`
+- [x] run tests and `npm run test:e2e` (`plugin-secrets`, `web-access-settings`: `selectSecretStore` at `index.ts:235`
       is every start's) - must pass before next task
 
 ### Task 6: Secrets of the other mode: what the person sees [model: sonnet]

@@ -102,7 +102,14 @@ import { buildRestorePlan, forgetMissing, planLaunch, relinkMissing, TabRestorer
 import { PluginOAuth } from './oauth/plugin-oauth'
 import { PluginSecrets } from './secrets/plugin-secrets'
 import { choosePasswordStore, execRunner } from './secrets/password-store'
-import { safeStorageSecretStore, selectSecretStore } from './secrets/secret-store'
+import { keyFileSecretStore } from './secrets/key-file-store'
+import {
+  otherStoreCount,
+  otherStoreLine,
+  safeStorageSecretStore,
+  selectSecretStore,
+  storedSecretValues
+} from './secrets/secret-store'
 import {
   AppearanceService,
   claudeTabOnOpenOf,
@@ -283,11 +290,21 @@ function start(server: boolean): void {
   })
   if (passwordStore !== null) app.commandLine.appendSwitch('password-store', passwordStore)
   // ctx.secrets (plugin-secrets.ts, `<data>/secrets.json`): encrypted through the OS keychain
-  // (safeStorage), or the marked fake store in an unpackaged test run only (secret-store.ts).
-  // Built before `ready` on purpose: availability is asked at each use, never here. First, because
-  // the registry (forget drops secret project settings) and the installer (uninstall drops the
-  // plugin's secrets) both clean up in it.
-  const secretStore = selectSecretStore(process.env, app.isPackaged, () => safeStorageSecretStore(safeStorage))
+  // (safeStorage) on the desktop, through `<data>/secret.key` in server mode (key-file-store.ts,
+  // design-web.md §9.5: the mode decides, never the keychain's state), or the marked fake store in
+  // an unpackaged test run only (secret-store.ts). Built before `ready` on purpose: the keychain's
+  // availability is asked at each use, never here (the key file is read, or made, here). First,
+  // because the registry (forget drops secret project settings) and the installer (uninstall drops
+  // the plugin's secrets) both clean up in it.
+  const secretStore = selectSecretStore(process.env, app.isPackaged, {
+    server,
+    keychain: () => safeStorageSecretStore(safeStorage),
+    keyFile: () =>
+      keyFileSecretStore({ path: dataPaths(dataDir).secretKey, storedValues: () => storedSecretValues(dataDir), log: warnLog })
+  })
+  // One data dir run both ways: values of the other mode's store cannot be read here (§9.5).
+  const otherStore = otherStoreLine(secretStore.kind, otherStoreCount(secretStore.kind, storedSecretValues(dataDir)))
+  if (otherStore !== null) warnLog(otherStore)
   const pluginSecrets = new PluginSecrets({ dataDir, store: secretStore, log: warnLog })
   // ctx.oauth (plugin-oauth.ts). The auth URL goes through the openExternal adapter (defined below
   // with the view registry; a sign-in only starts once a host runs), for the window that asked.

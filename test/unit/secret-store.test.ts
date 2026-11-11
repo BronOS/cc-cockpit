@@ -1,13 +1,22 @@
 // The secret store (safeStorage adapter with a stub, the marked fake, the test-only selection).
 // Moved out of the account-store tests when accounts left core; the store itself stays for plugin
 // secrets (design §6). Nothing touches the real keychain.
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   FAKE_PREFIX,
   fakeSecretStore,
+  KEYFILE_PREFIX,
+  otherStoreCount,
+  otherStoreLine,
   safeStorageSecretStore,
   selectSecretStore,
-  type SafeStorageApi
+  STORED_BY_KEY_FILE,
+  storedSecretValues,
+  type SafeStorageApi,
+  type SecretStore
 } from '../../src/main/secrets/secret-store'
 
 const SECRET = 'tok-very-secret-123'
@@ -121,19 +130,98 @@ describe('secret store', () => {
     await expect(fake.decrypt('c2VjcmV0')).rejects.toThrow('not stored by the fake store')
   })
 
-  it('selects the fake only in an unpackaged test run (CC_COCKPIT_TEST=1 as well)', () => {
+  it('selects the fake only in an unpackaged test run (CC_COCKPIT_TEST=1 as well), in either mode', () => {
     const real = safeStorageSecretStore(stubSafeStorage({ available: true }), 'darwin')
     const logs: string[] = []
     const log = (m: string): void => {
       logs.push(m)
     }
+    const desktop = { server: false, keychain: () => real, keyFile: (): SecretStore => fail('the key file on the desktop') }
     const both = { CC_COCKPIT_FAKE_SECRETS: '1', CC_COCKPIT_TEST: '1' }
-    expect(selectSecretStore(both, false, () => real, log).kind).toBe('fake')
-    expect(selectSecretStore({ CC_COCKPIT_FAKE_SECRETS: '1' }, false, () => real, log)).toBe(real)
-    expect(selectSecretStore({}, false, () => real, log)).toBe(real)
+    expect(selectSecretStore(both, false, desktop, log).kind).toBe('fake')
+    expect(selectSecretStore({ CC_COCKPIT_FAKE_SECRETS: '1' }, false, desktop, log)).toBe(real)
+    expect(selectSecretStore({}, false, desktop, log)).toBe(real)
     expect(logs.some((m) => m.includes('ignoring CC_COCKPIT_FAKE_SECRETS=1 outside a test run'))).toBe(true)
     // A packaged app never stores secrets reversibly, whatever its environment says.
-    expect(selectSecretStore(both, true, () => real, log)).toBe(real)
+    expect(selectSecretStore(both, true, desktop, log)).toBe(real)
     expect(logs.some((m) => m.includes('in a packaged app'))).toBe(true)
+    // Server mode: the fake keeps its place in a test run too.
+    const keyFile = fakeKeyFileStore()
+    const server = { server: true, keychain: (): SecretStore => fail('the keychain in server mode'), keyFile: () => keyFile }
+    expect(selectSecretStore(both, false, server, log).kind).toBe('fake')
+    expect(selectSecretStore(both, true, server, log)).toBe(keyFile)
+  })
+
+  it('the mode decides: server mode always the key file, the desktop never, whatever the keychain says', () => {
+    const made: string[] = []
+    for (const available of [true, false]) {
+      for (const backend of ['gnome_libsecret', 'basic_text']) {
+        const keychain = safeStorageSecretStore(stubSafeStorage({ available, backend }), 'linux')
+        const keyFile = fakeKeyFileStore()
+        const stores = (server: boolean) => ({
+          server,
+          keychain: () => (made.push('keychain'), keychain),
+          keyFile: () => (made.push('keyfile'), keyFile)
+        })
+        expect(selectSecretStore({}, false, stores(true))).toBe(keyFile)
+        expect(selectSecretStore({}, true, stores(true))).toBe(keyFile)
+        expect(selectSecretStore({}, false, stores(false))).toBe(keychain)
+        expect(selectSecretStore({}, true, stores(false))).toBe(keychain)
+      }
+    }
+    // Only the picked store is made: the keychain is never asked in server mode.
+    expect(made).toEqual(Array.from({ length: 4 }, () => ['keyfile', 'keyfile', 'keychain', 'keychain']).flat())
+  })
+
+  it('the keychain refuses a key file value with the other-mode text, before calling safeStorage', async () => {
+    const api = stubSafeStorage({ available: true })
+    let calls = 0
+    const inner = api.decryptStringAsync
+    api.decryptStringAsync = async (buf) => (calls++, inner(buf))
+    const s = safeStorageSecretStore(api, 'linux')
+    await expect(s.decrypt(`${KEYFILE_PREFIX}AAAA`)).rejects.toThrow(STORED_BY_KEY_FILE)
+    expect(STORED_BY_KEY_FILE).toBe("stored by server mode's key file: enter it again here")
+    expect(calls).toBe(0)
+  })
+
+  it('counts the stored values of the other store, in secrets.json and web-access.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ccc-stored-'))
+    try {
+      expect(storedSecretValues(dir)).toEqual([])
+      writeFileSync(
+        join(dir, 'secrets.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          plugins: { a: { k1: `${KEYFILE_PREFIX}x`, k2: 'b3M=', bad: 3 }, b: { k: `${FAKE_PREFIX}y` }, c: 'damaged' }
+        })
+      )
+      writeFileSync(
+        join(dir, 'web-access.json'),
+        JSON.stringify({ schemaVersion: 1, devices: [], accessToken: { hash: 'h', stored: 'dG9r', createdAt: 1 }, password: { stored: `${KEYFILE_PREFIX}p`, createdAt: 1 } })
+      )
+      const values = storedSecretValues(dir)
+      expect(values.sort()).toEqual([`${FAKE_PREFIX}y`, `${KEYFILE_PREFIX}p`, `${KEYFILE_PREFIX}x`, 'b3M=', 'dG9r'].sort())
+      expect(otherStoreCount('os', values)).toBe(2)
+      expect(otherStoreCount('keyfile', values)).toBe(2)
+      expect(otherStoreCount('fake', values)).toBe(0)
+      expect(otherStoreLine('os', 2)).toContain("2 stored value(s) belong to server mode's key file")
+      expect(otherStoreLine('keyfile', 2)).toContain("2 stored value(s) belong to the desktop's keychain")
+      expect(otherStoreLine('os', 0)).toBeNull()
+      expect(otherStoreLine('fake', 3)).toBeNull()
+      // A damaged file has no values; it never throws at start.
+      writeFileSync(join(dir, 'secrets.json'), '{not json')
+      expect(storedSecretValues(dir)).toEqual(['dG9r', `${KEYFILE_PREFIX}p`])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
+
+/** A SecretStore standing in for the key file in the selection tests (kind only). */
+function fakeKeyFileStore(): SecretStore {
+  return { ...fakeSecretStore(), kind: 'keyfile' }
+}
+
+function fail(what: string): never {
+  throw new Error(`made ${what}`)
+}
