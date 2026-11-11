@@ -4,7 +4,7 @@
 import { createElement, type FunctionComponent } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it } from 'vitest'
-import { allowClickCounts, APPROVAL_ARM_MS, ApprovalArm, approvalKey, ApprovalStack, type ArmTimers } from '../../src/renderer/notices/approval-model'
+import { allowClickCounts, APPROVAL_ARM_MS, ApprovalArm, approvalKey, ApprovalStack, enterArmedAtOnce, type ArmTimers } from '../../src/renderer/notices/approval-model'
 import { isServerView, markWebShell, resetShellKindForTest, setServerHint } from '../../src/renderer/shell-kind'
 
 /** Timers driven by hand: `advance(ms)` fires what is due. */
@@ -149,6 +149,47 @@ describe('ApprovalStack', () => {
     first.leave()
     expect(second.arm.armed).toBe(true)
     expect(stack.size).toBe(1)
+  })
+
+  // External review round 2: the desktop's link confirm (LinkDialog) was outside the stack, so a
+  // trash ask under it kept arming and was bared with Move to Trash already enabled.
+  it('the desktop link confirm is in the same stack: a trash ask under it stops arming and needs a fresh second after it', () => {
+    const timers = fakeTimers()
+    const stack = new ApprovalStack()
+    const trash = dialog(stack, timers)
+    timers.advance(APPROVAL_ARM_MS / 2)
+    const linkArm = new ApprovalArm(() => {}, timers)
+    const leaveLink = enterArmedAtOnce(stack, linkArm)
+    // The desktop confirm stands in for the native dialog: Allow ready at once on its first show.
+    expect(linkArm.armed).toBe(true)
+    timers.advance(5 * APPROVAL_ARM_MS)
+    expect(trash.arm.armed).toBe(false)
+    leaveLink()
+    expect(trash.arm.armed).toBe(false)
+    timers.advance(APPROVAL_ARM_MS - 1)
+    expect(trash.arm.armed).toBe(false)
+    timers.advance(1)
+    expect(trash.arm.armed).toBe(true)
+    trash.leave()
+    expect(stack.size).toBe(0)
+  })
+
+  it('the desktop link confirm covered by a trash ask disarms, and bared again waits a fresh second', () => {
+    const timers = fakeTimers()
+    const stack = new ApprovalStack()
+    const linkArm = new ApprovalArm(() => {}, timers)
+    const leaveLink = enterArmedAtOnce(stack, linkArm)
+    expect(linkArm.armed).toBe(true)
+    const trash = dialog(stack, timers)
+    expect(linkArm.armed).toBe(false)
+    timers.advance(APPROVAL_ARM_MS)
+    trash.leave()
+    // A double click meant for the trash ask must not land on an armed Allow.
+    expect(linkArm.armed).toBe(false)
+    timers.advance(APPROVAL_ARM_MS)
+    expect(linkArm.armed).toBe(true)
+    leaveLink()
+    expect(stack.size).toBe(0)
   })
 })
 

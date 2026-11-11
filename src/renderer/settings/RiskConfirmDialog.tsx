@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { WebAccessRisk } from '../../shared/types'
 import { WEB_RISK_TEXT } from '../../shared/web-access'
+import { ApprovalArm, approvalStack, enterArmedAtOnce } from '../notices/approval-model'
 
 /**
  * The §4.3 confirm of a dangerous web access choice (design-web.md): no sign-in on a network
@@ -31,6 +32,18 @@ export function RiskConfirmDialog(props: { risks: readonly WebAccessRisk[]; onAn
   useEffect(() => {
     answerRef.current = answer
   })
+  // In the page's approval stack (approval-model.ts) with the link and trash asks, which can come up
+  // while this is open: one under this one stops arming, and this one, covered and bared again,
+  // waits a fresh second before its accept takes a click.
+  const [armed, setArmed] = useState(true)
+  useEffect(() => {
+    const arm = new ApprovalArm(setArmed)
+    const leave = enterArmedAtOnce(approvalStack, arm)
+    return () => {
+      leave()
+      arm.dispose()
+    }
+  }, [])
   useEffect(() => {
     const root = document.getElementById('root')
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -84,7 +97,7 @@ export function RiskConfirmDialog(props: { risks: readonly WebAccessRisk[]; onAn
           <button type="button" ref={cancel} onClick={() => answer(false)}>
             Cancel
           </button>
-          <button type="button" className="confirm-danger" onClick={() => (last ? answer(true) : setStep(step + 1))}>
+          <button type="button" className="confirm-danger" disabled={!armed} onClick={() => armed && (last ? answer(true) : setStep(step + 1))}>
             {text.accept}
           </button>
         </div>

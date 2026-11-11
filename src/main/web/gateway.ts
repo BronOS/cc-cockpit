@@ -561,7 +561,7 @@ export class WebGateway {
     if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, this.projects())
     const serverProjects = this.deps.serverProjects
     if (method === 'POST' && path === PROJECTS_PATH && serverProjects) {
-      return void this.openProject(req, res, host, serverProjects, device).catch((err: unknown) => {
+      return void this.openProject(req, res, host, serverProjects).catch((err: unknown) => {
         this.deps.log(`web access: opening a project failed: ${errorText(err)}`)
         if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'opening the project failed' })
       })
@@ -661,11 +661,15 @@ export class WebGateway {
   /**
    * Server mode's open from the browser picker (design-web.md §9.8). Origin and cookie were checked
    * before the route (request above); the body is read as a sign-in body is (JSON, capped), checked
-   * by parseOpenProjectBody, and only the checked request reaches main.
+   * by parseOpenProjectBody, and only the checked request reaches main. The cookie is checked again
+   * once the body is in: a client may take its time sending it, and a device revoked (or a mode
+   * change that signs it out) meanwhile must open nothing with a check made before the revoke.
    */
-  private async openProject(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects, device: WebDevice): Promise<void> {
+  private async openProject(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects): Promise<void> {
     const read = await this.readJson(req, res, host)
     if (!read) return
+    const device = this.deps.auth.authorize(req.headers.cookie)
+    if (!device) return this.json(res, host, 401, { error: 'not signed in' })
     const request = parseOpenProjectBody(read.body)
     if ('error' in request) return this.json(res, host, 400, request)
     if (res.destroyed) return

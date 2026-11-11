@@ -42,12 +42,30 @@ describe('oauthSignInOf / addSignIn', () => {
     expect(oauthSignInOf({ url: 'javascript:alert(1)', signIn: id(1) })).toBeUndefined()
     expect(oauthSignInOf(undefined)).toBeUndefined()
   })
-  it('joins once by id and keeps the newest few', () => {
+  it('joins once by id; past the cap the oldest ended ones go', () => {
     const one = addSignIn([], { url: 'https://a.example', signIn: id(1) })
     expect(addSignIn(one, { url: 'https://a.example', signIn: id(1) })).toBe(one)
     let list = one
-    for (let n = 2; n <= MAX_SIGN_IN_NOTICES + 2; n++) list = addSignIn(list, { url: 'https://a.example', signIn: id(n) })
-    expect(list.map((x) => x.signIn)).toEqual(Array.from({ length: MAX_SIGN_IN_NOTICES }, (_, i) => id(i + 3)))
+    for (let n = 2; n <= MAX_SIGN_IN_NOTICES; n++) list = endSignIn(addSignIn(list, { url: 'https://b.example', signIn: id(n) }), id(n), false)
+    // One pending (1) and three ended (2..4): the next two push out the oldest ended, 2 and 3.
+    list = addSignIn(list, { url: 'https://b.example', signIn: id(5) })
+    list = addSignIn(list, { url: 'https://b.example', signIn: id(6) })
+    expect(list.map((x) => x.signIn)).toEqual([id(1), id(4), id(5), id(6)])
+  })
+  // External review round 2: another plugin's failed attempts (each one replacing the last, which
+  // ends it) evicted a pending sign-in's paste box while main still waited for it.
+  it('never drops a pending sign-in, however many ended ones come after it', () => {
+    let list = addSignIn([], { url: 'https://a.example', signIn: id(1) })
+    for (let n = 2; n < 20; n++) {
+      list = addSignIn(list, { url: 'https://b.example', signIn: id(n) })
+      list = endSignIn(list, id(n), false)
+    }
+    expect(list[0]).toEqual({ url: 'https://a.example', signIn: id(1) })
+    expect(list.length).toBeLessThanOrEqual(MAX_SIGN_IN_NOTICES)
+    // Pending ones only, past the cap: all kept (main bounds them, one per plugin and window).
+    let pending: readonly { url: string; signIn: string }[] = []
+    for (let n = 1; n <= MAX_SIGN_IN_NOTICES + 2; n++) pending = addSignIn(pending, { url: 'https://c.example', signIn: id(n) })
+    expect(pending.map((x) => x.signIn)).toEqual(Array.from({ length: MAX_SIGN_IN_NOTICES + 2 }, (_, i) => id(i + 1)))
   })
   it('a sign-in that ended with a code loses its notice; one that ended otherwise is marked over', () => {
     const list = [

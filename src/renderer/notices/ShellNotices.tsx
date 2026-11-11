@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
+import { ApprovalArm, approvalStack, enterArmedAtOnce } from './approval-model'
 import { MAX_OAUTH_PASTE_LENGTH, OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../shared/oauth-paste'
 import {
   addSharedAsk,
@@ -390,6 +391,17 @@ function LinkDialog(props: { ask: LinkAsk; canAllow: boolean; onAnswer: (allow: 
   const titleId = useId()
   const textId = useId()
   const answered = useRef(false)
+  // In the page's approval stack with every ApprovalDialog (a trash ask can be up at the same time):
+  // one under this one stops arming, and this one, covered and bared again, waits a fresh second.
+  const [armed, setArmed] = useState(true)
+  useEffect(() => {
+    const arm = new ApprovalArm(setArmed)
+    const leave = enterArmedAtOnce(approvalStack, arm)
+    return () => {
+      leave()
+      arm.dispose()
+    }
+  }, [])
   const answer = (allow: boolean): void => {
     if (answered.current) return
     answered.current = true
@@ -445,7 +457,7 @@ function LinkDialog(props: { ask: LinkAsk; canAllow: boolean; onAnswer: (allow: 
             Deny
           </button>
           {canAllow ? (
-            <button type="button" className="confirm-danger" onClick={() => answer(true)}>
+            <button type="button" className="confirm-danger" disabled={!armed} onClick={() => armed && answer(true)}>
               Allow
             </button>
           ) : null}

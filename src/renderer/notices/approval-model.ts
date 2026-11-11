@@ -59,6 +59,17 @@ export class ApprovalArm {
     }, this.delayMs)
   }
 
+  /**
+   * Armed at once, with no second: a desktop confirm on its first show (enterArmedAtOnce),
+   * which keeps the native dialog's behaviour there. A later `visible(false)` disarms it as any other.
+   */
+  armNow(): void {
+    if (this.disposed) return
+    this.lastVisible = true
+    this.stop()
+    this.set(true)
+  }
+
   dispose(): void {
     this.stop()
     this.disposed = true
@@ -112,8 +123,34 @@ export class ApprovalStack {
   }
 }
 
-/** The page's one stack: every ApprovalDialog enters it. */
+/**
+ * The page's one stack: every approval that can be up at once enters it, ApprovalDialog, the
+ * desktop's own link confirm (LinkDialog, ShellNotices.tsx) and the web access risk confirm
+ * (RiskConfirmDialog.tsx) alike. A dialog outside it would cover one inside without the covered one
+ * knowing (external review round 2: a desktop link confirm over a trash ask let Move to Trash arm
+ * underneath, enabled the moment the link confirm went).
+ */
 export const approvalStack = new ApprovalStack()
+
+/**
+ * The place in the stack of a desktop confirm that stands in for a native dialog (the link confirm,
+ * the risk confirm: the safe button focused, the page behind inert): its accept is ready at once when
+ * it first shows, but covered by another approval it disarms, and bared again it needs a fresh
+ * second as any other, so a double click meant for the upper dialog cannot land on it. Returns the
+ * stack's `leave`.
+ */
+export function enterArmedAtOnce(stack: ApprovalStack, arm: ApprovalArm): () => void {
+  let first = true
+  return stack.enter((top) => {
+    if (first) {
+      // `enter` tells a new dialog it is on top before returning: its first show.
+      first = false
+      arm.armNow()
+      return
+    }
+    arm.visible(top)
+  })
+}
 
 /**
  * Whether a click on Allow counts: Allow is armed now, and the press that ends in this click began

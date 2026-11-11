@@ -50,16 +50,25 @@ export function oauthSignInOf(payload: unknown): OAuthSignInNotice | undefined {
   return url !== undefined && isSignInId(signIn) ? { url, signIn } : undefined
 }
 
-/** At most this many sign-in notices at once (one pending sign-in per plugin; a few plugins at most). */
+/**
+ * Sign-in notices kept at once, past which ended ones go. Pending ones are never dropped: main keeps
+ * one pending sign-in per plugin and window (a new one replaces it), so they are bounded already.
+ */
 export const MAX_SIGN_IN_NOTICES = 4
 
 /**
- * A sign-in notice joins once, by id (the same array when it is there); past the cap the oldest goes,
- * its sign-in long since replaced or timed out (a paste for it is refused like any other).
+ * A sign-in notice joins once, by id (the same array when it is there). Past the cap the oldest
+ * *ended* ones go, never a pending one: main still waits for its paste, and dropping its box would
+ * leave nothing to finish it with (external review round 2: another plugin's failed attempts, each
+ * replacing the last and so ending it, pushed an active sign-in out). Only pending ones over the cap
+ * stay over it.
  */
 export function addSignIn(list: readonly OAuthSignInNotice[], n: OAuthSignInNotice): readonly OAuthSignInNotice[] {
   if (list.some((x) => x.signIn === n.signIn)) return list
-  return [...list, n].slice(-MAX_SIGN_IN_NOTICES)
+  const next = [...list, n]
+  let over = next.length - MAX_SIGN_IN_NOTICES
+  if (over <= 0) return next
+  return next.filter((x) => !(x.ended === true && over-- > 0))
 }
 
 /**

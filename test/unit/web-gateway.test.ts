@@ -88,7 +88,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: ReturnType<typeof vi.fn>; logs: string[]; auth: WebAuth } {
+function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: ReturnType<typeof vi.fn>; logs: string[]; auth: WebAuth; devices: DeviceStore } {
   const logs: string[] = []
   const loadWs = vi.fn(async (): Promise<WsModule> => wsModule)
   const dir = mkdtempSync(join(tmpdir(), 'ccc-gw-'))
@@ -98,7 +98,7 @@ function make(over: Partial<GatewayDeps> = {}): { gw: WebGateway; loadWs: Return
   const auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog })
   const gw = new WebGateway({ log: (m) => logs.push(m), loadWs, auth, accessLog, shellDir: writeFakeShellDir(join(dir, 'shell')), ...over })
   gateway = gw
-  return { gw, loadWs, logs, auth }
+  return { gw, loadWs, logs, auth, devices }
 }
 
 /**
@@ -766,13 +766,15 @@ describe('server mode: projects from the browser', () => {
     cookie: string
     logs: string[]
     opened: unknown[]
+    auth: WebAuth
+    devices: DeviceStore
   }
 
   /** Link mode with one signed-in device; `server` false leaves `serverProjects` out (a desktop). */
   async function signedIn(server = true, recent: () => Array<{ id: string; name: string; path: string; missing: boolean }> = () => []): Promise<Signed> {
     const port = await freePort()
     const opened: unknown[] = []
-    const { gw, auth, logs } = make({
+    const { gw, auth, devices, logs } = make({
       openProjects: () => [{ id: 'open1', name: 'open', path: '/work/open' }],
       ...(server
         ? {
@@ -799,7 +801,7 @@ describe('server mode: projects from the browser', () => {
     })
     expect(res.status).toBe(200)
     const cookie = String(res.headers['set-cookie']).split(';')[0] ?? ''
-    return { port, host, origin, cookie, logs, opened }
+    return { port, host, origin, cookie, logs, opened, auth, devices }
   }
 
   const headers = (s: Signed, over: Record<string, string | undefined> = {}): Record<string, string> => {
@@ -880,6 +882,38 @@ describe('server mode: projects from the browser', () => {
     expect((await post(s.port, { headers: headers(s, { Cookie: undefined }), body })).status).toBe(401)
     expect((await post(s.port, { headers: headers(s, { Cookie: 'ccc_device=forged' }), body })).status).toBe(401)
     expect(s.opened).toEqual([])
+  })
+
+  // External review round 2: the cookie was checked only before the body was read, so a device
+  // revoked while its client was still sending the body could open a project after the revoke.
+  it('a device revoked while its body is still coming opens nothing', async () => {
+    const s = await signedIn()
+    // The first check (before the body) has run once `authorize` was asked for this request.
+    let checked!: () => void
+    const firstCheck = new Promise<void>((resolve) => (checked = resolve))
+    const authorize = s.auth.authorize.bind(s.auth)
+    vi.spyOn(s.auth, 'authorize').mockImplementation((cookie) => {
+      const device = authorize(cookie)
+      checked()
+      return device
+    })
+    const answer = new Promise<Answer>((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port: s.port, method: 'POST', path: '/api/projects', headers: headers(s) }, (res) => {
+        let body = ''
+        res.on('data', (d: Buffer) => (body += d.toString()))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }))
+      })
+      req.on('error', reject)
+      req.write('{"open":')
+      void firstCheck.then(() => {
+        expect(s.devices.revokeAll()).toBe(1)
+        req.end('"/work/new"}')
+      })
+    })
+    const res = await answer
+    expect(res.status).toBe(401)
+    expect(s.opened).toEqual([])
+    expect(s.logs.some((l) => l.includes('opened project'))).toBe(false)
   })
 
   it('refuses a body that is not JSON, too large, or not exactly one of open and reopen', async () => {

@@ -13,8 +13,9 @@ import { allowClickCounts, ApprovalArm, approvalKey, approvalStack } from './app
  *   and Space do nothing (approval-model.ts `approvalKey`); Esc there is Deny.
  * - Allow is enabled only after the dialog has been visible for about a second (ApprovalArm), and a
  *   press begun before that does not count when it is released after (`allowClickCounts`). Visible
- *   means the top dialog too (`approvalStack`): one under another (a link ask under a trash ask) is
- *   disarmed, and its second starts when the one over it goes.
+ *   means the top dialog too (`approvalStack`): one under another (a link ask under a trash ask, or
+ *   under the desktop's own link confirm, which is in the same stack) is disarmed, and its second
+ *   starts when the one over it goes.
  * - The backdrop blocks clicks to what is behind it but answers nothing: a click on its way to a
  *   terminal lands there and neither allows nor denies.
  */

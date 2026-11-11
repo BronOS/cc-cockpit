@@ -730,6 +730,9 @@ stays: a remote view may only Deny.
   terminal by itself, and Allow is enabled only after the dialog has been visible for about a second: neither keys typed
   for Claude nor a click already on its way when an ask appears can approve. Visible means on top too: of two dialogs up
   at once (a link ask and a trash ask) only the upper one arms, and the one under it starts its second when it is bared.
+  The desktop's own confirms (the link confirm, the web access risk confirm) are in the same stack: ready at once when
+  they first show, as the native dialog, but one under them stops arming, and covered and bared again they too wait a
+  second. A browser's pending OAuth sign-in keeps its paste box: past the notice cap only ended sign-ins go.
 
 ### 9.7 Native dialogs
 
@@ -757,7 +760,8 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
 - **Opening.** In server mode the browser picker (`renderer/web/picker.tsx`) lists the recent projects and has "Open
   folder…" with a server path field. The picker's GET adds recent and missing projects only in server mode
   (`projects.recent` stays `no`). `POST /api/projects` (server mode only, else 404; device cookie and Origin as every
-  state-changing POST; body capped as the sign-in routes'): `{ open: path }` (absolute, resolved, an existing
+  state-changing POST, the cookie checked again once the body is read, so a device revoked mid-request opens nothing;
+  body capped as the sign-in routes'): `{ open: path }` (absolute, resolved, an existing
   directory; no create, `mkdir` in a terminal) or `{ reopen: id }`. Main runs `windows.openPath` as the desktop does and
   answers the project id or the error text; the picker goes on to `/?project=<id>`. Any folder the server user can
   read can be opened: no more than the shell a device already has. `ccc open <path>` and `cc-cockpit <path>` from a
