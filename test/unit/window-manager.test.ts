@@ -8,6 +8,9 @@ import { ProjectRegistry } from '../../src/main/projects/registry'
 import {
   asSecondInstanceData,
   projectPathFromArgv,
+  PAGE_RELOAD_FIRST_MS,
+  PAGE_RELOAD_MAX_MS,
+  PAGE_RELOAD_RESET_MS,
   WindowManager,
   type Rect,
   type WindowCallbacks,
@@ -30,6 +33,10 @@ interface FakeWindow extends WindowHandle {
   fullScreen: boolean
   /** Off screen (kept running for a browser); `focus` shows it again, as BrowserWindow.show. */
   hidden: boolean
+  /** How many times `hide` was called. */
+  hides: number
+  /** How many times its page was loaded again (`reload`). */
+  reloads: number
   /** The project window id this picker was created as a modal child of. */
   parentId?: number
   bounds: WindowBounds
@@ -92,6 +99,8 @@ class FakeFactory implements WindowFactory {
       minimized: false,
       fullScreen: false,
       hidden: false,
+      hides: 0,
+      reloads: 0,
       bounds: createdWith ?? { x: 10, y: 10, width: 800, height: 600 },
       callbacks,
       blurCalls: [],
@@ -108,7 +117,11 @@ class FakeFactory implements WindowFactory {
         win.hidden = false
       },
       hide() {
+        win.hides++
         win.hidden = true
+      },
+      reload() {
+        win.reloads++
       },
       // Programmatic close and a user close look the same to the manager: `close` is asked
       // (onCloseRequested, which may keep the window open, as preventDefault does), then `closed`.
@@ -1315,5 +1328,192 @@ describe('asSecondInstanceData', () => {
     ]) {
       expect(asSecondInstanceData(bad)).toBeUndefined()
     }
+  })
+})
+
+describe('server mode: the hidden page (design-web.md §9.8)', () => {
+  interface Server {
+    wm: WindowManager
+    asks: number
+    closed: string[]
+    logs: string[]
+    /** Pending timers, fired by hand. */
+    timers: Array<{ fn: () => void; ms: number; cancelled: boolean }>
+    now: number
+    devices: Map<number, string[]>
+  }
+
+  function server(platform: NodeJS.Platform = 'linux', on = true): Server {
+    const s = { asks: 0, closed: [], logs: [], timers: [], now: 1_000_000, devices: new Map() } as unknown as Server
+    s.wm = new WindowManager({
+      factory,
+      registry,
+      platform,
+      quit: () => quits++,
+      server: on,
+      onProjectClosed: (projectId) => s.closed.push(projectId),
+      remoteDevices: (windowId) => s.devices.get(windowId) ?? [],
+      // Wired here on purpose: server mode must not ask even when an askClose exists.
+      askClose: () => {
+        s.asks++
+        return Promise.resolve('everyone' as CloseChoice)
+      },
+      setTimer: (fn, ms) => {
+        const t = { fn, ms, cancelled: false }
+        s.timers.push(t)
+        return () => {
+          t.cancelled = true
+        }
+      },
+      now: () => s.now,
+      log: (m) => s.logs.push(m)
+    })
+    return s
+  }
+
+  /** Fires every pending, uncancelled timer once. */
+  function fire(s: Server): void {
+    const due = s.timers.filter((t) => !t.cancelled)
+    s.timers = []
+    for (const t of due) t.fn()
+  }
+
+  /** No focus (show), no hide, no picker window made: the four calls server mode never makes. */
+  function untouched(): void {
+    for (const w of factory.windows) {
+      expect(w.focused).toBe(0)
+      expect(w.hides).toBe(0)
+    }
+    expect(factory.windows.filter((w) => w.kind === 'picker')).toHaveLength(0)
+  }
+
+  it('never focuses, shows, hides or makes a picker on any path', () => {
+    const s = server()
+    const a = folder('a')
+    const view = s.wm.openPath(a)
+    const win = factory.open('project')[0]!
+    // Opening it again (`ccc open`, a second launch with the folder), a plugin's focus, a bare second
+    // launch, the dock, the last browser leaving, the menu's or the shell's picker.
+    s.wm.openPath(a)
+    expect(s.wm.focusProject(view.id)).toBe(true)
+    s.wm.focusAny()
+    s.wm.activate()
+    s.devices.set(win.id, [])
+    s.wm.remoteViewGone(win.id)
+    s.wm.showPicker(win.id)
+    s.wm.showPicker()
+    untouched()
+    expect(s.wm.isHidden(win.id)).toBe(false)
+    expect(s.wm.pickerOpen).toBe(false)
+  })
+
+  it('makes no picker and does not quit when the last project closes; nothing open stays nothing', () => {
+    const s = server('linux')
+    const view = s.wm.openPath(folder('a'))
+    factory.open('project')[0]!.userClose()
+    expect(s.closed).toEqual([view.id])
+    expect(quits).toBe(0)
+    expect(s.wm.pickerOpen).toBe(false)
+    // With no project open: a bare second launch and the dock make nothing either.
+    s.wm.focusAny()
+    s.wm.activate()
+    untouched()
+    expect(quits).toBe(0)
+  })
+
+  it('asks no close, even with browsers attached: the close goes ahead', () => {
+    const s = server()
+    const view = s.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    s.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    expect(s.asks).toBe(0)
+    expect(win.closed).toBe(true)
+    expect(s.closed).toEqual([view.id])
+  })
+
+  it('a crash reloads the page after a pause, with a log line, and the window stays', () => {
+    const s = server()
+    s.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    expect(win.callbacks.onPageGone?.('crashed (crashed, exit code 133)')).toBe(true)
+    // Not at once: the pause comes first.
+    expect(win.reloads).toBe(0)
+    expect(s.timers.map((t) => t.ms)).toEqual([PAGE_RELOAD_FIRST_MS])
+    expect(s.logs).toEqual(['the hidden page of a crashed (crashed, exit code 133): reloading in 1 s'])
+    fire(s)
+    expect(win.reloads).toBe(1)
+    expect(win.closed).toBe(false)
+    expect(s.closed).toEqual([])
+  })
+
+  it('a failed load reloads too, never closing the window; the crash and failure of one try are one reload', () => {
+    const s = server()
+    s.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    expect(win.callbacks.onPageGone?.('failed to load (ERR_FILE_NOT_FOUND)')).toBe(true)
+    expect(win.callbacks.onPageGone?.('crashed (crashed, exit code 1)')).toBe(true)
+    expect(s.timers).toHaveLength(1)
+    fire(s)
+    expect(win.reloads).toBe(1)
+    expect(win.closed).toBe(false)
+  })
+
+  it('the pause doubles while the page keeps dying soon after each reload, up to the cap, and resets after a quiet minute', () => {
+    const s = server()
+    s.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    const pauses: number[] = []
+    for (let i = 0; i < 8; i++) {
+      win.callbacks.onPageGone?.('crashed (crashed, exit code 1)')
+      pauses.push(s.timers[0]!.ms)
+      s.now += s.timers[0]!.ms
+      fire(s)
+      s.now += 100
+    }
+    expect(pauses).toEqual([1000, 2000, 4000, 8000, 16000, PAGE_RELOAD_MAX_MS, PAGE_RELOAD_MAX_MS, PAGE_RELOAD_MAX_MS])
+    expect(win.reloads).toBe(8)
+    // Up for longer than the reset since the last reload: the first pause again.
+    s.now += PAGE_RELOAD_RESET_MS
+    win.callbacks.onPageGone?.('crashed (crashed, exit code 1)')
+    expect(s.timers[0]!.ms).toBe(PAGE_RELOAD_FIRST_MS)
+  })
+
+  it('a window closed during the pause is not reloaded; neither is one while quitting', () => {
+    const s = server()
+    s.wm.openPath(folder('a'))
+    s.wm.openPath(folder('b'))
+    const [a, b] = factory.open('project')
+    a!.callbacks.onPageGone?.('crashed (crashed, exit code 1)')
+    a!.userClose()
+    expect(s.timers[0]!.cancelled).toBe(true)
+    fire(s)
+    expect(a!.reloads).toBe(0)
+    b!.callbacks.onPageGone?.('crashed (crashed, exit code 1)')
+    s.wm.beginQuit()
+    fire(s)
+    expect(b!.reloads).toBe(0)
+    // Quitting: a crash then schedules nothing, but still never closes the window.
+    expect(b!.callbacks.onPageGone?.('crashed (crashed, exit code 1)')).toBe(true)
+    expect(s.timers).toHaveLength(0)
+  })
+
+  it('the desktop keeps today\'s behaviour: no page-gone handling (a failed load closes), focus, picker, ask', async () => {
+    const s = server('linux', false)
+    const a = folder('a')
+    s.wm.openPath(a)
+    const win = factory.open('project')[0]!
+    expect(win.callbacks.onPageGone).toBeUndefined()
+    s.wm.openPath(a)
+    expect(win.focused).toBe(1)
+    s.wm.focusAny()
+    expect(win.focused).toBe(2)
+    s.devices.set(win.id, ['Pixel'])
+    win.userClose()
+    expect(s.asks).toBe(1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(win.closed).toBe(true)
+    // The last project closed: the picker, as before.
+    expect(s.wm.pickerOpen).toBe(true)
   })
 })

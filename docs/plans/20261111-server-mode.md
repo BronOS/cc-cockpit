@@ -537,19 +537,19 @@ driving, and this is the first time Playwright meets a `--ozone-platform=headles
   `askClose`, `:1982`)
 - Modify: `test/unit/window-manager.test.ts`, `ccc-offer.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] a state of its own, not Keep running's set: in server mode `WindowManager` never calls `focus`, `show`, `hide` or
+- [x] a state of its own, not Keep running's set: in server mode `WindowManager` never calls `focus`, `show`, `hide` or
       `showPicker`, across `remoteViewGone`, `openView`, `focusAny`, `activate` and a second launch; it never makes the
       picker window, and with no project open the app keeps running with the gateway up
-- [ ] no close ask in server mode (`askClose` absent): nobody can press the window's close button
-- [ ] a crash (`render-process-gone`) or a failed load reloads the page with a log line, with a pause between tries, and
+- [x] no close ask in server mode (`askClose` absent): nobody can press the window's close button
+- [x] a crash (`render-process-gone`) or a failed load reloads the page with a log line, with a pause between tries, and
       never closes the window (today a failed load closes it, which would end the project's tabs)
-- [ ] server mode skips the ccc offer (its modal left the hidden page's root inert)
-- [ ] write tests with the fake window factory: none of the four calls happens in server mode on each path; no picker
+- [x] server mode skips the ccc offer (its modal left the hidden page's root inert)
+- [x] write tests with the fake window factory: none of the four calls happens in server mode on each path; no picker
       window and no quit with the last project closed; a crash and a failed load reload and the window stays, with the
       pause; no offer in server mode; the desktop keeps every one of today's behaviours
-- [ ] e2e in the real server process: crash the hidden page (`forcefullyCrashRenderer` through a test hook), it
+- [x] e2e in the real server process: crash the hidden page (`forcefullyCrashRenderer` through a test hook), it
       reloads, the tab and the browser view keep working, main alive
-- [ ] run tests, the smoke script and `npm run test:e2e` (`server-mode`, `close-confirm`, `project-picker`, `restore`,
+- [x] run tests, the smoke script and `npm run test:e2e` (`server-mode`, `close-confirm`, `project-picker`, `restore`,
       `ccc-install`) - must pass before next task
 
 ### Task 10: The hidden page: sizes [model: opus]

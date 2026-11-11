@@ -41,6 +41,12 @@ export interface WindowHandle {
   /** Ask it to close: the factory's `onCloseRequested` is asked first, as for the person's own close. */
   close(): void
   /**
+   * Load its page again (server mode, after a crash or a failed load): the window, its ids and its
+   * view stay, so the project's tabs never notice. A load that fails again reports through
+   * `onPageGone` once more.
+   */
+  reload(): void
+  /**
    * The normal (not maximised / fullscreen) bounds, which is what is worth persisting, plus the
    * maximised / full-screen flags (set only when true).
    */
@@ -76,6 +82,13 @@ export interface WindowCallbacks {
    * itself once answered. Absent (the picker): every close goes ahead.
    */
   onCloseRequested?(): boolean
+  /**
+   * The page is gone: its renderer crashed (`render-process-gone`) or the page failed to load
+   * (`what` says which, for the log line). True: the manager reloads it (server mode, design-web.md
+   * §9.8). Absent or false: today's desktop behaviour, a failed load closes the window (it would
+   * stay hidden forever, ready-to-show never fires) and a crash leaves the dead page as it is.
+   */
+  onPageGone?(what: string): boolean
 }
 
 /** The Electron side, behind an interface so the logic here runs under vitest with a fake. */
@@ -165,7 +178,34 @@ export interface WindowManagerOptions {
    * looks at must never shrink Claude for the browser that does (terminal-sizes.ts).
    */
   onWindowVisibility?: (windowId: number, visible: boolean) => void
+  /**
+   * Server mode (design-web.md §9.8, main's flag from server-mode.ts): the project window's page is
+   * the hidden page, a state of its own and not Keep running's. Nothing ever focuses, shows or hides
+   * it (there is no screen; every way in is a browser), no picker window is made (it would be
+   * invisible, and on Linux its close quits the app), so with no project open the app keeps running
+   * with the gateway up until SIGTERM; no close is asked (nobody can press the close button); and a
+   * crashed or failed page is reloaded, never closed (a close would end the project's tabs).
+   */
+  server?: boolean
+  /** The pause before a reload (server mode); returns a cancel. Absent: setTimeout. Tests inject it. */
+  setTimer?: (fn: () => void, ms: number) => () => void
+  /** Milliseconds now, for the reload backoff. Absent: Date.now. */
+  now?: () => number
   log?: (message: string) => void
+}
+
+/** The first pause before a hidden page is reloaded (server mode). */
+export const PAGE_RELOAD_FIRST_MS = 1000
+/** The longest pause: a page that crashes on every load is tried twice a minute, not in a loop. */
+export const PAGE_RELOAD_MAX_MS = 30_000
+/** A page that stayed up this long since its last reload starts again from the first pause. */
+export const PAGE_RELOAD_RESET_MS = 60_000
+
+/** A hidden page's reload state: the pending pause's cancel, and the last pause and reload time. */
+interface PageReload {
+  cancel?: () => void
+  delay: number
+  at: number
 }
 
 export class WindowManager {
@@ -198,6 +238,8 @@ export class WindowManager {
   private readonly asking = new Set<WindowHandle>()
   /** Windows this manager is closing after "Close for everyone": their `close` is not asked again. */
   private readonly closing = new Set<WindowHandle>()
+  /** Server mode: each project window's page reload state (a pending pause, the backoff). */
+  private readonly reloads = new Map<WindowHandle, PageReload>()
   /**
    * Set on `before-quit`. Quitting closes every window one by one, and each `closed` must not be
    * read as "the user closed it": that would open a picker mid-quit (which can cancel the quit)
@@ -241,7 +283,9 @@ export class WindowManager {
    * another window is how the user finds it again.
    */
   showPicker(callerWindowId?: number): void {
-    if (this.quitting) return
+    // Server mode makes no picker window: nobody could see it, and on Linux its close would quit the
+    // app. Every caller (start, the last project closing, a menu, the shell's "+") lands here.
+    if (this.quitting || this.options.server) return
     if (this.picker) {
       this.picker.focus()
       return
@@ -274,6 +318,8 @@ export class WindowManager {
    * screen); closed ones have already left `projects`.
    */
   focusAny(): void {
+    // Server mode: a bare `cc-cockpit` from a server shell has no screen to surface anything on.
+    if (this.options.server) return
     const last = this.lastWindow()
     if (last) this.show(last)
     else this.showPicker()
@@ -290,7 +336,7 @@ export class WindowManager {
   focusProject(projectId: string): boolean {
     const handle = this.projects.get(projectId)
     if (!handle) return false
-    if (!this.hidden.has(handle)) handle.focus()
+    if (!this.hidden.has(handle) && !this.options.server) handle.focus()
     return true
   }
 
@@ -304,7 +350,7 @@ export class WindowManager {
    * for a browser (the dock is one of the ways back, design-web.md §5.6), else the picker.
    */
   activate(): void {
-    if (this.picker) return
+    if (this.picker || this.options.server) return
     if ([...this.projects.values()].some((h) => !this.hidden.has(h))) return
     const last = this.lastWindow()
     if (last) this.show(last)
@@ -318,7 +364,9 @@ export class WindowManager {
    * the person's tabs without asking).
    */
   remoteViewGone(windowId: number): void {
-    if (this.quitting) return
+    // Server mode: the hidden page is never Keep running's mark (nothing is ever hidden there), and
+    // the last browser leaving shows nothing: the window stays as it was, its tabs alive.
+    if (this.quitting || this.options.server) return
     for (const h of this.hidden) {
       if (h.id !== windowId) continue
       if ((this.options.remoteDevices?.(windowId) ?? []).length === 0) this.show(h)
@@ -420,8 +468,9 @@ export class WindowManager {
   private openView(view: ProjectView, { keepPicker = false }: { keepPicker?: boolean } = {}): ProjectView {
     const existing = this.projects.get(view.id)
     if (existing) {
-      // Opening the project again is how a window kept running for a browser comes back.
-      this.show(existing)
+      // Opening the project again is how a window kept running for a browser comes back. Not in
+      // server mode: the hidden page has no screen to come back to (`ccc open`, a browser's open).
+      if (!this.options.server) this.show(existing)
       // Picked in a picker the user opened over open projects (the top strip's "+"): the pick is
       // done, so the picker goes as it does when a new window opens.
       this.closePicker()
@@ -455,7 +504,11 @@ export class WindowManager {
         onClosed: () => {
           if (handle) this.projectClosed(projectId, handle)
         },
-        onCloseRequested: () => (handle ? this.closeRequested(projectId, handle) : false)
+        onCloseRequested: () => (handle ? this.closeRequested(projectId, handle) : false),
+        // Server mode only: absent on the desktop, so the factory keeps today's behaviour there.
+        ...(this.options.server
+          ? { onPageGone: (what: string) => (handle ? this.pageGone(projectId, view.name, handle, what) : true) }
+          : {})
       },
       look
     )
@@ -494,6 +547,9 @@ export class WindowManager {
     if (this.projects.get(projectId) !== handle) return false
     // The dialog is up: a second click on the close button waits for the same answer.
     if (this.asking.has(handle)) return true
+    // Server mode asks nobody: no one can press the window's close button, and a close main starts
+    // (a browser's Close project) is already the person's answer.
+    if (this.options.server) return false
     const ask = this.options.askClose
     const devices = this.options.remoteDevices?.(handle.id) ?? []
     if (!ask || devices.length === 0) return false
@@ -544,6 +600,35 @@ export class WindowManager {
     if (wasHidden) this.options.onWindowVisibility?.(handle.id, true)
   }
 
+  /**
+   * Server mode: the hidden page crashed or failed to load. It is loaded again after a pause, with a
+   * log line, and the window is never closed (that would end the project's tabs). The pause doubles
+   * while the page keeps dying soon after each reload, up to PAGE_RELOAD_MAX_MS, so a page that can
+   * never load costs a try and a log line twice a minute, not a busy loop. True always: the factory
+   * must not close the window, whatever the state here.
+   */
+  private pageGone(projectId: string, name: string, handle: WindowHandle, what: string): boolean {
+    // Quitting, or a window that is no longer the project's (closing, a late event): nothing to reload.
+    if (this.quitting || this.projects.get(projectId) !== handle) return true
+    const state = this.reloads.get(handle)
+    // A pause already running: the crash and the failed load of one reload are one event.
+    if (state?.cancel) return true
+    const now = (this.options.now ?? Date.now)()
+    const delay =
+      state && now - state.at < PAGE_RELOAD_RESET_MS ? Math.min(state.delay * 2, PAGE_RELOAD_MAX_MS) : PAGE_RELOAD_FIRST_MS
+    this.logLine(`the hidden page of ${name} ${what}: reloading in ${delay / 1000} s`)
+    const setTimer = this.options.setTimer ?? defaultTimer
+    const next: PageReload = { delay, at: state?.at ?? now }
+    next.cancel = setTimer(() => {
+      next.cancel = undefined
+      next.at = (this.options.now ?? Date.now)()
+      if (this.quitting || this.projects.get(projectId) !== handle) return
+      handle.reload()
+    }, delay)
+    this.reloads.set(handle, next)
+    return true
+  }
+
   /** The most recently opened project window on screen, else the most recently opened hidden one. */
   private lastWindow(): WindowHandle | undefined {
     let visible: WindowHandle | undefined
@@ -565,6 +650,8 @@ export class WindowManager {
     this.hidden.delete(handle)
     this.asking.delete(handle)
     this.closing.delete(handle)
+    this.reloads.get(handle)?.cancel?.()
+    this.reloads.delete(handle)
     // Its views go with it, before onProjectClosed: the tabs killed there emit to a window that is gone.
     this.options.views?.removeWindow(handle.id)
     this.transparent.delete(handle)
@@ -695,6 +782,11 @@ export function asSecondInstanceData(data: unknown): SecondInstanceData | undefi
     return undefined
   }
   return { argv, cwd }
+}
+
+function defaultTimer(fn: () => void, ms: number): () => void {
+  const timer = setTimeout(fn, ms)
+  return () => clearTimeout(timer)
 }
 
 function isDir(path: string): boolean {

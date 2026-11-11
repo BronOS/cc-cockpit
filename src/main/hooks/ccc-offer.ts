@@ -9,10 +9,14 @@
 //    a second project window, or a page reload, never asks again.
 //  - Never in a test run (every e2e launch would grow a dialog over what the spec drives) unless
 //    the spec sets CC_COCKPIT_CCC_OFFER=1, which is itself honoured only in a test run.
+//  - Never in server mode (design-web.md §9.9): its modal opened on the hidden page, which nobody
+//    sees, and left that page's root inert.
 //  - A link that cannot be inspected (EACCES...) means we do not know it is missing: no offer.
 import type { CccCommandState } from '../../shared/ipc'
 
 export interface CccOfferInputs {
+  /** Main's server flag (server-mode.ts). */
+  server?: boolean
   /** isTestRun(): e2e launch. */
   testRun: boolean
   /** CC_COCKPIT_CCC_OFFER=1: a test asks for the offer. */
@@ -23,6 +27,7 @@ export interface CccOfferInputs {
 }
 
 export function shouldOfferCcc(i: CccOfferInputs): boolean {
+  if (i.server) return false
   if (i.testRun && !i.forcedByTest) return false
   return i.enabled && i.state === 'missing'
 }
@@ -32,6 +37,7 @@ export class CccOffer {
 
   constructor(
     private readonly deps: {
+      server?: boolean
       testRun: boolean
       forcedByTest: boolean
       enabled: () => boolean
@@ -50,6 +56,7 @@ export class CccOffer {
       return false
     }
     return shouldOfferCcc({
+      server: this.deps.server,
       testRun: this.deps.testRun,
       forcedByTest: this.deps.forcedByTest,
       enabled: this.deps.enabled(),

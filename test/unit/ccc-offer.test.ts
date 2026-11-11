@@ -17,6 +17,11 @@ describe('shouldOfferCcc', () => {
   it('does not offer after "Don\'t ask again"', () => {
     expect(shouldOfferCcc({ ...base, enabled: false })).toBe(false)
   })
+  it('never offers in server mode (its modal left the hidden page inert), forced by a test or not', () => {
+    expect(shouldOfferCcc({ ...base, server: true })).toBe(false)
+    expect(shouldOfferCcc({ ...base, server: true, testRun: true, forcedByTest: true })).toBe(false)
+    expect(new CccOffer({ server: true, testRun: false, forcedByTest: false, enabled: () => true, state: () => 'missing' }).claim()).toBe(false)
+  })
   it('does not offer in a test run unless the test asks', () => {
     expect(shouldOfferCcc({ ...base, testRun: true })).toBe(false)
     expect(shouldOfferCcc({ ...base, testRun: true, forcedByTest: true })).toBe(true)

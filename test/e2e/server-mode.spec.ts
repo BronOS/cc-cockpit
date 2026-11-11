@@ -115,3 +115,51 @@ test('server mode: links never open on the server; they reach the browser as a l
     await browser.close()
   }
 })
+
+test('server mode: a crashed hidden page is reloaded; the window, the tab and the browser view keep working', async () => {
+  test.setTimeout(90_000)
+  server = await launchServer()
+  const { cockpit } = server
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Shell' }).click()
+    await browser.waitForTerminalText('FAKE-SHELL ready')
+
+    // Through main: Playwright's handle on the hidden page is dead after a crash, a reload or not.
+    const pageState = (): Promise<{ windows: number; windowId: number; project: string }> =>
+      cockpit.app.evaluate(async ({ BrowserWindow }) => {
+        const all = BrowserWindow.getAllWindows()
+        const win = all[0]
+        if (!win) return { windows: 0, windowId: -1, project: '' }
+        // Asked of the page itself: only a loaded shell page with its preload answers.
+        const project = (await win.webContents
+          .executeJavaScript(
+            "window.cockpit.invoke('window.info').then((i) => (i.kind === 'project' ? i.project.id : ''))"
+          )
+          .catch(() => '')) as string
+        return { windows: all.length, windowId: win.id, project }
+      })
+    const before = await pageState()
+    expect(before.project).toBe(server.projectId)
+
+    const crashed = new Promise<void>((resolve) => cockpit.page.once('crash', () => resolve()))
+    expect(await cockpit.hook<boolean>('crashPage', server.projectId)).toBe(true)
+    await crashed
+
+    // Reloaded after the pause: the same window (a closed one would have ended the project and its
+    // tabs) answers again for the same project.
+    await expect.poll(pageState, { timeout: 30_000 }).toEqual(before)
+
+    // The tab lived through it, and the browser view still drives it.
+    await page.locator('.terminal-view:not([hidden]) .xterm').click()
+    await page.keyboard.type('echo srv-$((50+5))')
+    await page.keyboard.press('Enter')
+    await browser.waitForTerminalText('srv-55')
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})

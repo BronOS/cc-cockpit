@@ -2,6 +2,7 @@
 // Kept thin on purpose (covered by e2e, not unit tests); every decision lives in window-manager.ts
 // and window-bounds.ts.
 import { BrowserWindow, screen, type MessagePortMain } from 'electron'
+import { errorText } from '../../shared/error-text'
 import type { ProjectView, WindowBounds } from '../../shared/types'
 import { createWindow, loadRenderer, type WindowLinkOpener } from './create-window'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type Rect } from './window-bounds'
@@ -68,7 +69,16 @@ export class ElectronWindowFactory implements WindowFactory {
       callbacks.onBoundsChanged()
       if (callbacks.onCloseRequested?.()) event.preventDefault()
     })
-    return this.finish(win, callbacks.onClosed)
+    // Server mode's hidden page (design-web.md §9.8): a crashed renderer is reported so the manager
+    // reloads it. Only wired when the manager asks (absent on the desktop: a crash there stays as
+    // today, the person sees it and closes the window).
+    const onPageGone = callbacks.onPageGone
+    if (onPageGone) {
+      win.webContents.on('render-process-gone', (_event, details) => {
+        if (!win.isDestroyed()) onPageGone(`crashed (${details.reason}, exit code ${details.exitCode})`)
+      })
+    }
+    return this.finish(win, callbacks.onClosed, onPageGone)
   }
 
   createPickerWindow(callbacks: Pick<WindowCallbacks, 'onClosed'>, parentId?: number): WindowHandle {
@@ -98,16 +108,22 @@ export class ElectronWindowFactory implements WindowFactory {
     return [primary, ...screen.getAllDisplays().filter((d) => d.id !== primary.id)].map((d) => d.workArea)
   }
 
-  private finish(win: BrowserWindow, onClosed: () => void): WindowHandle {
+  private finish(win: BrowserWindow, onClosed: () => void, onPageGone?: (what: string) => boolean): WindowHandle {
     // Read the ids now: after `closed` the webContents is destroyed and reading it throws.
     const id = win.id
     const senderId = win.webContents.id
     win.on('closed', onClosed)
-    loadRenderer(win).catch((err: unknown) => {
-      // ready-to-show never fires for a failed load, so the window would stay hidden forever.
-      console.error('failed to load the shell UI', err)
-      if (!win.isDestroyed()) win.close()
-    })
+    const load = (): void => {
+      loadRenderer(win).catch((err: unknown) => {
+        if (win.isDestroyed()) return
+        // Server mode: the manager reloads it after a pause (closing would end the project's tabs).
+        if (onPageGone?.(`failed to load (${errorText(err)})`)) return
+        // ready-to-show never fires for a failed load, so the window would stay hidden forever.
+        console.error('failed to load the shell UI', err)
+        win.close()
+      })
+    }
+    load()
     return {
       id,
       senderId,
@@ -130,6 +146,9 @@ export class ElectronWindowFactory implements WindowFactory {
       close: () => {
         if (!win.isDestroyed()) win.close()
       },
+      reload: () => {
+        if (!win.isDestroyed()) load()
+      },
       // Normal bounds: a maximised or fullscreen window would otherwise save the screen size as
       // its "normal" size and reopen huge after un-maximising. The flags only when true.
       getBounds: () => ({
@@ -147,4 +166,15 @@ export class ElectronWindowFactory implements WindowFactory {
       }
     }
   }
+}
+
+/**
+ * Crash a window's page as a real renderer crash would (`forcefullyCrashRenderer`). Test runs only
+ * (the server-mode e2e's `crashPage` hook): here because this adapter owns the windows' webContents.
+ */
+export function crashWindowPage(windowId: number): boolean {
+  const win = BrowserWindow.fromId(windowId)
+  if (!win || win.isDestroyed()) return false
+  win.webContents.forcefullyCrashRenderer()
+  return true
 }

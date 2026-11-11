@@ -159,7 +159,7 @@ import { createIndexFetcher, createPreviewFetcher, type IndexFetcher, type Previ
 import { MarketplaceService, marketplaceUrls } from './marketplace/marketplace-service'
 import { revocationNotice } from './marketplace/marketplace-view'
 import { rendererLocation } from './windows/create-window'
-import { ElectronWindowFactory } from './windows/electron-window-factory'
+import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
 import { CLOSE } from '../shared/web-protocol'
 import { blurSupport } from './windows/window-chrome'
@@ -562,12 +562,17 @@ function start(server: boolean): void {
       }
       return [...names]
     },
-    askClose:
-      testCloseAsk?.ask ??
-      electronAskClose({
-        windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
-        showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
-      }),
+    // Server mode (design-web.md §9.8): the hidden page is a state of its own; the manager never
+    // focuses, shows or hides it, makes no picker, reloads a crashed page, and asks no close (nobody
+    // can press the close button), so no askClose is wired there at all.
+    server,
+    askClose: server
+      ? undefined
+      : (testCloseAsk?.ask ??
+        electronAskClose({
+          windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
+          showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
+        })),
     onWindowVisibility: (windowId, visible) => {
       const viewId = desktopViewId(windowId)
       if (visible) hiddenDesktopViews.delete(viewId)
@@ -2058,6 +2063,8 @@ function start(server: boolean): void {
     offerAtStart: () => registry.app.data.cccOffer !== false
   })
   const cccOffer = new CccOffer({
+    // Skipped in server mode (design-web.md §9.9): its modal left the hidden page's root inert.
+    server,
     testRun,
     forcedByTest: process.env.CC_COCKPIT_CCC_OFFER === '1',
     enabled: () => registry.app.data.cccOffer !== false,
@@ -2400,6 +2407,12 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // Crash the renderer of the window showing `projectId` (the hidden page in server mode), as a
+          // real crash would: the server-mode e2e checks it is reloaded and the window stays.
+          crashPage: (projectId: string) => {
+            const windowId = windows.windowIdOf(projectId)
+            return windowId === undefined ? false : crashWindowPage(windowId)
+          },
           // The three calls of the Dialogs main wired, with no queued fake in the way (the server-mode
           // e2e: the same calls on Electron's `dialog` abort main under Ozone headless). The error box's
           // log line is caught by wrapping console.error for the call.
