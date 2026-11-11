@@ -9,8 +9,11 @@
 //
 // Network binds (plan Task 28, design §4.3): any address is allowed, but the two dangerous choices
 // (no sign-in on a network address, plain http on one) listen only once the person confirmed them
-// on the settings page (`confirmed`, set by `applyWebAccessPatch` from a confirmed change). A risk
-// in the file that was never confirmed (a hand edit) is refused like any other bad setting.
+// on the settings page (`confirmed`, set by `applyWebAccessPatch` from a confirmed change). A risky
+// setting typed into the file on its own (a hand-edited bind of 0.0.0.0) is refused like any other
+// bad setting. The confirm is a guard against a choice made on the page without reading what it
+// means, not a seal on the file: whoever can write `app.json` can turn web access on, and can write
+// `confirmed` next to the risk just as well (the same trust as the rest of the file).
 //
 // No regexes in what is new here (the project rule for anything parsing settings): host names and
 // origins go through WHATWG `URL`, addresses through `net.isIP`.
@@ -236,6 +239,20 @@ export type PatchResult = { ok: true; value: WebAccessSettings } | { ok: false; 
 
 const PATCH_KEYS = ['enabled', 'bind', 'port', 'externalOrigin', 'hosts', 'mode', 'tls', 'confirm'] as const
 
+/**
+ * Whether the confirm `risk` had in `current` still covers it in `next`: the exposure it was given
+ * for is unchanged. A confirm is worded for the choice shown at the time, so a wider exposure under
+ * the same risk id asks again (review finding: plain http confirmed for an `http:` proxy origin on a
+ * loopback bind must not carry over to the gateway itself on 0.0.0.0 over plain http, nor None
+ * confirmed on one LAN address to every address). Any change of what the risk depends on counts,
+ * narrower or not: asking once more is cheap, judging "narrower" is where a mistake would hide.
+ */
+function confirmCarries(risk: WebAccessRisk, current: WebAccessSettings, next: WebAccessSettings): boolean {
+  if (current.bind !== next.bind) return false
+  if (risk === 'none-network') return true
+  return current.externalOrigin === next.externalOrigin && (current.tls === undefined) === (next.tls === undefined)
+}
+
 /** A host entry as the error message shows it: the person's text, cut short and on one line. */
 function shown(raw: unknown): string {
   return JSON.stringify(String(raw).slice(0, 80))
@@ -251,8 +268,10 @@ function shown(raw: unknown): string {
  * The §4.3 confirms: a change that leaves web access on with a risk that was not confirmed before
  * (and is not in the patch's `confirm`) is refused with `needsConfirm`, so a cancelled confirm leaves
  * every setting as it was (a loopback bind stays loopback). A risk the change removes loses its
- * confirm, so choosing it again asks again. Turning off never needs one: a risk saved while off is
- * stored unconfirmed and asked for when web access is turned on.
+ * confirm, so choosing it again asks again, and so does a change that widens what the risk exposes
+ * (`confirmCarries`: another bind, origin or TLS). Turning off never needs one and drops every
+ * confirm: confirms exist only while web access is on, so turning it on again, weeks later or a
+ * minute later, always asks for the risks it brings (a risk saved while off included).
  */
 export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown): PatchResult {
   if (!isPlainObject(patch)) return { ok: false, error: 'the change must be an object' }
@@ -328,15 +347,18 @@ export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown):
     if (!Array.isArray(raw) || !raw.every(isRisk)) return { ok: false, error: 'confirm must be a list of risks' }
     given = raw
   }
-  // Only a confirm of a risk the settings still have carries over (a stale entry in a hand-edited
-  // file confirms nothing).
-  const before = webAccessRiskIds(current).filter((r) => current.confirmed?.includes(r))
+  // Only a confirm of a risk the settings still have, given while on and for the same exposure,
+  // carries over (a stale entry in a hand-edited file confirms nothing; nor does one left in a file
+  // that is off).
+  const before = current.enabled
+    ? webAccessRiskIds(current).filter((r) => current.confirmed?.includes(r) === true && confirmCarries(r, current, next))
+    : []
   const risks = webAccessRiskIds(next)
   const missing = risks.filter((r) => !before.includes(r) && !given.includes(r))
   if (next.enabled && missing.length > 0) {
     return { ok: false, error: `confirm first: ${missing.map((r) => WEB_RISK_TEXT[r].title).join(' ')}`, needsConfirm: missing }
   }
-  const confirmed = risks.filter((r) => before.includes(r) || given.includes(r))
+  const confirmed = next.enabled ? risks.filter((r) => before.includes(r) || given.includes(r)) : []
   if (confirmed.length > 0) next.confirmed = confirmed
   else delete next.confirmed
   return { ok: true, value: next }

@@ -316,10 +316,12 @@ export interface WebAccessSettings {
   /** Certificate and key files (PEM, absolute paths): present, the gateway serves https. */
   tls?: { certPath: string; keyPath: string }
   /**
-   * The §4.3 risks the person confirmed, set only by a confirmed change on the settings page and
-   * kept only while the risk is still there (a change that removes it drops it, so coming back asks
-   * again). A risk of the settings not listed here is refused (nothing listens): a hand-edited bind
-   * of 0.0.0.0 never listens on the network without the confirm.
+   * The §4.3 risks the person confirmed, set by a confirmed change on the settings page and kept
+   * only while web access stays on with the risk and the exposure it was confirmed for (a change
+   * that removes the risk, widens it with another bind, origin or TLS, or turns web access off drops
+   * it, so coming back asks again). A risk of the settings not listed here is refused (nothing
+   * listens): a hand-edited bind of 0.0.0.0 alone never listens on the network. Not a seal: whoever
+   * can write `app.json` can write this list too, the same trust as turning web access on.
    */
   confirmed?: WebAccessRisk[]
 }

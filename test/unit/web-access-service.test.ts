@@ -168,14 +168,44 @@ describe('network binds, TLS and the §4.3 confirms (plan Task 28)', () => {
     expect(refused({ confirm: 'plain-http' })).toMatch(/list of risks/)
   })
 
-  it('turning off never asks; a risk saved while off is asked for when turning on', () => {
+  it('turning off never asks and drops every confirm, so turning on asks again for each risk', () => {
     const lan = patched({ bind: '0.0.0.0', confirm: ['plain-http'] }, { ...base, enabled: true })
     const off = patched({ enabled: false, mode: 'none' }, lan)
-    expect(off).toMatchObject({ enabled: false, mode: 'none', confirmed: ['plain-http'] })
-    expect(asks({ enabled: true }, off)).toEqual(['none-network'])
+    expect(off).toMatchObject({ enabled: false, mode: 'none', bind: '0.0.0.0' })
+    expect(off.confirmed).toBeUndefined()
+    expect(asks({ enabled: true }, off)).toEqual(['none-network', 'plain-http'])
+    // Off and straight on again, nothing else changed: still asks (review finding, task 28).
+    expect(asks({ enabled: true }, patched({ enabled: false }, lan))).toEqual(['plain-http'])
     const offLan = patched({ bind: '10.0.0.4' })
     expect(offLan.confirmed).toBeUndefined()
     expect(asks({ enabled: true }, offLan)).toEqual(['plain-http'])
+    // A confirm left in a file that is off (a hand edit, or a file from before this rule) carries nothing.
+    expect(asks({ enabled: true }, { ...offLan, confirmed: ['plain-http'] })).toEqual(['plain-http'])
+    // A confirm sent with a change that leaves web access off is not stored either.
+    expect(patched({ bind: '0.0.0.0', confirm: ['plain-http'] }).confirmed).toBeUndefined()
+  })
+
+  it('a confirm holds only for the exposure it was given for: another bind, origin or TLS asks again', () => {
+    const on = { ...base, enabled: true }
+    // plain http confirmed for an http: proxy origin on loopback does not cover the gateway itself on 0.0.0.0.
+    const proxy = patched({ externalOrigin: 'http://box.lan', confirm: ['plain-http'] }, on)
+    expect(proxy.confirmed).toEqual(['plain-http'])
+    expect(asks({ bind: '0.0.0.0' }, proxy)).toEqual(['plain-http'])
+    // None confirmed on one LAN address does not cover every address; nor plain http.
+    const lanNone = patched({ bind: '10.0.0.4', mode: 'none', confirm: ['none-network', 'plain-http'] }, on)
+    expect(lanNone.confirmed).toEqual(['none-network', 'plain-http'])
+    expect(asks({ bind: '0.0.0.0' }, lanNone)).toEqual(['none-network', 'plain-http'])
+    // A proxy's http origin on a TLS bind: dropping TLS (the gateway's own leg goes plain) asks again,
+    // and so does another origin.
+    const tlsProxy = patched({ bind: '0.0.0.0', tls: TLS, externalOrigin: 'http://box.lan', confirm: ['plain-http'] }, on)
+    expect(asks({ tls: null }, tlsProxy)).toEqual(['plain-http'])
+    expect(asks({ externalOrigin: 'http://other.lan' }, tlsProxy)).toEqual(['plain-http'])
+    // None does not depend on TLS: adding a certificate keeps its confirm (and ends plain http's).
+    const lanTlsNone = patched({ tls: TLS }, lanNone)
+    expect(lanTlsNone.confirmed).toEqual(['none-network'])
+    // What the risks do not depend on (port, hosts, mode between signed-in modes) keeps them.
+    expect(patched({ port: 8000, hosts: ['box.lan'] }, lanNone).confirmed).toEqual(['none-network', 'plain-http'])
+    expect(patched({ mode: 'password' }, patched({ bind: '0.0.0.0', confirm: ['plain-http'] }, on)).confirmed).toEqual(['plain-http'])
   })
 
   it('listens on a network address only with TLS or the confirm; a hand-edited risk is refused', () => {
