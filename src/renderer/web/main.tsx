@@ -129,10 +129,10 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
 
   // A server's project closed for every device (a browser's Close project): every view of it goes
   // back to the project list, the asking one included. `replace`: Back must not land on the closed
-  // project's page.
+  // project's page. Relative to the page's own path, so a reverse-proxy prefix is kept and `?project=` dropped.
   const toPicker = backToPicker(status, isServerView())
   useEffect(() => {
-    if (toPicker) location.replace('/')
+    if (toPicker) location.replace(location.pathname)
   }, [toPicker])
 
   if (toPicker) return <main className="web-state">The project was closed. Opening the project list...</main>
