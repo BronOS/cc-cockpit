@@ -113,7 +113,7 @@ function LinkDialog(props: { ask: LinkAsk; canAllow: boolean; onAnswer: (allow: 
     }
   }, [])
   return createPortal(
-    <div className="confirm-backdrop" onMouseDown={() => answer(false)}>
+    <div className="confirm-backdrop confirm-over-all" onMouseDown={() => answer(false)}>
       <div
         className="confirm-dialog"
         role="alertdialog"

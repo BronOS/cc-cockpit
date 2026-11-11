@@ -1200,6 +1200,14 @@ iframe:focus-visible {
   background: rgba(0, 0, 0, 0.3);
   z-index: 120;
 }
+/* A confirm portalled out of #root (the web access risk confirm, RiskConfirmDialog; the link
+   confirm, ShellNotices): #root is inert behind it, so it must paint over everything #root holds,
+   the settings screen (150) and the overlay stack (200 + i) included. At 120 the risk confirm, which
+   only ever opens from the settings screen, was drawn under it: the question hidden and the page
+   in front of it inert, the window looked frozen (only Esc, heard on the document, got out). */
+.confirm-backdrop.confirm-over-all {
+  z-index: 1000;
+}
 .confirm-dialog {
   width: min(440px, 90vw);
   padding: 16px 18px;

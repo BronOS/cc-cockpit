@@ -7,7 +7,7 @@
 // than loopback: a network bind is only ever refused.
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { request } from 'node:http'
+import { Agent, request } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { checkServerIdentity, type PeerCertificate } from 'node:tls'
 import { createServer, type AddressInfo } from 'node:net'
@@ -177,6 +177,42 @@ describe('start and stop with the setting', () => {
     const next = await freePort()
     expect(await gw.apply(webAccessOf({ enabled: true, port: next }))).toEqual({ state: 'listening', bind: '127.0.0.1', port: next })
     await expect(http(port, { headers: { Host: `127.0.0.1:${port}` } })).rejects.toThrow(/ECONNREFUSED/)
+  })
+
+  it('a rebind with a view connected and a keep-alive request open completes: the view is dropped (it reconnects), the new listener serves', async () => {
+    // The manual-test "stuck on Save to 0.0.0.0" suspect: server.close() only calls back once every
+    // connection is gone, so an open WebSocket or keep-alive socket left behind would hang the save.
+    // (The cause was the renderer's confirm drawn under the settings screen; this keeps the rebind
+    // path honest.) Another port stands in for another address: tests bind loopback only.
+    const { gw, port } = await listening()
+    const host = `127.0.0.1:${port}`
+    gw.setSocketHandler(() => undefined)
+    const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin: `http://${host}` })
+    await new Promise<void>((resolve, reject) => {
+      client.on('open', () => resolve())
+      client.on('error', reject)
+    })
+    const closed = new Promise<number>((resolve) => client.on('close', (code) => resolve(code)))
+    const agent = new Agent({ keepAlive: true })
+    try {
+      const kept = await new Promise<number>((resolve, reject) => {
+        const req = request({ host: '127.0.0.1', port, path: '/', headers: { Host: host }, agent }, (res) => {
+          res.resume()
+          res.on('end', () => resolve(res.statusCode ?? 0))
+        })
+        req.on('error', reject)
+        req.end()
+      })
+      expect(kept).toBe(200)
+      const next = await freePort()
+      expect(await gw.apply(webAccessOf({ enabled: true, port: next, mode: 'none' }))).toEqual({ state: 'listening', bind: '127.0.0.1', port: next })
+      // Dropped, not told "turned off": a 1006 is what the page retries (bridge.ts), and it finds the new listener.
+      expect(await closed).toBe(1006)
+      await vi.waitFor(() => expect(gw.connections().size).toBe(0))
+      expect((await http(next, { headers: { Host: `127.0.0.1:${next}` } })).status).toBe(200)
+    } finally {
+      agent.destroy()
+    }
   })
 
   it('a toggle while a start is still on its way ends in the last setting', async () => {

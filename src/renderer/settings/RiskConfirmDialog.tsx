@@ -12,7 +12,9 @@ import { WEB_RISK_TEXT } from '../../shared/web-access'
  *
  * Cancel has the focus, so Enter alone never takes the risk. Portalled out of #root, which goes inert
  * meanwhile (as the link confirm, ShellNotices.tsx): no key reaches the settings page or a terminal
- * behind it. The texts are WEB_RISK_TEXT, the one copy main's badge uses too.
+ * behind it. So it paints over everything in #root, the settings screen it opens from included
+ * (`confirm-over-all`, styles.css): under it, the question was hidden and the page dead. The texts
+ * are WEB_RISK_TEXT, the one copy main's badge uses too.
  */
 export function RiskConfirmDialog(props: { risks: readonly WebAccessRisk[]; onAnswer: (accepted: boolean) => void }): React.JSX.Element | null {
   const [step, setStep] = useState(0)
@@ -54,7 +56,7 @@ export function RiskConfirmDialog(props: { risks: readonly WebAccessRisk[]; onAn
   const text = WEB_RISK_TEXT[risk]
   const last = step === props.risks.length - 1
   return createPortal(
-    <div className="confirm-backdrop" onMouseDown={() => answer(false)}>
+    <div className="confirm-backdrop confirm-over-all" onMouseDown={() => answer(false)}>
       <div
         className="confirm-dialog"
         role="alertdialog"
