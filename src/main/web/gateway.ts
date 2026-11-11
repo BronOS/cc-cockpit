@@ -47,7 +47,11 @@ import {
   SIGN_IN_LINK_PATH,
   SIGN_IN_PASSWORD_PATH,
   type WebConfirmTicket,
+  type WebOpenProjectReply,
+  type WebOpenProjectRequest,
   type WebProjectEntry,
+  type WebProjectsReply,
+  type WebRecentProject,
   type WebSessionReply
 } from '../../shared/web-protocol'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
@@ -55,6 +59,7 @@ import type { AccessLog } from './access-log'
 import { deviceCookie, type SignInResult, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp, type OriginRule } from './checks'
 import type { WebDevice } from './devices'
+import { parseOpenProjectBody } from './open-project'
 import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
 import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
 import { listenPlanOf, type ListenPlan } from './settings'
@@ -91,7 +96,7 @@ export { WS_PATH }
 export { CONFIRM_ASK_PATH, CONFIRM_POLL_PATH, SIGN_IN_LINK_PATH, SIGN_IN_PASSWORD_PATH }
 /** What the page asks first: the mode, and whether this browser is signed in. */
 export { SESSION_PATH }
-/** The open project windows, for the web project picker; needs a device. */
+/** The open project windows, for the web project picker (and server mode's open); needs a device. */
 export { PROJECTS_PATH }
 /** A sign-in body is a token (or a password, or a ticket) and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
@@ -114,10 +119,24 @@ export interface GatewayDeps {
   shellDir?: string
   /** The projects that have a window open now (main's window table), for the web picker. */
   openProjects?: () => WebProjectEntry[]
+  /**
+   * Server mode only (design-web.md §9.8): main passes it when its own `server` flag is on, never
+   * otherwise. Present, the picker's GET adds `server` and the recent projects, and the POST opens a
+   * folder or reopens a recent one; absent, the POST is 404 as any unknown route.
+   */
+  serverProjects?: ServerProjects
   /** Plugin files and inline overlays (plugin-pages.ts). Absent: `/p/` and `/o/` are 404. */
   pages?: PluginPages
   /** The ping interval (HEARTBEAT_MS); tests shorten it. */
   heartbeatMs?: number
+}
+
+/** What a browser may do with projects when there is no desktop (open-project.ts does the open). */
+export interface ServerProjects {
+  /** The recent projects with no window open, newest first, `missing` when the folder is gone. */
+  recent(): WebRecentProject[]
+  /** A checked body (parseOpenProjectBody): the project id, or the error text. */
+  open(request: WebOpenProjectRequest): WebOpenProjectReply
 }
 
 export type GatewayStatus =
@@ -537,8 +556,16 @@ export class WebGateway {
       })
     }
     // Everything else needs a device: a request without a valid cookie learns nothing more.
-    if (!this.deps.auth.authorize(req.headers.cookie)) return this.json(res, host, 401, { error: 'not signed in' })
-    if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, { projects: this.openProjects() })
+    const device = this.deps.auth.authorize(req.headers.cookie)
+    if (!device) return this.json(res, host, 401, { error: 'not signed in' })
+    if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, this.projects())
+    const serverProjects = this.deps.serverProjects
+    if (method === 'POST' && path === PROJECTS_PATH && serverProjects) {
+      return void this.openProject(req, res, host, serverProjects, device).catch((err: unknown) => {
+        this.deps.log(`web access: opening a project failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'opening the project failed' })
+      })
+    }
     this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
   }
 
@@ -617,6 +644,61 @@ export class WebGateway {
     }
   }
 
+  /** The picker's list: the open projects, and in server mode the recent ones too (same failure rule). */
+  private projects(): WebProjectsReply {
+    const projects = this.openProjects()
+    const serverProjects = this.deps.serverProjects
+    if (!serverProjects) return { projects }
+    let recent: WebRecentProject[] = []
+    try {
+      recent = serverProjects.recent().map((p) => ({ id: p.id, name: p.name, path: p.path, missing: p.missing === true }))
+    } catch (err) {
+      this.deps.log(`web access: listing recent projects failed: ${errorText(err)}`)
+    }
+    return { projects, server: true, recent }
+  }
+
+  /**
+   * Server mode's open from the browser picker (design-web.md §9.8). Origin and cookie were checked
+   * before the route (request above); the body is read as a sign-in body is (JSON, capped), checked
+   * by parseOpenProjectBody, and only the checked request reaches main.
+   */
+  private async openProject(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects, device: WebDevice): Promise<void> {
+    const read = await this.readJson(req, res, host)
+    if (!read) return
+    const request = parseOpenProjectBody(read.body)
+    if ('error' in request) return this.json(res, host, 400, request)
+    if (res.destroyed) return
+    const reply = projects.open(request)
+    if ('error' in reply) return this.json(res, host, 400, { error: reply.error })
+    // Which device opened which project, for the server's log (no path: the id names it).
+    this.deps.log(`web access: device ${device.id} opened project ${reply.id}`)
+    this.json(res, host, 200, { id: reply.id })
+  }
+
+  /**
+   * A small JSON body (MAX_SIGN_IN_BODY), or undefined once the answer for a body that is not one
+   * (415 not JSON, 413 too large, 400 unparsable) has been sent.
+   */
+  private async readJson(req: IncomingMessage, res: ServerResponse, host: string): Promise<{ body: unknown } | undefined> {
+    if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+      req.resume()
+      this.json(res, host, 415, { error: 'expected JSON' })
+      return undefined
+    }
+    const text = await readBody(req, MAX_SIGN_IN_BODY)
+    if (text === undefined) {
+      this.json(res, host, 413, { error: 'too large' }, { Connection: 'close' })
+      return undefined
+    }
+    try {
+      return { body: JSON.parse(text) }
+    } catch {
+      this.json(res, host, 400, { error: 'expected JSON' })
+      return undefined
+    }
+  }
+
   private json(res: ServerResponse, host: string, status: number, value: unknown, extra: Record<string, string> = {}): void {
     this.send(res, host, status, 'application/json; charset=utf-8', JSON.stringify(value), extra)
   }
@@ -669,19 +751,9 @@ export class WebGateway {
   ): Promise<void> {
     // The Origin was checked before the route (request above); the cookie's flags follow it.
     const origin = String(req.headers.origin)
-    if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
-      req.resume()
-      return this.json(res, host, 415, { error: 'expected JSON' })
-    }
-    const text = await readBody(req, MAX_SIGN_IN_BODY)
-    if (text === undefined) return this.json(res, host, 413, { error: 'too large' }, { Connection: 'close' })
-    let body: unknown
-    try {
-      body = JSON.parse(text)
-    } catch {
-      return this.json(res, host, 400, { error: 'expected JSON' })
-    }
-    const answer = await route(body, () => res.destroyed)
+    const read = await this.readJson(req, res, host)
+    if (!read) return
+    const answer = await route(read.body, () => res.destroyed)
     if (res.destroyed) return
     this.json(res, host, answer.status, answer.body, answer.cookie === undefined ? {} : { 'Set-Cookie': deviceCookie(answer.cookie, origin) })
   }

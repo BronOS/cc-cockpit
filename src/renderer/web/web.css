@@ -81,7 +81,8 @@
 .web-picker-list li + li {
   border-top: 1px solid var(--cc-border);
 }
-.web-picker-list a {
+.web-picker-list a,
+.web-picker-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -89,9 +90,77 @@
   color: inherit;
   text-decoration: none;
 }
+/* Server mode's recent rows (a button each) and a missing one (not openable). */
+button.web-picker-row {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.web-picker-row:disabled {
+  cursor: default;
+}
 .web-picker-list a:hover,
-.web-picker-list a:focus-visible {
+.web-picker-list a:focus-visible,
+button.web-picker-row:enabled:hover,
+button.web-picker-row:focus-visible {
   background: var(--cc-bg-hover, color-mix(in srgb, var(--cc-fg) 8%, transparent));
+}
+.web-picker-missing {
+  color: var(--cc-fg-muted, var(--cc-fg));
+}
+.web-picker-badge {
+  font-size: var(--cc-text-sm);
+  font-weight: 400;
+}
+.web-picker-heading {
+  margin: 0 0 8px;
+  font-size: var(--cc-text-md);
+  font-weight: 600;
+}
+.web-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Server mode's "Open folder…": a path on the server. */
+.web-picker-open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.web-picker-open input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--cc-border, currentColor);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: inherit;
+}
+.web-picker-open button {
+  font: inherit;
+  padding: 4px 12px;
+  border: 1px solid var(--cc-border, currentColor);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-fg);
+  cursor: pointer;
+}
+.web-picker-error {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--cc-status-ended) 35%, transparent);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-error);
+  overflow-wrap: anywhere;
 }
 .web-picker-name {
   font-weight: 600;

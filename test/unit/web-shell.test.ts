@@ -8,7 +8,7 @@ import { openProjectEntries } from '../../src/main/web/connection'
 import { shellFileOf } from '../../src/main/web/shell-files'
 import { armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, takeLoadTake } from '../../src/renderer/shell-kind'
 import { topStripClass } from '../../src/renderer/status/strip-order'
-import { loadOpenProjects, projectHref } from '../../src/renderer/web/picker-model'
+import { loadOpenProjects, openProject, projectHref } from '../../src/renderer/web/picker-model'
 import {
   askConfirm,
   confirmPollOf,
@@ -277,9 +277,54 @@ describe('the project picker', () => {
       projects: [
         { id: 'p1', name: 'one', path: '/w/one' },
         { id: 'p2', name: 'two', path: '/w/two' }
-      ]
+      ],
+      server: false,
+      recent: []
     })
     expect(fetchFn).toHaveBeenCalledWith(PROJECTS_PATH, { credentials: 'same-origin', cache: 'no-store' })
+  })
+
+  it('server mode: the recent projects too, a missing one marked; recent without server is ignored', async () => {
+    const recent = [{ id: 'r1', name: 'one', path: '/w/one', missing: false }, { id: 'r2', name: 'gone', path: '/w/gone', missing: true }, { id: 'r3', name: 'x', path: '/x', missing: 'yes' }, 7]
+    expect(await loadOpenProjects(answer(200, { projects: [], server: true, recent }))).toEqual({
+      ok: true,
+      projects: [],
+      server: true,
+      recent: [
+        { id: 'r1', name: 'one', path: '/w/one', missing: false },
+        { id: 'r2', name: 'gone', path: '/w/gone', missing: true },
+        { id: 'r3', name: 'x', path: '/x', missing: false }
+      ]
+    })
+    expect(await loadOpenProjects(answer(200, { projects: [], recent }))).toMatchObject({ server: false, recent: [] })
+    expect(await loadOpenProjects(answer(200, { projects: [], server: true, recent: 'x' }))).toMatchObject({ server: true, recent: [] })
+  })
+
+  it('opens by path or recent id with a JSON POST; the id, the host\'s error text, signed out, or no answer', async () => {
+    const fetchFn = vi.fn(answer(200, { id: 'p9' }))
+    expect(await openProject(fetchFn, { open: '/srv/app' })).toEqual({ ok: true, id: 'p9' })
+    expect(fetchFn).toHaveBeenCalledWith(PROJECTS_PATH, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"open":"/srv/app"}'
+    })
+    expect(await openProject(answer(400, { error: 'not a folder: /srv/x' }), { open: '/srv/x' })).toEqual({
+      ok: false,
+      signedOut: false,
+      error: 'not a folder: /srv/x'
+    })
+    expect(await openProject(answer(401, {}), { reopen: 'r1' })).toEqual({ ok: false, signedOut: true })
+    // Off server mode the gateway's 404 is plain text: the status, not a throw.
+    const notJson = async () => ({ ok: false, status: 404, json: async () => { throw new SyntaxError('x') } })
+    expect(await openProject(notJson, { reopen: 'r1' })).toEqual({ ok: false, signedOut: false, error: 'the host answered 404' })
+    expect(await openProject(answer(200, { id: '' }), { reopen: 'r1' })).toEqual({ ok: false, signedOut: false, error: 'the host answered 200' })
+    expect(
+      await openProject(async () => {
+        throw new TypeError('Failed to fetch')
+      }, { reopen: 'r1' })
+    ).toEqual({ ok: false, signedOut: false, error: 'the host did not answer' })
   })
 
   it('a 401 means signed out; anything else is an error, never a throw', async () => {

@@ -5,7 +5,7 @@
 //
 // Markers are printed by shell arithmetic (`echo srv-$((40+2))` prints srv-42), so the command line
 // echoed back never contains the text a step waits for: only the shell's output does.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -378,6 +378,110 @@ test('server mode: Move to Trash from Files is confirmed in the browser; the res
       await expect(error).toContainText('to-trash.txt was not moved to the Trash: Failed to move item to trash')
       console.log(`Move to Trash in server mode: ${await error.textContent()}`)
     }
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+// design-web.md §9.8: with no desktop the browser picker is the picker. It opens a folder by its
+// path on the server (an error for a bad one, in the asking view), lists the recent projects with no
+// window and reopens one, and shows a gone folder as missing. `ccc open <path>` from a server shell
+// opens a project too. Nothing of it reaches a native dialog or a window shown on the server.
+test('server mode: projects are opened by path and reopened from the browser picker; ccc open from the shell', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer()
+  const { cockpit } = server
+  const root = realpathSync(cockpit.root)
+  const second = join(root, 'second')
+  const gone = join(root, 'gone')
+  const fromShell = join(root, 'from-shell')
+  for (const dir of [second, gone, fromShell]) mkdirSync(dir)
+  writeFileSync(join(root, 'a-file.txt'), 'x')
+  // The window with the highest id: the project opened last (each open makes a new BrowserWindow).
+  const closeNewestWindow = (): Promise<void> =>
+    cockpit.app.evaluate(({ BrowserWindow }) => {
+      const newest = BrowserWindow.getAllWindows().sort((a, b) => b.id - a.id)[0]
+      newest?.close()
+    })
+  const openCount = (): Promise<number> => cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
+
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await expect(page.getByRole('list', { name: 'Open projects' }).getByRole('link')).toHaveCount(1)
+    await page.getByRole('button', { name: 'Open folder…' }).click()
+    const field = page.getByLabel('Folder on the server')
+    const alert = page.locator('.web-picker-error')
+
+    // Errors, in this view: a relative path, a file, a folder that is not there (nothing is created).
+    await field.fill('second')
+    await page.getByRole('button', { name: 'Open', exact: true }).click()
+    await expect(alert).toHaveText('Cannot open: not an absolute path: second')
+    await field.fill(join(root, 'a-file.txt'))
+    await page.getByRole('button', { name: 'Open', exact: true }).click()
+    await expect(alert).toHaveText(`Cannot open: not a folder: ${join(root, 'a-file.txt')}`)
+    await field.fill(join(root, 'nope'))
+    await page.getByRole('button', { name: 'Open', exact: true }).click()
+    await expect(alert).toHaveText(`Cannot open: not a folder: ${join(root, 'nope')}`)
+    expect(existsSync(join(root, 'nope'))).toBe(false)
+    expect(await openCount()).toBe(1)
+
+    // A folder by its path: main opens it and the page goes on to the shell bound to it.
+    await field.fill(second)
+    await page.getByRole('button', { name: 'Open', exact: true }).click()
+    await expect(page).toHaveURL(/\?project=/)
+    await page.locator('.tabs-pane').waitFor()
+    const secondId = new URL(page.url()).searchParams.get('project') ?? ''
+    expect(secondId).not.toBe('')
+    expect(secondId).not.toBe(server.projectId)
+    expect(await openCount()).toBe(2)
+
+    // Closed on the server (Task 18 adds Close project in the browser): it is now a recent project.
+    // The bound view loses its window, so the picker is loaded again by hand.
+    await closeNewestWindow()
+    await expect.poll(openCount).toBe(1)
+    // `gone`: opened, closed, its folder removed: listed as missing, with nothing to click.
+    const goneOpen = await fetch(`${server.origin}/api/projects`, {
+      method: 'POST',
+      headers: { Origin: server.origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ open: gone })
+    })
+    expect(goneOpen.status).toBe(200)
+    await goneOpen.body?.cancel()
+    await expect.poll(openCount).toBe(2)
+    await closeNewestWindow()
+    await expect.poll(openCount).toBe(1)
+    rmSync(gone, { recursive: true })
+
+    await page.goto(`${server.origin}/`)
+    const recent = page.getByRole('list', { name: 'Recent projects' })
+    await expect(recent.getByRole('button')).toHaveCount(1)
+    await expect(recent).toContainText('missing')
+    await expect(recent).toContainText(gone)
+    // An unknown reopen id is refused with its text, opening nothing.
+    const unknown = await fetch(`${server.origin}/api/projects`, {
+      method: 'POST',
+      headers: { Origin: server.origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reopen: 'not-a-project' })
+    })
+    expect(unknown.status).toBe(400)
+    expect(await unknown.json()).toEqual({ error: 'not a recent project' })
+
+    // Reopen the recent one: the same project id, its shell.
+    await recent.getByRole('button', { name: /second/ }).click()
+    await expect(page).toHaveURL(`${server.origin}/?project=${encodeURIComponent(secondId)}`)
+    await page.locator('.tabs-pane').waitFor()
+    expect(await openCount()).toBe(2)
+
+    // `ccc open <path>` from a shell on the server: opened, listed in the browser's picker.
+    const opened = await ccc(server, ['open', fromShell])
+    expect(opened.code, opened.stderr).toBe(0)
+    await expect.poll(openCount).toBe(3)
+    await page.goto(`${server.origin}/`)
+    await expect(page.getByRole('list', { name: 'Open projects' }).getByRole('link')).toHaveCount(3)
+    await expect(page.getByRole('list', { name: 'Open projects' })).toContainText(fromShell)
+
     await expectMainAlive(server)
   } finally {
     await browser.close()

@@ -772,21 +772,21 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/web-gateway.test.ts`, `picker-model.test.ts`, `window-manager.test.ts`,
   `test/e2e/server-mode.spec.ts`
 
-- [ ] `GET /api/projects` adds `server` and the recent and missing projects only in server mode (`projects.recent` stays `no`)
-- [ ] `POST /api/projects`, 404 outside server mode: the device cookie and the Origin check as every state-changing
+- [x] `GET /api/projects` adds `server` and the recent and missing projects only in server mode (`projects.recent` stays `no`)
+- [x] `POST /api/projects`, 404 outside server mode: the device cookie and the Origin check as every state-changing
       POST, the body capped as the sign-in routes'; exactly one of `{ open: path }` (absolute, resolved, an existing
       directory, never created) or `{ reopen: id }`, where the id is looked up in main's own recent list and nothing
       else of the body is used; main runs `windows.openPath` as the desktop does and answers the project id or the
       error text; no regexes in the parsing
-- [ ] the picker in server mode: the recent projects, "Open folder…" with a server path field, a missing project shown
+- [x] the picker in server mode: the recent projects, "Open folder…" with a server path field, a missing project shown
       as missing (no relink or forget), the error in the asking view, then on to `/?project=<id>`
-- [ ] `ccc open <path>` from a server shell opens a project too, with nothing shown or focused (the no-display second
+- [x] `ccc open <path>` from a server shell opens a project too, with nothing shown or focused (the no-display second
       launch, `cc-cockpit <path>`, is Task 14's)
-- [ ] write tests: the POST 404 off server mode, with no Origin, a wrong Origin, no cookie, a path that is a file, a
+- [x] write tests: the POST 404 off server mode, with no Origin, a wrong Origin, no cookie, a path that is a file, a
       relative path, an oversize body, a non-JSON body, both keys, neither key, a missing or unknown `reopen` id; the
       GET lists recent projects only in server mode; `ccc open <path>` in server mode calls none of `show` and `focus`;
       e2e: open by path, an error for a bad path, reopen a recent one, main alive
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `web-access-settings`, `project-picker`, `cli`) - must pass
+- [x] run tests and `npm run test:e2e` (`server-mode`, `web-access-settings`, `project-picker`, `cli`) - must pass
       before next task
 
 ### Task 18: Projects from the browser: close [model: opus]

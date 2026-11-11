@@ -106,15 +106,42 @@ export interface WebSessionReply {
 }
 
 /**
- * One row of the PROJECTS_PATH answer (`{ projects: [...] }`): a project that has a window open
- * on the desktop now. Only those: a remote view binds to an open window (design-web.md §2.1) and
- * never opens one on the host (`projects.openRecent` is `no`-class).
+ * One row of the PROJECTS_PATH answer's `projects`: a project that has a window open now. A remote
+ * view binds to an open window (design-web.md §2.1). On the desktop that is all a browser gets: it
+ * never opens one on the host (`projects.openRecent` is `no`-class). Server mode adds `recent` and
+ * the POST below (§9.8).
  */
 export interface WebProjectEntry {
   id: string
   name: string
   path: string
 }
+
+/** A recent project in server mode's list: `missing` when its folder is gone (shown, not openable). */
+export interface WebRecentProject extends WebProjectEntry {
+  missing: boolean
+}
+
+/**
+ * The PROJECTS_PATH answer. `server` and `recent` only in server mode (design-web.md §9.8): the
+ * recent projects that have no window open, newest first. `server` is a UI hint (which items the
+ * picker shows); the POST's 404 off server mode is main's own decision.
+ */
+export interface WebProjectsReply {
+  projects: WebProjectEntry[]
+  server?: true
+  recent?: WebRecentProject[]
+}
+
+/**
+ * The PROJECTS_PATH POST body (server mode only): exactly one of `open` (an absolute path to an
+ * existing folder on the server; nothing is created) or `reopen` (a project id, looked up in main's
+ * own recent list only). Capped as the sign-in bodies (MAX_SIGN_IN_BODY).
+ */
+export type WebOpenProjectRequest = { open: string } | { reopen: string }
+
+/** The POST's answer: the opened project's id (200), or the error text (4xx). */
+export type WebOpenProjectReply = { id: string } | { error: string }
 
 /**
  * Largest frame either way (design-web.md §3): a 1 MiB panel message wrapped in a frame must fit.

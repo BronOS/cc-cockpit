@@ -180,13 +180,14 @@ import { revocationNotice } from './marketplace/marketplace-view'
 import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
-import { CLOSE } from '../shared/web-protocol'
+import { CLOSE, type WebOpenProjectRequest } from '../shared/web-protocol'
 import { blurSupport } from './windows/window-chrome'
 import { ViewRegistry } from './views/view-registry'
 import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
 import { openProjectEntries, WebConnections, windowSnapshot } from './web/connection'
+import { openProjectFromWeb } from './web/open-project'
 import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
 import { storedWebAccess } from './web/settings'
@@ -1585,7 +1586,23 @@ function start(server: boolean): void {
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
     shellDir: join(__dirname, '../renderer'),
     // The web picker lists what a remote view can bind to: projects with a window open now.
-    openProjects: () => openProjectEntries(windows, (projectId) => registry.get(projectId))
+    openProjects: () => openProjectEntries(windows, (projectId) => registry.get(projectId)),
+    // Server mode only (design-web.md §9.8): with no desktop the browser picker is the only one, so
+    // it lists the recent projects and opens a folder or a recent one as the desktop's picker does.
+    // On the desktop it stays absent: the POST is 404 and a browser never opens a window on the host.
+    ...(server
+      ? {
+          serverProjects: {
+            recent: () =>
+              registry
+                .recent()
+                .filter((p) => windows.windowIdOf(p.id) === undefined)
+                .map((p) => ({ id: p.id, name: p.name, path: p.path, missing: p.missing })),
+            open: (request: WebOpenProjectRequest) =>
+              openProjectFromWeb(request, { openPath: (path) => windows.openPath(path), openRecent: (id) => windows.openRecent(id) })
+          }
+        }
+      : {})
   })
   // Settings › General › Web access and the top bar's indicator (every channel `no`-class: desktop
   // windows only, so toAll reaches the picker and project windows and never a browser).

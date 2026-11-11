@@ -19,7 +19,7 @@ import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
-import { WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
+import { MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
 import { CLOSE, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
@@ -739,5 +739,178 @@ describe('the open projects (the web picker)', () => {
     const { port } = await listening({}, { openProjects: () => [] })
     const res = await http(port, { method: 'POST', path: '/api/projects', headers: { Host: `127.0.0.1:${port}`, Origin: 'http://evil.example' } })
     expect(res.status).toBe(403)
+  })
+})
+
+// Server mode's open from the browser (design-web.md §9.8, plan 20261111-server-mode Task 17): the
+// picker's GET adds the recent projects and the POST opens a folder or a recent one, only when main
+// passed `serverProjects` (its own server flag). Origin and cookie as every state-changing POST, the
+// body capped and checked before anything reaches main.
+describe('server mode: projects from the browser', () => {
+  function post(port: number, opts: { path?: string; headers: Record<string, string>; body?: string }): Promise<Answer> {
+    return new Promise((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, method: 'POST', path: opts.path ?? '/api/projects', headers: opts.headers }, (res) => {
+        let body = ''
+        res.on('data', (d: Buffer) => (body += d.toString()))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }))
+      })
+      req.on('error', reject)
+      req.end(opts.body)
+    })
+  }
+
+  interface Signed {
+    port: number
+    host: string
+    origin: string
+    cookie: string
+    logs: string[]
+    opened: unknown[]
+  }
+
+  /** Link mode with one signed-in device; `server` false leaves `serverProjects` out (a desktop). */
+  async function signedIn(server = true, recent: () => Array<{ id: string; name: string; path: string; missing: boolean }> = () => []): Promise<Signed> {
+    const port = await freePort()
+    const opened: unknown[] = []
+    const { gw, auth, logs } = make({
+      openProjects: () => [{ id: 'open1', name: 'open', path: '/work/open' }],
+      ...(server
+        ? {
+            serverProjects: {
+              recent,
+              open: (request) => {
+                opened.push(request)
+                if ('reopen' in request) return request.reopen === 'r1' ? { id: 'r1' } : { error: 'not a recent project' }
+                return request.open === '/work/new' ? { id: 'new1' } : { error: `not a folder: ${request.open}` }
+              }
+            }
+          }
+        : {})
+    })
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
+    const host = `127.0.0.1:${port}`
+    const origin = `http://${host}`
+    const link = await auth.accessLink(origin)
+    if (!link.ok) throw new Error('no link')
+    const res = await post(port, {
+      path: SIGN_IN_LINK_PATH,
+      headers: { Host: host, Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: link.link.split('#t=')[1], name: 'Phone' })
+    })
+    expect(res.status).toBe(200)
+    const cookie = String(res.headers['set-cookie']).split(';')[0] ?? ''
+    return { port, host, origin, cookie, logs, opened }
+  }
+
+  const headers = (s: Signed, over: Record<string, string | undefined> = {}): Record<string, string> => {
+    const all: Record<string, string | undefined> = { Host: s.host, Origin: s.origin, Cookie: s.cookie, 'Content-Type': 'application/json', ...over }
+    return Object.fromEntries(Object.entries(all).filter((e): e is [string, string] => e[1] !== undefined))
+  }
+
+  it('the GET adds server and the recent projects only in server mode', async () => {
+    const recent = [
+      { id: 'r1', name: 'one', path: '/work/one', missing: false },
+      { id: 'r2', name: 'gone', path: '/work/gone', missing: true, secret: 'x' } as unknown as { id: string; name: string; path: string; missing: boolean }
+    ]
+    const s = await signedIn(true, () => recent)
+    const res = await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie } })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({
+      projects: [{ id: 'open1', name: 'open', path: '/work/open' }],
+      server: true,
+      recent: [
+        { id: 'r1', name: 'one', path: '/work/one', missing: false },
+        { id: 'r2', name: 'gone', path: '/work/gone', missing: true }
+      ]
+    })
+    await gateway?.stop()
+
+    const desk = await signedIn(false)
+    expect(JSON.parse((await http(desk.port, { path: '/api/projects', headers: { Host: desk.host, Cookie: desk.cookie } })).body)).toEqual({
+      projects: [{ id: 'open1', name: 'open', path: '/work/open' }]
+    })
+  })
+
+  it('a failing recent list is an empty one, never a 500 with its text', async () => {
+    const s = await signedIn(true, () => {
+      throw new Error('registry gone')
+    })
+    const res = await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie } })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ server: true, recent: [] })
+    expect(res.body).not.toContain('registry gone')
+    expect(s.logs.some((l) => l.includes('registry gone'))).toBe(true)
+  })
+
+  it('opens a path and reopens a recent id, answering the project id', async () => {
+    const s = await signedIn()
+    const open = await post(s.port, { headers: headers(s), body: JSON.stringify({ open: '/work/new' }) })
+    expect(open.status).toBe(200)
+    expect(JSON.parse(open.body)).toEqual({ id: 'new1' })
+    const reopen = await post(s.port, { headers: headers(s), body: JSON.stringify({ reopen: 'r1', open: undefined, more: 'ignored' }) })
+    expect(reopen.status).toBe(200)
+    expect(JSON.parse(reopen.body)).toEqual({ id: 'r1' })
+    // Only the checked request reached main: nothing else of the body.
+    expect(s.opened).toEqual([{ open: '/work/new' }, { reopen: 'r1' }])
+    expect(s.logs.some((l) => l.includes('opened project new1'))).toBe(true)
+  })
+
+  it('answers main\'s error text for a bad path or an unknown recent id', async () => {
+    const s = await signedIn()
+    const bad = await post(s.port, { headers: headers(s), body: JSON.stringify({ open: '/work/file.txt' }) })
+    expect(bad.status).toBe(400)
+    expect(JSON.parse(bad.body)).toEqual({ error: 'not a folder: /work/file.txt' })
+    const unknown = await post(s.port, { headers: headers(s), body: JSON.stringify({ reopen: 'nope' }) })
+    expect(unknown.status).toBe(400)
+    expect(JSON.parse(unknown.body)).toEqual({ error: 'not a recent project' })
+  })
+
+  it('is 404 off server mode, even signed in with the right Origin', async () => {
+    const s = await signedIn(false)
+    const res = await post(s.port, { headers: headers(s), body: JSON.stringify({ open: '/work/new' }) })
+    expect(res.status).toBe(404)
+    expect(s.opened).toEqual([])
+  })
+
+  it('refuses no Origin, a wrong Origin and no cookie before reading the body', async () => {
+    const s = await signedIn()
+    const body = JSON.stringify({ open: '/work/new' })
+    expect((await post(s.port, { headers: headers(s, { Origin: undefined }), body })).status).toBe(403)
+    expect((await post(s.port, { headers: headers(s, { Origin: 'http://evil.example' }), body })).status).toBe(403)
+    expect((await post(s.port, { headers: headers(s, { Cookie: undefined }), body })).status).toBe(401)
+    expect((await post(s.port, { headers: headers(s, { Cookie: 'ccc_device=forged' }), body })).status).toBe(401)
+    expect(s.opened).toEqual([])
+  })
+
+  it('refuses a body that is not JSON, too large, or not exactly one of open and reopen', async () => {
+    const s = await signedIn()
+    expect((await post(s.port, { headers: headers(s, { 'Content-Type': 'text/plain' }), body: '{"open":"/work/new"}' })).status).toBe(415)
+    expect((await post(s.port, { headers: headers(s), body: '{"open":' })).status).toBe(400)
+    const big = await post(s.port, { headers: headers(s), body: JSON.stringify({ open: `/${'a'.repeat(MAX_SIGN_IN_BODY)}` }) })
+    expect(big.status).toBe(413)
+    for (const body of [{ open: '/work/new', reopen: 'r1' }, {}, { reopen: '' }, { reopen: 3 }, { open: null }, [], 'x', null]) {
+      const res = await post(s.port, { headers: headers(s), body: JSON.stringify(body) })
+      expect(res.status, JSON.stringify(body)).toBe(400)
+      expect(typeof JSON.parse(res.body).error).toBe('string')
+    }
+    expect(s.opened).toEqual([])
+  })
+
+  it('a throwing open answers 500 without its text', async () => {
+    const port = await freePort()
+    const { gw, logs } = make({
+      serverProjects: {
+        recent: () => [],
+        open: () => {
+          throw new Error('window factory exploded')
+        }
+      }
+    })
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'none' }))
+    const host = `127.0.0.1:${port}`
+    const res = await post(port, { headers: { Host: host, Origin: `http://${host}`, 'Content-Type': 'application/json' }, body: '{"open":"/x"}' })
+    expect(res.status).toBe(500)
+    expect(res.body).not.toContain('exploded')
+    expect(logs.some((l) => l.includes('exploded'))).toBe(true)
   })
 })
