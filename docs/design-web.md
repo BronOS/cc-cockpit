@@ -423,9 +423,9 @@ defer to (§9.7, §9.9).
 4. **Native mapping** (§6.1) and window lifetime (§5.6).
 5. **Remote reach**: password and desktop-confirm modes, external origin and TLS settings, the confirms of §4.3,
    Tailscale and SSH docs.
-6. **Server mode** (§9, Linux): the spawned start, the hidden page's own state, the dialog and `openExternal` adapters,
-   the key file, `ccc web` and the start link, owner approvals, opening projects from the browser, in-page notices and
-   the OAuth paste box.
+6. **Server mode** (§9, Linux): the re-executed start, the hidden page's own state, the dialog and `openExternal`
+   adapters, the key file, `ccc web` and the start link, owner approvals, opening projects from the browser, in-page
+   notices and the OAuth paste box.
 7. Later: the desktop as a remote client, multi-user (§10), a phone layout.
 
 ## 7a. Spike results (2026-11-10, branch `spike/web-terminal-mirror`, not merged)
@@ -509,26 +509,42 @@ hang, so it needs the same work.
 - **Linux only.** On macOS and Windows `--server` prints "server mode runs on Linux only" and exits 1, and nothing is
   detected. macOS would need another mechanism (never-shown windows, throttling, the dock, a GUI login session, a
   keychain that prompts on screen) and has no spike.
-- **Spawn.** The Ozone switch must be on argv: `app.commandLine.appendSwitch` from main is too late and
+- **Re-exec.** The Ozone switch must be on argv: `app.commandLine.appendSwitch` from main is too late and
   `ELECTRON_OZONE_PLATFORM_HINT=headless` is not read (spike). `app.relaunch` loses stdout: measured, the relaunched
-  process has fd 1 and 2 on `/dev/null` and is detached, so a manual run would daemonize silently. So when server mode
-  applies and argv lacks `--ozone-platform=headless`, main, before `ready`:
+  process has fd 1 and 2 on `/dev/null` and is detached, so a manual run would daemonize silently. A `spawnSync` child
+  keeps stdout, but a SIGTERM sent to the first process alone leaves the child running, reparented; an async `spawn`
+  cannot forward signals, because the first process leaves its top-level script, fails at platform init and exits 1
+  within 3 s (both measured, minimal app). So when server mode applies and argv lacks `--ozone-platform=headless`,
+  main, before `ready`:
   1. checks the single-instance lock: when another instance holds it, argv goes to that one as any second launch does
-     and this process exits 0, with no second Electron spawned. Else it releases the lock (a launch in the gap meets the
-     child as a second instance);
+     and this process exits 0, with nothing re-executed. Else it releases the lock, which the re-executed image takes
+     again (a launch that takes it in the gap becomes the primary, and this one hands its argv over after the re-exec);
   2. without `--server` (detected), prints one line: "no display: starting cc-cockpit in server mode, web access on;
      stop with Ctrl-C";
-  3. runs `spawnSync(exe, [...argv, '--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic'],
-     { stdio: 'inherit' })` and exits with the child's status (128 + n for a signal). `exe` is `process.env.APPIMAGE`
-     when set (`process.execPath` sits in the image's mount), else `process.execPath`.
+  3. checks that `process.execve` is a function and that `exe` is executable (`accessSync(exe, X_OK)`), then calls
+     `process.execve(exe, [exe, ...argv after the executable, '--server', '--ozone-platform=headless', '--disable-gpu',
+     '--password-store=basic'], process.env)`: the image is replaced, so there is one process with the same pid and
+     the same stdin, stdout and stderr, and its exit status is its own. A failed `execve` aborts the process (Electron
+     45.1.0: SIGABRT, no exception), hence the check first. `exe` is `process.execPath`, in an AppImage too: under
+     `execve` the image's mount lives on with the pid, and executing `APPIMAGE` again would nest a second runtime and
+     mount (the AppImage run is a manual check after the plan and may change this).
 
-  Measured in a minimal app: stdout is kept, the run stays in the foreground, Ctrl-C reaches both (one process group),
-  and the status passes through. Not measured: a SIGTERM sent to the parent alone; if the child outlives it, the plan
-  switches to an async `spawn` that forwards SIGTERM and SIGINT. The decision is a pure function (`src/main/server-mode.ts`:
-  platform, env, argv in; `{ server, spawnArgs }` or a refusal out) at the top of `index.ts`; main keeps `server` for
-  the run. `projectPathFromArgv` skips the flag and the switches. `--disable-gpu` only spares the GPU process failing EGL
-  twice before Chromium's software fallback; `--password-store=basic` is §9.5's, and `choosePasswordStore` already
-  leaves an explicit one alone.
+  **Fallback, chosen at run time by that check**, at each start and before the lock is released; never by catching,
+  because a failed `execve` leaves nothing to catch. When `process.execve` is missing or `exe` fails the check, main
+  runs `spawnSync(exe, [...the same args, '--server-parent=<its own pid>'], { stdio: 'inherit' })` and exits with the
+  child's status (128 + n for a signal; 1 with a line when the spawn itself fails, which a non-executable `exe` does
+  without aborting). The second process arms a parent watch only when that marker is on its argv: a timer compares it
+  with `process.ppid` and quits as SIGTERM does when they differ, so a SIGTERM sent to the first process alone no
+  longer leaves it running. A direct start with the switches (a unit that passes them, the e2e harness) carries no
+  marker and never arms the watch; unit tests run the watch over an injected parent-pid reader and start no process.
+
+  Measured in a minimal app, and repeated in the real app before anything is built on it (plan Task 1, which writes
+  its numbers here): same pid, stdout kept, the lock taken again, SIGTERM and Ctrl-C quit with status 0; the first
+  image's two zygote processes stay as zombies of that pid for the run (accepted: they are gone with it). The decision
+  is a pure function (`src/main/server-mode.ts`: platform, env, argv in; `{ server, exec: { exe, args } }` or a refusal
+  out) at the top of `index.ts`; main keeps `server` for the run. `projectPathFromArgv` skips the flag, the switches
+  and the fallback's marker. `--disable-gpu` only spares the GPU process failing EGL twice before Chromium's software
+  fallback; `--password-store=basic` is §9.5's, and `choosePasswordStore` already leaves an explicit one alone.
 - **A desktop launch meets a server.** `SecondInstanceData` carries whether the second launch has a display. A server
   primary ignores the argv of one that has (it opens nothing there, logs a line); the second launch asks the socket
   (`ccc web status`, 2 s deadline), and when the answer says server mode shows a native box, as it has a screen:
@@ -539,8 +555,9 @@ hang, so it needs the same work.
   (today `void webAccess.apply()` is not awaited and a socket that cannot start only logs, `index.ts:2569-2572`). Either
   failing (the port is taken) logs the reason and exits 1, so systemd shows the failure and retries without Claude
   tabs resuming and being killed on each try. A stored setting the gateway refuses is not a failure (§9.2).
-- **systemd.** The first process stays in the foreground and passes the status through, so a `Type=simple` unit needs
-  no switches. Example user unit (in `docs/features.md`, not shipped):
+- **systemd.** The process re-executes itself in place, so the unit's main pid is the app: a `Type=simple` unit needs
+  no switches, `systemctl stop` reaches it directly and the status is its own. Example user unit (in
+  `docs/features.md`, not shipped):
 
   ```ini
   # ~/.config/systemd/user/cc-cockpit.service
@@ -565,8 +582,8 @@ hang, so it needs the same work.
   to the user's journal. Never as root: Chromium's sandbox refuses it, and the app never passes `--no-sandbox`.
 - **Installs.** The deb and AUR packages, which ship `chrome-sandbox`. The AppImage needs FUSE and has no setuid
   sandbox helper, so it aborts where unprivileged user namespaces are restricted (Ubuntu 23.10 and later, most
-  containers; inferred): with no `--no-sandbox`, it does not start there. `docs/features.md` names the supported
-  installs; the plan checks a stock Ubuntu Server.
+  containers; inferred): with no `--no-sandbox`, it does not start there. `docs/features.md` marks each install as
+  run or not run; a stock Ubuntu Server is a manual check after the plan (it needs a second machine).
 
 ### 9.2 Web access is on
 
@@ -647,7 +664,7 @@ A server rarely has a Secret Service, so safeStorage falls back to `basic_text` 
 settings fields, OAuth tokens) are off (spike).
 
 - **The mode decides the store.** Server mode always uses the key file and runs Chromium with `--password-store=basic`
-  (§9.1's spawn), so the keyring is never asked and a locked Secret Service cannot leave a probe waiting on an unlock
+  (§9.1's re-exec), so the keyring is never asked and a locked Secret Service cannot leave a probe waiting on an unlock
   prompt nobody sees. The desktop always uses the keychain and keeps refusing `basic_text`: a desktop has a keychain to
   fix, and a silent key file would weaken it. No selection by keychain state, no mixed reads.
 - **Key file.** `<data>/secret.key`: 256 random bits, made on first start with `O_CREAT | O_EXCL` and mode 0600 at open
@@ -799,7 +816,7 @@ exact-name exception there, with a comment and a unit test; Claude tabs then get
 
 | Spike result | Fix | Files |
 |---|---|---|
-| No display: the app exits; `appendSwitch` is too late | spawn with the switches and inherited stdio (§9.1) | `main/server-mode.ts`, `main/index.ts` |
+| No display: the app exits; `appendSwitch` is too late | re-exec in place with the switches, same pid and stdio (§9.1) | `main/server-mode.ts`, `main/index.ts` |
 | The GPU process fails EGL twice | `--disable-gpu` | same |
 | 1x1 screen, 480x320 window; with no browser the desktop view sizes tabs | the hidden page's own state, never measured; 120x40 default; bounds and zone sizes not saved (§9.8) | `index.ts`, `windows/window-manager.ts`, `views/view-sizes.ts`, `tabs/tab-manager.ts` |
 | DBus and libnotify errors per notification | in-page notice backend (§9.9) | `notifications/notifier.ts` |
@@ -843,8 +860,10 @@ What server mode gives up, and what stands in:
 ### 9.13 Testing
 
 - Unit, `server-mode.ts` table: platform, `DISPLAY` / `WAYLAND_DISPLAY`, `--server`, switches already present: server
-  or not, the spawn args (`--password-store=basic` included), `APPIMAGE` as the executable, the refusal off Linux, no
-  spawn when the switches are there; argv parsing skips the flag and the switches.
+  or not, the exec args (`--password-store=basic` included), `process.execPath` as the executable with `APPIMAGE` set
+  or not, the refusal off Linux, no re-exec when the switches are there; the start path (`execve` missing or the
+  executable failing its check gives the watch, and `execve` is never called); the watch armed only by its marker;
+  argv parsing skips the flag, the switches and the marker.
 - Key file store, in plain Node in a temp dir: made 0600 with `O_EXCL`; opened `O_NOFOLLOW` and refused as a symlink,
   with a wider mode, another owner (an injected `fstat`) or the wrong length; round trip; one changed byte fails the GCM
   tag; a new key with tagged values on disk logs the count and answers "replaced"; each store refuses the other's with
@@ -870,15 +889,17 @@ What server mode gives up, and what stands in:
   views and not the hidden page. OAuth paste: wrong origin, path or `state`, an oversize code, the attempt limit, no
   request made, the pending sign-in taken from the caller's window, no URL in errors. `buildPtyEnv`:
   `CLAUDE_CODE_OAUTH_TOKEN` passes, every other `CLAUDE_CODE_*` is still stripped.
-- Smoke script, like `scripts/web-terminal-bench.mjs` (Playwright attaches to the first process, so it cannot cover the
-  spawn): no display, no switches, wait for the socket, `ccc web status --json`, SIGTERM, check the exit status.
-- e2e: the harness launches the child directly (`--server --ozone-platform=headless --disable-gpu
-  --password-store=basic`, no `DISPLAY`, Linux), signs in through `ccc web add-device` with the web browser fixture
-  (`test/e2e/web-fixtures.ts`), opens a project by path, runs `ccc plugin link` and Allows it in the browser, opens an
-  HTML overlay with `ccc overlay` from a Claude tab and answers it in the browser, trashes a file from Files with the
-  real `shell`, closes the project, and checks main is alive. One spec runs with no session bus and no fake secret
-  store: `ccc web password`, sign in, restart, sign in again. Server-mode specs do not use the queued test dialogs for
-  these paths: those fakes hid the crash.
+- Smoke script, like `scripts/web-terminal-bench.mjs` (the re-exec replaces the image Playwright launched and drops its
+  inspector connection, so the e2e cannot cover it): no display, no switches, wait for the socket, the pid unchanged,
+  `ccc web status --json`, SIGTERM, check the exit status and that no live process of the run is left; one run with
+  the fallback forced.
+- e2e: the harness starts the app with the switches directly (`--server --ozone-platform=headless --disable-gpu
+  --password-store=basic`, no `DISPLAY`, Linux; what the re-exec starts), signs in through `ccc web add-device` with the
+  web browser fixture (`test/e2e/web-fixtures.ts`), opens a project by path, runs `ccc plugin link` and Allows it in the
+  browser, opens an HTML overlay with `ccc overlay` from a Claude tab and answers it in the browser, trashes a file from
+  Files with the real `shell`, closes the project, and checks main is alive. One spec runs with no session bus and no
+  fake secret store: `ccc web password`, sign in, restart, sign in again. Server-mode specs do not use the queued test
+  dialogs for these paths: those fakes hid the crash.
 
 ### 9.14 Out of scope
 
@@ -917,5 +938,5 @@ What v1 keeps open, and what multi-user adds:
 6. ~~Plugin OAuth in server mode~~: a paste box settled in-process by main, no request made (§9.9).
 7. ~~Device management from a browser in server mode~~: Revoke and Disconnect allowed, minting stays on the server
    shell (§9.6).
-8. ~~stdout over `app.relaunch`~~: lost and detached (measured in review), so §9.1 spawns with inherited stdio. macOS
-   is not in this phase.
+8. ~~stdout over `app.relaunch`~~: lost and detached (measured in review), so §9.1 re-executes in place
+   (`process.execve`), same stdio. macOS is not in this phase.
