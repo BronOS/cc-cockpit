@@ -28,7 +28,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { isPlainObject } from '../../shared/guards'
 import { JsonFile, type FsOps } from '../store/json-file'
-import { plainText, type AccessLog } from './access-log'
+import { plainText, type AccessActor, type AccessLog } from './access-log'
 
 /** 30 days without use and a device is gone. */
 export const DEVICE_IDLE_MS = 30 * 24 * 60 * 60 * 1000
@@ -287,21 +287,23 @@ export class DeviceStore {
     if (record) this.seen(record, this.now(), true)
   }
 
-  /** Revokes one device; false when there is none with that id. */
-  revoke(id: string, reason = 'revoked on the desktop'): boolean {
+  /** Revokes one device; false when there is none with that id. `by`: the browser that did it (the log). */
+  revoke(id: string, reason = 'revoked on the desktop', by?: AccessActor): boolean {
     return this.drop(
       this.file.data.devices.filter((d) => d.id === id).map((d) => d.id),
       'revoke',
-      reason
+      reason,
+      by
     ) > 0
   }
 
-  /** Revokes every device; the count revoked. */
-  revokeAll(reason = 'revoke all'): number {
+  /** Revokes every device; the count revoked. `by`: the browser that did it (the log). */
+  revokeAll(reason = 'revoke all', by?: AccessActor): number {
     return this.drop(
       this.file.data.devices.map((d) => d.id),
       'revoke',
-      reason
+      reason,
+      by
     )
   }
 
@@ -365,14 +367,16 @@ export class DeviceStore {
     this.file.save()
   }
 
-  private drop(ids: readonly string[], event: 'revoke' | 'expired', reason?: string): number {
+  private drop(ids: readonly string[], event: 'revoke' | 'expired', reason?: string, by?: AccessActor): number {
     if (ids.length === 0) return 0
     const set = new Set(ids)
     const gone = this.file.data.devices.filter((d) => set.has(d.id))
     this.file.data.devices = this.file.data.devices.filter((d) => !set.has(d.id))
     // Credentials: on disk now, not after the debounce, so a crash cannot bring a revoked device back.
     this.commit()
-    for (const d of gone) this.accessLog.write({ event, device: d.id, name: d.name, ...(reason ? { detail: reason } : {}) })
+    for (const d of gone) {
+      this.accessLog.write({ event, device: d.id, name: d.name, ...(reason ? { detail: reason } : {}), ...(by ? { by } : {}) })
+    }
     for (const listener of this.listeners) {
       try {
         listener(gone.map((d) => d.id))

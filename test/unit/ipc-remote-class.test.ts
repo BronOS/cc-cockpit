@@ -39,17 +39,14 @@ describe('REMOTE_CLASS drift', () => {
     'webviews.current',
     'webviews.navigated',
     'overlays.bounds',
-    // Web access settings and the indicator: a browser must never read the link or widen its access.
-    'settings.webAccess',
+    // Web access: what adds or widens access, in both modes (design-web.md §9.6: minting stays on
+    // the server shell); a browser must never read the link or widen its access.
     'settings.webAccessSet',
     'settings.webAccessLink',
     'settings.webAccessRegenerate',
     'settings.webAccessAddDevice',
-    'settings.webDeviceDisconnect',
-    'settings.webDeviceRevoke',
-    'settings.webDevicesRevokeAll',
-    'webAccess.state',
-    'webAccess.changed',
+    'settings.webAccessSetPassword',
+    'webAccess.confirmAnswer',
     // The desktop page seeds web access's terminal copies from its own screen: a browser's answer
     // would be shown to the other views.
     'tabs.screen',
@@ -58,7 +55,24 @@ describe('REMOTE_CLASS drift', () => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('no')
   })
 
-  it.each(['app.openExternal', 'updates.openRelease', 'notify.soundData', 'tabs.list', 'tabs.ack', 'tabs.selected', 'tabs.data', 'links.answer', 'projects.close'])('%s is adapted', (channel) => {
+  it.each([
+    'app.openExternal',
+    'updates.openRelease',
+    'notify.soundData',
+    'tabs.list',
+    'tabs.ack',
+    'tabs.selected',
+    'tabs.data',
+    'links.answer',
+    'projects.close',
+    // The web access card's read side and the narrowing calls: a server's browsers only (§9.4, §9.6).
+    'settings.webAccess',
+    'webAccess.state',
+    'webAccess.changed',
+    'settings.webDeviceRevoke',
+    'settings.webDevicesRevokeAll',
+    'settings.webDeviceDisconnect'
+  ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })
 
@@ -68,13 +82,24 @@ describe('REMOTE_CLASS drift', () => {
   })
 })
 
-// Every channel whose name says it manages web access is `no`: a channel added later under these names
-// (`settings.web*`, `webAccess.*`) without thought cannot reach a browser by being classified `yes`.
+// Every channel whose name says it manages web access is `no`, but for the six server mode opens to
+// its browsers (`adapted`: the read side and the narrowing calls, decided by main's flag in the
+// handler, design-web.md §9.4, §9.6): a channel added later under these names (`settings.web*`,
+// `webAccess.*`) without thought cannot reach a browser by being classified `yes` or `adapted`.
 describe('web access channels', () => {
-  it('every settings.web* and webAccess.* channel is no', () => {
+  const SERVER_CARD = new Set([
+    'settings.webAccess',
+    'webAccess.state',
+    'webAccess.changed',
+    'settings.webDeviceRevoke',
+    'settings.webDevicesRevokeAll',
+    'settings.webDeviceDisconnect'
+  ])
+  it('every settings.web* and webAccess.* channel is no, but the six of the server card', () => {
     const names = [...INVOKE_CHANNELS, ...EVENT_CHANNELS].filter((c) => c.startsWith('settings.web') || c.startsWith('webAccess.'))
     expect(names.length).toBeGreaterThanOrEqual(10)
-    for (const name of names) expect(REMOTE_CLASS[name as keyof typeof REMOTE_CLASS], name).toBe('no')
+    for (const name of names) expect(REMOTE_CLASS[name as keyof typeof REMOTE_CLASS], name).toBe(SERVER_CARD.has(name) ? 'adapted' : 'no')
+    for (const name of SERVER_CARD) expect(names, name).toContain(name)
   })
 })
 

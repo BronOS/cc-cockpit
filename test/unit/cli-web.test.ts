@@ -114,7 +114,8 @@ const VIEW = {
   gateway: STATUS.gateway,
   devices: [],
   risks: [],
-  passwordSet: false
+  passwordSet: false,
+  credentials: { accessLink: 'unset' as const, password: 'unset' as const }
 }
 
 const NOT_HOST: Caller[] = [
@@ -661,8 +662,8 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
     h = webHandlers({
       server: true,
       status: () => service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }),
-      revoke: (id) => service.revoke(id, SHELL_REVOKE_REASON),
-      revokeAll: () => service.revokeAll(SHELL_REVOKE_REASON),
+      revoke: (id) => service.revoke(id, { reason: SHELL_REVOKE_REASON }),
+      revokeAll: () => service.revokeAll({ reason: SHELL_REVOKE_REASON }),
       stop: () => undefined,
       link: (regenerate) => (regenerate ? service.regenerate() : service.link()),
       addDevice: () => service.addDevice(),

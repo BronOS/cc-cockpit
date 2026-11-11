@@ -2,7 +2,7 @@ import { useEffect, useId } from 'react'
 import type { AppearanceView, CccCommandView, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
 import type { TabExitBehavior } from '../../shared/types'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
-import { isWebShell } from '../shell-kind'
+import { isServerView, isWebShell } from '../shell-kind'
 import { DiscussPromptField } from './DiscussPromptField'
 import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
@@ -304,8 +304,9 @@ export function GeneralPage(): React.JSX.Element {
             )}
           </Group>
 
-          {/* Desktop only: a browser view can reach none of web access's channels (`no`-class). */}
-          {!isWebShell() && <WebAccessSection />}
+          {/* The desktop's card; a server's browsers get it read-only (design-web.md §9.4). A browser
+              of a desktop is refused its channels (`adapted`, server mode only), so it is not drawn. */}
+          {(!isWebShell() || isServerView()) && <WebAccessSection />}
 
           {updates.data && (
             <Group title="Updates">

@@ -1174,8 +1174,9 @@ export interface IpcInvokeMap {
   'settings.cccInstall': { req: void; res: CccCommandView }
   /** Turn the start-up offer to install `ccc` on or off (Settings and the offer's "Don't ask again"). */
   'settings.cccOfferSet': { req: { value: boolean }; res: void }
-  // Settings › General › Web access (design-web.md §4). Desktop only: every one is `no`-class, so a
-  // remote view can never read the access link or the device list, or widen its own access.
+  // Settings › General › Web access (design-web.md §4). What adds or widens access is `no`-class in
+  // both modes; the read, the indicator and Revoke/Disconnect are `adapted`: a browser view of a
+  // server reads the card and narrows (§9.4, §9.6), one on the desktop is refused as before.
   /** The web access settings, the gateway's state, the devices and the risks of the current choices. */
   'settings.webAccess': { req: void; res: WebAccessView }
   /**
@@ -1873,21 +1874,28 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settings.cccStatus': 'yes',
   'settings.cccInstall': 'no',
   'settings.cccOfferSet': 'no',
-  // Web access: the whole of it is the desktop's. A remote view that could read the access link, list
-  // or revoke devices, or change the mode, bind or host list would widen its own access (§4.1).
-  'settings.webAccess': 'no',
+  // Web access. What adds or widens access stays the desktop's (and, in server mode, the server
+  // shell's `ccc web`) in both modes: a remote view that could read the access link, mint a one-time
+  // one, set the password or change the mode, bind or host list would widen its own access (§4.1).
   'settings.webAccessSet': 'no',
   'settings.webAccessLink': 'no',
   'settings.webAccessRegenerate': 'no',
   'settings.webAccessAddDevice': 'no',
-  'settings.webDeviceDisconnect': 'no',
-  'settings.webDeviceRevoke': 'no',
-  'settings.webDevicesRevokeAll': 'no',
   'settings.webAccessSetPassword': 'no',
-  'webAccess.state': 'no',
   // A browser answering its own sign-in request would let itself in.
   'webAccess.confirmAnswer': 'no',
-  'webAccess.changed': 'no',
+  // The card's read side and the narrowing calls (design-web.md §9.4, §9.6): open to a remote view
+  // only when main runs as a server, where every signed-in device is the owner and a lost phone must
+  // be revocable with no SSH at hand; decided by main's flag and `view.remote`, never the payload
+  // (router.ts registerWebAccessHandlers). On the desktop a browser is refused, as before. The view
+  // holds no link or token; the indicator to a browser never carries a confirm request
+  // (`remoteIndicator`), and the event reaches a browser only in server mode (web/connection.ts).
+  'settings.webAccess': 'adapted',
+  'settings.webDeviceDisconnect': 'adapted',
+  'settings.webDeviceRevoke': 'adapted',
+  'settings.webDevicesRevokeAll': 'adapted',
+  'webAccess.state': 'adapted',
+  'webAccess.changed': 'adapted',
   'ccc.offer': 'no',
 
   // Overlays. URL overlays are a WebContentsView on the host's window (a placeholder remotely, §6.1),

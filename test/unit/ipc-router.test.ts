@@ -23,6 +23,7 @@ import {
   type IpcEventLike,
   type IpcMainLike,
   type TabHandlerDeps,
+  type WebAccessHandlerOptions,
   webCaller
 } from '../../src/main/ipc/router'
 import type { SenderContext } from '../../src/main/windows/window-manager'
@@ -32,6 +33,7 @@ import { ServiceChoices } from '../../src/main/plugins/service-choices'
 import type { ServicePlugin, ServicesStatus } from '../../src/shared/services'
 import { defaultLayout } from '../../src/shared/layout'
 import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
+import type { WebAccessIndicator, WebAccessView } from '../../src/shared/web-access'
 import type { ProjectView } from '../../src/shared/types'
 
 type Listener = (event: IpcEventLike, ...args: unknown[]) => unknown
@@ -1796,7 +1798,7 @@ describe('registerWebAccessHandlers', () => {
     'webAccess.confirmAnswer'
   ] as const
 
-  function webAccessSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+  function webAccessSetup(options: WebAccessHandlerOptions = {}): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     const view = {
@@ -1805,7 +1807,8 @@ describe('registerWebAccessHandlers', () => {
       gateway: { state: 'off' as const },
       devices: [],
       risks: [],
-      passwordSet: false
+      passwordSet: false,
+      credentials: { accessLink: 'unset' as const, password: 'unset' as const }
     }
     registerWebAccessHandlers(router, {
       view: () => (calls.push(['view']), view),
@@ -1813,13 +1816,13 @@ describe('registerWebAccessHandlers', () => {
       link: async () => (calls.push(['link']), { ok: true, link: 'http://127.0.0.1:7330/#t=x' }),
       regenerate: async () => (calls.push(['regenerate']), { ok: false, reason: 'no' }),
       addDevice: () => (calls.push(['addDevice']), { ok: false, reason: 'no' }),
-      disconnect: (id) => (calls.push(['disconnect', id]), true),
-      revoke: (id) => (calls.push(['revoke', id]), true),
-      revokeAll: () => (calls.push(['revokeAll']), 2),
-      indicator: () => (calls.push(['indicator']), { connected: 1 }),
+      disconnect: (...args) => (calls.push(['disconnect', ...args]), true),
+      revoke: (...args) => (calls.push(['revoke', ...args]), true),
+      revokeAll: (...args) => (calls.push(['revokeAll', ...args]), 2),
+      indicator: () => (calls.push(['indicator']), { connected: 1, warning: 'risky', confirm: { id: 'c1', name: 'a stranger', expiresAt: 1 } }),
       setPassword: async (password) => (calls.push(['setPassword', password]), { ok: true }),
       answerConfirm: (payload) => (calls.push(['answerConfirm', payload]), { ok: false, reason: 'no' })
-    })
+    }, options)
     return { ipc, router, calls }
   }
 
@@ -1831,7 +1834,8 @@ describe('registerWebAccessHandlers', () => {
     await ipc.invoke('settings.webDeviceRevoke', 11, [{ id: 'abc' }])
     await ipc.invoke('settings.webDeviceDisconnect', 11, [{ id: 7 }])
     expect(await ipc.invoke('settings.webDevicesRevokeAll', 11)).toBe(2)
-    expect(await ipc.invoke('webAccess.state', 11)).toEqual({ connected: 1 })
+    // The desktop page gets the indicator whole, a confirm request included (only it may answer).
+    expect(await ipc.invoke('webAccess.state', 11)).toEqual({ connected: 1, warning: 'risky', confirm: { id: 'c1', name: 'a stranger', expiresAt: 1 } })
     await ipc.invoke('settings.webAccessSetPassword', 11, [{ password: 'correct horse' }])
     await ipc.invoke('webAccess.confirmAnswer', 11, [{ id: 'a', allow: true, code: '123456' }])
     expect(calls).toEqual([
@@ -1845,13 +1849,91 @@ describe('registerWebAccessHandlers', () => {
     ])
   })
 
-  // Design-web §4.1: a remote view cannot widen its own access. The class is checked before any handler
-  // runs, so even a handler that forgot to look at the caller is unreachable from a browser.
-  it.each(WEB_CHANNELS)('refuses %s from a web caller before the handler', async (channel) => {
-    const { router, calls } = webAccessSetup()
+  // Design-web §4.1: a remote view cannot widen its own access. On the desktop every web access
+  // channel is refused to a browser: the `no` ones by class before any handler runs, the `adapted`
+  // ones by their handler, which reads main's flag (absent or false here), never the payload.
+  it.each(WEB_CHANNELS)('refuses %s from a web caller on the desktop, before the service is called', async (channel) => {
+    for (const options of [{}, { server: false }]) {
+      const { router, calls } = webAccessSetup({ ...options, actorOf: () => ({ device: 'd1', name: 'Phone' }) })
+      const ctx = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+      await expect(router.dispatch(webCaller(ctx, 'web:1'), channel, { id: 'abc', server: true })).rejects.toThrow(/refused/)
+      expect(calls).toEqual([])
+    }
+  })
+
+  // Design-web §9.6: minting (link, add-device, password, mode, bind) stays on the server shell in
+  // server mode too: refused by class before the handler, whatever the flag.
+  const MINTING = [
+    'settings.webAccessSet',
+    'settings.webAccessLink',
+    'settings.webAccessRegenerate',
+    'settings.webAccessAddDevice',
+    'settings.webAccessSetPassword',
+    'webAccess.confirmAnswer'
+  ] as const
+  it.each(MINTING)('refuses %s from a web caller in server mode too', async (channel) => {
+    const { router, calls } = webAccessSetup({ server: true, actorOf: () => ({ device: 'd1', name: 'Phone' }) })
     const ctx = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
-    await expect(router.dispatch(webCaller(ctx, 'web:1'), channel, undefined)).rejects.toThrow(/refused/)
+    await expect(router.dispatch(webCaller(ctx, 'web:1'), channel, { value: { mode: 'none' }, password: 'x'.repeat(12) })).rejects.toThrow(/refused/)
     expect(calls).toEqual([])
+  })
+
+  describe('server mode: the card and the narrowing calls from a browser', () => {
+    const ctx = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+    const phone = { device: 'dev-phone', name: 'Phone' }
+    const serverSetup = (): ReturnType<typeof webAccessSetup> & { asked: string[] } => {
+      const asked: string[] = []
+      const out = webAccessSetup({
+        server: true,
+        actorOf: (viewId) => {
+          asked.push(viewId)
+          return viewId === 'web:4' ? phone : undefined
+        },
+        secrets: async () => ({ store: 'keyfile', unavailable: null, otherMode: 2, replaced: 0 })
+      })
+      return { ...out, asked }
+    }
+
+    it('reads the card, with the secret store, and the indicator without a confirm request', async () => {
+      const { router, calls } = serverSetup()
+      const view = (await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webAccess', undefined)) as WebAccessView
+      expect(view.secrets).toEqual({ store: 'keyfile', unavailable: null, otherMode: 2, replaced: 0 })
+      expect(view.credentials).toEqual({ accessLink: 'unset', password: 'unset' })
+      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'webAccess.state', undefined)).toEqual({ connected: 1, warning: 'risky' })
+      expect(calls).toEqual([['view'], ['indicator']])
+    })
+
+    it('revokes and disconnects with the acting device main bound, never one from the payload', async () => {
+      const { router, calls, asked } = serverSetup()
+      const forged = { id: 'dev-laptop', by: { device: 'dev-forged', name: 'Forged' }, viewId: 'web:9' }
+      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webDeviceRevoke', forged)).toBe(true)
+      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webDeviceDisconnect', forged)).toBe(true)
+      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webDevicesRevokeAll', forged)).toBe(2)
+      expect(calls).toEqual([
+        ['revoke', 'dev-laptop', { by: phone }],
+        ['disconnect', 'dev-laptop', phone],
+        ['revokeAll', { by: phone }]
+      ])
+      expect(asked).toEqual(['web:4', 'web:4', 'web:4'])
+    })
+
+    it('refuses a narrowing call from a view that is already gone (no device to name in the log)', async () => {
+      const { router, calls } = serverSetup()
+      for (const channel of ['settings.webDeviceRevoke', 'settings.webDeviceDisconnect', 'settings.webDevicesRevokeAll'] as const) {
+        await expect(router.dispatch(webCaller(ctx, 'web:5'), channel, { id: 'dev-laptop' })).rejects.toThrow(/refused/)
+      }
+      expect(calls).toEqual([])
+    })
+
+    it('leaves the desktop page as it was: no acting device, the whole indicator', async () => {
+      const { ipc, calls, asked } = serverSetup()
+      await ipc.invoke('settings.webDeviceRevoke', 11, [{ id: 'abc' }])
+      await ipc.invoke('settings.webDeviceDisconnect', 11, [{ id: 'abc' }])
+      await ipc.invoke('settings.webDevicesRevokeAll', 11)
+      expect((await ipc.invoke('webAccess.state', 11)) as WebAccessIndicator).toHaveProperty('confirm')
+      expect(calls).toEqual([['revoke', 'abc'], ['disconnect', 'abc'], ['revokeAll'], ['indicator']])
+      expect(asked).toEqual([])
+    })
   })
 })
 

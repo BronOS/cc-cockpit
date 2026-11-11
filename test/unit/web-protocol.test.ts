@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
 import type { EventChannel, LayoutView } from '../../src/shared/ipc'
-import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, type ProjectContext } from '../../src/main/ipc/router'
+import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, registerWebAccessHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { LinkAsks } from '../../src/main/plugins/link-asks'
 import { TrashAsks } from '../../src/main/files/trash-asks'
@@ -20,7 +20,7 @@ import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { ViewRegistry } from '../../src/main/views/view-registry'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
-import { MAX_PENDING_INVOKES, SOCKET_HIGH_WATER, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
+import { MAX_PENDING_INVOKES, remoteEvent, SOCKET_HIGH_WATER, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
 import { DeviceStore, type WebDevice } from '../../src/main/web/devices'
 import type { TerminalSource } from '../../src/main/web/view-terminals'
 import type { MirrorView } from '../../src/main/terminals/mirror'
@@ -157,6 +157,7 @@ function setup(
     hasTab?: (projectId: string, tabId: string) => boolean
     viewGone?: (viewId: string) => void
     pagePaths?: (deviceId: string) => WebPagePaths
+    server?: boolean
   } = {}
 ) {
   const windows = new Map<string, number>([
@@ -192,6 +193,7 @@ function setup(
     hasTab: over.hasTab ?? (() => false),
     ...(over.viewGone ? { viewGone: over.viewGone } : {}),
     ...(over.pagePaths ? { pagePaths: over.pagePaths } : {}),
+    ...(over.server !== undefined ? { server: over.server } : {}),
     log: (m) => logs.push(m),
     helloTimeoutMs: 50
   })
@@ -1340,6 +1342,80 @@ describe('html overlays held by one view', () => {
     phone.drop()
     expect(overlays.infos(1)[0]).not.toHaveProperty('heldBy')
     expect(overlays.infos(1)[0]?.loading).toBe(true)
+  })
+})
+
+// design-web.md §9.4, §9.6: the web access card in a server's browsers. The event and the invokes
+// are `adapted`: main's flag decides (the connection's `server`, the handlers' option), and the
+// acting device is the one main bound the socket to.
+describe('the web access card (server mode)', () => {
+  const INDICATOR = { connected: 2, warning: 'risky', confirm: { id: 'c1', name: 'a stranger', expiresAt: 1 } }
+
+  it('webAccess.changed reaches a browser only in server mode, never with a confirm request', () => {
+    for (const server of [undefined, false]) {
+      const { connect, views, desktop } = setup(server === undefined ? {} : { server })
+      const ws = connect('p1')
+      views.toAll('webAccess.changed', INDICATOR)
+      expect(ws.frames('event')).toEqual([])
+      expect(desktop.send).toHaveBeenCalledWith('webAccess.changed', INDICATOR)
+    }
+    const { connect, views, desktop } = setup({ server: true })
+    const ws = connect('p1')
+    views.toAll('webAccess.changed', INDICATOR)
+    expect(ws.frames('event')).toEqual([{ t: 'event', ch: 'webAccess.changed', p: { connected: 2, warning: 'risky' } }])
+    // The desktop page (the hidden one, in server mode) still gets it whole.
+    expect(desktop.send).toHaveBeenCalledWith('webAccess.changed', INDICATOR)
+  })
+
+  it('remoteEvent passes every other event as it is', () => {
+    expect(remoteEvent('layout.updated', { a: 1 }, false)).toEqual({ payload: { a: 1 } })
+    expect(remoteEvent('webAccess.changed', { connected: 0 }, false)).toBeUndefined()
+  })
+
+  it('names the device behind a view while it is bound, and nobody once it is gone', () => {
+    const { connect, conns, views } = setup({ server: true })
+    const ws = connect('p1')
+    const viewId = views.viewsOf(1).find((v) => v.startsWith('web:'))
+    expect(viewId).toBeDefined()
+    expect(conns.actorOf(viewId!)).toEqual({ device: 'dev1', name: 'phone' })
+    ws.drop()
+    expect(conns.actorOf(viewId!)).toBeUndefined()
+    // A view still waiting for hello acts for nobody either.
+    connect()
+    expect(conns.actorOf('web:2')).toBeUndefined()
+  })
+
+  it('a revoke from the browser goes through the router with the device main bound, not one in the payload', async () => {
+    const { connect, conns, router } = setup({ server: true })
+    const revoked: unknown[] = []
+    registerWebAccessHandlers(
+      router,
+      {
+        view: () => ({}) as never,
+        set: async () => ({}) as never,
+        link: async () => ({ ok: false, reason: 'no' }),
+        regenerate: async () => ({ ok: false, reason: 'no' }),
+        addDevice: () => ({ ok: false, reason: 'no' }),
+        disconnect: () => false,
+        revoke: (...args) => (revoked.push(args), true),
+        revokeAll: () => 0,
+        setPassword: async () => ({ ok: true }),
+        indicator: () => INDICATOR,
+        answerConfirm: () => ({ ok: false, reason: 'no' })
+      },
+      { server: true, actorOf: (viewId) => conns.actorOf(viewId) }
+    )
+    const ws = connect('p1')
+    ws.feed({ t: 'invoke', id: 1, ch: 'settings.webDeviceRevoke', p: { id: 'dev2', by: { device: 'forged', name: 'x' } } })
+    ws.feed({ t: 'invoke', id: 2, ch: 'webAccess.state' })
+    // Minting stays `no`: refused before any handler.
+    ws.feed({ t: 'invoke', id: 3, ch: 'settings.webAccessAddDevice' })
+    await flush()
+    expect(revoked).toEqual([['dev2', { by: { device: 'dev1', name: 'phone' } }]])
+    const results = ws.frames('result')
+    expect(results.find((r) => r.id === 1)).toMatchObject({ ok: true, v: true })
+    expect(results.find((r) => r.id === 2)).toMatchObject({ ok: true, v: { connected: 2, warning: 'risky' } })
+    expect(results.find((r) => r.id === 3)).toMatchObject({ ok: false })
   })
 })
 

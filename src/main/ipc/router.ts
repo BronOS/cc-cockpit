@@ -43,7 +43,17 @@ import type { TabFlag } from '../../shared/tab-flag'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
-import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from '../../shared/web-access'
+import type {
+  WebAccessIndicator,
+  WebAccessPatch,
+  WebAccessSetReply,
+  WebAccessView,
+  WebActionReply,
+  WebLinkReply,
+  WebSecretsStatus
+} from '../../shared/web-access'
+import { remoteIndicator } from '../../shared/web-access'
+import type { AccessActor } from '../web/access-log'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
@@ -908,9 +918,11 @@ export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHa
 }
 
 /**
- * What the web access handlers need (WebAccessService, main/web/access-service.ts). Every channel
- * here is `no`-class: the router refuses a remote caller before a handler runs, so these are the
- * desktop's alone and need no check of their own for that.
+ * What the web access handlers need (WebAccessService, main/web/access-service.ts). What adds or
+ * widens access (the settings, the link, add-device, the password, the confirm answer) is `no`-class:
+ * the router refuses a remote caller before a handler runs. The read side and Revoke/Disconnect are
+ * `adapted` (design-web.md §9.4, §9.6): open to a remote view only when main runs as a server
+ * (WebAccessHandlerOptions.server, main's flag, never the payload), refused to one on the desktop.
  */
 export interface WebAccessHandlerDeps {
   view(): WebAccessView
@@ -918,10 +930,11 @@ export interface WebAccessHandlerDeps {
   link(): Promise<WebLinkReply>
   regenerate(): Promise<WebLinkReply>
   addDevice(): WebLinkReply
-  /** `id` is whatever the renderer sent: the service checks the type. */
-  disconnect(id: unknown): boolean
-  revoke(id: unknown): boolean
-  revokeAll(): number
+  /** `id` is whatever the renderer sent: the service checks the type. `by`: the acting browser (the log). */
+  disconnect(id: unknown, by?: AccessActor): boolean
+  /** `how.by`: the acting browser, for the log; absent for the desktop page, as before. */
+  revoke(id: unknown, how?: { by?: AccessActor }): boolean
+  revokeAll(how?: { by?: AccessActor }): number
   /** `password` is whatever the renderer sent: the service checks it. */
   setPassword(password: unknown): Promise<WebActionReply>
   indicator(): WebAccessIndicator
@@ -929,19 +942,69 @@ export interface WebAccessHandlerDeps {
   answerConfirm(payload: unknown): WebActionReply
 }
 
-export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHandlerDeps): void {
-  router.handleProject('settings.webAccess', () => deps.view())
+export interface WebAccessHandlerOptions {
+  /** Main's server-mode flag for the run: the only thing that opens the `adapted` channels to a browser. */
+  server?: boolean
+  /**
+   * The signed-in device behind a remote view (WebConnections.actorOf), named in `web-access.log`
+   * for a browser's Revoke and Disconnect; undefined for a view that is gone.
+   */
+  actorOf?(viewId: ViewId): AccessActor | undefined
+  /** Server mode: the run's secret store for the browser's card (what `ccc web status` shows). */
+  secrets?(): Promise<WebSecretsStatus>
+}
+
+export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHandlerDeps, options: WebAccessHandlerOptions = {}): void {
+  // An `adapted` channel from a remote view: allowed only in server mode, where every signed-in device
+  // is the owner (§9.6). On the desktop web access is the desktop's alone, as before: a browser
+  // would read the device list or revoke the desktop's other devices.
+  const gate = (channel: InvokeChannel, view: CallView): void => {
+    if (view.remote && options.server !== true) throw new Error(`${channel}: refused for a browser view outside server mode`)
+  }
+  // The device that acts, from the view main bound the call to: a view that is already gone (its
+  // socket closed while the call was on its way) acts for nobody, so the call is refused rather
+  // than logged without a name.
+  const actor = (channel: InvokeChannel, view: CallView): AccessActor | undefined => {
+    if (!view.remote) return undefined
+    const by = options.actorOf?.(view.viewId)
+    if (by === undefined) throw new Error(`${channel}: refused, the browser view is gone`)
+    return by
+  }
+  router.handleProject('settings.webAccess', async (_ctx, _payload, view) => {
+    gate('settings.webAccess', view)
+    const out = deps.view()
+    if (options.secrets) out.secrets = await options.secrets()
+    return out
+  })
   router.handleProject('settings.webAccessSet', (_ctx, payload) => deps.set((payload as { value?: WebAccessPatch } | undefined)?.value as WebAccessPatch))
   router.handleProject('settings.webAccessLink', () => deps.link())
   router.handleProject('settings.webAccessRegenerate', () => deps.regenerate())
   router.handleProject('settings.webAccessAddDevice', () => deps.addDevice())
-  router.handleProject('settings.webDeviceDisconnect', (_ctx, payload) => deps.disconnect((payload as { id?: unknown } | undefined)?.id))
-  router.handleProject('settings.webDeviceRevoke', (_ctx, payload) => deps.revoke((payload as { id?: unknown } | undefined)?.id))
-  router.handleProject('settings.webDevicesRevokeAll', () => deps.revokeAll())
+  router.handleProject('settings.webDeviceDisconnect', (_ctx, payload, view) => {
+    gate('settings.webDeviceDisconnect', view)
+    const by = actor('settings.webDeviceDisconnect', view)
+    const id = (payload as { id?: unknown } | undefined)?.id
+    return by ? deps.disconnect(id, by) : deps.disconnect(id)
+  })
+  router.handleProject('settings.webDeviceRevoke', (_ctx, payload, view) => {
+    gate('settings.webDeviceRevoke', view)
+    const by = actor('settings.webDeviceRevoke', view)
+    const id = (payload as { id?: unknown } | undefined)?.id
+    return by ? deps.revoke(id, { by }) : deps.revoke(id)
+  })
+  router.handleProject('settings.webDevicesRevokeAll', (_ctx, _payload, view) => {
+    gate('settings.webDevicesRevokeAll', view)
+    const by = actor('settings.webDevicesRevokeAll', view)
+    return by ? deps.revokeAll({ by }) : deps.revokeAll()
+  })
   router.handleProject('settings.webAccessSetPassword', (_ctx, payload) => deps.setPassword((payload as { password?: unknown } | undefined)?.password))
-  router.handleProject('webAccess.state', () => deps.indicator())
+  router.handleProject('webAccess.state', (_ctx, _payload, view) => {
+    gate('webAccess.state', view)
+    return view.remote ? remoteIndicator(deps.indicator()) : deps.indicator()
+  })
   router.handleProject('webAccess.confirmAnswer', (_ctx, payload) => deps.answerConfirm(payload))
 }
+
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */
 export function summary(view: ProjectView): ProjectSummary {

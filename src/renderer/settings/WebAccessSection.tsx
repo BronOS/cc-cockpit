@@ -1,6 +1,8 @@
 import { useEffect, useId, useState } from 'react'
 import type { WebAccessMode, WebAccessRisk } from '../../shared/types'
 import type { WebAccessPatch, WebAccessView, WebDeviceView } from '../../shared/web-access'
+import { ApprovalDialog } from '../notices/ApprovalDialog'
+import { isServerView } from '../shell-kind'
 import { qrOf } from './qr'
 import { RiskConfirmDialog } from './RiskConfirmDialog'
 import { Empty, Group, Row, Select, Switch } from './ui'
@@ -9,6 +11,8 @@ import { useLoaded } from './use-loaded'
 import {
   confirmedPatch,
   confirmsNeeded,
+  desktopCredentialNotes,
+  deviceAskText,
   deviceDetail,
   displayedLink,
   draftOf,
@@ -26,6 +30,9 @@ import {
   qrText,
   revealFrom,
   REVEAL_MS,
+  SERVER_CARD_FOOT,
+  serverCardRows,
+  type DeviceAsk,
   type LinkReveal,
   type WebAccessDraft
 } from './web-access-model'
@@ -42,6 +49,11 @@ const loadWebAccess = (): Promise<WebAccessView> => window.cockpit.invoke('setti
  * screenshot or a screen share of this page leaks nothing by default (§4.2).
  */
 export function WebAccessSection(): React.JSX.Element {
+  // A server's browser (design-web.md §9.4): the read-only card, settings changed with `ccc web`.
+  return isServerView() ? <ServerWebAccessSection /> : <DesktopWebAccessSection />
+}
+
+function DesktopWebAccessSection(): React.JSX.Element {
   const view = useLoaded(loadWebAccess)
   const { busy, error, run } = useAction()
   const reload = view.reload
@@ -66,6 +78,62 @@ export function WebAccessSection(): React.JSX.Element {
       </Group>
       {view.data && (
         <Devices devices={view.data.devices} noSignIn={view.data.form.mode === 'none'} busy={busy} run={run} reload={reload} now={now} />
+      )}
+    </>
+  )
+}
+
+/**
+ * The card in a server's browser view (design-web.md §9.4, §9.6): read-only. It shows the mode, the
+ * address, the link and password states, the secret store, why desktop confirm is off and None's
+ * shared-server warning, and says that `ccc web` on the server changes them; it never shows a link
+ * or a QR code (main sends it none: minting is `no`-class in both modes). The devices keep Revoke,
+ * Disconnect and Revoke all, each behind the in-page approval: a lost phone is revoked from another
+ * device with no SSH at hand, and a click on its way cannot sign a device out.
+ */
+function ServerWebAccessSection(): React.JSX.Element {
+  const view = useLoaded(loadWebAccess)
+  const { busy, error, run } = useAction()
+  const reload = view.reload
+  // A device signing in, a socket opening, a `ccc web mode` on the server: the card follows, live.
+  useEffect(() => window.cockpit.on('webAccess.changed', () => reload()), [reload])
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 15_000)
+    return () => clearInterval(timer)
+  }, [])
+  return (
+    <>
+      <Group
+        title="Web access"
+        description="This cockpit runs as a server: browsers are the only way in. What is set now, read-only here."
+      >
+        {view.error && <p role="alert" className="settings-alert">{view.error}</p>}
+        {error && <p role="alert" className="settings-alert">{error}</p>}
+        {view.data && (
+          <div className="settings-card" data-testid="web-access-server-card">
+            {serverCardRows(view.data).map((row) => (
+              <Row
+                key={row.key}
+                label={row.label}
+                data-testid={`web-access-row-${row.key}`}
+                help={row.warn ? <span className="warn">{row.text}</span> : row.text}
+              />
+            ))}
+            <Row label="" help={SERVER_CARD_FOOT} />
+          </div>
+        )}
+      </Group>
+      {view.data && (
+        <Devices
+          devices={view.data.devices}
+          noSignIn={view.data.form.mode === 'none'}
+          busy={busy}
+          run={run}
+          reload={reload}
+          now={now}
+          inPageConfirm
+        />
       )}
     </>
   )
@@ -114,6 +182,11 @@ function WebAccessCard(props: {
           }}
         />
       )}
+      {desktopCredentialNotes(data.credentials).map((note) => (
+        <p key={note} role="alert" className="settings-alert warn">
+          {note}
+        </p>
+      ))}
       {data.risks.length > 0 && (
         <div role="alert" className="settings-alert" data-testid="web-access-risks">
           {data.risks.map((r) => (
@@ -534,83 +607,125 @@ function Devices(props: {
   run: Action['run']
   reload: () => void
   now: number
+  /**
+   * A server's browser (design-web.md §9.6): Revoke, Disconnect and Revoke all ask first with the
+   * in-page approval (ApprovalDialog), which a click or a key already on its way cannot answer.
+   */
+  inPageConfirm?: boolean
 }): React.JSX.Element {
   const { devices, busy, run, reload, now } = props
   const [confirmAll, setConfirmAll] = useState(false)
+  const [ask, setAsk] = useState<DeviceAsk | null>(null)
   const act = (label: string, fn: () => Promise<unknown>): void => {
     void run(label, fn).then(reload)
   }
+  const perform = (what: DeviceAsk): void => {
+    if (what.kind === 'revoke') act('web-revoke', () => window.cockpit.invoke('settings.webDeviceRevoke', { id: what.id }))
+    else if (what.kind === 'disconnect') act('web-disconnect', () => window.cockpit.invoke('settings.webDeviceDisconnect', { id: what.id }))
+    else act('web-revoke-all', () => window.cockpit.invoke('settings.webDevicesRevokeAll'))
+  }
+  // At once on the desktop (Revoke all has its own inline confirm there), asked first in a server's browser.
+  const request = (what: DeviceAsk): void => {
+    if (props.inPageConfirm) setAsk(what)
+    else perform(what)
+  }
+  const askText = ask ? deviceAskText(ask) : undefined
   return (
-    <Group
-      title="Web access devices"
-      actions={
-        confirmAll ? (
-          <>
-            <span className="settings-confirm">Sign out all {devices.length}?</span>
+    <>
+      {ask && askText && (
+        <ApprovalDialog
+          title={askText.title}
+          canAllow
+          allowLabel={askText.allowLabel}
+          denyLabel="Cancel"
+          onAnswer={(yes) => {
+            setAsk(null)
+            if (yes) perform(ask)
+          }}
+        >
+          <p>{askText.body}</p>
+        </ApprovalDialog>
+      )}
+      <Group
+        title="Web access devices"
+        actions={
+          props.inPageConfirm ? (
             <button
               type="button"
-              className="danger"
-              disabled={busy !== null}
-              onClick={() => {
-                setConfirmAll(false)
-                act('web-revoke-all', () => window.cockpit.invoke('settings.webDevicesRevokeAll'))
-              }}
+              className="quiet danger"
+              disabled={busy !== null || devices.length === 0}
+              onClick={() => request({ kind: 'revoke-all', count: devices.length })}
             >
               Revoke all
             </button>
-            <button type="button" className="quiet" onClick={() => setConfirmAll(false)}>Cancel</button>
-          </>
-        ) : (
-          <button type="button" className="quiet danger" disabled={busy !== null || devices.length === 0} onClick={() => setConfirmAll(true)}>
-            Revoke all
-          </button>
-        )
-      }
-    >
-      <div className="settings-card" data-testid="web-access-devices">
-        {props.noSignIn && (
-          <p className="settings-alert warn inset" data-testid="web-access-none-revoke">
-            {NONE_REVOKE_NOTE}
-          </p>
-        )}
-        {devices.length === 0 ? (
-          <Empty>No device has signed in.</Empty>
-        ) : (
-          <ul className="settings-list">
-            {devices.map((d) => (
-              <li key={d.id} className="settings-item" data-testid="web-access-device">
-                <div className="settings-item-main">
-                  <span className="settings-item-title">
-                    {d.name}
-                    {d.connected && <span className="settings-badge accent">connected</span>}
-                  </span>
-                  <span className="settings-item-meta">{deviceDetail(d, now)}</span>
-                </div>
-                <div className="settings-item-actions">
-                  <button
-                    type="button"
-                    className="quiet"
-                    disabled={busy !== null || !d.connected}
-                    title="Close its connections; it stays signed in and the page reconnects"
-                    onClick={() => act('web-disconnect', () => window.cockpit.invoke('settings.webDeviceDisconnect', { id: d.id }))}
-                  >
-                    Disconnect
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={busy !== null}
-                    title="Sign it out for good"
-                    onClick={() => act('web-revoke', () => window.cockpit.invoke('settings.webDeviceRevoke', { id: d.id }))}
-                  >
-                    Revoke
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </Group>
+          ) : confirmAll ? (
+            <>
+              <span className="settings-confirm">Sign out all {devices.length}?</span>
+              <button
+                type="button"
+                className="danger"
+                disabled={busy !== null}
+                onClick={() => {
+                  setConfirmAll(false)
+                  perform({ kind: 'revoke-all', count: devices.length })
+                }}
+              >
+                Revoke all
+              </button>
+              <button type="button" className="quiet" onClick={() => setConfirmAll(false)}>Cancel</button>
+            </>
+          ) : (
+            <button type="button" className="quiet danger" disabled={busy !== null || devices.length === 0} onClick={() => setConfirmAll(true)}>
+              Revoke all
+            </button>
+          )
+        }
+      >
+        <div className="settings-card" data-testid="web-access-devices">
+          {props.noSignIn && (
+            <p className="settings-alert warn inset" data-testid="web-access-none-revoke">
+              {NONE_REVOKE_NOTE}
+            </p>
+          )}
+          {devices.length === 0 ? (
+            <Empty>No device has signed in.</Empty>
+          ) : (
+            <ul className="settings-list">
+              {devices.map((d) => (
+                <li key={d.id} className="settings-item" data-testid="web-access-device">
+                  <div className="settings-item-main">
+                    <span className="settings-item-title">
+                      {d.name}
+                      {d.connected && <span className="settings-badge accent">connected</span>}
+                    </span>
+                    <span className="settings-item-meta">{deviceDetail(d, now)}</span>
+                  </div>
+                  <div className="settings-item-actions">
+                    <button
+                      type="button"
+                      className="quiet"
+                      disabled={busy !== null || !d.connected}
+                      title="Close its connections; it stays signed in and the page reconnects"
+                      onClick={() => request({ kind: 'disconnect', id: d.id, name: d.name })}
+                    >
+                      Disconnect
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy !== null}
+                      title="Sign it out for good"
+                      onClick={() => request({ kind: 'revoke', id: d.id, name: d.name })}
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Group>
+    </>
   )
 }

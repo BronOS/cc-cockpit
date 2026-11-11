@@ -6,10 +6,14 @@ import type {
   WebAccessIndicator,
   WebAccessPatch,
   WebAccessSetReply,
+  WebAccessView,
   WebConfirmAsk,
+  WebCredentialState,
   WebDeviceView,
-  WebLinkReply
+  WebLinkReply,
+  WebSecretsStatus
 } from '../../shared/web-access'
+import { SERVER_NONE_WARNING } from '../../shared/web-access'
 
 /** How long a revealed link stays on screen before it hides again (a forgotten screen share must not keep it). */
 export const REVEAL_MS = 60_000
@@ -268,13 +272,170 @@ export function indicatorText(indicator: WebAccessIndicator): string | undefined
   return indicator.warning !== undefined ? 'Web access' : undefined
 }
 
-/** The chip's hover text: who is connected, and the warning in full words. */
-export function indicatorTitle(indicator: WebAccessIndicator): string {
+/**
+ * The chip's hover text: who is connected, and the warning in full words. `server`: a server's
+ * browser (design-web.md §9.4), whose click opens its own read-only card with the devices.
+ */
+export function indicatorTitle(indicator: WebAccessIndicator, server = false): string {
   const lead =
     indicator.connected === 0
       ? 'No browser is connected.'
       : indicator.connected === 1
         ? '1 browser is connected to this cockpit.'
         : `${indicator.connected} browsers are connected to this cockpit.`
-  return `${lead}${indicator.warning !== undefined ? ` ${indicator.warning}` : ''} Click to manage web access.`
+  const action = server ? 'Click to see the devices.' : 'Click to manage web access.'
+  return `${lead}${indicator.warning !== undefined ? ` ${indicator.warning}` : ''} ${action}`
+}
+
+
+// Server mode's card in a browser (design-web.md §9.4, §9.6): read-only. It never holds a link or a
+// QR code (main never sends one to it: `settings.webAccessLink` and the rest are `no`-class), and
+// every change is made with `ccc web` from a shell on the server.
+
+/** One row of the browser's read-only card: a label, its text, and whether it warns. */
+export interface ServerCardRow {
+  key: string
+  label: string
+  text: string
+  warn?: boolean
+}
+
+/** The card's last line: where its settings are changed. */
+export const SERVER_CARD_FOOT = 'Change these with `ccc web` in a shell on the server; `ccc web status` shows them there too.'
+
+/**
+ * Why desktop confirm is off in server mode (design-web.md §9.2): the request card it needs is on a
+ * desktop nobody looks at, so every browser would wait and fail.
+ */
+export const SERVER_CONFIRM_OFF =
+  'Not available in server mode: each new browser would wait for someone at the server\'s screen to type its code, and there is nobody there.'
+
+const LINK_STATE: Record<WebCredentialState, { text: string; warn?: boolean }> = {
+  unset: { text: 'Not made yet: `ccc web link` on the server makes it. A one-time link (`ccc web add-device`) is safer to pass on.' },
+  set: { text: 'Made. Only `ccc web link` on the server shows it; it is never shown in a browser.' },
+  'other-mode': {
+    text: 'Stored by the desktop\'s keychain, so it cannot be shown here: `ccc web link --regenerate` makes a new one (and signs out the devices of the old one).',
+    warn: true
+  },
+  replaced: {
+    text: 'Stored under a key file that was replaced, so it cannot be shown: `ccc web link --regenerate` makes a new one (and signs out the devices of the old one).',
+    warn: true
+  }
+}
+
+const PASSWORD_STATE: Record<WebCredentialState, { text: string; warn?: boolean }> = {
+  unset: { text: 'Not set: `ccc web password` on the server sets one.' },
+  set: { text: 'Set. `ccc web password` on the server changes it.' },
+  'other-mode': { text: 'Stored by the desktop\'s keychain, so it cannot be checked here: set it again with `ccc web password`.', warn: true },
+  replaced: { text: 'Stored under a key file that was replaced: set it again with `ccc web password`.', warn: true }
+}
+
+const STORE_TEXT: Record<WebSecretsStatus['store'], string> = {
+  keyfile: 'The key file on the server (secret.key in the data folder): anyone who can read that folder as you, or root, can read the secrets.',
+  os: 'The OS keychain.',
+  fake: 'In memory only (a test run).'
+}
+
+/** "1 stored value was", "3 stored values were". */
+function valuesWere(n: number): string {
+  return n === 1 ? '1 stored value was' : `${n} stored values were`
+}
+
+/** What the secret store row says: the store, why it cannot work, and what it cannot read. */
+export function secretsText(secrets: WebSecretsStatus): { text: string; warn: boolean } {
+  const parts = [STORE_TEXT[secrets.store]]
+  let warn = false
+  if (secrets.unavailable !== null) {
+    parts.push(`It cannot store or read anything now: ${secrets.unavailable}.`)
+    warn = true
+  }
+  if (secrets.otherMode > 0) {
+    parts.push(`${valuesWere(secrets.otherMode)} saved by the desktop's keychain and cannot be read here: enter them again.`)
+    warn = true
+  }
+  if (secrets.replaced > 0) {
+    parts.push(`${valuesWere(secrets.replaced)} saved under a key file that was replaced: enter them again.`)
+    warn = true
+  }
+  return { text: parts.join(' '), warn }
+}
+
+/** The address row: where browsers reach it, or why nothing listens. */
+function addressText(view: WebAccessView): { text: string; warn?: boolean } {
+  const { gateway, form } = view
+  if (gateway.state === 'listening') {
+    const tls = form.certPath !== '' ? ', over https' : ''
+    return { text: `${gateway.origin} (listening on ${gateway.bind} port ${gateway.port}${tls})` }
+  }
+  if (gateway.state === 'off') return { text: 'Not listening: web access is off.', warn: true }
+  return { text: `Not listening: ${gateway.reason}.`, warn: true }
+}
+
+/**
+ * The read-only card's rows, in order: sign-in mode (None with its shared-server warning), address,
+ * the access link and password states (§9.5), the secret store, desktop confirm off with its reason,
+ * and the live §4.3 risks. Text only, never a link.
+ */
+export function serverCardRows(view: WebAccessView): ServerCardRow[] {
+  const rows: ServerCardRow[] = []
+  const mode = view.form.mode
+  rows.push({ key: 'mode', label: 'Sign-in', text: `${MODE_TEXT[mode].label}. ${MODE_TEXT[mode].help}` })
+  if (mode === 'none') rows.push({ key: 'none', label: 'Warning', text: SERVER_NONE_WARNING, warn: true })
+  rows.push({ key: 'address', label: 'Address', ...addressText(view) })
+  rows.push({ key: 'link', label: 'Access link', ...LINK_STATE[view.credentials.accessLink] })
+  rows.push({ key: 'password', label: 'Password', ...PASSWORD_STATE[view.credentials.password] })
+  if (view.secrets) rows.push({ key: 'secrets', label: 'Secrets', ...secretsText(view.secrets) })
+  rows.push({ key: 'confirm', label: MODE_TEXT.confirm.label, text: SERVER_CONFIRM_OFF })
+  for (const [i, risk] of view.risks.entries()) rows.push({ key: `risk-${i}`, label: 'Warning', text: risk, warn: true })
+  return rows
+}
+
+/** A Revoke, Revoke all or Disconnect a browser asked for, waiting for its in-page confirm. */
+export type DeviceAsk =
+  | { kind: 'revoke'; id: string; name: string }
+  | { kind: 'disconnect'; id: string; name: string }
+  | { kind: 'revoke-all'; count: number }
+
+/**
+ * The in-page confirm's text (ApprovalDialog). Revoke says what it does not undo (design-web.md §9.6:
+ * a revoke does not undo what an unlocked lost device already did from its shell); every one says
+ * it can end this browser too, which the card cannot tell apart from the others.
+ */
+export function deviceAskText(ask: DeviceAsk): { title: string; body: string; allowLabel: string } {
+  if (ask.kind === 'revoke') {
+    return {
+      title: `Revoke ${ask.name}?`,
+      body: 'It is signed out for good and its pages close at once; to come back it signs in again. It does not undo what it already did. If it is this browser, this page closes too.',
+      allowLabel: 'Revoke'
+    }
+  }
+  if (ask.kind === 'disconnect') {
+    return {
+      title: `Disconnect ${ask.name}?`,
+      body: 'Its pages close; it stays signed in and reconnects when it opens the cockpit again. If it is this browser, this page reconnects.',
+      allowLabel: 'Disconnect'
+    }
+  }
+  return {
+    title: ask.count === 1 ? 'Revoke the 1 device?' : `Revoke all ${ask.count} devices?`,
+    body: 'Every browser is signed out, this one included, and their pages close at once; each signs in again to come back.',
+    allowLabel: 'Revoke all'
+  }
+}
+
+/**
+ * The desktop card's notes for a credential this run's store cannot read (design-web.md §9.5): a
+ * desktop start on a data dir a server used. Empty when both are readable or unset, so the desktop's
+ * card is as it was.
+ */
+export function desktopCredentialNotes(credentials: WebAccessView['credentials']): string[] {
+  const notes: string[] = []
+  const by = (state: WebCredentialState): string => (state === 'other-mode' ? "server mode's key file" : 'a key file that was replaced')
+  if (credentials.accessLink === 'other-mode' || credentials.accessLink === 'replaced') {
+    notes.push(`The access link was saved by ${by(credentials.accessLink)} and cannot be shown here: Regenerate makes a new one (and signs out the devices of the old one).`)
+  }
+  if (credentials.password === 'other-mode' || credentials.password === 'replaced') {
+    notes.push(`The password was saved by ${by(credentials.password)} and cannot be checked here: set it again.`)
+  }
+  return notes
 }

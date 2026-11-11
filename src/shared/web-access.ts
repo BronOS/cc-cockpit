@@ -1,7 +1,8 @@
 // What the desktop's Settings › General › Web access page and the top bar's indicator see of web
 // access (design-web.md §4). Types plus the few constants both sides need; main builds every value
-// (main/web/access-service.ts) and a remote view can reach none of it (every channel that carries
-// these is `no`-class, ipc.ts: a browser must never widen its own access).
+// (main/web/access-service.ts). A remote view reaches the read side only in server mode (the card,
+// the indicator and Revoke/Disconnect are `adapted`, design-web.md §9.4, §9.6), and never what adds
+// or widens access (the link, add-device, the password, the settings: `no`-class in both modes).
 import type { WebAccessMode, WebAccessRisk } from './types'
 
 /** The settings as the page edits them. */
@@ -84,6 +85,14 @@ export const WEB_RISK_TEXT: Record<WebAccessRisk, WebRiskText> = {
   }
 }
 
+/**
+ * §9.12: on a shared server every local user reaches 127.0.0.1, so None hands the account to all of
+ * them (and, on a network bind given its confirm, to the network too). Server mode's start line,
+ * `ccc web mode none` and the browser's card all say it.
+ */
+export const SERVER_NONE_WARNING =
+  'no sign-in: anyone who can reach this address, every user of this machine included, controls cc-cockpit as you'
+
 /** The order confirms are asked in when one change brings both: the worse one first. */
 export const WEB_RISK_ORDER: readonly WebAccessRisk[] = ['none-network', 'plain-http']
 
@@ -117,6 +126,14 @@ export interface WebAccessView {
   risks: string[]
   /** A password is set (the password mode can be picked only then). */
   passwordSet: boolean
+  /**
+   * The access link's token and the password as stored (design-web.md §9.5): `other-mode` and
+   * `replaced` are there but cannot be read by this run's store, so the link cannot be shown until
+   * regenerated and the password must be set again. Never the values themselves.
+   */
+  credentials: { accessLink: WebCredentialState; password: WebCredentialState }
+  /** Server mode only (the browser's card): the secret store of the run, as `ccc web status` has it. */
+  secrets?: WebSecretsStatus
 }
 
 /**
@@ -139,6 +156,18 @@ export interface WebAccessIndicator {
   warning?: string
   /** Present while a browser waits for a desktop confirm: every desktop window shows the request. */
   confirm?: WebConfirmAsk
+}
+
+/**
+ * The indicator as a browser view gets it: never a desktop-confirm request (`confirm` names the
+ * browser asking to get in, and only the desktop may answer it, `webAccess.confirmAnswer` is `no`).
+ * Server mode refuses that mode anyway (§9.2); dropped here so no path depends on it. The router's
+ * `webAccess.state` and the `webAccess.changed` event's adapter (main/web/connection.ts) both use it.
+ */
+export function remoteIndicator(indicator: WebAccessIndicator): WebAccessIndicator {
+  const out: WebAccessIndicator = { connected: indicator.connected }
+  if (indicator.warning !== undefined) out.warning = indicator.warning
+  return out
 }
 
 /** An access link (or a one-time one, which expires), or why there is none. */

@@ -280,6 +280,7 @@ describe('WebAccessService', () => {
   let devices: DeviceStore
   let auth: WebAuth
   let service: WebAccessService
+  let log: AccessLog
 
   // Rebuilt per test (a test may swap `apply`).
   let gateway: GatewayLike
@@ -314,6 +315,7 @@ describe('WebAccessService', () => {
     indicators = []
     gateway = makeGateway()
     const accessLog = new AccessLog({ filePath: join(dir, 'logs', 'web-access.log'), now: () => clock })
+    log = accessLog
     devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog, now: () => clock })
     // A cheap scrypt (N=2^10): the cost is password.ts's business, its tests use the real one.
     const hasher = new PasswordHasher({ params: { N: 1024, r: 8, p: 1 } })
@@ -329,7 +331,8 @@ describe('WebAccessService', () => {
       },
       emit: (i) => indicators.push(i),
       // The terminals' own rule has its test below.
-      terminals: { start: () => undefined, drain: async () => undefined }
+      terminals: { start: () => undefined, drain: async () => undefined },
+      accessLog
     })
   })
   afterEach(() => {
@@ -544,6 +547,8 @@ describe('WebAccessService', () => {
       expect(await service.setPassword('correct horse')).toEqual({ ok: true })
       expect(indicators.length).toBeGreaterThan(0)
       expect(service.view().passwordSet).toBe(true)
+      // The card's credential states (design-web.md §9.5): states only, read without a decrypt.
+      expect(service.view().credentials).toEqual({ accessLink: 'unset', password: 'set' })
       // Nothing of the password or its hash reaches the view.
       expect(JSON.stringify(service.view())).not.toMatch(/correct horse|scrypt/)
       const v = pageOf(await service.set({ enabled: true, mode: 'password' }))
@@ -612,6 +617,43 @@ describe('WebAccessService', () => {
       expect(service.disconnect('nobody')).toBe(false)
       expect(service.disconnect(null)).toBe(false)
       expect(disconnected).toEqual([a, 'nobody'])
+    })
+
+    // design-web.md §9.6: a server's browser revokes and disconnects from its card; web-access.log
+    // names the acting device (main's, from the view it bound) next to the device acted on.
+    it('logs the acting browser of a revoke, a revoke all and a disconnect', () => {
+      const phone = { device: 'dev-phone', name: 'Phone' }
+      const a = signIn('Laptop')
+      const b = signIn('Tablet')
+      open.set(b, 1)
+      expect(service.disconnect(b, phone)).toBe(true)
+      expect(service.revoke(a, { by: phone })).toBe(true)
+      signIn('Watch')
+      expect(service.revokeAll({ by: phone })).toBe(2)
+      const acted = log.recent().filter((e) => e.event === 'revoke' || e.event === 'disconnect')
+      expect(acted).toEqual([
+        { at: expect.any(String), event: 'disconnect', device: b, name: 'Tablet', detail: 'disconnected from a browser', by: 'dev-phone', byName: 'Phone' },
+        { at: expect.any(String), event: 'revoke', device: a, name: 'Laptop', detail: 'revoked from a browser', by: 'dev-phone', byName: 'Phone' },
+        { at: expect.any(String), event: 'revoke', device: b, name: 'Tablet', detail: 'revoked from a browser', by: 'dev-phone', byName: 'Phone' },
+        { at: expect.any(String), event: 'revoke', device: expect.any(String), name: 'Watch', detail: 'revoked from a browser', by: 'dev-phone', byName: 'Phone' }
+      ])
+      // On disk too, as one JSON line each.
+      const lines = readFileSync(join(dir, 'logs', 'web-access.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+      expect(lines.filter((l) => l['by'] === 'dev-phone')).toHaveLength(4)
+    })
+
+    it('keeps the desktop and shell reasons, with no acting device, and logs no disconnect that closed nothing', () => {
+      const a = signIn('Laptop')
+      const b = signIn('Tablet')
+      expect(service.disconnect(a, { device: 'dev-phone', name: 'Phone' })).toBe(false)
+      expect(service.disconnect(a)).toBe(false)
+      service.revoke(a)
+      service.revoke(b, { reason: 'revoked from the server shell (ccc web revoke)' })
+      const acted = log.recent().filter((e) => e.event === 'revoke' || e.event === 'disconnect')
+      expect(acted.map((e) => [e.event, e.detail, e.by])).toEqual([
+        ['revoke', 'revoked on the desktop', undefined],
+        ['revoke', 'revoked from the server shell (ccc web revoke)', undefined]
+      ])
     })
 
     it('tells the desktop when a device signs in, is revoked, or a socket opens or closes', () => {

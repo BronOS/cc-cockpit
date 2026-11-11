@@ -833,20 +833,20 @@ task only takes the hidden page out of the set of views that may own a size or a
 - Modify: `test/unit/ipc-remote-class.test.ts`, `ipc-router.test.ts`, `web-access-service.test.ts`,
   `web-access-model.test.ts`, `test/e2e/server-mode.spec.ts`
 
-- [ ] `settings.webAccess` (the read), `webAccess.state` and `webAccess.changed` become `adapted`: open to a remote view
+- [x] `settings.webAccess` (the read), `webAccess.state` and `webAccess.changed` become `adapted`: open to a remote view
       only in server mode, so the card follows changes live
-- [ ] `settings.webDeviceRevoke`, `webDevicesRevokeAll` and `webDeviceDisconnect` become `adapted` the same way, behind
+- [x] `settings.webDeviceRevoke`, `webDevicesRevokeAll` and `webDeviceDisconnect` become `adapted` the same way, behind
       an `ApprovalDialog`; `web-access.log` names the acting device
-- [ ] everything that adds or widens stays `no` in both modes: `webAccessSet`, `Link`, `Regenerate`, `AddDevice`,
+- [x] everything that adds or widens stays `no` in both modes: `webAccessSet`, `Link`, `Regenerate`, `AddDevice`,
       `SetPassword`, `confirmAnswer`
-- [ ] the card in a browser, read-only: mode, address, the secret store and Task 6's "other mode" states, the devices
+- [x] the card in a browser, read-only: mode, address, the secret store and Task 6's "other mode" states, the devices
       with Revoke and Disconnect, Desktop confirm disabled with its reason, None's shared-server warning, and "change
       these with `ccc web` on the server"; it never shows a link or a QR code
-- [ ] write tests: each of the six channels from a remote view in both modes, decided by the bound caller and never the
+- [x] write tests: each of the six channels from a remote view in both modes, decided by the bound caller and never the
       payload; each minting channel refused for a remote view in server mode; the acting device in the log
-- [ ] e2e: the card shows a second device, Revoke from the browser closes that device's socket, and a `ccc web mode`
+- [x] e2e: the card shows a second device, Revoke from the browser closes that device's socket, and a `ccc web mode`
       change appears on the card without a reload
-- [ ] run tests and `npm run test:e2e` (`server-mode`, `web-access-settings`) - must pass before next task
+- [x] run tests and `npm run test:e2e` (`server-mode`, `web-access-settings`) - must pass before next task
 
 ### Task 21: In-page notices for plugins [model: opus]
 

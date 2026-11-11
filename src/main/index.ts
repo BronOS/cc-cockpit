@@ -181,6 +181,7 @@ import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
 import { CLOSE, type WebOpenProjectRequest } from '../shared/web-protocol'
+import type { WebSecretsStatus } from '../shared/web-access'
 import { blurSupport } from './windows/window-chrome'
 import { ViewRegistry } from './views/view-registry'
 import { AccessLog } from './web/access-log'
@@ -1616,8 +1617,8 @@ function start(server: boolean): void {
         }
       : {})
   })
-  // Settings › General › Web access and the top bar's indicator (every channel `no`-class: desktop
-  // windows only, so toAll reaches the picker and project windows and never a browser).
+  // Settings › General › Web access and the top bar's indicator (design-web.md §4; a server's
+  // browsers read the card and narrow too, §9.4, §9.6).
   const webAccess = new WebAccessService({
     gateway: webGateway,
     auth: webAuth,
@@ -1627,9 +1628,21 @@ function start(server: boolean): void {
         a.webAccess = storedWebAccess(a.webAccess, next)
       })
     },
+    // Every view: a browser's connection passes it on only in server mode, with no confirm request
+    // (web/connection.ts `remoteEvent`).
     emit: (indicator) => views.toAll('webAccess.changed', indicator),
     terminals: terminalMirror,
-    server
+    server,
+    accessLog: webAccessLog
+  })
+  /**
+   * The secret store of the run as `ccc web status` and a server's browser card show it (design-web.md
+   * §9.5): which store, why it cannot work, how many stored values it cannot read. Counts only.
+   */
+  const webSecretsStatus = async (): Promise<WebSecretsStatus> => ({
+    store: secretStore.kind,
+    unavailable: await secretStore.unavailableReason(),
+    ...unreadableCounts(secretStore, storedSecretValues(dataDir))
   })
   // Server mode (design-web.md §9.2): web access is the only way in, so start writes it on (and the
   // link mode over desktop confirm, which nobody could answer) to app.json, and says so once.
@@ -1716,16 +1729,9 @@ function start(server: boolean): void {
   // socket's connections, and the shell would otherwise see a dropped one instead of the answer.
   registerWebHandlers(socket, {
     server,
-    status: async () => {
-      const values = storedSecretValues(dataDir)
-      return webAccess.cliStatus({
-        store: secretStore.kind,
-        unavailable: await secretStore.unavailableReason(),
-        ...unreadableCounts(secretStore, values)
-      })
-    },
-    revoke: (id) => webAccess.revoke(id, SHELL_REVOKE_REASON),
-    revokeAll: () => webAccess.revokeAll(SHELL_REVOKE_REASON),
+    status: async () => webAccess.cliStatus(await webSecretsStatus()),
+    revoke: (id) => webAccess.revoke(id, { reason: SHELL_REVOKE_REASON }),
+    revokeAll: () => webAccess.revokeAll({ reason: SHELL_REVOKE_REASON }),
     stop: () => {
       setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100)
     },
@@ -2250,7 +2256,15 @@ function start(server: boolean): void {
       return cccCommand.view()
     }
   })
-  registerWebAccessHandlers(router, webAccess)
+  // The card's read side and Revoke/Disconnect are `adapted` (design-web.md §9.4, §9.6): a browser
+  // view of a server reads the card (with the secret store, as `ccc web status` has it) and narrows;
+  // the acting device, from the view main bound, is named in web-access.log. `webConnections` is
+  // defined below, before any browser can call.
+  registerWebAccessHandlers(router, webAccess, {
+    server,
+    actorOf: (viewId) => webConnections.actorOf(viewId),
+    ...(server ? { secrets: webSecretsStatus } : {})
+  })
   registerUpdateHandlers(router, {
     state: updateState,
     setEnabled: (value) => {
@@ -2476,6 +2490,8 @@ function start(server: boolean): void {
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),
+    // `webAccess.changed` reaches a browser only in server mode (connection.ts `remoteEvent`).
+    server,
     // A browser left: the tabs it sized fall back to a remaining visible view (terminal-sizes.ts).
     // Its slot instances and the settings page it held end too (panel-ports.ts viewGone).
     // The project's active tab goes back to a remaining view's selection (view-selections.ts).

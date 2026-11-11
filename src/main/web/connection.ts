@@ -35,6 +35,8 @@ import { MAX_VIEWS_PER_DEVICE_WINDOW, type WebPagePaths, type WebProjectEntry } 
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
 import type { ViewSink } from '../views/view-registry'
+import { remoteIndicator, type WebAccessIndicator } from '../../shared/web-access'
+import type { AccessActor } from './access-log'
 import type { WebDevice } from './devices'
 import { PortRelay } from './port-relay'
 import { type TerminalSource, ViewTerminals } from './view-terminals'
@@ -111,6 +113,11 @@ export interface WebConnectionDeps {
   pagePaths?(deviceId: string): WebPagePaths
   /** The view is gone (TabManager.viewGone): the tabs it sized fall back to a remaining view. */
   viewGone?(viewId: ViewId): void
+  /**
+   * Main's server-mode flag: the events `remoteEvent` passes to a remote view only in server mode
+   * (`webAccess.changed`, design-web.md §9.4). Absent: false.
+   */
+  server?: boolean
   log(message: string): void
   helloTimeoutMs?: number
 }
@@ -262,6 +269,29 @@ export class WebConnections {
   deviceName(viewId: ViewId): string | undefined {
     return this.open.get(viewId)?.deviceName
   }
+
+  /**
+   * The signed-in device behind an open view, for `web-access.log` when it acts on the card (server
+   * mode's Revoke and Disconnect, design-web.md §9.6); undefined for a view that is gone.
+   */
+  actorOf(viewId: ViewId): AccessActor | undefined {
+    const conn = this.open.get(viewId)
+    return conn?.binding() !== undefined ? { device: conn.deviceId, name: conn.deviceName } : undefined
+  }
+}
+
+/**
+ * What of an event (already `eventAllowed`) a remote view gets: the payload to send, or undefined to
+ * send nothing. `webAccess.changed` is `adapted` (design-web.md §9.4): a server's browsers follow the
+ * card live, but on the desktop web access is the desktop's alone, so a browser gets none of it; and
+ * never a desktop-confirm request (`remoteIndicator`).
+ */
+export function remoteEvent(channel: EventChannel, payload: unknown, server: boolean): { payload: unknown } | undefined {
+  if (channel === 'webAccess.changed') {
+    if (!server) return undefined
+    return { payload: remoteIndicator(payload as WebAccessIndicator) }
+  }
+  return { payload }
 }
 
 export class WebConnection {
@@ -485,7 +515,9 @@ export class WebConnection {
     if (!eventAllowed(channel)) return
     // The desktop's terminal output: this view gets its own, numbered, as term.* frames (header).
     if (channel === 'tabs.data') return
-    this.send({ t: 'event', ch: channel, p: payload })
+    const out = remoteEvent(channel, payload, this.deps.server === true)
+    if (out === undefined) return
+    this.send({ t: 'event', ch: channel, p: out.payload })
   }
 
   private send(frame: ServerFrame): void {

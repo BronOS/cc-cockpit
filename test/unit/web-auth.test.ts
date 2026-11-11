@@ -744,6 +744,16 @@ describe('the access log', () => {
     expect(text).not.toContain(DEVICE_COOKIE)
   })
 
+  // design-web.md §9.6: a browser's Revoke and Disconnect in server mode name the acting device; the
+  // acting device's name is the requester's own text, cleaned as every other name.
+  it('writes the acting device as plain `by` and `byName` fields, cleaned and capped', () => {
+    const log = new AccessLog({ now: () => clock })
+    log.write({ event: 'revoke', device: 'd2', name: 'Laptop', detail: 'revoked from a browser', by: { device: 'd1\u0007' + 'x'.repeat(80), name: 'Ph\u202eone\n' } })
+    const [entry] = log.recent()
+    expect(entry).toMatchObject({ event: 'revoke', device: 'd2', by: `d1${'x'.repeat(38)}`, byName: 'Phone' })
+    expect(Object.keys(entry ?? {}).sort()).toEqual(['at', 'by', 'byName', 'detail', 'device', 'event', 'name'])
+  })
+
   it('collapses a run of failed sign-ins into one line and a count, so a flood keeps the history', () => {
     const path = join(dir, 'logs', 'flood.log')
     const log = new AccessLog({ filePath: path, now: () => clock })

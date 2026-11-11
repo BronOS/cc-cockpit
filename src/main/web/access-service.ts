@@ -2,8 +2,9 @@
 // §4). It owns no state: the settings are `app.json` › `webAccess` (read and written through the
 // two callbacks), the devices and tokens are WebAuth's, the sockets the gateway's. What it adds is
 // the rule "a change is validated, stored, then applied to the gateway", and the views the
-// renderer reads. Every channel that reaches it is `no`-class (shared/ipc.ts), so only a desktop
-// window ever calls it: a browser must never widen its own access.
+// renderer reads. A browser view reaches only the read side and Revoke/Disconnect, and only in server
+// mode (`adapted`, ipc/router.ts registerWebAccessHandlers, design-web.md §9.4, §9.6); everything
+// that adds or widens access is `no`-class, so a browser never widens its own access.
 import type { WebAccessSettings } from '../../shared/types'
 import type {
   WebAccessIndicator,
@@ -17,6 +18,8 @@ import type {
   WebLinkReply,
   WebSecretsStatus
 } from '../../shared/web-access'
+import { SERVER_NONE_WARNING } from '../../shared/web-access'
+import type { AccessActor, AccessEntry } from './access-log'
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
 import type { GatewayStatus } from './gateway'
@@ -46,7 +49,7 @@ export interface WebAccessServiceDeps {
   read(): unknown
   /** Stores the next settings (every field the page edits, and the confirmed risks). */
   write(next: WebAccessSettings): void
-  /** Tells the desktop windows (`webAccess.changed`). */
+  /** Tells the windows (`webAccess.changed`; a browser view gets it only in server mode, web/connection.ts). */
   emit(indicator: WebAccessIndicator): void
   /**
    * The headless terminals (terminals/mirror.ts): running only while the settings mean the gateway
@@ -59,16 +62,28 @@ export interface WebAccessServiceDeps {
    * desktop confirm (settings.ts `applyWebAccessPatch`), and start writes and prints what runs.
    */
   server?: boolean
+  /**
+   * `web-access.log` (access-log.ts), for what the service itself does that no other module logs: a
+   * browser's Disconnect of a device (the gateway logs only the sockets closing). Absent: not logged.
+   */
+  accessLog?: { write(entry: AccessEntry): void }
 }
+
+/** How a revoke came about, for `web-access.log`: the reason, and the browser that did it. */
+export interface RevokeHow {
+  reason?: string
+  by?: AccessActor
+}
+
+/** The log's reason for a revoke from a browser's card (server mode, design-web.md §9.6). */
+export const BROWSER_REVOKE_REASON = 'revoked from a browser'
+/** The log's detail for a Disconnect from a browser's card. */
+export const BROWSER_DISCONNECT_DETAIL = 'disconnected from a browser'
 
 /** stdout, once, when server mode wrote web access on (design-web.md §9.2). */
 export const SERVER_TURNED_ON_LINE = 'server mode: turned web access on in app.json'
-/**
- * §9.12: on a shared server every local user reaches 127.0.0.1, so None hands the account to all of
- * them (and, on a network bind given its confirm, to the network too).
- */
-export const SERVER_NONE_WARNING =
-  'no sign-in: anyone who can reach this address, every user of this machine included, controls cc-cockpit as you'
+/** §9.12's None warning (shared/web-access.ts, where the browser's card reads it too). */
+export { SERVER_NONE_WARNING }
 
 /** The same links need the gateway to be listening: a link to a port nobody serves helps no one. */
 const NOT_LISTENING = 'Turn web access on first: there is nothing to open the link on.'
@@ -139,7 +154,9 @@ export class WebAccessService {
       devices,
       // A risky choice that is refused (nothing listens) is no risk: the badge is for what is live.
       risks: gateway.state === 'listening' ? webAccessRisks(settings) : [],
-      passwordSet: this.deps.auth.hasPassword()
+      passwordSet: this.deps.auth.hasPassword(),
+      // States only (synchronous, no decrypt): the card says when one must be made again (§9.5).
+      credentials: this.deps.auth.credentialStates()
     }
   }
 
@@ -326,19 +343,32 @@ export class WebAccessService {
     return this.deps.auth.answerConfirm(p['id'], p['allow'], p['code'])
   }
 
-  disconnect(id: unknown): boolean {
+  /**
+   * Closes a device's sockets; it stays signed in. `by`: the browser that asked (server mode's card),
+   * logged with the device it disconnected; the desktop's own Disconnect is not logged beyond the
+   * sockets closing, as before.
+   */
+  disconnect(id: unknown, by?: AccessActor): boolean {
     if (typeof id !== 'string') return false
-    return this.deps.gateway.disconnectDevice(id) > 0
+    const name = by ? this.deps.auth.devices.list().find((d) => d.id === id)?.name : undefined
+    const closed = this.deps.gateway.disconnectDevice(id) > 0
+    if (closed && by) {
+      this.deps.accessLog?.write({ event: 'disconnect', device: id, ...(name !== undefined ? { name } : {}), detail: BROWSER_DISCONNECT_DETAIL, by })
+    }
+    return closed
   }
 
-  /** `reason` goes to `web-access.log` (the desktop's default, or `ccc web revoke`'s). */
-  revoke(id: unknown, reason?: string): boolean {
+  /**
+   * `how.reason` goes to `web-access.log` (the desktop's default, or `ccc web revoke`'s); a browser's
+   * revoke (`how.by`, server mode's card) is logged as BROWSER_REVOKE_REASON with the acting device.
+   */
+  revoke(id: unknown, how: RevokeHow = {}): boolean {
     if (typeof id !== 'string') return false
-    return this.deps.auth.devices.revoke(id, reason)
+    return this.deps.auth.devices.revoke(id, reasonOf(how), how.by)
   }
 
-  revokeAll(reason?: string): number {
-    return this.deps.auth.devices.revokeAll(reason)
+  revokeAll(how: RevokeHow = {}): number {
+    return this.deps.auth.devices.revokeAll(reasonOf(how), how.by)
   }
 
   /** The origin a link points at, or the reply that says why there is no link. */
@@ -355,4 +385,9 @@ export class WebAccessService {
   private changed(): void {
     this.deps.emit(this.indicator())
   }
+}
+
+/** The log reason of a revoke: the one given, a browser's, or (undefined) the device store's default. */
+function reasonOf(how: RevokeHow): string | undefined {
+  return how.reason ?? (how.by ? BROWSER_REVOKE_REASON : undefined)
 }

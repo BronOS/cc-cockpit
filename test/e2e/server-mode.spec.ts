@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
+import { WebSocket } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
@@ -617,6 +618,103 @@ test('server mode: Close project in the browser closes it for every device; the 
   } finally {
     await first.close()
     await second.close()
+  }
+})
+
+// design-web.md §9.4, §9.6: with no desktop, a browser's Settings shows the web access card read-only
+// (never a link), lists the devices with Revoke and Disconnect behind the in-page approval, follows
+// `ccc web` changes live, and web-access.log names the device that revoked.
+test('server mode: the web access card in the browser lists a second device, revokes it, and follows ccc web mode live', async () => {
+  test.setTimeout(120_000)
+  server = await launchServer({ mode: 'link' })
+  const { origin, cockpit } = server
+  const browser = await openBrowser(await addDeviceLink(server))
+  // Signed in before the next link is made: a new one-time link ends the one before it.
+  await expect(browser.page.getByRole('list', { name: 'Open projects' }).getByRole('link')).toHaveCount(1)
+  // A second device, signed in with its own one-time link and connected to the project.
+  const token = (await addDeviceLink(server)).split('#t=')[1] ?? ''
+  const signed = await fetch(`${origin}/auth/link`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, name: 'Second phone' })
+  })
+  expect(signed.status).toBe(200)
+  await signed.body?.cancel()
+  const cookie = (signed.headers.get('set-cookie') ?? '').split(';')[0] ?? ''
+  const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { origin, headers: { Cookie: cookie } })
+  const wsClosed = new Promise<void>((resolve) => ws.on('close', () => resolve()))
+  await new Promise<void>((resolve, reject) => {
+    ws.on('open', () => resolve())
+    ws.on('error', reject)
+  })
+  ws.send(JSON.stringify({ t: 'hello', v: 1, project: server.projectId }))
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, origin, server.projectId)
+
+    // The top bar counts both devices in the browser too; its click opens this browser's Settings.
+    const chip = page.locator('header.top-strip .web-access-chip')
+    await expect(chip).toContainText('2 devices')
+    await chip.click()
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await expect(settings).toBeVisible()
+    const card = settings.getByTestId('web-access-server-card')
+    await expect(card).toBeVisible()
+    await expect(card.getByTestId('web-access-row-mode')).toContainText('Access link')
+    await expect(card.getByTestId('web-access-row-address')).toContainText(origin)
+    await expect(card.getByTestId('web-access-row-confirm')).toContainText('Not available in server mode')
+    await expect(card).toContainText('ccc web')
+    // Read-only, and never a link: no switch, no Show, no QR code, no token anywhere in the page.
+    await expect(settings.getByRole('checkbox', { name: 'Allow browsers to connect' })).toHaveCount(0)
+    await expect(settings.getByRole('button', { name: 'Show' })).toHaveCount(0)
+    await expect(settings.getByRole('img', { name: /QR code/ })).toHaveCount(0)
+    expect(await page.content()).not.toContain('#t=')
+
+    const second = settings.getByTestId('web-access-device').filter({ hasText: 'Second phone' })
+    await expect(second).toContainText('connected now')
+    await expect(settings.getByTestId('web-access-device')).toHaveCount(2)
+
+    // Revoke asks first in the page (not armed at once), Cancel leaves it signed in.
+    await second.getByRole('button', { name: 'Revoke', exact: true }).click()
+    const ask = page.getByRole('alertdialog', { name: 'Revoke Second phone?' })
+    await expect(ask).toBeVisible()
+    const allow = ask.getByRole('button', { name: 'Revoke', exact: true })
+    await expect(allow).toBeDisabled()
+    await ask.getByRole('button', { name: 'Cancel' }).click()
+    await expect(ask).toHaveCount(0)
+    await expect(second).toContainText('connected now')
+
+    // Asked again and allowed: its socket closes at once and it leaves the list.
+    await second.getByRole('button', { name: 'Revoke', exact: true }).click()
+    await expect(allow).toBeEnabled({ timeout: 5_000 })
+    await allow.click()
+    await wsClosed
+    await expect(second).toHaveCount(0)
+    await expect(settings.getByTestId('web-access-device')).toHaveCount(1)
+    const status = JSON.parse((await ccc(server, ['web', 'status', '--json'])).stdout) as WebCliStatus
+    expect(status.devices.map((d) => d.name)).not.toContain('Second phone')
+
+    // web-access.log names the browser that revoked it (its own device, the one left).
+    const me = status.devices[0]
+    const log = readFileSync(join(cockpit.dataDir, 'logs', 'web-access.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(log.find((e) => e['event'] === 'revoke' && e['name'] === 'Second phone')).toMatchObject({
+      detail: 'revoked from a browser',
+      by: me?.id,
+      byName: me?.name
+    })
+
+    // A change made with `ccc web` on the server shows on the open card, no reload.
+    const mode = await ccc(server, ['web', 'mode', 'none'])
+    expect(mode.code, mode.stderr).toBe(0)
+    await expect(card.getByTestId('web-access-row-mode')).toContainText('No sign-in')
+    await expect(card.getByTestId('web-access-row-none')).toContainText('every user of this machine')
+    await expectMainAlive(server)
+  } finally {
+    ws.close()
+    await browser.close()
   }
 })
 

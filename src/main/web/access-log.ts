@@ -57,6 +57,16 @@ export type AccessEvent =
    */
   | 'shell'
 
+/**
+ * The signed-in device that did something to another (or itself) from a browser: server mode's
+ * Revoke and Disconnect on the card (design-web.md §9.6). Main takes it from the view it bound the
+ * call to, never from the payload.
+ */
+export interface AccessActor {
+  device: string
+  name: string
+}
+
 export interface AccessEntry {
   event: AccessEvent
   /** The device id (never its secret). */
@@ -65,9 +75,15 @@ export interface AccessEntry {
   name?: string
   /** How it signed in, why it was revoked, `from → to` for a mode change. */
   detail?: string
+  /** The device that acted, when a browser did it (written as `by` and `byName`). */
+  by?: AccessActor
 }
 
-export interface LoggedAccessEntry extends AccessEntry {
+export interface LoggedAccessEntry extends Omit<AccessEntry, 'by'> {
+  /** The acting device's id (AccessEntry.by). */
+  by?: string
+  /** The acting device's name, the requester's own text. */
+  byName?: string
   /** ISO time (of the last failure, on a collapsed line). */
   at: string
   /** On a collapsed `sign-in-failed` line: how many failures it stands for. Absent means one. */
@@ -131,6 +147,10 @@ export class AccessLog {
     if (entry.device !== undefined) out.device = plainText(entry.device, 40)
     if (entry.name !== undefined) out.name = plainText(entry.name)
     if (entry.detail !== undefined) out.detail = plainText(entry.detail)
+    if (entry.by !== undefined) {
+      out.by = plainText(entry.by.device, 40)
+      out.byName = plainText(entry.by.name)
+    }
     if (entry.event === 'sign-in-failed') {
       const run = this.failed
       if (run && run.detail === out.detail && now - run.startedAt < FAILED_SIGN_IN_WINDOW_MS) {

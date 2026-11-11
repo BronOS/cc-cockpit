@@ -23,6 +23,12 @@ import {
   NONE_REVOKE_NOTE,
   confirmedPatch,
   confirmsNeeded,
+  desktopCredentialNotes,
+  deviceAskText,
+  secretsText,
+  SERVER_CARD_FOOT,
+  SERVER_CONFIRM_OFF,
+  serverCardRows,
   MODE_CHANGE_KEEPS_DEVICES,
   modeHelp,
   modeOptions,
@@ -31,7 +37,7 @@ import {
   qrText,
   revealFrom
 } from '../../src/renderer/settings/web-access-model'
-import { WEB_RISK_TEXT, type WebAccessForm } from '../../src/shared/web-access'
+import { SERVER_NONE_WARNING, WEB_RISK_TEXT, type WebAccessForm, type WebAccessView } from '../../src/shared/web-access'
 
 const TOKEN = 'T0kenT0kenT0kenT0kenT0kenT0kenT0kenT0kenT0k'
 const LINK = `http://127.0.0.1:7330/#t=${TOKEN}`
@@ -124,7 +130,7 @@ describe('the address form', () => {
 describe('the §4.3 confirms (plan Task 28)', () => {
   it('a needsConfirm reply asks, a page reply does not', () => {
     expect(confirmsNeeded({ needsConfirm: ['none-network', 'plain-http'] })).toEqual(['none-network', 'plain-http'])
-    const page = { form, network: false, gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false }
+    const page = { form, network: false, gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false, credentials: { accessLink: 'unset' as const, password: 'unset' as const } }
     expect(confirmsNeeded(page)).toBeUndefined()
   })
 
@@ -223,6 +229,97 @@ describe('devices and the chip', () => {
     expect(indicatorTitle({ connected: 1 })).toMatch(/^1 browser is connected/)
     expect(indicatorTitle({ connected: 2, warning: 'Sign-in is off.' })).toContain('Sign-in is off.')
     expect(indicatorTitle({ connected: 0 })).toMatch(/No browser/)
+    expect(indicatorTitle({ connected: 1 })).toMatch(/Click to manage web access\.$/)
+    // A server's browser: the click opens its own read-only card.
+    expect(indicatorTitle({ connected: 1 }, true)).toMatch(/^1 browser is connected.*Click to see the devices\.$/)
+  })
+})
+
+// design-web.md §9.4, §9.5, §9.6: the web access card in a server's browser, read-only.
+describe("a server's browser card", () => {
+  const view = (over: Partial<WebAccessView> = {}): WebAccessView => ({
+    form: { ...form, bind: '127.0.0.1', mode: 'link' },
+    network: false,
+    gateway: { state: 'listening', bind: '127.0.0.1', port: 7330, origin: 'https://box.tailnet.ts.net' },
+    devices: [],
+    risks: [],
+    passwordSet: false,
+    credentials: { accessLink: 'set', password: 'unset' },
+    secrets: { store: 'keyfile', unavailable: null, otherMode: 0, replaced: 0 },
+    ...over
+  })
+  const row = (v: WebAccessView, key: string) => serverCardRows(v).find((r) => r.key === key)
+
+  it('shows the mode, the address, the states, the store and desktop confirm off with its reason', () => {
+    const rows = serverCardRows(view())
+    expect(rows.map((r) => r.key)).toEqual(['mode', 'address', 'link', 'password', 'secrets', 'confirm'])
+    expect(row(view(), 'mode')?.text).toMatch(/^Access link\. /)
+    expect(row(view(), 'address')?.text).toBe('https://box.tailnet.ts.net (listening on 127.0.0.1 port 7330)')
+    expect(row(view(), 'link')?.text).toMatch(/ccc web link/)
+    expect(row(view(), 'password')?.text).toMatch(/ccc web password/)
+    expect(row(view(), 'secrets')?.text).toMatch(/key file/)
+    expect(row(view(), 'confirm')).toMatchObject({ label: 'Confirm on this computer', text: SERVER_CONFIRM_OFF })
+    expect(SERVER_CARD_FOOT).toMatch(/ccc web/)
+    expect(rows.every((r) => r.warn !== true)).toBe(true)
+  })
+
+  it('never holds a link, whatever the view carries', () => {
+    const text = JSON.stringify(serverCardRows(view({ form: { ...form, externalOrigin: 'https://x' } })))
+    expect(text).not.toContain('#t=')
+  })
+
+  it("warns about None's shared server and the live risks", () => {
+    const v = view({ form: { ...form, mode: 'none' }, risks: ['Sign-in is off on a network address.'] })
+    expect(row(v, 'none')).toEqual({ key: 'none', label: 'Warning', text: SERVER_NONE_WARNING, warn: true })
+    expect(serverCardRows(v).at(-1)).toEqual({ key: 'risk-0', label: 'Warning', text: 'Sign-in is off on a network address.', warn: true })
+  })
+
+  it('says why nothing listens', () => {
+    expect(row(view({ gateway: { state: 'refused', reason: 'plain http on a network address needs a certificate' } }), 'address')).toEqual({
+      key: 'address',
+      label: 'Address',
+      text: 'Not listening: plain http on a network address needs a certificate.',
+      warn: true
+    })
+    expect(row(view({ gateway: { state: 'off' } }), 'address')?.warn).toBe(true)
+  })
+
+  it("says a credential stored by the other mode, or under a replaced key file, must be made again (Task 6's states)", () => {
+    const v = view({ credentials: { accessLink: 'other-mode', password: 'replaced' } })
+    expect(row(v, 'link')).toMatchObject({ warn: true, text: expect.stringMatching(/desktop's keychain.*ccc web link --regenerate/) })
+    expect(row(v, 'password')).toMatchObject({ warn: true, text: expect.stringMatching(/key file that was replaced.*ccc web password/) })
+  })
+
+  it('words the secret store: unavailable, and the values it cannot read', () => {
+    expect(secretsText({ store: 'keyfile', unavailable: null, otherMode: 0, replaced: 0 })).toEqual({ text: expect.stringMatching(/^The key file/), warn: false })
+    const bad = secretsText({ store: 'keyfile', unavailable: 'the key file is readable by others', otherMode: 1, replaced: 3 })
+    expect(bad.warn).toBe(true)
+    expect(bad.text).toContain('cannot store or read anything now: the key file is readable by others.')
+    expect(bad.text).toContain("1 stored value was saved by the desktop's keychain")
+    expect(bad.text).toContain('3 stored values were saved under a key file that was replaced')
+    // No secrets row when main sent no store (the desktop's own card never shows this one).
+    const noStore = view()
+    delete noStore.secrets
+    expect(serverCardRows(noStore).some((r) => r.key === 'secrets')).toBe(false)
+  })
+
+  it('asks before Revoke, Disconnect and Revoke all, naming the device as plain text', () => {
+    expect(deviceAskText({ kind: 'revoke', id: 'a', name: '<b>Phone</b>' })).toEqual({
+      title: 'Revoke <b>Phone</b>?',
+      body: expect.stringMatching(/signed out for good.*does not undo/),
+      allowLabel: 'Revoke'
+    })
+    expect(deviceAskText({ kind: 'disconnect', id: 'a', name: 'Phone' })).toMatchObject({ title: 'Disconnect Phone?', allowLabel: 'Disconnect' })
+    expect(deviceAskText({ kind: 'revoke-all', count: 3 })).toMatchObject({ title: 'Revoke all 3 devices?', allowLabel: 'Revoke all' })
+    expect(deviceAskText({ kind: 'revoke-all', count: 1 }).title).toBe('Revoke the 1 device?')
+  })
+
+  it("the desktop card notes only an unreadable credential, so its card is otherwise as it was", () => {
+    expect(desktopCredentialNotes({ accessLink: 'set', password: 'unset' })).toEqual([])
+    const notes = desktopCredentialNotes({ accessLink: 'other-mode', password: 'other-mode' })
+    expect(notes).toHaveLength(2)
+    expect(notes[0]).toMatch(/server mode's key file.*Regenerate/)
+    expect(notes[1]).toMatch(/password.*set it again/)
   })
 })
 
