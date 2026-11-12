@@ -1717,6 +1717,25 @@ describe('remote desktop windows', () => {
     expect(quits).toBe(0)
   })
 
+  it('a picker shown over a remote window offers Cancel, and Cancel closes it without quitting; with none it stays', () => {
+    const { wm, remote } = remoteManager('linux')
+    remote.count = 1
+    // A remote window's "+": no project window to sit on, yet not the app's only window.
+    wm.showPicker()
+    expect(wm.pickerModal).toBe(true)
+    wm.dismissPicker()
+    expect(wm.pickerOpen).toBe(false)
+    expect(quits).toBe(0)
+    // The remote window closed while the picker was up: re-checked at Cancel, so the page's stale
+    // "dismissible" cannot close the app's only window.
+    wm.showPicker()
+    remote.count = 0
+    expect(wm.pickerModal).toBe(false)
+    wm.dismissPicker()
+    expect(wm.pickerOpen).toBe(true)
+    expect(quits).toBe(0)
+  })
+
   it('the person closing the picker on Linux with a remote window open does not quit', () => {
     const { wm, remote } = remoteManager('linux')
     remote.count = 1

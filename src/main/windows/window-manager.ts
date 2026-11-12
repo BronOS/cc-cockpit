@@ -504,19 +504,25 @@ export class WindowManager {
     return this.picker?.id
   }
 
-  /** The open picker is a modal child of a project window (so it offers Cancel / Esc). */
+  /**
+   * The open picker may be dismissed (so it offers Cancel / Esc): it is a modal child of a project
+   * window, or a remote window is open (design-remote-desktop.md §4: the picker a remote window's
+   * "+" shows has no project window to sit on, yet it is not the app's only window, so closing it
+   * neither quits on Linux nor leaves the person with nothing on screen).
+   */
   get pickerModal(): boolean {
-    return this.picker !== undefined && this.pickerParent !== undefined
+    return this.picker !== undefined && (this.pickerParent !== undefined || this.remoteWindows() > 0)
   }
 
   /**
-   * The picker's Cancel / Esc. Only a modal picker may be dismissed this way: a standalone one is
-   * the app's only window, and closing it ends the app on Linux / Windows, which is the close
-   * button's decision, not a page's. Closes through the handle like a user close, so the parent
-   * gets its focus back (`pickerClosed`).
+   * The picker's Cancel / Esc. Only a dismissible picker (`pickerModal`) may be closed this way: a
+   * standalone one is the app's only window, and closing it ends the app on Linux / Windows, which
+   * is the close button's decision, not a page's. Re-checked here, not trusted from what the page
+   * was told: the remote window that made it dismissible may have closed since. Closes through the
+   * handle like a user close, so the parent gets its focus back (`pickerClosed`).
    */
   dismissPicker(): void {
-    if (this.picker && this.pickerParent) this.picker.close()
+    if (this.picker && this.pickerModal) this.picker.close()
   }
 
   get pickerOpen(): boolean {
