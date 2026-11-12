@@ -99,15 +99,15 @@
 - Modify: `src/shared/web-access.ts`, `src/main/web/access-service.ts`, `src/cli/client.ts` (status text)
 - Modify: the existing checks test (`test/unit/*checks*.test.ts`), `test/unit/cli-web.test.ts`
 
-- [ ] `checkHost` (or the gateway's call) accepts `127.0.0.1:<n>`, `localhost:<n>`, `[::1]:<n>` for any port `n` in
+- [x] `checkHost` (or the gateway's call) accepts `127.0.0.1:<n>`, `localhost:<n>`, `[::1]:<n>` for any port `n` in
       1–65535 when `server` is set; the desktop keeps the exact list; comment carries design §5.3's argument
-- [ ] `checkOrigin` unchanged; a test proves `Origin: http://127.0.0.1:3000` with `Host: 127.0.0.1:<P>` is still
+- [x] `checkOrigin` unchanged; a test proves `Origin: http://127.0.0.1:3000` with `Host: 127.0.0.1:<P>` is still
       refused and `Origin` = `Host` on another loopback port is accepted in server mode only
-- [ ] `WebCliStatus` gains `version` (app version) and `scheme` (`http` / `https`, the gateway's own); `ccc web
+- [x] `WebCliStatus` gains `version` (app version) and `scheme` (`http` / `https`, the gateway's own); `ccc web
       status` text shows the version
-- [ ] tests: Host rule (server mode on/off, malformed ports, names that only look loopback such as `127.0.0.1.evil`),
+- [x] tests: Host rule (server mode on/off, malformed ports, names that only look loopback such as `127.0.0.1.evil`),
       status fields
-- [ ] run unit tests and `node scripts/server-mode-smoke.mjs` - must pass before task 2
+- [x] run unit tests and `node scripts/server-mode-smoke.mjs` - must pass before task 2
 
 ### Task 2: Web client in a desktop window: key table and device name [model: sonnet]
 

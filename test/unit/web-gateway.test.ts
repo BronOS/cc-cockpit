@@ -416,6 +416,39 @@ describe('Host check (every request and the upgrade)', () => {
     expect((await http(port, { noHost: true })).status).toBe(400)
   })
 
+  it('in server mode takes a loopback name on any port (the desktop app\'s SSH tunnel), Origin still tied to it', async () => {
+    const { gw, port } = await listening({}, { server: true })
+    const tunnel = port === 54321 ? '127.0.0.1:54322' : '127.0.0.1:54321'
+    for (const host of [tunnel, 'localhost:3000', '[::1]:8080']) {
+      const res = await http(port, { headers: { Host: host } })
+      expect(res.status, host).toBe(200)
+      // The CSP is built from that one Host, not from a list.
+      expect(String(res.headers['content-security-policy'])).toContain(`frame-src http://${host}/p/ http://${host}/o/;`)
+    }
+    for (const host of ['127.0.0.1:', '127.0.0.1:0', '127.0.0.1:65536', '127.0.0.1:80a', '127.0.0.1.evil:80', `evil.example:${port}`]) {
+      expect((await http(port, { headers: { Host: host } })).status, host).toBe(403)
+    }
+    // A dev server's page on another loopback port: its own Origin, never the Host's.
+    const post = (host: string, origin: string): Promise<Answer> => http(port, { method: 'POST', path: '/sign-in', headers: { Host: host, Origin: origin } })
+    expect((await post(`127.0.0.1:${port}`, 'http://127.0.0.1:3000')).status).toBe(403)
+    expect((await post(tunnel, 'http://127.0.0.1:3000')).status).toBe(403)
+    // Origin = Host on the tunnel's port passes the check and finds no route.
+    expect((await post(tunnel, `http://${tunnel}`)).status).toBe(404)
+    const handler = vi.fn((ws: wsModule.WebSocket) => ws.close())
+    gw.setSocketHandler(handler)
+    expect(await upgrade(port, { Host: `127.0.0.1:${port}`, Origin: 'http://127.0.0.1:3000' })).toBe(403)
+    expect(await upgrade(port, { Host: tunnel, Origin: `http://${tunnel}` })).toBe(101)
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('on the desktop keeps the exact list: a loopback name on another port is refused', async () => {
+    const { gw, port } = await listening({}, { server: false })
+    const other = `127.0.0.1:${port === 54321 ? 54322 : 54321}`
+    expect((await http(port, { headers: { Host: other } })).status).toBe(403)
+    gw.setSocketHandler((ws) => ws.close())
+    expect(await upgrade(port, { Host: other, Origin: `http://${other}` })).toBe(403)
+  })
+
   it('refuses an upgrade under a foreign Host even with a matching Origin', async () => {
     const { gw, port } = await listening()
     gw.setSocketHandler((ws) => ws.close())

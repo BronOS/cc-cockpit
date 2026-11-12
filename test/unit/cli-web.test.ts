@@ -54,6 +54,8 @@ const CWD = '/work/dir'
 /** A status as main would build it, for the handler and the CLI's printing. */
 const STATUS: WebCliStatus = {
   server: true,
+  version: '0.17.0',
+  scheme: 'http',
   enabled: true,
   mode: 'link',
   bind: '127.0.0.1',
@@ -379,7 +381,8 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
       },
       emit: () => undefined,
       terminals: { start: () => undefined, drain: async () => undefined },
-      server: true
+      server: true,
+      version: '9.8.7'
     })
     auth.setMode('link')
     const made = await auth.accessLink('https://box.example')
@@ -396,6 +399,8 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
     const view = service.cliStatus(secrets, [])
     expect(view).toEqual({
       server: true,
+      version: '9.8.7',
+      scheme: 'http',
       enabled: true,
       mode: 'link',
       bind: '127.0.0.1',
@@ -437,6 +442,9 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
     const notice = { kind: 'update' as const, text: 'A new cc-cockpit version is available: 1.2.3 (running 1.0.0)', at: 5 }
     expect(service.cliStatus(secrets, [notice]).notices).toEqual([notice])
     expect(service.cliStatus(secrets, []).notices).toEqual([])
+    // The gateway's own scheme follows the TLS settings (the desktop app's SSH tunnel refuses https).
+    stored = { ...(stored as object), tls: { certPath: '/etc/cc/cert.pem', keyPath: '/etc/cc/key.pem' } }
+    expect(service.cliStatus(secrets, [])).toMatchObject({ scheme: 'https', version: '9.8.7' })
     service.dispose()
   })
 
@@ -517,6 +525,13 @@ describe('ccc web: the CLI', () => {
     err = ''
     expect(await run(['sessions'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
     expect(err).toBe('')
+  })
+
+  it('shows the app version first, plain text only', () => {
+    expect(formatWebStatus(STATUS, String).startsWith('version: 0.17.0\nserver mode: yes\n')).toBe(true)
+    expect(formatWebStatus({ ...STATUS, version: '1.0\u001b[2J' }, (t) => String(t).split('\u001b').join(' '))).toContain('version: 1.0 [2J\n')
+    // An older app's reply has no version.
+    expect(formatWebStatus({ ...STATUS, version: undefined }, String)).toContain('version: unknown\n')
   })
 
   it('shows the start folder in server mode only, the home folder when none is set', () => {
@@ -742,7 +757,8 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
       },
       emit: () => undefined,
       terminals: { start: () => undefined, drain: async () => undefined },
-      server: true
+      server: true,
+      version: '9.8.7'
     })
     // Wired as main/index.ts does (webHandlerDeps).
     h = webHandlers(

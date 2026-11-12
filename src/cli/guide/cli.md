@@ -78,10 +78,11 @@ stderr).
 - `ccc web status [--json]`, `ccc web revoke <device id>|--all` and `ccc web stop` are web access
   from a shell on the server, for the person who runs cc-cockpit, not for Claude: inside any
   cockpit tab (Claude, shell or command) they are refused with "run `ccc web` from a shell on the
-  server, outside cc-cockpit". `status` prints the sign-in mode, the address and external origin,
-  whether the gateway listens (or why not), the secret store and how many stored values it cannot
-  read, whether the access link and the password are set, whether this is server mode, and the
-  signed-in devices (id, name, how each signed in, last seen); never a link, a token or a hash.
+  server, outside cc-cockpit". `status` prints the app's version, the sign-in mode, the address
+  and external origin, whether the gateway listens (or why not), the secret store and how many
+  stored values it cannot read, whether the access link and the password are set, whether this is
+  server mode, and the signed-in devices (id, name, how each signed in, last seen); never a link, a
+  token or a hash. `--json` also has `scheme` (`http` or `https`: TLS on), the gateway's own.
   In server mode the app's own notices (a new device signed in, a plugin the marketplace revoked, a
   newer release) are one stdout line each, in the terminal or journal that runs the app, with no
   OS notification; `status` lists this run's as `notices` (also in `--json`), a new device with its

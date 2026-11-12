@@ -1733,6 +1733,8 @@ function start(server: boolean): void {
     shellDir: join(__dirname, '../renderer'),
     // The web picker lists what a remote view can bind to: projects with a window open now.
     openProjects: () => openProjectEntries(windows, (projectId) => registry.get(projectId)),
+    // The Host check takes the loopback names on any port in server mode only (design-remote-desktop.md §5.3).
+    server,
     // Server mode only (design-web.md §9.8): with no desktop the browser picker is the only one, so
     // it lists the recent projects and opens a folder or a recent one as the desktop's picker does.
     // On the desktop it stays absent: the POST is 404 and a browser never opens a window on the host.
@@ -1792,7 +1794,9 @@ function start(server: boolean): void {
     emit: (indicator) => views.toAll('webAccess.changed', indicator),
     terminals: terminalMirror,
     server,
-    accessLog: webAccessLog
+    accessLog: webAccessLog,
+    // `ccc web status` reports it, so the desktop app can name an older server (design-remote-desktop.md §8).
+    version: appVersion
   })
   /**
    * The secret store of the run as `ccc web status` and a server's browser card show it (design-web.md

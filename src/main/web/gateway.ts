@@ -61,7 +61,7 @@ import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
 import { deviceCookie, type SignInResult, type WebAuth } from './auth'
-import { allowedHosts, checkHost, checkOrigin, webShellCsp, type OriginRule } from './checks'
+import { allowedHosts, checkHost, checkOrigin, webShellCsp, type HostRule, type OriginRule } from './checks'
 import type { WebDevice } from './devices'
 import { parseFoldersBody } from './list-folders'
 import { parseOpenProjectBody, type OpenProjectOutcome } from './open-project'
@@ -133,6 +133,12 @@ export interface GatewayDeps {
    * a folder's subfolders; absent, both POSTs are 404 as any unknown route.
    */
   serverProjects?: ServerProjects
+  /**
+   * Main's `server` flag for the run (server-mode.ts), never re-derived here: on, the Host check
+   * also takes `127.0.0.1`, `localhost` and `[::1]` on any port, for the desktop app's SSH tunnel
+   * (checks.ts checkHost, design-remote-desktop.md §5.3). Absent or false: the exact host list.
+   */
+  server?: boolean
   /** Plugin files and inline overlays (plugin-pages.ts). Absent: `/p/` and `/o/` are 404. */
   pages?: PluginPages
   /** The ping interval (HEARTBEAT_MS); tests shorten it. */
@@ -551,7 +557,7 @@ export class WebGateway {
   }
 
   private request(req: IncomingMessage, res: ServerResponse): void {
-    const host = checkHost(req.headers.host, this.hosts)
+    const host = checkHost(req.headers.host, this.hosts, this.hostRule())
     if (!host) return this.send(res, undefined, 403, 'text/plain; charset=utf-8', 'unknown host')
     const method = req.method ?? 'GET'
     const safe = method === 'GET' || method === 'HEAD'
@@ -832,6 +838,11 @@ export class WebGateway {
     this.json(res, host, answer.status, answer.body, answer.cookie === undefined ? {} : { 'Set-Cookie': deviceCookie(answer.cookie, origin) })
   }
 
+  /** Server mode also takes the loopback literals on any port (checks.ts checkHost, design-remote-desktop.md §5.3). */
+  private hostRule(): HostRule {
+    return { anyLoopbackPort: this.deps.server === true }
+  }
+
   private originRule(): OriginRule {
     const scheme = this.scheme()
     return this.plan?.externalOrigin !== undefined ? { scheme, externalOrigin: this.plan.externalOrigin } : { scheme }
@@ -839,7 +850,7 @@ export class WebGateway {
 
   private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     socket.on('error', () => socket.destroy())
-    const host = checkHost(req.headers.host, this.hosts)
+    const host = checkHost(req.headers.host, this.hosts, this.hostRule())
     if (!host) return refuseUpgrade(socket, '403 Forbidden')
     if (!checkOrigin(req.headers.origin, host, this.originRule())) {
       this.deps.log(`web access: upgrade refused, origin ${JSON.stringify((req.headers.origin ?? 'none').slice(0, 100))}`)

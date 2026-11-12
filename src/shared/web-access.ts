@@ -213,6 +213,13 @@ export interface WebSecretsStatus {
 export interface WebCliStatus {
   /** Main's `server` flag for the run. */
   server: boolean
+  /** The app's version (a checkout reports the version it was built from). */
+  version: string
+  /**
+   * The gateway's own scheme: `https` with TLS settings, else `http`. Its presence also marks a
+   * server whose Host check takes loopback on any port (design-remote-desktop.md §5.3, §8).
+   */
+  scheme: 'http' | 'https'
   enabled: boolean
   mode: WebAccessMode
   bind: string

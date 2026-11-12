@@ -61,11 +61,60 @@ export function allowedHosts({ bind, port, hosts, externalOrigin, interfaces, ho
   return out
 }
 
-/** The Host header, lowercased, if it is one of `allowed`; undefined otherwise. */
-export function checkHost(hostHeader: string | undefined, allowed: ReadonlySet<string>): string | undefined {
+export interface HostRule {
+  /**
+   * Main's `server` flag for the run (server-mode.ts), passed in by the gateway's owner and never
+   * derived from a request: also accept the loopback literals on any port (`isLoopbackAnyPort`).
+   */
+  anyLoopbackPort?: boolean
+}
+
+/**
+ * The Host header, lowercased, if it is one of `allowed` (or, with `rule.anyLoopbackPort`, a
+ * loopback literal on any port); undefined otherwise.
+ *
+ * Why the loopback literals on any port are safe in server mode (design-remote-desktop.md §5.3):
+ * the desktop app reaches a server through an SSH tunnel, `127.0.0.1:<L>` on its own machine
+ * forwarded to the gateway's `<P>`, so Chromium sends `Host: 127.0.0.1:<L>` with a port the
+ * gateway cannot know. The Host check is the DNS-rebinding defence, and a rebound name is never a
+ * loopback literal (`127.0.0.1.evil:80` and `localhost.evil.com:80` are names, refused below), so
+ * that defence is whole. A loopback Host on a foreign port reaches the gateway only through
+ * something forwarding to it that the person set up (a tunnel, a proxy). A page on another loopback
+ * port of either machine (a dev server on `127.0.0.1:3000`) still sends its own
+ * `Origin: http://127.0.0.1:3000` with `Host: 127.0.0.1:<P>`, and `checkOrigin`, unchanged, wants
+ * the Origin of the very Host the request came in on, so it is refused as before. Cookies were
+ * never port-scoped, so nothing about them changes. A check-time rule, not 65535 entries in the
+ * set: what reuses the request's Host (the CSP's frame origins) builds from that one Host only.
+ * The desktop (no `server`) keeps the exact list: nothing tunnels to it.
+ */
+export function checkHost(hostHeader: string | undefined, allowed: ReadonlySet<string>, rule: HostRule = {}): string | undefined {
   if (typeof hostHeader !== 'string') return undefined
   const host = hostHeader.trim().toLowerCase()
-  return host !== '' && allowed.has(host) ? host : undefined
+  if (host === '') return undefined
+  if (allowed.has(host)) return host
+  return rule.anyLoopbackPort === true && isLoopbackAnyPort(host) ? host : undefined
+}
+
+/** The three loopback literals `allowedHosts` always lists, before their port. */
+const LOOPBACK_HOST_PREFIXES = ['127.0.0.1:', 'localhost:', '[::1]:'] as const
+
+/**
+ * A lowercased Host that is exactly one loopback literal, a colon and a port 1-65535 written as a
+ * browser writes it: decimal digits only (no `+`, sign, space or suffix), no leading zero. No
+ * regex (repo rule); a prefix and a digit walk.
+ */
+export function isLoopbackAnyPort(host: string): boolean {
+  for (const prefix of LOOPBACK_HOST_PREFIXES) {
+    if (host.startsWith(prefix)) return isPortText(host.slice(prefix.length))
+  }
+  return false
+}
+
+function isPortText(text: string): boolean {
+  if (text.length === 0 || text.length > 5 || text.startsWith('0')) return false
+  for (const c of text) if (c < '0' || c > '9') return false
+  const port = Number(text)
+  return port >= 1 && port <= 65535
 }
 
 export interface OriginRule {

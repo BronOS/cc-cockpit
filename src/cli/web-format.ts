@@ -80,6 +80,7 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
   const s = (result ?? {}) as Partial<WebCliStatus>
   const secrets = (s.secrets ?? {}) as Partial<WebCliStatus['secrets']>
   const lines = [
+    `version: ${typeof s.version === 'string' ? plain(s.version) : 'unknown'}`,
     `server mode: ${s.server === true ? 'yes' : 'no (the desktop app)'}`,
     `web access: ${s.enabled === true ? 'on' : 'off'}`,
     `sign-in: ${MODE_NAMES[String(s.mode)] ?? plain(s.mode)}`,

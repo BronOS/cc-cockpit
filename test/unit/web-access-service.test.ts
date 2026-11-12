@@ -348,7 +348,8 @@ describe('WebAccessService', () => {
       emit: (i) => indicators.push(i),
       // The terminals' own rule has its test below.
       terminals: { start: () => undefined, drain: async () => undefined },
-      accessLog
+      accessLog,
+      version: '9.8.7'
     })
   })
   afterEach(() => {
@@ -389,7 +390,8 @@ describe('WebAccessService', () => {
         drain: async () => {
           calls.push('drain')
         }
-      }
+      },
+      version: '9.8.7'
     })
     // Start-up with web access off: drained after the gateway (a no-op), so nothing is loaded.
     await withTerminals.apply()
@@ -809,7 +811,8 @@ describe('server mode: WebAccessService start and first lines (design-web.md §9
       },
       emit: () => undefined,
       terminals: { start: () => undefined, drain: async () => undefined },
-      server
+      server,
+      version: '9.8.7'
     })
   }
 

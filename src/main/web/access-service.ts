@@ -67,6 +67,8 @@ export interface WebAccessServiceDeps {
    * browser's Disconnect of a device (the gateway logs only the sockets closing). Absent: not logged.
    */
   accessLog?: { write(entry: AccessEntry): void }
+  /** The app's version (index.ts `appVersion`), for `ccc web status` (design-remote-desktop.md §8). */
+  version: string
 }
 
 /** How a revoke came about, for `web-access.log`: the reason, and the browser that did it. */
@@ -170,6 +172,11 @@ export class WebAccessService {
     const credentials = this.deps.auth.credentialStates()
     return {
       server: this.deps.server === true,
+      version: this.deps.version,
+      // What the gateway serves with these settings (its own `scheme()` and linkOrigin's rule): TLS
+      // set is https. The desktop app's SSH tunnel refuses https (design-remote-desktop.md §5.4), and
+      // the field being there at all says the server takes loopback on any port (§5.3, §8).
+      scheme: settings.tls !== undefined ? 'https' : 'http',
       enabled: settings.enabled,
       mode: settings.mode,
       bind: settings.bind,

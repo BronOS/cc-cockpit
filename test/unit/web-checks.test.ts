@@ -173,6 +173,63 @@ describe('allowedHosts / checkHost', () => {
   })
 })
 
+describe('checkHost in server mode: the loopback literals on any port (design-remote-desktop.md §5.3)', () => {
+  const hosts = allowedHosts({ bind: '127.0.0.1', port: 7777, hosts: ['proxy.lan:443'] })
+  const server = { anyLoopbackPort: true }
+
+  it('takes 127.0.0.1, localhost and [::1] on any port 1-65535 in server mode only', () => {
+    for (const host of ['127.0.0.1:1', '127.0.0.1:54321', 'localhost:3000', 'LOCALHOST:65535', '[::1]:8080', '127.0.0.1:7777']) {
+      expect(checkHost(host, hosts, server), host).toBe(host.toLowerCase())
+    }
+    // The desktop keeps the exact list: its own port only.
+    for (const host of ['127.0.0.1:54321', 'localhost:3000', '[::1]:8080']) {
+      expect(checkHost(host, hosts), host).toBeUndefined()
+      expect(checkHost(host, hosts, { anyLoopbackPort: false }), host).toBeUndefined()
+    }
+    // The set itself does not grow: what else reads it stays exact.
+    expect(hosts.has('127.0.0.1:54321')).toBe(false)
+  })
+
+  it('refuses a malformed port and names that only look loopback', () => {
+    for (const host of [
+      '127.0.0.1',
+      'localhost',
+      '[::1]',
+      '127.0.0.1:',
+      '127.0.0.1:0',
+      '127.0.0.1:00080',
+      '127.0.0.1:080',
+      '127.0.0.1:65536',
+      '127.0.0.1:99999',
+      '127.0.0.1:123456',
+      '127.0.0.1:80a',
+      '127.0.0.1:+80',
+      '127.0.0.1:-1',
+      '127.0.0.1:8 0',
+      '127.0.0.1:80:80',
+      '127.0.0.1:1e3',
+      '127.0.0.1:0x50',
+      '127.0.0.1:８０',
+      '127.0.0.1.evil:80',
+      '127.0.0.1.evil.com:80',
+      'localhost.evil.com:80',
+      'evil.localhost:80',
+      '127.0.0.2:80',
+      '0.0.0.0:80',
+      '[::1]x:1',
+      '[::1]:80]',
+      '::1:80',
+      '[0:0:0:0:0:0:0:1]:80',
+      'evil.example:80',
+      '',
+      ' '
+    ]) {
+      expect(checkHost(host, hosts, server), host).toBeUndefined()
+    }
+    expect(checkHost(undefined, hosts, server)).toBeUndefined()
+  })
+})
+
 describe('checkOrigin', () => {
   const rule = { scheme: 'http' as const }
 
@@ -197,6 +254,18 @@ describe('checkOrigin', () => {
     const tls = { scheme: 'https' as const }
     expect(checkOrigin('https://192.168.1.20:7777', '192.168.1.20:7777', tls)).toBe(true)
     expect(checkOrigin('http://192.168.1.20:7777', '192.168.1.20:7777', tls)).toBe(false)
+  })
+
+  it('stays tied to the Host the server-mode rule let in (a tunnel on another loopback port)', () => {
+    const hosts = allowedHosts({ bind: '127.0.0.1', port: 7777, hosts: [] })
+    // Through the desktop app's tunnel: Host and Origin name the same local port, so it passes.
+    const tunnel = checkHost('127.0.0.1:54321', hosts, { anyLoopbackPort: true })
+    expect(tunnel).toBe('127.0.0.1:54321')
+    expect(checkOrigin('http://127.0.0.1:54321', tunnel!, rule)).toBe(true)
+    // A dev server's page on another loopback port posting to the gateway's own port: refused.
+    expect(checkOrigin('http://127.0.0.1:3000', '127.0.0.1:7777', rule)).toBe(false)
+    expect(checkOrigin('http://localhost:3000', tunnel!, rule)).toBe(false)
+    expect(checkOrigin('http://127.0.0.1:3000', tunnel!, rule)).toBe(false)
   })
 
   it('takes the external origin behind a proxy while Host is loopback', () => {
