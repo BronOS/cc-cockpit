@@ -374,18 +374,43 @@ External review: sol / high
 - Create: `test/unit/webview-input.test.ts`
 - Modify: `test/e2e/server-webview.spec.ts`
 
-- [ ] `webviews.input` (`adapted`) validated in main (allow-listed key names, finite in-frame coordinates, 64 events
+- [x] `webviews.input` (`adapted`) validated in main (allow-listed key names, finite in-frame coordinates, 64 events
       per call, 600/s per view dropped silently, only from a current viewer, key resolved through the layout) and
       mapped to `sendInputEvent` through the header scale; a press, key or text makes the sender the size owner
-- [ ] the canvas captures pointer (moves coalesced per animation frame), wheel and keys with the letterbox scale
+- [x] the canvas captures pointer (moves coalesced per animation frame), wheel and keys with the letterbox scale
       undone; shell command chords stay with the shell; **clipboard chords (Ctrl/Cmd+C, X, V, Shift+Insert) are never
       forwarded**
-- [ ] `webviews.cursor` mirrored as the input layer's CSS cursor from a fixed map
-- [ ] write unit tests: validation (bad types, out of frame, unknown keys, rate cap, non-viewer, another window's
+- [x] `webviews.cursor` mirrored as the input layer's CSS cursor from a fixed map
+- [x] write unit tests: validation (bad types, out of frame, unknown keys, rate cap, non-viewer, another window's
       view), mapping and scale, chord split, clipboard chords dropped
-- [ ] e2e: a click in the canvas runs the page's click handler; wheel scrolls; Enter/Backspace reach an input; a page
+- [x] e2e: a click in the canvas runs the page's click handler; wheel scrolls; Enter/Backspace reach an input; a page
       calling `alert()` leaves main alive
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+- ➕ done: `src/main/webview/webview-input.ts` (`parseInputEvents`, `toElectronEvents`, `claimsOwner`, `cursorEvent`,
+      `WebviewInput` with a per-view token bucket, `INPUT_RATE` 600/s, `INPUT_BURST` 600, forgotten on `viewGone`), the
+      key allow-list and the cursor table in `src/shared/webview-keys.ts` (read by both sides, Maps, never plain objects),
+      `WebviewManager.inputTarget` (server mode, a live view with the new optional `WebviewView.size`/`sendInput`; the
+      off-screen adapter's `sendInput` is `sendInputEvent`), `webviews.input` in router.ts (refused unless
+      `server && view.remote` and the gate is wired; the panel by the caller's layout; non-viewers refused by the gate),
+      `webviews.cursor` sent by index.ts to `webviewViewers.viewers(owner)` through `views.toView` (and passed by
+      `remoteEvent` only in server mode). Wire deviations from Technical Details: the browser sends **page CSS px**
+      (letterbox and frame scale undone in the browser, `boxToPage`), so main checks points against the page's current
+      size (`view.size()`) and does not scale; points outside the page are dropped one by one (a stale frame after a
+      resize must not lose a release), anything malformed refuses the whole call. Modifiers are Electron's lower-case
+      names (`shift`, `control`, `alt`, `meta`, `leftbuttondown`, `middlebuttondown`, `rightbuttondown`, `isautorepeat`);
+      held buttons travel on moves (without them a page's `buttons` reads 0). Wheel deltas are negated for Chromium
+      (checked headless). Clipboard chords dropped in the browser: Ctrl/Cmd+C/X/V (any Shift/Alt, by `key` or `code`),
+      Ctrl+Insert, Shift+Insert and Shift+Delete. Shell chords: `commandForEvent` (the window's own table) or an event
+      the window's capture handler already prevented. The browser's outbox (`InputQueue`) sends once per animation
+      frame, moves coalesced and wheels summed; click counts are the browser's own (`ClickCounter`: a PointerEvent's
+      `detail` is 0); a blur releases held keys, a pointercancel held buttons.
+- ➕ **for Task 8**: a key down currently also sends a `char` (`webviewKeyChar`: one printable ASCII key, Space, Enter as
+      `'\r'`, with no Ctrl, Meta or Alt; checked headless: a raw key down inserts nothing, and Enter needs `'\r'` for a
+      textarea newline and a form submit). Once typed text goes through the hidden textarea and `insertText`, printable
+      keys and Space must stop sending their `char` (or the text arrives twice); keep Enter's `'\r'` unless the textarea
+      path sends the newline itself. Non-ASCII keys (`é`, dead keys, `Process`) are `ignore`d by `webviewKeyAction` today
+      and are the textarea's. Clipboard chords are not prevented, so the browser's own `copy`/`paste` still fire on the
+      focused element: the textarea needs the focus the input layer takes on pointerdown (`.webview-input`, tabIndex 0).
 
 ### Task 8: Text, IME, paste and copy [model: opus]
 

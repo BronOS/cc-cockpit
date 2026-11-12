@@ -56,6 +56,7 @@ import { remoteIndicator, REMOTE_SECRETS_UNAVAILABLE_TEXT } from '../../shared/w
 import type { AccessActor } from '../web/access-log'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
 import type { WebviewViewers } from '../webview/webview-viewers'
+import type { WebviewInput } from '../webview/webview-input'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
 import type { SenderContext } from '../windows/window-manager'
@@ -1618,6 +1619,8 @@ export interface WebviewHandlerDeps {
   server?: boolean
   /** Server mode's viewers and size owner (webview-viewers.ts); absent: the two channels refuse. */
   viewers?: Pick<WebviewViewers, 'report' | 'claimOwner' | 'leave'>
+  /** Server mode's input gate (webview-input.ts); absent: `webviews.input` refuses. */
+  input?: Pick<WebviewInput, 'accept'>
 }
 
 /**
@@ -1699,6 +1702,17 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     const owner = panelOf('webviews.fit', ctx, payload)
     // Ignored from a view that is not a viewer of the panel now (webview-viewers.ts).
     viewers.claimOwner({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId)
+  })
+  // `adapted` (design-web-browser.md §4.1): pointer, wheel and keys into the streamed page, trusted
+  // input once sent. The same gate as place/fit (main's flag, the view main bound), the panel by the
+  // caller's own window's layout; the input gate checks the view is a viewer of it now, every
+  // field, the page bounds and the rate (webview-input.ts).
+  router.handleProject('webviews.input', (ctx, payload, view) => {
+    if (deps.server !== true || !view.remote || !deps.input) {
+      throw new Error('webviews.input: only a browser view of a server shows a streamed webview')
+    }
+    const owner = panelOf('webviews.input', ctx, payload)
+    deps.input.accept({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId, fields('webviews.input', payload).events)
   })
 }
 

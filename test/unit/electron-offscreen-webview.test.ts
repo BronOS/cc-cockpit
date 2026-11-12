@@ -95,6 +95,9 @@ class FakeWebContents extends FakeEmitter {
   invalidate(): void {
     this.calls.push('invalidate')
   }
+  sendInputEvent(event: { type: string }): void {
+    this.calls.push(`input ${event.type}`)
+  }
   reload(): void {
     this.calls.push('reload')
   }
@@ -460,6 +463,24 @@ describe('OffscreenWebviewFactory', () => {
     view.setSink(undefined)
     wc.emit('paint', {}, { x: 0, y: 0, width: 10, height: 10 }, 'image-2')
     expect(got).toEqual(['paint 10 image-1', 'cursor hand'])
+  })
+
+  // Task 7: a browser's checked input (webview-input.ts) goes to the page as trusted input, and
+  // never focuses or shows the window to get there.
+  it('sends input with sendInputEvent, in order, and nothing once the page is gone', () => {
+    const { view, wc, win } = make()
+    wc.calls.length = 0
+    view.sendInput([
+      { type: 'mouseDown', x: 1, y: 1, button: 'left', clickCount: 1, modifiers: [] },
+      { type: 'keyDown', keyCode: 'a', modifiers: [] },
+      { type: 'char', keyCode: 'a', modifiers: [] }
+    ])
+    expect(wc.calls).toEqual(['input mouseDown', 'input keyDown', 'input char'])
+    expect(win.forbidden).toEqual([])
+    view.destroy()
+    wc.calls.length = 0
+    view.sendInput([{ type: 'mouseMove', x: 1, y: 1, modifiers: [] }])
+    expect(wc.calls).toEqual([])
   })
 
   it('reports a main-frame load failure and rejects load with it; a superseded load resolves', async () => {

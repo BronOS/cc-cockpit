@@ -324,6 +324,19 @@ export interface WebviewPageInfo {
   error?: string
 }
 
+/** Electron's modifier names a browser may send with `webviews.input` (main checks against its own list). */
+export type WebviewInputModifier = 'shift' | 'control' | 'alt' | 'meta' | 'leftbuttondown' | 'middlebuttondown' | 'rightbuttondown' | 'isautorepeat'
+
+/**
+ * One `webviews.input` event as a browser sends it: points in the page's CSS px, DOM key names
+ * (shared/webview-keys.ts), wheel deltas in px with the DOM's sign.
+ */
+export type WebviewInputEventWire =
+  | { kind: 'pointer'; type: 'move'; x: number; y: number; modifiers?: WebviewInputModifier[] }
+  | { kind: 'pointer'; type: 'down' | 'up'; x: number; y: number; button: 'left' | 'middle' | 'right'; clickCount: number; modifiers?: WebviewInputModifier[] }
+  | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers?: WebviewInputModifier[] }
+  | { kind: 'key'; type: 'down' | 'up'; key: string; modifiers?: WebviewInputModifier[] }
+
 /**
  * `PanelInfo.error` of every panel of a plugin whose host crashed too often and was given up on
  * (host-manager.ts): the panel then offers Restart (`plugins.restart`) instead of its page.
@@ -1327,6 +1340,14 @@ export interface IpcInvokeMap {
   }
   /** Server mode, a browser view only: "Fit to this screen", the page takes this viewer's size. */
   'webviews.fit': { req: { panelKey: string }; res: void }
+  /**
+   * Server mode, a browser view that is a viewer of the panel only (design-web-browser.md §4.1):
+   * pointer, wheel and key events over the canvas, in the page's CSS px, at most 64 per call. Main
+   * checks every field (main/webview/webview-input.ts), drops what is off the page or over
+   * 600 events/s per view, and sends the rest to the page as trusted input; a press, a key or a
+   * wheel makes this view the page's size owner.
+   */
+  'webviews.input': { req: { panelKey: string; events: WebviewInputEventWire[] }; res: void }
 
   // Tabs. All are scoped to the sender's project: a tab id that belongs to another project is
   // treated as unknown.
@@ -1565,6 +1586,11 @@ export interface IpcEventMap {
   /** A webview panel's view committed a page or changed its title (coalesced); empty: it closed. */
   'webviews.navigated': { panelKey: string } & WebviewPageInfo
   /**
+   * Server mode: a streamed page's cursor changed; to the panel's viewers only. `cursor` is a CSS
+   * cursor from main's fixed table (shared/webview-keys.ts), never the page's text.
+   */
+  'webviews.cursor': { panelKey: string; cursor: string }
+  /**
    * A chord typed into a native view the page cannot see (a webview panel) that main resolved to
    * this command: run it as if the key had been pressed here (same modal rules).
    */
@@ -1710,6 +1736,7 @@ export const INVOKE_CHANNELS = [
   'webviews.current',
   'webviews.place',
   'webviews.fit',
+  'webviews.input',
   'tabs.list',
   'tabs.create',
   'tabs.commands',
@@ -1765,6 +1792,7 @@ export const EVENT_CHANNELS = [
   'commands.updated',
   'panels.reload',
   'webviews.navigated',
+  'webviews.cursor',
   'commands.trigger'
 ] as const satisfies readonly EventChannel[]
 
@@ -2024,6 +2052,12 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // layout; the desktop page and the hidden page are refused (they place native views, or none).
   'webviews.place': 'adapted',
   'webviews.fit': 'adapted',
+  // Input into the streamed page and its cursor (§4.1): taken only in server mode from a remote view
+  // that is a viewer of the panel now (the panel through the caller's own window, the view main's);
+  // the cursor goes to those viewers only (ViewRegistry.toView) and to no remote view outside server
+  // mode (web/connection.ts remoteEvent).
+  'webviews.input': 'adapted',
+  'webviews.cursor': 'adapted',
 
   // Tabs and terminals. Input from a remote view is the person typing (`typed` and the send gate
   // apply unchanged, Task 16); the flag is the person's, and a remote view is the person.

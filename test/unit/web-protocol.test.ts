@@ -1646,6 +1646,9 @@ describe('the web access card (server mode)', () => {
     expect(remoteEvent('webviews.navigated', { panelKey: 'a/b', url: 'https://x/', title: '' }, true)).toEqual({
       payload: { panelKey: 'a/b', url: 'https://x/', title: '' }
     })
+    // A streamed page's cursor (§4.1, Task 7): the same.
+    expect(remoteEvent('webviews.cursor', { panelKey: 'a/b', cursor: 'pointer' }, false)).toBeUndefined()
+    expect(remoteEvent('webviews.cursor', { panelKey: 'a/b', cursor: 'pointer' }, true)).toEqual({ payload: { panelKey: 'a/b', cursor: 'pointer' } })
   })
 
   // design-web.md §9.9: notifications and their sound stay on the host on the desktop (§6.1), so a

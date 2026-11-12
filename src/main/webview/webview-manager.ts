@@ -67,6 +67,7 @@ import { splitChord } from '../../shared/keys'
 import { MAX_URL_LENGTH, overlayUrlOf, type ViewBounds } from '../overlays/overlay-manager'
 import { PREVIEW_SCHEME, PREVIEW_TOKEN_PATTERN } from './preview-protocol'
 import { defaultTempRoots, resolveWebviewTarget, type WebviewTarget } from './webview-target'
+import type { ElectronInputEvent, InputTarget } from './webview-input'
 import { warnLog } from '../warn-log'
 
 /**
@@ -170,6 +171,10 @@ export interface WebviewView {
   setVisible(visible: boolean): void
   /** Remove it from the window and close its page. Safe once the window is gone. */
   destroy(): void
+  /** Server mode's off-screen view only: the page's size, CSS px (webview-input.ts checks points against it). */
+  size?(): { width: number; height: number }
+  /** Server mode's off-screen view only: trusted input for the page (`sendInputEvent`), checked by webview-input.ts. */
+  sendInput?(events: readonly ElectronInputEvent[]): void
 }
 
 export interface WebviewViewFactory {
@@ -482,6 +487,28 @@ export class WebviewManager {
     const height = side(size?.height)
     if (width === 0 || height === 0) return
     this.placeServerView(keyOf(windowId, pluginId, panelId), { bounds: { x: 0, y: 0, width, height } })
+  }
+
+  /**
+   * Server mode: where a browser's input for the panel goes (`webviews.input`, webview-input.ts has
+   * checked it): the live off-screen page's size and its sendInputEvent. Undefined on the desktop
+   * (a native view gets the keyboard and mouse itself), with no view yet, and once its page is gone.
+   */
+  inputTarget(windowId: number, pluginId: string, panelId: string): InputTarget | undefined {
+    if (this.deps.server !== true) return undefined
+    const rec = this.records.get(keyOf(windowId, pluginId, panelId))
+    if (!rec) return undefined
+    const { view } = rec
+    const size = view.size
+    const sendInput = view.sendInput
+    if (!size || !sendInput) return undefined
+    return {
+      size: () => size(),
+      // Looked up again per call: the record may have gone in between (a crash, the plugin off).
+      send: (events) => {
+        if (this.isLive(rec)) sendInput(events)
+      }
+    }
   }
 
   /** Whether a navigate is waiting for the panel's first viewer (server mode; tests). */

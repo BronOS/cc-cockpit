@@ -1,0 +1,277 @@
+// Pointer, wheel and keys from a server's browser view into its streamed webview
+// (`webviews.input`, design-web-browser.md §4.1, §5; plan 20261111-streamed-webviews.md Task 7).
+//
+// The browser draws the off-screen page on a canvas and sends what the person does over it, in
+// the page's CSS px (the browser undid its letterbox and the frame's scale, web/webview-stream.ts).
+// Everything here is untrusted text from a socket, and what comes out is *trusted* input to a page
+// (`webContents.sendInputEvent`: a click the page cannot tell from a real one), so:
+//
+//   who        only a current viewer of the panel (webview-viewers.ts): a browser view of the panel's
+//              own window that shows it now. The router resolved the panel key through the caller's
+//              own window's layout and passes main's view id, never the payload's.
+//   what       ≤ MAX_INPUT_EVENTS per call; pointer `move|down|up` with finite x, y, a button
+//              (left, middle, right) and a click count 1..3 for down and up; wheel with finite x, y
+//              and deltas clamped to ±MAX_WHEEL_DELTA; key `down|up` with a DOM key name from the
+//              allow-list (shared/webview-keys.ts); modifiers from MODIFIERS only. A call with
+//              anything else is refused whole (a browser of ours never sends it).
+//   where      a pointer or wheel outside the page's current size is dropped, the rest of the call
+//              goes: right after a resize the browser may still map against one frame of the old
+//              size, which is no reason to lose a button release in the same call.
+//   how often  INPUT_RATE events per second per browser view, a token bucket (INPUT_BURST deep);
+//              over-rate events are dropped silently. Pointer moves are coalesced per animation
+//              frame in the browser, so a person never gets near it.
+//   the size   a button press, a key or a wheel makes the sender the page's size owner (claimOwner;
+//              §3.2, the terminal's rule); a pointer move does not (passing over a letterboxed
+//              view must not resize the page under the person typing in another).
+//
+// Mapping (checked headless, Electron 45.1.0): mouseMove / mouseDown / mouseUp / mouseWheel /
+// keyDown / keyUp / char. A wheel's deltas are negated: Chromium's wheel delta is positive
+// scrolling up, the DOM's positive scrolling down. A key down that types (webviewKeyChar: a
+// printable key, Space, Enter as '\r', with no Ctrl, Meta or Alt) is followed by its `char`: a raw
+// key down inserts nothing. Held buttons travel as the `leftbuttondown`-style modifiers on moves,
+// so a page's drag code sees `buttons` (selection by drag works without, `buttons` reads 0).
+//
+// Pure: no Electron (the view's sendInput is injected), clock injected.
+
+import { isPlainObject } from '../../shared/guards'
+import type { WebviewInputModifier } from '../../shared/ipc'
+import { MAX_KEY_NAME_LENGTH, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../shared/webview-keys'
+import type { ViewId } from '../../shared/views'
+import type { PlaceSize, WebviewPanelOf } from './webview-viewers'
+
+/** Most events one `webviews.input` call may carry. */
+export const MAX_INPUT_EVENTS = 64
+/** Events per second per browser view (design-web-browser.md §5). */
+export const INPUT_RATE = 600
+/** The bucket's depth: a second's worth, so a burst (a fast drag after a pause) is not cut. */
+export const INPUT_BURST = INPUT_RATE
+/** Largest wheel delta per event, CSS px either way (the browser turns lines and pages into px). */
+export const MAX_WHEEL_DELTA = 2000
+/** Largest coordinate that can be inside any page (webview-viewers.ts MAX_PLACE_SIDE). */
+const MAX_COORDINATE = 4096
+
+/** The modifiers a browser may name (Electron's names). */
+export const MODIFIERS = [
+  'shift',
+  'control',
+  'alt',
+  'meta',
+  'leftbuttondown',
+  'middlebuttondown',
+  'rightbuttondown',
+  'isautorepeat'
+] as const satisfies readonly WebviewInputModifier[]
+export type InputModifier = (typeof MODIFIERS)[number]
+const MODIFIER_SET: ReadonlySet<string> = new Set(MODIFIERS)
+
+export type PointerButton = 'left' | 'middle' | 'right'
+
+/** One checked event, as the browser described it (page CSS px, DOM key names, DOM wheel sign). */
+export type WebviewInputEvent =
+  | { kind: 'pointer'; type: 'move'; x: number; y: number; modifiers: InputModifier[] }
+  | { kind: 'pointer'; type: 'down' | 'up'; x: number; y: number; button: PointerButton; clickCount: number; modifiers: InputModifier[] }
+  | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers: InputModifier[] }
+  | { kind: 'key'; type: 'down' | 'up'; key: string; modifiers: InputModifier[] }
+
+/** What goes to `webContents.sendInputEvent` (structurally Electron's MouseInputEvent & co). */
+export type ElectronInputEvent =
+  | { type: 'mouseMove'; x: number; y: number; modifiers: InputModifier[] }
+  | { type: 'mouseDown' | 'mouseUp'; x: number; y: number; button: PointerButton; clickCount: number; modifiers: InputModifier[] }
+  | { type: 'mouseWheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers: InputModifier[] }
+  | { type: 'keyDown' | 'keyUp' | 'char'; keyCode: string; modifiers: InputModifier[] }
+
+function fail(message: string): never {
+  throw new Error(`webviews.input: ${message}`)
+}
+
+function coordinate(v: unknown, name: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > MAX_COORDINATE) fail(`${name} must be a finite number in the page`)
+  return v
+}
+
+function delta(v: unknown, name: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) fail(`${name} must be a finite number`)
+  return Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, v))
+}
+
+function modifiersOf(v: unknown): InputModifier[] {
+  if (v === undefined) return []
+  if (!Array.isArray(v) || v.length > MODIFIERS.length) fail('modifiers must be a short list')
+  const out: InputModifier[] = []
+  for (const m of v) {
+    if (typeof m !== 'string' || !MODIFIER_SET.has(m)) fail('unknown modifier')
+    if (!out.includes(m as InputModifier)) out.push(m as InputModifier)
+  }
+  return out
+}
+
+function parseOne(raw: unknown): WebviewInputEvent {
+  if (!isPlainObject(raw)) fail('an event must be an object')
+  const modifiers = modifiersOf(raw.modifiers)
+  if (raw.kind === 'pointer') {
+    const x = coordinate(raw.x, 'x')
+    const y = coordinate(raw.y, 'y')
+    if (raw.type === 'move') return { kind: 'pointer', type: 'move', x, y, modifiers }
+    if (raw.type !== 'down' && raw.type !== 'up') fail('a pointer event is move, down or up')
+    const button = raw.button
+    if (button !== 'left' && button !== 'middle' && button !== 'right') fail('button must be left, middle or right')
+    const clickCount = raw.clickCount === undefined ? 1 : raw.clickCount
+    if (clickCount !== 1 && clickCount !== 2 && clickCount !== 3) fail('clickCount must be 1, 2 or 3')
+    return { kind: 'pointer', type: raw.type, x, y, button, clickCount, modifiers }
+  }
+  if (raw.kind === 'wheel') {
+    return { kind: 'wheel', x: coordinate(raw.x, 'x'), y: coordinate(raw.y, 'y'), deltaX: delta(raw.deltaX, 'deltaX'), deltaY: delta(raw.deltaY, 'deltaY'), modifiers }
+  }
+  if (raw.kind === 'key') {
+    if (raw.type !== 'down' && raw.type !== 'up') fail('a key event is down or up')
+    // Length first: a huge string is not looked at any further.
+    if (typeof raw.key !== 'string' || raw.key.length > MAX_KEY_NAME_LENGTH || webviewKeyCode(raw.key) === undefined) fail('unknown key')
+    return { kind: 'key', type: raw.type, key: raw.key, modifiers }
+  }
+  fail('an event is a pointer, wheel or key event')
+}
+
+/** A call's `events`, checked whole: a list of at most MAX_INPUT_EVENTS valid events, or it throws. */
+export function parseInputEvents(raw: unknown): WebviewInputEvent[] {
+  if (!Array.isArray(raw)) fail('events must be a list')
+  if (raw.length > MAX_INPUT_EVENTS) fail(`at most ${MAX_INPUT_EVENTS} events per call`)
+  return raw.map(parseOne)
+}
+
+/** Whether an event's point is on the page (keys have none). The far edges count as inside. */
+export function inPage(event: WebviewInputEvent, size: PlaceSize): boolean {
+  if (event.kind === 'key') return true
+  return event.x <= size.width && event.y <= size.height
+}
+
+/** Whether the event makes its sender the size owner: a press, a key or a wheel, never a move or a release. */
+export function claimsOwner(event: WebviewInputEvent): boolean {
+  if (event.kind === 'pointer') return event.type === 'down'
+  if (event.kind === 'key') return event.type === 'down'
+  return true
+}
+
+/** A point as Electron takes it: whole CSS px, on the page (the far edge is its last pixel). */
+function point(v: number, side: number): number {
+  return Math.max(0, Math.min(Math.max(0, side - 1), Math.round(v)))
+}
+
+/** The sendInputEvent calls for one checked event on a page of `size`. */
+export function toElectronEvents(event: WebviewInputEvent, size: PlaceSize): ElectronInputEvent[] {
+  const modifiers = event.modifiers
+  if (event.kind === 'key') {
+    const keyCode = webviewKeyCode(event.key)
+    if (keyCode === undefined) return []
+    if (event.type === 'up') return [{ type: 'keyUp', keyCode, modifiers }]
+    const char = webviewKeyChar(event.key, {
+      control: modifiers.includes('control'),
+      meta: modifiers.includes('meta'),
+      alt: modifiers.includes('alt')
+    })
+    const down: ElectronInputEvent = { type: 'keyDown', keyCode, modifiers }
+    return char === undefined ? [down] : [down, { type: 'char', keyCode: char, modifiers }]
+  }
+  const x = point(event.x, size.width)
+  const y = point(event.y, size.height)
+  if (event.kind === 'wheel') {
+    // The DOM's sign → Chromium's (positive deltaY scrolls up there): checked headless.
+    return [{ type: 'mouseWheel', x, y, deltaX: -event.deltaX, deltaY: -event.deltaY, modifiers }]
+  }
+  if (event.type === 'move') return [{ type: 'mouseMove', x, y, modifiers }]
+  return [{ type: event.type === 'down' ? 'mouseDown' : 'mouseUp', x, y, button: event.button, clickCount: event.clickCount, modifiers }]
+}
+
+/**
+ * The `webviews.cursor` event for the page's `cursor-changed`: the panel's key as the browser names
+ * it and a CSS cursor from the fixed table (shared/webview-keys.ts), never the page's own text.
+ */
+export function cursorEvent(panel: WebviewPanelOf, type: unknown): { panelKey: string; cursor: string } {
+  return { panelKey: `${panel.pluginId}/${panel.panelId}`, cursor: webviewCursor(type) }
+}
+
+/** Where a panel's input goes: its off-screen page's size and its sendInputEvent. */
+export interface InputTarget {
+  size(): PlaceSize
+  send(events: readonly ElectronInputEvent[]): void
+}
+
+export interface WebviewInputDeps {
+  /** Whether `viewId` is a viewer of `panel` now (WebviewViewers.isViewer). */
+  isViewer(panel: WebviewPanelOf, viewId: ViewId): boolean
+  /** A press, a key or a wheel from a viewer (WebviewViewers.claimOwner). */
+  claimOwner(panel: WebviewPanelOf, viewId: ViewId): void
+  /** The panel's live off-screen page, or undefined (no view yet, gone). */
+  target(panel: WebviewPanelOf): InputTarget | undefined
+  /** Clock in ms (default Date.now; tests pin it). */
+  now?: () => number
+}
+
+interface Bucket {
+  tokens: number
+  at: number
+}
+
+/**
+ * The `webviews.input` gate: one per app (index.ts, server mode). Buckets are per browser view
+ * (all its panels together: one person's input rate), forgotten with the view (viewGone).
+ */
+export class WebviewInput {
+  private readonly buckets = new Map<ViewId, Bucket>()
+  private readonly now: () => number
+
+  constructor(private readonly deps: WebviewInputDeps) {
+    this.now = deps.now ?? Date.now
+  }
+
+  /**
+   * One call from `viewId` for `panel` (both main's). Throws for a non-viewer and a malformed call;
+   * returns how many events went to the page (over-rate and off-page ones are dropped silently, and
+   * a panel with no page yet takes nothing).
+   */
+  accept(panel: WebviewPanelOf, viewId: ViewId, raw: unknown): number {
+    if (!this.deps.isViewer(panel, viewId)) fail('not a viewer of this panel')
+    const events = parseInputEvents(raw)
+    if (events.length === 0) return 0
+    const allowed = this.take(viewId, events.length)
+    if (allowed === 0) return 0
+    const target = this.deps.target(panel)
+    if (!target) return 0
+    const size = target.size()
+    const out: ElectronInputEvent[] = []
+    let claim = false
+    let sent = 0
+    for (const event of events.slice(0, allowed)) {
+      if (!inPage(event, size)) continue
+      if (claimsOwner(event)) claim = true
+      out.push(...toElectronEvents(event, size))
+      sent++
+    }
+    // Claimed before the page gets them, so the size the press asks for is already on its way;
+    // the events themselves are in the coordinates of the frame the person saw.
+    if (claim) this.deps.claimOwner(panel, viewId)
+    if (out.length > 0) target.send(out)
+    return sent
+  }
+
+  /** The view's socket closed: its bucket goes. */
+  viewGone(viewId: ViewId): void {
+    this.buckets.delete(viewId)
+  }
+
+  /** Take up to `want` tokens from the view's bucket; how many it had. */
+  private take(viewId: ViewId, want: number): number {
+    const now = this.now()
+    let bucket = this.buckets.get(viewId)
+    if (!bucket) {
+      bucket = { tokens: INPUT_BURST, at: now }
+      this.buckets.set(viewId, bucket)
+    }
+    // A clock that went back refills nothing (and never drains).
+    const elapsed = Math.max(0, now - bucket.at)
+    bucket.tokens = Math.min(INPUT_BURST, bucket.tokens + (elapsed * INPUT_RATE) / 1000)
+    bucket.at = now
+    const got = Math.min(want, Math.floor(bucket.tokens))
+    bucket.tokens -= got
+    return got
+  }
+}

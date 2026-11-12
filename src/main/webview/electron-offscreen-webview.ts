@@ -25,10 +25,12 @@
 //   `startPainting` plus `invalidate` when one does, so a full frame comes at once (an idle page
 //   paints nothing by itself, spike).
 // - `paint` and `cursor-changed` go to the view's sink (setSink), for the frame stream and the
-//   browsers' cursor (later tasks); with no sink they are dropped.
+//   browsers' cursor; with no sink they are dropped. Input comes back through sendInput
+//   (`sendInputEvent`, checked by webview-input.ts).
 import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
+import type { ElectronInputEvent } from './webview-input'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
 /** The page's size before any browser reported one (CSS px; a common laptop browser area). */
@@ -54,6 +56,8 @@ export interface OffscreenWebviewView extends WebviewView {
   size(): { width: number; height: number }
   /** Ask the page for a full frame (a new viewer with no frame to show yet). No-op once gone. */
   invalidate(): void
+  /** Trusted input for the page (`sendInputEvent`), as webview-input.ts checked and mapped it. No-op once gone. */
+  sendInput(events: readonly ElectronInputEvent[]): void
 }
 
 /** One live off-screen view's window, as the test hook `offscreenWebviews` reports it. */
@@ -188,6 +192,13 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
         sink = destroyed ? undefined : next
       },
       size: () => ({ ...size }),
+      // A browser's pointer, wheel and keys, checked and mapped by webview-input.ts (main's only
+      // path here: `webviews.input` from a viewer). Never focuses the window: off-screen input
+      // reaches the page without it (spike).
+      sendInput: (events) => {
+        if (wc.isDestroyed()) return
+        for (const event of events) wc.sendInputEvent(event)
+      },
       invalidate: () => {
         if (!wc.isDestroyed()) wc.invalidate()
       }

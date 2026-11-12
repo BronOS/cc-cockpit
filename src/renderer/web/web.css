@@ -468,6 +468,20 @@ html[data-shell='web']:has(.tabs-pane) body {
 .webview-canvas[hidden] {
   display: none;
 }
+/* The input layer over the canvas (Task 7): the pointer, the wheel and, focused, the keys go to the
+   page; touch-action none so a drag on a touch screen is the page's, not the browser's scroll. */
+.webview-input {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  outline: none;
+}
+.webview-input[hidden] {
+  display: none;
+}
+.webview-input:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--cc-accent);
+}
 .webview-canvas-note {
   position: absolute;
   inset: 0;

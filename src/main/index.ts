@@ -75,9 +75,10 @@ import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-offscreen-webview'
 import { FrameStream, streamView } from './webview/frame-stream'
+import { cursorEvent, WebviewInput } from './webview/webview-input'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager, type WebviewViewFactory } from './webview/webview-manager'
-import { WebviewViewers } from './webview/webview-viewers'
+import { WebviewViewers, type WebviewPanelOf } from './webview/webview-viewers'
 import {
   chordOfInput,
   OverlayManager,
@@ -1033,7 +1034,8 @@ function start(server: boolean): void {
           const view = offscreenWebviews.create(windowId, partition, events)
           nativeViewsMade.offscreenWebviews++
           // Its paints go to the panel's viewers (frame-stream.ts); its destroy detaches it.
-          return frameStream ? streamView(frameStream, owner, view) : view
+          // Its cursor goes to the same viewers, as a CSS cursor from a fixed table (webviews.cursor).
+          return frameStream ? streamView(frameStream, owner, view, (type) => sendWebviewCursor(owner, type)) : view
         }
         nativeViewsMade.webviews++
         return webviewFactory.create(windowId, partition, events, owner)
@@ -1110,6 +1112,20 @@ function start(server: boolean): void {
         log: warnLog
       })
     : undefined
+  // Server mode: a browser viewer's pointer, wheel and keys into the panel's off-screen page
+  // (webviews.input, webview-input.ts, design-web-browser.md §4.1): from a current viewer only,
+  // checked, rate-capped per view, a press making it the size owner.
+  const webviewInput = new WebviewInput({
+    isViewer: (panel, viewId) => webviewViewers.isViewer(panel, viewId),
+    claimOwner: (panel, viewId) => webviewViewers.claimOwner(panel, viewId),
+    target: (panel) => webviews.inputTarget(panel.windowId, panel.pluginId, panel.panelId)
+  })
+  // The page's cursor, to the panel's viewers only (browser views of its own window that show it):
+  // never toWindow, whose desktop page is the hidden page in server mode.
+  const sendWebviewCursor = (owner: WebviewPanelOf, type: string): void => {
+    const event = cursorEvent(owner, type)
+    for (const viewId of webviewViewers.viewers(owner)) views.toView(viewId, 'webviews.cursor', event)
+  }
   // Keys typed into a window's own page can come from an html overlay's iframe, which the shell
   // UI's key handler never sees (a sandboxed frame's events stay in the frame). So main resolves
   // the overlay keys of a window that shows an overlay before the page gets them; Esc over a
@@ -2511,7 +2527,8 @@ function start(server: boolean): void {
     views: webviews,
     // A server's browser views report their webview panels (`webviews.place`, `webviews.fit`).
     server,
-    viewers: webviewViewers
+    viewers: webviewViewers,
+    input: webviewInput
   })
 
   registerTabHandlers(router, {
@@ -2664,6 +2681,7 @@ function start(server: boolean): void {
       // It is no viewer of any webview panel any more: the size goes to another viewer, or the
       // page stops painting (webview-viewers.ts).
       webviewViewers.viewGone(viewId)
+      webviewInput.viewGone(viewId)
       // A plugin close every remaining view declined ends now (close-asks.ts).
       closeAsks.viewGone()
     },

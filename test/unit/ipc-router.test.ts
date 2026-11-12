@@ -2473,4 +2473,61 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
     await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(/refused/)
     expect(calls).toHaveLength(1)
   })
+
+  // Task 7 (design-web-browser.md §4.1): input into the streamed page, the same gate.
+  describe('webviews.input', () => {
+    const events = [{ kind: 'pointer', type: 'move', x: 1, y: 1 }]
+    function inputSetup(options: { server?: boolean; input?: boolean } = {}) {
+      const { ipc, router } = setup()
+      const accepted: unknown[][] = []
+      registerWebviewHandlers(router, {
+        panel: (projectId, panelKey) => (projectId === PROJECT_A && panelKey === 'a.one/view' ? { pluginId: 'a.one', panelId: 'view' } : undefined),
+        views: { setPlacement: () => {}, back: () => {}, forward: () => {}, reload: () => {}, current: () => ({ url: '', title: '' }) },
+        server: options.server ?? true,
+        ...(options.input === false ? {} : {
+              input: {
+                accept: (panel, viewId, raw) => {
+                  accepted.push([panel, viewId, raw])
+                  return 0
+                }
+              }
+            })
+      })
+      return { ipc, router, accepted }
+    }
+
+    it('is adapted, and passes main\'s window, panel and view with the raw events', async () => {
+      expect(REMOTE_CLASS['webviews.input']).toBe('adapted')
+      expect(REMOTE_CLASS['webviews.cursor']).toBe('adapted')
+      const { router, accepted } = inputSetup()
+      await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.input', { panelKey: 'a.one/view', events, windowId: 2, viewId: 'web:9' })
+      expect(accepted).toEqual([[{ windowId: 1, pluginId: 'a.one', panelId: 'view' }, 'web:3', events]])
+    })
+
+    it('refuses the desktop page, the hidden page, a browser outside server mode, and no gate', async () => {
+      const server = inputSetup()
+      await expect(server.ipc.invoke('webviews.input', 11, [{ panelKey: 'a.one/view', events }])).rejects.toThrow(/only a browser view of a server/)
+      const desktop = inputSetup({ server: false })
+      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
+        /only a browser view of a server/
+      )
+      const none = inputSetup({ input: false })
+      await expect(none.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
+        /only a browser view of a server/
+      )
+      expect([...server.accepted, ...desktop.accepted, ...none.accepted]).toEqual([])
+    })
+
+    it("refuses a key that is no webview panel of the caller's own project (another window's view naming it)", async () => {
+      const { router, accepted } = inputSetup()
+      await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
+        /not a webview panel of this project/
+      )
+      await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', { panelKey: 'core/sessions', events })).rejects.toThrow(
+        /not a webview panel/
+      )
+      await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', null)).rejects.toThrow(/bad payload/)
+      expect(accepted).toEqual([])
+    })
+  })
 })
