@@ -1,5 +1,6 @@
-// The project picker's pure logic: how a path is shown, what the filter keeps, where the keyboard
-// highlight goes. DOM-free so the unit tests (plain Node) cover it.
+// The project pickers' pure logic (the desktop window's and server mode's browser picker): how a path
+// is shown, what the filter keeps, where the keyboard highlight goes, how old a row is. DOM-free so
+// the unit tests (plain Node) cover it.
 import type { ProjectSummary } from '../../shared/ipc'
 
 /**
@@ -22,7 +23,7 @@ export function tildePath(path: string, home: string | undefined): string {
  * spaces, in their recent order. The `~` form of the path matches too, since that is what the row
  * shows: typing `~/src` finds what is listed as `~/src/...`.
  */
-export function filterProjects(projects: readonly ProjectSummary[], query: string, home: string | undefined): ProjectSummary[] {
+export function filterProjects<T extends Pick<ProjectSummary, 'name' | 'path'>>(projects: readonly T[], query: string, home: string | undefined): T[] {
   const q = query.trim().toLowerCase()
   if (q === '') return [...projects]
   return projects.filter(
@@ -50,4 +51,27 @@ export function moveHighlight(rows: readonly Pick<ProjectSummary, 'missing'>[], 
     if (!rows[i]!.missing) return i
   }
   return from
+}
+
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+/**
+ * When a project was last opened, as a row's short note: "just now", "5 min ago", "3 h ago",
+ * "yesterday", "4 days ago", "3 weeks ago", then the date (`2026-03-14`, the same on every browser,
+ * unlike a locale's format). A time in the future (another clock) reads as "just now".
+ */
+export function openedAgo(at: number, now: number): string {
+  const age = now - at
+  if (age < MINUTE) return 'just now'
+  if (age < HOUR) return `${Math.floor(age / MINUTE)} min ago`
+  if (age < DAY) return `${Math.floor(age / HOUR)} h ago`
+  const days = Math.floor(age / DAY)
+  if (days === 1) return 'yesterday'
+  if (days < 14) return `${days} days ago`
+  if (days < 60) return `${Math.floor(days / 7)} weeks ago`
+  const d = new Date(at)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }

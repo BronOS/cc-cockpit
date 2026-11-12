@@ -360,8 +360,8 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       args = command.confirm.length > 0 ? { mode: command.mode, confirm: command.confirm } : { mode: command.mode }
       break
     case 'web-set': {
-      // Field names are WebAccessPatch's; main's cwd means nothing to the caller, so TLS paths are
-      // made absolute here, as `--project` is (main refuses a relative one).
+      // Field names are WebAccessPatch's; main's cwd means nothing to the caller, so TLS paths and the
+      // start folder are made absolute here, as `--project` is (main refuses a relative one).
       cmd = 'web.set'
       if (command.bind !== undefined) args.bind = command.bind
       if (command.port !== undefined) args.port = command.port
@@ -369,6 +369,8 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       if (command.hosts !== undefined) args.hosts = command.hosts
       if (command.tls !== undefined) args.tls = command.tls === null ? null : { certPath: abs(command.tls.cert), keyPath: abs(command.tls.key) }
       if (command.confirm.length > 0) args.confirm = command.confirm
+      // '' clears it (main reads it as the home folder); anything else is a path, made absolute here.
+      if (command.startFolder !== undefined) args.startFolder = command.startFolder === '' ? null : abs(command.startFolder)
       break
     }
   }

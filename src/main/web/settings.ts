@@ -18,7 +18,7 @@
 // No regexes in what is new here (the project rule for anything parsing settings): host names and
 // origins go through WHATWG `URL`, addresses through `net.isIP`.
 import { isIP } from 'node:net'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import { isPlainObject } from '../../shared/guards'
 import type { WebAccessMode, WebAccessRisk, WebAccessSettings } from '../../shared/types'
 import { WEB_RISK_ORDER, WEB_RISK_TEXT } from '../../shared/web-access'
@@ -89,6 +89,19 @@ function tlsPathOf(raw: unknown): string | undefined {
   const path = raw.trim()
   if (path === '' || path.length > MAX_TLS_PATH || path.includes('\0') || !isAbsolute(path)) return undefined
   return path
+}
+
+/**
+ * Server mode's folder browser start (`startFolder`): absolute (main's cwd means nothing to a
+ * browser), no NUL, within the TLS paths' cap, and normalized (`/srv/a/../b/` is `/srv/b`) so the
+ * browser's breadcrumbs and `ccc web status` show one form. Whether it exists is checked when a
+ * browser asks (a folder on a mount that comes later is fine), never here.
+ */
+export function startFolderOf(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const path = raw.trim()
+  if (path === '' || path.length > MAX_TLS_PATH || path.includes('\0') || !isAbsolute(path)) return undefined
+  return resolve(path)
 }
 
 function isRisk(value: unknown): value is WebAccessRisk {
@@ -174,6 +187,9 @@ export function webAccessOf(stored: unknown): WebAccessSettings {
     const confirmed = WEB_RISK_ORDER.filter((r) => (s['confirmed'] as unknown[]).includes(r))
     if (confirmed.length > 0) out.confirmed = confirmed
   }
+  // A damaged start folder (relative, not a string) reads as none: the home folder.
+  const startFolder = startFolderOf(s['startFolder'])
+  if (startFolder !== undefined) out.startFolder = startFolder
   return out
 }
 
@@ -237,7 +253,7 @@ export function listenPlanOf(settings: WebAccessSettings): ListenPlan {
  */
 export type PatchResult = { ok: true; value: WebAccessSettings } | { ok: false; error: string; needsConfirm?: WebAccessRisk[] }
 
-const PATCH_KEYS = ['enabled', 'bind', 'port', 'externalOrigin', 'hosts', 'mode', 'tls', 'confirm'] as const
+const PATCH_KEYS = ['enabled', 'bind', 'port', 'externalOrigin', 'hosts', 'mode', 'tls', 'confirm', 'startFolder'] as const
 
 /**
  * Whether the confirm `risk` had in `current` still covers it in `next`: the exposure it was given
@@ -352,6 +368,17 @@ export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown, 
       next.tls = { certPath, keyPath }
     }
   }
+  if ('startFolder' in patch) {
+    // Not part of what listens or who gets in (no risk, no confirm): where the folder browser starts.
+    const raw = patch['startFolder']
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      delete next.startFolder
+    } else {
+      const path = startFolderOf(raw)
+      if (path === undefined) return { ok: false, error: 'the start folder must be a full path (starting with /)' }
+      next.startFolder = path
+    }
+  }
   // Server mode (design-web.md §9.2): web access is how the person reaches the app at all, and
   // nobody sits at a desktop to answer a desktop-confirm request (every browser would wait 2 min and
   // fail, spike). Decided on the result, not the patch: a hand-edited `confirm` met mid-run is
@@ -394,7 +421,7 @@ export function webAccessRisks(settings: WebAccessSettings): string[] {
 
 /**
  * `app.json` › `webAccess` after a saved change: every field the page edits, an optional one the
- * change cleared (the external origin, TLS, the confirms) removed from the file, and anything else
+ * change cleared (the external origin, TLS, the confirms, the start folder) removed from the file, and anything else
  * the file holds kept as it is.
  */
 export function storedWebAccess(previous: Partial<WebAccessSettings> | undefined, next: WebAccessSettings): Partial<WebAccessSettings> {
@@ -405,6 +432,8 @@ export function storedWebAccess(previous: Partial<WebAccessSettings> | undefined
   else delete stored.tls
   if (next.confirmed !== undefined) stored.confirmed = [...next.confirmed]
   else delete stored.confirmed
+  if (next.startFolder !== undefined) stored.startFolder = next.startFolder
+  else delete stored.startFolder
   return stored
 }
 

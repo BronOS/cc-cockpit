@@ -155,7 +155,8 @@ export class ProjectRegistry {
     if (!isDirectory(real)) throw new ProjectRefusal(`not a directory: ${newPath}`)
     const other = this.findByRealPath(real)
     if (other && other.data.id !== id) {
-      throw new Error(`that folder is already a project (${other.data.id})`)
+      // A refusal: shown to whoever asked (a server's browser relinking too, web/open-project.ts).
+      throw new ProjectRefusal(`that folder is already a project (${other.data.id})`)
     }
     file.update((r) => {
       r.path = real

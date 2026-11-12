@@ -21,7 +21,7 @@ import { checkSessionName } from '../shared/session-name'
 import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
 import type { ProjectView, TabKind, TabRecord } from '../shared/types'
-import type { ProjectRegistry } from './projects/registry'
+import { ProjectRefusal, type ProjectRegistry } from './projects/registry'
 import { SESSION_ID } from './tabs/claude-argv'
 import { isPluginCommand, isPluginId, resolveCwd, type AnyTabCommand } from './tabs/tab-manager'
 import { warnLog } from './warn-log'
@@ -360,8 +360,10 @@ export type MissingProjectRegistry = Pick<ProjectRegistry, 'recent' | 'relink' |
  */
 function missingRecent(registry: Pick<MissingProjectRegistry, 'recent'>, id: string): ProjectView {
   const project = registry.recent().find((p) => p.id === id)
-  if (!project) throw new Error('not a recent project')
-  if (!project.missing) throw new Error('the project folder is not missing')
+  // Refusals (a server's browser is answered with their text, web/open-project.ts): they say what is
+  // wrong with the request, never anything of the data dir.
+  if (!project) throw new ProjectRefusal('not a recent project')
+  if (!project.missing) throw new ProjectRefusal('the project folder is not missing')
   return project
 }
 

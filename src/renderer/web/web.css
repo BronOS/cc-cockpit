@@ -57,8 +57,7 @@ body {
   padding: 0 16px;
   text-align: center;
 }
-.web-state-box button,
-.web-picker-refresh {
+.web-state-box button {
   font: inherit;
   padding: 4px 12px;
   border: 1px solid var(--cc-border, currentColor);
@@ -71,126 +70,333 @@ body {
   color: var(--cc-accent, var(--cc-fg));
 }
 
-/* The project picker (picker.tsx): the projects open on the desktop, one link each. */
-.web-picker {
-  box-sizing: border-box;
-  max-width: 40rem;
+/* The project picker (picker.tsx): the desktop picker's look (styles.css `.picker-*`, drawn from
+   picker/parts.tsx), as a page that scrolls rather than a fixed window whose panel scrolls inside. */
+.picker.picker-web {
+  height: auto;
   min-height: 100vh;
-  margin: 0 auto;
-  padding: 32px 16px;
+  max-width: 720px;
+  padding: 28px 16px 40px;
   color: var(--cc-fg);
   font: var(--cc-text-md) var(--cc-font-ui);
 }
-.web-picker h1 {
-  margin: 0 0 16px;
-  font-size: 1.25rem;
-  font-weight: 600;
+/* On a phone the buttons go under the name rather than squeezing it to a word per line. */
+.picker-web .picker-header {
+  flex-wrap: wrap;
 }
-.web-picker-note {
-  color: var(--cc-fg-muted, var(--cc-fg));
+.picker-web .picker-title {
+  flex: 1 1 12rem;
 }
-.web-picker-list {
-  list-style: none;
-  margin: 0 0 16px;
-  padding: 0;
-  border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-md);
-  background: var(--cc-surface-1, transparent);
+.picker-web .picker-recent,
+.picker-web .picker-panel,
+.picker-web .picker-list {
+  flex: none;
 }
-.web-picker-list li + li {
-  border-top: 1px solid var(--cc-border);
+.picker-web .picker-list {
+  overflow: visible;
 }
-.web-picker-list a,
-.web-picker-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 14px;
-  color: inherit;
+/* A missing row's buttons (and Forget's confirm) wrap under the name on a phone instead of squeezing
+   it: the row's control keeps a basis of its own. */
+.picker-web .picker-row {
+  flex-wrap: wrap;
+}
+.picker-web .picker-row > .picker-open {
+  flex: 1 1 16rem;
+}
+.picker-web .picker-row-actions {
+  margin-left: auto;
+  padding: 0 8px 4px;
+}
+.picker-web a.picker-open {
   text-decoration: none;
 }
-/* Server mode's recent rows (a button each) and a missing one (not openable). */
-button.web-picker-row {
-  box-sizing: border-box;
-  width: 100%;
+.picker-web a.picker-open:hover .picker-enter,
+.picker-web a.picker-open:focus-visible .picker-enter {
+  visibility: visible;
+}
+.picker-web .picker-open:enabled:hover,
+.picker-web a.picker-open:hover {
+  background: var(--cc-accent-soft);
+}
+.picker-loading {
   margin: 0;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  color: var(--cc-fg-muted);
 }
-button.web-picker-row:disabled {
-  cursor: default;
+
+/* The first-run welcome (a server with no project yet): one card, one button. */
+.picker-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-surface-1);
 }
-.web-picker-list a:hover,
-.web-picker-list a:focus-visible,
-button.web-picker-row:enabled:hover,
-button.web-picker-row:focus-visible {
-  background: var(--cc-bg-hover, color-mix(in srgb, var(--cc-fg) 8%, transparent));
-}
-.web-picker-missing {
-  color: var(--cc-fg-muted, var(--cc-fg));
-}
-.web-picker-badge {
-  font-size: var(--cc-text-sm);
-  font-weight: 400;
-}
-.web-picker-heading {
-  margin: 0 0 8px;
-  font-size: var(--cc-text-md);
+.picker-welcome h2 {
+  margin: 0;
+  font-size: var(--cc-text-lg);
   font-weight: 600;
 }
-.web-picker-actions {
+.picker-welcome p {
+  margin: 0;
+  max-width: 34rem;
+  line-height: 1.5;
+}
+.picker-welcome .picker-welcome-hint {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+
+/* The folder browser (folder-browser.tsx): a modal card over the picker, its list a picker panel. */
+.folder-browser-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--cc-shadow) 70%, transparent);
+}
+.folder-browser {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(640px, 100%);
+  max-height: min(720px, calc(100dvh - 32px));
+  padding: 18px 18px 14px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  font: var(--cc-text-md) var(--cc-font-ui);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  outline: none;
+}
+.folder-browser-head h2 {
+  margin: 0;
+  font-size: var(--cc-text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.folder-browser-intro {
+  margin: 4px 0 0;
+  color: var(--cc-fg-muted);
+  overflow-wrap: anywhere;
+}
+.folder-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.folder-crumbs ol {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-/* Server mode's "Open folder…": a path on the server. */
-.web-picker-open {
+.folder-crumbs li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+/* A chevron between steps (not a slash: the first step may itself be `/`). */
+.folder-crumbs li + li::before {
+  content: '›';
+  padding: 0 3px;
+  color: var(--cc-fg-subtle);
+}
+.folder-crumbs [aria-current] {
+  padding: 2px 4px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.folder-crumb {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-accent);
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.folder-crumb:hover {
+  background: var(--cc-accent-soft);
+}
+.folder-up {
+  flex: none;
+  width: 30px;
+  padding: 0;
+}
+.folder-up:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.folder-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.folder-tools .picker-search {
+  flex: 1 1 14rem;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-surface-1);
+}
+.folder-tools .picker-search:focus-within {
+  border-color: var(--cc-accent);
+}
+.folder-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cc-fg-muted);
+  cursor: pointer;
+}
+.folder-note {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-surface-2);
+  color: var(--cc-fg-muted);
+  overflow-wrap: anywhere;
+}
+.folder-inline-error {
+  flex: none;
+}
+.folder-list-wrap {
+  flex: 1 1 auto;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-surface-1);
+  overflow: hidden;
+}
+.folder-list-wrap[aria-busy='true'] .folder-list {
+  opacity: 0.6;
+}
+.folder-list {
+  padding: 4px;
+}
+.folder-list .picker-open {
+  box-sizing: border-box;
+  min-height: 34px;
+  gap: 10px;
+  padding: 6px 10px;
+}
+.folder-list .picker-open:focus-visible {
+  outline-offset: -2px;
+}
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-project-badge {
+  border-color: color-mix(in srgb, var(--cc-accent) 55%, transparent);
+  color: var(--cc-accent);
+}
+.folder-chevron {
+  flex: none;
+  color: var(--cc-fg-subtle);
+  font-size: var(--cc-text-lg);
+  line-height: 1;
+}
+.folder-unreadable {
+  color: var(--cc-fg);
+}
+.folder-status {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.folder-goto {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 0 0 16px;
 }
-.web-picker-open input {
-  flex: 1 1 16rem;
+.folder-goto label {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-sm);
+}
+.folder-goto input {
+  flex: 1 1 14rem;
   min-width: 0;
-  font: inherit;
-  padding: 4px 8px;
-  border: 1px solid var(--cc-border, currentColor);
-  border-radius: var(--cc-radius-sm);
-  background: transparent;
-  color: inherit;
-}
-.web-picker-open button {
-  font: inherit;
-  padding: 4px 12px;
-  border: 1px solid var(--cc-border, currentColor);
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-sm);
   background: transparent;
   color: var(--cc-fg);
-  cursor: pointer;
-}
-.web-picker-error {
-  margin: 0 0 16px;
-  padding: 9px 12px;
-  border: 1px solid color-mix(in srgb, var(--cc-status-ended) 35%, transparent);
-  border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-error);
-  overflow-wrap: anywhere;
-}
-.web-picker-name {
-  font-weight: 600;
-}
-.web-picker-path {
-  overflow: hidden;
-  color: var(--cc-fg-muted, var(--cc-fg));
+  font: inherit;
+  font-family: var(--cc-font-mono, monospace);
   font-size: var(--cc-text-sm);
+}
+.folder-goto input:focus {
+  border-color: var(--cc-accent);
+  outline: none;
+}
+.folder-browser-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--cc-border);
+}
+.folder-here {
+  flex: 1 1 12rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+.folder-here-path {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--cc-font-mono, monospace);
+  font-size: var(--cc-text-sm);
 }
+.folder-browser-foot .picker-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* A phone: the label and the folder shown on lines of their own, the field with Go and the two
+   buttons side by side under them. */
+@media (max-width: 520px) {
+  .folder-browser {
+    padding: 14px 12px 12px;
+  }
+  .folder-goto label,
+  .folder-here {
+    flex-basis: 100%;
+  }
+  .folder-browser-foot .picker-cancel {
+    margin-left: auto;
+  }
+}
+
 /* The signed-out page's password and desktop-confirm forms (sign-in-forms.tsx). */
 .web-sign-in-form {
   display: flex;

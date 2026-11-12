@@ -524,12 +524,15 @@ test('server mode: html overlays are held by a browser; ccc overlay from a Claud
   }
 })
 
-// design-web.md §9.8: with no desktop the browser picker is the picker. It opens a folder by its
-// path on the server (an error for a bad one, in the asking view), lists the recent projects with no
-// window and reopens one, and shows a gone folder as missing. `ccc open <path>` from a server shell
-// opens a project too. Nothing of it reaches a native dialog or a window shown on the server.
-test('server mode: projects are opened by path and reopened from the browser picker; ccc open from the shell', async () => {
-  test.setTimeout(120_000)
+// design-web.md §9.8: with no desktop the browser picker is the picker. Its folder browser starts in
+// the start folder (`ccc web set --start-folder`), lists folders only and marks projects, shows a bad
+// path's error in place (nothing is created), completes "Go to path" with Tab and opens the folder
+// shown or a double-clicked one. The picker lists the recent projects with no window and reopens
+// one; a gone folder shows as missing with Relink… (the same folder browser, then the project opens
+// there) and Forget (confirmed in its row). `ccc open <path>` from a server shell opens a project
+// too. Nothing of it reaches a native dialog or a window shown on the server.
+test('server mode: the browser picker opens folders through the folder browser, reopens, relinks and forgets; ccc open from the shell', async () => {
+  test.setTimeout(150_000)
   server = await launchServer()
   const { cockpit } = server
   const root = realpathSync(cockpit.root)
@@ -546,30 +549,51 @@ test('server mode: projects are opened by path and reopened from the browser pic
     })
   const openCount = (): Promise<number> => cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
 
+  // The folder browser starts in the test's root (default: the server user's home, empty here).
+  const set = await ccc(server, ['web', 'set', '--start-folder', root])
+  expect(set.code, set.stderr).toBe(0)
+  expect(set.stdout).toContain(`start folder: ${root}`)
+
   const browser = await openBrowser(`${server.origin}/`)
   try {
     const { page } = browser
     await expect(page.getByRole('list', { name: 'Open projects' }).getByRole('link')).toHaveCount(1)
     await page.getByRole('button', { name: 'Open folder…' }).click()
-    const field = page.getByLabel('Folder on the server')
-    const alert = page.locator('.web-picker-error')
+    const dialog = page.getByRole('dialog', { name: 'Open folder' })
+    const folders = dialog.getByRole('list', { name: 'Folders' })
+    // Folders only (no a-file.txt), sorted; the app's own project folder is marked a project.
+    await expect(folders.getByRole('button', { name: 'second', exact: true })).toBeVisible()
+    await expect(folders).not.toContainText('a-file.txt')
+    await expect(folders.getByRole('button', { name: 'project', exact: true }).locator('.folder-project-badge')).toHaveText('project')
+    await expect(folders.getByRole('button', { name: 'second', exact: true }).locator('.picker-badge')).toHaveCount(0)
+    const goTo = dialog.getByLabel('Go to path')
+    const open = dialog.getByRole('button', { name: 'Open', exact: true })
 
-    // Errors, in this view: a relative path, a file, a folder that is not there (nothing is created).
-    await field.fill('second')
-    await page.getByRole('button', { name: 'Open', exact: true }).click()
-    await expect(alert).toHaveText('Cannot open: not an absolute path: second')
-    await field.fill(join(root, 'a-file.txt'))
-    await page.getByRole('button', { name: 'Open', exact: true }).click()
-    await expect(alert).toHaveText(`Cannot open: not a folder: ${join(root, 'a-file.txt')}`)
-    await field.fill(join(root, 'nope'))
-    await page.getByRole('button', { name: 'Open', exact: true }).click()
-    await expect(alert).toHaveText(`Cannot open: not a folder: ${join(root, 'nope')}`)
+    // Errors, in this dialog: a relative path, a file, a folder that is not there (nothing is created).
+    await goTo.fill('second')
+    await goTo.press('Enter')
+    await expect(dialog.getByRole('alert')).toHaveText('Type a full path, starting with / or ~')
+    await goTo.fill(join(root, 'a-file.txt'))
+    await goTo.press('Enter')
+    await expect(dialog.locator('.folder-unreadable')).toHaveText('not a folder')
+    await expect(open).toBeDisabled()
+    await goTo.fill(join(root, 'nope'))
+    await goTo.press('Enter')
+    await expect(dialog.locator('.folder-unreadable')).toHaveText('this folder does not exist (any more)')
+    await expect(open).toBeDisabled()
     expect(existsSync(join(root, 'nope'))).toBe(false)
     expect(await openCount()).toBe(1)
 
-    // A folder by its path: main opens it and the page goes on to the shell bound to it.
-    await field.fill(second)
-    await page.getByRole('button', { name: 'Open', exact: true }).click()
+    // "Go to path" completes from the listing with Tab; Enter goes there; Open takes the folder shown.
+    await goTo.fill(`${root}/sec`)
+    await expect(async () => {
+      await goTo.press('Tab')
+      await expect(goTo).toHaveValue(`${second}/`, { timeout: 500 })
+    }).toPass({ timeout: 10_000 })
+    await goTo.press('Enter')
+    await expect(dialog.getByRole('navigation', { name: 'Folder path' }).locator('[aria-current]')).toHaveText('second')
+    await expect(dialog.getByText('No folders here.')).toBeVisible()
+    await open.click()
     await expect(page).toHaveURL(/\?project=/)
     await page.locator('.tabs-pane').waitFor()
     const secondId = new URL(page.url()).searchParams.get('project') ?? ''
@@ -581,14 +605,15 @@ test('server mode: projects are opened by path and reopened from the browser pic
     // The bound view loses its window, so the picker is loaded again by hand.
     await closeNewestWindow()
     await expect.poll(openCount).toBe(1)
-    // `gone`: opened, closed, its folder removed: listed as missing, with nothing to click.
-    const goneOpen = await fetch(`${server.origin}/api/projects`, {
-      method: 'POST',
-      headers: { Origin: server.origin, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ open: gone })
-    })
-    expect(goneOpen.status).toBe(200)
-    await goneOpen.body?.cancel()
+
+    // `gone`: opened by a double click in the folder browser, closed, its folder removed.
+    await page.goto(`${server.origin}/`)
+    await page.getByRole('button', { name: 'Open folder…' }).click()
+    await dialog.getByRole('list', { name: 'Folders' }).getByRole('button', { name: 'gone', exact: true }).dblclick()
+    await expect(page).toHaveURL(/\?project=/)
+    await page.locator('.tabs-pane').waitFor()
+    const goneId = new URL(page.url()).searchParams.get('project') ?? ''
+    expect(goneId).not.toBe(secondId)
     await expect.poll(openCount).toBe(2)
     await closeNewestWindow()
     await expect.poll(openCount).toBe(1)
@@ -596,9 +621,9 @@ test('server mode: projects are opened by path and reopened from the browser pic
 
     await page.goto(`${server.origin}/`)
     const recent = page.getByRole('list', { name: 'Recent projects' })
-    await expect(recent.getByRole('button')).toHaveCount(1)
-    await expect(recent).toContainText('missing')
-    await expect(recent).toContainText(gone)
+    const goneRow = recent.getByRole('listitem').filter({ hasText: gone })
+    await expect(goneRow.locator('.picker-badge')).toHaveText('missing')
+    await expect(goneRow.getByRole('button', { name: 'gone', exact: true })).toBeDisabled()
     // An unknown reopen id is refused with its text, opening nothing.
     const unknown = await fetch(`${server.origin}/api/projects`, {
       method: 'POST',
@@ -607,9 +632,51 @@ test('server mode: projects are opened by path and reopened from the browser pic
     })
     expect(unknown.status).toBe(400)
     expect(await unknown.json()).toEqual({ error: 'not a recent project' })
+    // Relink and forget are state-changing POSTs: no Origin, no change.
+    const noOrigin = await fetch(`${server.origin}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forget: goneId })
+    })
+    expect(noOrigin.status).toBe(403)
+    await noOrigin.body?.cancel()
+
+    // Forget asks in the row: Cancel keeps it.
+    await goneRow.getByRole('button', { name: 'Forget' }).click()
+    const ask = goneRow.getByRole('group', { name: 'Forget gone?' })
+    await expect(ask).toContainText('Forget it and its saved tabs?')
+    await expect(ask.getByRole('button', { name: 'Cancel' })).toBeFocused()
+    await ask.getByRole('button', { name: 'Cancel' }).click()
+    await expect(goneRow.getByRole('button', { name: 'Relink…' })).toBeVisible()
+
+    // Relink… opens the folder browser for the new place; the project opens there, the same id.
+    const moved = join(root, 'moved')
+    mkdirSync(moved)
+    await goneRow.getByRole('button', { name: 'Relink…' }).click()
+    const relink = page.getByRole('dialog', { name: 'Relink gone' })
+    await expect(relink).toContainText(`Its folder ${gone} is gone.`)
+    await relink.getByRole('list', { name: 'Folders' }).getByRole('button', { name: 'moved', exact: true }).click()
+    await expect(relink.getByRole('navigation', { name: 'Folder path' }).locator('[aria-current]')).toHaveText('moved')
+    await relink.getByRole('button', { name: 'Relink here' }).click()
+    await expect(page).toHaveURL(`${server.origin}/?project=${encodeURIComponent(goneId)}`)
+    await page.locator('.tabs-pane').waitFor()
+    await expect.poll(openCount).toBe(2)
+    await closeNewestWindow()
+    await expect.poll(openCount).toBe(1)
+
+    // Forget: the moved folder gone too, confirmed in the row; the project leaves the list for good.
+    rmSync(moved, { recursive: true })
+    await page.goto(`${server.origin}/`)
+    const movedRow = recent.getByRole('listitem').filter({ hasText: moved })
+    await expect(movedRow.locator('.picker-badge')).toHaveText('missing')
+    await movedRow.getByRole('button', { name: 'Forget' }).click()
+    await movedRow.getByRole('group', { name: 'Forget moved?' }).getByRole('button', { name: 'Forget' }).click()
+    await expect(recent.getByRole('listitem')).toHaveCount(1)
+    const listed = (await (await fetch(`${server.origin}/api/projects`)).json()) as { recent: Array<{ id: string }> }
+    expect(listed.recent.map((p) => p.id)).toEqual([secondId])
 
     // Reopen the recent one: the same project id, its shell.
-    await recent.getByRole('button', { name: /second/ }).click()
+    await recent.getByRole('button', { name: 'second', exact: true }).click()
     await expect(page).toHaveURL(`${server.origin}/?project=${encodeURIComponent(secondId)}`)
     await page.locator('.tabs-pane').waitFor()
     expect(await openCount()).toBe(2)

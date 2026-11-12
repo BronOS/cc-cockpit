@@ -95,6 +95,10 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
   if (typeof secrets.replaced === 'number' && secrets.replaced > 0) {
     lines.push(`  ${secrets.replaced} stored value(s) were made under a replaced key file: enter them again`)
   }
+  // Server mode's browser picker only: on the desktop the native folder dialog is used.
+  if (s.server === true) {
+    lines.push(`start folder: ${typeof s.startFolder === 'string' ? plain(s.startFolder) : 'the home folder (default)'}`)
+  }
   lines.push(`access link: ${credential(s.accessLink, 'made', 'not made yet', 'regenerate it')}`)
   lines.push(`password: ${credential(s.password, 'set', 'not set', 'set it again')}`)
   const devices = Array.isArray(s.devices) ? (s.devices as Array<Partial<WebDeviceView>>) : []
@@ -111,9 +115,11 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
 
 /**
  * `ccc web set` after a change was saved: the address and whether the gateway listens there now (a
- * port in use or an unreadable certificate is saved all the same and shows here as the reason).
+ * port in use or an unreadable certificate is saved all the same and shows here as the reason), and
+ * the browser picker's start folder when one is set.
  */
 export function formatWebSaved(result: unknown, plain: Plain): string {
   const s = (result ?? {}) as Partial<WebCliStatus>
-  return `saved\naddress: ${hostPort(s.bind, s.port, plain)}\ngateway: ${gatewayLine(s.gateway, plain)}\n`
+  const start = typeof s.startFolder === 'string' ? `start folder: ${plain(s.startFolder)}\n` : ''
+  return `saved\naddress: ${hostPort(s.bind, s.port, plain)}\ngateway: ${gatewayLine(s.gateway, plain)}\n${start}`
 }

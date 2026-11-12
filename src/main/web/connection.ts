@@ -178,15 +178,16 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
  * main's window table, never the registry's recents: a remote view can only bind to an open window
  * (the hello above looks it up the same way) and on the desktop cannot open one on the host (server
  * mode's recents and open are the gateway's `serverProjects`, open-project.ts). A window whose
- * record is gone mid-close is left out. Plain fields only.
+ * record is gone mid-close is left out. Plain fields only (and the project's colour, for the row's dot).
  */
 export function openProjectEntries(
   windows: { projectWindows(): Array<{ projectId: string }> },
-  record: (projectId: string) => { id: string; name: string; path: string } | undefined
+  record: (projectId: string) => { id: string; name: string; path: string; color?: WebProjectEntry['color'] } | undefined
 ): WebProjectEntry[] {
   return windows.projectWindows().flatMap(({ projectId }) => {
     const r = record(projectId)
-    return r ? [{ id: r.id, name: r.name, path: r.path }] : []
+    // The colour as the record has it; the gateway checks it again before it goes on the wire.
+    return r ? [{ id: r.id, name: r.name, path: r.path, ...(r.color !== undefined ? { color: r.color } : {}) }] : []
   })
 }
 

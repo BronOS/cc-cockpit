@@ -399,10 +399,24 @@ link reaches the journal: run `ccc web add-device` in a shell on the server for 
 `web-access.log`, which records that a start link was issued and the sign-in that used it. If someone else opens it
 first, that shows as an unknown device (Revoke it) and your own copy says "already used".
 
+**Projects:** the browser's first page is the project picker, in the desktop picker's look: the projects open now (a
+link each), the recent ones (newest first, with when each was last opened; a filter field with ↑/↓ and Enter) and
+"Open folder…". On a new server with nothing open or recent it is a welcome naming the server and the user it runs as,
+with one Open folder button. "Open folder…" opens a folder browser on the server's folders: it starts in the start folder
+(`ccc web set --start-folder <path>`; by default the server user's home, and a start folder that is gone falls back to
+home with a note), shows subfolders only (dot folders behind "Hidden folders"), with a filter, breadcrumbs and Up, and
+marks folders that are git repositories or already projects. A click goes into a folder; Open takes the folder shown;
+a double click (or Enter on a row) takes a folder at once. "Go to path" takes a pasted path (`~` is the home folder) and
+completes it with Tab from the listings. A folder the server user cannot read says so in place. It reaches any folder
+the server user can read, no more than a terminal tab does; at most 1000 folders are listed at once (it says so; type
+the path to go further). A recent project whose folder is gone shows as missing with Relink… (the folder browser again:
+the project opens in the folder you pick, without its old tabs) and Forget (asks in the row; removes the project and its
+saved tabs). `ccc open <path>` from a server shell opens one too.
+
 **`ccc web`** is run from a shell on the server, outside cc-cockpit (a Claude, shell or command tab is refused): `status
 [--json]`, `revoke <id>|--all`, `link [--regenerate]`, `add-device`, `password` (from stdin, or asked twice with no
-echo on a terminal, never an argument), `mode link|password|none`, `set` (bind, port, origin, hosts, TLS, `--confirm`)
-and `stop`. A network bind with plain http, or with no sign-in, applies only with its `--confirm`, as the Settings
+echo on a terminal, never an argument), `mode link|password|none`, `set` (bind, port, origin, hosts, TLS, `--confirm`,
+and `--start-folder` for the folder browser, `''` for home) and `stop`. A network bind with plain http, or with no sign-in, applies only with its `--confirm`, as the Settings
 confirm does on the desktop. On a desktop `ccc web` answers only `status` and `revoke`. `ccc guide cli` has the
 details. The wrapper is `<data>/bin/ccc` (`~/.config/cc-cockpit/bin/ccc` on Linux); the app offers no install in server
 mode, so start prints that path.
@@ -426,7 +440,8 @@ both as under Web access above. A LAN bind works with the same confirms.
 - Approvals are in the browser, by any signed-in device. A plugin link (`ccc plugin link`, code that runs as you) and
   the Trash confirm ask in an in-page dialog: Allow is never the default, Enter does nothing, the dialog takes no
   keyboard focus from a terminal, and Allow works only after the dialog has been visible for about a second. A browser
-  can also open a project by its server path (or from Recent), close a project for everyone, revoke and disconnect
+  can also browse the server's folders and open one (or a recent project), relink or forget a missing project, close a
+  project for everyone, revoke and disconnect
   devices, read the web access card and finish a plugin's OAuth sign-in. It cannot add or widen access (mode, bind,
   secrets, new devices): those are `ccc web`.
 - Nothing is shown on the server's screen. A link opens as a notice you click; a folder dialog, "Reveal in the file

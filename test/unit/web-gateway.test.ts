@@ -775,7 +775,8 @@ describe('server mode: projects from the browser', () => {
   async function signedIn(
     server = true,
     recent: () => Array<{ id: string; name: string; path: string; missing: boolean }> = () => [],
-    open?: ServerProjects['open']
+    open?: ServerProjects['open'],
+    more: Partial<Pick<ServerProjects, 'host' | 'folders'>> = {}
   ): Promise<Signed> {
     const port = await freePort()
     const opened: unknown[] = []
@@ -790,7 +791,16 @@ describe('server mode: projects from the browser', () => {
                 ((request) => {
                   opened.push(request)
                   if ('reopen' in request) return request.reopen === 'r1' ? { id: 'r1' } : { error: 'not a recent project' }
+                  if ('forget' in request) return request.forget === 'gone1' ? { id: 'gone1' } : { error: 'not a recent project' }
+                  if ('relink' in request) return request.relink === 'gone1' ? { id: 'gone1' } : { error: 'not a recent project' }
                   return request.open === '/work/new' ? { id: 'new1' } : { error: `not a folder: ${request.open}` }
+                }),
+              host: more.host ?? (() => ({ name: 'box', user: 'me', home: '/home/me' })),
+              folders:
+                more.folders ??
+                (async (request) => {
+                  opened.push({ folders: request })
+                  return { path: request.path ?? '/home/me', parent: '/home', home: '/home/me', folders: [{ name: 'src', git: true }], hiddenCount: 1, truncated: false, here: { git: false, project: false } }
                 })
             }
           }
@@ -830,7 +840,8 @@ describe('server mode: projects from the browser', () => {
       recent: [
         { id: 'r1', name: 'one', path: '/work/one', missing: false },
         { id: 'r2', name: 'gone', path: '/work/gone', missing: true }
-      ]
+      ],
+      host: { name: 'box', user: 'me', home: '/home/me' }
     })
     await gateway?.stop()
 
@@ -991,6 +1002,10 @@ describe('server mode: projects from the browser', () => {
         recent: () => [],
         open: () => {
           throw new Error('window factory exploded')
+        },
+        host: () => ({ name: 'box', user: 'me', home: '/home/me' }),
+        folders: () => {
+          throw new Error('disk exploded')
         }
       }
     })
@@ -1000,5 +1015,98 @@ describe('server mode: projects from the browser', () => {
     expect(res.status).toBe(500)
     expect(res.body).not.toContain('exploded')
     expect(logs.some((l) => l.includes('exploded'))).toBe(true)
+    // The folder listing the same way: 500, the text only in the log.
+    const listing = await post(port, { path: '/api/folders', headers: { Host: host, Origin: `http://${host}`, 'Content-Type': 'application/json' }, body: '{}' })
+    expect(listing.status).toBe(500)
+    expect(listing.body).not.toContain('disk exploded')
+    expect(logs.some((l) => l.includes('disk exploded'))).toBe(true)
+  })
+
+  it('the GET carries the colour (checked) and when each recent project was last opened; a failing host read leaves it out', async () => {
+    const recent = (): Array<{ id: string; name: string; path: string; missing: boolean }> =>
+      [
+        { id: 'r1', name: 'one', path: '/work/one', missing: false, color: 'blue', lastOpenedAt: 5 },
+        { id: 'r2', name: 'two', path: '/work/two', missing: false, color: 'url(x)', lastOpenedAt: 'yesterday' }
+      ] as unknown as Array<{ id: string; name: string; path: string; missing: boolean }>
+    const s = await signedIn(true, recent, undefined, {
+      host: () => {
+        throw new Error('no passwd entry')
+      }
+    })
+    const body = JSON.parse((await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie } })).body) as Record<string, unknown>
+    expect(body.recent).toEqual([
+      { id: 'r1', name: 'one', path: '/work/one', missing: false, color: 'blue', lastOpenedAt: 5 },
+      { id: 'r2', name: 'two', path: '/work/two', missing: false }
+    ])
+    expect(body).not.toHaveProperty('host')
+    expect(s.logs.some((l) => l.includes('no passwd entry'))).toBe(true)
+  })
+
+  // Relink and forget a missing project (design-web.md §9.8): the same route, Origin and cookie as the open.
+  it('relinks and forgets through the same POST, logging which device did what', async () => {
+    const s = await signedIn()
+    const relink = await post(s.port, { headers: headers(s), body: JSON.stringify({ relink: 'gone1', path: '/work/moved' }) })
+    expect(relink.status).toBe(200)
+    expect(JSON.parse(relink.body)).toEqual({ id: 'gone1' })
+    const forget = await post(s.port, { headers: headers(s), body: JSON.stringify({ forget: 'gone1' }) })
+    expect(forget.status).toBe(200)
+    expect(JSON.parse(forget.body)).toEqual({ id: 'gone1' })
+    const unknown = await post(s.port, { headers: headers(s), body: JSON.stringify({ forget: 'nope' }) })
+    expect(unknown.status).toBe(400)
+    expect(JSON.parse(unknown.body)).toEqual({ error: 'not a recent project' })
+    // A relink with no new folder is refused before main.
+    const noPath = await post(s.port, { headers: headers(s), body: JSON.stringify({ relink: 'gone1' }) })
+    expect(noPath.status).toBe(400)
+    expect(s.opened).toEqual([{ relink: 'gone1', path: '/work/moved' }, { forget: 'gone1' }, { forget: 'nope' }])
+    expect(s.logs.some((l) => l.includes('relinked and opened project gone1'))).toBe(true)
+    expect(s.logs.some((l) => l.includes('forgot project gone1'))).toBe(true)
+  })
+
+  it('relink and forget are refused with no Origin, a wrong one or no cookie, and are 404 off server mode', async () => {
+    const s = await signedIn()
+    for (const body of [JSON.stringify({ forget: 'gone1' }), JSON.stringify({ relink: 'gone1', path: '/work/moved' })]) {
+      expect((await post(s.port, { headers: headers(s, { Origin: undefined }), body })).status).toBe(403)
+      expect((await post(s.port, { headers: headers(s, { Origin: 'http://evil.example' }), body })).status).toBe(403)
+      expect((await post(s.port, { headers: headers(s, { Cookie: undefined }), body })).status).toBe(401)
+    }
+    expect(s.opened).toEqual([])
+    await gateway?.stop()
+    const desk = await signedIn(false)
+    expect((await post(desk.port, { headers: headers(desk), body: JSON.stringify({ forget: 'gone1' }) })).status).toBe(404)
+    expect(desk.opened).toEqual([])
+  })
+
+  // The folder browser (FOLDERS_PATH, list-folders.ts): a POST so it gets the Origin check; server mode
+  // and a device only; the body checked before main sees it.
+  it('lists a folder for a signed-in device in server mode, only the checked request reaching main', async () => {
+    const s = await signedIn()
+    const res = await post(s.port, { path: '/api/folders', headers: headers(s), body: JSON.stringify({ path: '/srv/a/../b/', hidden: true, extra: 1 }) })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ path: '/srv/b', folders: [{ name: 'src', git: true }] })
+    const start = await post(s.port, { path: '/api/folders', headers: headers(s), body: '{}' })
+    expect(JSON.parse(start.body)).toMatchObject({ path: '/home/me' })
+    expect(s.opened).toEqual([{ folders: { path: '/srv/b', hidden: true } }, { folders: {} }])
+  })
+
+  it('the folder listing refuses no Origin, a wrong one, no cookie, a bad body, and is 404 off server mode', async () => {
+    const s = await signedIn()
+    const body = JSON.stringify({ path: '/srv' })
+    expect((await post(s.port, { path: '/api/folders', headers: headers(s, { Origin: undefined }), body })).status).toBe(403)
+    expect((await post(s.port, { path: '/api/folders', headers: headers(s, { Origin: 'http://evil.example' }), body })).status).toBe(403)
+    expect((await post(s.port, { path: '/api/folders', headers: headers(s, { Cookie: undefined }), body })).status).toBe(401)
+    expect((await post(s.port, { path: '/api/folders', headers: headers(s, { Cookie: 'ccc_device=forged' }), body })).status).toBe(401)
+    // GET is not the route: it is a POST so the Origin check applies.
+    expect((await http(s.port, { path: '/api/folders', headers: { Host: s.host, Cookie: s.cookie } })).status).toBe(404)
+    for (const bad of [{ path: 'relative' }, { path: '/a\u0000b' }, { path: 3 }, { hidden: 'yes' }, [], null]) {
+      const res = await post(s.port, { path: '/api/folders', headers: headers(s), body: JSON.stringify(bad) })
+      expect(res.status, JSON.stringify(bad)).toBe(400)
+      expect(typeof JSON.parse(res.body).error).toBe('string')
+    }
+    expect((await post(s.port, { path: '/api/folders', headers: headers(s, { 'Content-Type': 'text/plain' }), body })).status).toBe(415)
+    expect((await post(s.port, { path: '/api/folders', headers: headers(s), body: JSON.stringify({ path: `/${'a'.repeat(MAX_SIGN_IN_BODY)}` }) })).status).toBe(413)
+    expect(s.opened).toEqual([])
+    await gateway?.stop()
+    const desk = await signedIn(false)
+    expect((await post(desk.port, { path: '/api/folders', headers: headers(desk), body })).status).toBe(404)
   })
 })

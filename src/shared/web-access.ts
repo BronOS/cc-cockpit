@@ -35,6 +35,8 @@ export interface WebAccessPatch {
   mode?: WebAccessMode
   tls?: { certPath: string; keyPath: string } | null
   confirm?: WebAccessRisk[]
+  /** Server mode's folder browser start (`ccc web set --start-folder`): an absolute path; null or '' clears it (home). */
+  startFolder?: string | null
 }
 
 /** The answer to a change that needs the person's confirm first: nothing was saved. */
@@ -217,6 +219,8 @@ export interface WebCliStatus {
   port: number
   /** The external origin set in the settings, or null. */
   externalOrigin: string | null
+  /** Where server mode's folder browser starts (`ccc web set --start-folder`), or null for the home folder. */
+  startFolder: string | null
   /** Listening (with the origin links point at), or why not. */
   gateway: WebGatewayView
   secrets: WebSecretsStatus

@@ -324,6 +324,12 @@ export interface WebAccessSettings {
    * can write `app.json` can write this list too, the same trust as turning web access on.
    */
   confirmed?: WebAccessRisk[]
+  /**
+   * Server mode's folder browser starts here (design-web.md §9.8; `ccc web set --start-folder`): an
+   * absolute, normalized path. Absent = the server user's home folder; a folder that is gone when
+   * the browser asks falls back to home with a note (main/web/list-folders.ts).
+   */
+  startFolder?: string
 }
 
 /**

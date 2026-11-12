@@ -60,6 +60,22 @@ describe('applyWebAccessPatch (settings validation)', () => {
     expect(refused({ port })).toMatch(/port must be a whole number from 1024 to 65535/)
   })
 
+  // Server mode's folder browser start (design-web.md §9.8): absolute and normalized, cleared by
+  // null or '', a damaged stored value read as none, kept and dropped by storedWebAccess.
+  it('takes the start folder as an absolute path (normalized), clears it on empty or null, refuses a relative one', () => {
+    expect(patched({ startFolder: ' /srv//projects/../work/ ' })).toEqual({ ...base, startFolder: '/srv/work' })
+    const withStart = { ...base, startFolder: '/srv/work' }
+    expect(patched({ startFolder: null }, withStart)).toEqual(base)
+    expect(patched({ startFolder: '' }, withStart)).toEqual(base)
+    for (const bad of ['srv', '~/src', '/a\0b', 3, true, `/${'a'.repeat(5000)}`]) expect(refused({ startFolder: bad })).toMatch(/start folder must be a full path/)
+    // Not part of what listens: no confirm, whatever the bind.
+    expect(patched({ startFolder: '/srv' }, { ...base, enabled: true, bind: '0.0.0.0', confirmed: ['plain-http'] })).toMatchObject({ startFolder: '/srv', confirmed: ['plain-http'] })
+    expect(webAccessOf({ startFolder: '/srv/./a/' }).startFolder).toBe('/srv/a')
+    for (const damaged of ['relative', 5, '', null]) expect(webAccessOf({ startFolder: damaged })).not.toHaveProperty('startFolder')
+    expect(storedWebAccess({ startFolder: '/old' }, { ...base, startFolder: '/new' }).startFolder).toBe('/new')
+    expect(storedWebAccess({ startFolder: '/old' }, base)).not.toHaveProperty('startFolder')
+  })
+
   it('moves host entries that named the old port when the port changes', () => {
     const from = { ...base, hosts: ['box.local:7330', 'other:9000'] }
     expect(patched({ port: 8000 }, from).hosts).toEqual(['box.local:8000', 'other:9000'])

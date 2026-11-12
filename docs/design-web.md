@@ -673,7 +673,7 @@ desktop, so they move to the CLI socket, used from a shell on the server:
 | `ccc web add-device` | prints a one-time link, 10 minutes | refused |
 | `ccc web password` | sets the password from stdin (a no-echo prompt on a TTY), never argv: argv shows in `ps` | refused |
 | `ccc web mode link\|password\|none` | switches the mode; `confirm` is refused | refused |
-| `ccc web set [--bind <addr>] [--port <n>] [--origin <url>] [--host <name>]... [--tls-cert <pem> --tls-key <pem> \| --no-tls] [--confirm none-network\|plain-http]` | bind, port, origin, hosts, TLS, through the same `applyWebAccessPatch` as the settings page: a §4.3 risk is refused with its confirm text printed, and applies only with its `--confirm` | refused |
+| `ccc web set [--bind <addr>] [--port <n>] [--origin <url>] [--host <name>]... [--tls-cert <pem> --tls-key <pem> \| --no-tls] [--confirm none-network\|plain-http] [--start-folder <path>]` | bind, port, origin, hosts, TLS, through the same `applyWebAccessPatch` as the settings page: a §4.3 risk is refused with its confirm text printed, and applies only with its `--confirm`; `--start-folder` is where the browser picker's folder browser starts (§9.8; `''` clears it) | refused |
 | `ccc web stop` | quits as SIGTERM does (§9.1's box uses it) | refused |
 
 - **Desktop: narrowing only.** Outside server mode `ccc web` answers `status` and `revoke` and refuses the rest with
@@ -798,6 +798,32 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   Built: the GET's recent list leaves out projects that have a window open (they are under the open ones), so a recent
   row always means reopen; an open or reopen main refuses answers 400 with main's text (not a folder, not an absolute
   path, not a recent project, folder missing), a throw inside main's open 500 with no text.
+  Built (picker v2, 2026-11-11): the page is drawn from the desktop picker's parts (`renderer/picker/parts.tsx`: header,
+  panels, project rows with colour dot and missing badge, empty states; the CSS is styles.css's `.picker-*`), so both
+  pickers change together; the recent rows show when each was last opened. With nothing open and nothing recent (a new
+  server) the page is a welcome naming the server and its user (the GET's `host`: host name, OS user, home) with one
+  Open folder button. The path field became a **folder browser** (`renderer/web/folder-browser.tsx`), an in-page
+  dialog over `POST /api/folders` (`main/web/list-folders.ts`; server mode only, else 404; device cookie and Origin as
+  every POST, the cookie checked again once the body is in; body capped): `{ path?, hidden? }`, a path absolute, no NUL,
+  normalized by `resolve`, absent for the start folder (`webAccess.startFolder` in `app.json`, set by `ccc web set
+  --start-folder`, §9.4; default the server user's home; one that is not a folder now falls back to home with a note).
+  A POST though it changes nothing, so it gets the Origin check, and the path is in no URL. It answers the folder's
+  subfolders only (never files), sorted, dot folders left out unless asked (counted), at most 1000 with `truncated`,
+  and stops reading after 20,000 directory entries; each folder marked `git` (an `lstat` of its `.git`, file or folder)
+  and `project` (its real path is a record's). The entry type is readdir's (lstat's view): a symbolic link to a folder
+  is listed as a link and can be entered, and is never marked (resolving it would mean a `realpath` and a stat on a
+  target that may be a slow mount, for a hint; entered, the folder shows its own marks). A folder it cannot read is an
+  answer with the reason (permission denied, gone, not a folder; another code generic with the detail in the log), the
+  path and its parent, so the dialog shows it in place and Up still works. A click goes into a folder, the bottom
+  button takes the folder shown, a double click or Enter on a row takes a folder at once (the double click's second
+  click takes the folder the first one entered: the list under the pointer has changed by then); "Go to path" takes a
+  pasted path (`~` expanded in the page) and completes with Tab from listings of the typed folder's parent. Same
+  reach as the old path field: no new access. **Relink and forget** a missing project are in the browser too, through
+  the same `POST /api/projects` with all its checks: `{ relink: id, path }` (the new folder checked as an open's path,
+  picked in the folder browser) and `{ forget: id }` (confirmed inline in the row, never a `confirm()`); main runs the
+  desktop picker's own code (`restore.ts` `relinkMissing` then `windows.openPath`, `forgetMissing`: only a recent
+  project whose folder really is missing), refuses one with a window open, and answers the id; their refusals are
+  `ProjectRefusal`s, so their text reaches the device. The log line names the device and what it did.
 - **Closing.** Close project in the browser shell: an in-page confirm in that view ("Close <name> for every device? Its
   tabs end."), then `projects.close` (`adapted`: a remote view only in server mode). Main closes the window as "Close
   for everyone" does; its views go back to the picker.
@@ -911,10 +937,12 @@ exact-name exception there, with a comment and a unit test; Claude tabs then get
 ### 9.12 Security
 
 The rule of §4 holds: a signed-in device is the person at the keyboard, with a shell on the host. In server mode a
-browser may also Allow a plugin link (code that runs as the user), open any folder, close a project, answer trash,
+browser may also Allow a plugin link (code that runs as the user), list and open any folder, relink or forget a missing
+project, close a project, answer trash,
 revoke and disconnect devices, settle a plugin's OAuth sign-in, and read the web access card. None of it is more than
 that shell already gives, so the boundary does not move: it is sign-in. What keeps it:
-- §4.1 unchanged: Host check, Origin check on every state-changing POST (`/api/projects` included), the device cookie,
+- §4.1 unchanged: Host check, Origin check on every state-changing POST (`/api/projects` included, and the folder
+  listing `/api/folders`, a POST for that reason), the device cookie,
   `frame-ancestors 'none'` (no other page can frame the shell and steer a click onto Allow).
 - Plugin pages cannot answer: sandboxed opaque-origin frames with only their own port (§5.5); `links.answer`,
   `trash.answer`, `projects.close`, the device calls and the OAuth paste are shell channels.
@@ -961,8 +989,11 @@ What server mode gives up, and what stands in:
 - The socket: `web` refused for a session or window token, answered tokenless; outside server mode only `status` and
   `revoke`; not running exits non-zero; `web` reserved in `CORE_CLI_COMMANDS`; guide drift. Start order: a gateway or
   socket that cannot start exits 1 before any window opens.
-- The gateway: `POST /api/projects` 404 off server mode, no Origin, no cookie, a path that is no directory, an oversize
-  body; the GET lists recent projects only in server mode. Device Revoke and Disconnect from a remote view only in
+- The gateway: `POST /api/projects` (open, reopen, relink, forget) and `POST /api/folders` 404 off server mode, no
+  Origin, no cookie, a path that is no directory, an oversize
+  body; the GET lists recent projects only in server mode. The folder listing (`web-list-folders.test.ts`): folders
+  only, the start folder and its fallback, hidden ones, the marks never through a link, both caps, an unreadable folder
+  as text. Device Revoke and Disconnect from a remote view only in
   server mode, the acting device logged. SIGTERM closes views with the non-final code, and the bridge retries.
 - In-page notice backend: plain text, caps, `Notifier.wait` and the click through the bound view, the chime to browser
   views and not the hidden page. OAuth paste: wrong origin, path or `state`, an oversize code, the attempt limit, no
@@ -974,7 +1005,8 @@ What server mode gives up, and what stands in:
   the fallback forced.
 - e2e: the harness starts the app with the switches directly (`--server --ozone-platform=headless --disable-gpu
   --password-store=basic`, no `DISPLAY`, Linux; what the re-exec starts), signs in through `ccc web add-device` with the
-  web browser fixture (`test/e2e/web-fixtures.ts`), opens a project by path, runs `ccc plugin link` and Allows it in the
+  web browser fixture (`test/e2e/web-fixtures.ts`), opens a project through the folder browser (relinks and forgets a
+  missing one), runs `ccc plugin link` and Allows it in the
   browser, opens an HTML overlay with `ccc overlay` from a Claude tab and answers it in the browser, trashes a file from
   Files with the real `shell`, closes the project, and checks main is alive. One spec runs with no session bus and no
   fake secret store: `ccc web password`, sign in, restart, sign in again. Server-mode specs do not use the queued test

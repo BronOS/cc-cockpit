@@ -175,6 +175,7 @@ export class WebAccessService {
       bind: settings.bind,
       port: settings.port,
       externalOrigin: settings.externalOrigin ?? null,
+      startFolder: settings.startFolder ?? null,
       gateway: this.gatewayView(settings),
       secrets: { store: secrets.store, unavailable: secrets.unavailable, otherMode: secrets.otherMode, replaced: secrets.replaced },
       accessLink: credentials.accessLink,

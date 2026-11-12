@@ -93,7 +93,17 @@ export type Command =
    * `ccc web set`: only the options given; `origin` '' clears the external origin, `tls` null is
    * `--no-tls`. TLS paths stay as typed here; client.ts makes them absolute against its cwd.
    */
-  | { kind: 'web-set'; bind?: string; port?: number; origin?: string; hosts?: string[]; tls?: { cert: string; key: string } | null; confirm: WebAccessRisk[] }
+  | {
+      kind: 'web-set'
+      bind?: string
+      port?: number
+      origin?: string
+      hosts?: string[]
+      tls?: { cert: string; key: string } | null
+      confirm: WebAccessRisk[]
+      /** As typed ('' clears it); the client makes it absolute against its cwd. */
+      startFolder?: string
+    }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -260,6 +270,10 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
           'web set [--tls-cert <pem> --tls-key <pem> | --no-tls] [--confirm none-network|plain-http]...'
         ],
         text: ['change where web access listens (server mode; the options', 'combine); a risky choice is refused with its text until', 'its --confirm is given']
+      },
+      {
+        synopsis: ['web set --start-folder <path>'],
+        text: ["where the browser's folder browser starts (server mode);", "'' for the home folder (the default)"]
       }
     ]
   },
@@ -588,8 +602,8 @@ function parseWebSet(args: readonly string[]): Command {
       continue
     }
     const value = args[++i]
-    // An empty value is a value for --origin only (it clears the external origin).
-    if (value === undefined || (value === '' && arg !== '--origin')) {
+    // An empty value is a value for --origin and --start-folder only (it clears the setting).
+    if (value === undefined || (value === '' && arg !== '--origin' && arg !== '--start-folder')) {
       return arg.startsWith('--') && SET_OPTIONS.includes(arg) ? usage(`web set: ${arg} needs a value`) : usage(`web set: unknown option ${arg}`)
     }
     switch (arg) {
@@ -604,6 +618,9 @@ function parseWebSet(args: readonly string[]): Command {
       }
       case '--origin':
         out.origin = value
+        break
+      case '--start-folder':
+        out.startFolder = value
         break
       case '--host':
         hosts.push(value)
@@ -634,7 +651,7 @@ function parseWebSet(args: readonly string[]): Command {
 }
 
 /** The options of `ccc web set` that take a value. */
-const SET_OPTIONS: readonly string[] = ['--bind', '--port', '--origin', '--host', '--tls-cert', '--tls-key', '--confirm']
+const SET_OPTIONS: readonly string[] = ['--bind', '--port', '--origin', '--host', '--tls-cert', '--tls-key', '--confirm', '--start-folder']
 
 /** `ccc panel show [--project <path>] <plugin>/<panel>`: the panel key is the plugin id, a slash, the manifest's panel id. */
 function parsePanel(rest: readonly string[]): Command {

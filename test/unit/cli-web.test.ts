@@ -11,7 +11,7 @@ import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseArgs } from '../../src/cli/args'
 import { buildRequest, NOT_RUNNING, run, runCommand, type Output } from '../../src/cli/client'
-import { formatWebStatus } from '../../src/cli/web-format'
+import { formatWebSaved, formatWebStatus } from '../../src/cli/web-format'
 import { MAX_PASSWORD_STDIN_BYTES, PROMPT_TIMEOUT_MS, readHidden, readPassword } from '../../src/cli/web-password'
 import { fakeSecretStore, KEYFILE_PREFIX, unreadableCounts, type SecretStore } from '../../src/main/secrets/secret-store'
 import { SocketServer, type Caller, type Handler } from '../../src/main/socket/socket-server'
@@ -59,6 +59,7 @@ const STATUS: WebCliStatus = {
   bind: '127.0.0.1',
   port: 7330,
   externalOrigin: null,
+  startFolder: null,
   gateway: { state: 'listening', bind: '127.0.0.1', port: 7330, origin: 'http://127.0.0.1:7330' },
   secrets: { store: 'keyfile', unavailable: null, otherMode: 0, replaced: 0 },
   accessLink: 'set',
@@ -400,6 +401,7 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
       bind: '127.0.0.1',
       port: 7330,
       externalOrigin: 'https://box.example',
+      startFolder: null,
       gateway: { state: 'listening', bind: '127.0.0.1', port: 7330, origin: 'https://box.example' },
       secrets,
       accessLink: 'set',
@@ -515,6 +517,14 @@ describe('ccc web: the CLI', () => {
     err = ''
     expect(await run(['sessions'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
     expect(err).toBe('')
+  })
+
+  it('shows the start folder in server mode only, the home folder when none is set', () => {
+    expect(formatWebStatus({ ...STATUS, startFolder: '/srv/projects' }, String)).toContain('start folder: /srv/projects\n')
+    expect(formatWebStatus(STATUS, String)).toContain('start folder: the home folder (default)\n')
+    expect(formatWebStatus({ ...STATUS, server: false, startFolder: '/srv/projects' }, String)).not.toContain('start folder')
+    expect(formatWebSaved({ ...STATUS, startFolder: '/srv/projects' }, String)).toContain('start folder: /srv/projects\n')
+    expect(formatWebSaved(STATUS, String)).not.toContain('start folder')
   })
 
   it('brackets an IPv6 address in the status lines', () => {
@@ -861,6 +871,43 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
     expect(request.args).toEqual({ tls: { certPath: '/work/dir/c.pem', keyPath: '/work/keys/k.pem' } })
     await call(request.cmd, request.args)
     expect(stored.tls).toEqual({ certPath: '/work/dir/c.pem', keyPath: '/work/keys/k.pem' })
+  })
+
+  // Server mode's folder browser starts here (design-web.md §9.8): stored normalized in app.json ›
+  // webAccess, shown by status, cleared by '' (back to the home folder), a relative path refused
+  // (main's cwd means nothing to the caller), and the change logged by flag, never by value.
+  it('--start-folder: stored normalized, shown by status, cleared by an empty value; a relative path refused', async () => {
+    await service.apply()
+    const before = JSON.stringify(stored)
+    expect(await refusal('web.set', { startFolder: 'src/app' })).toMatch(/--start-folder takes an absolute path/)
+    expect(await refusal('web.set', { startFolder: 7 })).toMatch(/--start-folder takes an absolute path/)
+    expect(JSON.stringify(stored)).toBe(before)
+
+    const request = buildRequest({ kind: 'web-set', startFolder: '../srv/./projects/', confirm: [] }, {}, CWD) as Request
+    expect(request.args).toEqual({ startFolder: '/work/srv/projects' })
+    const status = (await call(request.cmd, request.args)) as WebCliStatus
+    expect(stored.startFolder).toBe('/work/srv/projects')
+    expect(status.startFolder).toBe('/work/srv/projects')
+    expect(((await call('web.status')) as WebCliStatus).startFolder).toBe('/work/srv/projects')
+    // A path main normalizes itself too (the CLI is not the only caller of the socket).
+    await call('web.set', { startFolder: '/srv//a/../b/' })
+    expect(stored.startFolder).toBe('/srv/b')
+    // Nothing else of the record moved, and the gateway kept listening.
+    expect(stored.bind).toBe('127.0.0.1')
+    expect(status.gateway.state).toBe('listening')
+
+    const clear = buildRequest({ kind: 'web-set', startFolder: '', confirm: [] }, {}, CWD) as Request
+    expect(clear.args).toEqual({ startFolder: null })
+    await call(clear.cmd, clear.args)
+    expect('startFolder' in stored).toBe(false)
+    expect(((await call('web.status')) as WebCliStatus).startFolder).toBeNull()
+    await call('web.set', { startFolder: '/srv/c' })
+    await call('web.set', { startFolder: '' })
+    expect('startFolder' in stored).toBe(false)
+
+    const log = readFileSync(logFile, 'utf8')
+    expect(log).toContain('ccc web set --start-folder')
+    expect(log).not.toContain('/srv/b')
   })
 })
 

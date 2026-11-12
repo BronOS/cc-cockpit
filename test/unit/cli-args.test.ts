@@ -91,6 +91,8 @@ describe('ccc web (design-web.md §9.4)', () => {
     [['web', 'set', '--port', '1e4'], /--port takes a number/],
     [['web', 'set', '--port', '123456'], /--port takes a number/],
     [['web', 'set', '--tls-cert', 'c.pem'], /--tls-cert and --tls-key go together/],
+    [['web', 'set', '--start-folder'], /--start-folder needs a value/],
+    [['web', 'set', '--start-folder', '/a', '--start-folder', '/b'], /--start-folder given twice/],
     [['web', 'set', '--tls-key', 'k.pem'], /--tls-cert and --tls-key go together/],
     [['web', 'set', '--no-tls', '--tls-cert', 'c', '--tls-key', 'k'], /--no-tls goes without/],
     [['web', 'set', '--confirm', 'all'], /--confirm takes none-network or plain-http/],
@@ -122,6 +124,9 @@ describe('ccc web (design-web.md §9.4)', () => {
     ).toEqual({ kind: 'web-set', port: 7400, origin: 'https://box.example', hosts: ['box', 'box.lan:7400'], tls: { cert: 'c.pem', key: '/k.pem' }, confirm: [] })
     expect(parseArgs(['web', 'set', '--no-tls', '--origin', ''])).toEqual({ kind: 'web-set', tls: null, origin: '', confirm: [] })
     expect(parseArgs(['web', 'set', '--confirm', 'plain-http', '--confirm', 'plain-http'])).toEqual({ kind: 'web-set', confirm: ['plain-http'] })
+    // The browser picker's start folder: a path as typed, or '' (back to the home folder).
+    expect(parseArgs(['web', 'set', '--start-folder', '~/src'])).toEqual({ kind: 'web-set', startFolder: '~/src', confirm: [] })
+    expect(parseArgs(['web', 'set', '--start-folder', ''])).toEqual({ kind: 'web-set', startFolder: '', confirm: [] })
   })
 
   it('never echoes an argument given to web password: it may be the password', () => {

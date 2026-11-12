@@ -276,7 +276,7 @@ export function webModeHandler(deps: Pick<WebHandlerDeps, 'server' | 'set' | 'lo
 }
 
 /** The fields `web.set` takes, `WebAccessPatch`'s names; `enabled` and `mode` are not among them. */
-const SET_KEYS = ['bind', 'port', 'externalOrigin', 'hosts', 'tls', 'confirm'] as const
+const SET_KEYS = ['bind', 'port', 'externalOrigin', 'hosts', 'tls', 'confirm', 'startFolder'] as const
 /** The flag each field came from, for the log line. */
 const SET_FLAGS: Record<(typeof SET_KEYS)[number], string> = {
   bind: '--bind',
@@ -284,15 +284,17 @@ const SET_FLAGS: Record<(typeof SET_KEYS)[number], string> = {
   externalOrigin: '--origin',
   hosts: '--host',
   tls: '--tls-cert/--tls-key',
-  confirm: '--confirm'
+  confirm: '--confirm',
+  startFolder: '--start-folder'
 }
 
 /**
- * Bind, port, origin, hosts and TLS through the same `applyWebAccessPatch` as the Settings page (main's
- * `server` included). A §4.3 risk is refused with its confirm text unless the request confirms it. TLS
- * paths must be absolute: the CLI makes them so against its own cwd, and main's cwd means nothing to
- * the caller, so a relative one is refused here rather than read against it. Answers the status after
- * the change (listening or why not).
+ * Bind, port, origin, hosts, TLS and the browser picker's start folder through the same
+ * `applyWebAccessPatch` as the Settings page (main's `server` included). A §4.3 risk is refused with
+ * its confirm text unless the request confirms it. TLS paths and the start folder must be absolute:
+ * the CLI makes them so against its own cwd, and main's cwd means nothing to the caller, so a relative
+ * one is refused here rather than read against it. Answers the status after the change (listening or
+ * why not).
  */
 export function webSetHandler(deps: Pick<WebHandlerDeps, 'server' | 'set' | 'status' | 'logShell'>): Handler {
   return async (args, caller): Promise<WebCliStatus> => {
@@ -309,6 +311,12 @@ export function webSetHandler(deps: Pick<WebHandlerDeps, 'server' | 'set' | 'sta
         throw new Error('web set: --tls-cert and --tls-key take absolute paths')
       }
       patch.tls = { certPath: t.certPath, keyPath: t.keyPath }
+    }
+    // The browser picker's start folder (design-web.md §9.8): absolute, as the TLS paths and for the
+    // same reason; null or '' clears it (back to the home folder).
+    const start = args.startFolder
+    if (start !== undefined && start !== null && start !== '' && (typeof start !== 'string' || !isAbsolute(start))) {
+      throw new Error('web set: --start-folder takes an absolute path, or \'\' for the home folder')
     }
     if ('confirm' in args) patch.confirm = risksOf(args.confirm, 'web set')
     await applyPatch(deps, patch as WebAccessPatch)

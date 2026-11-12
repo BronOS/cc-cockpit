@@ -3804,6 +3804,14 @@ ul.settings-alert {
   visibility: visible;
 }
 
+/* A short note at a row's right (server mode's browser picker: when it was last opened). */
+.picker-row-meta {
+  flex: none;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-subtle);
+  white-space: nowrap;
+}
+
 /* A folder that is gone: the name and path step back, the badge and the actions do not. */
 .picker-row.missing .picker-row-name,
 .picker-row.missing .picker-row-path,
@@ -3838,6 +3846,22 @@ ul.settings-alert {
 }
 .picker-quiet:hover {
   background: var(--cc-surface-3);
+  color: var(--cc-fg);
+}
+
+/* A destructive confirm in a row (the browser picker's Forget): the one red control in it. */
+.picker-quiet.picker-danger {
+  border-color: color-mix(in srgb, var(--cc-status-ended) 55%, transparent);
+  color: var(--cc-status-ended);
+}
+.picker-quiet.picker-danger:hover {
+  background: var(--cc-bg-error);
+}
+.picker-row-confirm {
+  align-items: center;
+}
+.picker-confirm-text {
+  font-size: var(--cc-text-sm);
   color: var(--cc-fg);
 }
 

@@ -104,8 +104,11 @@ stderr).
   --tls-key <pem> | --no-tls] [--confirm none-network|plain-http]...` changes where it listens, as
   the Settings page does (`--origin ''` clears the origin; `--host` replaces the list; TLS paths are
   taken against the current folder). No sign-in or plain http on a network address is refused with
-  the warning text until the same command is run with its `--confirm` (once per risk). Each change
-  is written to `web-access.log`, never a link or a password.
+  the warning text until the same command is run with its `--confirm` (once per risk).
+  `ccc web set --start-folder <path>` sets where the browser picker's folder browser starts (taken
+  against the current folder; `''` goes back to the default, the server user's home folder; a folder
+  that is gone when a browser asks falls back to home with a note); `ccc web status` shows it. Each
+  change is written to `web-access.log`, never a link or a password.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 - `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
   (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost

@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ProjectRefusal } from '../../src/main/projects/registry'
+import { ProjectRefusal, ProjectRegistry } from '../../src/main/projects/registry'
+import { forgetMissing, relinkMissing } from '../../src/main/restore'
 import { MAX_OPEN_PATH, openProjectFromWeb, parseOpenProjectBody, type OpenProjectDeps } from '../../src/main/web/open-project'
 
 describe('parseOpenProjectBody', () => {
@@ -27,6 +28,14 @@ describe('parseOpenProjectBody', () => {
   it('refuses an empty, non-string, NUL-carrying or oversize value', async () => {
     for (const body of [{ open: '' }, { reopen: '' }, { open: 3 }, { reopen: null }, { open: ['/a'] }, { open: '/a\0b' }, { open: `/${'a'.repeat(MAX_OPEN_PATH)}` }]) {
       expect(parseOpenProjectBody(body), JSON.stringify(body).slice(0, 40)).toHaveProperty('error')
+    }
+  })
+
+  it('takes relink with its new folder and forget, each with a project id', async () => {
+    expect(parseOpenProjectBody({ relink: 'abc', path: '/srv/new' })).toEqual({ relink: 'abc', path: '/srv/new' })
+    expect(parseOpenProjectBody({ forget: 'abc', path: '/ignored' })).toEqual({ forget: 'abc' })
+    for (const body of [{ relink: 'abc' }, { relink: 'abc', path: '' }, { relink: 'abc', path: 3 }, { relink: '', path: '/a' }, { relink: 'a', path: '/a\0b' }, { forget: '' }, { forget: 1 }, { forget: 'a', reopen: 'b' }, { relink: 'a', path: '/x', open: '/y' }]) {
+      expect(parseOpenProjectBody(body), JSON.stringify(body)).toHaveProperty('error')
     }
   })
 
@@ -148,5 +157,120 @@ describe('openProjectFromWeb', () => {
     expect(await reply).toEqual({ unauthorized: true })
     expect(asked).toEqual([false])
     expect(calls).toEqual([])
+  })
+})
+
+// Relink and forget from a server's browser (design-web.md §9.8): main's own relinkMissing /
+// forgetMissing behind the checked request, the new folder checked as an open's path, a refusal's
+// text answered, and nothing changed for a device no longer signed in.
+describe('openProjectFromWeb: relink and forget', () => {
+  let root: string
+  let dataDir: string
+  let registry: ProjectRegistry
+  let id: string
+  let gone: string
+  let opened: string[]
+  let deps: OpenProjectDeps
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'ccc-relink-'))
+    dataDir = join(root, 'data')
+    mkdirSync(dataDir)
+    registry = new ProjectRegistry({ dataDir, log: () => {} })
+    gone = join(root, 'gone')
+    mkdirSync(gone)
+    id = registry.openPath(gone).id
+    registry.update(id, (r) => {
+      r.tabs = [{ id: 't', kind: 'shell', cwd: gone }]
+    })
+    opened = []
+    // As main wires it (index.ts): the desktop's code, then open the relinked folder.
+    deps = {
+      openPath: (path) => {
+        opened.push(path)
+        return registry.openPath(path)
+      },
+      openRecent: () => {
+        throw new ProjectRefusal('not a recent project')
+      },
+      relink: (projectId, path) => {
+        const view = relinkMissing(registry, projectId, path)
+        opened.push(view.path)
+        return registry.openPath(view.path)
+      },
+      forget: (projectId) => forgetMissing(registry, projectId)
+    }
+  })
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  it('relinks a missing project to an existing folder (its tabs dropped) and opens it there', async () => {
+    rmSync(gone, { recursive: true })
+    const moved = join(root, 'moved')
+    mkdirSync(moved)
+    expect(await openProjectFromWeb({ relink: id, path: `${root}/x/../moved/` }, deps, signedIn)).toEqual({ id })
+    expect(registry.get(id)).toMatchObject({ path: moved, missing: false, tabs: [] })
+    expect(opened).toEqual([moved])
+  })
+
+  it('refuses a relink to a relative path, a file or nothing, and of a project that is fine or not recent, changing nothing', async () => {
+    const moved = join(root, 'moved')
+    mkdirSync(moved)
+    writeFileSync(join(root, 'file.txt'), 'x')
+    // Fine (not missing): the desktop's refusal, as text.
+    expect(await openProjectFromWeb({ relink: id, path: moved }, deps, signedIn)).toEqual({ error: 'the project folder is not missing' })
+    rmSync(gone, { recursive: true })
+    expect(await openProjectFromWeb({ relink: id, path: 'moved' }, deps, signedIn)).toEqual({ error: 'not an absolute path: moved' })
+    expect(await openProjectFromWeb({ relink: id, path: join(root, 'file.txt') }, deps, signedIn)).toEqual({ error: `not a folder: ${join(root, 'file.txt')}` })
+    expect(await openProjectFromWeb({ relink: id, path: join(root, 'nope') }, deps, signedIn)).toEqual({ error: `not a folder: ${join(root, 'nope')}` })
+    expect(await openProjectFromWeb({ relink: 'ffffffffffffffff', path: moved }, deps, signedIn)).toEqual({ error: 'not a recent project' })
+    // Another project's folder: one record per folder.
+    const other = registry.openPath(moved)
+    expect(await openProjectFromWeb({ relink: id, path: moved }, deps, signedIn)).toEqual({ error: `that folder is already a project (${other.id})` })
+    expect(registry.get(id)).toMatchObject({ path: gone, missing: true })
+    expect(registry.get(id)?.tabs).toHaveLength(1)
+    expect(opened).toEqual([])
+  })
+
+  it('forgets a missing recent project and its saved tabs; refuses one that is fine or unknown', async () => {
+    expect(await openProjectFromWeb({ forget: id }, deps, signedIn)).toEqual({ error: 'the project folder is not missing' })
+    expect(await openProjectFromWeb({ forget: 'ffffffffffffffff' }, deps, signedIn)).toEqual({ error: 'not a recent project' })
+    expect(registry.get(id)).toBeDefined()
+    rmSync(gone, { recursive: true })
+    expect(await openProjectFromWeb({ forget: id }, deps, signedIn)).toEqual({ id })
+    expect(registry.get(id)).toBeUndefined()
+    expect(registry.recent()).toEqual([])
+  })
+
+  it('a device no longer signed in relinks and forgets nothing, also when revoked during the folder check', async () => {
+    rmSync(gone, { recursive: true })
+    const moved = join(root, 'moved')
+    mkdirSync(moved)
+    expect(await openProjectFromWeb({ forget: id }, deps, () => false)).toEqual({ unauthorized: true })
+    expect(await openProjectFromWeb({ relink: id, path: moved }, deps, () => false)).toEqual({ unauthorized: true })
+    let finish!: (isDir: boolean) => void
+    let signed = true
+    const reply = openProjectFromWeb({ relink: id, path: moved }, { ...deps, isDirectory: () => new Promise<boolean>((r) => (finish = r)) }, () => signed)
+    signed = false
+    finish(true)
+    expect(await reply).toEqual({ unauthorized: true })
+    expect(registry.get(id)).toMatchObject({ path: gone, missing: true })
+  })
+
+  it('a caller without relink or forget is refused, and an unexpected failure is generic with the detail logged', async () => {
+    rmSync(gone, { recursive: true })
+    const moved = join(root, 'moved')
+    mkdirSync(moved)
+    const bare: OpenProjectDeps = { openPath: deps.openPath, openRecent: deps.openRecent }
+    expect(await openProjectFromWeb({ forget: id }, bare, signedIn)).toEqual({ error: 'forget is not available here' })
+    expect(await openProjectFromWeb({ relink: id, path: moved }, bare, signedIn)).toEqual({ error: 'relink is not available here' })
+    const logged: string[] = []
+    const failing: OpenProjectDeps = {
+      ...deps,
+      log: (l) => logged.push(l),
+      forget: () => {
+        throw new Error("EACCES: unlink '/data/projects/x.json'")
+      }
+    }
+    expect(await openProjectFromWeb({ forget: id }, failing, signedIn)).toEqual({ error: 'forgetting the project failed' })
+    expect(logged.join()).toContain('/data/projects/x.json')
   })
 })

@@ -3,8 +3,7 @@ import type { PickerInfo, ProjectSummary } from '../../shared/ipc'
 import { displayChord } from '../commands/keybindings'
 import { splitChord } from '../../shared/keys'
 import { ipcErrorMessage } from '../ipc-error'
-import { ProjectDot } from '../status/ProjectDot'
-import { AppIcon, FolderGlyph, SearchGlyph } from './icons'
+import { PickerEmpty, PickerError, PickerHeader, PickerSearch, PickerSection, ProjectRow } from './parts'
 import { filterProjects, firstOpenable, moveHighlight, tildePath } from './picker-model'
 
 const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
@@ -110,12 +109,7 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
 
   return (
     <main className="picker">
-      <header className="picker-header">
-        <AppIcon size={56} />
-        <div className="picker-title">
-          <h1>cc-cockpit</h1>
-          <p className="picker-tagline">Claude Code sessions, one cockpit</p>
-        </div>
+      <PickerHeader tagline="Claude Code sessions, one cockpit">
         <button
           type="button"
           className="picker-primary"
@@ -130,88 +124,48 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
             Cancel
           </button>
         )}
-      </header>
+      </PickerHeader>
 
-      {error && (
-        <p role="alert" className="picker-error">
-          {error}
-        </p>
-      )}
+      {error && <PickerError>{error}</PickerError>}
 
-      <section className="picker-recent" aria-labelledby="picker-recent-title">
-        <h2 id="picker-recent-title">Recent projects</h2>
-        <div className="picker-panel">
-          {recent === null ? null : recent.length === 0 ? (
-            <p className="picker-empty">No recent projects.</p>
-          ) : (
-            <>
-              <label className="picker-search">
-                <SearchGlyph />
-                <input
-                  type="text"
-                  autoFocus
-                  spellCheck={false}
-                  placeholder="Search recent projects…"
-                  aria-label="Search recent projects"
-                  aria-controls="picker-list"
-                  aria-activedescendant={highlight >= 0 ? rowId(highlight) : undefined}
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value)
-                    setHighlightId(null)
-                  }}
-                  onKeyDown={onFilterKey}
-                />
-              </label>
-              {rows.length === 0 ? (
-                <p className="picker-empty">No projects match “{query.trim()}”.</p>
-              ) : (
-                <ul id="picker-list" className="picker-list" ref={listRef}>
-                  {rows.map((p, i) => (
-                    <li
-                      key={p.id}
-                      className={`picker-row${p.missing ? ' missing' : ''}${i === highlight ? ' highlighted' : ''}`}
-                      onMouseMove={() => {
-                        if (!p.missing && i !== highlight) setHighlightId(p.id)
-                      }}
-                    >
-                      <button
-                        type="button"
-                        id={rowId(i)}
-                        className="picker-open"
-                        disabled={p.missing}
-                        // The name alone is the button's name (specs and screen readers find a
-                        // project by it); the path, and that it is missing, describe it.
-                        aria-labelledby={`${rowId(i)}-name`}
-                        aria-describedby={`${rowId(i)}-path`}
-                        title={p.missing ? `${p.path} (folder missing)` : p.path}
-                        onClick={() => open(p)}
-                      >
-                        <FolderGlyph />
-                        <span className="picker-row-text">
-                          <span className="picker-row-line">
-                            <ProjectDot color={p.color} />
-                            <span className="picker-row-name" id={`${rowId(i)}-name`}>
-                              {p.name}
-                            </span>
-                            {p.missing && (
-                              <span className="picker-badge" aria-hidden="true">
-                                missing
-                              </span>
-                            )}
-                          </span>
-                          <span className="picker-row-path" id={`${rowId(i)}-path`}>
-                            {tildePath(p.path, picker.home)}
-                            {p.missing && <span className="visually-hidden"> (missing)</span>}
-                          </span>
-                        </span>
-                        {!p.missing && (
-                          <kbd className="picker-enter" aria-hidden="true">
-                            ↵
-                          </kbd>
-                        )}
-                      </button>
-                      {p.missing && (
+      <PickerSection id="picker-recent-title" title="Recent projects">
+        {recent === null ? null : recent.length === 0 ? (
+          <PickerEmpty>No recent projects.</PickerEmpty>
+        ) : (
+          <>
+            <PickerSearch
+              label="Search recent projects"
+              autoFocus
+              placeholder="Search recent projects…"
+              aria-controls="picker-list"
+              aria-activedescendant={highlight >= 0 ? rowId(highlight) : undefined}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setHighlightId(null)
+              }}
+              onKeyDown={onFilterKey}
+            />
+            {rows.length === 0 ? (
+              <PickerEmpty>No projects match “{query.trim()}”.</PickerEmpty>
+            ) : (
+              <ul id="picker-list" className="picker-list" ref={listRef}>
+                {rows.map((p, i) => (
+                  <ProjectRow
+                    key={p.id}
+                    rowId={rowId(i)}
+                    name={p.name}
+                    path={tildePath(p.path, picker.home)}
+                    title={p.missing ? `${p.path} (folder missing)` : p.path}
+                    color={p.color}
+                    missing={p.missing}
+                    highlighted={i === highlight}
+                    onHover={() => {
+                      if (!p.missing && i !== highlight) setHighlightId(p.id)
+                    }}
+                    onOpen={() => open(p)}
+                    actions={
+                      p.missing && (
                         // A folder that moved: pick the new one (opens the project, without its old
                         // tabs). A folder that is gone for good: forget the project.
                         <span className="picker-row-actions">
@@ -230,15 +184,15 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
                             Forget
                           </button>
                         </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-        </div>
-      </section>
+                      )
+                    }
+                  />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </PickerSection>
     </main>
   )
 }

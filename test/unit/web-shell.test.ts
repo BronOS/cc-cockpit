@@ -8,7 +8,19 @@ import { openProjectEntries } from '../../src/main/web/connection'
 import { shellFileOf } from '../../src/main/web/shell-files'
 import { armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, takeLoadTake } from '../../src/renderer/shell-kind'
 import { topStripClass } from '../../src/renderer/status/strip-order'
-import { loadOpenProjects, openProject, projectHref } from '../../src/renderer/web/picker-model'
+import {
+  breadcrumbs,
+  childPath,
+  commonPrefix,
+  completions,
+  completionTarget,
+  expandHome,
+  filterFolders,
+  loadFolders,
+  loadOpenProjects,
+  openProject,
+  projectHref
+} from '../../src/renderer/web/picker-model'
 import {
   askConfirm,
   confirmPollOf,
@@ -22,7 +34,17 @@ import {
   signInWithPassword,
   type SignInEnv
 } from '../../src/renderer/web/sign-in'
-import { CONFIRM_ASK_PATH, CONFIRM_POLL_PATH, PROJECTS_PATH, SESSION_PATH, SIGN_IN_LINK_PATH, SIGN_IN_PASSWORD_PATH } from '../../src/shared/web-protocol'
+import {
+  CONFIRM_ASK_PATH,
+  CONFIRM_POLL_PATH,
+  FOLDERS_PATH,
+  MAX_FOLDER_ENTRIES,
+  PROJECTS_PATH,
+  SESSION_PATH,
+  SIGN_IN_LINK_PATH,
+  SIGN_IN_PASSWORD_PATH,
+  type WebFolderEntry
+} from '../../src/shared/web-protocol'
 
 describe('shellFileOf', () => {
   const root = '/app/out/renderer'
@@ -355,6 +377,140 @@ describe('the project picker', () => {
       { id: 'p1', name: 'one', path: '/w/one' }
     ])
     expect(openProjectEntries({ projectWindows: () => [] }, (id) => records.get(id))).toEqual([])
+  })
+
+  it('server mode: the colour (checked again), when each was last opened and which server it is', async () => {
+    const body = {
+      projects: [{ id: 'p1', name: 'one', path: '/w/one', color: 'teal' }, { id: 'p2', name: 'two', path: '/w/two', color: 'red; background: url(x)' }],
+      server: true,
+      recent: [{ id: 'r1', name: 'r', path: '/w/r', missing: false, color: '#a1b2c3', lastOpenedAt: 12 }, { id: 'r2', name: 's', path: '/w/s', missing: true, lastOpenedAt: 'x' }],
+      host: { name: 'box', user: 'me', home: '/home/me', extra: 1 }
+    }
+    expect(await loadOpenProjects(answer(200, body))).toEqual({
+      ok: true,
+      projects: [
+        { id: 'p1', name: 'one', path: '/w/one', color: 'teal' },
+        { id: 'p2', name: 'two', path: '/w/two' }
+      ],
+      server: true,
+      recent: [
+        { id: 'r1', name: 'r', path: '/w/r', missing: false, color: '#a1b2c3', lastOpenedAt: 12 },
+        { id: 'r2', name: 's', path: '/w/s', missing: true }
+      ],
+      host: { name: 'box', user: 'me', home: '/home/me' }
+    })
+    // A host off server mode, or a damaged one, is left out.
+    expect(await loadOpenProjects(answer(200, { projects: [], host: body.host }))).not.toHaveProperty('host')
+    expect(await loadOpenProjects(answer(200, { projects: [], server: true, host: { name: 'box' } }))).not.toHaveProperty('host')
+  })
+
+  it('relinks and forgets with the same JSON POST as the open', async () => {
+    const fetchFn = vi.fn(answer(200, { id: 'g1' }))
+    expect(await openProject(fetchFn, { relink: 'g1', path: '/srv/moved' })).toEqual({ ok: true, id: 'g1' })
+    expect(await openProject(fetchFn, { forget: 'g1' })).toEqual({ ok: true, id: 'g1' })
+    expect(fetchFn.mock.calls.map((c) => (c as unknown as [string, { body: string }])[1].body)).toEqual(['{"relink":"g1","path":"/srv/moved"}', '{"forget":"g1"}'])
+    expect(await openProject(answer(400, { error: 'the project folder is not missing' }), { forget: 'g1' })).toEqual({
+      ok: false,
+      signedOut: false,
+      error: 'the project folder is not missing'
+    })
+  })
+})
+
+// Server mode's folder browser, the page's side (renderer/web/picker-model.ts, folder-browser.tsx).
+describe('the folder browser', () => {
+  const answer = (status: number, body: unknown) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })
+  const listing = {
+    path: '/home/me/src',
+    parent: '/home/me',
+    home: '/home/me',
+    folders: [{ name: 'app', git: true }, { name: 'docs', project: true, extra: 1 }, { name: 'link', link: true }] as WebFolderEntry[],
+    hiddenCount: 2,
+    truncated: false,
+    here: { git: false, project: true }
+  }
+
+  it('asks with a JSON POST and checks every field of the answer', async () => {
+    const fetchFn = vi.fn(answer(200, { ...listing, note: 'start folder gone' }))
+    expect(await loadFolders(fetchFn, { path: '/home/me/src', hidden: true })).toEqual({
+      ok: true,
+      listing: {
+        ...listing,
+        folders: [{ name: 'app', git: true }, { name: 'docs', project: true }, { name: 'link', link: true }],
+        note: 'start folder gone'
+      }
+    })
+    expect(fetchFn).toHaveBeenCalledWith(FOLDERS_PATH, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"path":"/home/me/src","hidden":true}'
+    })
+    // A name that is not one path segment is dropped (it is joined onto the path).
+    const bad = { ...listing, folders: [{ name: '..' }, { name: 'a/b' }, { name: '' }, { name: 3 }, 'x', { name: 'ok' }] }
+    expect(await loadFolders(answer(200, bad), {})).toMatchObject({ ok: true, listing: { folders: [{ name: 'ok' }] } })
+    // More than the cap is cut to it.
+    const many = { ...listing, folders: Array.from({ length: MAX_FOLDER_ENTRIES + 3 }, (_, i) => ({ name: `d${i}` })) }
+    const capped = await loadFolders(answer(200, many), {})
+    expect(capped.ok && capped.listing.folders.length).toBe(MAX_FOLDER_ENTRIES)
+    expect(await loadFolders(answer(200, { ...listing, path: 'relative' }), {})).toMatchObject({ ok: false, signedOut: false })
+  })
+
+  it('an unreadable folder is a listing with its error; a refused request, signed out or no answer is not', async () => {
+    expect(await loadFolders(answer(200, { path: '/root', parent: '/', home: '/home/me', error: 'permission denied' }), {})).toEqual({
+      ok: true,
+      listing: { path: '/root', parent: '/', home: '/home/me', folders: [], hiddenCount: 0, truncated: false, here: { git: false, project: false }, error: 'permission denied' }
+    })
+    expect(await loadFolders(answer(400, { error: 'not an absolute path: x' }), { path: 'x' })).toEqual({ ok: false, signedOut: false, error: 'not an absolute path: x' })
+    expect(await loadFolders(answer(401, {}), {})).toEqual({ ok: false, signedOut: true })
+    expect(await loadFolders(answer(404, 'not found'), {})).toEqual({ ok: false, signedOut: false, error: 'the host answered 404' })
+    expect(
+      await loadFolders(async () => {
+        throw new TypeError('Failed to fetch')
+      }, {})
+    ).toEqual({ ok: false, signedOut: false, error: 'the host did not answer' })
+  })
+
+  it('breadcrumbs start at ~ under home, else at /', () => {
+    expect(breadcrumbs('/home/me/src/app', '/home/me')).toEqual([
+      { label: '~', path: '/home/me' },
+      { label: 'src', path: '/home/me/src' },
+      { label: 'app', path: '/home/me/src/app' }
+    ])
+    expect(breadcrumbs('/home/me', '/home/me/')).toEqual([{ label: '~', path: '/home/me' }])
+    // `/home/meg` is not under `/home/me`.
+    expect(breadcrumbs('/home/meg', '/home/me')).toEqual([
+      { label: '/', path: '/' },
+      { label: 'home', path: '/home' },
+      { label: 'meg', path: '/home/meg' }
+    ])
+    expect(breadcrumbs('/', '/home/me')).toEqual([{ label: '/', path: '/' }])
+    // A home of `/` shortens nothing.
+    expect(breadcrumbs('/srv', '/')).toEqual([
+      { label: '/', path: '/' },
+      { label: 'srv', path: '/srv' }
+    ])
+  })
+
+  it('joins, filters, expands ~ and completes a typed path from a listing', () => {
+    expect(childPath('/', 'srv')).toBe('/srv')
+    expect(childPath('/srv', 'app')).toBe('/srv/app')
+    expect(filterFolders(listing.folders, ' DO ')).toEqual([{ name: 'docs', project: true, extra: 1 }])
+    expect(filterFolders(listing.folders, '')).toHaveLength(3)
+    expect(expandHome('~', '/home/me')).toBe('/home/me')
+    expect(expandHome('~/src', '/home/me/')).toBe('/home/me/src')
+    expect(expandHome('~other/x', '/home/me')).toBe('~other/x')
+    expect(completionTarget('/home/me/sr', '/home/me')).toEqual({ dir: '/home/me', prefix: 'sr' })
+    expect(completionTarget('~/src/', '/home/me')).toEqual({ dir: '/home/me/src', prefix: '' })
+    expect(completionTarget('/sr', '/home/me')).toEqual({ dir: '/', prefix: 'sr' })
+    expect(completionTarget('src', '/home/me')).toBeUndefined()
+    const folders = [{ name: 'App' }, { name: 'apps' }, { name: 'docs' }]
+    expect(completions(folders, { dir: '/srv', prefix: 'ap' })).toEqual(['/srv/App', '/srv/apps'])
+    expect(completions(folders, { dir: '/', prefix: '' }, 2)).toEqual(['/App', '/apps'])
+    expect(commonPrefix(['/srv/app', '/srv/apps'])).toBe('/srv/app')
+    expect(commonPrefix(['/srv/App', '/srv/apps'])).toBe('/srv/')
+    expect(commonPrefix([])).toBe('')
   })
 })
 

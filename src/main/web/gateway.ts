@@ -42,22 +42,28 @@ import {
   CLOSE,
   CONFIRM_ASK_PATH,
   CONFIRM_POLL_PATH,
+  FOLDERS_PATH,
   PROJECTS_PATH,
   SESSION_PATH,
   SIGN_IN_LINK_PATH,
   SIGN_IN_PASSWORD_PATH,
   type WebConfirmTicket,
+  type WebFoldersReply,
+  type WebFoldersRequest,
   type WebOpenProjectRequest,
   type WebProjectEntry,
   type WebProjectsReply,
   type WebRecentProject,
+  type WebServerHost,
   type WebSessionReply
 } from '../../shared/web-protocol'
+import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import type { AccessLog } from './access-log'
 import { deviceCookie, type SignInResult, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp, type OriginRule } from './checks'
 import type { WebDevice } from './devices'
+import { parseFoldersBody } from './list-folders'
 import { parseOpenProjectBody, type OpenProjectOutcome } from './open-project'
 import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
 import { MAX_FRAME_BYTES, WS_PATH } from './protocol'
@@ -97,6 +103,8 @@ export { CONFIRM_ASK_PATH, CONFIRM_POLL_PATH, SIGN_IN_LINK_PATH, SIGN_IN_PASSWOR
 export { SESSION_PATH }
 /** The open project windows, for the web project picker (and server mode's open); needs a device. */
 export { PROJECTS_PATH }
+/** Server mode's folder browser (list-folders.ts); needs a device, a POST with the Origin check. */
+export { FOLDERS_PATH }
 /** A sign-in body is a token (or a password, or a ticket) and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
 
@@ -120,8 +128,9 @@ export interface GatewayDeps {
   openProjects?: () => WebProjectEntry[]
   /**
    * Server mode only (design-web.md §9.8): main passes it when its own `server` flag is on, never
-   * otherwise. Present, the picker's GET adds `server` and the recent projects, and the POST opens a
-   * folder or reopens a recent one; absent, the POST is 404 as any unknown route.
+   * otherwise. Present, the picker's GET adds `server`, the recent projects and the host, the POST
+   * opens a folder, reopens a recent one, or relinks or forgets a missing one, and FOLDERS_PATH lists
+   * a folder's subfolders; absent, both POSTs are 404 as any unknown route.
    */
   serverProjects?: ServerProjects
   /** Plugin files and inline overlays (plugin-pages.ts). Absent: `/p/` and `/o/` are 404. */
@@ -140,6 +149,14 @@ export interface ServerProjects {
    * changes anything, after its last await (open-project.ts), and open nothing when it is false.
    */
   open(request: WebOpenProjectRequest, authorized: () => boolean): OpenProjectOutcome | Promise<OpenProjectOutcome>
+  /** Which server this is, for the picker's welcome (host name, OS user, home folder). */
+  host(): WebServerHost
+  /**
+   * A checked body (parseFoldersBody): one folder's subfolders, or the text why it cannot be listed
+   * (list-folders.ts). Read-only, so no `authorized` at the end: the gateway's checks before it are
+   * the ones that count, and a listing finishing after a revoke shows nothing it had not shown.
+   */
+  folders(request: WebFoldersRequest): Promise<WebFoldersReply>
 }
 
 export type GatewayStatus =
@@ -170,6 +187,18 @@ interface SignInAnswer {
   status: number
   body: unknown
   cookie?: string
+}
+
+/**
+ * A project as the picker's wire has it: the plain fields, and the colour checked once more (the
+ * registry repaired it already; this is the last stop before a page that drops it into a style, as
+ * router.ts `summary` for the desktop picker).
+ */
+function entryOf(p: { id: string; name: string; path: string; color?: unknown }): WebProjectEntry {
+  const out: WebProjectEntry = { id: p.id, name: p.name, path: p.path }
+  const color = projectColorOf(p.color)
+  if (color !== undefined) out.color = color
+  return out
 }
 
 /** The body as text, or undefined once it passes `max` bytes (the rest is not read). */
@@ -569,6 +598,12 @@ export class WebGateway {
         if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'opening the project failed' })
       })
     }
+    if (method === 'POST' && path === FOLDERS_PATH && serverProjects) {
+      return void this.listFolders(req, res, host, serverProjects).catch((err: unknown) => {
+        this.deps.log(`web access: listing a folder failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'listing the folder failed' })
+      })
+    }
     this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
   }
 
@@ -640,7 +675,7 @@ export class WebGateway {
   /** The open project windows, plain data only; a failing source is an empty list, never a 500 with its text. */
   private openProjects(): WebProjectEntry[] {
     try {
-      return (this.deps.openProjects?.() ?? []).map((p) => ({ id: p.id, name: p.name, path: p.path }))
+      return (this.deps.openProjects?.() ?? []).map(entryOf)
     } catch (err) {
       this.deps.log(`web access: listing projects failed: ${errorText(err)}`)
       return []
@@ -654,11 +689,39 @@ export class WebGateway {
     if (!serverProjects) return { projects }
     let recent: WebRecentProject[] = []
     try {
-      recent = serverProjects.recent().map((p) => ({ id: p.id, name: p.name, path: p.path, missing: p.missing === true }))
+      recent = serverProjects.recent().map((p) => {
+        const out: WebRecentProject = { ...entryOf(p), missing: p.missing === true }
+        if (typeof p.lastOpenedAt === 'number' && Number.isFinite(p.lastOpenedAt)) out.lastOpenedAt = p.lastOpenedAt
+        return out
+      })
     } catch (err) {
       this.deps.log(`web access: listing recent projects failed: ${errorText(err)}`)
     }
-    return { projects, server: true, recent }
+    const reply: WebProjectsReply = { projects, server: true, recent }
+    try {
+      const h = serverProjects.host()
+      reply.host = { name: h.name, user: h.user, home: h.home }
+    } catch (err) {
+      // The welcome goes without it; the list is what matters.
+      this.deps.log(`web access: reading the host name failed: ${errorText(err)}`)
+    }
+    return reply
+  }
+
+  /**
+   * Server mode's folder browser (list-folders.ts). Origin and cookie were checked before the route,
+   * as for every POST; the body is read capped, the cookie checked again once it is in (a slow body
+   * outliving a revoke learns nothing), and only the checked request reaches main.
+   */
+  private async listFolders(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects): Promise<void> {
+    const read = await this.readJson(req, res, host)
+    if (!read) return
+    if (!this.deps.auth.authorize(req.headers.cookie)) return this.json(res, host, 401, { error: 'not signed in' })
+    const request = parseFoldersBody(read.body)
+    if ('error' in request) return this.json(res, host, 400, request)
+    if (res.destroyed) return
+    const reply = await projects.folders(request)
+    this.json(res, host, 200, reply)
   }
 
   /**
@@ -681,8 +744,9 @@ export class WebGateway {
     const reply = await projects.open(request, () => this.deps.auth.authorize(req.headers.cookie) !== undefined)
     if ('unauthorized' in reply) return this.json(res, host, 401, { error: 'not signed in' })
     if ('error' in reply) return this.json(res, host, 400, { error: reply.error })
-    // Which device opened which project, for the server's log (no path: the id names it).
-    this.deps.log(`web access: device ${device.id} opened project ${reply.id}`)
+    // Which device did what to which project, for the server's log (no path: the id names it).
+    const did = 'relink' in request ? 'relinked and opened' : 'forget' in request ? 'forgot' : 'opened'
+    this.deps.log(`web access: device ${device.id} ${did} project ${reply.id}`)
     this.json(res, host, 200, { id: reply.id })
   }
 

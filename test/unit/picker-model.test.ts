@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterProjects, firstOpenable, moveHighlight, tildePath } from '../../src/renderer/picker/picker-model'
+import { filterProjects, firstOpenable, moveHighlight, openedAgo, tildePath } from '../../src/renderer/picker/picker-model'
 import type { ProjectSummary } from '../../src/shared/ipc'
 
 const p = (name: string, path: string, missing = false): ProjectSummary => ({ id: name, name, path, missing })
@@ -59,5 +59,21 @@ describe('highlight', () => {
     expect(moveHighlight(rows, -1, 1)).toBe(1)
     expect(moveHighlight(rows, -1, -1)).toBe(1)
     expect(moveHighlight([], -1, 1)).toBe(-1)
+  })
+})
+
+describe('openedAgo', () => {
+  const now = Date.UTC(2026, 10, 11, 12, 0, 0)
+  it('says how long ago in short words, then the date', () => {
+    expect(openedAgo(now - 30_000, now)).toBe('just now')
+    expect(openedAgo(now + 3_600_000, now)).toBe('just now') // another clock ahead
+    expect(openedAgo(now - 5 * 60_000, now)).toBe('5 min ago')
+    expect(openedAgo(now - 3 * 3_600_000, now)).toBe('3 h ago')
+    expect(openedAgo(now - 30 * 3_600_000, now)).toBe('yesterday')
+    expect(openedAgo(now - 4 * 86_400_000, now)).toBe('4 days ago')
+    expect(openedAgo(now - 21 * 86_400_000, now)).toBe('3 weeks ago')
+    const old = now - 90 * 86_400_000
+    const d = new Date(old)
+    expect(openedAgo(old, now)).toBe(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
   })
 })

@@ -25,7 +25,7 @@ import {
 } from 'electron'
 import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, hostname, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
@@ -102,7 +102,7 @@ import { PanelPortHub } from './plugins/panel-ports'
 import { pluginFileUrl, servePluginRequest } from './plugins/plugin-protocol'
 import { PluginLogWriter } from './plugins/plugin-log'
 import { PluginIndex } from './plugins/plugin-index'
-import { ProjectRegistry, realPathOf } from './projects/registry'
+import { ProjectRefusal, ProjectRegistry, realPathOf } from './projects/registry'
 import { buildRestorePlan, forgetMissing, planLaunch, relinkMissing, TabRestorer } from './restore'
 import { PluginOAuth } from './oauth/plugin-oauth'
 import { PluginSecrets } from './secrets/plugin-secrets'
@@ -169,7 +169,7 @@ import { revocationNotice, revocationNoticeLines } from './marketplace/marketpla
 import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
-import { CLOSE, type WebOpenProjectRequest } from '../shared/web-protocol'
+import { CLOSE, type WebFoldersRequest, type WebOpenProjectRequest } from '../shared/web-protocol'
 import type { WebSecretsStatus } from '../shared/web-access'
 import { blurSupport } from './windows/window-chrome'
 import { ViewRegistry } from './views/view-registry'
@@ -177,10 +177,11 @@ import { AccessLog } from './web/access-log'
 import { WebAuth } from './web/auth'
 import { DeviceStore } from './web/devices'
 import { openProjectEntries, WebConnections, windowSnapshot } from './web/connection'
+import { listFolders } from './web/list-folders'
 import { openProjectFromWeb } from './web/open-project'
 import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
-import { storedWebAccess } from './web/settings'
+import { storedWebAccess, webAccessOf } from './web/settings'
 import { WebGateway } from './web/gateway'
 import { PluginPages } from './web/plugin-pages'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
@@ -1634,6 +1635,20 @@ function start(server: boolean): void {
     sdkFile: join(__dirname, '../sdk/panel.js'),
     log: warnLog
   })
+  /**
+   * The home folder's real path: project paths are stored resolved, so a symlinked home (or macOS
+   * /var -> /private/var in a test HOME) would otherwise never prefix them and no picker row would
+   * show `~`; the server's folder browser starts there too.
+   */
+  const realHome = (): string => {
+    try {
+      return realpathSync(homedir())
+    } catch {
+      return homedir()
+    }
+  }
+  /** The pickers' relink of a missing project (desktop dialog, server browser): restore.ts's checks, then open it there. */
+  const relinkAndOpen = (id: string, path: string): { id: string } => windows.openPath(relinkMissing(registry, id, path).path)
   const webGateway = new WebGateway({
     log: warnLog,
     auth: webAuth,
@@ -1649,7 +1664,7 @@ function start(server: boolean): void {
     ...(server
       ? {
           serverProjects: {
-            // Whole records: the gateway picks the four fields that go on the wire.
+            // Whole records: the gateway picks the fields that go on the wire.
             recent: () => registry.recent().filter((p) => windows.windowIdOf(p.id) === undefined),
             open: (request: WebOpenProjectRequest, authorized: () => boolean) =>
               openProjectFromWeb(
@@ -1657,10 +1672,31 @@ function start(server: boolean): void {
                 {
                   openPath: (path) => windows.openPath(path),
                   openRecent: (id) => windows.openRecent(id),
+                  // The desktop picker's Relink… and Forget (restore.ts checks it is a recent project
+                  // whose folder is gone). Refused while the project has a window: the browser list
+                  // never offers one (recent above leaves them out), so only a forged id gets here,
+                  // and forgetting a project under its open window would pull its record away.
+                  relink: (id, path) => {
+                    if (windows.windowIdOf(id) !== undefined) throw new ProjectRefusal('the project has a window open; close it first')
+                    return relinkAndOpen(id, path)
+                  },
+                  forget: (id) => {
+                    if (windows.windowIdOf(id) !== undefined) throw new ProjectRefusal('the project has a window open; close it first')
+                    forgetMissing(registry, id)
+                  },
                   log: warnLog
                 },
                 authorized
-              )
+              ),
+            host: () => ({ name: hostname(), user: userInfo().username, home: realHome() }),
+            // The folder browser (list-folders.ts): no new reach, the path field above opens any of these.
+            folders: (request: WebFoldersRequest) =>
+              listFolders(request, {
+                home: realHome,
+                startFolder: () => webAccessOf(registry.app.data.webAccess).startFolder,
+                projectPaths: () => new Set(registry.list().map((p) => p.path)),
+                log: warnLog
+              })
           }
         }
       : {})
@@ -1926,15 +1962,8 @@ function start(server: boolean): void {
     reopenWindow: (projectId) => windows.reopen(projectId),
     pickerModal: () => windows.pickerModal,
     dismissPicker: () => windows.dismissPicker(),
-    // Real path: project paths are stored resolved, so a symlinked home (or macOS /var ->
-    // /private/var in a test HOME) would otherwise never prefix them and no row would show `~`.
-    homeDir: () => {
-      try {
-        return realpathSync(homedir())
-      } catch {
-        return homedir()
-      }
-    },
+    // Real path (realHome says why).
+    homeDir: realHome,
     // '' is the table AppMenu resolves while the picker is focused, so the hint is that accelerator.
     pickerOpenFolderKey: () => openFolderKey(commands.view('')),
     // Picker buttons for a project whose folder is gone (restore.ts checks it really is).
@@ -1948,7 +1977,7 @@ function start(server: boolean): void {
       const path = result.filePaths[0]
       if (result.canceled || !path) return false
       try {
-        windows.openPath(relinkMissing(registry, id, path).path)
+        relinkAndOpen(id, path)
         return true
       } catch (err) {
         dialogs.showErrorBox('Cannot relink', errorText(err))

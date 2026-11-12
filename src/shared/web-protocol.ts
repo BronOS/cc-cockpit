@@ -5,6 +5,7 @@
 // bundled into the web shell, so no Node (`Buffer`) and no Electron.
 
 import type { IpcEventMap, LayoutView, OverlayInfo, TabInfo } from './ipc'
+import type { ProjectColor } from './project-color'
 import type { WebAccessMode } from './types'
 import type { ViewId } from './views'
 
@@ -25,6 +26,13 @@ export const CONFIRM_ASK_PATH = '/auth/confirm'
 export const CONFIRM_POLL_PATH = '/auth/confirm/poll'
 /** The open project windows a signed-in browser may join (the web project picker, picker.tsx). */
 export const PROJECTS_PATH = '/api/projects'
+/**
+ * Server mode's folder browser (design-web.md §9.8): the subfolders of one folder on the server, for
+ * the picker's Open folder and Relink. A POST (`WebFoldersRequest`, JSON), though it changes nothing:
+ * it reads the server's file tree, so it gets the Origin check every state-changing request gets, and
+ * the path travels in the body rather than in a URL a log or a history could keep.
+ */
+export const FOLDERS_PATH = '/api/folders'
 
 /**
  * Plugin files over HTTP (design-web.md §5.5): `/p/<token>/<pluginId>/<path>`, one token per
@@ -115,11 +123,28 @@ export interface WebProjectEntry {
   id: string
   name: string
   path: string
+  /** The project's colour (Settings › This project), checked by main as for the desktop picker; absent = none. */
+  color?: ProjectColor
 }
 
-/** A recent project in server mode's list: `missing` when its folder is gone (shown, not openable). */
+/**
+ * A recent project in server mode's list: `missing` when its folder is gone (relink or forget it from
+ * the picker), `lastOpenedAt` (epoch ms) for the row's "opened 3 days ago".
+ */
 export interface WebRecentProject extends WebProjectEntry {
   missing: boolean
+  lastOpenedAt?: number
+}
+
+/**
+ * Which server a browser is on (server mode's picker: the first-run welcome, `~` in paths): the host
+ * name, the OS user cc-cockpit runs as, and that user's home folder (its real path, as project paths
+ * are). Nothing a signed-in device could not learn from a terminal tab.
+ */
+export interface WebServerHost {
+  name: string
+  user: string
+  home: string
 }
 
 /**
@@ -131,17 +156,73 @@ export interface WebProjectsReply {
   projects: WebProjectEntry[]
   server?: true
   recent?: WebRecentProject[]
+  /** Server mode only: which server this is (absent when main could not read it). */
+  host?: WebServerHost
 }
 
 /**
  * The PROJECTS_PATH POST body (server mode only): exactly one of `open` (an absolute path to an
- * existing folder on the server; nothing is created) or `reopen` (a project id, looked up in main's
- * own recent list only). Capped as the sign-in bodies (MAX_SIGN_IN_BODY).
+ * existing folder on the server; nothing is created), `reopen` (a project id, looked up in main's
+ * own recent list only), `relink` (a recent project whose folder is gone, with `path`, its new
+ * folder: absolute and existing, as `open`'s; the project is then opened there) or `forget` (a recent
+ * project whose folder is gone: its record and saved tabs are removed). Relink and forget are the
+ * desktop picker's (restore.ts relinkMissing / forgetMissing), with its checks. Capped as the sign-in
+ * bodies (MAX_SIGN_IN_BODY).
  */
-export type WebOpenProjectRequest = { open: string } | { reopen: string }
+export type WebOpenProjectRequest = { open: string } | { reopen: string } | { relink: string; path: string } | { forget: string }
 
-/** The POST's answer: the opened project's id (200), or the error text (4xx). */
+/**
+ * The POST's answer: the project's id (200: opened, reopened or relinked and opened; for `forget` the
+ * id that was forgotten), or the error text (4xx).
+ */
 export type WebOpenProjectReply = { id: string } | { error: string }
+
+/**
+ * The FOLDERS_PATH POST body (server mode only). `path`: an absolute folder on the server; absent or
+ * empty, the start folder (`ccc web set --start-folder`, else the home folder). `hidden`: list
+ * folders whose name starts with a dot too. Capped as the sign-in bodies.
+ */
+export interface WebFoldersRequest {
+  path?: string
+  hidden?: boolean
+}
+
+/**
+ * A subfolder in a FOLDERS_PATH answer. `git`: it holds a `.git` (a repo, a worktree or a
+ * submodule); `project`: it is already a cc-cockpit project (a record's folder); `link`: a symbolic
+ * link to a folder, listed and entered but never marked (list-folders.ts says why).
+ */
+export interface WebFolderEntry {
+  name: string
+  git?: true
+  project?: true
+  link?: true
+}
+
+/**
+ * The FOLDERS_PATH answer (200 for any folder main could look at, readable or not). `path` is the
+ * folder shown, absolute and normalized; `parent` the one above it (null at `/`); `home` the server
+ * user's home folder. Readable: its subfolders, sorted, at most MAX_FOLDER_ENTRIES (`truncated`
+ * says there were more), how many dot folders were left out (`hidden` false), the marks of the
+ * folder itself (`here`), and a `note` when the start folder was not usable and the home folder is
+ * shown instead. Not readable (`error`: permission denied, gone, not a folder): the text, shown in
+ * place of the list, with `parent` so the browser can still go up.
+ */
+export type WebFoldersReply =
+  | {
+      path: string
+      parent: string | null
+      home: string
+      folders: WebFolderEntry[]
+      hiddenCount: number
+      truncated: boolean
+      here: { git: boolean; project: boolean }
+      note?: string
+    }
+  | { path: string; parent: string | null; home: string; error: string }
+
+/** Most subfolders one FOLDERS_PATH answer lists (a home folder has tens; `/nix/store` has many thousands). */
+export const MAX_FOLDER_ENTRIES = 1000
 
 /**
  * Largest frame either way (design-web.md §3): a 1 MiB panel message wrapped in a frame must fit.
