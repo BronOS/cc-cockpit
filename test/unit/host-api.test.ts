@@ -2295,3 +2295,79 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     expect(focused).toEqual([[tab.id]])
   })
 })
+
+// design-remote-desktop.md §4.1 (plan 20261112-machine-chips Task 2): the other machines' counts
+// behind the scope-'all' declaration, focusMachine on focus's budget, the event only on a change and
+// only to a host running a declaring plugin.
+describe('sessions.machines, focusMachine, the sessions.machines event', () => {
+  const declared = (): HostScope => ({
+    ...scopeA(),
+    plugins: [
+      { id: 'a.one', dir: pluginOne, panels: ['board'], sessionsAll: true },
+      { id: 'a.two', dir: pluginTwo, panels: ['inbox'] }
+    ]
+  })
+  const list = [{ id: 'm1', name: 'devbox', reachable: true, waiting: 1, working: 0, idle: 2 }]
+
+  it('refuses every machine call without the declaration; answers the list with it, [] without the dep', async () => {
+    deps.focusMachine = () => true
+    const plain = hostA()
+    for (const [method, params] of [
+      ['sessions.machines', { pluginId: 'a.one' }],
+      ['sessions.focusMachine', { pluginId: 'a.one', id: 'm1' }]
+    ] as const) {
+      await expect(plain(method, params)).rejects.toThrow(`needs "access": { "sessions": "all-windows" } in a.one's plugin.json`)
+    }
+    const host = hostFor(declared())
+    // Server mode wires no machines: an empty list, not an error.
+    await expect(host('sessions.machines', { pluginId: 'a.one' })).resolves.toEqual([])
+    deps.machines = () => list
+    const host2 = hostFor(declared())
+    await expect(host2('sessions.machines', { pluginId: 'a.one' })).resolves.toEqual(list)
+    await expect(host2('sessions.machines', { pluginId: 'a.two' })).rejects.toThrow('needs "access"')
+    await expect(host2('sessions.machines', { pluginId: 'nobody' })).rejects.toThrow('unknown plugin')
+  })
+
+  it('focusMachine: false for an unknown id (refunded), shares focus’s 10 in 10 s, refused without the dep', async () => {
+    const theirs = tabs.create(B, { kind: 'claude' })
+    deps.focusTab = () => true
+    const host = hostFor(declared())
+    await expect(host('sessions.focusMachine', { pluginId: 'a.one', id: 'm1' })).rejects.toThrow('not available')
+    const focused: string[] = []
+    deps.focusMachine = (id) => {
+      focused.push(id)
+      return id === 'm1'
+    }
+    const h = hostFor(declared())
+    await expect(h('sessions.focusMachine', { pluginId: 'a.one', id: 5 })).rejects.toThrow('id must be a string')
+    // An unknown id moved nothing: it costs nothing either.
+    for (let i = 0; i < 20; i++) await expect(h('sessions.focusMachine', { pluginId: 'a.one', id: 'nope' })).resolves.toBe(false)
+    await expect(h('sessions.focusMachine', { pluginId: 'a.one', id: 'm1' })).resolves.toBe(true)
+    // The same budget as focus: mixing the two does not double the rate.
+    for (let i = 2; i < MAX_FOCUSES_PER_WINDOW; i++) await h('sessions.focus', { pluginId: 'a.one', tabId: theirs.id })
+    await expect(h('sessions.focusMachine', { pluginId: 'a.one', id: 'm1' })).resolves.toBe(true)
+    await expect(h('sessions.focusMachine', { pluginId: 'a.one', id: 'm1' })).rejects.toThrow(
+      `more than ${MAX_FOCUSES_PER_WINDOW} focuses in ${FOCUS_WINDOW_MS / 1000} s`
+    )
+    await expect(h('sessions.focus', { pluginId: 'a.one', tabId: theirs.id })).rejects.toThrow('more than')
+    expect(focused.filter((id) => id === 'm1')).toHaveLength(2)
+  })
+
+  it('pushes sessions.machines only to a host with a declaring plugin, and stops at revoke', () => {
+    const listeners = new Set<(machines: typeof list) => void>()
+    deps.onMachinesChange = (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }
+    const withDecl: { event: string; params: unknown }[] = []
+    const without: { event: string; params: unknown }[] = []
+    hostFor(declared(), withDecl)
+    hostA(without)
+    for (const l of listeners) l(list)
+    expect(withDecl).toEqual([{ event: 'sessions.machines', params: { machines: list } }])
+    expect(without).toEqual([])
+    apis.at(-2)!.revoke()
+    apis.at(-1)!.revoke()
+    expect(listeners.size).toBe(0)
+  })
+})

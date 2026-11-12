@@ -673,6 +673,10 @@ export class HostContexts {
       this.sessions.handleRateLimitsEvent(params)
       return
     }
+    if (event === 'sessions.machines') {
+      this.sessions.handleMachinesEvent(params)
+      return
+    }
     if (event === 'overlay.ended') {
       this.typeButtons.ended(params)
       return

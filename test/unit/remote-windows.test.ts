@@ -1028,3 +1028,55 @@ describe('RemoteWindows: My own tunnel gate', () => {
     expect((t.factory.views[0] as FakeView).loads).toEqual([`${ORIGIN}/?project=p1`])
   })
 })
+
+// The machine chips' side (design-remote-desktop.md §4.1, plan 20261112-machine-chips Task 2): which
+// servers have a window, the server's most recently focused window, and main's own GET through the
+// partition (machine-status.ts polls SESSIONS_PATH with it).
+describe('RemoteWindows: machine chips', () => {
+  let t: ReturnType<typeof setup>
+  beforeEach(() => {
+    t = setup()
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+  })
+
+  it('lists each server with a window once, in the order its first window opened', async () => {
+    expect(t.windows.serverIds()).toEqual([])
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    await t.windows.open('d1', { origin: 'https://box.example', projectId: 'p1' })
+    expect(t.windows.serverIds()).toEqual(['d1', 's1'])
+    ;(t.factory.views[1] as FakeView).close()
+    expect(t.windows.serverIds()).toEqual(['d1'])
+  })
+
+  it('focuses the server\'s most recently focused window, else its newest; false with none open', async () => {
+    expect(t.windows.focusServer('s1')).toBe(false)
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    const [a, b, other] = t.factory.views as [FakeView, FakeView, FakeView]
+    // No focus event yet: the newest opened (shown focused).
+    expect(t.windows.focusServer('s1')).toBe(true)
+    expect([a.focuses, b.focuses, other.focuses]).toEqual([0, 1, 0])
+    a.hooks.focused()
+    // Another server's window taking the focus changes nothing for s1.
+    other.hooks.focused()
+    expect(t.windows.focusServer('s1')).toBe(true)
+    expect([a.focuses, b.focuses, other.focuses]).toEqual([1, 1, 0])
+    a.close()
+    expect(t.windows.focusServer('s1')).toBe(true)
+    expect(b.focuses).toBe(2)
+  })
+
+  it('fetches a path through the server\'s partition at its current origin; an unknown server rejects', async () => {
+    await expect(t.windows.fetchFromServer('s1', '/api/sessions')).rejects.toThrow('no such server')
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    await flush()
+    t.factory.fetcher = async (url) => (url.endsWith('/api/sessions') ? { waiting: 1, working: 0, idle: 2 } : signedIn)
+    await expect(t.windows.fetchFromServer('s1', '/api/sessions')).resolves.toEqual({ waiting: 1, working: 0, idle: 2 })
+    expect(t.factory.session1().fetches.at(-1)).toBe(`${ORIGIN}/api/sessions`)
+    await t.windows.setOrigin('s1', 'http://127.0.0.1:4200')
+    await t.windows.fetchFromServer('s1', '/api/sessions')
+    expect(t.factory.session1().fetches.at(-1)).toBe('http://127.0.0.1:4200/api/sessions')
+  })
+})

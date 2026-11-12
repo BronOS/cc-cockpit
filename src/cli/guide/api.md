@@ -294,6 +294,18 @@ with full Node access.
   list: check `typeof ctx.sessions.focus === 'function'` first.
 - `ctx.sessions.focus(tabId)`: select a Claude tab of any window and raise that window; `false` for an
   id that is no Claude tab. At most 10 in 10 s.
+- `ctx.sessions.machines()`: the other machines, one `{ id, name, reachable, waiting?, working?, idle? }`
+  per server this app has a remote window open on (empty in server mode and with no remote window). The
+  counts are that server's Claude tabs: `waiting` for the person (the prompt or a permission dialog),
+  `working` (or starting), `idle` (idle or exited); only counts cross machines, never a tab's text. They
+  are absent before the first answer, for a server too old to give them, and when `reachable` is false
+  (it did not answer; draw the name dimmed). `name` is the person's own name for the server; `id` is
+  opaque and only good for this run. `ctx.sessions.onMachinesChange(listener)` hears the whole list
+  again when it changes (the app asks each server every 5 s; returns a disposer).
+  `ctx.sessions.focusMachine(id)` raises that server's most recently focused remote window; `false` for
+  an id no longer listed; it shares `focus`'s 10 in 10 s. All three need the same `access` declaration
+  as `{ scope: 'all' }` and throw without it. An older app has none: check
+  `typeof ctx.sessions.machines === 'function'`.
 - `ctx.sessions.close(tabId)`: close a Claude tab of this window the person's way: a running tab asks
   first (the close dialog, unless they turned it off) in this window, raised for it. Resolves
   `{ closed: false }` on Cancel or when the dialog could not be shown (another dialog, an overlay, the

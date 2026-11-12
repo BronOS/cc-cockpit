@@ -11,6 +11,11 @@
 //   sessions.rateLimits { pluginId }           -> RateLimits | null  the account's plan usage (app-wide,
 //                                                                any plugin: not tied to a window)
 //   sessions.focus  { pluginId, tabId }        -> boolean        select a Claude tab of ANY window, raising it
+//   sessions.machines { pluginId }             -> MachineInfo[]  the servers with a remote window open, as
+//                                                                counts only (machine-status.ts); the same
+//                                                                `access` declaration as scope 'all'
+//   sessions.focusMachine { pluginId, id }     -> boolean        that server's most recently focused remote
+//                                                                window; the declaration, focus's budget
 //   sessions.close  { pluginId, tabId }        -> { closed }     a Claude tab of THIS project, through the
 //                                                                person's close path (the dialog may ask)
 //   sessions.openFile { pluginId, tabId, path } -> null          a file main recorded for a tab of THIS
@@ -100,6 +105,9 @@
 //                                                                `access` declaration)
 //   sessions.rateLimits { rateLimits: RateLimits }               the plan usage changed (at most one per
 //                                                                2 s, RateLimitsStore; to every host)
+//   sessions.machines { machines: MachineInfo[] }                the machine list changed (only on a change,
+//                                                                machine-status.ts; only to a host running a
+//                                                                plugin with the `access` declaration)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
 //   overlay.message { pluginId, handle, message, view? }         that overlay's page posted (not a result;
 //                                                                `view`: a remote view's page)
@@ -215,6 +223,7 @@ import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewP
 import { pluginFileUrl } from './plugin-protocol'
 import { resolveInside } from './validate'
 import { warnLog } from '../warn-log'
+import type { MachineInfo } from '../remote/machine-status'
 
 /** ctx.sessions.send per plugin: at most this many texts per window. The gate's queue cap (50) also holds. */
 export const SEND_WINDOW_MS = 60_000
@@ -371,6 +380,18 @@ export interface HostApiDeps {
    * unsubscribe. Without it no `sessions.rateLimits` event goes out.
    */
   onRateLimitsChange?(listener: (rateLimits: RateLimits) => void): () => void
+  /**
+   * The other machines (MachineStatus.machines, design-remote-desktop.md §4.1), for
+   * ctx.sessions.machines. Absent (server mode: no remote windows): the answer is an empty list.
+   */
+  machines?(): MachineInfo[]
+  /** Subscribe to the machine list (MachineStatus.onChange: only on a change); returns the unsubscribe. */
+  onMachinesChange?(listener: (machines: MachineInfo[]) => void): () => void
+  /**
+   * Focus the most recently focused remote window of the server machine `id` names (MachineStatus
+   * resolves the id, RemoteWindows focuses); false for an id that is not listed. Absent: refused.
+   */
+  focusMachine?(id: string): boolean
   /**
    * Start a Claude tab in the project and tell its window (TabManager.create after the login env).
    * The tab manager realpaths `cwd` inside the project folder and passes `prompt` as one argv
@@ -750,6 +771,8 @@ export class HostApi {
   private readonly unsubscribe: () => void
   /** The plan usage subscription (absent without the dep). */
   private readonly unsubscribeRateLimits: (() => void) | undefined
+  /** The machine list subscription (absent without the dep). */
+  private readonly unsubscribeMachines: (() => void) | undefined
   private readonly interval: number
   private readonly log: (message: string) => void
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -774,6 +797,7 @@ export class HostApi {
     this.log = deps.log ?? warnLog
     this.unsubscribe = deps.onSessionsChange((change) => this.sessionsChanged(change))
     this.unsubscribeRateLimits = deps.onRateLimitsChange?.((rateLimits) => this.rateLimitsChanged(rateLimits))
+    this.unsubscribeMachines = deps.onMachinesChange?.((machines) => this.machinesChanged(machines))
   }
 
   /** The RPC methods, to merge into the host's endpoint handlers. */
@@ -786,6 +810,8 @@ export class HostApi {
       'sessions.openShell': (params) => this.openShell(params),
       'sessions.openCommand': (params) => this.openCommand(params),
       'sessions.focus': (params, meta) => this.focus(params, meta),
+      'sessions.machines': (params) => this.machines(params),
+      'sessions.focusMachine': (params) => this.focusMachine(params),
       'sessions.close': (params) => this.close(params),
       'sessions.openFile': (params, meta) => this.sessionFile(params, meta),
       'sessions.rename': (params) => this.rename(params),
@@ -953,6 +979,7 @@ export class HostApi {
     this.revoked = true
     this.unsubscribe()
     this.unsubscribeRateLimits?.()
+    this.unsubscribeMachines?.()
     // Each pending sign-in closes its loopback and rejects (its finally drops the entry).
     for (const controller of this.signIns.values()) controller.abort()
     if (this.timer !== undefined) clearTimeout(this.timer)
@@ -1101,6 +1128,60 @@ export class HostApi {
       return false
     }
     return true
+  }
+
+  /**
+   * The machine calls' plugin: one of this host's, with the scope-'all' declaration. The list names
+   * which servers the person works on and how busy they are, the same kind of cross-window knowledge
+   * as the summaries, so it takes the same declaration rather than a new one.
+   */
+  private machinePlugin(pluginId: unknown, what: string): HostApiPlugin {
+    const plugin = this.plugin(pluginId, what)
+    if (plugin.sessionsAll !== true) {
+      throw new Error(`${what} needs "access": { "sessions": "all-windows" } in ${plugin.id}'s plugin.json`)
+    }
+    return plugin
+  }
+
+  /** ctx.sessions.machines: the servers with a remote window open, counts only (machine-status.ts builds them). */
+  private machines(params: unknown): MachineInfo[] {
+    this.alive()
+    this.machinePlugin((params as { pluginId?: unknown } | null)?.pluginId, 'sessions.machines')
+    return this.deps.machines?.() ?? []
+  }
+
+  /**
+   * ctx.sessions.focusMachine: like focus, it only moves the person's focus, so it spends focus's
+   * budget (one per click; a plugin cannot double its window-raising rate by mixing the two). The id
+   * is resolved by main's own table (MachineStatus.serverOf); an unknown one moved nothing and is refunded.
+   */
+  private focusMachine(params: unknown): boolean {
+    this.alive()
+    const { pluginId, id } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.machinePlugin(pluginId, 'sessions.focusMachine')
+    if (typeof id !== 'string') throw new Error('sessions.focusMachine: id must be a string')
+    if (!this.deps.focusMachine) throw new Error('sessions.focusMachine: focusing machines is not available')
+    if (!this.focuses.take(plugin.id)) {
+      throw new Error(`sessions.focusMachine: more than ${MAX_FOCUSES_PER_WINDOW} focuses in ${FOCUS_WINDOW_MS / 1000} s`)
+    }
+    if (!this.deps.focusMachine(id)) {
+      this.focuses.refund(plugin.id)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * The machine list changed (MachineStatus announces only a change): a host running a plugin with
+   * the declaration hears it; other hosts get nothing, as for `sessions.all`.
+   */
+  private machinesChanged(machines: MachineInfo[]): void {
+    if (this.revoked || !this.scope.plugins.some((p) => p.sessionsAll === true)) return
+    try {
+      this.emit('sessions.machines', { machines })
+    } catch (err) {
+      this.log(`plugin host ${this.scope.projectId}: sessions.machines event failed: ${errorText(err)}`)
+    }
   }
 
   /**

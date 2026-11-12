@@ -22,7 +22,9 @@ import { DeviceStore } from '../../src/main/web/devices'
 import { MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type ServerProjects, type WsModule } from '../../src/main/web/gateway'
 import { openProjectFromWeb } from '../../src/main/web/open-project'
 import { webAccessOf } from '../../src/main/web/settings'
-import { CLOSE, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
+import { CLOSE, SESSIONS_PATH, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
+import { countSessions } from '../../src/main/web/session-counts'
+import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
 
 /** A port nothing listens on right now (the OS's pick, always above 1024). */
@@ -1141,5 +1143,113 @@ describe('server mode: projects from the browser', () => {
     await gateway?.stop()
     const desk = await signedIn(false)
     expect((await post(desk.port, { path: '/api/folders', headers: headers(desk), body })).status).toBe(404)
+  })
+})
+
+// Server mode's session counts (design-remote-desktop.md §4.1, plan 20261112-machine-chips Task 1):
+// the desktop app's machine chip asks them through the server's partition with the device cookie.
+// A signed-in device as PROJECTS_PATH, GET only, 404 when main did not pass `sessionCounts` (a
+// desktop), and only three integers on the wire.
+describe('server mode: session counts', () => {
+  async function signedIn(sessionCounts?: GatewayDeps['sessionCounts']): Promise<{ port: number; host: string; origin: string; cookie: string; logs: string[] }> {
+    const port = await freePort()
+    const { gw, auth, logs } = make(sessionCounts ? { sessionCounts } : {})
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
+    const host = `127.0.0.1:${port}`
+    const origin = `http://${host}`
+    const link = await auth.accessLink(origin)
+    if (!link.ok) throw new Error('no link')
+    const res = await new Promise<Answer>((resolve, reject) => {
+      const req = request(
+        { host: '127.0.0.1', port, method: 'POST', path: SIGN_IN_LINK_PATH, headers: { Host: host, Origin: origin, 'Content-Type': 'application/json' } },
+        (r) => {
+          let body = ''
+          r.on('data', (d: Buffer) => (body += d.toString()))
+          r.on('end', () => resolve({ status: r.statusCode ?? 0, headers: r.headers, body }))
+        }
+      )
+      req.on('error', reject)
+      req.end(JSON.stringify({ token: link.link.split('#t=')[1], name: 'Desktop' }))
+    })
+    expect(res.status).toBe(200)
+    return { port, host, origin, cookie: String(res.headers['set-cookie']).split(';')[0] ?? '', logs }
+  }
+
+  it('answers the counts to a signed-in device, no-store, and reads them afresh each time', async () => {
+    let counts = { waiting: 2, working: 1, idle: 3 }
+    const s = await signedIn(() => counts)
+    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    expect(res.status).toBe(200)
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(JSON.parse(res.body)).toEqual({ waiting: 2, working: 1, idle: 3 })
+    counts = { waiting: 0, working: 0, idle: 1 }
+    expect(JSON.parse((await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })).body)).toEqual(counts)
+  })
+
+  it('needs a device: no cookie or a forged one is 401 and the source is never read', async () => {
+    const source = vi.fn(() => ({ waiting: 1, working: 0, idle: 0 }))
+    const s = await signedIn(source)
+    const asks: Array<Record<string, string>> = [{ Host: s.host }, { Host: s.host, Cookie: 'ccc_device=forged' }]
+    for (const headers of asks) {
+      const res = await http(s.port, { path: SESSIONS_PATH, headers })
+      expect(res.status).toBe(401)
+      expect(res.body).not.toContain('waiting')
+    }
+    expect(source).not.toHaveBeenCalled()
+  })
+
+  it('is 404 off server mode (no sessionCounts), as an older server answers', async () => {
+    const s = await signedIn()
+    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    expect(res.status).toBe(404)
+  })
+
+  it('refuses anything but GET', async () => {
+    const source = vi.fn(() => ({ waiting: 1, working: 0, idle: 0 }))
+    const s = await signedIn(source)
+    // A POST with the page's own Origin passes the Origin check and still finds no route.
+    const post = await http(s.port, { method: 'POST', path: SESSIONS_PATH, headers: { Host: s.host, Origin: s.origin, Cookie: s.cookie } })
+    expect(post.status).toBe(404)
+    const put = await http(s.port, { method: 'PUT', path: SESSIONS_PATH, headers: { Host: s.host, Origin: s.origin, Cookie: s.cookie } })
+    expect(put.status).toBe(405)
+    expect(source).not.toHaveBeenCalled()
+  })
+
+  it('puts only three non-negative integers on the wire; a failing source is a 500 with no text', async () => {
+    let fail = false
+    const s = await signedIn(() => {
+      if (fail) throw new Error('registry gone /secret/path')
+      return { waiting: -1, working: 1.5, idle: 'x', title: 'leak' } as unknown as { waiting: number; working: number; idle: number }
+    })
+    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    expect(JSON.parse(res.body)).toEqual({ waiting: 0, working: 0, idle: 0 })
+    fail = true
+    const failed = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    expect(failed.status).toBe(500)
+    expect(failed.body).not.toContain('secret')
+    expect(s.logs.some((l) => l.includes('registry gone'))).toBe(true)
+  })
+})
+
+describe('countSessions (the status mapping)', () => {
+  it('puts every Claude tab in exactly one count', () => {
+    const statuses = ['waiting', 'needs-permission', 'working', 'starting', 'idle', 'ended', 'working'] as const
+    expect(countSessions(statuses.map((status) => ({ status })))).toEqual({ waiting: 2, working: 3, idle: 2 })
+    expect(countSessions([])).toEqual({ waiting: 0, working: 0, idle: 0 })
+  })
+
+  it('counts a status it does not know nowhere, never off the prototype', () => {
+    const odd = [{ status: 'toString' }, { status: 'bogus' }] as unknown as Array<{ status: 'idle' }>
+    expect(countSessions(odd)).toEqual({ waiting: 0, working: 0, idle: 0 })
+  })
+
+  it('counts a real registry\'s entries (Claude tabs only; a shell tab has none)', () => {
+    const registry = new SessionRegistry({ projectName: () => 'p', broadcast: () => undefined, write: () => undefined })
+    registry.tabStarted({ tabId: 't1', projectId: 'p1', kind: 'claude', cwd: '/w' })
+    registry.tabStarted({ tabId: 't2', projectId: 'p1', kind: 'claude', cwd: '/w' })
+    registry.tabStarted({ tabId: 't3', projectId: 'p1', kind: 'shell', cwd: '/w' })
+    registry.applyHook('t2', 'Stop', {})
+    expect(countSessions(registry.list())).toEqual({ waiting: 1, working: 1, idle: 0 })
+    registry.dispose()
   })
 })

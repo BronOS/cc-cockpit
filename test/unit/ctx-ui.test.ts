@@ -197,6 +197,50 @@ describe('ctx.sessions scope all and the tab actions', () => {
     expect(all).toHaveLength(1)
   })
 
+  it('the machine calls need the declaration before asking main; with it they ask with the plugin id', async () => {
+    const { ctx, calls } = setup()
+    await expect(ctx.sessions.machines()).rejects.toThrow('needs "access": { "sessions": "all-windows" }')
+    await expect(ctx.sessions.focusMachine('m1')).rejects.toThrow('needs "access"')
+    expect(() => ctx.sessions.onMachinesChange(() => {})).toThrow('needs "access"')
+    expect(calls).toEqual([])
+    const machines = [{ id: 'm1', name: 'devbox', reachable: true, waiting: 1, working: 0, idle: 0 }]
+    const d = declaring((c) => (c.method === 'sessions.machines' ? machines : true))
+    await expect(d.seer.sessions.machines()).resolves.toEqual(machines)
+    await expect(d.seer.sessions.focusMachine('m1')).resolves.toBe(true)
+    await expect(d.seer.sessions.focusMachine('' as string)).rejects.toThrow('needs a machine id')
+    expect(d.calls).toEqual([
+      { method: 'sessions.machines', params: { pluginId: 'a.seer' } },
+      { method: 'sessions.focusMachine', params: { pluginId: 'a.seer', id: 'm1' } }
+    ])
+  })
+
+  it('hands sessions.machines to onMachinesChange listeners only, a copy each, until disposed', () => {
+    const { contexts, ctx, seer } = declaring()
+    const heard: unknown[][] = []
+    const off = seer.sessions.onMachinesChange((m) => {
+      heard.push(m)
+      ;(m as unknown[]).push('mutated')
+    })
+    const second: unknown[][] = []
+    seer.sessions.onMachinesChange((m) => second.push(m))
+    const plain: unknown[] = []
+    ctx.sessions.onChange((s) => plain.push(s))
+    const machines = [{ id: 'm1', name: 'devbox', reachable: false }]
+    contexts.handleEvent('sessions.machines', { machines })
+    expect(second).toEqual([machines])
+    expect(plain).toEqual([])
+    // Not a list: dropped.
+    contexts.handleEvent('sessions.machines', { machines: 'x' })
+    expect(second).toHaveLength(1)
+    off()
+    contexts.handleEvent('sessions.machines', { machines })
+    expect(heard).toHaveLength(1)
+    expect(second).toHaveLength(2)
+    contexts.dispose('a.seer')
+    contexts.handleEvent('sessions.machines', { machines })
+    expect(second).toHaveLength(2)
+  })
+
   it('asks main for the plan usage with the plugin id, no declaration needed', async () => {
     const usage = { fiveHour: { usedPercent: 10, resetsAt: 1 }, updatedAt: 2 }
     const { ctx, calls } = setup((c) => (c.method === 'sessions.rateLimits' ? usage : null))

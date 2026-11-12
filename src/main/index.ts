@@ -78,6 +78,7 @@ import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-o
 import { ElectronRemoteWindowFactory, isRemoteWindow } from './remote/electron-remote-window'
 import { RemoteServerStore } from './remote/remote-servers'
 import { RemoteWindows } from './remote/remote-windows'
+import { MachineStatus, type MachineInfo } from './remote/machine-status'
 import { notifyingStore, RemoteService } from './remote/remote-service'
 import { SshLink } from './remote/ssh-link'
 import { probeTunnel, tunnelGate } from './remote/tunnel-probe'
@@ -194,6 +195,7 @@ import { nodeMirrorWorker, TerminalMirror } from './terminals/mirror'
 import { WebAccessService } from './web/access-service'
 import { storedWebAccess, webAccessOf } from './web/settings'
 import { WebGateway } from './web/gateway'
+import { countSessions } from './web/session-counts'
 import { PluginPages } from './web/plugin-pages'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
@@ -657,7 +659,11 @@ function start(server: boolean): void {
             open: (serverId, request) => remoteWindows.open(serverId, request),
             setOrigin: (serverId, origin) => remoteWindows.setOrigin(serverId, origin),
             countOf: (serverId) => remoteWindows.countOf(serverId),
-            refreshTitles: (serverId) => remoteWindows.refreshTitles(serverId),
+            // A rename: the window titles and the machine chips' names follow.
+            refreshTitles: (serverId) => {
+              remoteWindows.refreshTitles(serverId)
+              machineStatus.refresh()
+            },
             forget: (serverId) => remoteWindows.forget(serverId)
           },
           // One link per server. The login env carries the person's SSH_AUTH_SOCK (a GUI start may have
@@ -678,6 +684,15 @@ function start(server: boolean): void {
           onChanged: changed,
           log: warnLog
         })
+        // The machine chips' data (design-remote-desktop.md §4.1, machine-status.ts): each server with a
+        // remote window open is asked its session counts through its partition, every 5 s. Plugins
+        // read it through ctx.sessions.machines (host-api.ts; the hosts' deps below).
+        const machineStatus: MachineStatus = new MachineStatus({
+          servers: () => remoteWindows.serverIds(),
+          name: (serverId) => store.get(serverId)?.name,
+          fetch: (serverId, path) => remoteWindows.fetchFromServer(serverId, path),
+          log: warnLog
+        })
         const remoteWindows: RemoteWindows = new RemoteWindows({
           factory,
           store: notifyingStore(store, changed),
@@ -690,12 +705,14 @@ function start(server: boolean): void {
           onChanged: () => {
             windows.remoteWindowsChanged()
             changed()
+            // A server's first window starts its polling, its last one stops it.
+            machineStatus.sync()
           },
           // A remote project page going back to the server's picker: the desktop picker instead.
           showPicker: () => windows.showPicker(),
           log: warnLog
         })
-        return { service, windows: remoteWindows }
+        return { service, windows: remoteWindows, machines: machineStatus }
       })()
   const windows = new WindowManager({
     // A link a window's page asks to open (the reviewer's mail frame) comes from its desktop page.
@@ -1453,6 +1470,20 @@ function start(server: boolean): void {
       // ctx.sessions.focus: any window's Claude tab (the cockpit.sessions strip's click).
       // With the view the plugin acted for (HostApi checked it is a view of this host's window).
       focusTab: (tabId, view) => focusClaudeTab(tabId, view),
+      // ctx.sessions.machines / onMachinesChange / focusMachine (HostApi checks the `access`
+      // declaration). Absent in server mode: no remote windows there, so the list is empty and
+      // focusMachine is refused.
+      ...(remote
+        ? {
+            machines: () => remote.machines.machines(),
+            onMachinesChange: (listener: (machines: MachineInfo[]) => void) => remote.machines.onChange(listener),
+            // The id resolves only through main's own table, to a server with a window open now.
+            focusMachine: (id: string) => {
+              const serverId = remote.machines.serverOf(id)
+              return serverId !== undefined && remote.windows.focusServer(serverId)
+            }
+          }
+        : {}),
       // ctx.sessions.close: HostApi checked the tab is this project's. A running tab asks in its
       // window, so that window is raised first when it will (the dialog is the person's, they must
       // see it); an idle tab closes without moving their focus. The renderer decides the rest
@@ -1811,6 +1842,9 @@ function start(server: boolean): void {
     // On the desktop it stays absent: the POST is 404 and a browser never opens a window on the host.
     ...(server
       ? {
+          // The desktop app's machine chip (design-remote-desktop.md §4.1): counts over every Claude
+          // tab, nothing else. Server mode only, as the picker's open: a desktop's gateway is 404.
+          sessionCounts: () => countSessions(sessions.list()),
           serverProjects: {
             // Whole records: the gateway picks the fields that go on the wire.
             recent: () => registry.recent().filter((p) => windows.windowIdOf(p.id) === undefined),
@@ -3109,6 +3143,7 @@ function start(server: boolean): void {
     windows.beginQuit()
     // Remote desktop windows go with the quit (after beginQuit, so their closing shows no picker);
     // their tunnels are stopped in will-quit.
+    remote?.machines.dispose()
     remote?.windows.closeAll()
     // Server mode: the off-screen pages go now, without the close Electron's quit would ask each
     // for (a blocked page never answers one; electron-offscreen-webview.ts destroyAll).

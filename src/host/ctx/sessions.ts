@@ -11,10 +11,15 @@
 // main checks the declaration again for list, and sends `sessions.all` only to a host that runs such
 // a plugin. focus reaches any window's tab, close and openFile only this window's (main decides).
 //
+// machines / onMachinesChange / focusMachine (design-remote-desktop.md §4.1): the servers this app
+// has a remote window open on, as counts only, for the strip's machine chips. The same declaration
+// as scope `all` (checked here for the fast error and again in main); main sends `sessions.machines`
+// only to a host running such a plugin, and only when the list changed.
+//
 // rateLimits / onRateLimits: the account's plan usage from the Claude tabs' status lines, the same
 // for every plugin (main answers `sessions.rateLimits` and pushes the event of that name to every
 // host, at most one per 2 s); no declaration needed.
-import type { Disposer, PluginContext, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
+import type { Disposer, MachineInfo, PluginContext, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { checkSessionName } from '../../shared/session-name'
 import { checkSessionOptions } from '../../shared/session-options'
@@ -23,6 +28,7 @@ import { checkCommandArgv } from '../../shared/tab-commands'
 type Listener = (sessions: SessionInfo[]) => void
 type AllListener = (sessions: SessionSummary[]) => void
 type RateLimitsListener = (rateLimits: RateLimits) => void
+type MachinesListener = (machines: MachineInfo[]) => void
 
 export interface SessionsApiDeps {
   pluginId: string
@@ -43,6 +49,8 @@ export class SessionsHub {
   private readonly allListeners = new Map<string, Set<AllListener>>()
   /** ctx.sessions.onRateLimits listeners (the `sessions.rateLimits` event). */
   private readonly rateLimitListeners = new Map<string, Set<RateLimitsListener>>()
+  /** ctx.sessions.onMachinesChange listeners (the `sessions.machines` event). */
+  private readonly machineListeners = new Map<string, Set<MachinesListener>>()
 
   constructor(private readonly log: (pluginId: string, message: string) => void) {}
 
@@ -66,8 +74,13 @@ export class SessionsHub {
     }
   }
 
+  addMachines(pluginId: string, listener: MachinesListener): Disposer {
+    return addTo(this.machineListeners, pluginId, listener)
+  }
+
   /** The plugin is gone: its listeners hear nothing more. */
   removePlugin(pluginId: string): void {
+    this.machineListeners.delete(pluginId)
     this.listeners.delete(pluginId)
     this.allListeners.delete(pluginId)
     this.rateLimitListeners.delete(pluginId)
@@ -89,6 +102,13 @@ export class SessionsHub {
         }
       }
     }
+  }
+
+  /** Main's `sessions.machines` event: `{ machines: MachineInfo[] }`, to the onMachinesChange listeners. */
+  handleMachinesEvent(params: unknown): void {
+    const machines = (params as { machines?: unknown } | null)?.machines
+    if (!Array.isArray(machines)) return
+    fanOut(this.machineListeners, machines, this.log, 'sessions.onMachinesChange')
   }
 
   /** Main's `sessions.all` event: `{ sessions: SessionSummary[] }`, to the scope `all` listeners. */
@@ -127,14 +147,15 @@ function addTo<L extends (sessions: never[]) => void>(map: Map<string, Set<L>>, 
 function fanOut<L extends (sessions: never[]) => void>(
   map: Map<string, Set<L>>,
   sessions: unknown[],
-  log: (pluginId: string, message: string) => void
+  log: (pluginId: string, message: string) => void,
+  what = 'sessions.onChange'
 ): void {
   for (const [pluginId, set] of [...map]) {
     for (const listener of [...set]) {
       try {
         listener(structuredClone(sessions) as never[])
       } catch (err) {
-        log(pluginId, `a sessions.onChange listener threw: ${errorText(err)}`)
+        log(pluginId, `a ${what} listener threw: ${errorText(err)}`)
       }
     }
   }
@@ -149,6 +170,11 @@ function scopeOf(what: string, options: unknown, sessionsAll: boolean): 'window'
   if (scope !== 'all') throw new TypeError(`${what}: scope must be "window" or "all"`)
   if (!sessionsAll) throw new Error(`${what}: scope "all" needs "access": { "sessions": "all-windows" } in plugin.json`)
   return 'all'
+}
+
+/** The machine calls need the declaration (the fast error; main checks again). */
+function checkMachinesAccess(what: string, sessionsAll: boolean): void {
+  if (!sessionsAll) throw new Error(`${what} needs "access": { "sessions": "all-windows" } in plugin.json`)
 }
 
 function checkTabId(what: string, tabId: unknown): asserts tabId is string {
@@ -180,6 +206,23 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
       guardAsync(async () => {
         checkTabId('sessions.focus', tabId)
         return (await call('sessions.focus', { pluginId, tabId })) as boolean
+      }),
+    machines: () =>
+      guardAsync(async () => {
+        checkMachinesAccess('sessions.machines', sessionsAll)
+        return (await call('sessions.machines', { pluginId })) as MachineInfo[]
+      }),
+    onMachinesChange: (listener: MachinesListener): Disposer => {
+      deps.alive()
+      if (typeof listener !== 'function') throw new TypeError('sessions.onMachinesChange needs a function')
+      checkMachinesAccess('sessions.onMachinesChange', sessionsAll)
+      return deps.hub.addMachines(pluginId, listener)
+    },
+    focusMachine: (id: string) =>
+      guardAsync(async () => {
+        checkMachinesAccess('sessions.focusMachine', sessionsAll)
+        if (typeof id !== 'string' || id === '') throw new TypeError('sessions.focusMachine needs a machine id')
+        return (await call('sessions.focusMachine', { pluginId, id })) as boolean
       }),
     close: (tabId: string) =>
       guardAsync(async () => {

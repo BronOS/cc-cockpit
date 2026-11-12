@@ -523,7 +523,7 @@ function PluginCardItem(props: {
           )}
           {plugin?.seesAllSessions === true && (
             <div className="settings-item-meta" data-testid="plugin-access-sessions">
-              Sees the Claude sessions of every window: status, tool, title and project (never prompts, notes or files).
+              Sees the Claude sessions of every window: status, tool, title and project (never prompts, notes or files), and how many sessions each connected server has waiting or working.
             </div>
           )}
           {props.services !== undefined && props.services.provides.length > 0 && (

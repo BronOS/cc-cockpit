@@ -191,6 +191,7 @@ function windowHooks(log: string[]): RemoteWindowHooks {
     openWindow: (url) => void log.push(`open ${url}`),
     navigated: (url) => void log.push(`navigated ${url}`),
     loaded: () => void log.push('loaded'),
+    focused: () => void log.push('focused'),
     closed: () => void log.push('closed')
   }
 }
@@ -287,7 +288,7 @@ describe('ElectronRemoteWindowFactory: the window', () => {
     expect(wc.webrtcPolicy).toBe('disable_non_proxied_udp')
   })
 
-  it('reports navigations, finished loads and the close; keeps the page title out', () => {
+  it('reports navigations, finished loads, focus and the close; keeps the page title out', () => {
     const { wc, win, log } = make()
     wc.url = 'http://127.0.0.1:4100/?project=p'
     wc.emit('did-navigate', {}, wc.url)
@@ -296,8 +297,9 @@ describe('ElectronRemoteWindowFactory: the window', () => {
     const title = prevented()
     win.emit('page-title-updated', title)
     expect(title.defaultPrevented).toBe(true)
+    win.emit('focus')
     win.emit('closed')
-    expect(log).toEqual(['navigated http://127.0.0.1:4100/?project=p', 'loaded', 'closed'])
+    expect(log).toEqual(['navigated http://127.0.0.1:4100/?project=p', 'loaded', 'focused', 'closed'])
   })
 
   it('drives the window: load, reload, focus, title, plain-text error, close', () => {
@@ -387,6 +389,8 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
     expect(ses.fetches[0]?.init.signal).toBeInstanceOf(AbortSignal)
     ses.answer = { ok: false, status: 401, body: {} }
     await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects')).rejects.toThrow('401')
+    // With its status, for the machine poller (a 404 is an older server, machine-status.ts).
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects')).rejects.toMatchObject({ status: 401 })
   })
 
   it('posts JSON with the server Origin and answers any status with its body', async () => {

@@ -45,6 +45,7 @@ import {
   FOLDERS_PATH,
   PROJECTS_PATH,
   SESSION_PATH,
+  SESSIONS_PATH,
   SIGN_IN_LINK_PATH,
   SIGN_IN_PASSWORD_PATH,
   type WebConfirmTicket,
@@ -55,6 +56,7 @@ import {
   type WebProjectsReply,
   type WebRecentProject,
   type WebServerHost,
+  type WebSessionCounts,
   type WebSessionReply
 } from '../../shared/web-protocol'
 import { projectColorOf } from '../../shared/project-color'
@@ -105,6 +107,8 @@ export { SESSION_PATH }
 export { PROJECTS_PATH }
 /** Server mode's folder browser (list-folders.ts); needs a device, a POST with the Origin check. */
 export { FOLDERS_PATH }
+/** Server mode's Claude tab counts for the desktop app's machine chip (session-counts.ts); needs a device. */
+export { SESSIONS_PATH }
 /** A sign-in body is a token (or a password, or a ticket) and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
 
@@ -133,6 +137,12 @@ export interface GatewayDeps {
    * a folder's subfolders; absent, both POSTs are 404 as any unknown route.
    */
   serverProjects?: ServerProjects
+  /**
+   * Server mode only, like `serverProjects` (main passes it only when its own `server` flag is on):
+   * the counts SESSIONS_PATH answers (session-counts.ts). Absent, the GET is 404 as any unknown route,
+   * which is also what an older server answers, so the desktop's poller has one "no counts" case.
+   */
+  sessionCounts?: () => WebSessionCounts
   /**
    * Main's `server` flag for the run (server-mode.ts), never re-derived here: on, the Host check
    * also takes `127.0.0.1`, `localhost` and `[::1]` on any port, for the desktop app's SSH tunnel
@@ -597,6 +607,7 @@ export class WebGateway {
     const device = this.deps.auth.authorize(req.headers.cookie)
     if (!device) return this.json(res, host, 401, { error: 'not signed in' })
     if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, this.projects())
+    if (method === 'GET' && path === SESSIONS_PATH && this.deps.sessionCounts) return this.sessionCounts(res, host, this.deps.sessionCounts)
     const serverProjects = this.deps.serverProjects
     if (method === 'POST' && path === PROJECTS_PATH && serverProjects) {
       return void this.openProject(req, res, host, serverProjects).catch((err: unknown) => {
@@ -686,6 +697,25 @@ export class WebGateway {
       this.deps.log(`web access: listing projects failed: ${errorText(err)}`)
       return []
     }
+  }
+
+  /**
+   * SESSIONS_PATH: the three counts, rebuilt field by field as plain non-negative integers (whatever
+   * the source hands back, only these numbers go on the wire). A failing source is a 500 with no
+   * text: unlike the picker's list there is no safe empty answer, since zeros would read as "nothing
+   * waits" on the desktop's chip, while a failure leaves the chip's last state and marks it unreachable.
+   */
+  private sessionCounts(res: ServerResponse, host: string, source: () => WebSessionCounts): void {
+    let counts: WebSessionCounts
+    try {
+      const raw = source()
+      const count = (n: unknown): number => (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : 0)
+      counts = { waiting: count(raw.waiting), working: count(raw.working), idle: count(raw.idle) }
+    } catch (err) {
+      this.deps.log(`web access: counting sessions failed: ${errorText(err)}`)
+      return this.json(res, host, 500, { error: 'counting sessions failed' })
+    }
+    this.json(res, host, 200, counts)
   }
 
   /** The picker's list: the open projects, and in server mode the recent ones too (same failure rule). */

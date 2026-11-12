@@ -427,6 +427,23 @@ export interface SessionSummary {
   readonly flag?: { readonly color: string }
 }
 
+/**
+ * Another machine (`ctx.sessions.machines`): a server this app has a remote window open on. `id` is
+ * opaque, minted by the app for this run (focusMachine takes it). The counts are the server's Claude
+ * tabs: `waiting` for the person (at the prompt or a permission dialog), `working` (or starting),
+ * `idle` (idle or exited). They are absent while the first answer is pending, for a server too old to
+ * answer them, and whenever `reachable` is false (the server did not answer).
+ */
+export interface MachineInfo {
+  readonly id: string
+  /** The person's own name for the server. */
+  readonly name: string
+  readonly reachable: boolean
+  readonly waiting?: number
+  readonly working?: number
+  readonly idle?: number
+}
+
 /** One rate-limit window of the person's Claude account (`RateLimits`). */
 export interface RateLimitWindow {
   /** How much of the window is used, 0-100. */
@@ -815,6 +832,21 @@ export interface PluginContext {
      * (any more). At most 10 in 10 s.
      */
     focus(tabId: string): Promise<boolean>
+    /**
+     * The other machines: one entry per server this app has a remote window open on, with its Claude
+     * tabs as counts only (no session text crosses machines). Empty in server mode and when no remote
+     * window is open. The same `"access": { "sessions": "all-windows" }` declaration as
+     * `list({ scope: 'all' })` (throws otherwise). An older app has none: check
+     * `typeof ctx.sessions.machines === 'function'`.
+     */
+    machines(): Promise<MachineInfo[]>
+    /** The whole list again whenever it changes (a machine added or gone, a name, a count); the same declaration. */
+    onMachinesChange(listener: (machines: MachineInfo[]) => void): Disposer
+    /**
+     * Focus that machine's most recently focused remote window. False for an id that is not listed
+     * (any more). The same declaration; shares focus's limit (at most 10 in 10 s for both).
+     */
+    focusMachine(id: string): Promise<boolean>
     /**
      * Close a Claude tab of this window the way the person would: a running tab asks first (the close
      * dialog, unless the person turned it off), in this window, which is raised for it. `closed: false`

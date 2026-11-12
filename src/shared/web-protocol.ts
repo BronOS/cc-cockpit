@@ -37,6 +37,14 @@ export const PROJECTS_PATH = '/api/projects'
  * the path travels in the body rather than in a URL a log or a history could keep.
  */
 export const FOLDERS_PATH = '/api/folders'
+/**
+ * Server mode's session counts (design-remote-desktop.md §4.1): how many Claude tabs of the server
+ * wait for the person, work, or idle (`WebSessionCounts`), for the desktop app's one chip per server
+ * in its sessions strip. A GET for a signed-in device, as PROJECTS_PATH; 404 off server mode (a
+ * desktop with web access has no desktop app asking it, and an old server answers 404 the same way,
+ * which the poller reads as "no counts"). Counts only: no title, tool or project crosses machines.
+ */
+export const SESSIONS_PATH = '/api/sessions'
 
 /**
  * Plugin files over HTTP (design-web.md §5.5): `/p/<token>/<pluginId>/<path>`, one token per
@@ -162,6 +170,17 @@ export interface WebProjectsReply {
   recent?: WebRecentProject[]
   /** Server mode only: which server this is (absent when main could not read it). */
   host?: WebServerHost
+}
+
+/**
+ * The SESSIONS_PATH answer: every Claude tab of the server in exactly one count (the gateway's
+ * `sessionCounts` says which status goes where). Non-negative integers; a reader still checks them,
+ * since the answer crosses machines.
+ */
+export interface WebSessionCounts {
+  waiting: number
+  working: number
+  idle: number
 }
 
 /**

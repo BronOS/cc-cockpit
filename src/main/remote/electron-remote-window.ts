@@ -34,7 +34,7 @@ import { lockDownSession, NO_APP_PAGE } from '../windows/permissions'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../windows/window-bounds'
 import { warnLog } from '../warn-log'
 import type { RemoteCookieJar } from './remote-cookie'
-import type { RemoteSessionHooks, RemoteSessionView, RemoteWindowFactory, RemoteWindowHooks, RemoteWindowView } from './remote-windows'
+import { RemoteHttpError, type RemoteSessionHooks, type RemoteSessionView, type RemoteWindowFactory, type RemoteWindowHooks, type RemoteWindowView } from './remote-windows'
 
 /** The partition of server `serverId`'s windows. The prefix is named in this file only (grep test). */
 export function remotePartition(serverId: string): string {
@@ -126,7 +126,7 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
           redirect: 'error',
           signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)
         })
-        if (!res.ok) throw new Error(`the server answered ${res.status}`)
+        if (!res.ok) throw new RemoteHttpError(res.status)
         return (await res.json()) as unknown
       },
       postJson: async (url, body, origin) => {
@@ -185,6 +185,7 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       gone: () => undefined
     })
     wc.on('did-finish-load', () => hooks.loaded())
+    win.on('focus', () => hooks.focused())
     win.on('closed', () => hooks.closed())
     const id = win.id
     const webContentsId = wc.id

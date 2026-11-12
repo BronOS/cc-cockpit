@@ -57,8 +57,9 @@ so a person chooses to install or link it.
   Only declared names work with `ctx.services` (`api` topic).
 - `access` (optional, top level): what the plugin sees beyond its own window, shown on its row in
   Settings > Plugins. Only `"access": { "sessions": "all-windows" }` exists: `ctx.sessions.list` and
-  `onChange` with `{ scope: 'all' }` then answer a summary of every window's Claude tabs (`api` topic);
-  without it they throw. An app before 0.10 ignores the key.
+  `onChange` with `{ scope: 'all' }` then answer a summary of every window's Claude tabs, and
+  `ctx.sessions.machines`, `onMachinesChange` and `focusMachine` the other machines' counts (`api`
+  topic); without it they throw. An app before 0.10 ignores the key.
 - `openFile` (an object, not a list; needs `main`): the plugin can take over a click on a changed
   file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
   names the choice in Settings > This Project, where a project with several such plugins picks one (or

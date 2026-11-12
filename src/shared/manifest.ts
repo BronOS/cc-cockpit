@@ -235,7 +235,9 @@ export interface PluginManifest {
   /**
    * What the plugin may see beyond its own window (design-next §4.1), shown on the Plugins page.
    * `sessions: 'all-windows'`: `ctx.sessions.list/onChange({ scope: 'all' })` answer with a summary of
-   * every window's Claude tabs (status, tool, title, project); without it those calls throw. Top level,
+   * every window's Claude tabs (status, tool, title, project), and `ctx.sessions.machines` /
+   * `onMachinesChange` / `focusMachine` with the other machines' session counts (design-remote-desktop.md
+   * §4.1); without it those calls throw. Top level,
    * like `services`: an older app tolerates the unknown key and simply never offers the scope.
    */
   access?: { sessions?: 'all-windows' }

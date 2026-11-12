@@ -251,8 +251,22 @@ export interface RemoteWindowHooks {
   navigated(url: string): void
   /** The main frame finished loading (a re-pair trigger). */
   loaded(): void
+  /** The window got the focus (the machine chip's click focuses the server's most recently focused one). */
+  focused(): void
   /** The window closed. */
   closed(): void
+}
+
+/**
+ * A non-2xx answer to `fetchJson`, with its status: the machine poller (machine-status.ts) tells an
+ * older server's 404 (no SESSIONS_PATH: reachable, no counts) from a server that is away or refuses.
+ * Every other caller only needs "it did not answer", which any rejection still is.
+ */
+export class RemoteHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`the server answered ${status}`)
+    this.name = 'RemoteHttpError'
+  }
 }
 
 /** One remote window as the logic drives it. */
@@ -284,7 +298,10 @@ export interface RemoteSessionHooks {
 /** One server's partition. */
 export interface RemoteSessionView {
   readonly jar: RemoteCookieJar
-  /** GET `url` with the partition's cookies and parse the JSON body; rejects on a network error or a non-2xx answer. */
+  /**
+   * GET `url` with the partition's cookies and parse the JSON body; rejects on a network error, or
+   * with a RemoteHttpError on a non-2xx answer.
+   */
   fetchJson(url: string): Promise<unknown>
   /**
    * POST `body` as JSON to `url` with the partition's cookies and `Origin: <origin>` (the gateway
@@ -377,6 +394,8 @@ interface WindowRecord {
   closed: boolean
   /** Bumped by every main-made load: a gate answer for an older one is dropped. */
   loads: number
+  /** When it last got the focus, as RemoteWindows' own counter (opening counts: a new window is shown focused). */
+  focusedAt: number
   /** A gated load waiting for the tunnel: its retry timer, and the text the window shows. */
   retry: unknown
   waiting: string | undefined
@@ -447,6 +466,8 @@ export class RemoteWindows {
   /** By window id, in opening order. */
   private readonly windows = new Map<number, WindowRecord>()
   private readonly byWebContents = new Map<number, WindowRecord>()
+  /** The focus order counter (WindowRecord.focusedAt): a counter, not a clock, so two focuses in one ms still order. */
+  private focusSeq = 0
 
   constructor(options: RemoteWindowsOptions) {
     this.options = options
@@ -490,11 +511,14 @@ export class RemoteWindows {
       loaded: () => {
         if (made.rec !== undefined) this.trigger(made.rec)
       },
+      focused: () => {
+        if (made.rec !== undefined && !made.rec.closed) made.rec.focusedAt = ++this.focusSeq
+      },
       closed: () => {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false, loads: 0, retry: undefined, waiting: undefined }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false, loads: 0, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
@@ -534,6 +558,38 @@ export class RemoteWindows {
     if (last === undefined) return false
     last.view.focus()
     return true
+  }
+
+  /**
+   * The servers with a remote window open, each once, in the order their first open window opened
+   * (the machine poller's set, machine-status.ts).
+   */
+  serverIds(): string[] {
+    return [...new Set([...this.windows.values()].map((r) => r.serverId))]
+  }
+
+  /**
+   * Focus server `serverId`'s most recently focused window (the machine chip's click); false when it
+   * has none open.
+   */
+  focusServer(serverId: string): boolean {
+    let best: WindowRecord | undefined
+    for (const rec of this.windowsOf(serverId)) if (best === undefined || rec.focusedAt > best.focusedAt) best = rec
+    if (best === undefined) return false
+    best.view.focus()
+    return true
+  }
+
+  /**
+   * GET `path` on server `serverId` through its partition (the device cookie applies) at its current
+   * origin, once the saved cookie is in the jar: the machine poller's SESSIONS_PATH. Rejects for a
+   * server with no state (never opened, or forgotten) and as `fetchJson` does.
+   */
+  async fetchFromServer(serverId: string, path: string): Promise<unknown> {
+    const state = this.servers.get(serverId)
+    if (state === undefined) throw new Error('no such server')
+    await state.restored
+    return state.session.fetchJson(`${state.origin}${path}`)
   }
 
   /** The server was renamed: its windows' titles follow. */
