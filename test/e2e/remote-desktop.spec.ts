@@ -175,6 +175,24 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     const saved = savedServers(desktop.cockpit.dataDir)[0]!
     expect(saved.cookie?.startsWith('FAKE-SECRET-STORE-NOT-ENCRYPTED:')).toBe(true)
 
+    // (i) Back to the picker (§4): the tab strip's "+" in the remote window shows the desktop picker,
+    // not the server's web one, and the project is still open on the server, so the window stays on it.
+    // noWaitAfter: the click starts a navigation main cancels, which Playwright would wait on forever.
+    await remote.getByRole('button', { name: 'Open project…' }).click({ noWaitAfter: true })
+    const back = await pickerWindow(app, server.origin)
+    await expect(back.getByRole('button', { name: 'Connect to server…' })).toBeVisible()
+    await new Promise((r) => setTimeout(r, 1000))
+    expect(remote.isClosed()).toBe(false)
+    // Read through main: Playwright keeps waiting on the navigation main cancelled, so its locators would too.
+    const shown = await app.evaluate(async ({ BrowserWindow }, origin) => {
+      const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith(`${origin}/`))
+      if (win === undefined) return undefined
+      const pane = (await win.webContents.executeJavaScript("document.querySelector('.tabs-pane') !== null")) as boolean
+      return { url: win.webContents.getURL(), pane }
+    }, server.origin)
+    expect(shown).toEqual({ url: `${server.origin}/${href}`, pane: true })
+    expect(await titles(app)).toEqual([`Test server — ${projectName}`, 'cc-cockpit'].sort())
+
     await desktop.close({ keepFiles: true })
     desktop = undefined
 
@@ -200,6 +218,25 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     expect((await status(server)).devices).toHaveLength(1)
     await expect.poll(() => titles(app2)).toEqual([`Test server — ${projectName}`])
 
+    // (j) Close project in the remote window (§4 "Back to the picker"): the server closes it for every
+    // device, the page's move to the server's picker becomes the desktop picker, and the window, whose
+    // project is no longer open, closes.
+    await remote2.getByRole('button', { name: 'Close project' }).first().click()
+    const closeConfirm = remote2.getByRole('alertdialog', { name: /^Close .+ for every device\?$/ }).getByRole('button', { name: 'Close project' })
+    await expect(closeConfirm).toBeEnabled({ timeout: 5_000 })
+    await closeConfirm.click({ noWaitAfter: true })
+    await expect.poll(() => remote2.isClosed(), { timeout: 15_000 }).toBe(true)
+    const backPicker = await pickerWindow(app2, server.origin)
+    await expect(backPicker.getByRole('list', { name: 'Recent projects on Test server' })).toBeVisible()
+    expect(await titles(app2)).toEqual(['cc-cockpit'])
+
+    // The server's own picker in a window again (for Forget below); the desktop picker closes as for any open.
+    await backPicker.getByRole('button', { name: 'More for Test server' }).click()
+    await backPicker.getByRole('menuitem', { name: 'Open server’s picker' }).click()
+    const remote3 = await remoteWindow(app2, server.origin)
+    await remote3.getByRole('list', { name: 'Recent projects' }).waitFor()
+    await expect.poll(() => backPicker.isClosed()).toBe(true)
+
     // (h) Forget, from a picker opened over the remote window (File › Open Project): the server's
     // windows close and its entry goes, with its cookie.
     await app2.evaluate(({ Menu }) => {
@@ -214,7 +251,7 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     const rename = picker3.getByRole('textbox', { name: 'New name for Test server' })
     await rename.fill('Box')
     await rename.press('Enter')
-    await expect.poll(() => titles(app2)).toEqual(['Box — ' + projectName, 'cc-cockpit'].sort())
+    await expect.poll(() => titles(app2)).toEqual(['Box', 'cc-cockpit'])
     await expect(picker3.getByRole('list', { name: 'Recent projects on Box' })).toBeVisible()
 
     await picker3.getByRole('button', { name: 'More for Box' }).click()
@@ -222,7 +259,7 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     const confirm = picker3.getByRole('group', { name: 'Forget Box?' })
     await expect(confirm).toContainText('This machine stays in the server’s device list until you revoke it there.')
     await confirm.getByRole('button', { name: 'Forget' }).click()
-    await expect.poll(() => remote2.isClosed()).toBe(true)
+    await expect.poll(() => remote3.isClosed()).toBe(true)
     await expect(picker3.getByText('No servers yet.', { exact: false })).toBeVisible()
     // app.json is written debounced (store/json-file.ts).
     await expect.poll(() => savedServers(desktop!.cockpit.dataDir)).toEqual([])

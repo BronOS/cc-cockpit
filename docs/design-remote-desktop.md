@@ -168,6 +168,13 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
   `did-navigate` / `did-navigate-in-page`, the web client's own routing, `renderer/web/main.tsx`). Opening a project
   that already has a window focuses it. When the server's web picker navigates a window to a project that another
   window shows, that window is focused and this one goes back to the picker.
+- **Back to the picker.** In this app the person's project list is the desktop picker (local projects, the other
+  servers), not the server's web one. A main-frame navigation the page starts from a project page to the server's
+  picker (the tab strip's "+" assigns `/`, Close project replaces the URL with the page's own path, the 'gone' page
+  links `/`) is cancelled in `will-frame-navigate` and the desktop picker shows (`showPicker`). Main then asks
+  `/api/projects`: the project still open keeps the window as it is ("+"); not open any more (Close project) closes it;
+  no answer keeps it (never closed on a guess). Done in main, so any server version's web client gets it. A window on
+  the server's picker navigates as before (`remote-windows.ts › isPickerNavigation`).
 - **Title and names.** The web shell's only title is the static `cc-cockpit` (`renderer/web/index.html`), so main does
   not read the page's title: after a navigation to `?project=<id>` it asks the server's `/api/projects` through the
   window's own session (`ses.fetch`, the device cookie applies) for that project's name. The window title is

@@ -12,6 +12,7 @@ import {
   allowRemoteNavigation,
   allowRemoteRequest,
   isLoopbackHost,
+  isPickerNavigation,
   projectOfUrl,
   remotePageUrl,
   remoteTitle,
@@ -81,6 +82,22 @@ describe('the rules', () => {
     expect(allowRemoteNavigation('javascript:alert(1)', ORIGIN)).toBe(false)
     expect(allowRemoteNavigation('data:text/html,x', ORIGIN)).toBe(false)
     expect(allowRemoteNavigation(`${ORIGIN}/`, undefined)).toBe(false)
+  })
+
+  it('tells a project page going back to the server picker', () => {
+    const from = `${ORIGIN}/?project=p1`
+    expect(isPickerNavigation(from, `${ORIGIN}/`, ORIGIN)).toBe(true)
+    expect(isPickerNavigation(from, `${ORIGIN}/?project=`, ORIGIN)).toBe(true)
+    // Close project replaces the URL with the page's own path (a reverse-proxy prefix kept).
+    expect(isPickerNavigation(`${ORIGIN}/cc/?project=p1`, `${ORIGIN}/cc/`, ORIGIN)).toBe(true)
+    expect(isPickerNavigation(from, `${ORIGIN}/other`, ORIGIN)).toBe(false)
+    expect(isPickerNavigation(from, `${ORIGIN}/?project=p2`, ORIGIN)).toBe(false)
+    expect(isPickerNavigation(from, `${ORIGIN}/?project=p1`, ORIGIN)).toBe(false)
+    // From the picker, or another origin: not this.
+    expect(isPickerNavigation(`${ORIGIN}/`, `${ORIGIN}/`, ORIGIN)).toBe(false)
+    expect(isPickerNavigation('data:text/plain,x', `${ORIGIN}/`, ORIGIN)).toBe(false)
+    expect(isPickerNavigation(from, 'http://127.0.0.1:4101/', ORIGIN)).toBe(false)
+    expect(isPickerNavigation(from, `${ORIGIN}/`, undefined)).toBe(false)
   })
 
   it('reads the project, builds page URLs and titles', () => {
@@ -223,9 +240,11 @@ function setup() {
   let changes = 0
   let clock = 1_000_000
   let tokens = 0
+  let pickers = 0
   const options = {
     factory,
     store,
+    showPicker: () => void pickers++,
     openExternal: (url: string) => void external.push(url),
     mintToken: vi.fn(async (server: Omit<RemoteServer, 'cookie'>) => {
       minted.push(server.id)
@@ -247,6 +266,7 @@ function setup() {
     allClosed,
     logs,
     changes: () => changes,
+    pickers: () => pickers,
     tick: (ms: number) => {
       clock += ms
     }
@@ -430,6 +450,78 @@ describe('RemoteWindows: windows', () => {
 
   it('refuses an unknown server', async () => {
     await expect(t.windows.open('zz', { origin: ORIGIN })).rejects.toThrow('unknown server')
+  })
+})
+
+describe('RemoteWindows: back to the picker', () => {
+  let t: ReturnType<typeof setup>
+  let open: { projects: Array<{ id: string; name: string; path: string }> }
+  beforeEach(() => {
+    t = setup()
+    open = { projects: [{ id: 'p1', name: 'Api', path: '/srv/api' }] }
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? open : signedIn)
+  })
+
+  async function projectWindow(): Promise<FakeView> {
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views.at(-1) as FakeView
+    view.commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    return view
+  }
+
+  it('the tab strip "+" shows the desktop picker and keeps the window (the project is still open)', async () => {
+    const view = await projectWindow()
+    const fetches = t.factory.session1().fetches.length
+    expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
+    expect(t.pickers()).toBe(1)
+    await flush()
+    expect(t.factory.session1().fetches.slice(fetches)).toEqual([`${ORIGIN}/api/projects`])
+    expect(view.closed).toBe(false)
+    expect(t.windows.count()).toBe(1)
+  })
+
+  it('Close project shows the desktop picker and closes the window (the project is no longer open)', async () => {
+    const view = await projectWindow()
+    open = { projects: [] }
+    expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
+    expect(t.pickers()).toBe(1)
+    await flush()
+    expect(view.closed).toBe(true)
+    expect(t.windows.count()).toBe(0)
+    expect(t.allClosed).toEqual(['s1'])
+  })
+
+  it('keeps the window when the server does not answer, or answers something else', async () => {
+    const view = await projectWindow()
+    t.factory.fetcher = async () => {
+      throw new Error('the server answered 401')
+    }
+    expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
+    await flush()
+    expect(view.closed).toBe(false)
+    expect(t.logs.some((l) => l.includes('the window stays'))).toBe(true)
+    t.factory.fetcher = async () => ({ nope: true })
+    expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
+    await flush()
+    expect(view.closed).toBe(false)
+    expect(t.pickers()).toBe(2)
+  })
+
+  it('leaves the server picker window own navigation alone', async () => {
+    await t.windows.open('s1', { origin: ORIGIN })
+    const picker = t.factory.views[0] as FakeView
+    picker.commit(`${ORIGIN}/`)
+    const fetches = t.factory.session1().fetches.length
+    expect(picker.hooks.allowNavigation(`${ORIGIN}/`)).toBe(true)
+    expect(picker.hooks.allowNavigation(`${ORIGIN}/?project=p1`)).toBe(true)
+    // Between projects, and off the origin, as before.
+    const view = await projectWindow()
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?project=p2`)).toBe(true)
+    expect(view.hooks.allowNavigation('https://example.com/')).toBe(false)
+    expect(t.pickers()).toBe(0)
+    await flush()
+    expect(t.factory.session1().fetches.slice(fetches).filter((u) => u.endsWith('/api/projects')).length).toBe(1)
   })
 })
 

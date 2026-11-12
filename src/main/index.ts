@@ -691,6 +691,8 @@ function start(server: boolean): void {
             windows.remoteWindowsChanged()
             changed()
           },
+          // A remote project page going back to the server's picker: the desktop picker instead.
+          showPicker: () => windows.showPicker(),
           log: warnLog
         })
         return { service, windows: remoteWindows }

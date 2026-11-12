@@ -14,6 +14,10 @@
 //    a page-opened window is never one of ours: an http(s) link goes to the person's browser under
 //    the webview panels' open budget (open-budget.ts), anything else is dropped.
 //
+// Back to the picker: a project page navigating to the server's own picker (the tab strip's "+",
+// Close project) is cancelled and the desktop picker shows; the window closes when the server no
+// longer has the project open, and stays otherwise (`backToPicker`).
+//
 // Windows per (server, project): the project comes from the page's own routing (`?project=<id>`,
 // renderer/web/main.tsx), read on every main-frame navigation. Opening a project that has a window
 // focuses it; the server's web picker navigating a second window to it focuses the first and sends
@@ -146,6 +150,21 @@ export function projectOfUrl(url: string): string | undefined {
   return project === '' || project.length > MAX_PROJECT_ID ? undefined : project
 }
 
+/**
+ * Whether a main-frame navigation from `from` to `to` is a project page going back to the server's
+ * own picker: both on `origin`, `from` showing a project, `to` with no project at `/` or at `from`'s
+ * own path (the web client's tab strip "+" assigns `/`; its Close project replaces the URL with
+ * `location.pathname`, and its 'gone' page links `/`). Navigations within the picker, from it to a
+ * project and between projects are not.
+ */
+export function isPickerNavigation(from: string, to: string, origin: string | undefined): boolean {
+  if (!onOrigin(from, origin) || !onOrigin(to, origin) || projectOfUrl(from) === undefined) return false
+  const target = parsed(to)
+  const source = parsed(from)
+  if (target === undefined || source === undefined || (target.searchParams.get('project') ?? '') !== '') return false
+  return target.pathname === '/' || target.pathname === source.pathname
+}
+
 /** The page for a server's project (or its picker), with an access token in the fragment when signing in. */
 export function remotePageUrl(origin: string, projectId?: string, token?: string): string {
   const query = projectId === undefined ? '' : `?project=${encodeURIComponent(projectId)}`
@@ -255,6 +274,11 @@ export interface RemoteWindowsOptions {
   gate?(server: RemoteServerRecord): Promise<LoadGate>
   /** A window opened or closed (WindowManager's counts). */
   onChanged?(): void
+  /**
+   * A project page went back to the server's picker: the desktop picker shows instead (WindowManager
+   * `showPicker`; it focuses one already open). Absent: the navigation is only cancelled (tests).
+   */
+  showPicker?(): void
   now?(): number
   timers?: RemoteWindowsTimers
   log?(message: string): void
@@ -326,6 +350,20 @@ function projectNameOf(body: unknown, projectId: string): string | undefined {
   return undefined
 }
 
+/** The ids of the projects open on the server (PROJECTS_PATH `projects`), or undefined for another shape. */
+function openProjectIdsOf(body: unknown): Set<string> | undefined {
+  if (body === null || typeof body !== 'object') return undefined
+  const list = (body as Record<string, unknown>)['projects']
+  if (!Array.isArray(list)) return undefined
+  const ids = new Set<string>()
+  for (const entry of list) {
+    if (entry === null || typeof entry !== 'object') continue
+    const { id } = entry as Record<string, unknown>
+    if (typeof id === 'string') ids.add(id)
+  }
+  return ids
+}
+
 const realTimers: RemoteWindowsTimers = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)
@@ -371,7 +409,8 @@ export class RemoteWindows {
     // The hooks run only after create returned (the page has not loaded anything before that).
     const made: { rec?: WindowRecord } = {}
     const view = this.options.factory.create(serverId, remoteTitle(server.name), {
-      allowNavigation: (url) => allowRemoteNavigation(url, this.servers.get(serverId)?.origin),
+      allowNavigation: (url) =>
+        made.rec === undefined ? allowRemoteNavigation(url, this.servers.get(serverId)?.origin) : this.allowNavigation(made.rec, url),
       openWindow: (url) => {
         if (made.rec !== undefined) this.openWindow(made.rec, url)
       },
@@ -493,6 +532,49 @@ export class RemoteWindows {
 
   private find(serverId: string, projectId: string | undefined): WindowRecord | undefined {
     return this.windowsOf(serverId).find((r) => r.project === projectId)
+  }
+
+  /**
+   * A main-frame navigation the page started. The origin pin first; then a project page going back
+   * to the server's picker is cancelled and the desktop picker shows instead (design §4 "Back to the
+   * picker"): in this app the person's project list is the desktop's, with local projects and the
+   * other servers, not the server's web one. Done here, on the navigation, so any server version's
+   * web client gets it. Main's own loads (the picker after a duplicate project, a sign-in) never
+   * come through here (`loadURL` fires no will-navigate).
+   */
+  private allowNavigation(rec: WindowRecord, url: string): boolean {
+    const origin = this.servers.get(rec.serverId)?.origin
+    if (!allowRemoteNavigation(url, origin)) return false
+    const from = rec.view.url()
+    const project = projectOfUrl(from)
+    if (rec.closed || project === undefined || !isPickerNavigation(from, url, origin)) return true
+    this.backToPicker(rec, project)
+    return false
+  }
+
+  /**
+   * The desktop picker shows; then the window stays or goes by whether the server still has its
+   * project open. Still open (the tab strip's "+"): the window is kept as it is. Not open (Close
+   * project, or a project page that found its window gone): the window closes. The server not
+   * answering, or an answer that is not a project list: the window is kept (never closed on a
+   * guess; the person can close it).
+   */
+  private backToPicker(rec: WindowRecord, project: string): void {
+    this.options.showPicker?.()
+    const state = this.servers.get(rec.serverId)
+    if (state === undefined) return
+    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`).then(
+      (body) => {
+        if (rec.closed) return
+        const open = openProjectIdsOf(body)
+        if (open === undefined) {
+          this.log(`remote ${rec.serverId}: the project list was not one; the window stays`)
+          return
+        }
+        if (!open.has(project)) rec.view.close()
+      },
+      (err: unknown) => this.log(`remote ${rec.serverId}: the project list did not answer; the window stays: ${errorText(err)}`)
+    )
   }
 
   private openWindow(rec: WindowRecord, url: string): void {

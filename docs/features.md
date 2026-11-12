@@ -573,7 +573,8 @@ or port drops the trusted host key, and a changed host, user, port or sign-in dr
 passphrase. Saving an SSH server dials nothing; the next open asks for what it needs.
 
 **Windows.** Opening a remote project gives one window per project, with the desktop's shortcuts. Links clicked in a
-remote session open in your own browser here, not on the server.
+remote session open in your own browser here, not on the server. In a remote project window the tab strip's **+** shows this app's own
+picker (local projects and your servers), and **Close project** closes the project on the server and its window here.
 
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
