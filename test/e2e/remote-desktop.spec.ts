@@ -298,7 +298,9 @@ async function connectSsh(picker: Page, host: string, name?: string): Promise<Re
   return dialog
 }
 
-test('SSH: tunnel on another port, signed in by add-device, one re-pair after a revoke, tunnel restart, bad auth', async () => {
+// The app no longer spawns `ssh` (remote SSH rev 2 Task 5: the built-in `ssh2` client), so this fake-ssh
+// test cannot pass: replaced in Task 7 (an `ssh2` server fixture).
+test.skip('SSH: tunnel on another port, signed in by add-device, one re-pair after a revoke, tunnel restart, bad auth', async () => {
   test.setTimeout(300_000)
   const server = await launchServer({ mode: 'link' })
   const ssh = fakeSsh(server)

@@ -2581,7 +2581,7 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
   })
 })
 
-// Remote desktop (design-remote-desktop.md §3): the picker's `remote.*` calls run the person's ssh and
+// Remote desktop (design-remote-desktop.md §3): the picker's `remote.*` calls dial out over SSH and
 // keep device cookies, so only the desktop picker page reaches them; payloads are checked by hand.
 describe('remote server handlers', () => {
   const PICKER = 13
@@ -2597,9 +2597,17 @@ describe('remote server handlers', () => {
         calls.push(['connect', request])
         return { ok: true, serverId: 's1' }
       },
-      open: async (serverId, projectId) => {
-        calls.push(['open', serverId, projectId])
+      open: async (serverId, projectId, answers) => {
+        calls.push(answers === undefined ? ['open', serverId, projectId] : ['open', serverId, projectId, answers])
         return { ok: true, serverId }
+      },
+      edit: async (request) => {
+        calls.push(['edit', request])
+        return { ok: true, serverId: request.serverId }
+      },
+      pickKey: async (windowId) => {
+        calls.push(['pickKey', windowId])
+        return '/home/me/.ssh/id_work'
       },
       rename: (serverId, name) => {
         calls.push(['rename', serverId, name])
@@ -2622,6 +2630,13 @@ describe('remote server handlers', () => {
     await ipc.invoke('remote.open', PICKER, [{ serverId: 's1' }])
     await ipc.invoke('remote.rename', PICKER, [{ serverId: 's1', name: 'Home' }])
     await ipc.invoke('remote.forget', PICKER, [{ serverId: 's1' }])
+    await ipc.invoke('remote.connect', PICKER, [
+      { kind: 'ssh', host: 'devbox', user: 'me', port: 2222, auth: { kind: 'key', path: '~/.ssh/k' }, answers: { hostKey: 'SHA256:x', passphrase: 'p', remember: true } }
+    ])
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox', link: 'http://127.0.0.1:7330/#t=t' }])
+    await ipc.invoke('remote.open', PICKER, [{ serverId: 's1', answers: { password: 'pw' } }])
+    await expect(ipc.invoke('remote.edit', PICKER, [{ serverId: 's1', kind: 'ssh', host: 'devbox', auth: { kind: 'password' } }])).resolves.toEqual({ ok: true, serverId: 's1' })
+    await expect(ipc.invoke('remote.pickKey', PICKER)).resolves.toBe('/home/me/.ssh/id_work')
     expect(calls).toEqual([
       ['list'],
       ['connect', { kind: 'ssh', host: 'devbox', ccc: '/opt/ccc', name: 'Dev' }],
@@ -2629,11 +2644,17 @@ describe('remote server handlers', () => {
       ['open', 's1', 'p1'],
       ['open', 's1', undefined],
       ['rename', 's1', 'Home'],
-      ['forget', 's1']
+      ['forget', 's1'],
+      ['connect', { kind: 'ssh', host: 'devbox', user: 'me', port: 2222, auth: { kind: 'key', path: '~/.ssh/k' }, answers: { hostKey: 'SHA256:x', passphrase: 'p', remember: true } }],
+      ['connect', { kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox', link: 'http://127.0.0.1:7330/#t=t' }],
+      ['open', 's1', undefined, { password: 'pw' }],
+      ['edit', { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, serverId: 's1' }],
+      // The dialog is a sheet on the window main resolved for the sender (13 is window 3), never one from the payload.
+      ['pickKey', 3]
     ])
   })
 
-  it.each(['remote.list', 'remote.connect', 'remote.open', 'remote.rename', 'remote.forget'])(
+  it.each(['remote.list', 'remote.connect', 'remote.open', 'remote.edit', 'remote.pickKey', 'remote.rename', 'remote.forget'])(
     '%s is refused to a project window and to a browser view, before the service runs',
     async (channel) => {
       const { ipc, router, calls } = remoteSetup()
@@ -2656,6 +2677,15 @@ describe('remote server handlers', () => {
     const { ipc, calls } = remoteSetup()
     await expect(ipc.invoke('remote.connect', PICKER, [])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'telnet', host: 'x' }])).rejects.toThrow(/kind must be/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', port: '22' }])).rejects.toThrow(/port must be a whole number/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', auth: { kind: 'cert' } }])).rejects.toThrow(/auth.kind must be/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', auth: { kind: 'key' } }])).rejects.toThrow(/path must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', answers: { password: 7 } }])).rejects.toThrow(/password must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', answers: { password: 'x'.repeat(1025) } }])).rejects.toThrow(/password must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', answers: { remember: 'yes' } }])).rejects.toThrow(/remember must be a boolean/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'tunnel', localPort: 1.5, remotePort: 7330 }])).rejects.toThrow(/localPort must be a whole number/)
+    await expect(ipc.invoke('remote.open', PICKER, [{ serverId: 's', answers: 'pw' }])).rejects.toThrow(/bad payload/)
+    await expect(ipc.invoke('remote.edit', PICKER, [{ kind: 'direct', link: 'https://box' }])).rejects.toThrow(/serverId must be a string/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 7 }])).rejects.toThrow(/host must be a string/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', ccc: 1 }])).rejects.toThrow(/ccc must be a string/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'x'.repeat(5000) }])).rejects.toThrow(/link must be a string/)
@@ -2666,11 +2696,18 @@ describe('remote server handlers', () => {
     await expect(ipc.invoke('remote.forget', PICKER, ['s1'])).rejects.toThrow(/bad payload/)
     // Only the fields named are passed on: an extra field never reaches the service.
     await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', origin: 'http://evil' }])
-    expect(calls).toEqual([['connect', { kind: 'direct', link: 'https://box' }]])
+    // Answers ride on an SSH connect only; extra answer fields are dropped too.
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', answers: { password: 'x' } }])
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', answers: { password: 'x', cookie: 'c' } }])
+    expect(calls).toEqual([
+      ['connect', { kind: 'direct', link: 'https://box' }],
+      ['connect', { kind: 'direct', link: 'https://box' }],
+      ['connect', { kind: 'ssh', host: 'h', answers: { password: 'x' } }]
+    ])
   })
 
   it('every remote channel is no-class', () => {
-    for (const channel of ['remote.list', 'remote.connect', 'remote.open', 'remote.rename', 'remote.forget', 'remote.changed'] as const) {
+    for (const channel of ['remote.list', 'remote.connect', 'remote.open', 'remote.edit', 'remote.pickKey', 'remote.rename', 'remote.forget', 'remote.changed'] as const) {
       expect(REMOTE_CLASS[channel]).toBe('no')
     }
   })

@@ -136,28 +136,87 @@ export class RemoteServerStore {
    * the other's server.
    */
   add(input: { name?: string; via: RemoteVia }): RemoteServerRecord {
+    const prepared = this.prepare(input)
+    return prepared.saved ? prepared.record : this.insert(prepared.record)
+  }
+
+  /**
+   * `add` without the write (design §5.4, "nothing saved before success"): the same server already
+   * saved (`saved: true`), or a new record with a fresh id that nothing holds yet. The connect dials
+   * with that record and `insert`s it only once the window opens. `via` is the input as checked (a
+   * saved record keeps its own settings: compare with `sameSettings`). Throws as `add` does.
+   */
+  prepare(input: { name?: string; via: RemoteVia }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia } {
     const via = this.checkedVia(input.via)
     const servers = this.read()
-    const same = servers.find((s) => sameVia(s.via, via))
-    if (same !== undefined) {
-      if (via.kind === 'tunnel' && !sameTunnel(same.via, via)) {
-        throw new RemoteServerError(`local port ${via.localPort} is already used by the tunnel of "${same.name}"; choose another local port`)
-      }
-      return withoutSecrets(same)
-    }
-    if (servers.length >= MAX_REMOTE_SERVERS) {
-      throw new RemoteServerError(`at most ${MAX_REMOTE_SERVERS} servers can be saved; forget one first`)
-    }
-    const name = input.name === undefined || input.name.trim() === '' ? defaultServerName(via) : serverNameOf(input.name)
-    if (name === undefined) throw new RemoteServerError('the name is too long or has control characters')
+    const same = this.sameSaved(servers, via)
+    if (same !== undefined) return { record: withoutSecrets(same), saved: true, via }
+    const name = this.newName(servers, input.name, via)
     const ids = new Set(servers.map((s) => s.id))
     let id = this.newId()
     while (ids.has(id)) id = this.newId()
     const server: RemoteServer = { id, name, via, recent: [] }
     // The validator is the one reader: a made-up id (a test seam) it would drop is refused here, not lost silently.
     if (validateRemoteServers([server]).length !== 1) throw new RemoteServerError('the server record is not valid')
+    return { record: server, saved: false, via }
+  }
+
+  /**
+   * Save a record `prepare` made. Checked again (the list may have changed meanwhile): a same server
+   * saved since, a clash, the cap. Only the id, name and `via` are taken; the rest starts empty.
+   */
+  insert(record: RemoteServerRecord): RemoteServerRecord {
+    const servers = this.read()
+    if (servers.some((s) => s.id === record.id)) throw new RemoteServerError('this server is saved already')
+    const via = this.checkedVia(record.via)
+    const same = this.sameSaved(servers, via)
+    if (same !== undefined) throw new RemoteServerError(`this server was saved meanwhile as "${same.name}"`)
+    const server: RemoteServer = { id: record.id, name: this.newName(servers, record.name, via), via, recent: [] }
+    if (validateRemoteServers([server]).length !== 1) throw new RemoteServerError('the server record is not valid')
     this.write([...servers, server])
-    return server
+    return withoutSecrets(server)
+  }
+
+  /**
+   * Edit a saved server's settings (the picker's Edit, design §3): its name (absent or empty: kept)
+   * and `via`, of the same kind (another kind is another server). The device cookie is kept, with
+   * one exception: a Direct origin that changed (the cookie would be sent to that other origin). An
+   * SSH host or port that changed drops the trusted host key (another machine may answer there, and
+   * its key must be confirmed again); a host, user, port or sign-in that changed drops the password
+   * or passphrase, stored and in memory (it was for that account or that key). A `via` another saved
+   * server already has is refused, as `add` refuses a tunnel's used local port.
+   */
+  edit(id: string, input: { name?: string; via: RemoteVia }): { viaChanged: boolean; renamed: boolean } {
+    const servers = this.read()
+    const server = servers.find((s) => s.id === id)
+    if (server === undefined) throw new RemoteServerError('unknown server')
+    const via = this.checkedVia(input.via)
+    if (via.kind !== server.via.kind) throw new RemoteServerError('Edit cannot change how a server is reached: connect it as a new server')
+    const other = servers.find((s) => s.id !== id && sameVia(s.via, via))
+    if (other !== undefined) throw new RemoteServerError(`"${other.name}" is already saved with these settings`)
+    let name = server.name
+    if (input.name !== undefined && input.name.trim() !== '') {
+      const clean = serverNameOf(input.name)
+      if (clean === undefined) throw new RemoteServerError('the name must be 1 to 100 characters with no control characters')
+      name = clean
+    }
+    const before = server.via
+    const viaChanged = !sameSettings(before, via)
+    if (before.kind === 'ssh' && via.kind === 'ssh') {
+      const address = before.host !== via.host || (before.port ?? 0) !== (via.port ?? 0)
+      const account = address || (before.user ?? '') !== (via.user ?? '') || JSON.stringify(sshAuthOf(before)) !== JSON.stringify(sshAuthOf(via))
+      if (address) delete server.hostKey
+      if (account) {
+        delete server.secrets
+        this.held.delete(id)
+      }
+    }
+    if (before.kind === 'direct' && via.kind === 'direct' && before.origin !== via.origin) delete server.cookie
+    const renamed = name !== server.name
+    server.name = name
+    server.via = via
+    this.write(servers)
+    return { viaChanged, renamed }
   }
 
   rename(id: string, name: string): void {
@@ -345,6 +404,25 @@ export class RemoteServerStore {
     })
   }
 
+  /** The saved server `via` names, or undefined; a tunnel on a used local port with other settings throws. */
+  private sameSaved(servers: RemoteServer[], via: RemoteVia): RemoteServer | undefined {
+    const same = servers.find((s) => sameVia(s.via, via))
+    if (same !== undefined && via.kind === 'tunnel' && !sameTunnel(same.via, via)) {
+      throw new RemoteServerError(`local port ${via.localPort} is already used by the tunnel of "${same.name}"; choose another local port`)
+    }
+    return same
+  }
+
+  /** A new server's name (the cap checked first: there is no room for one more). */
+  private newName(servers: RemoteServer[], name: string | undefined, via: RemoteVia): string {
+    if (servers.length >= MAX_REMOTE_SERVERS) {
+      throw new RemoteServerError(`at most ${MAX_REMOTE_SERVERS} servers can be saved; forget one first`)
+    }
+    const clean = name === undefined || name.trim() === '' ? defaultServerName(via) : serverNameOf(name)
+    if (clean === undefined) throw new RemoteServerError('the name is too long or has control characters')
+    return clean
+  }
+
   private checkedVia(via: RemoteVia): RemoteVia {
     if (via.kind === 'ssh') {
       // A typed `user@host` is split as ssh does; beside a User field it is ambiguous.
@@ -447,6 +525,18 @@ function sameVia(a: RemoteVia, b: RemoteVia): boolean {
   if (a.kind === 'ssh' && b.kind === 'ssh') return a.host === b.host && (a.user ?? '') === (b.user ?? '') && (a.port ?? 0) === (b.port ?? 0)
   if (a.kind === 'tunnel' && b.kind === 'tunnel') return a.localPort === b.localPort
   return a.kind === 'direct' && b.kind === 'direct' && a.origin === b.origin
+}
+
+/** Two `via`s with the same settings (sign-in, `ccc` and a tunnel's printed host included), not only the same identity. */
+export function sameSettings(a: RemoteVia, b: RemoteVia): boolean {
+  return JSON.stringify(canonicalVia(a)) === JSON.stringify(canonicalVia(b))
+}
+
+/** `via` with its fields in one order and the defaults spelled out, so two can be compared as JSON. */
+function canonicalVia(via: RemoteVia): unknown {
+  if (via.kind === 'ssh') return ['ssh', via.host, via.user ?? '', via.port ?? 0, sshAuthOf(via), via.ccc ?? '']
+  if (via.kind === 'tunnel') return ['tunnel', via.localPort, via.remotePort, via.sshHost ?? '']
+  return ['direct', via.origin]
 }
 
 /** Two tunnels on one local port with the same settings (a repeated Connect), as opposed to a clash. */

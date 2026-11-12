@@ -24,7 +24,9 @@ import type {
   ProjectSettingsView,
   RemoteConnectAnswer,
   RemoteConnectRequest,
+  RemoteEditRequest,
   RemoteServerInfo,
+  RemoteServerSettings,
   ProjectSummary,
   SessionsSnapshot,
   SettingsPageInfo,
@@ -38,6 +40,7 @@ import type {
 } from '../../shared/ipc'
 import { remoteAllowed } from '../../shared/ipc'
 import { projectColorOf, type ProjectColor } from '../../shared/project-color'
+import { MAX_REMOTE_SECRET, type RemoteAnswers, type SshAuth } from '../../shared/remote-servers'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope } from '../../shared/settings-page'
 import type { Theme } from '../../shared/theme'
@@ -1105,33 +1108,106 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
 export interface RemoteServerHandlerDeps {
   list(): Promise<RemoteServerInfo[]>
   connect(request: RemoteConnectRequest): Promise<RemoteConnectAnswer>
-  open(serverId: string, projectId?: string): Promise<RemoteConnectAnswer>
+  open(serverId: string, projectId?: string, answers?: RemoteAnswers): Promise<RemoteConnectAnswer>
+  edit(request: RemoteEditRequest): Promise<RemoteConnectAnswer>
+  /** The key file dialog, a sheet on window `windowId` (the picker main resolved). */
+  pickKey(windowId: number): Promise<string | null>
   rename(serverId: string, name: string): { ok: true } | { ok: false; error: string }
   forget(serverId: string): Promise<void>
 }
 
 /** A text field of a `remote.*` payload is cut off here (the store checks the exact limits and characters). */
 const REMOTE_TEXT_MAX = 4096
+/** A `SHA256:` fingerprint is 50 characters; anything far past that is not one. */
+const REMOTE_HOST_KEY_MAX = 200
 
 /** A required string field of a `remote.*` payload, type and length checked (content is the store's). */
-function remoteText(channel: string, body: Record<string, unknown>, key: string): string {
+function remoteText(channel: string, body: Record<string, unknown>, key: string, max = REMOTE_TEXT_MAX): string {
   const value = body[key]
-  if (typeof value !== 'string' || value.length > REMOTE_TEXT_MAX) throw new Error(`${channel}: ${key} must be a string`)
+  if (typeof value !== 'string' || value.length > max) throw new Error(`${channel}: ${key} must be a string`)
   return value
 }
 
 /** An optional string field: absent or undefined reads as absent, anything but a string is refused. */
-function remoteOptionalText(channel: string, body: Record<string, unknown>, key: string): string | undefined {
-  return body[key] === undefined ? undefined : remoteText(channel, body, key)
+function remoteOptionalText(channel: string, body: Record<string, unknown>, key: string, max = REMOTE_TEXT_MAX): string | undefined {
+  return body[key] === undefined ? undefined : remoteText(channel, body, key, max)
+}
+
+/** A port field: a whole number (its range is the store's to check, with its own words). */
+function remotePort(channel: string, body: Record<string, unknown>, key: string): number {
+  const value = body[key]
+  if (typeof value !== 'number' || !Number.isInteger(value)) throw new Error(`${channel}: ${key} must be a whole number`)
+  return value
+}
+
+/** The SSH sign-in: one of the three kinds, a key's path a string (the store checks the path). */
+function remoteAuth(channel: string, value: unknown): SshAuth {
+  const auth = fields(`${channel}: auth`, value)
+  if (auth.kind === 'auto' || auth.kind === 'password') return { kind: auth.kind }
+  if (auth.kind === 'key') return { kind: 'key', path: remoteText(channel, auth, 'path') }
+  throw new Error(`${channel}: auth.kind must be auto, password or key`)
 }
 
 /**
- * The remote desktop's picker calls (design-remote-desktop.md §3). They run the person's `ssh`, keep
- * device cookies on this machine and open windows on its screen, so they answer the desktop picker
- * page only: a project window has no business with them, and a browser view never (they are
- * `no`-class, refused before any handler for a remote caller; checked again here, by the context and
- * the view main resolved, never by the payload). Every payload field is type-checked by hand; the
- * service and the store check what the text may hold.
+ * The answers of a connect or open (design §5.4), field by field. The secrets are capped as the
+ * store caps them; nothing of them is ever put in an error or a log.
+ */
+function remoteAnswers(channel: string, value: unknown): RemoteAnswers | undefined {
+  if (value === undefined) return undefined
+  const body = fields(`${channel}: answers`, value)
+  const hostKey = remoteOptionalText(channel, body, 'hostKey', REMOTE_HOST_KEY_MAX)
+  const password = remoteOptionalText(channel, body, 'password', MAX_REMOTE_SECRET)
+  const passphrase = remoteOptionalText(channel, body, 'passphrase', MAX_REMOTE_SECRET)
+  const remember = body.remember
+  if (remember !== undefined && typeof remember !== 'boolean') throw new Error(`${channel}: remember must be a boolean`)
+  return {
+    ...(hostKey === undefined ? {} : { hostKey }),
+    ...(password === undefined ? {} : { password }),
+    ...(passphrase === undefined ? {} : { passphrase }),
+    ...(remember === undefined ? {} : { remember })
+  }
+}
+
+/** A server's settings (connect, edit), only the fields named passed on. */
+function remoteSettings(channel: string, body: Record<string, unknown>): RemoteServerSettings {
+  const name = remoteOptionalText(channel, body, 'name')
+  const named = name === undefined ? {} : { name }
+  if (body.kind === 'ssh') {
+    const user = remoteOptionalText(channel, body, 'user')
+    const ccc = remoteOptionalText(channel, body, 'ccc')
+    return {
+      kind: 'ssh',
+      host: remoteText(channel, body, 'host'),
+      ...(user === undefined ? {} : { user }),
+      ...(body.port === undefined ? {} : { port: remotePort(channel, body, 'port') }),
+      ...(body.auth === undefined ? {} : { auth: remoteAuth(channel, body.auth) }),
+      ...(ccc === undefined ? {} : { ccc }),
+      ...named
+    }
+  }
+  if (body.kind === 'tunnel') {
+    const sshHost = remoteOptionalText(channel, body, 'sshHost')
+    const link = remoteOptionalText(channel, body, 'link')
+    return {
+      kind: 'tunnel',
+      localPort: remotePort(channel, body, 'localPort'),
+      remotePort: remotePort(channel, body, 'remotePort'),
+      ...(sshHost === undefined ? {} : { sshHost }),
+      ...(link === undefined ? {} : { link }),
+      ...named
+    }
+  }
+  if (body.kind === 'direct') return { kind: 'direct', link: remoteText(channel, body, 'link'), ...named }
+  throw new Error(`${channel}: kind must be ssh, tunnel or direct`)
+}
+
+/**
+ * The remote desktop's picker calls (design-remote-desktop.md §3). They dial out over SSH, keep
+ * device cookies, passwords and passphrases on this machine, show a native dialog and open windows
+ * on its screen, so they answer the desktop picker page only: a project window has no business with
+ * them, and a browser view never (they are `no`-class, refused before any handler for a remote
+ * caller; checked again here, by the context and the view main resolved, never by the payload).
+ * Every payload field is type-checked by hand; the service and the store check what the text may hold.
  */
 export function registerRemoteServerHandlers(router: IpcRouter, deps: RemoteServerHandlerDeps | undefined): void {
   const pickerOnly = (channel: InvokeChannel, ctx: SenderContext, view: CallView): RemoteServerHandlerDeps => {
@@ -1143,23 +1219,26 @@ export function registerRemoteServerHandlers(router: IpcRouter, deps: RemoteServ
   router.handleWindow('remote.connect', (ctx, payload, view) => {
     const service = pickerOnly('remote.connect', ctx, view)
     const body = fields('remote.connect', payload)
-    const name = remoteOptionalText('remote.connect', body, 'name')
-    const named = name === undefined ? {} : { name }
-    if (body.kind === 'ssh') {
-      const host = remoteText('remote.connect', body, 'host')
-      const ccc = remoteOptionalText('remote.connect', body, 'ccc')
-      return service.connect({ kind: 'ssh', host, ...(ccc === undefined ? {} : { ccc }), ...named })
-    }
-    if (body.kind === 'direct') return service.connect({ kind: 'direct', link: remoteText('remote.connect', body, 'link'), ...named })
-    throw new Error('remote.connect: kind must be ssh or direct')
+    const settings = remoteSettings('remote.connect', body)
+    if (settings.kind !== 'ssh') return service.connect(settings)
+    const answers = remoteAnswers('remote.connect', body.answers)
+    return service.connect(answers === undefined ? settings : { ...settings, answers })
   })
   router.handleWindow('remote.open', (ctx, payload, view) => {
     const service = pickerOnly('remote.open', ctx, view)
     const body = fields('remote.open', payload)
     const serverId = remoteText('remote.open', body, 'serverId')
     const projectId = remoteOptionalText('remote.open', body, 'projectId')
-    return service.open(serverId, projectId === '' ? undefined : projectId)
+    const answers = remoteAnswers('remote.open', body.answers)
+    return service.open(serverId, projectId === '' ? undefined : projectId, answers)
   })
+  router.handleWindow('remote.edit', (ctx, payload, view) => {
+    const service = pickerOnly('remote.edit', ctx, view)
+    const body = fields('remote.edit', payload)
+    const serverId = remoteText('remote.edit', body, 'serverId')
+    return service.edit({ ...remoteSettings('remote.edit', body), serverId })
+  })
+  router.handleWindow('remote.pickKey', (ctx, _payload, view) => pickerOnly('remote.pickKey', ctx, view).pickKey(ctx.windowId))
   router.handleWindow('remote.rename', (ctx, payload, view) => {
     const service = pickerOnly('remote.rename', ctx, view)
     const body = fields('remote.rename', payload)

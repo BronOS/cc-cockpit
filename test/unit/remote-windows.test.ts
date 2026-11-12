@@ -20,6 +20,7 @@ import {
   type RemoteWindowHooks,
   type RemoteWindowView
 } from '../../src/main/remote/remote-windows'
+import { TUNNEL_RETRY_MS, type LoadGate } from '../../src/main/remote/tunnel-probe'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS } from '../../src/main/webview/open-budget'
 import { FakeCookieStore, FakeJar } from '../fakes/fake-cookie-jar'
 
@@ -606,5 +607,103 @@ describe('RemoteWindows: re-pair', () => {
     t.factory.session1().hooks.sessionRequestCompleted(99_999)
     await flush()
     expect(t.minted).toEqual([])
+  })
+})
+
+// My own tunnel (design §6): every load main makes passes the gate (tunnel-probe.ts) first; nothing
+// answering shows the waiting page once and probes again every 3 s while the window is open.
+describe('RemoteWindows: My own tunnel gate', () => {
+  const TUNNEL = 'http://127.0.0.1:7331'
+
+  function tunnelSetup(results: LoadGate[]) {
+    const t = setup()
+    t.store.servers.set('t1', { id: 't1', name: 'tun', via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 }, recent: [] })
+    const tasks = new Map<number, { fn: () => void; ms: number }>()
+    let next = 1
+    const gated: string[] = []
+    const windows = new RemoteWindows({
+      ...t.options,
+      gate: async (server) => {
+        gated.push(server.id)
+        return results.shift() ?? { go: true }
+      },
+      timers: {
+        setTimeout: (fn, ms) => {
+          tasks.set(next, { fn, ms })
+          return next++
+        },
+        clearTimeout: (h) => void tasks.delete(h as number)
+      }
+    })
+    /** Run the pending retries (the 3 s ones; the sign-in wait is left alone). */
+    const retry = async (): Promise<void> => {
+      for (const [id, task] of [...tasks]) {
+        if (task.ms !== TUNNEL_RETRY_MS) continue
+        tasks.delete(id)
+        task.fn()
+      }
+      await flush()
+    }
+    const retries = (): number => [...tasks.values()].filter((x) => x.ms === TUNNEL_RETRY_MS).length
+    return { ...t, windows, gated, retry, retries }
+  }
+
+  it('waits with the command while nothing answers, then loads the page with the token', async () => {
+    const wait = { wait: 'Nothing answers on 127.0.0.1:7331. Start the tunnel: …' }
+    const t = tunnelSetup([wait, wait, { go: true }])
+    await t.windows.open('t1', { origin: TUNNEL, token: 'tok' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([])
+    expect(view.errors).toEqual([wait.wait])
+    expect(t.retries()).toBe(1)
+    // A second miss probes again without drawing the page again.
+    await t.retry()
+    expect(view.errors).toEqual([wait.wait])
+    expect(t.retries()).toBe(1)
+    await t.retry()
+    expect(view.loads).toEqual([`${TUNNEL}/#t=tok`])
+    expect(t.retries()).toBe(0)
+    expect(t.gated).toEqual(['t1', 't1', 't1'])
+  })
+
+  it('something else answering shows the error and loads nothing, with no retry', async () => {
+    const t = tunnelSetup([{ error: 'Something else is listening on 127.0.0.1:7331' }])
+    await t.windows.open('t1', { origin: TUNNEL, projectId: 'p1' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([])
+    expect(view.errors).toEqual(['Something else is listening on 127.0.0.1:7331'])
+    expect(t.retries()).toBe(0)
+  })
+
+  it('a window closed while it waits stops probing', async () => {
+    const t = tunnelSetup([{ wait: 'waiting' }])
+    await t.windows.open('t1', { origin: TUNNEL })
+    await flush()
+    expect(t.retries()).toBe(1)
+    ;(t.factory.views[0] as FakeView).close()
+    expect(t.retries()).toBe(0)
+    expect(t.gated).toEqual(['t1'])
+  })
+
+  it('a move to another origin replaces the waiting load', async () => {
+    const t = tunnelSetup([{ wait: 'waiting' }, { go: true }])
+    await t.windows.open('t1', { origin: TUNNEL, projectId: 'p1' })
+    await flush()
+    await t.windows.setOrigin('t1', 'http://127.0.0.1:7340')
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual(['http://127.0.0.1:7340/?project=p1'])
+    expect(t.retries()).toBe(0)
+  })
+
+  it('other kinds load at once, never through the gate', async () => {
+    const t = tunnelSetup([])
+    t.factory.fetcher = async () => signedIn
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    expect(t.gated).toEqual([])
+    expect((t.factory.views[0] as FakeView).loads).toEqual([`${ORIGIN}/?project=p1`])
   })
 })

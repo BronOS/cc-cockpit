@@ -31,7 +31,9 @@
 //    cookie, and the page's origin never moves under it. Each accepted socket is piped to one
 //    `forwardOut` channel; while the connection is down, accepted sockets are closed at once (the
 //    page's own reconnect retries). A redial re-runs `web status` (the server may have restarted on
-//    another gateway port); a redial refused on sign-in or on the host key stops and says why: the
+//    another gateway port); so does a page channel the server refuses while SSH stays up (its
+//    cockpit restarted alone), at most once per GATEWAY_RECHECK_MS, and the socket is retried once
+//    on the new port. A redial refused on sign-in or on the host key stops and says why: the
 //    background never asks.
 //  - Secrets (password, passphrase) never reach a log, a state, an error text or a result.
 import { readFile, stat } from 'node:fs/promises'
@@ -44,6 +46,7 @@ import {
   isLocalPort,
   sshAuthOf,
   type RemoteHostKey,
+  type RemoteNeed,
   type RemoteSecretName,
   type RemoteServerRecord,
   type SshAuth
@@ -89,6 +92,12 @@ const DEFAULT_KEY_FILES = ['id_ed25519', 'id_ecdsa', 'id_rsa'] as const
 /** `CHANNEL_OPEN_FAILURE` reasons (RFC 4254 §5.1), as `ssh2` puts them on a refused `forwardOut`. */
 const OPEN_ADMINISTRATIVELY_PROHIBITED = 1
 const OPEN_CONNECT_FAILED = 2
+/**
+ * A refused page channel re-runs `web status` at most this often (the server's cockpit restarted on
+ * another gateway port while SSH stayed up): a page retrying in a loop must not turn into a stream
+ * of remote commands.
+ */
+export const GATEWAY_RECHECK_MS = 5000
 
 // ---------------------------------------------------------------------------------------------
 // The interface RemoteService talks to
@@ -105,12 +114,7 @@ export interface LinkAnswers {
 }
 
 /** What a call needs from the person before it can go on (design §5.4): passed to the picker as is. */
-export type LinkNeed =
-  | { need: 'hostKey'; type: string; sha256: string; address: string }
-  /** `again`: the last password tried was wrong. */
-  | { need: 'password'; again?: true }
-  /** `path`: the key file as the record has it. `again`: the passphrase tried does not open it. */
-  | { need: 'passphrase'; path: string; again?: true }
+export type LinkNeed = RemoteNeed
 
 /**
  * What the live connection rests on that the store does not have yet: a host key trusted from an
@@ -377,6 +381,9 @@ export class SshLink implements RemoteLink {
   private gatewayPort: number | undefined
   /** The forwarding probe passed on the live connection. */
   private probed = false
+  /** A `web status` re-run after a refused page channel (one at a time), and when the last one started. */
+  private rechecking: Promise<number | undefined> | undefined
+  private lastRecheck = -Infinity
   private listener: LinkListener | undefined
   private opening: Promise<LinkListener> | undefined
   /** Acquired users (windows). */
@@ -1016,26 +1023,66 @@ export class SshLink implements RemoteLink {
     }
     this.pipes.add(socket)
     socket.once('close', () => this.pipes.delete(socket))
-    conn.forwardOut(socket.remotePort ?? 0, port).then(
-      (channel) => {
-        if (socket.destroyed || this.conn !== conn) {
-          channel.destroy()
-          return
-        }
-        this.pipes.add(channel)
-        const closeBoth = (): void => {
-          this.pipes.delete(channel)
-          socket.destroy()
-          channel.destroy()
-        }
-        channel.on('error', closeBoth)
-        channel.on('close', closeBoth)
-        socket.on('close', closeBoth)
-        socket.pipe(channel)
-        channel.pipe(socket)
-      },
-      () => socket.destroy()
-    )
+    void this.forward(conn, socket, port, true)
+  }
+
+  /**
+   * Pipe `socket` to a `forwardOut` channel to the gateway's `port`. A channel the server refuses
+   * (CHANNEL_OPEN_FAILURE: nothing listens there) while the connection stays up may mean the
+   * server's cockpit restarted on another gateway port, which only a redial used to notice: then
+   * `web status` runs again (throttled) and, when the port moved, the socket is tried once more there.
+   */
+  private async forward(conn: SshConnection, socket: Socket, port: number, retry: boolean): Promise<void> {
+    let channel: Duplex
+    try {
+      channel = await conn.forwardOut(socket.remotePort ?? 0, port)
+    } catch (err) {
+      const refused = typeof (err as { reason?: unknown }).reason === 'number'
+      const moved = refused && retry && !socket.destroyed ? await this.recheckGateway(conn) : undefined
+      if (moved !== undefined && moved !== port && !socket.destroyed && this.conn === conn) return this.forward(conn, socket, moved, false)
+      socket.destroy()
+      return
+    }
+    if (socket.destroyed || this.conn !== conn) {
+      channel.destroy()
+      return
+    }
+    this.pipes.add(channel)
+    const closeBoth = (): void => {
+      this.pipes.delete(channel)
+      socket.destroy()
+      channel.destroy()
+    }
+    channel.on('error', closeBoth)
+    channel.on('close', closeBoth)
+    socket.on('close', closeBoth)
+    socket.pipe(channel)
+    channel.pipe(socket)
+  }
+
+  /**
+   * The gateway port after a refused page channel: `web status` again on the live connection, at most
+   * once per GATEWAY_RECHECK_MS (sockets refused meanwhile share the run in flight, or get the port
+   * as it stands). A failed status keeps the port: the page's own reconnect tries again later.
+   */
+  private recheckGateway(conn: SshConnection): Promise<number | undefined> {
+    if (this.rechecking !== undefined) return this.rechecking
+    const now = this.timers.now()
+    if (now - this.lastRecheck < GATEWAY_RECHECK_MS) return Promise.resolve(this.gatewayPort)
+    this.lastRecheck = now
+    this.busy++
+    const run = this.statusOn(conn)
+      .then((s) => {
+        if (s.ok && this.conn === conn) this.gatewayPort = s.status.port
+        return this.conn === conn ? this.gatewayPort : undefined
+      })
+      .finally(() => {
+        this.rechecking = undefined
+        this.busy--
+        this.armIdle()
+      })
+    this.rechecking = run
+    return run
   }
 
   /**

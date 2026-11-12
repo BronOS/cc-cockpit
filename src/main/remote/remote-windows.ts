@@ -33,6 +33,13 @@
 // refuses the cookie each time must not get a new device on every reload). Opening a window from the
 // picker is the person's own retry and starts the count again. Direct never re-pairs: the page's own
 // sign-in screen shows, and the person pastes a new link.
+//
+// My own tunnel (design §6): every load main makes of such a server's page (open, a sign-in with a
+// pasted link, a move, a reload after a sign-in) passes the options' `gate` first (tunnel-probe.ts:
+// main asks the session path itself, with no cookie). Nothing answering shows main's waiting page
+// with the command that starts the tunnel and tries again every TUNNEL_RETRY_MS while the window is
+// open; anything but a cc-cockpit answer shows the error and loads nothing, so the device cookie is
+// never sent to it. The page's own reconnects are not covered (they are the page's, not main's).
 
 import { errorText } from '../../shared/error-text'
 import { recentEntryOf, type RemoteServerRecord } from '../../shared/remote-servers'
@@ -41,6 +48,7 @@ import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
 import { warnLog } from '../warn-log'
 import { RemoteCookie, type RemoteCookieJar, type RemoteCookieStore } from './remote-cookie'
+import { TUNNEL_RETRY_MS, type LoadGate } from './tunnel-probe'
 
 /** Pairings in a row with no device seen in between before the window shows the error. */
 export const MAX_PAIR_ATTEMPTS = 2
@@ -236,10 +244,15 @@ export interface RemoteWindowsOptions {
   store: RemoteWindowsStore
   /** An http(s) link a page asked to open: the person's own browser (main's `createOpenExternal`). */
   openExternal(url: string): Promise<void> | void
-  /** A one-time add-device token for an SSH server (`addDeviceToken` over the person's ssh). */
+  /** A one-time add-device token for an SSH server (`addDeviceToken` over the server's built-in SSH link). */
   mintToken(server: RemoteServerRecord): Promise<string>
   /** The last window of a server closed (its tunnel can be released). */
   onAllClosed?(serverId: string): void
+  /**
+   * Asked before every load main makes of a My own tunnel server's page (tunnel-probe.ts
+   * `tunnelGate`). Absent: every load goes ahead (tests of the other kinds).
+   */
+  gate?(server: RemoteServerRecord): Promise<LoadGate>
   /** A window opened or closed (WindowManager's counts). */
   onChanged?(): void
   now?(): number
@@ -279,12 +292,17 @@ interface WindowRecord {
   titled: string | undefined | null
   readonly budget: OpenBudget
   closed: boolean
+  /** Bumped by every main-made load: a gate answer for an older one is dropped. */
+  loads: number
+  /** A gated load waiting for the tunnel: its retry timer, and the text the window shows. */
+  retry: unknown
+  waiting: string | undefined
 }
 
-type SessionReply = { mode: string; device: { id: string } | null }
+export type SessionReply = { mode: string; device: { id: string } | null }
 
 /** The SESSION_PATH answer, checked; undefined when it is not one (the gateway's own shape, web-protocol.ts). */
-function sessionReplyOf(body: unknown): SessionReply | undefined {
+export function sessionReplyOf(body: unknown): SessionReply | undefined {
   if (body === null || typeof body !== 'object') return undefined
   const { mode, device } = body as Record<string, unknown>
   if (typeof mode !== 'string') return undefined
@@ -367,14 +385,14 @@ export class RemoteWindows {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false, loads: 0, retry: undefined, waiting: undefined }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
     this.options.onChanged?.()
     this.updateTitle(rec)
     if (request.token !== undefined) this.signInWith(rec, state, request.token)
-    else view.load(remotePageUrl(state.origin, projectId))
+    else this.load(rec, remotePageUrl(state.origin, projectId))
   }
 
   /**
@@ -388,7 +406,7 @@ export class RemoteWindows {
     state.origin = origin
     state.restored = state.cookie.restore()
     await state.restored
-    for (const rec of this.windowsOf(serverId)) rec.view.load(remotePageUrl(origin, rec.project))
+    for (const rec of this.windowsOf(serverId)) this.load(rec, remotePageUrl(origin, rec.project))
   }
 
   /** Open remote windows, all servers (WindowManager's lifecycle rules). */
@@ -505,7 +523,7 @@ export class RemoteWindows {
         other.view.focus()
         rec.project = undefined
         this.updateTitle(rec)
-        rec.view.load(remotePageUrl(state.origin))
+        this.load(rec, remotePageUrl(state.origin))
         return
       }
     }
@@ -546,6 +564,7 @@ export class RemoteWindows {
   private closed(rec: WindowRecord): void {
     if (rec.closed) return
     rec.closed = true
+    this.stopWaiting(rec)
     this.windows.delete(rec.view.id)
     this.byWebContents.delete(rec.view.webContentsId)
     this.options.onChanged?.()
@@ -576,7 +595,7 @@ export class RemoteWindows {
    */
   private signInWith(rec: WindowRecord, state: ServerState, token: string): void {
     if (state.pairing !== undefined) {
-      rec.view.load(remotePageUrl(state.origin, rec.project, token))
+      this.load(rec, remotePageUrl(state.origin, rec.project, token))
       return
     }
     this.hold(rec, state, async () => {
@@ -601,10 +620,71 @@ export class RemoteWindows {
    */
   private async loadToken(rec: WindowRecord, state: ServerState, token: string): Promise<boolean> {
     const landed = this.waitSignedIn(state)
-    rec.view.load(remotePageUrl(state.origin, rec.project, token))
+    this.load(rec, remotePageUrl(state.origin, rec.project, token))
     const ok = await landed
-    if (ok) for (const other of this.windowsOf(rec.serverId)) if (other !== rec) other.view.reload()
+    if (ok) for (const other of this.windowsOf(rec.serverId)) if (other !== rec) this.reload(other, state)
     return ok
+  }
+
+  /** Whether main's loads of this server pass the gate first (My own tunnel). */
+  private gated(serverId: string): RemoteServerRecord | undefined {
+    const server = this.options.store.get(serverId)
+    return this.options.gate !== undefined && server?.via.kind === 'tunnel' ? server : undefined
+  }
+
+  /**
+   * A load main makes: at once, or for a gated server once the gate lets it. A newer load replaces
+   * one still waiting; a closed window loads nothing.
+   */
+  private load(rec: WindowRecord, url: string): void {
+    if (rec.closed) return
+    rec.loads++
+    this.clearRetry(rec)
+    const server = this.gated(rec.serverId)
+    if (server === undefined) {
+      rec.waiting = undefined
+      rec.view.load(url)
+      return
+    }
+    const attempt = rec.loads
+    const gate = this.options.gate as (server: RemoteServerRecord) => Promise<LoadGate>
+    void gate(server)
+      .catch((err: unknown): LoadGate => ({ error: `checking the tunnel failed: ${errorText(err)}` }))
+      .then((result) => {
+        if (rec.closed || rec.loads !== attempt) return
+        if ('go' in result) {
+          rec.waiting = undefined
+          rec.view.load(url)
+        } else if ('error' in result) {
+          rec.waiting = undefined
+          rec.view.showError(result.error)
+        } else {
+          // The page is shown once; the retries only probe until something answers.
+          if (rec.waiting !== result.wait) rec.view.showError(result.wait)
+          rec.waiting = result.wait
+          rec.retry = this.timers.setTimeout(() => {
+            rec.retry = undefined
+            if (!rec.closed && rec.loads === attempt) this.load(rec, url)
+          }, TUNNEL_RETRY_MS)
+        }
+      })
+  }
+
+  /** Another window's sign-in landed: this one shows its page again (through the gate when it has one). */
+  private reload(rec: WindowRecord, state: ServerState): void {
+    if (this.gated(rec.serverId) !== undefined) this.load(rec, remotePageUrl(state.origin, rec.project))
+    else rec.view.reload()
+  }
+
+  private clearRetry(rec: WindowRecord): void {
+    if (rec.retry === undefined) return
+    this.timers.clearTimeout(rec.retry)
+    rec.retry = undefined
+  }
+
+  private stopWaiting(rec: WindowRecord): void {
+    this.clearRetry(rec)
+    rec.waiting = undefined
   }
 
   private async pair(rec: WindowRecord, state: ServerState): Promise<void> {

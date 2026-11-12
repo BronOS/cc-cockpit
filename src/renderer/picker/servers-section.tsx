@@ -3,14 +3,14 @@
 // server badge, and a menu (Open server's picker, Rename, Forget). Everything goes to main through
 // the picker-only `remote.*` channels; main decides, and the picker closes when a window opens.
 //
-// Every string here that came from a server or the person's ssh (a project name, an error, the
+// Every string here that came from a server or its SSH connection (a project name, an error, the
 // server's name as the person typed it) is rendered as React text, never markup.
 import { useEffect, useRef, useState } from 'react'
 import type { RemoteServerInfo } from '../../shared/ipc'
 import { ipcErrorMessage } from '../ipc-error'
 import { ServerGlyph } from './icons'
 import { PickerEmpty, PickerSection, ProjectRow } from './parts'
-import { groupServers, openedAgo, type ServerGroup } from './picker-model'
+import { connectFailureText, groupServers, openedAgo, type ServerGroup } from './picker-model'
 
 export function ServersSection(props: {
   /** null until the first `remote.list` answer. */
@@ -66,7 +66,7 @@ function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number
     window.cockpit
       .invoke('remote.open', projectId === undefined ? { serverId: server.id } : { serverId: server.id, projectId })
       .then((answer) => {
-        if (!answer.ok) setError(answer.error)
+        if (!answer.ok) setError(connectFailureText(answer))
       })
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
       .finally(() => setBusy(false))

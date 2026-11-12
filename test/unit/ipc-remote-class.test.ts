@@ -48,11 +48,13 @@ describe('REMOTE_CLASS drift', () => {
     // would be shown to the other views.
     'tabs.screen',
     'tabs.screenAsk',
-    // Remote desktop (design-remote-desktop.md §3): they run the person's ssh and keep device cookies
+    // Remote desktop (design-remote-desktop.md §3): they dial out over SSH and keep device cookies
     // on this machine; a browser view of this desktop must never drive them.
     'remote.list',
     'remote.connect',
     'remote.open',
+    'remote.edit',
+    'remote.pickKey',
     'remote.rename',
     'remote.forget',
     'remote.changed'

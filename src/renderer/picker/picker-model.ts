@@ -2,7 +2,7 @@
 // is shown, what the filter keeps, where the keyboard highlight goes, how old a row is. DOM-free so
 // the unit tests (plain Node) cover it. The desktop picker's Servers section (remote servers,
 // design-remote-desktop.md §3) takes its labels, order and grouping from here too.
-import type { ProjectSummary, RemoteConnectRequest, RemoteServerInfo } from '../../shared/ipc'
+import type { ProjectSummary, RemoteConnectAnswer, RemoteConnectRequest, RemoteServerInfo } from '../../shared/ipc'
 import type { RemoteRecent, RemoteVia } from '../../shared/remote-servers'
 
 /**
@@ -133,7 +133,7 @@ function windowsText(n: number): string {
 /**
  * The connection state (SSH: the tunnel's) and the open windows, as one short label; undefined when
  * there is nothing to say (a closed server, or a Direct one with no window). A dropped tunnel that
- * restarts by itself says so, and a stopped one with an error shows ssh's words.
+ * restarts by itself says so, and a stopped one with an error shows the link's words.
  */
 export function serverStateLabel(server: Pick<RemoteServerInfo, 'connection' | 'windows'>): ServerStateLabel | undefined {
   const c = server.connection
@@ -202,4 +202,16 @@ export function connectRequest(kind: ConnectKind, fields: { host: string; link: 
   if (kind === 'link') return { kind: 'direct', link: fields.link.trim(), ...named }
   const ccc = fields.ccc.trim()
   return { kind: 'ssh', host: fields.host.trim(), ...(ccc === '' ? {} : { ccc }), ...named }
+}
+
+/**
+ * A failed connect or open as the form's text. A `need` (design §5.4) reads as what is missing until
+ * the picker's prompts answer it (remote SSH rev 2, Task 6).
+ */
+export function connectFailureText(answer: Exclude<RemoteConnectAnswer, { ok: true }>): string {
+  if ('error' in answer) return answer.error
+  const need = answer.need
+  if (need.need === 'hostKey') return `the host key of ${need.address} (${need.type} ${need.sha256}) is not trusted yet`
+  if (need.need === 'password') return need.again ? 'the password was not accepted' : 'the server asks for a password'
+  return need.again ? `the passphrase does not open ${need.path}` : `the key ${need.path} needs its passphrase`
 }

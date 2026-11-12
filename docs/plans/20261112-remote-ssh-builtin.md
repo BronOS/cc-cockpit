@@ -265,24 +265,70 @@
 - Delete: `src/main/remote/ssh-process.ts`, `src/main/remote/ssh-tunnel.ts`, `test/unit/ssh-tunnel.test.ts`
 - Modify: `test/unit/remote-service.test.ts`, grep tests that named `ssh-process.ts`
 
-- [ ] `RemoteService` on `RemoteLink`; connect and open take `answers` (all of the connect's, resent by the picker) and
+- [x] `RemoteService` on `RemoteLink`; connect and open take `answers` (all of the connect's, resent by the picker) and
       return `need` results; nothing (record, host key, secret) is saved before the dial and pairing succeed, so a
       `need` never forgets or half-saves a new server; remember → store, else memory; background redial and re-pair
       never ask
-- [ ] `tunnel` kind: origin `http://127.0.0.1:<localPort>`; the pasted link's token only; before every main-made load
+- [x] `tunnel` kind: origin `http://127.0.0.1:<localPort>`; the pasted link's token only; before every main-made load
       the probe (`http`, no cookie, no redirects, 16 KiB cap, 2 s); nothing answers → main's waiting page with the
       `ssh -N -L` command and a 3 s retry while the window is open; non-cockpit answer → error, no load; 403 from an
       old server → "update cc-cockpit on the server"
-- [ ] channels, all `REMOTE_CLASS` `no` and picker-only in the router: `remote.edit` (settings plus an optional link to
+- [x] channels, all `REMOTE_CLASS` `no` and picker-only in the router: `remote.edit` (settings plus an optional link to
       sign in with; keeps cookie and host key unless host or port changed, then clears the host key),
       `remote.pickKey` (open dialog through `electron-dialog.ts`, starting in `~/.ssh`, returns a path);
       `remote.forget` also ends the link and clears memory secrets
-- [ ] delete the spawn code and its tests; update grep tests and comments naming them
-- [ ] tests: new server hostKey → password → ok saves everything once at the end; cancel after hostKey leaves nothing;
+- [x] delete the spawn code and its tests; update grep tests and comments naming them
+- [x] tests: new server hostKey → password → ok saves everything once at the end; cancel after hostKey leaves nothing;
       wrong password asks once then errors; background redial does not ask; tunnel probe (nothing, non-cockpit,
       cockpit, old server); Edit keeps the cookie, clears the host key on a port change, signs in with a link; Forget
       ends the link; channels refused from a non-picker caller and from a remote view
-- [ ] run tests and typecheck - must pass before next task
+- [x] run tests and typecheck - must pass before next task
+- ➕ the store got `prepare` (validated record with a fresh id, nothing written; or the same server already saved, with
+      the request's checked `via`), `insert` (saves a prepared record, re-checked), `edit` and `sameSettings`. A new
+      server's connect dials with the draft (the link's store view serves `store.get(id) ?? draft`); the record, the
+      host key, the secrets and `localPort` are written right before `windows.open` (which needs the record), and
+      a new record is forgotten again if the window cannot open. Connects of new servers run one at a time (queue
+      `connect`), so two Connects of one new host save it once. A Connect to a saved server with other settings (sign-in,
+      `ccc`) is refused with "use Edit"
+- ➕ every open acquires (a link down with windows open gets this call's answers), and releases at once when the
+      windows already hold it; a failed connect or open disposes and drops the link unless windows hold it
+- ➕ Task 4's ⚠️ is closed in `ssh-link.ts`: a page channel the server refuses (CHANNEL_OPEN_FAILURE) while SSH is up
+      re-runs `web status` (one run at a time, at most once per `GATEWAY_RECHECK_MS` = 5 s) and retries that socket once
+      on the new port; test "follows a gateway that moved while SSH stayed up"
+- ➕ My own tunnel: `tunnel-probe.ts` (`probeTunnel` → `cockpit | nothing | other | old`, `tunnelGate`, the texts);
+      connect probes first (`other` / `old` refuse before anything is saved; `nothing` still opens the window, which
+      waits). `RemoteWindows` takes an optional `gate` and routes every main-made load of a tunnel server through it
+      (open, sign-in, move, the reload after another window's sign-in); the waiting page is the `showError` data page,
+      drawn once, retried every `TUNNEL_RETRY_MS` until it loads, errors or the window closes. A reset or a 2 s
+      silence counts as `nothing` (the person's ssh accepts locally before the far end answers); 403 `unknown host`
+      is `old` (also a cockpit not in server mode)
+- ➕ Edit (decided): saves the settings and dials nothing for SSH (the next open asks what it needs); a tunnel or
+      Direct link with a token signs in (opens the server's picker, as Connect). Another kind is refused. A changed
+      connection (anything but the name) disposes the link and moves tunnel / Direct windows to the new origin.
+      Host or port change → host key dropped; host, user, port or sign-in change → password / passphrase dropped
+      (stored and memory). The cookie stays, except a Direct origin change drops it (the jar would send it to the new
+      origin)
+- ➕ "wrong password asks once then errors": main is stateless across calls, so every wrong password is
+      `{need:'password', again:true}` (sent once per dial, never resent, nothing saved); counting "asked once again,
+      then show the error" is the picker's (Task 6), which knows how often it asked in this connect
+- ➕ the only remaining `ssh` mention in code is the jump-host text; a grep test (`no-direct-ssh2.test.ts`) keeps
+      `child_process` out of `src/main/remote/`. The fake-ssh e2e test is `test.skip` ("replaced in Task 7");
+      `test/fixtures/fake-ssh.mjs` stays until Task 7
+- ➕ for Task 6, the IPC as built (`src/shared/ipc.ts`, `src/shared/remote-servers.ts`):
+      `RemoteServerSettings` = `{kind:'ssh', host, user?, port?, auth?: SshAuth, ccc?, name?}` |
+      `{kind:'tunnel', localPort, remotePort, sshHost?, link?, name?}` | `{kind:'direct', link, name?}`;
+      `remote.connect` req `RemoteConnectRequest` = the ssh settings `& {answers?: RemoteAnswers}` or the other two;
+      `RemoteAnswers` = `{hostKey?: string (the SHA256: fingerprint), password?, passphrase?, remember?: boolean}`
+      (`remember` must be `true` to encrypt; absent = memory only);
+      `remote.open` req `{serverId, projectId?, answers?}`; `remote.edit` req `RemoteEditRequest` =
+      `RemoteServerSettings & {serverId}`; all three answer `RemoteConnectAnswer` = `{ok:true, serverId}` |
+      `{ok:false, error}` | `{ok:false, need: RemoteNeed}`, `RemoteNeed` = `{need:'hostKey', type, sha256, address}` |
+      `{need:'password', again?: true}` | `{need:'passphrase', path, again?: true}`; `remote.pickKey` req void, res
+      `string | null` (absolute path). On a `need` the picker resends the same settings with every answer so far
+      (to `remote.connect`, or `remote.open` for a saved server; for an SSH Edit with a typed password: `remote.edit`
+      then `remote.open` with the answers). `tunnelCommand(via)` in `shared/remote-servers.ts` builds the `ssh -N -L`
+      line; the add-device command is the form's own. `connectFailureText` (picker-model.ts) is the stopgap that shows
+      a `need` as text; the prompts replace it
 
 ### Task 6: Picker: three-tab form, prompts, Edit [model: opus]
 

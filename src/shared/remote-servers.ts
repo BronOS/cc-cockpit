@@ -68,6 +68,39 @@ export type RemoteVia =
   /** `scheme://host[:port]` of the link, nothing else kept. */
   | { kind: 'direct'; origin: string }
 
+/**
+ * What the picker answered so far in one connect or open (design §5.4). The picker keeps every
+ * answer of that connect and resends them all on each retry; main uses them for that call only and
+ * saves nothing from them until the dial and the pairing succeeded. `hostKey` is the `SHA256:`
+ * fingerprint the person trusted (main compares it with the key it sees on the new dial);
+ * `remember`: keep the password or passphrase encrypted (else main's memory for the app's life).
+ */
+export interface RemoteAnswers {
+  hostKey?: string
+  password?: string
+  passphrase?: string
+  remember?: boolean
+}
+
+/**
+ * What a connect or open needs from the person before it can go on (design §5.4): the picker shows
+ * the dialog and calls again with the answer added. `again`: the last one tried was wrong. A
+ * passphrase's `path` is the key file as the record has it.
+ */
+export type RemoteNeed =
+  | { need: 'hostKey'; type: string; sha256: string; address: string }
+  | { need: 'password'; again?: true }
+  | { need: 'passphrase'; path: string; again?: true }
+
+/**
+ * The command My own tunnel shows (design §3, §6): `ssh -N -L 127.0.0.1:<L>:127.0.0.1:<P> <host>`,
+ * `<host>` standing in when the form has no SSH host. `sshHost` is checked by `checkSshHost` on
+ * save, so the printed line never carries a shell metacharacter.
+ */
+export function tunnelCommand(via: { localPort: number; remotePort: number; sshHost?: string }): string {
+  return `ssh -N -L 127.0.0.1:${via.localPort}:127.0.0.1:${via.remotePort} ${via.sshHost ?? '<host>'}`
+}
+
 /** The secrets a record may keep, by name (design §2): beside the cookie, never inside `via`. */
 export type RemoteSecretName = 'password' | 'passphrase'
 

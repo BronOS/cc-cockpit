@@ -23,7 +23,7 @@ import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
 import type { OAuthPasteAnswer } from './oauth-paste'
-import type { RemoteRecent, RemoteSecretName, RemoteVia } from './remote-servers'
+import type { RemoteAnswers, RemoteNeed, RemoteRecent, RemoteSecretName, RemoteVia, SshAuth } from './remote-servers'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
@@ -387,8 +387,8 @@ export interface PanelPortPayload {
 
 /**
  * How a saved remote server's connection stands (design-remote-desktop.md §3), for its picker row.
- * SSH only (the tunnel's state, main/remote/ssh-tunnel.ts); a Direct server has none.
- * `retrying`: the tunnel dropped while windows were open and restarts by itself.
+ * Built-in SSH only (the link's state, main/remote/ssh-link.ts); My own tunnel and Direct have none.
+ * `retrying`: the connection dropped while windows were open and redials by itself.
  */
 export type RemoteConnectionState =
   | { state: 'stopped' }
@@ -420,16 +420,37 @@ export interface RemoteServerInfo {
 }
 
 /**
- * The picker's Connect to server form (`remote.connect`). `name` is optional (default: the host);
- * `ccc` is the Advanced path override for the remote `ccc`. `link` is the access link or a one-time
- * add-device link; main keeps its origin only and uses the token once.
+ * A server's settings as the Connect to server form and Edit send them (design-remote-desktop.md
+ * §2, §3). `name` is optional (default: the host; on Edit, absent or empty keeps it).
+ *  - `ssh`: built-in SSH. `host` may be `user@host` (split on save); empty `user` / `port` mean the
+ *    `~/.ssh/config` value, else the local user / 22; no `auth` is auto (agent and key files); `ccc`
+ *    is the Advanced path override for the remote `ccc`.
+ *  - `tunnel`: My own tunnel. `sshHost` is only printed in the commands. `link` (optional) is the
+ *    add-device link the person's `ccc web add-device` printed: only its `#t=` token is used (an
+ *    https link is refused), never its origin.
+ *  - `direct`: the access link or a one-time add-device link; main keeps its origin and uses the
+ *    token once.
  */
-export type RemoteConnectRequest =
-  | { kind: 'ssh'; host: string; ccc?: string; name?: string }
+export type RemoteServerSettings =
+  | { kind: 'ssh'; host: string; user?: string; port?: number; auth?: SshAuth; ccc?: string; name?: string }
+  | { kind: 'tunnel'; localPort: number; remotePort: number; sshHost?: string; link?: string; name?: string }
   | { kind: 'direct'; link: string; name?: string }
 
-/** A connect or open: the server it was for, or the text to show in place (never thrown at the form). */
-export type RemoteConnectAnswer = { ok: true; serverId: string } | { ok: false; error: string }
+/**
+ * The Connect to server form (`remote.connect`): the settings, and for SSH every answer the person
+ * gave so far in this connect (design §5.4: the picker keeps them all and resends them).
+ */
+export type RemoteConnectRequest = (Extract<RemoteServerSettings, { kind: 'ssh' }> & { answers?: RemoteAnswers }) | Exclude<RemoteServerSettings, { kind: 'ssh' }>
+
+/** Edit (`remote.edit`): a saved server's new settings, of the same kind. */
+export type RemoteEditRequest = RemoteServerSettings & { serverId: string }
+
+/**
+ * A connect, open or edit: the server it was for; the text to show in place (never thrown at the
+ * form); or what the person must answer first (design §5.4), after which the picker calls again with
+ * that answer added to the ones it already had.
+ */
+export type RemoteConnectAnswer = { ok: true; serverId: string } | { ok: false; error: string } | { ok: false; need: RemoteNeed }
 
 /** A project in the settings list: the picker's summary plus whether a window shows it now. */
 export interface SettingsProject extends ProjectSummary {
@@ -969,28 +990,41 @@ export interface IpcInvokeMap {
   'projects.forget': { req: { id: string }; res: void }
   /**
    * Remote desktop (design-remote-desktop.md §3), all picker only: the desktop picker page, never a
-   * project window or a browser view (they spawn the person's ssh and keep credentials here).
+   * project window or a browser view (they dial out over SSH and keep credentials here).
    * The saved servers, with their window counts and connection state; changes arrive as
    * `remote.changed`.
    */
   'remote.list': { req: void; res: RemoteServerInfo[] }
   /**
-   * Save a server (or find the one already saved for the same host or origin) and open its web
-   * picker: SSH runs `ccc web status` and, in link mode with no saved cookie, `ccc web add-device`
-   * over the person's ssh, then the tunnel; Direct signs in with the link's token. The picker closes
-   * once the window is open. A failure is `{ ok: false, error }`, text for the form.
+   * Connect to a server (a new one, or the one already saved for the same host, local port or
+   * origin with the same settings) and open its web picker: built-in SSH runs `ccc web status` and,
+   * in link mode with no saved cookie, `ccc web add-device` over the app's own SSH connection, then
+   * the tunnel; My own tunnel probes the local port and signs in with the link's token; Direct signs
+   * in with the link's token. Nothing is saved (record, host key, secret) until the window opens. A
+   * failure is `{ ok: false, error }`, text for the form; `{ ok: false, need }` asks the person.
    */
   'remote.connect': { req: RemoteConnectRequest; res: RemoteConnectAnswer }
   /**
    * Open (or focus) a saved server's project window, or its web picker when `projectId` is absent
-   * (Open server's picker). The picker closes once the window is open.
+   * (Open server's picker). `answers` as in `remote.connect` (a password not remembered, a host key
+   * after Edit changed the host). The picker closes once the window is open.
    */
-  'remote.open': { req: { serverId: string; projectId?: string }; res: RemoteConnectAnswer }
+  'remote.open': { req: { serverId: string; projectId?: string; answers?: RemoteAnswers }; res: RemoteConnectAnswer }
+  /**
+   * Edit a saved server's settings (same kind). The device cookie stays (unless a Direct origin
+   * changed); an SSH host or port change forgets the trusted host key; a host, user, port or sign-in
+   * change forgets the password or passphrase. A tunnel or Direct `link` with a token signs in with
+   * it (the server's web picker opens, as on Connect); otherwise nothing opens and nothing dials.
+   */
+  'remote.edit': { req: RemoteEditRequest; res: RemoteConnectAnswer }
+  /** The key file Browse button: the native open dialog in `~/.ssh`; the chosen path, or null when cancelled. */
+  'remote.pickKey': { req: void; res: string | null }
   /** Rename a saved server; its windows' titles follow. A refused name is `{ ok: false, error }`. */
   'remote.rename': { req: { serverId: string; name: string }; res: { ok: true } | { ok: false; error: string } }
   /**
-   * Forget a saved server: its windows close, its partition is emptied, its tunnel stops and the
-   * record goes with its cookie. The device stays in the server's list until revoked there.
+   * Forget a saved server: its windows close, its partition is emptied, its SSH connection ends and
+   * the record goes with its cookie, secrets (stored and in memory) and trusted host key. The device
+   * stays in the server's list until revoked there.
    */
   'remote.forget': { req: { serverId: string }; res: void }
   /**
@@ -1753,6 +1787,8 @@ export const INVOKE_CHANNELS = [
   'remote.list',
   'remote.connect',
   'remote.open',
+  'remote.edit',
+  'remote.pickKey',
   'remote.rename',
   'remote.forget',
   'app.openExternal',
@@ -1985,12 +2021,14 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'projects.relink': 'no',
   'projects.forget': 'no',
   'projects.changed': 'no',
-  // Remote desktop (design-remote-desktop.md §3): they run the person's ssh and keep device cookies
-  // on this machine, and open windows on its screen. A browser view of this desktop must never
-  // drive them; the handlers take the desktop picker page only.
+  // Remote desktop (design-remote-desktop.md §3): they dial out over SSH, keep device cookies,
+  // passwords and passphrases on this machine, show native dialogs and open windows on its screen.
+  // A browser view of this desktop must never drive them; the handlers take the desktop picker page only.
   'remote.list': 'no',
   'remote.connect': 'no',
   'remote.open': 'no',
+  'remote.edit': 'no',
+  'remote.pickKey': 'no',
   'remote.rename': 'no',
   'remote.forget': 'no',
   'remote.changed': 'no',

@@ -611,6 +611,75 @@ describe('RemoteServerStore', () => {
     expect(app.data.remoteServers).toBeUndefined()
   })
 
+  it('prepare writes nothing; insert saves the prepared record once; a same server answers the saved one', () => {
+    const store = make()
+    const writes: number[] = []
+    const counting: RemoteServersApp = { data: app.data, update: (m) => (writes.push(1), app.update(m)) }
+    const s = make(fakeSecretStore(), counting)
+    const draft = s.prepare({ name: 'Dev', via: { kind: 'ssh', host: 'me@devbox', port: 2222, auth: { kind: 'password' } } })
+    expect(draft).toEqual({
+      saved: false,
+      record: { id: 'id1', name: 'Dev', via: { kind: 'ssh', host: 'devbox', user: 'me', port: 2222, auth: { kind: 'password' } }, recent: [] },
+      via: { kind: 'ssh', host: 'devbox', user: 'me', port: 2222, auth: { kind: 'password' } }
+    })
+    expect(writes).toEqual([])
+    expect(store.get('id1')).toBeUndefined()
+    expect(s.insert(draft.record)).toEqual(draft.record)
+    expect(writes).toEqual([1])
+    // Once saved, the same server (other sign-in: not part of its identity) answers the saved record.
+    const again = s.prepare({ via: { kind: 'ssh', host: 'devbox', user: 'me', port: 2222 } })
+    expect(again.saved).toBe(true)
+    expect(again.record.id).toBe('id1')
+    expect(again.via).toEqual({ kind: 'ssh', host: 'devbox', user: 'me', port: 2222 })
+    // A record inserted twice, or the same server inserted under another id, is refused.
+    expect(() => s.insert(draft.record)).toThrow(/saved already/)
+    expect(() => s.insert({ ...draft.record, id: 'other' })).toThrow(/saved meanwhile/)
+    expect(() => s.prepare({ via: { kind: 'ssh', host: '-x' } })).toThrow(/cannot start/)
+  })
+
+  it('edit keeps the cookie and the host key; a host or port change drops the host key; a sign-in change drops the secret', async () => {
+    const store = make()
+    const { id } = store.add({ via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } } })
+    await store.setCookie(id, 'dev-cookie')
+    store.setHostKey(id, { type: 'ssh-ed25519', sha256: `SHA256:${'A'.repeat(43)}` })
+    await store.setSecret(id, 'password', 'pw', { remember: true })
+    // Only the ccc path and the name: everything kept.
+    expect(store.edit(id, { name: 'Dev', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' } })).toEqual({ viaChanged: true, renamed: true })
+    expect(store.get(id)).toMatchObject({ name: 'Dev', hostKey: { type: 'ssh-ed25519' }, via: { ccc: '/opt/ccc' } })
+    expect(await store.getCookie(id)).toBe('dev-cookie')
+    expect(await store.getSecret(id, 'password')).toBe('pw')
+    // Nothing but an empty name: nothing changed.
+    expect(store.edit(id, { name: '', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' } })).toEqual({ viaChanged: false, renamed: false })
+    // The port: another machine may answer, so its key is asked again; the cookie stays.
+    store.edit(id, { via: { kind: 'ssh', host: 'devbox', port: 2222, auth: { kind: 'password' } } })
+    expect(store.get(id)?.hostKey).toBeUndefined()
+    expect(await store.getCookie(id)).toBe('dev-cookie')
+    expect(await store.getSecret(id, 'password')).toBeUndefined()
+    // A memory-held secret goes with a sign-in change too.
+    await store.setSecret(id, 'password', 'mem', { remember: false })
+    store.edit(id, { via: { kind: 'ssh', host: 'devbox', port: 2222, user: 'root', auth: { kind: 'password' } } })
+    expect(await store.getSecret(id, 'password')).toBeUndefined()
+  })
+
+  it('edit refuses another kind, a clash with another server and an unknown id; a Direct origin change drops the cookie', async () => {
+    const store = make()
+    const a = store.add({ via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 } })
+    store.add({ via: { kind: 'tunnel', localPort: 7332, remotePort: 7330 } })
+    expect(() => store.edit(a.id, { via: { kind: 'direct', origin: 'https://box' } })).toThrow(/cannot change how a server is reached/)
+    expect(() => store.edit(a.id, { via: { kind: 'tunnel', localPort: 7332, remotePort: 7330 } })).toThrow(/already saved/)
+    expect(() => store.edit('nope', { via: { kind: 'tunnel', localPort: 7333, remotePort: 7330 } })).toThrow(/unknown server/)
+    await store.setCookie(a.id, 'tunnel-cookie')
+    store.edit(a.id, { via: { kind: 'tunnel', localPort: 7340, remotePort: 7330, sshHost: 'devbox' } })
+    expect(store.get(a.id)?.via).toEqual({ kind: 'tunnel', localPort: 7340, remotePort: 7330, sshHost: 'devbox' })
+    expect(await store.getCookie(a.id)).toBe('tunnel-cookie')
+    const d = store.add({ via: { kind: 'direct', origin: 'https://box.example' } })
+    await store.setCookie(d.id, 'direct-cookie')
+    store.edit(d.id, { via: { kind: 'direct', origin: 'https://box.example' } })
+    expect(await store.getCookie(d.id)).toBe('direct-cookie')
+    store.edit(d.id, { via: { kind: 'direct', origin: 'https://other.example' } })
+    expect(store.hasCookie(d.id)).toBe(false)
+  })
+
   it('repairs a damaged app.json list on every operation', async () => {
     app.data.remoteServers = [{ id: 'good', name: 'g', via: { kind: 'ssh', host: 'g' }, recent: [] }, { id: 'bad', via: { kind: 'x' } }, 5] as never
     const store = make()

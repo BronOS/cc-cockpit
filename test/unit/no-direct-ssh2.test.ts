@@ -46,6 +46,19 @@ describe('ssh2 only through the adapter', () => {
     for (const f of ALLOWED) expect(offences(f, readFileSync(join(ROOT, f), 'utf8')).length, f).toBeGreaterThan(0)
   })
 
+  it('the remote code spawns no process (the system `ssh` is gone: remote SSH rev 2)', () => {
+    const remote = join(SRC, 'main', 'remote')
+    const spawning = /(['"`])(node:)?child_process\1/
+    const found = sources(remote).flatMap((p) =>
+      readFileSync(p, 'utf8')
+        .split('\n')
+        .map((t, i) => ({ line: i + 1, text: t }))
+        .filter(({ text: t }) => !/^\s*(\/\/|\/?\*)/.test(t) && spawning.test(t))
+        .map(({ line }) => `${relative(ROOT, p)}:${line}`)
+    )
+    expect(found).toEqual([])
+  })
+
   it('catches each form it forbids and ignores comments and look-alikes', () => {
     const sample = [
       "import { Client } from 'ssh2'",

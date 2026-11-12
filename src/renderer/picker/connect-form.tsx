@@ -1,6 +1,6 @@
 // The picker's Connect to server form (design-remote-desktop.md §3, §5, §6): a modal card over the
-// desktop picker. SSH host (the person's own `ssh` runs `ccc web` on it and opens the tunnel; the
-// SSH key is the pairing) or Link (the access link or a one-time add-device link, as a browser would
+// desktop picker. SSH host (the app's built-in SSH client runs `ccc web` on it and owns the tunnel;
+// for now with the agent and key files only: the full form with prompts is remote SSH rev 2 Task 6) or Link (the access link or a one-time add-device link, as a browser would
 // use it), an optional name, and under Advanced the `ccc` path on the server for SSH.
 //
 // Main checks everything again (`remote.connect`: the host allowlist, the link parser, the ccc
@@ -9,7 +9,7 @@
 // picker, this form with it.
 import { useEffect, useId, useRef, useState } from 'react'
 import { ipcErrorMessage } from '../ipc-error'
-import { connectRequest, type ConnectKind } from './picker-model'
+import { connectFailureText, connectRequest, type ConnectKind } from './picker-model'
 
 export function ConnectForm(props: { onClose(): void; onConnected(serverId: string): void }): React.JSX.Element {
   const uid = useId()
@@ -38,7 +38,7 @@ export function ConnectForm(props: { onClose(): void; onConnected(serverId: stri
       .invoke('remote.connect', connectRequest(kind, { host, link, name, ccc }))
       .then((answer) => {
         if (answer.ok) props.onConnected(answer.serverId)
-        else setError(answer.error)
+        else setError(connectFailureText(answer))
       })
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
       .finally(() => setBusy(false))
@@ -122,7 +122,7 @@ export function ConnectForm(props: { onClose(): void; onConnected(serverId: stri
             <Field
               id={`${uid}-host`}
               label="SSH host"
-              hint="Your own ssh runs, with your keys and ~/.ssh/config. The server runs cc-cockpit in server mode."
+              hint="Signs in with your SSH agent and keys, as ~/.ssh/config says. The server runs cc-cockpit in server mode."
               errorId={error !== null ? errorId : undefined}
             >
               {(attrs) => (

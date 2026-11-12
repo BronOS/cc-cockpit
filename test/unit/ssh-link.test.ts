@@ -687,6 +687,41 @@ describe('the tunnel', () => {
     expect(await get(port)).toBe('gateway B')
   })
 
+  it('follows a gateway that moved while SSH stayed up: a refused page channel re-runs web status, at most every 5 s', async () => {
+    const gatewayA = await startGateway('gateway A')
+    const httpA = netServers.at(-1) as HttpServer
+    const s = await startServer({ gateway: gatewayA })
+    const { link, timers, dials } = makeLink(s, { secrets: { password: PASSWORD } })
+    const r = await link.acquire()
+    const port = r.ok ? r.value : 0
+    expect(await get(port)).toBe('gateway A')
+    const statusRuns = (): number => s.commands.filter((c) => c.includes("'web' 'status'")).length
+    expect(statusRuns()).toBe(1)
+
+    // The server's cockpit restarts on another gateway port; the SSH connection stays up.
+    httpA.closeAllConnections()
+    httpA.close()
+    const gatewayB = await startGateway('gateway B')
+    const httpB = netServers.at(-1) as HttpServer
+    s.gateway = gatewayB
+    // The refused channel re-runs `web status` and the same page request is retried on the new port.
+    expect(await get(port)).toBe('gateway B')
+    expect(statusRuns()).toBe(2)
+    expect(dials).toHaveLength(1)
+    expect(link.state).toEqual({ state: 'up', localPort: port })
+
+    // Again within 5 s: no second `web status` (a page retrying in a loop is not a command stream).
+    httpB.closeAllConnections()
+    httpB.close()
+    const gatewayC = await startGateway('gateway C')
+    s.gateway = gatewayC
+    await expect(get(port)).rejects.toThrow()
+    expect(statusRuns()).toBe(2)
+    timers.advance(5000)
+    expect(await get(port)).toBe('gateway C')
+    expect(statusRuns()).toBe(3)
+  })
+
   it('backs off 1, 2, 4 s while the server stays away', async () => {
     const gateway = await startGateway('gateway A')
     const s = await startServer({ gateway })

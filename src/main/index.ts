@@ -78,8 +78,9 @@ import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-o
 import { ElectronRemoteWindowFactory, isRemoteWindow } from './remote/electron-remote-window'
 import { RemoteServerStore } from './remote/remote-servers'
 import { RemoteWindows } from './remote/remote-windows'
-import { notifyingStore, RemoteService, sshOver } from './remote/remote-service'
-import { createSshSpawn } from './remote/ssh-process'
+import { notifyingStore, RemoteService } from './remote/remote-service'
+import { SshLink } from './remote/ssh-link'
+import { probeTunnel, tunnelGate } from './remote/tunnel-probe'
 import { FrameStream, streamView } from './webview/frame-stream'
 import { cursorEvent, WebviewInput } from './webview/webview-input'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
@@ -632,8 +633,9 @@ function start(server: boolean): void {
   // visible again (a hidden renderer is throttled and must never size a tab, terminal-sizes.ts);
   // only the window being shown again does.
   const hiddenDesktopViews = new Set<ViewId>()
-  // Remote desktop (design-remote-desktop.md): the picker's saved servers, each SSH server's tunnel
-  // and the sandboxed windows on a server's web client. Desktop only: a server has no screen to open
+  // Remote desktop (design-remote-desktop.md): the picker's saved servers, each built-in SSH server's
+  // link (the app's own `ssh2` connection and loopback listener; no `ssh` is spawned) and the
+  // sandboxed windows on a server's web client. Desktop only: a server has no screen to open
   // them on, so in server mode none of it exists and the `remote.*` handlers refuse. A remote window
   // is no project window: WindowManager only counts it (its lifecycle rules), it is never a sender,
   // never restored and never in the open list. The lambdas reach `windows` and `sendToWindow`
@@ -648,6 +650,7 @@ function start(server: boolean): void {
           const picker = windows.pickerWindowId
           if (picker !== undefined) sendToWindow(picker, 'remote.changed', undefined)
         }
+        const probe = (port: number): ReturnType<typeof probeTunnel> => probeTunnel(port)
         const service: RemoteService = new RemoteService({
           store,
           windows: {
@@ -657,11 +660,20 @@ function start(server: boolean): void {
             refreshTitles: (serverId) => remoteWindows.refreshTitles(serverId),
             forget: (serverId) => remoteWindows.forget(serverId)
           },
-          // The login env: the person's SSH_AUTH_SOCK and a PATH that finds their `ssh` (a GUI start
-          // has neither). Each ssh is tracked by the child registry, so quit kills it.
-          ssh: sshOver(createSshSpawn({ env: () => loginEnv })),
+          // One link per server. The login env carries the person's SSH_AUTH_SOCK (a GUI start may have
+          // none in process.env); the service awaits it before a link's first call.
+          link: (serverId, view) => new SshLink({ serverId, store: view, home: homedir(), env: () => loginEnv }),
+          probe,
           ready: () => loginEnvReady,
           clearSession: (serverId) => factory.clearSession(serverId),
+          // The key file Browse button: the native dialog as a sheet on the picker.
+          pickFile: async (windowId, defaultPath) => {
+            const options: OpenDialogOptions = { title: 'Choose a private key file', defaultPath, properties: ['openFile', 'showHiddenFiles'] }
+            const result = await dialogs.showOpenDialog(BrowserWindow.fromId(windowId) ?? undefined, options)
+            const path = result.filePaths[0]
+            return result.canceled || !path ? undefined : path
+          },
+          home: homedir(),
           opened: () => windows.remoteWindowOpened(),
           onChanged: changed,
           log: warnLog
@@ -673,6 +685,8 @@ function start(server: boolean): void {
           openExternal: (url) => openExternal(url, 'app'),
           mintToken: (record) => service.mintToken(record),
           onAllClosed: (serverId) => service.allClosed(serverId),
+          // My own tunnel: each load main makes probes the local port first (tunnel-probe.ts).
+          gate: tunnelGate(probe),
           onChanged: () => {
             windows.remoteWindowsChanged()
             changed()
@@ -3111,8 +3125,7 @@ function start(server: boolean): void {
       return
     }
     updateChecker.stop()
-    // The remote servers' tunnels: SIGTERM to each ssh's process group now (a ProxyCommand's child
-    // with it), before the registry's SIGKILL below reaches the ssh itself.
+    // The remote servers' SSH links: connections and listeners ended now.
     remote?.service.dispose()
     // Main's own helper processes (the login-env shell, an install's clone, the diff probe):
     // their timeouts are timers that die with main. Synchronous SIGKILLs, never throws, and first
