@@ -226,8 +226,11 @@ export class FrameStream {
     switch (change.kind) {
       case 'added':
         // A new viewer (or a reconnect: a new view) has nothing yet; the last frame goes at once
-        // when its socket can take it, else the page is asked for one.
-        state.sent.delete(change.viewId)
+        // when its socket can take it, else the page is asked for one. Its progress is not reset
+        // here: a view's entry goes with its `removed`, and a joining view is a viewer before its
+        // `added` (the size and owner it brings come first), so frames painted meanwhile (a
+        // reloaded browser's join: the size's repaint, the page starting to paint again) already
+        // reached it. Forgetting them sent the same frame twice on every rejoin (logged).
         if (state.last) this.pump(id, state)
         else this.invalidate(state)
         return

@@ -554,9 +554,9 @@ test('server mode: a browser that reloads gets a frame at once', async () => {
       .poll(async () => {
         const [r = -99, g = -99, b = -99] = await centrePixel(browser.page)
         return Math.max(Math.abs(r - COLOUR.r), Math.abs(g - COLOUR.g), Math.abs(b - COLOUR.b))
-      // Usually within about 300 ms of the page's load; about 1 reload in 40 took 3 to 4 s (a late join
-      // frame, not investigated here), so the bound leaves room for that.
-      }, { timeout: 8_000 })
+      // The join frame lands within about 250 ms of the panel showing (about 300 runs measured, four and
+      // six workers included); the bound is tight, so a join that waits for something comes up here.
+      }, { timeout: 2_000 })
       .toBeLessThanOrEqual(8)
     await expectMainAlive(server)
   } finally {

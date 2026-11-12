@@ -383,11 +383,14 @@ export interface InputScheduler {
 export const MAX_INPUT_BATCH = 64
 
 /**
- * The input layer's outbox: events go out once per animation frame, in order, at most
- * MAX_INPUT_BATCH per call. A pointer move right after a move replaces it, a wheel right after a
- * wheel adds to it (one per frame each: the rate main allows is far above it), so a fast pointer
- * costs one move per frame however many the browser fires. Nothing else is merged: a press, a
- * release and every key keep their place.
+ * The input layer's outbox, the one ordered way out for a panel's input: events go out once per
+ * animation frame, in order, at most MAX_INPUT_BATCH per call. A pointer move right after a move
+ * replaces it, a wheel right after a wheel adds to it (one per frame each: the rate main allows is
+ * far above it), so a fast pointer costs one move per frame however many the browser fires. Nothing
+ * else is merged, and nothing is merged across anything else: a press, a release and every key keep
+ * their place. What is not an event (an inserted text, a select choice) goes through `call`, which
+ * sends the events before it first, so the page gets it all in the order the person produced it
+ * (main keeps that order, webview-input.ts).
  */
 export class InputQueue {
   private pending: WebviewInputEventWire[] = []
@@ -416,6 +419,16 @@ export class InputQueue {
         this.flush()
       })
     }
+  }
+
+  /**
+   * Send `fn`'s call in its place: the events pushed before it go first (in one or more batches),
+   * then `fn` runs. After `dispose` nothing runs.
+   */
+  call(fn: () => void): void {
+    if (this.disposed) return
+    this.flush()
+    fn()
   }
 
   /** Send what is waiting now (also before the layer goes: a release must not be lost). */

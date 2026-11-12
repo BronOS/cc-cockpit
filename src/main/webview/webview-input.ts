@@ -60,6 +60,20 @@
 // this view (`webviews.select`) and its answer (`acceptChoice`) sets the value. Anything else, a
 // failed hit-test or one too slow: the press goes, then what queued, as if nothing had waited.
 //
+// Order (design-web-browser.md §4.2): everything one browser view sends for one panel (pointer,
+// wheel, keys, inserted text, select choices) reaches the page in the order the person produced
+// it, through one lane per view and panel (PressLane) shared by the three channels. The browser
+// sends them in that order (web/webview-stream.ts InputQueue); main keeps it. Input events and text
+// take different roads into the page, though: `sendInputEvent` goes through the widget's input
+// pipe and the renderer's input queue, while a text or a choice is a separate call whose own
+// promise says when the page has it. The e2e typing 'héllo ü' got "hlélo ü" and "éhllo ü" about one
+// run in ten with main's calls in the right order (logged): Electron's `webContents.insertText` is
+// an IPC to the renderer that a key sent just before or after it can overtake. So the view inserts
+// text on the input pipe itself (electron-offscreen-webview.ts: the protocol's `Input.insertText`,
+// queued behind the keys already sent), and the lane holds what comes after a text or a choice
+// until its promise settles (PAGE_WAIT_MS at most: a hung page must not hold the person's input
+// forever), so nothing sent later can pass it either.
+//
 // Pure: no Electron (the view's sendInput, insertText, readSelection, hitSelect and chooseSelect
 // are injected), clock, timers and popup ids injected.
 
@@ -102,6 +116,11 @@ export const SELECTION_DEBOUNCE_MS = 100
  * the world of Electron's contextIsolation preloads (none in a webview, but never shared).
  */
 export const WEBVIEW_WORLD_ID = 1717
+/**
+ * The longest the lane holds later input behind a text or a select choice the page has not
+ * confirmed yet (usually a few ms): after that the rest goes, so a hung page costs order, not input.
+ */
+export const PAGE_WAIT_MS = 500
 
 /**
  * The selection script, run in WEBVIEW_WORLD_ID (fresh globals, the page's DOM): the selected slice
@@ -309,8 +328,11 @@ export function cursorEvent(panel: WebviewPanelOf, type: unknown): { panelKey: s
 export interface InputTarget {
   size(): PlaceSize
   send(events: readonly ElectronInputEvent[]): void
-  /** `webContents.insertText` (absent: the view takes no text). */
-  insertText?(text: string): void
+  /**
+   * Committed text into the page's focused field (absent: the view takes no text). A promise that
+   * settles once the page has it: the lane holds later input until then.
+   */
+  insertText?(text: string): Promise<unknown> | void
   /** SELECTION_SCRIPT's result in WEBVIEW_WORLD_ID; rejects or never settles for a page that is gone or hung. */
   readSelection?(): Promise<unknown>
   /**
@@ -354,17 +376,23 @@ export interface WebviewInputDeps {
 }
 
 type PressEvent = Extract<ElectronInputEvent, { type: 'mouseDown' | 'mouseUp' }>
-/** What waits behind a held press: input events and committed texts, in the order they came. */
-type QueuedInput = ElectronInputEvent | { type: 'insertText'; text: string }
+/** One item of a lane: an input event, a committed text or a select choice, in the order they came. */
+type QueuedInput = ElectronInputEvent | { type: 'insertText'; text: string } | { type: 'choose'; id: string; index: number | null }
 
-/** One view's press path for one panel (only while a hit-test runs or a release is to be dropped). */
+/** What a lane waits for before the rest of its input goes. */
+type LaneWait =
+  /** A left press's hit-test: its press (held), its popup id. */
+  | { kind: 'hit'; seq: number; timer: unknown; press: PressEvent; selectId: string }
+  /** A text or a choice the page has not confirmed yet. */
+  | { kind: 'page'; seq: number; timer: unknown }
+
+/** One view's input path for one panel (kept while something waits or a release is to be dropped). */
 interface PressLane {
   id: string
   panel: WebviewPanelOf
   viewId: ViewId
-  /** The hit-test in flight: its press (held), its timeout, its popup id. */
-  hit: { seq: number; press: PressEvent; timer: unknown; selectId: string } | undefined
-  /** Events and texts that came after the held press, in order. */
+  wait: LaneWait | undefined
+  /** Events, texts and choices that came while the lane waited, in order. */
   held: QueuedInput[]
   /** The last left press went to a popup: its release (the next left mouseUp) does not go either. */
   dropRelease: boolean
@@ -418,7 +446,8 @@ export class WebviewInput {
   /** By view id, then panel key (`windowId/pluginId/panelId`): forgotten with the view. */
   private readonly lanes = new Map<ViewId, Map<string, PressLane>>()
   private readonly popups = new SelectPopups()
-  private hitSeq = 0
+  /** Numbers each wait of every lane, so a late answer to an earlier one changes nothing. */
+  private waitSeq = 0
   private readonly now: () => number
   private readonly timers: SelectionTimers
 
@@ -470,14 +499,16 @@ export class WebviewInput {
     }
     const open = this.popups.take(viewId, laneIdOf(panel), id)
     if (!open) return false
-    const choose = this.deps.target(panel)?.chooseSelect
-    if (!choose) return false
+    const target = this.deps.target(panel)
+    if (!target?.chooseSelect) return false
+    // In the lane like any input: keys typed before the choice reach the page before it, and
+    // what comes after waits for it.
     if (index === null || !open.choosable.has(index) || this.take(viewId, 1) === 0) {
       // Forget the element in the page's world either way (it is capped there too).
-      void choose(open.id, null).catch(() => {})
+      this.deliver(panel, viewId, target, [{ type: 'choose', id: open.id, index: null }])
       return false
     }
-    void choose(open.id, index).catch(() => {})
+    this.deliver(panel, viewId, target, [{ type: 'choose', id: open.id, index }])
     return true
   }
 
@@ -498,8 +529,8 @@ export class WebviewInput {
     const target = this.deps.target(panel)
     if (!target?.insertText) return false
     this.deps.claimOwner(panel, viewId)
-    // Behind a held press like any key: text typed right after a click must land where the click
-    // put the caret (the press goes first), never before it.
+    // In the lane like any key: text typed right after a click must land where the click put the
+    // caret (the press goes first), never before it, and a key typed after it never passes it.
     this.deliver(panel, viewId, target, [{ type: 'insertText', text }])
     return true
   }
@@ -511,17 +542,17 @@ export class WebviewInput {
     const lanes = this.lanes.get(viewId)
     this.lanes.delete(viewId)
     // A held press never went, so no release is owed to the page.
-    for (const lane of lanes?.values() ?? []) if (lane.hit) this.timers.clear(lane.hit.timer)
+    for (const lane of lanes?.values() ?? []) if (lane.wait) this.timers.clear(lane.wait.timer)
     const entries = this.selections.get(viewId)
     if (!entries) return
     this.selections.delete(viewId)
     for (const entry of entries.values()) if (entry.timer !== undefined) this.timers.clear(entry.timer)
   }
 
-  /** Checked, mapped events for the page, behind a hit-test in flight if there is one. */
+  /** Checked, mapped input for the page, behind whatever the lane waits for. */
   private deliver(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: QueuedInput[]): void {
     const lane = this.lanes.get(viewId)?.get(laneIdOf(panel))
-    if (lane?.hit) {
+    if (lane?.wait) {
       // Over the cap the newest go: a browser of ours sends a few per animation frame.
       const room = MAX_HELD_EVENTS - lane.held.length
       if (room > 0) lane.held.push(...events.slice(0, room))
@@ -532,18 +563,29 @@ export class WebviewInput {
 
   /**
    * Send `events` in order, up to a left press that needs a hit-test (the target can hit-test and
-   * a popup can be sent): it and the rest wait (startHit). A release owed to a popup is dropped.
+   * a popup can be sent): it and the rest wait (startHit). A text or a choice goes after the events
+   * before it, and the rest waits for the page to confirm it (startPageWait). A release owed to a
+   * popup is dropped.
    */
   private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly QueuedInput[], lane: PressLane | undefined): void {
     let out: ElectronInputEvent[] = []
     const canHit = target.hitSelect !== undefined && this.deps.pushSelect !== undefined
     for (let i = 0; i < events.length; i++) {
       const event = events[i] as QueuedInput
-      if (event.type === 'insertText') {
+      if (event.type === 'insertText' || event.type === 'choose') {
         this.send(panel, viewId, target, out)
         out = []
-        target.insertText?.(event.text)
-        this.selectionMayChange(panel, viewId)
+        let pending: Promise<unknown> | void
+        try {
+          pending = event.type === 'insertText' ? target.insertText?.(event.text) : target.chooseSelect?.(event.id, event.index)
+        } catch {
+          pending = undefined
+        }
+        if (event.type === 'insertText') this.selectionMayChange(panel, viewId)
+        if (pending && typeof pending.then === 'function') {
+          this.startPageWait(panel, viewId, pending, events.slice(i + 1))
+          return
+        }
         continue
       }
       const left = (event.type === 'mouseDown' || event.type === 'mouseUp') && event.button === 'left'
@@ -583,19 +625,44 @@ export class WebviewInput {
     const id = laneIdOf(panel)
     let lane = lanes.get(id)
     if (!lane) {
-      lane = { id, panel, viewId, hit: undefined, held: [], dropRelease: false }
+      lane = { id, panel, viewId, wait: undefined, held: [], dropRelease: false }
       lanes.set(id, lane)
     }
     return lane
   }
 
+  /** Hold `rest` until the page has the text or choice `pending` is for (or PAGE_WAIT_MS passes). */
+  private startPageWait(panel: WebviewPanelOf, viewId: ViewId, pending: Promise<unknown>, rest: readonly QueuedInput[]): void {
+    const lane = this.lane(panel, viewId)
+    const seq = ++this.waitSeq
+    lane.held = rest.slice(0, MAX_HELD_EVENTS)
+    lane.wait = { kind: 'page', seq, timer: this.timers.set(() => this.pageDone(lane, seq), PAGE_WAIT_MS) }
+    // A rejection (a page gone or navigated meanwhile) lets the rest go all the same.
+    pending.then(
+      () => this.pageDone(lane, seq),
+      () => this.pageDone(lane, seq)
+    )
+  }
+
+  /** The text or choice `seq` reached the page, failed or timed out: what waited goes, in order. */
+  private pageDone(lane: PressLane, seq: number): void {
+    const wait = lane.wait
+    if (!wait || wait.kind !== 'page' || wait.seq !== seq || this.lanes.get(lane.viewId)?.get(lane.id) !== lane) return
+    this.timers.clear(wait.timer)
+    lane.wait = undefined
+    const held = lane.held
+    lane.held = []
+    const target = this.deps.target(lane.panel)
+    if (target) this.run(lane.panel, lane.viewId, target, held, lane)
+  }
+
   /** Hold `press` and `rest` while the page says what is under the press (or HIT_TIMEOUT_MS passes). */
   private startHit(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, press: PressEvent, rest: QueuedInput[]): void {
     const lane = this.lane(panel, viewId)
-    const seq = ++this.hitSeq
+    const seq = ++this.waitSeq
     const selectId = (this.deps.newSelectId ?? newSelectId)()
     lane.held = rest.slice(0, MAX_HELD_EVENTS)
-    lane.hit = { seq, press, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
+    lane.wait = { kind: 'hit', seq, press, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
     let pending: Promise<unknown>
     try {
       pending = (target.hitSelect as NonNullable<InputTarget['hitSelect']>)(press.x, press.y, selectId)
@@ -615,10 +682,10 @@ export class WebviewInput {
    * the lane's current hit counts; a late answer finds the press already gone to the page.
    */
   private hitDone(lane: PressLane, seq: number, raw: unknown): void {
-    const hit = lane.hit
-    if (!hit || hit.seq !== seq || this.lanes.get(lane.viewId)?.get(lane.id) !== lane) return
+    const hit = lane.wait
+    if (!hit || hit.kind !== 'hit' || hit.seq !== seq || this.lanes.get(lane.viewId)?.get(lane.id) !== lane) return
     this.timers.clear(hit.timer)
-    lane.hit = undefined
+    lane.wait = undefined
     const held = lane.held
     lane.held = []
     const target = this.deps.target(lane.panel)

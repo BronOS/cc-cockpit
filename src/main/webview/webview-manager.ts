@@ -175,8 +175,8 @@ export interface WebviewView {
   size?(): { width: number; height: number }
   /** Server mode's off-screen view only: trusted input for the page (`sendInputEvent`), checked by webview-input.ts. */
   sendInput?(events: readonly ElectronInputEvent[]): void
-  /** Server mode's off-screen view only: committed text for the page (`webContents.insertText`). */
-  insertText?(text: string): void
+  /** Server mode's off-screen view only: committed text for the page, settled once the page has it (webview-input.ts InputTarget). */
+  insertText?(text: string): Promise<unknown> | void
   /** Server mode's off-screen view only: the page's selection (webview-input.ts SELECTION_SCRIPT, isolated world). */
   readSelection?(): Promise<unknown>
   /** Server mode's off-screen view only: what select is under a press (select-hit.ts hitScript, isolated world). */
@@ -522,9 +522,7 @@ export class WebviewManager {
       },
       ...(insertText
         ? {
-            insertText: (text: string) => {
-              if (this.isLive(rec)) insertText(text)
-            }
+            insertText: (text: string) => (this.isLive(rec) ? insertText(text) : undefined)
           }
         : {}),
       ...(readSelection

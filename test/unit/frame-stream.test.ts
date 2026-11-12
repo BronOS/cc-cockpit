@@ -284,6 +284,28 @@ describe('FrameStream', () => {
     expect(encodes).toHaveLength(1)
   })
 
+  it('a viewer that got frames before its join (its size made the page paint) gets none of them twice', () => {
+    viewers.report(PANEL, A, shown())
+    stream.paint(PANEL, image())
+    // The last viewer goes (a browser reloading): the panel's state goes with it.
+    viewers.viewGone(A)
+    // The reloaded browser's first report: its size comes before its join, and the page paints
+    // for it at once (the real page's repaint, and its start painting again).
+    const real = page.invalidate
+    page.invalidate = () => {
+      real()
+      stream.paint(PANEL, image())
+    }
+    try {
+      viewers.report(PANEL, B, shown())
+    } finally {
+      page.invalidate = real
+    }
+    expect(framesTo(B).map((f) => f.seq)).toEqual([2])
+    stream.paint(PANEL, image())
+    expect(framesTo(B).map((f) => f.seq)).toEqual([2, 3])
+  })
+
   it('asks the page for a full paint when a viewer joins with no frame yet, and on a size change', () => {
     viewers.report(PANEL, A, shown())
     expect(invalidated).toBe(1)

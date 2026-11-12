@@ -572,6 +572,47 @@ describe("the browser's side (web/webview-stream.ts)", () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('the outbox keeps text and choices in their place: the events before them go first, moves never merge across them', () => {
+    // One log of what leaves, in order: a batch of events, or a text / choice call.
+    const out: string[] = []
+    const name = (e: WebviewInputEventWire): string =>
+      e.kind === 'key' ? `${e.type}:${e.key}` : e.kind === 'pointer' ? `${e.type}@${e.x}` : `wheel:${e.deltaY}`
+    let due: (() => void) | undefined
+    const q = new InputQueue((events) => void out.push(events.map(name).join(' ')), {
+      frame: (fn) => {
+        due = fn
+        return 1
+      },
+      cancel: () => {
+        due = undefined
+      }
+    })
+    // 'h' as a key, 'é' as text, then 'l' while a frame is still due: never 'é' before 'h', nor
+    // 'l' before 'é' (the e2e's "hlélo" and "éhllo").
+    q.push({ kind: 'key', type: 'down', key: 'h' })
+    q.push({ kind: 'key', type: 'up', key: 'h' })
+    q.call(() => void out.push('text é'))
+    q.push({ kind: 'key', type: 'down', key: 'l' })
+    expect(out).toEqual(['down:h up:h', 'text é'])
+    // A move before the text and one after it stay two moves, on either side of it.
+    q.push(move(1, 1))
+    q.call(() => void out.push('text ü'))
+    q.push(move(2, 2))
+    q.push(move(3, 3))
+    q.push({ kind: 'pointer', type: 'down', x: 3, y: 3, button: 'left', clickCount: 1 })
+    q.push(move(4, 4))
+    q.call(() => void out.push('choose 1'))
+    expect(out).toEqual(['down:h up:h', 'text é', 'down:l move@1', 'text ü', 'move@3 down@3 move@4', 'choose 1'])
+    // Nothing waits: the frame that was due sends nothing, and a call with nothing queued goes at once.
+    due?.()
+    q.call(() => void out.push('text x'))
+    expect(out.slice(-1)).toEqual(['text x'])
+    // After dispose (the layer went) nothing more leaves.
+    q.dispose()
+    q.call(() => void out.push('late'))
+    expect(out).not.toContain('late')
+  })
+
   it('the channels are adapted', () => {
     expect(REMOTE_CLASS['webviews.input']).toBe('adapted')
     expect(REMOTE_CLASS['webviews.cursor']).toBe('adapted')

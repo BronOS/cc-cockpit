@@ -29,6 +29,10 @@
 // on one to the page and sends its options instead (`webviews.select`); this draws a dropdown over
 // the select's place on the canvas (webview-select-menu.tsx) and answers `webviews.selectChoose`.
 //
+// Order (§4.2): the pointer, the wheel, the keys, the text and the select choices of a panel all
+// leave through its one outbox (InputQueue): a text or a choice goes after the events queued before
+// it, never ahead of a key still waiting for its animation frame. Main keeps that order.
+//
 // The math, the key split and the outbox are DOM-free in webview-stream.ts and webview-select.ts
 // (unit tested).
 
@@ -73,6 +77,9 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
   const canvas = useRef<HTMLCanvasElement>(null)
   const layer = useRef<HTMLDivElement>(null)
   const textbox = useRef<HTMLTextAreaElement>(null)
+  // The input layer's outbox while it is mounted: a select choice goes through it too, after the
+  // keys and clicks before it (see the input effect).
+  const outbox = useRef<InputQueue | undefined>(undefined)
   // The frame on the canvas now (its header): input maps against the frame the person sees.
   const shown = useRef<DecodedFrame<ImageBitmap>['frame'] | undefined>(undefined)
   // The open select popup (at most one per panel: a new one replaces it, main closed the old id).
@@ -83,7 +90,11 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
       if (menuId.current !== id) return
       menuId.current = undefined
       setMenu(undefined)
-      window.cockpit.invoke('webviews.selectChoose', { panelKey, id, index }).catch(() => {})
+      const choose = (): void => {
+        window.cockpit.invoke('webviews.selectChoose', { panelKey, id, index }).catch(() => {})
+      }
+      if (outbox.current) outbox.current.call(choose)
+      else choose()
       // The keyboard goes back to the page.
       textbox.current?.focus({ preventScroll: true })
     },
@@ -190,6 +201,7 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
       },
       { frame: (fn) => requestAnimationFrame(fn), cancel: (h) => cancelAnimationFrame(h as number) }
     )
+    outbox.current = queue
     const clicks = new ClickCounter()
     // Buttons whose press went to the page (only their release goes too), and the last point sent.
     const pressed = new Set<'left' | 'middle' | 'right'>()
@@ -280,12 +292,14 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     }
     const noMenu = (e: Event): void => e.preventDefault()
 
-    // Text. Keys already queued go first, so the page gets them in the order they were typed.
+    // Text, in its place in the outbox: keys already queued go first, so the page gets them in
+    // the order they were typed.
     const sendText = (value: string): void => {
       if (value === '') return
-      queue.flush()
       for (const chunk of textChunks(value)) {
-        window.cockpit.invoke('webviews.insertText', { panelKey, text: chunk }).catch(() => {})
+        queue.call(() => {
+          window.cockpit.invoke('webviews.insertText', { panelKey, text: chunk }).catch(() => {})
+        })
       }
     }
     let composing = false
@@ -376,6 +390,7 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
       releaseButtons()
       releaseKeys()
       queue.dispose()
+      if (outbox.current === queue) outbox.current = undefined
     }
   }, [panelKey])
 

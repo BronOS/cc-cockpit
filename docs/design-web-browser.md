@@ -221,8 +221,18 @@ the input layer has focus.
   browser's IME and dead keys already understand: committed text (`input` insertText/insertReplacementText when not
   composing, and `compositionend`) of IME and dead-key compositions, non-ASCII characters and AltGr text goes to main
   as one `webviews.insertText` (`{ panelKey, text }`, at most 64 KiB of UTF-8, the same gate and rate bucket as input;
-  control characters other than tab and newline stripped), delivered with `webContents.insertText`. No character goes
-  both ways. Enter is a key with `'\r'` as its char; Tab, Backspace, Delete, arrows, Escape, F-keys and chords are keys
+  control characters other than tab and newline stripped), delivered as the page protocol's `Input.insertText` (an IME
+  commit on the widget's input pipe; `webContents.insertText` only when the protocol detached). No character goes
+  both ways.
+- **Order.** Everything one browser view sends for one panel (pointer, wheel, keys, inserted text, select choices)
+  reaches the page in the order the person produced it. The browser has one outbox per panel (`InputQueue`: events
+  batched per animation frame, a move coalesced only with the move right before it; a text or a choice flushes the
+  events before it), and main one lane per view and panel shared by `webviews.input`, `.insertText` and
+  `.selectChoose` (the lane that also holds a press for its select hit-test, §4.4). A text or a choice is a call of
+  its own into the page, so the lane holds what comes after it until its promise settles (at most 500 ms, so a hung
+  page costs order, not input). `webContents.insertText` was not enough: it is an IPC to the renderer that a key sent
+  just before or after it overtook (the e2e typed "héllo ü" as "hlélo ü" or "éhllo ü" about one run in ten, with
+  main's calls in order), while `Input.insertText` is queued behind the keys already sent. Enter is a key with `'\r'` as its char; Tab, Backspace, Delete, arrows, Escape, F-keys and chords are keys
   with no char. v1 shows no composition preview inside the page (the browser's own IME window shows it, where the
   textarea sits under the pointer).
 - **Paste.** A `paste` event on the textarea (Ctrl/Cmd+V while the panel has focus) gives the text without any

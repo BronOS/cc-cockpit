@@ -569,6 +569,24 @@ External review: sol / high
 - [x] e2e: a second browser on the same project sees the page letterboxed; a press from it makes it the size owner
 - [x] e2e: a browser that reconnects gets a frame at once; a hidden browser tab stops being a viewer
 - [x] run the e2e - must pass before next task
+- ➕ fix (input order): "typed and pasted text" got "hlélo ü" / "éhllo ü" about one run in ten. Logged in a scratch run:
+      the browser's invokes and main's calls into the view were in order every time; the page reordered them, since
+      `webContents.insertText` is an IPC to the renderer that a key from `sendInputEvent` just before or after it
+      overtook. Now the off-screen view inserts text with the page protocol's `Input.insertText` (an IME commit on the
+      widget's input pipe, queued behind the keys already sent; the debugger is attached by cancelOffscreenNativeUi
+      already, `webContents.insertText` only as the fallback once it detached), and main's per view and panel lane
+      (`PressLane`, Task 9's) is the one queue of all three channels: `webviews.selectChoose` goes through it too, and
+      what comes after a text or a choice waits for its promise (`PAGE_WAIT_MS` 500 at most). In the browser,
+      `InputQueue.call` sends a text chunk or a select choice after the events queued before it (moves still coalesce
+      only with the move right before them). Unit tests on both sides (keys, text, presses, moves, choices interleaved;
+      a hung, a failed and a void text). 20/20 at two workers after, 4 of 12 failed before.
+- ➕ fix (reload join): the 3 to 4 s first frame did not reproduce in about 300 instrumented runs (sequential, four and six
+      workers, whole spec in parallel): the join frame came 70 to 260 ms after the panel showed. An Electron spike (300
+      stop/start painting cycles with the page changed while stopped) had a fresh paint 3 to 19 ms after
+      `startPainting` + `invalidate` every time. The logs showed one defect on the join path: a joining view is a viewer
+      before its `added` (its size and owner come first, and the size's repaint and the page starting to paint send it
+      frames), and `added` then reset its progress, so every rejoin sent the same frame twice; `added` no longer does
+      (unit tested). The reload test's poll is back to 2 s (it was 8 s); if a slow join comes back it fails there.
 
 ### Task 12: Verify acceptance criteria [model: sonnet]
 - [ ] verify all requirements from Overview are implemented (Browser panel and a third-party webview panel)

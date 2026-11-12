@@ -18,7 +18,7 @@ import {
   parseHitResult,
   SelectPopups
 } from '../../src/main/webview/select-hit'
-import { WebviewInput, type ElectronInputEvent } from '../../src/main/webview/webview-input'
+import { PAGE_WAIT_MS, WebviewInput, type ElectronInputEvent } from '../../src/main/webview/webview-input'
 import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webview-viewers'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import type { IpcEventMap, WebviewSelectOption } from '../../src/shared/ipc'
@@ -354,7 +354,15 @@ const pup = (x: number, y: number, button = 'left') => ({ kind: 'pointer', type:
 const pmove = (x: number, y: number, modifiers: string[] = []) => ({ kind: 'pointer', type: 'move', x, y, modifiers })
 const pkey = (k: string) => ({ kind: 'key', type: 'down', key: k })
 
-function pressSetup(options: { hit?: (x: number, y: number, id: string) => Promise<unknown>; pushSelect?: boolean } = {}) {
+function pressSetup(
+  options: {
+    hit?: (x: number, y: number, id: string) => Promise<unknown>
+    pushSelect?: boolean
+    /** What insertText and chooseSelect return (default: void and a resolved promise). */
+    textDone?: () => Promise<unknown> | void
+    chooseDone?: () => Promise<unknown>
+  } = {}
+) {
   const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => 0 })
   const timers = new Map<number, () => void>()
   let nextTimer = 0
@@ -377,6 +385,7 @@ function pressSetup(options: { hit?: (x: number, y: number, id: string) => Promi
       insertText: (text) => {
         texts.push(text)
         order.push(`text ${text}`)
+        return options.textDone?.()
       },
       hitSelect:
         options.hit ??
@@ -386,7 +395,8 @@ function pressSetup(options: { hit?: (x: number, y: number, id: string) => Promi
           })),
       chooseSelect: (id, index) => {
         chosen.push([id, index])
-        return Promise.resolve(true)
+        order.push(`choose ${index}`)
+        return options.chooseDone ? options.chooseDone() : Promise.resolve(true)
       }
     }),
     ...(options.pushSelect === false ? {} : { pushSelect: (viewId: string, event: IpcEventMap['webviews.select']) => void popups.push([viewId, event]) }),
@@ -558,6 +568,135 @@ describe('a press held behind its hit-test', () => {
     input.accept(PANEL, 'web:1', [pdown(1, 1)])
     input.accept(PANEL, 'web:2', [pkey('b')])
     expect(types(sent)).toEqual(['keyDown', 'char'])
+  })
+})
+
+// One lane per view and panel for all three channels (webviews.input, .insertText, .selectChoose):
+// the page gets them in the order they came. A text or a choice takes another road into the page
+// than sendInputEvent, so what comes after one waits until the page has it.
+describe('one ordered lane per view and panel: input, text and choices', () => {
+  /** A promise settled by hand, one per call. */
+  function deferreds() {
+    const list: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
+    return {
+      list,
+      make: (): Promise<unknown> =>
+        new Promise((resolve, reject) => {
+          list.push({ resolve, reject })
+        })
+    }
+  }
+
+  it('keys after a text wait until the page has the text; keys before it go first', async () => {
+    const d = deferreds()
+    const { input, order, flush } = pressSetup({ textDone: d.make })
+    input.accept(PANEL, 'web:1', [pkey('h')])
+    input.acceptText(PANEL, 'web:1', 'é')
+    input.accept(PANEL, 'web:1', [pkey('l'), pkey('l')])
+    input.acceptText(PANEL, 'web:1', 'ü')
+    input.accept(PANEL, 'web:1', [pkey('o')])
+    expect(order).toEqual(['keyDown', 'char', 'text é'])
+    d.list[0]?.resolve(undefined)
+    await flush()
+    expect(order).toEqual(['keyDown', 'char', 'text é', 'keyDown', 'char', 'keyDown', 'char', 'text ü'])
+    d.list[1]?.resolve(undefined)
+    await flush()
+    expect(order).toEqual(['keyDown', 'char', 'text é', 'keyDown', 'char', 'keyDown', 'char', 'text ü', 'keyDown', 'char'])
+    // Nothing waits any more: input goes at once.
+    input.accept(PANEL, 'web:1', [pmove(1, 1)])
+    expect(order.at(-1)).toBe('mouseMove')
+  })
+
+  it('a paste in chunks goes chunk by chunk, each after the page has the one before', async () => {
+    const d = deferreds()
+    const { input, texts, flush } = pressSetup({ textDone: d.make })
+    for (const chunk of ['one ', 'two ', 'three']) input.acceptText(PANEL, 'web:1', chunk)
+    expect(texts).toEqual(['one '])
+    d.list[0]?.resolve(undefined)
+    await flush()
+    expect(texts).toEqual(['one ', 'two '])
+    d.list[1]?.resolve(undefined)
+    await flush()
+    expect(texts).toEqual(['one ', 'two ', 'three'])
+  })
+
+  it('a press, text and keys interleaved: the press held for its hit-test, the text for the page, all in order', async () => {
+    const d = deferreds()
+    const { input, order, hits, flush } = pressSetup({ textDone: d.make })
+    input.accept(PANEL, 'web:1', [pmove(5, 5), pdown(10, 10), pmove(11, 11), pup(11, 11), pkey('a')])
+    input.acceptText(PANEL, 'web:1', 'é')
+    input.accept(PANEL, 'web:1', [pkey('b'), pdown(20, 20), pup(20, 20)])
+    input.acceptText(PANEL, 'web:1', 'ü')
+    expect(order).toEqual(['mouseMove'])
+    hits[0]?.resolve(null)
+    await flush()
+    expect(order).toEqual(['mouseMove', 'mouseDown', 'mouseMove', 'mouseUp', 'keyDown', 'char', 'text é'])
+    d.list[0]?.resolve(undefined)
+    await flush()
+    // The second press is asked about in its turn; the text behind it waits for that.
+    expect(order).toEqual(['mouseMove', 'mouseDown', 'mouseMove', 'mouseUp', 'keyDown', 'char', 'text é', 'keyDown', 'char'])
+    expect(hits).toHaveLength(2)
+    hits[1]?.resolve(null)
+    await flush()
+    expect(order.slice(-3)).toEqual(['mouseDown', 'mouseUp', 'text ü'])
+  })
+
+  it(`a text the page never confirms holds the rest at most PAGE_WAIT_MS; a failed one holds nothing`, async () => {
+    const hung = pressSetup({ textDone: () => new Promise(() => {}) })
+    hung.input.acceptText(PANEL, 'web:1', 'é')
+    hung.input.accept(PANEL, 'web:1', [pkey('a')])
+    expect(hung.order).toEqual(['text é'])
+    expect(PAGE_WAIT_MS).toBeLessThanOrEqual(1000)
+    hung.timeout()
+    expect(hung.order).toEqual(['text é', 'keyDown', 'char'])
+    const failed = pressSetup({ textDone: () => Promise.reject(new Error('gone')) })
+    failed.input.acceptText(PANEL, 'web:1', 'é')
+    failed.input.accept(PANEL, 'web:1', [pkey('a')])
+    await failed.flush()
+    expect(failed.order).toEqual(['text é', 'keyDown', 'char'])
+    // A text the view inserts with no promise (an older adapter) holds nothing.
+    const plain = pressSetup()
+    plain.input.acceptText(PANEL, 'web:1', 'é')
+    plain.input.accept(PANEL, 'web:1', [pkey('a')])
+    expect(plain.order).toEqual(['text é', 'keyDown', 'char'])
+  })
+
+  it('a select choice waits behind a held text and holds what comes after it', async () => {
+    const texts = deferreds()
+    const chooses = deferreds()
+    const s = pressSetup({ textDone: texts.make, chooseDone: chooses.make })
+    s.input.accept(PANEL, 'web:1', [pdown(20, 30), pup(20, 30)])
+    s.hits[0]?.resolve(SELECT_RESULT)
+    await s.flush()
+    s.input.acceptText(PANEL, 'web:1', 'x')
+    expect(s.input.acceptChoice(PANEL, 'web:1', ID, 1)).toBe(true)
+    s.input.accept(PANEL, 'web:1', [pkey('Enter')])
+    expect(s.order).toEqual(['text x'])
+    texts.list[0]?.resolve(undefined)
+    await s.flush()
+    expect(s.order).toEqual(['text x', 'choose 1'])
+    chooses.list[0]?.resolve(true)
+    await s.flush()
+    expect(s.order).toEqual(['text x', 'choose 1', 'keyDown', 'char'])
+  })
+
+  it("one view's waiting text does not hold another view's input", () => {
+    const { input, order } = pressSetup({ textDone: () => new Promise(() => {}) })
+    input.acceptText(PANEL, 'web:1', 'é')
+    input.accept(PANEL, 'web:2', [pkey('b')])
+    expect(order).toEqual(['text é', 'keyDown', 'char'])
+  })
+
+  it('a view that goes while its text waits: its held input is dropped and nothing runs later', async () => {
+    const d = deferreds()
+    const { input, order, flush, timers } = pressSetup({ textDone: d.make })
+    input.acceptText(PANEL, 'web:1', 'é')
+    input.accept(PANEL, 'web:1', [pkey('a')])
+    input.viewGone('web:1')
+    expect(timers.size).toBe(0)
+    d.list[0]?.resolve(undefined)
+    await flush()
+    expect(order).toEqual(['text é'])
   })
 })
 

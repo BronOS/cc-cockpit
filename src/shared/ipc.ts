@@ -1372,7 +1372,8 @@ export interface IpcInvokeMap {
    * Server mode, a viewer of the panel only (design-web-browser.md §4.2): committed text from the
    * browser's hidden textarea (an IME or dead-key composition, non-ASCII, AltGr text, a paste), at
    * most 64 KB of UTF-8 per call; the same gate and rate bucket as `webviews.input`, and it claims
-   * the size. Main inserts it as the page's committed text (`webContents.insertText`).
+   * the size. Main inserts it as the page's committed text (the page protocol's `Input.insertText`),
+   * in order with the view's other input.
    */
   'webviews.insertText': { req: { panelKey: string; text: string }; res: void }
   /**

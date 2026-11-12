@@ -202,9 +202,16 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       },
       // A browser's committed text (an IME, a dead key, non-ASCII, a paste; webview-input.ts has
       // checked and cleaned it): into the focused field as an IME commit, nothing when none is.
+      // Through the page's protocol (attached by cancelOffscreenNativeUi), whose `Input.insertText`
+      // is an IME commit on the widget's input pipe: the renderer queues it behind the keys
+      // sendInputEvent already sent, and it settles once the page has it. `webContents.insertText`
+      // is an IPC of its own to the renderer, which a key sent just before or after it overtook
+      // (the e2e typed 'héllo ü' as "hlélo ü" and "éhllo ü", about one run in ten); it is only the
+      // fallback for a view whose protocol detached. A rejection is the lane's to hear (it lets
+      // the input after the text go), never thrown here.
       insertText: (text) => {
-        if (wc.isDestroyed()) return
-        wc.insertText(text).catch(() => {})
+        if (wc.isDestroyed()) return Promise.resolve()
+        return wc.debugger.isAttached() ? wc.debugger.sendCommand('Input.insertText', { text }) : wc.insertText(text)
       },
       // The page's selection, read in main's own isolated world (webview-input.ts SELECTION_SCRIPT):
       // the page's scripts cannot see the read nor stand in for what it calls.

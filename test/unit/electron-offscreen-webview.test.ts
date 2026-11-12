@@ -54,6 +54,9 @@ class FakeDebugger extends FakeEmitter {
   attach(version: string): void {
     this.attachedWith = version
   }
+  isAttached(): boolean {
+    return this.attachedWith !== undefined
+  }
   sendCommand(method: string, params?: unknown): Promise<unknown> {
     this.commands.push({ method, params })
     // A refusal: the protocol said no, or the page closed under the command.
@@ -497,9 +500,18 @@ describe('OffscreenWebviewFactory', () => {
   it('inserts text and reads the selection in its own isolated world, and neither once the page is gone', async () => {
     const { view, wc, win } = make()
     wc.calls.length = 0
-    view.insertText?.('héllo')
+    const commands = wc.debugger.commands.length
+    // Through the page's protocol (the input pipe, in order with sendInputEvent), settled once the
+    // page has it; not webContents.insertText (an IPC a key can overtake).
+    await expect(view.insertText?.('héllo')).resolves.toBeDefined()
+    expect(wc.debugger.commands.slice(commands)).toEqual([{ method: 'Input.insertText', params: { text: 'héllo' } }])
     await expect(view.readSelection?.()).resolves.toBe('picked')
-    expect(wc.calls).toEqual(['text héllo', `world ${WEBVIEW_WORLD_ID} 1`])
+    expect(wc.calls).toEqual([`world ${WEBVIEW_WORLD_ID} 1`])
+    // A protocol that detached: webContents.insertText is the fallback.
+    wc.debugger.attachedWith = undefined
+    await view.insertText?.('ü')
+    expect(wc.calls).toEqual([`world ${WEBVIEW_WORLD_ID} 1`, 'text ü'])
+    wc.calls.length = 0
     expect(WEBVIEW_WORLD_ID).not.toBe(0)
     expect(WEBVIEW_WORLD_ID).not.toBe(999)
     expect(win.forbidden).toEqual([])
