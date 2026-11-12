@@ -98,14 +98,16 @@ const server = (over: Partial<RemoteServerInfo> & Pick<RemoteServerInfo, 'id'>):
   recent: [],
   cookieSaved: false,
   cookieKept: true,
+  remembered: {},
   windows: 0,
   ...over
 })
 
 describe('viaLabel', () => {
-  it('names the ssh host, or the Direct origin', () => {
+  it('names the ssh host with its user, the tunnel\'s local port, or the Direct origin', () => {
     expect(viaLabel({ kind: 'ssh', host: 'devbox' })).toBe('ssh devbox')
-    expect(viaLabel({ kind: 'ssh', host: 'me@box', ccc: '/opt/ccc' })).toBe('ssh me@box')
+    expect(viaLabel({ kind: 'ssh', host: 'box', user: 'me', port: 2222, ccc: '/opt/ccc' })).toBe('ssh me@box')
+    expect(viaLabel({ kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox' })).toBe('tunnel :7331')
     expect(viaLabel({ kind: 'direct', origin: 'https://box.ts.net' })).toBe('https://box.ts.net')
   })
 })

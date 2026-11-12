@@ -288,7 +288,8 @@ export interface AppSettings {
   /**
    * Saved remote servers (design-remote-desktop.md §2). The file is user-writable, so every read goes
    * through `validateRemoteServers` (shared/remote-servers.ts), which caps and repairs it; the device
-   * cookie of each is stored encrypted (`RemoteServerStore`, main/remote/remote-servers.ts).
+   * cookie and the SSH password or passphrase of each are stored encrypted (`RemoteServerStore`,
+   * main/remote/remote-servers.ts).
    */
   remoteServers?: RemoteServer[]
 }

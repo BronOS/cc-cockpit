@@ -260,7 +260,7 @@ export function selectSecretStore(
 /**
  * Every stored value in the data dir: `secrets.json` (plugin secrets and secret settings fields),
  * `web-access.json` (the access link's token and the password) and `app.json` › `remoteServers`
- * (each saved remote server's encrypted device cookie). Read tolerantly: a missing or
+ * (each saved remote server's encrypted device cookie, password and passphrase). Read tolerantly: a missing or
  * damaged file has none. For the counts start logs and `ccc web status` shows, never for a read.
  */
 export function storedSecretValues(dataDir: string, read: (path: string) => string = (p) => readFileSync(p, 'utf8')): string[] {
@@ -286,13 +286,18 @@ export function storedSecretValues(dataDir: string, read: (path: string) => stri
       if (isPlainObject(record) && typeof record.stored === 'string') values.push(record.stored)
     }
   }
-  // The remote servers' device cookies (design-remote-desktop.md §2) sit in app.json itself, in each
-  // server's record. Read raw: only string `cookie` members of the entries, with no validation (the
-  // counts want every stored value, and a hand-damaged entry must not hide one).
+  // The remote servers' device cookies and SSH secrets (design-remote-desktop.md §2) sit in app.json
+  // itself, in each server's record. Read raw: only string `cookie` and `secrets.password` /
+  // `secrets.passphrase` members of the entries, with no validation (the counts want every stored
+  // value, and a hand-damaged entry must not hide one).
   const app = parse(paths.appJson)
   if (isPlainObject(app) && Array.isArray(app.remoteServers)) {
     for (const server of app.remoteServers) {
-      if (isPlainObject(server) && typeof server.cookie === 'string' && server.cookie !== '') values.push(server.cookie)
+      if (!isPlainObject(server)) continue
+      if (typeof server.cookie === 'string' && server.cookie !== '') values.push(server.cookie)
+      const secrets = server.secrets
+      if (!isPlainObject(secrets)) continue
+      for (const value of [secrets.password, secrets.passphrase]) if (typeof value === 'string' && value !== '') values.push(value)
     }
   }
   return values

@@ -1,6 +1,7 @@
 // Saved remote servers (design-remote-desktop.md §2, §5.1, §6): the record kept in `app.json` ›
-// `remoteServers`, its tolerant validation, the access-link parser Direct uses, and the two checks
-// that stand between a typed host or `ccc` path and the person's own `ssh`.
+// `remoteServers`, its tolerant validation, the access-link parser Direct and My own tunnel use, and
+// the allowlist checks that stand between typed text (a host, a user, a key path, the `ccc` path) and
+// a dial, a remote command or a command the picker prints for the person to paste.
 //
 // No Node, no Electron, no regexes (the link and host come from a text box): the renderer's picker
 // and main share this file.
@@ -15,20 +16,71 @@ const MAX_NAME = 100
 const MAX_PROJECT_ID = 200
 const MAX_PROJECT_NAME = 200
 const MAX_HOST = 255
+/** Linux caps a user name at 32; a directory account (`me@corp.example`) runs longer. */
+const MAX_USER = 100
 const MAX_CCC_PATH = 1024
+const MAX_KEY_PATH = 1024
 const MAX_ORIGIN = 300
 /** An encrypted cookie is a few hundred bytes (base64 of keychain ciphertext); this is far above that. */
 const MAX_COOKIE = 4096
+/**
+ * A password or passphrase as typed (before encryption). Far above any real one; the cap keeps an
+ * encrypted value under `MAX_STORED_SECRET` (base64 and the store's own framing add about half).
+ */
+export const MAX_REMOTE_SECRET = 1024
+/** An encrypted password or passphrase as stored in the record (the cookie's cap: same store, same framing). */
+const MAX_STORED_SECRET = MAX_COOKIE
+/** A host key type (`ssh-ed25519`, `ecdsa-sha2-nistp256`, `sk-ssh-ed25519@openssh.com`); the longest real one is 34. */
+const MAX_KEY_TYPE = 64
+/** `SHA256:` and the unpadded base64 of 32 bytes: the `ssh-keygen -l` form (main/remote/known-hosts.ts `fingerprint`). */
+const SHA256_PREFIX = 'SHA256:'
+const SHA256_B64_LENGTH = 43
 const MAX_LINK = 2048
 /** The same cap the web client puts on the `#t=` token (renderer/web/sign-in.ts `MAX_TOKEN_LENGTH`). */
 const MAX_TOKEN = 512
 
+/**
+ * How the built-in SSH client signs in (design §2, §5.1). A record with no `auth` (a first-version
+ * record, or one saved with the default) reads as `auto`: use `sshAuthOf`, never `via.auth` directly.
+ */
+export type SshAuth =
+  /** The agent, then the config's `IdentityFile`s or the default key files. Uses no stored secret. */
+  | { kind: 'auto' }
+  /** `secrets.password`, or asked each launch when not remembered. */
+  | { kind: 'password' }
+  /** That key file only (absolute or `~/`; read when dialling, never stored), with `secrets.passphrase` when it has one. */
+  | { kind: 'key'; path: string }
+
 /** How a saved server is reached (design §2). */
 export type RemoteVia =
-  /** `host` as typed (an `ssh_config` alias works); `ccc` is the path override for the remote `ccc`. */
-  | { kind: 'ssh'; host: string; ccc?: string }
+  /**
+   * Built-in SSH. `host` is a host name, address or `~/.ssh/config` alias (never `user@`: a typed
+   * `user@host` is split into `user` and `host` on save and on read). Empty `user` / `port`: the
+   * config's, else the local user name / 22. `ccc` is the path override for the remote `ccc`.
+   */
+  | { kind: 'ssh'; host: string; user?: string; port?: number; auth?: SshAuth; ccc?: string }
+  /**
+   * My own tunnel (design §6): the person's `ssh -N -L 127.0.0.1:<localPort>:127.0.0.1:<remotePort>`.
+   * The page's origin is `http://127.0.0.1:<localPort>`; `sshHost` is only printed in the commands
+   * the form shows (never dialled by the app), so it holds the same allowlist as an SSH host.
+   */
+  | { kind: 'tunnel'; localPort: number; remotePort: number; sshHost?: string }
   /** `scheme://host[:port]` of the link, nothing else kept. */
   | { kind: 'direct'; origin: string }
+
+/** The secrets a record may keep, by name (design §2): beside the cookie, never inside `via`. */
+export type RemoteSecretName = 'password' | 'passphrase'
+
+/** The record's encrypted secrets, each as `SecretStore.encrypt` returned it, never plain. */
+export type RemoteSecrets = Partial<Record<RemoteSecretName, string>>
+
+/** The host key the person trusted (or `known_hosts` vouched for) for a built-in SSH server (design §5.3). Not secret. */
+export interface RemoteHostKey {
+  /** The key's type as the server sent it (`ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa-sha2-512` keys are `ssh-rsa`). */
+  type: string
+  /** `SHA256:<43 base64 characters>`, the `ssh-keygen -l` form. */
+  sha256: string
+}
 
 export interface RemoteRecent {
   projectId: string
@@ -46,8 +98,34 @@ export interface RemoteServer {
   recent: RemoteRecent[]
   /** The device cookie, encrypted by the `SecretStore` (`encrypt`/`decrypt`), never plain. */
   cookie?: string
-  /** SSH: the tunnel's preferred local port, kept so the page's origin (its `localStorage`) stays the same. */
+  /**
+   * Built-in SSH: the remembered password / passphrase, encrypted like the cookie and stripped with
+   * it on every path out of the store (`RemoteServerRecord`). Only the one the record's `auth` uses
+   * is kept (`password` for password, `passphrase` for key); the validator drops the other.
+   */
+  secrets?: RemoteSecrets
+  /** Built-in SSH: the listener's preferred local port, kept so the page's origin (its `localStorage`) stays the same. */
   localPort?: number
+  /** Built-in SSH: the trusted host key (design §5.3). */
+  hostKey?: RemoteHostKey
+}
+
+/**
+ * A saved server as every reader outside the store gets it: never the cookie, never the secrets
+ * (encrypted or not). The store's `get` and `add` answer this; nothing else hands out a record.
+ */
+export type RemoteServerRecord = Omit<RemoteServer, 'cookie' | 'secrets'>
+
+/** How an SSH server signs in: its `auth`, or `auto` when it has none (design §2: a first-version record keeps working). */
+export function sshAuthOf(via: Extract<RemoteVia, { kind: 'ssh' }>): SshAuth {
+  return via.auth ?? { kind: 'auto' }
+}
+
+/** The secret an SSH sign-in uses, or undefined for `auto` (which never asks: a locked key is skipped and named). */
+export function secretNameOf(auth: SshAuth): RemoteSecretName | undefined {
+  if (auth.kind === 'password') return 'password'
+  if (auth.kind === 'key') return 'passphrase'
+  return undefined
 }
 
 function isCodeBetween(code: number, lo: number, hi: number): boolean {
@@ -100,6 +178,46 @@ export function checkSshHost(host: string): string | undefined {
     const ok = isWord(c) || c === 0x2e || c === 0x2d || c === 0x5f || c === 0x40 || c === 0x3a || c === 0x5b || c === 0x5d
     if (!ok) return 'a host may only hold letters, digits and . - _ @ : [ ]'
   }
+  return undefined
+}
+
+/**
+ * `user@host` as `ssh` reads it: split at the LAST `@` (OpenSSH's own rule, so a directory account
+ * `me@corp@devbox` is user `me@corp`). No `@`: the host alone. The parts are not checked here.
+ */
+export function splitSshTarget(text: string): { host: string; user?: string } {
+  const at = text.lastIndexOf('@')
+  if (at < 0) return { host: text }
+  return { user: text.slice(0, at), host: text.slice(at + 1) }
+}
+
+/**
+ * Why `user` may not be an SSH user name, or undefined when it may. An allowlist (letters, digits,
+ * `.`, `-`, `_`, `@` for a directory account), not starting with `-`: the name goes into the SSH
+ * protocol, not a shell, but the picker prints it (`ssh user@host`) and a hand-edited `app.json`
+ * must not smuggle a control character into either.
+ */
+export function checkSshUser(user: string): string | undefined {
+  if (typeof user !== 'string' || user.length === 0) return 'enter a user name'
+  if (user.length > MAX_USER) return 'the user name is too long'
+  if (user.startsWith('-')) return 'a user name cannot start with "-"'
+  for (let i = 0; i < user.length; i++) {
+    const c = user.charCodeAt(i)
+    if (!isWord(c) && c !== 0x2e && c !== 0x2d && c !== 0x5f && c !== 0x40) return 'a user name may only hold letters, digits and . - _ @'
+  }
+  return undefined
+}
+
+/**
+ * Why `path` may not be a key file path, or undefined when it may: absolute or `~/` (main expands it
+ * against the injected home; a relative path would depend on the app's working directory), no
+ * control character. Only the path is kept; main reads the file when dialling.
+ */
+export function checkKeyPath(path: string): string | undefined {
+  if (typeof path !== 'string' || path.length === 0) return 'choose a key file'
+  if (path.length > MAX_KEY_PATH) return 'the key file path is too long'
+  if (hasControl(path)) return 'the key file path may not contain a newline or control character'
+  if (!path.startsWith('/') && !path.startsWith('~/')) return 'the key file path must be absolute or start with ~/'
   return undefined
 }
 
@@ -225,15 +343,54 @@ function originOf(value: unknown): string | undefined {
   return 'origin' in link && link.token === undefined && link.origin === value ? link.origin : undefined
 }
 
+/** A saved `auth`, or undefined when absent or damaged (the record then reads as `auto`, as a first-version one does). */
+function sshAuthFrom(value: unknown): SshAuth | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (value['kind'] === 'auto') return { kind: 'auto' }
+  if (value['kind'] === 'password') return { kind: 'password' }
+  if (value['kind'] === 'key') {
+    const path = value['path']
+    return typeof path === 'string' && checkKeyPath(path) === undefined ? { kind: 'key', path } : undefined
+  }
+  return undefined
+}
+
+/**
+ * An SSH `via` as read: `host` (a typed `user@host` split, so a first-version record's target keeps
+ * working), the optional user, port, auth and `ccc`. A damaged host or user drops the record (it
+ * cannot be dialled as meant); a `user@host` host beside its own `user` is ambiguous and dropped too.
+ * A damaged port, auth or `ccc` is dropped alone: the default (config port, auto, default lookup)
+ * still reaches the same server.
+ */
+function sshViaOf(value: Record<string, unknown>): RemoteVia | undefined {
+  const target = splitSshTarget(typeof value['host'] === 'string' ? value['host'] : '')
+  const rawUser = value['user']
+  if (target.user !== undefined && rawUser !== undefined) return undefined
+  const user = target.user ?? rawUser
+  if (checkSshHost(target.host) !== undefined) return undefined
+  if (user !== undefined && (typeof user !== 'string' || checkSshUser(user) !== undefined)) return undefined
+  const via: Extract<RemoteVia, { kind: 'ssh' }> = { kind: 'ssh', host: target.host }
+  if (user !== undefined) via.user = user
+  if (isLocalPort(value['port'])) via.port = value['port']
+  const auth = sshAuthFrom(value['auth'])
+  if (auth !== undefined) via.auth = auth
+  // A damaged or unsafe override is dropped on its own: the server still works with the default lookup.
+  const ccc = value['ccc']
+  if (typeof ccc === 'string' && checkCccOverride(ccc) === undefined) via.ccc = ccc
+  return via
+}
+
 function viaOf(value: unknown): RemoteVia | undefined {
   if (!isPlainObject(value)) return undefined
-  if (value['kind'] === 'ssh') {
-    const host = typeof value['host'] === 'string' ? value['host'] : ''
-    if (checkSshHost(host) !== undefined) return undefined
-    const via: RemoteVia = { kind: 'ssh', host }
-    // A damaged or unsafe override is dropped on its own: the server still works with the default lookup.
-    const ccc = value['ccc']
-    if (typeof ccc === 'string' && checkCccOverride(ccc) === undefined) via.ccc = ccc
+  if (value['kind'] === 'ssh') return sshViaOf(value)
+  if (value['kind'] === 'tunnel') {
+    const localPort = value['localPort']
+    const remotePort = value['remotePort']
+    if (!isLocalPort(localPort) || !isLocalPort(remotePort)) return undefined
+    const via: RemoteVia = { kind: 'tunnel', localPort, remotePort }
+    // Only printed in the commands: a damaged one is dropped alone (the form shows a placeholder host).
+    const sshHost = value['sshHost']
+    if (typeof sshHost === 'string' && checkSshHost(sshHost) === undefined) via.sshHost = sshHost
     return via
   }
   if (value['kind'] === 'direct') {
@@ -241,6 +398,40 @@ function viaOf(value: unknown): RemoteVia | undefined {
     return origin === undefined ? undefined : { kind: 'direct', origin }
   }
   return undefined
+}
+
+/** A saved host key, or undefined: the type by allowlist, the fingerprint exactly `SHA256:` and 43 base64 characters. */
+export function hostKeyOf(value: unknown): RemoteHostKey | undefined {
+  if (!isPlainObject(value)) return undefined
+  const type = value['type']
+  const sha256 = value['sha256']
+  if (typeof type !== 'string' || type.length === 0 || type.length > MAX_KEY_TYPE || type.startsWith('-')) return undefined
+  for (let i = 0; i < type.length; i++) {
+    const c = type.charCodeAt(i)
+    if (!isWord(c) && c !== 0x2d && c !== 0x2e && c !== 0x40) return undefined
+  }
+  if (typeof sha256 !== 'string' || !sha256.startsWith(SHA256_PREFIX)) return undefined
+  const b64 = sha256.slice(SHA256_PREFIX.length)
+  if (b64.length !== SHA256_B64_LENGTH) return undefined
+  for (let i = 0; i < b64.length; i++) {
+    const c = b64.charCodeAt(i)
+    if (!isWord(c) && c !== 0x2b && c !== 0x2f) return undefined
+  }
+  return { type, sha256 }
+}
+
+/**
+ * The stored secrets an SSH record keeps: only the one its `auth` uses (a switch of sign-in leaves
+ * no stale credential behind on the next write), each a non-empty string under the cap. Undefined
+ * when none is left.
+ */
+function secretsOf(value: unknown, via: RemoteVia): RemoteSecrets | undefined {
+  if (via.kind !== 'ssh' || !isPlainObject(value)) return undefined
+  const name = secretNameOf(sshAuthOf(via))
+  if (name === undefined) return undefined
+  const stored = value[name]
+  if (typeof stored !== 'string' || stored.length === 0 || stored.length > MAX_STORED_SECRET) return undefined
+  return { [name]: stored }
 }
 
 function recentOf(value: unknown): RemoteRecent[] {
@@ -259,8 +450,9 @@ function recentOf(value: unknown): RemoteRecent[] {
   return out
 }
 
-/** The default name of a server with no (usable) name: the SSH host, or the link's host. */
+/** The default name of a server with no (usable) name: the SSH host, the tunnel's SSH host (else `tunnel :<port>`), or the link's host. */
 export function defaultServerName(via: RemoteVia): string {
+  if (via.kind === 'tunnel') return (via.sshHost === undefined ? `tunnel :${via.localPort}` : via.sshHost).slice(0, MAX_NAME)
   let name = via.kind === 'ssh' ? via.host : via.origin
   if (via.kind === 'direct') {
     try {
@@ -272,7 +464,7 @@ export function defaultServerName(via: RemoteVia): string {
   return name.slice(0, MAX_NAME)
 }
 
-/** A tunnel port the person's machine can bind: 1..65535. */
+/** A TCP port: 1..65535 (a local listener's, an SSH server's, a gateway's). */
 export function isLocalPort(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
 }
@@ -292,7 +484,8 @@ export function recentEntryOf(projectId: unknown, name: unknown, at: unknown): R
  * `app.json` › `remoteServers` as read (design §2): `app.json` is user-writable, so every entry is
  * checked field by field. A bad entry, an unknown `via` kind, a duplicate id and anything past the
  * 32nd server are dropped; a damaged optional field is dropped alone; recents are capped at 8 and
- * deduplicated by project. Never throws.
+ * deduplicated by project; a secret the record's sign-in does not use, and the built-in client's
+ * fields on another kind, are dropped. Never throws.
  */
 export function validateRemoteServers(raw: unknown): RemoteServer[] {
   const out: RemoteServer[] = []
@@ -311,7 +504,12 @@ export function validateRemoteServers(raw: unknown): RemoteServer[] {
     }
     const cookie = entry['cookie']
     if (typeof cookie === 'string' && cookie.length > 0 && cookie.length <= MAX_COOKIE) server.cookie = cookie
-    if (isLocalPort(entry['localPort'])) server.localPort = entry['localPort']
+    const secrets = secretsOf(entry['secrets'], via)
+    if (secrets !== undefined) server.secrets = secrets
+    // The listener's port and the host key are the built-in client's; a tunnel's port is in its `via`.
+    if (via.kind === 'ssh' && isLocalPort(entry['localPort'])) server.localPort = entry['localPort']
+    const hostKey = via.kind === 'ssh' ? hostKeyOf(entry['hostKey']) : undefined
+    if (hostKey !== undefined) server.hostKey = hostKey
     out.push(server)
   }
   return out

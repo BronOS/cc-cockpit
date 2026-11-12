@@ -190,6 +190,25 @@ describe('RemoteService: SSH', () => {
     expect(opened.count).toBe(1)
   })
 
+  it('a typed user@host is saved split and given back to ssh whole', async () => {
+    const { service, store, steps } = setup()
+    expect(await service.connect({ kind: 'ssh', host: 'me@devbox' })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(store.get('srv1')?.via).toEqual({ kind: 'ssh', host: 'devbox', user: 'me' })
+    expect(steps.slice(0, 3)).toEqual(['ready', 'status me@devbox', 'add-device me@devbox'])
+  })
+
+  it('refuses, without running ssh, a record the spawned ssh cannot express (a port, a sign-in, My own tunnel)', async () => {
+    const { service, app, steps } = setup()
+    app.data.remoteServers = [
+      { id: 'p', name: 'p', via: { kind: 'ssh', host: 'devbox', port: 2222 }, recent: [] },
+      { id: 'k', name: 'k', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } }, recent: [] },
+      { id: 't', name: 't', via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 }, recent: [] }
+    ]
+    for (const id of ['p', 'k']) expect(await service.open(id)).toEqual({ ok: false, error: expect.stringContaining('built-in SSH') })
+    expect(await service.open('t')).toEqual({ ok: false, error: expect.stringContaining('My own tunnel') })
+    expect(steps).toEqual([])
+  })
+
   it('passes the ccc override to every remote command', async () => {
     const { service, steps } = setup()
     await service.connect({ kind: 'ssh', host: 'devbox', ccc: '/opt/cc/ccc' })
@@ -350,8 +369,8 @@ describe('RemoteService: list, rename, forget', () => {
     await service.connect({ kind: 'direct', link: 'https://box.example' })
     const list = await service.list()
     expect(list).toEqual([
-      { id: 'srv1', name: 'devbox', via: { kind: 'ssh', host: 'devbox' }, recent: [], cookieSaved: true, cookieKept: true, windows: 1, connection: { state: 'up' } },
-      { id: 'srv2', name: 'box.example', via: { kind: 'direct', origin: 'https://box.example' }, recent: [], cookieSaved: false, cookieKept: true, windows: 1 }
+      { id: 'srv1', name: 'devbox', via: { kind: 'ssh', host: 'devbox' }, recent: [], cookieSaved: true, cookieKept: true, remembered: {}, windows: 1, connection: { state: 'up' } },
+      { id: 'srv2', name: 'box.example', via: { kind: 'direct', origin: 'https://box.example' }, recent: [], cookieSaved: false, cookieKept: true, remembered: {}, windows: 1 }
     ])
     expect(JSON.stringify(list)).not.toContain('localPort')
   })

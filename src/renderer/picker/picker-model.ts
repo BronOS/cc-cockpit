@@ -83,9 +83,11 @@ export function openedAgo(at: number, now: number): string {
 // ssh produced (a project name, an error) stays plain text: React renders it as text, and nothing
 // here builds markup.
 
-/** How a server is reached, as its row's small label: `ssh devbox`, or the Direct origin. */
+/** How a server is reached, as its row's small label: `ssh devbox`, `ssh me@devbox`, `tunnel :7331`, or the Direct origin. */
 export function viaLabel(via: RemoteVia): string {
-  return via.kind === 'ssh' ? `ssh ${via.host}` : via.origin
+  if (via.kind === 'ssh') return via.user === undefined ? `ssh ${via.host}` : `ssh ${via.user}@${via.host}`
+  if (via.kind === 'tunnel') return `tunnel :${via.localPort}`
+  return via.origin
 }
 
 /**

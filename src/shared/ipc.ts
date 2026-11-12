@@ -23,7 +23,7 @@ import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
 import type { OAuthPasteAnswer } from './oauth-paste'
-import type { RemoteRecent, RemoteVia } from './remote-servers'
+import type { RemoteRecent, RemoteSecretName, RemoteVia } from './remote-servers'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
@@ -397,13 +397,16 @@ export type RemoteConnectionState =
   | { state: 'down'; error: string; retrying: boolean }
 
 /**
- * A saved remote server as the picker shows it (`remote.list`). Never the device cookie, only
- * whether one is saved and whether one can be kept; never the tunnel's local port.
+ * A saved remote server as the picker shows it (`remote.list`). Never a credential (the device
+ * cookie, a password or passphrase, encrypted or not: those sit beside `via` in the record, never in
+ * it), only whether one is saved and whether one can be kept; never the built-in client's listener port.
  */
 export interface RemoteServerInfo {
   id: string
   name: string
   via: RemoteVia
+  /** Which of the SSH sign-in's secrets are saved encrypted (a key present only when true); never a value. */
+  remembered: Partial<Record<RemoteSecretName, true>>
   /** Remote projects opened from this app, newest first (names from the server: plain text). */
   recent: RemoteRecent[]
   /** A device cookie is saved: opening needs no new pairing. */

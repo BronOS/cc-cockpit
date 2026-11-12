@@ -1,31 +1,47 @@
-// The saved remote servers (design-remote-desktop.md §2): a store over `app.json` › `remoteServers`
-// and the device cookie's encryption through the `SecretStore`. No Electron import: unit tests load
-// it in plain Node with a fake store.
+// The saved remote servers (design-remote-desktop.md §2, §8 "Credentials"): a store over `app.json` ›
+// `remoteServers` and the encryption of the credentials kept beside each record (the device cookie,
+// the built-in SSH client's password or key passphrase) through the `SecretStore`. No Electron
+// import: unit tests load it in plain Node with a fake store.
 //
 // Rules:
 //  - `app.json` is user-writable, so every operation starts from `validateRemoteServers` of what is
 //    there and writes the repaired list back; a damaged entry never reaches a caller.
-//  - The cookie is a credential and is only ever kept as `SecretStore.encrypt` returned it, in the
-//    server's own record. When the store refuses (Linux with no keyring), nothing is kept, any older
-//    cookie is dropped (it may be the revoked one), and the caller is told so: the picker says "not
-//    remembered", and every launch pairs again.
-//  - `forget` drops the record and with it the cookie; there is no second copy to clean.
-//  - Errors and logs name a server by id at most: never a cookie, encrypted or not.
+//  - Credentials are only ever kept as `SecretStore.encrypt` returned them, in the server's own
+//    record, and never leave the store in a record: `get`, `add` and `list` strip the cookie and the
+//    secrets alike (`RemoteServerRecord`); `getCookie` / `getSecret` are the only ways to read one.
+//    When the store refuses (Linux with no keyring), no cookie is kept, any older one is dropped (it
+//    may be the revoked one), and the caller is told so: the picker says "not remembered", and every
+//    launch pairs again. A password or passphrase is then held in this store's memory for the app's
+//    life (design §2 "Remember or ask"), as one the person chose not to remember is.
+//  - `forget` drops the record and with it the cookie, the secrets and the host key, and the memory
+//    copies of its secrets; there is no other copy to clean.
+//  - Errors and logs name a server by id at most: never a credential, encrypted or not.
 import { randomBytes } from 'node:crypto'
 import type { AppSettings } from '../../shared/types'
 import {
   MAX_REMOTE_RECENT,
+  MAX_REMOTE_SECRET,
   MAX_REMOTE_SERVERS,
   checkCccOverride,
+  checkKeyPath,
   checkSshHost,
+  checkSshUser,
   defaultServerName,
+  hostKeyOf,
   isLocalPort,
   parseRemoteLink,
   recentEntryOf,
+  secretNameOf,
   serverNameOf,
+  splitSshTarget,
+  sshAuthOf,
   validateRemoteServers,
+  type RemoteHostKey,
+  type RemoteSecretName,
   type RemoteServer,
-  type RemoteVia
+  type RemoteServerRecord,
+  type RemoteVia,
+  type SshAuth
 } from '../../shared/remote-servers'
 import type { SecretStore } from '../secrets/secret-store'
 
@@ -35,12 +51,25 @@ export interface RemoteServersApp {
   update(mutate: (data: AppSettings) => void): void
 }
 
-/** A server as the picker sees it: no cookie text, only whether there is one and whether one can be kept. */
-export type RemoteServerView = Omit<RemoteServer, 'cookie'> & {
+/**
+ * A server as the picker's list is built from it: no credential, only whether one is saved and
+ * whether one can be kept.
+ */
+export type RemoteServerView = RemoteServerRecord & {
   /** A device cookie is saved (so the next connect needs no new pairing). */
   cookieSaved: boolean
   /** The secret store can keep a cookie right now; false is the "not remembered: no keyring" row. */
   cookieKept: boolean
+  /** Which secrets are saved encrypted (a key present only when true); never a value. Memory-held ones do not count. */
+  remembered: Partial<Record<RemoteSecretName, true>>
+}
+
+/** What `setSecret` did with a password or passphrase. */
+export interface SecretResult {
+  /** Saved encrypted in the record (false: held in memory for the app's life). */
+  remembered: boolean
+  /** Remember was asked for and the secret store refused: why, as it said (never the secret). */
+  reason?: string
 }
 
 export interface CookieResult {
@@ -66,6 +95,11 @@ export class RemoteServerStore {
   private readonly app: RemoteServersApp
   private readonly secrets: SecretStore
   private readonly newId: () => string
+  /**
+   * Secrets not remembered (the person's choice, or no keyring), by server id: main's memory only,
+   * for the app's life, so a reconnect never asks again (design §2). Never written anywhere.
+   */
+  private readonly held = new Map<string, Partial<Record<RemoteSecretName, string>>>()
 
   constructor(options: RemoteServerStoreOptions) {
     this.app = options.app
@@ -73,28 +107,44 @@ export class RemoteServerStore {
     this.newId = options.newId ?? (() => randomBytes(12).toString('hex'))
   }
 
-  /** Every saved server (validated), with the cookie text left out. */
+  /** Every saved server (validated), with the credentials left out. */
   async list(): Promise<RemoteServerView[]> {
     const cookieKept = (await this.secrets.unavailableReason()) === null
-    return this.read().map((s) => ({ ...withoutCookie(s), cookieSaved: s.cookie !== undefined, cookieKept }))
+    return this.read().map((s) => ({
+      ...withoutSecrets(s),
+      cookieSaved: s.cookie !== undefined,
+      cookieKept,
+      remembered: {
+        ...(s.secrets?.password === undefined ? {} : { password: true as const }),
+        ...(s.secrets?.passphrase === undefined ? {} : { passphrase: true as const })
+      }
+    }))
   }
 
-  /** One server's record without its cookie, or undefined. */
-  get(id: string): RemoteServer | undefined {
+  /** One server's record without its credentials, or undefined. */
+  get(id: string): RemoteServerRecord | undefined {
     const found = this.read().find((s) => s.id === id)
-    return found === undefined ? undefined : withoutCookie(found)
+    return found === undefined ? undefined : withoutSecrets(found)
   }
 
   /**
-   * Save a server. `via` is checked here (the host allowlist, the `ccc` path, the link's origin); the
-   * name defaults to the host. The same SSH host and `ccc` path, or the same origin, answers the
-   * record that is already saved instead of adding a second one.
+   * Save a server. `via` is checked here (the host, user and key path allowlists, the ports, the
+   * `ccc` path, the link's origin); the name defaults to the host. The same server already saved
+   * (`sameVia`: SSH host, user and port; a tunnel's local port; the origin) answers that record
+   * instead of adding a second one. A tunnel whose local port another tunnel already uses with
+   * other settings is refused: both would load the same origin, so one's cookie would be sent to
+   * the other's server.
    */
-  add(input: { name?: string; via: RemoteVia }): RemoteServer {
+  add(input: { name?: string; via: RemoteVia }): RemoteServerRecord {
     const via = this.checkedVia(input.via)
     const servers = this.read()
     const same = servers.find((s) => sameVia(s.via, via))
-    if (same !== undefined) return withoutCookie(same)
+    if (same !== undefined) {
+      if (via.kind === 'tunnel' && !sameTunnel(same.via, via)) {
+        throw new RemoteServerError(`local port ${via.localPort} is already used by the tunnel of "${same.name}"; choose another local port`)
+      }
+      return withoutSecrets(same)
+    }
     if (servers.length >= MAX_REMOTE_SERVERS) {
       throw new RemoteServerError(`at most ${MAX_REMOTE_SERVERS} servers can be saved; forget one first`)
     }
@@ -118,8 +168,12 @@ export class RemoteServerStore {
     })
   }
 
-  /** Drop the record, and with it the encrypted cookie, recents and saved port. Unknown ids are a no-op. */
+  /**
+   * Drop the record, and with it the encrypted cookie and secrets, the trusted host key, recents and
+   * saved port, and any secret held in memory for it. Unknown ids are a no-op (memory is cleared anyway).
+   */
   forget(id: string): boolean {
+    this.held.delete(id)
     const servers = this.read()
     const rest = servers.filter((s) => s.id !== id)
     if (rest.length === servers.length) return false
@@ -173,6 +227,104 @@ export class RemoteServerStore {
   }
 
   /**
+   * Keep the password or passphrase the server's sign-in uses (design §2 "Remember or ask"):
+   * `remember` encrypts it into the record and drops a memory copy; otherwise, or when the secret
+   * store refuses, it is held in memory for the app's life and a stored one is dropped (the person
+   * unticked Remember, or the stored one is stale: this one just replaced it). Refused for a secret
+   * the record's `auth` does not use (auto uses none), so no credential sits where nothing reads it.
+   */
+  async setSecret(id: string, name: RemoteSecretName, value: string, options: { remember: boolean }): Promise<SecretResult> {
+    const server = this.get(id)
+    if (server === undefined) throw new RemoteServerError('unknown server')
+    if (server.via.kind !== 'ssh' || secretNameOf(sshAuthOf(server.via)) !== name) {
+      throw new RemoteServerError(`this server does not sign in with a ${name}`)
+    }
+    if (typeof value !== 'string' || value.length === 0) throw new RemoteServerError(`enter the ${name}`)
+    if (value.length > MAX_REMOTE_SECRET) throw new RemoteServerError(`the ${name} is too long`)
+    let stored: string | undefined
+    let reason: string | undefined
+    if (options.remember) {
+      try {
+        reason = (await this.secrets.unavailableReason()) ?? undefined
+        if (reason === undefined) stored = await this.secrets.encrypt(value)
+      } catch (err) {
+        reason = err instanceof Error ? err.message : 'the secret store failed'
+      }
+    }
+    // The record may have been forgotten (or its sign-in changed) while the keychain answered: then
+    // nothing is kept, in the record or in memory.
+    let kept = false
+    this.change(id, (s) => {
+      if (s.via.kind !== 'ssh' || secretNameOf(sshAuthOf(s.via)) !== name) return
+      kept = true
+      if (stored === undefined) {
+        if (s.secrets !== undefined) delete s.secrets[name]
+        if (s.secrets !== undefined && Object.keys(s.secrets).length === 0) delete s.secrets
+      } else {
+        s.secrets = { ...s.secrets, [name]: stored }
+      }
+    }, false)
+    if (!kept) return { remembered: false, ...(options.remember ? { reason: 'the server was changed or forgotten meanwhile' } : {}) }
+    const memory = this.held.get(id) ?? {}
+    if (stored === undefined) memory[name] = value
+    else delete memory[name]
+    if (Object.keys(memory).length > 0) this.held.set(id, memory)
+    else this.held.delete(id)
+    if (stored !== undefined) return { remembered: true }
+    return options.remember ? { remembered: false, reason: reason ?? 'the secret store failed' } : { remembered: false }
+  }
+
+  /**
+   * The password or passphrase for the server's sign-in: the memory copy (this run's answer), else
+   * the stored one decrypted; undefined when there is none or it cannot be decrypted (the picker asks).
+   */
+  async getSecret(id: string, name: RemoteSecretName): Promise<string | undefined> {
+    const server = this.read().find((s) => s.id === id)
+    // A memory copy from before the sign-in was changed is not this sign-in's secret.
+    if (server === undefined || server.via.kind !== 'ssh' || secretNameOf(sshAuthOf(server.via)) !== name) return undefined
+    const memory = this.held.get(id)?.[name]
+    if (memory !== undefined) return memory
+    const stored = server.secrets?.[name]
+    if (stored === undefined) return undefined
+    try {
+      return await this.secrets.decrypt(stored)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Drop a password or passphrase, stored and in memory (a wrong one: the next connect asks again). */
+  clearSecret(id: string, name: RemoteSecretName): void {
+    const memory = this.held.get(id)
+    if (memory !== undefined) {
+      delete memory[name]
+      if (Object.keys(memory).length === 0) this.held.delete(id)
+    }
+    this.change(id, (s) => {
+      if (s.secrets === undefined) return
+      delete s.secrets[name]
+      if (Object.keys(s.secrets).length === 0) delete s.secrets
+    }, false)
+  }
+
+  /** Trust a host key for a built-in SSH server (design §5.3: confirmed by the person, or vouched for by `known_hosts`). */
+  setHostKey(id: string, key: RemoteHostKey): void {
+    const clean = hostKeyOf(key)
+    if (clean === undefined) throw new RemoteServerError('not a usable host key fingerprint')
+    this.change(id, (s) => {
+      if (s.via.kind !== 'ssh') throw new RemoteServerError('only an SSH server has a host key')
+      s.hostKey = clean
+    })
+  }
+
+  /** Forget the trusted host key (Edit: the server was reinstalled, or its host or port changed). */
+  clearHostKey(id: string): void {
+    this.change(id, (s) => {
+      delete s.hostKey
+    }, false)
+  }
+
+  /**
    * Note a remote project the person opened: newest first, one entry per project id, the last 8. The
    * name comes from the server, so it is plain text and capped here; an unusable one is not recorded.
    */
@@ -184,24 +336,52 @@ export class RemoteServerStore {
     })
   }
 
-  /** Keep the tunnel's local port so the page's origin stays the same next time. */
+  /** Keep the built-in client's listener port so the page's origin stays the same next time (SSH servers only). */
   setLocalPort(id: string, port: number): void {
     if (!isLocalPort(port)) throw new RemoteServerError('not a usable port')
     this.change(id, (s) => {
+      if (s.via.kind !== 'ssh') throw new RemoteServerError('only an SSH server keeps a listener port')
       s.localPort = port
     })
   }
 
   private checkedVia(via: RemoteVia): RemoteVia {
     if (via.kind === 'ssh') {
-      const host = via.host.trim()
-      const hostProblem = checkSshHost(host)
+      // A typed `user@host` is split as ssh does; beside a User field it is ambiguous.
+      const target = splitSshTarget(via.host.trim())
+      const typedUser = via.user?.trim() ?? ''
+      if (target.user !== undefined && typedUser !== '') throw new RemoteServerError('give the user in the User field or in the host, not both')
+      const hostProblem = checkSshHost(target.host)
       if (hostProblem !== undefined) throw new RemoteServerError(hostProblem)
-      const out: RemoteVia = { kind: 'ssh', host }
+      const out: Extract<RemoteVia, { kind: 'ssh' }> = { kind: 'ssh', host: target.host }
+      const user = target.user ?? typedUser
+      if (user !== '') {
+        const userProblem = checkSshUser(user)
+        if (userProblem !== undefined) throw new RemoteServerError(userProblem)
+        out.user = user
+      }
+      if (via.port !== undefined) {
+        if (!isLocalPort(via.port)) throw new RemoteServerError('the SSH port must be a number from 1 to 65535')
+        out.port = via.port
+      }
+      if (via.auth !== undefined) out.auth = this.checkedAuth(via.auth)
       if (via.ccc !== undefined && via.ccc !== '') {
         const cccProblem = checkCccOverride(via.ccc)
         if (cccProblem !== undefined) throw new RemoteServerError(cccProblem)
         out.ccc = via.ccc
+      }
+      return out
+    }
+    if (via.kind === 'tunnel') {
+      if (!isLocalPort(via.localPort)) throw new RemoteServerError('the local port must be a number from 1 to 65535')
+      if (!isLocalPort(via.remotePort)) throw new RemoteServerError('the server port must be a number from 1 to 65535')
+      const out: RemoteVia = { kind: 'tunnel', localPort: via.localPort, remotePort: via.remotePort }
+      const sshHost = via.sshHost?.trim() ?? ''
+      if (sshHost !== '') {
+        // Printed into a command the person pastes into a shell: the same allowlist as a dialled host.
+        const hostProblem = checkSshHost(sshHost)
+        if (hostProblem !== undefined) throw new RemoteServerError(hostProblem)
+        out.sshHost = sshHost
       }
       return out
     }
@@ -212,6 +392,17 @@ export class RemoteServerStore {
       return { kind: 'direct', origin: link.origin }
     }
     throw new RemoteServerError('unknown kind of server')
+  }
+
+  private checkedAuth(auth: SshAuth): SshAuth {
+    if (auth.kind === 'auto' || auth.kind === 'password') return { kind: auth.kind }
+    if (auth.kind === 'key') {
+      const path = auth.path.trim()
+      const problem = checkKeyPath(path)
+      if (problem !== undefined) throw new RemoteServerError(problem)
+      return { kind: 'key', path }
+    }
+    throw new RemoteServerError('unknown way to sign in')
   }
 
   private read(): RemoteServer[] {
@@ -238,13 +429,27 @@ export class RemoteServerStore {
   }
 }
 
-function withoutCookie(server: RemoteServer): Omit<RemoteServer, 'cookie'> {
+/** The record as it leaves the store: no cookie and no secrets, encrypted or not (design §2). */
+function withoutSecrets(server: RemoteServer): RemoteServerRecord {
   const copy: RemoteServer = { ...server }
   delete copy.cookie
+  delete copy.secrets
   return copy
 }
 
+/**
+ * The same server (design §2, `add` dedupes): SSH by host, user and port (an empty user or port is
+ * its own value: "the config's", which may differ from any explicit one); a tunnel by its local
+ * port (the origin, so the cookie jar's key); Direct by origin. Sign-in, `ccc` and a tunnel's other
+ * fields are settings of that server, not its identity.
+ */
 function sameVia(a: RemoteVia, b: RemoteVia): boolean {
-  if (a.kind === 'ssh' && b.kind === 'ssh') return a.host === b.host && (a.ccc ?? '') === (b.ccc ?? '')
+  if (a.kind === 'ssh' && b.kind === 'ssh') return a.host === b.host && (a.user ?? '') === (b.user ?? '') && (a.port ?? 0) === (b.port ?? 0)
+  if (a.kind === 'tunnel' && b.kind === 'tunnel') return a.localPort === b.localPort
   return a.kind === 'direct' && b.kind === 'direct' && a.origin === b.origin
+}
+
+/** Two tunnels on one local port with the same settings (a repeated Connect), as opposed to a clash. */
+function sameTunnel(a: RemoteVia, b: RemoteVia): boolean {
+  return a.kind === 'tunnel' && b.kind === 'tunnel' && a.localPort === b.localPort && a.remotePort === b.remotePort && (a.sshHost ?? '') === (b.sshHost ?? '')
 }

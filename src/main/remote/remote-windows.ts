@@ -35,7 +35,7 @@
 // sign-in screen shows, and the person pastes a new link.
 
 import { errorText } from '../../shared/error-text'
-import { recentEntryOf, type RemoteServer } from '../../shared/remote-servers'
+import { recentEntryOf, type RemoteServerRecord } from '../../shared/remote-servers'
 import { PROJECTS_PATH, SESSION_PATH } from '../../shared/web-protocol'
 import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
@@ -222,7 +222,7 @@ export interface RemoteWindowFactory {
 
 /** The slice of RemoteServerStore the windows use. */
 export interface RemoteWindowsStore extends RemoteCookieStore {
-  get(id: string): Omit<RemoteServer, 'cookie'> | undefined
+  get(id: string): RemoteServerRecord | undefined
   recordRecent(id: string, projectId: string, name: string, at: number): void
 }
 
@@ -237,7 +237,7 @@ export interface RemoteWindowsOptions {
   /** An http(s) link a page asked to open: the person's own browser (main's `createOpenExternal`). */
   openExternal(url: string): Promise<void> | void
   /** A one-time add-device token for an SSH server (`addDeviceToken` over the person's ssh). */
-  mintToken(server: Omit<RemoteServer, 'cookie'>): Promise<string>
+  mintToken(server: RemoteServerRecord): Promise<string>
   /** The last window of a server closed (its tunnel can be released). */
   onAllClosed?(serverId: string): void
   /** A window opened or closed (WindowManager's counts). */

@@ -27,15 +27,27 @@
 // and is saved as the new preferred port.
 import { errorText } from '../../shared/error-text'
 import type { RemoteConnectAnswer, RemoteConnectRequest, RemoteConnectionState, RemoteServerInfo } from '../../shared/ipc'
-import { checkCccOverride, checkSshHost, parseRemoteLink, type RemoteServer, type RemoteVia } from '../../shared/remote-servers'
+import { checkCccOverride, checkSshHost, parseRemoteLink, sshAuthOf, type RemoteServerRecord, type RemoteVia } from '../../shared/remote-servers'
 import { warnLog } from '../warn-log'
 import type { RemoteServerView } from './remote-servers'
 import type { RemoteOpenRequest, RemoteWindowsStore } from './remote-windows'
 import type { SshSpawn } from './ssh-process'
 import { addDeviceToken, serverStatus, SshTunnel, type RemoteStatus, type TunnelState } from './ssh-tunnel'
 
-/** A saved server without its cookie (what every reader outside the store gets). */
-export type RemoteServerRecord = Omit<RemoteServer, 'cookie'>
+/** A saved server without its credentials (what every reader outside the store gets). */
+export type { RemoteServerRecord }
+
+/**
+ * The target the person's `ssh` gets for an SSH record (`user@host`, as the first version saved it
+ * typed). Interim until the built-in client (remote SSH rev 2, task 5) replaces the spawn: a record
+ * with a port or a sign-in other than auto cannot be expressed to it, so it is refused, never
+ * dialled on the wrong port or with the wrong key. Nothing in the picker can make one yet.
+ */
+function sshTarget(via: RemoteVia): string {
+  if (via.kind !== 'ssh') throw new Error('not an SSH server')
+  if (via.port !== undefined || sshAuthOf(via).kind !== 'auto') throw new Error('this server needs the built-in SSH client, which this build does not have yet')
+  return via.user === undefined ? via.host : `${via.user}@${via.host}`
+}
 
 /** The slice of RemoteServerStore the coordinator uses. */
 export interface RemoteServiceStore {
@@ -184,6 +196,7 @@ export class RemoteService {
         recent: s.recent,
         cookieSaved: s.cookieSaved,
         cookieKept: s.cookieKept,
+        remembered: s.remembered,
         windows: this.options.windows.countOf(s.id)
       }
       if (s.via.kind === 'ssh') info.connection = connectionOf(this.tunnels.get(s.id)?.state)
@@ -261,7 +274,7 @@ export class RemoteService {
   async mintToken(server: RemoteServerRecord): Promise<string> {
     if (server.via.kind !== 'ssh') throw new Error('a Direct server signs in with a new link from the server')
     await this.options.ready?.()
-    const token = await this.options.ssh.addDevice(server.via.host, server.via.ccc)
+    const token = await this.options.ssh.addDevice(sshTarget(server.via), server.via.ccc)
     this.signedIn.add(server.id)
     return token
   }
@@ -296,7 +309,9 @@ export class RemoteService {
         await this.showWindow(server, { origin: server.via.origin, ...(projectId === undefined ? {} : { projectId }), ...(token === undefined ? {} : { token }) })
         return { ok: true, serverId }
       }
-      const { host, ccc } = server.via
+      if (server.via.kind === 'tunnel') return fail('My own tunnel is not available in this build yet')
+      const host = sshTarget(server.via)
+      const { ccc } = server.via
       await this.options.ready?.()
       if (this.disposed) return fail('the app is quitting')
       const tunnel = this.tunnelOf(serverId, host)
