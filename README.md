@@ -31,7 +31,7 @@ tested).
   and approvals happen in the browser. Not tested beyond the unpacked build; see
   [docs/features.md](docs/features.md#server-mode).
 - **Remote servers.** Connect the desktop app to a cc-cockpit in server mode on another machine, over a built-in SSH
-  client (agent, keys or password), your own tunnel or a pasted link, one window per project; see [docs/features.md](docs/features.md#remote-servers).
+  client (agent, keys or password), your own tunnel or a pasted link, one window per project, and the top bar's strip has a chip per server with its session counts; see [docs/features.md](docs/features.md#remote-servers).
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
 - **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with

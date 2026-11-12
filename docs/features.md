@@ -98,6 +98,7 @@ behind it are in [design.md](design.md).
   steps and changed files (a click opens the file through "Plugin used to open files", the built-in `git diff` overlay
   without one). A permission prompt, a question from Claude and a plan approval all show as needing you and sort first.
   With the plugin off there is no strip and no panel; tabs, dots, `ccc sessions` and notifications work as before.
+  The strip also has one chip per connected server (see "Remote servers" › "Other machines in the strip").
   A Sessions panel placed before 0.10 keeps its zone, order and size.
 - Session names: a Claude tab is named after the topic Claude Code puts in its terminal title (`File tree plugin`),
   in the tab strip and the Sessions panel, its spinner glyph left out; "Claude N" until Claude has one. Plugins see it
@@ -578,6 +579,15 @@ remote session open in your own browser here, not on the server. In a remote pro
 picker (local projects and your servers), and **Close project** closes the project on the server and its window here.
 A click on a session of another project in the top bar's strip opens that project in its own window (or brings its
 window forward) with that tab selected.
+
+**Other machines in the strip.** Local and remote windows run different cockpits, so each top-bar strip shows its own
+machine's sessions and a chip for the other one. In a local window the strip has one chip per connected server that has a
+window open: the server's name with a dot and a number for the sessions waiting for you and the ones working (the
+tooltip adds the idle ones), dimmed when the server cannot be reached; a click brings that server's window forward. The
+counts come from the server (`GET /api/sessions`, every 5 seconds while one of its windows is open) and are all that
+crosses: no session names, projects or text. A server too old to answer shows its name alone. In a remote window the strip
+starts with **This computer**: a click brings forward the local project window you used last, or shows the picker when none
+is open. The chips need the bundled Sessions plugin; plugins can read the same list with `ctx.sessions.machines()`.
 
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.

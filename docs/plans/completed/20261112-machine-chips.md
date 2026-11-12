@@ -116,16 +116,16 @@
 - [x] run tests - must pass before next task
 
 ### Task 5: e2e and docs [model: sonnet]
-- [ ] extend `test/e2e/remote-desktop.spec.ts` (Direct, `CC_COCKPIT_NO_BUNDLED: ''` for the strip): server chip with
+- [x] extend `test/e2e/remote-desktop.spec.ts` (Direct, `CC_COCKPIT_NO_BUNDLED: ''` for the strip): server chip with
       counts in the local window, click focuses the remote window; "This computer" in the remote window focuses the
       local one
-- [ ] `docs/features.md` ("Remote servers" and the Sessions strip), README if it lists the strip
-- [ ] run `npm run typecheck && npm run lint && npm test && npm run test:plugins` and the remote-desktop e2e
+- [x] `docs/features.md` ("Remote servers" and the Sessions strip), README if it lists the strip
+- [x] run `npm run typecheck && npm run lint && npm test && npm run test:plugins` and the remote-desktop e2e
 
 ### Task 6: Verify and finish [model: sonnet]
-- [ ] full e2e run; known Hyprland failures only
-- [ ] CLAUDE.md Remote servers bullet: one line on machine chips (counts only, opaque ids)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] full e2e run; known Hyprland failures only
+- [x] CLAUDE.md Remote servers bullet: one line on machine chips (counts only, opaque ids)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 - Manual: a real server over SSH; the counts update while a Claude tab there works and waits.

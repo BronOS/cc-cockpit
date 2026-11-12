@@ -207,7 +207,9 @@ opens its projects in sandboxed desktop windows running the server's web client)
   the docs say. Nothing from a connect's answers (host key, secret, new record) is saved before the window opens. A changed
   host key is never a question (refused, fixed only by Edit › Forget the trusted host key). Secrets (password, passphrase,
   cookie) sit beside the cookie in the record, never in `via`, and never in `remote.list`, a log or an event.
-  `remote.*` channels are `no` and answer the local picker only.
+  `remote.*` channels are `no` and answer the local picker only. Machine chips in the sessions strip (design §4.1) carry
+  counts only (`GET /api/sessions`, polled by `main/remote/machine-status.ts`) under opaque per-run ids minted by main, never
+  the saved server id; "This computer" is a navigation (`?cc-desktop=local`) main cancels, reading nothing else from the URL.
 - Plugin pages over HTTP are served by path token (`/p/<token>/`, one per device and plugin, killed on revoke; inline overlays
   under `/o/<token>/`): the token is the only credential, since a sandboxed page's requests carry no cookie. Responses carry the
   rewritten plugin CSP, no redirects, `no-store`. Pages must use relative URLs (the server rewrites only root-absolute `src` and

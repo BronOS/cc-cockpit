@@ -387,6 +387,84 @@ test('Direct: a session chip of another project opens that project in its own re
   }
 })
 
+// Machine chips (design-remote-desktop.md §4.1; plan 20261112-machine-chips Task 5): the local window's
+// sessions strip draws a chip per connected server with its counts (GET /api/sessions through the
+// remote partition, polled while a window of the server is open); a click focuses that server's remote
+// window. The remote window's "This computer" chip is a navigation main cancels and answers by focusing
+// the last local project window. Both strips are cockpit.sessions', so both apps run with the bundled
+// plugins on.
+test('Direct: the local strip shows the server as a chip with counts and focuses its window; This computer focuses back', async () => {
+  test.setTimeout(240_000)
+  const server = await launchServer({ mode: 'link', env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  let desktop: Desktop | undefined
+  try {
+    // One Claude tab on the server (the fake claude): the chip has something to count.
+    await expect.poll(async () => await server.cockpit.hook<string | undefined>('openClaudeTab', server.cockpit.projectDir)).toBeTruthy()
+    const link = await addDeviceLink(server)
+    // The desktop app has a local project window (its strip is the one with the server chip).
+    desktop = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+    const { app, page: local } = desktop.cockpit
+    // The window's own title (not the page's document title): what BrowserWindow reports.
+    const localTitle = (await titles(app))[0]!
+    const localStrip = local.frameLocator('.top-strip iframe[title="sessions-strip slot"]')
+    // No server yet, no machine chip.
+    await expect(localStrip.locator('.entry.machine')).toHaveCount(0)
+
+    // Connect over the picker File > Open Project opens above the local window.
+    await app.evaluate(({ Menu }) => {
+      const file = Menu.getApplicationMenu()?.items.find((i) => i.label === 'File')
+      file?.submenu?.items.find((i) => i.label === 'Open Project…')?.click()
+    })
+    const picker = await pickerWindow(app, server.origin)
+    await picker.getByRole('button', { name: 'Connect to server…' }).click()
+    const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
+    await dialog.getByRole('tab', { name: 'Link' }).click()
+    await dialog.getByRole('textbox', { name: 'Link' }).fill(link)
+    await dialog.getByRole('textbox', { name: 'Name (optional)' }).fill('Test server')
+    await dialog.getByRole('button', { name: 'Connect' }).click()
+    const remote = await remoteWindow(app, server.origin)
+    await remote.getByRole('list', { name: 'Open projects' }).waitFor()
+    const href = `?project=${encodeURIComponent(server.projectId)}`
+    await remote.getByRole('list', { name: 'Open projects' }).locator(`a[href="${href}"]`).click()
+    await remote.locator('.tabs-pane').waitFor()
+
+    // The local strip: a chip named for the server, its counts add up to the one Claude tab there.
+    const chip = localStrip.locator('.entry.machine')
+    await expect(chip).toHaveCount(1, { timeout: 20_000 })
+    await expect(chip.locator('.project')).toHaveText('Test server')
+    await expect(chip).toHaveAttribute('aria-label', /^Test server: \d+ waiting, \d+ working, \d+ idle$/, { timeout: 20_000 })
+    const counts = (await chip.getAttribute('aria-label'))!.match(/\d+/g)!.map(Number)
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(1)
+    await expect(chip).not.toHaveAttribute('data-unreachable', '')
+
+    const focusedTitle = (): Promise<string | undefined> => app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.getTitle())
+    const focusByTitle = (title: string): Promise<void> =>
+      app.evaluate(({ BrowserWindow }, t) => BrowserWindow.getAllWindows().find((w) => w.getTitle() === t)?.focus(), title)
+    const remoteTitle = (await titles(app)).find((t) => t.startsWith('Test server'))!
+    expect(remoteTitle).toBeTruthy()
+
+    // Click: the server's remote window takes the focus. The local window has it before.
+    await focusByTitle(localTitle)
+    await expect.poll(focusedTitle).toBe(localTitle)
+    await chip.click()
+    await expect.poll(focusedTitle).toBe(remoteTitle)
+
+    // The remote window's "This computer" chip: the navigation is cancelled (the page stays) and the
+    // local project window is focused. noWaitAfter: Playwright would wait on the cancelled navigation.
+    const url = remote.url()
+    await remote.getByRole('button', { name: 'This computer' }).click({ noWaitAfter: true })
+    await expect.poll(focusedTitle).toBe(localTitle)
+    await new Promise((r) => setTimeout(r, 500))
+    expect(remote.isClosed()).toBe(false)
+    expect(remote.url()).toBe(url)
+    expect((await titles(app)).filter((t) => t === localTitle)).toHaveLength(1)
+    await expectMainAlive(server)
+  } finally {
+    if (desktop !== undefined) await desktop.close()
+    await server.close()
+  }
+})
+
 // ---------------------------------------------------------------------------------------------
 // Built-in SSH and My own tunnel (plan 20261112-remote-ssh-builtin Task 7)
 //
