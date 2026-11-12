@@ -1,6 +1,8 @@
-// Host key fingerprints and a read-only `~/.ssh/known_hosts` lookup (design-remote-desktop.md §5.3).
+// Host key fingerprints and a read-only known_hosts lookup (design-remote-desktop.md §5.3): the
+// person's `~/.ssh/known_hosts`, then the system's `/etc/ssh/ssh_known_hosts`, as ssh reads them.
 // The built-in client trusts a host the person's own `ssh` already trusts, refuses one whose key
-// changed, and asks about the rest; it never writes known_hosts (the record's `hostKey` is ours).
+// changed or whose key is of a type the files do not list for a host they do list, and asks about
+// the rest; it never writes known_hosts (the record's `hostKey` is ours).
 //
 // Only the entry forms that say exactly one thing about exactly one host are read:
 //  - plain host lists (`devbox,10.0.0.5 ssh-ed25519 AAAA...`), compared case-insensitively;
@@ -31,7 +33,13 @@ export type KnownHostVerdict =
   | 'changed'
   /** The key is marked `@revoked`: refuse, whatever else says. */
   | 'revoked'
-  /** Nothing for the host with this type: ask the person. */
+  /**
+   * The host is listed with other key types only, and the server offered this one although the dial
+   * prefers the listed types: a server that has lost those keys, or a man in the middle that has none
+   * of them. ssh would ask; here it is refused, with ssh-keyscan as the way out (ssh-link.ts).
+   */
+  | 'other-type'
+  /** Nothing for the host: ask the person. */
   | 'unknown'
 
 /** `SHA256:` and the unpadded base64 of the key blob's SHA-256, exactly what `ssh-keygen -l` prints. */
@@ -175,14 +183,15 @@ export function knownHostKeyTypes(known: KnownHostKeys): string[] {
 
 /**
  * The verdict on the key a server showed: revoked first (whatever else the file says), then an exact
- * match, then a different key of the same type for the host ("changed"; ssh's MITM warning), else
- * unknown. A key of another type than the listed ones is unknown, as in ssh: the host may have
- * several key types and the file only some of them.
+ * match, then a different key of the same type for the host ("changed"; ssh's MITM warning). A key of
+ * a type the file does not list for a host it lists with other types is `other-type`: ssh would ask,
+ * but the dial asked for the listed types first, so a server answering with another one is the
+ * attacker's easy way past the file. Nothing listed for the host: unknown.
  */
 export function checkKnownHost(hostName: string, port: number, type: string, blob: Buffer, text: string): KnownHostVerdict {
   const known = knownHostKeys(hostName, port, text)
   if (known.revoked.some((k) => k.equals(blob))) return 'revoked'
   const listed = known.keys.get(type)
-  if (listed === undefined) return 'unknown'
+  if (listed === undefined) return known.keys.size > 0 ? 'other-type' : 'unknown'
   return listed.some((k) => k.equals(blob)) ? 'trusted' : 'changed'
 }

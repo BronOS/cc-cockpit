@@ -436,7 +436,7 @@ export interface SessionSummary {
  */
 export interface MachineInfo {
   readonly id: string
-  /** The person's own name for the server. */
+  /** The person's own name for the server, or `Server <n>` (stable for the run) when they gave it none; never its address. */
   readonly name: string
   readonly reachable: boolean
   readonly waiting?: number

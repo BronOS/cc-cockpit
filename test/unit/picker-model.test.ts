@@ -12,6 +12,7 @@ import {
   newPromptFlow,
   openedAgo,
   parsePort,
+  plainHttpToConfirm,
   promptStep,
   remoteRecentRows,
   serverNotes,
@@ -138,6 +139,27 @@ describe('isLoopbackOrigin', () => {
     for (const o of ['http://127.0.0.1.evil.com', 'http://10.0.0.1', 'http://box.lan', 'not a url', 'http://128.0.0.1']) {
       expect(isLoopbackOrigin(o), o).toBe(false)
     }
+  })
+})
+
+describe('plainHttpToConfirm', () => {
+  const link = (text: string) => ({ link: text })
+  it('asks for a plain-http link to another machine, once per origin', () => {
+    expect(plainHttpToConfirm('link', link('http://box.lan:7330/#t=abc'))).toBe('http://box.lan:7330')
+    expect(plainHttpToConfirm('link', link('  http://10.0.0.5:7330  '))).toBe('http://10.0.0.5:7330')
+  })
+  it('not for https, this machine, a link that does not parse, another tab', () => {
+    expect(plainHttpToConfirm('link', link('https://box.lan/#t=abc'))).toBeUndefined()
+    expect(plainHttpToConfirm('link', link('http://127.0.0.1:7330/#t=abc'))).toBeUndefined()
+    expect(plainHttpToConfirm('link', link('http://localhost:7330'))).toBeUndefined()
+    expect(plainHttpToConfirm('link', link('box.lan'))).toBeUndefined()
+    expect(plainHttpToConfirm('link', link(''))).toBeUndefined()
+    expect(plainHttpToConfirm('tunnel', link('http://box.lan:7330'))).toBeUndefined()
+  })
+  it('an Edit keeping the saved origin was confirmed already; a new origin asks', () => {
+    const saved = { kind: 'direct' as const, origin: 'http://box.lan:7330' }
+    expect(plainHttpToConfirm('link', link('http://box.lan:7330/#t=new'), saved)).toBeUndefined()
+    expect(plainHttpToConfirm('link', link('http://other.lan:7330'), saved)).toBe('http://other.lan:7330')
   })
 })
 

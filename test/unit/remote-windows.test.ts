@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RemoteServer } from '../../src/shared/remote-servers'
 import { REMOTE_DEVICE_COOKIE } from '../../src/main/remote/remote-cookie'
 import {
+  CLICK_WINDOW_MS,
+  MAX_PAGE_ACTIONS,
   MAX_PAIR_ATTEMPTS,
+  MAX_WINDOWS_PER_SERVER,
+  PAGE_ACTION_WINDOW_MS,
   PAIR_WAIT_MS,
   RemoteWindows,
   allowRemoteNavigation,
@@ -183,6 +187,16 @@ class FakeView implements RemoteWindowView {
     if (this.closed) return
     this.closed = true
     this.hooks.closed()
+  }
+
+  /** The person clicked in the page (a mouse button released), as the adapter reports it. */
+  click(): void {
+    this.hooks.input('click')
+  }
+
+  /** The person pressed a key in the page. */
+  key(): void {
+    this.hooks.input('key')
   }
 
   /** The page committed `url` (a load or in-page) and finished loading. */
@@ -395,6 +409,7 @@ describe('RemoteWindows: windows', () => {
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
     await t.windows.open('s1', { origin: ORIGIN })
     const [first, second] = t.factory.views as [FakeView, FakeView]
+    second.click()
     second.commit(`${ORIGIN}/?project=p1`)
     expect(first.focuses).toBe(1)
     expect(second.loads.at(-1)).toBe(`${ORIGIN}/`)
@@ -479,6 +494,27 @@ describe('RemoteWindows: windows', () => {
     expect(t.factory.session1().hooks.allowRequest(`${ORIGIN}/`)).toBe(false)
   })
 
+  it('forget counts the windows closed at once, and the old cookie keeper stops listening', async () => {
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const old = t.factory.views[0] as FakeView
+    const oldJar = t.factory.session1().jar
+    // A window whose close event comes later (Electron closes asynchronously).
+    old.close = () => void (old.closed = true)
+    t.windows.forget('s1')
+    expect(t.windows.countOf('s1')).toBe(0)
+    expect(t.allClosed).toEqual(['s1'])
+    // An open right after is a new window, not the closing one focused.
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    expect(t.factory.views).toHaveLength(2)
+    expect(old.focuses).toBe(0)
+    // The partition outlives the state (a session cannot drop its listeners): the forgotten state's
+    // cookie keeper ignores it from now on, so a sign-in there is saved by the new keeper alone.
+    const calls = t.store.setCalls.length
+    oldJar.emit({ name: REMOTE_DEVICE_COOKIE, value: 'fresh', domain: '127.0.0.1', expirationDate: 9e9 }, 'explicit', false)
+    await flush()
+    expect(t.store.setCalls.length).toBe(calls)
+  })
+
   it('refuses an unknown server', async () => {
     await expect(t.windows.open('zz', { origin: ORIGIN })).rejects.toThrow('unknown server')
   })
@@ -504,6 +540,7 @@ describe('RemoteWindows: back to the picker', () => {
   it('the tab strip "+" shows the desktop picker and keeps the window (the project is still open)', async () => {
     const view = await projectWindow()
     const fetches = t.factory.session1().fetches.length
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
     expect(t.pickers()).toBe(1)
     await flush()
@@ -515,6 +552,7 @@ describe('RemoteWindows: back to the picker', () => {
   it('Close project shows the desktop picker and closes the window (the project is no longer open)', async () => {
     const view = await projectWindow()
     open = { projects: [] }
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
     expect(t.pickers()).toBe(1)
     await flush()
@@ -528,11 +566,13 @@ describe('RemoteWindows: back to the picker', () => {
     t.factory.fetcher = async () => {
       throw new Error('the server answered 401')
     }
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
     await flush()
     expect(view.closed).toBe(false)
     expect(t.logs.some((l) => l.includes('the window stays'))).toBe(true)
     t.factory.fetcher = async () => ({ nope: true })
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
     await flush()
     expect(view.closed).toBe(false)
@@ -600,16 +640,143 @@ describe('RemoteWindows: another project from a project page', () => {
   it('focuses the window that shows the other project already, opening nothing', async () => {
     const first = await projectWindow('p1')
     const second = await projectWindow('p2')
+    first.click()
     expect(first.hooks.allowNavigation(`${ORIGIN}/?project=p2&tab=t9`)).toBe(false)
     await flush()
     expect(t.factory.views).toHaveLength(2)
     expect(second.focuses).toBe(1)
     expect(second.loads).toEqual([`${ORIGIN}/?project=p2`])
     // No tab: the same.
+    second.click()
     expect(second.hooks.allowNavigation(`${ORIGIN}/?project=p1`)).toBe(false)
     await flush()
     expect(first.focuses).toBe(1)
     expect(t.factory.views).toHaveLength(2)
+  })
+})
+
+// Page-driven actions (remote-windows.ts header): a server's page navigates when it likes and sees
+// what the person types, so what its navigations make main do is budgeted per server, and a focus
+// move needs the person's own click in that window just before.
+describe('RemoteWindows: page-driven actions', () => {
+  let t: ReturnType<typeof setup>
+  let focusedLocal: number
+  beforeEach(() => {
+    t = setup()
+    focusedLocal = 0
+    t.windows = new RemoteWindows({ ...t.options, focusLocal: () => (focusedLocal++, true) })
+    const open = { projects: Array.from({ length: 40 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, path: `/srv/p${i}` })) }
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? open : signedIn)
+  })
+
+  async function projectWindow(projectId: string): Promise<FakeView> {
+    await t.windows.open('s1', { origin: ORIGIN, projectId })
+    const view = t.factory.views.at(-1) as FakeView
+    view.commit(`${ORIGIN}/?project=${projectId}`)
+    await flush()
+    return view
+  }
+
+  it("a page looping location = '/?project=' + n opens a few windows, not one per turn", async () => {
+    const page = await projectWindow('p0')
+    for (let i = 1; i <= 30; i++) expect(page.hooks.allowNavigation(`${ORIGIN}/?project=p${i}`)).toBe(false)
+    await flush()
+    expect(t.windows.countOf('s1')).toBe(1 + MAX_PAGE_ACTIONS)
+    expect(t.logs.some((l) => l.includes(`past ${MAX_PAGE_ACTIONS} in`))).toBe(true)
+    // The budget refills with time, but the server's windows stop at the cap.
+    let next = 31
+    for (let round = 0; round < 10; round++) {
+      t.tick(PAGE_ACTION_WINDOW_MS)
+      for (let i = 0; i < MAX_PAGE_ACTIONS; i++) page.hooks.allowNavigation(`${ORIGIN}/?project=x${next++}`)
+      await flush()
+    }
+    expect(t.windows.countOf('s1')).toBe(MAX_WINDOWS_PER_SERVER)
+    expect(t.logs.some((l) => l.includes(`at most ${MAX_WINDOWS_PER_SERVER} windows`))).toBe(true)
+    // The picker's own open is refused at the cap too (the person sees why).
+    await expect(t.windows.open('s1', { origin: ORIGIN, projectId: 'p39' })).rejects.toThrow(`at most ${MAX_WINDOWS_PER_SERVER} windows`)
+    // Another server has its own count.
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    expect(t.windows.countOf('d1')).toBe(1)
+  })
+
+  it('"This computer" with no click of the person, or after a key press, focuses nothing', async () => {
+    const page = await projectWindow('p1')
+    // The server fires it while the person types: no click at all.
+    expect(page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    // A click, then typing (the click was in the terminal; the keystroke is what the server waits for).
+    page.click()
+    page.key()
+    expect(page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    // A click too long ago.
+    page.click()
+    t.tick(CLICK_WINDOW_MS + 1)
+    expect(page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(focusedLocal).toBe(0)
+    expect(t.pickers()).toBe(0)
+    expect(t.logs.filter((l) => l.includes('no click of the person')).length).toBe(3)
+    // The chip's own click: once per click.
+    page.click()
+    expect(page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(focusedLocal).toBe(1)
+  })
+
+  it("a click in another window of the server does not count for this one's page", async () => {
+    const a = await projectWindow('p1')
+    const b = await projectWindow('p2')
+    a.click()
+    expect(b.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(focusedLocal).toBe(0)
+  })
+
+  it('clicks do not lift the budget: a fourth focus move in the window is dropped', async () => {
+    const page = await projectWindow('p1')
+    for (let i = 0; i < MAX_PAGE_ACTIONS + 1; i++) {
+      page.click()
+      page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)
+    }
+    expect(focusedLocal).toBe(MAX_PAGE_ACTIONS)
+    t.tick(PAGE_ACTION_WINDOW_MS)
+    page.click()
+    page.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)
+    expect(focusedLocal).toBe(MAX_PAGE_ACTIONS + 1)
+  })
+
+  it('a switch to a window that shows the project, and back to the picker, need the click; refused they change nothing', async () => {
+    const first = await projectWindow('p1')
+    const second = await projectWindow('p2')
+    const focuses = second.focuses
+    expect(first.hooks.allowNavigation(`${ORIGIN}/?project=p2`)).toBe(false)
+    await flush()
+    expect(second.focuses).toBe(focuses)
+    expect(first.hooks.allowNavigation(`${ORIGIN}/`)).toBe(false)
+    await flush()
+    expect(t.pickers()).toBe(0)
+    expect(first.closed).toBe(false)
+    first.click()
+    expect(first.hooks.allowNavigation(`${ORIGIN}/?project=p2`)).toBe(false)
+    await flush()
+    expect(second.focuses).toBe(focuses + 1)
+  })
+
+  it("the server's web picker landing on a shown project focuses that window only after a click", async () => {
+    const shown = await projectWindow('p1')
+    await t.windows.open('s1', { origin: ORIGIN })
+    const picker = t.factory.views.at(-1) as FakeView
+    const focuses = shown.focuses
+    picker.commit(`${ORIGIN}/?project=p1`)
+    // No focus move, but the picker window goes back to the picker all the same (one window per project).
+    expect(shown.focuses).toBe(focuses)
+    expect(picker.loads.at(-1)).toBe(`${ORIGIN}/`)
+  })
+
+  it("window.open links share the server's budget across its windows", async () => {
+    const a = await projectWindow('p1')
+    const b = await projectWindow('p2')
+    for (let i = 0; i < MAX_OPENS_PER_VIEW; i++) a.hooks.openWindow(`https://example.com/a${i}`)
+    b.hooks.openWindow('https://example.com/b')
+    await flush()
+    expect(t.external).toEqual(Array.from({ length: MAX_OPENS_PER_VIEW }, (_, i) => `https://example.com/a${i}`))
   })
 })
 
@@ -1090,6 +1257,7 @@ describe('RemoteWindows: My own tunnel gate', () => {
     await flush()
     // The page as it stood (the waiting page aside): still on its project, on the new origin.
     view.current = `${TUNNEL.replace('7331', '7332')}/?project=p1`
+    view.click()
     expect(view.hooks.allowNavigation(`${TUNNEL.replace('7331', '7332')}/`)).toBe(false)
     await flush()
     expect(session.fetches.length).toBe(before)
@@ -1209,9 +1377,11 @@ describe('RemoteWindows: the "This computer" chip', () => {
   it('is cancelled and focuses the last local window, from a project page and from the picker', async () => {
     let focused = 0
     const view = await pageAt('/?project=p1', () => (focused++, true))
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
     expect(focused).toBe(1)
     view.commit(`${ORIGIN}/`)
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/cc/?project=p2&cc-desktop=local`)).toBe(false)
     expect(focused).toBe(2)
     expect(t.pickers()).toBe(0)
@@ -1220,6 +1390,7 @@ describe('RemoteWindows: the "This computer" chip', () => {
 
   it('shows the desktop picker when there is no local window (or no focusLocal)', async () => {
     const view = await pageAt('/?project=p1', () => false)
+    view.click()
     expect(view.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
     expect(t.pickers()).toBe(1)
     const plain = setup()
@@ -1227,6 +1398,7 @@ describe('RemoteWindows: the "This computer" chip', () => {
     await plain.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
     const other = plain.factory.views.at(-1) as FakeView
     other.commit(`${ORIGIN}/?project=p1`)
+    other.click()
     expect(other.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
     expect(plain.pickers()).toBe(1)
   })

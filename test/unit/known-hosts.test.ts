@@ -76,10 +76,13 @@ describe('knownHostKeys and checkKnownHost', () => {
     expect(checkKnownHost('devbox', 2222, 'ssh-ed25519', ed, `devbox ssh-ed25519 ${ED25519}\n`)).toBe('unknown')
   })
 
-  it('a different key of the same type is changed; another type is unknown', () => {
+  it('a different key of the same type is changed; another type of a listed host is other-type; an unlisted host is unknown', () => {
     const text = `devbox ssh-ed25519 ${ED25519}\n`
     expect(checkKnownHost('devbox', 22, 'ssh-ed25519', otherEd, text)).toBe('changed')
-    expect(checkKnownHost('devbox', 22, 'ecdsa-sha2-nistp256', ec, text)).toBe('unknown')
+    expect(checkKnownHost('devbox', 22, 'ecdsa-sha2-nistp256', ec, text)).toBe('other-type')
+    expect(checkKnownHost('otherbox', 22, 'ecdsa-sha2-nistp256', ec, text)).toBe('unknown')
+    // A revoked key of another type is still revoked first.
+    expect(checkKnownHost('devbox', 22, 'ecdsa-sha2-nistp256', ec, `${text}@revoked * ecdsa-sha2-nistp256 ${ECDSA}\n`)).toBe('revoked')
     expect(checkKnownHost('devbox', 22, 'ssh-ed25519', otherEd, `${hashed('devbox')} ssh-ed25519 ${ED25519}\n`)).toBe('changed')
   })
 

@@ -47,7 +47,7 @@ class FakeSession extends FakeEmitter {
   async fetch(url: string, init: Record<string, unknown>) {
     this.fetches.push({ url, init })
     const a = this.answer
-    return { ok: a.ok, status: a.status, json: async () => a.body }
+    return new Response(typeof a.body === 'string' ? a.body : JSON.stringify(a.body), { status: a.status })
   }
   async clearStorageData(): Promise<void> {
     this.cleared.push('storage')
@@ -170,7 +170,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { ElectronRemoteWindowFactory, isRemoteWindow, remotePartition } = await import('../../src/main/remote/electron-remote-window')
+const { ElectronRemoteWindowFactory, isRemoteWindow, readCappedText, remotePartition } = await import('../../src/main/remote/electron-remote-window')
 
 type Prevented = { defaultPrevented: boolean; preventDefault(): void }
 function prevented<T extends object>(fields: T = {} as T): Prevented & T {
@@ -192,6 +192,7 @@ function windowHooks(log: string[]): RemoteWindowHooks {
     navigated: (url) => void log.push(`navigated ${url}`),
     loaded: () => void log.push('loaded'),
     focused: () => void log.push('focused'),
+    input: (kind) => void log.push(`input ${kind}`),
     closed: () => void log.push('closed')
   }
 }
@@ -302,6 +303,14 @@ describe('ElectronRemoteWindowFactory: the window', () => {
     expect(log).toEqual(['navigated http://127.0.0.1:4100/?project=p', 'loaded', 'focused', 'closed'])
   })
 
+  it("reports the person's clicks and key presses to the page, nothing else", () => {
+    const { wc, log } = make()
+    for (const type of ['mouseDown', 'mouseMove', 'mouseUp', 'gestureTap', 'mouseWheel', 'rawKeyDown', 'keyDown', 'char', 'keyUp']) {
+      wc.emit('input-event', {}, { type })
+    }
+    expect(log.filter((l) => l.startsWith('input'))).toEqual(['input click', 'input click', 'input key', 'input key', 'input key'])
+  })
+
   it('drives the window: load, reload, focus, title, plain-text error, close', () => {
     const { view, wc, win } = make()
     view.load('http://127.0.0.1:4100/')
@@ -384,19 +393,52 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
 
   it('fetches with the partition cookies, no cache, no redirect; a non-2xx rejects', async () => {
     const { ses, sessionView } = make()
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/auth/session')).resolves.toEqual({ mode: 'link', device: null })
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/auth/session', 4096)).resolves.toEqual({ mode: 'link', device: null })
     expect(ses.fetches[0]?.init).toMatchObject({ credentials: 'include', cache: 'no-store', redirect: 'error' })
     expect(ses.fetches[0]?.init.signal).toBeInstanceOf(AbortSignal)
     ses.answer = { ok: false, status: 401, body: {} }
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects')).rejects.toThrow('401')
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects', 4096)).rejects.toThrow('401')
     // With its status, for the machine poller (a 404 is an older server, machine-status.ts).
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects')).rejects.toMatchObject({ status: 401 })
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects', 4096)).rejects.toMatchObject({ status: 401 })
+  })
+
+  it("reads the server's answers up to the cap only, and errors past it", async () => {
+    const { ses, sessionView } = make()
+    ses.answer = { ok: true, status: 200, body: { pad: 'x'.repeat(100) } }
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 50)).rejects.toThrow('larger than 50 bytes')
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 4096)).resolves.toEqual({ pad: 'x'.repeat(100) })
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', {}, 'http://127.0.0.1:4100', 50)).rejects.toThrow('larger than 50 bytes')
+    // A body that is not JSON: GET rejects, POST answers undefined.
+    ses.answer = { ok: true, status: 200, body: 'not json' }
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 4096)).rejects.toThrow()
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', {}, 'http://127.0.0.1:4100', 4096)).resolves.toEqual({ status: 200, body: undefined })
+  })
+
+  it('readCappedText stops a stream that runs on without end, and refuses a declared length over the cap unread', async () => {
+    let pulled = 0
+    let cancelled = false
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++
+        controller.enqueue(new Uint8Array(1024))
+      },
+      cancel() {
+        cancelled = true
+      }
+    })
+    await expect(readCappedText(new Response(endless), 10 * 1024)).rejects.toThrow('larger than 10240 bytes')
+    expect(cancelled).toBe(true)
+    expect(pulled).toBeLessThan(20)
+    const declared = new Response('{}', { headers: { 'content-length': '999999' } })
+    await expect(readCappedText(declared, 1024)).rejects.toThrow('larger than 1024 bytes')
+    await expect(readCappedText(new Response('héllo'), 1024)).resolves.toBe('héllo')
+    await expect(readCappedText(new Response(null), 1024)).resolves.toBe('')
   })
 
   it('posts JSON with the server Origin and answers any status with its body', async () => {
     const { ses, sessionView } = make()
     ses.answer = { ok: false, status: 400, body: { error: 'missing' } }
-    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', { reopen: 'p1' }, 'http://127.0.0.1:4100')).resolves.toEqual({
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', { reopen: 'p1' }, 'http://127.0.0.1:4100', 4096)).resolves.toEqual({
       status: 400,
       body: { error: 'missing' }
     })

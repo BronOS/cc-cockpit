@@ -79,8 +79,13 @@ export const EXEC_MAX_BYTES = 64 * 1024
 export const EXEC_TIMEOUT_MS = 20_000
 /** A key file is read only up to this (a real private key is a few KiB). */
 export const KEY_FILE_MAX_BYTES = 64 * 1024
-/** known_hosts is read only up to this; a bigger file is read as empty (every host "unknown": asked). */
+/**
+ * A known_hosts file is read only up to this; a bigger one is an error that stops the dial, never read
+ * as empty (its `@revoked` lines would be lost without a word).
+ */
 const KNOWN_HOSTS_MAX_BYTES = 4 * 1024 * 1024
+/** The system's known_hosts, read after the person's (ssh's GlobalKnownHostsFile default). */
+export const SYSTEM_KNOWN_HOSTS = '/etc/ssh/ssh_known_hosts'
 /** Redial delays after the connection dropped while windows use it; the last one repeats. */
 export const REDIAL_BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000, 16_000, 30_000]
 /** A connection up this long before it dropped redials from the first delay again. */
@@ -216,8 +221,13 @@ export interface SshLinkOptions {
   localUser?: () => string
   /** `~/.ssh/config` for the record's host. Default: `resolveSshConfig` over the real files under `home`. */
   resolveConfig?: (host: string) => Promise<SshConfigResult>
-  /** `~/.ssh/known_hosts` as text ('' when there is none). */
+  /**
+   * `~/.ssh/known_hosts` then the system's file, as one text ('' when there is none); rejects when one
+   * cannot be read or is over the cap. Default: `nodeReadKnownHosts(home, systemKnownHosts)`.
+   */
   readKnownHosts?: () => Promise<string>
+  /** The system known_hosts path (tests point it into their temp home). Default: SYSTEM_KNOWN_HOSTS. */
+  systemKnownHosts?: string
   readKeyFile?: (path: string) => Promise<KeyFileRead>
   listen?: LinkListen
   timers?: LinkTimers
@@ -238,17 +248,43 @@ export async function nodeReadKeyFile(path: string): Promise<KeyFileRead> {
   }
 }
 
-/** `<home>/.ssh/known_hosts`, '' when absent, not a regular file or over the cap. Never written. */
-export function nodeReadKnownHosts(home: string): () => Promise<string> {
+/**
+ * One known_hosts file: '' when it does not exist; an error (shown as is) when it is not a regular
+ * file, is over the cap or cannot be read. Reading it as empty would drop its `@revoked` lines and its
+ * keys silently, turning a refusal into a question. Never written.
+ */
+async function readKnownHostsFile(path: string, shown: string): Promise<string> {
+  let info: Awaited<ReturnType<typeof stat>>
+  try {
+    info = await stat(path)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return ''
+    throw new Error(`${shown} cannot be read`, { cause: err })
+  }
+  // A FIFO is never opened (it would block a thread-pool thread for good).
+  if (!info.isFile()) throw new Error(`${shown} is not a regular file`)
+  const tooBig = new Error(`${shown} is larger than ${KNOWN_HOSTS_MAX_BYTES / 1024 / 1024} MiB`)
+  if (info.size > KNOWN_HOSTS_MAX_BYTES) throw tooBig
+  let data: Buffer
+  try {
+    data = await readFile(path)
+  } catch (err) {
+    throw new Error(`${shown} cannot be read`, { cause: err })
+  }
+  if (data.length > KNOWN_HOSTS_MAX_BYTES) throw tooBig
+  return data.toString('utf8')
+}
+
+/**
+ * `<home>/.ssh/known_hosts`, then the system's file (`systemFile`), as one text, the person's first
+ * (ssh reads both the same way). Rejects as `readKnownHostsFile` does.
+ */
+export function nodeReadKnownHosts(home: string, systemFile: string = SYSTEM_KNOWN_HOSTS): () => Promise<string> {
   return async () => {
-    const path = join(home, '.ssh', 'known_hosts')
-    try {
-      const info = await stat(path)
-      if (!info.isFile() || info.size > KNOWN_HOSTS_MAX_BYTES) return ''
-      return await readFile(path, 'utf8')
-    } catch {
-      return ''
-    }
+    const user = await readKnownHostsFile(join(home, '.ssh', 'known_hosts'), '~/.ssh/known_hosts')
+    const system = await readKnownHostsFile(systemFile, systemFile)
+    return system === '' ? user : `${user}\n${system}`
   }
 }
 
@@ -328,7 +364,9 @@ function addressOf(hostName: string, port: number): string {
 /** What the verifier decided on one dial, read when the dial fails. */
 interface HostCheck {
   seen?: RemoteHostKey
-  verdict?: 'record' | 'known' | 'answer' | 'changed' | 'known-changed' | 'revoked' | 'unknown' | 'unreadable'
+  verdict?: 'record' | 'known' | 'answer' | 'changed' | 'known-changed' | 'other-type' | 'revoked' | 'unknown' | 'unreadable'
+  /** For `other-type`: the key types known_hosts lists for the host. */
+  listed?: string[]
 }
 
 /** What one dial's sign-in did, read when it fails. */
@@ -409,7 +447,7 @@ export class SshLink implements RemoteLink {
     this.dialFn = options.dial ?? ssh2Dial
     this.timers = options.timers ?? realLinkTimers
     this.listen = options.listen ?? netListen
-    this.readKnownHosts = options.readKnownHosts ?? nodeReadKnownHosts(options.home)
+    this.readKnownHosts = options.readKnownHosts ?? nodeReadKnownHosts(options.home, options.systemKnownHosts)
     this.readKeyFile = options.readKeyFile ?? nodeReadKeyFile
     this.resolveConfig = options.resolveConfig ?? ((host) => resolveSshConfig(host, { home: options.home, ...nodeSshConfigFiles }))
   }
@@ -600,10 +638,17 @@ export class SshLink implements RemoteLink {
     const username = via.user ?? config.user ?? this.localUser()
     if (username === '') return this.dialFailed(failure('no user name to sign in with: fill in User', false), background)
 
-    const known = await this.readKnownHosts().catch(() => '')
+    let known: string
+    try {
+      known = await this.readKnownHosts()
+    } catch (err) {
+      // Never read as empty: a revoked or changed key would turn into a question.
+      return this.dialFailed(failure(`The host key cannot be checked: ${errorText(err)}.`, false), background)
+    }
     const preferred: string[] = []
     if (record.hostKey !== undefined) preferred.push(record.hostKey.type)
-    for (const type of knownHostKeyTypes(knownHostKeys(hostName, port, known))) if (!preferred.includes(type)) preferred.push(type)
+    const listedTypes = knownHostKeyTypes(knownHostKeys(hostName, port, known))
+    for (const type of listedTypes) if (!preferred.includes(type)) preferred.push(type)
 
     const signIn = await this.signIn(sshAuthOf(via), config, answers)
     if (!('handler' in signIn)) return this.dialFailed(signIn, background)
@@ -636,6 +681,11 @@ export class SshLink implements RemoteLink {
       }
       if (verdict === 'changed') {
         check.verdict = 'known-changed'
+        return false
+      }
+      if (verdict === 'other-type') {
+        check.verdict = 'other-type'
+        check.listed = listedTypes
         return false
       }
       // Unknown: only the person's answer for exactly this key lets it through.
@@ -857,8 +907,14 @@ export class SshLink implements RemoteLink {
               `If the server was reinstalled, remove its old line there (ssh-keygen -R ${where.hostName}).`,
             false
           )
+        case 'other-type':
+          return failure(
+            `${host} offered a key of a type known_hosts does not list for it (it lists ${(check.listed ?? []).join(', ')}); ` +
+              `this could be an attack. Add the key with ssh-keyscan if expected.`,
+            false
+          )
         case 'revoked':
-          return failure(`The host key of ${host} is marked @revoked in ~/.ssh/known_hosts.`, false)
+          return failure(`The host key of ${host} is marked @revoked in known_hosts.`, false)
         case 'unreadable':
           return failure(`${host} sent a host key this app cannot read.`, false)
         default:

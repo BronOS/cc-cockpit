@@ -6,7 +6,9 @@
 //    a forgotten and a wrong secret all take the one path.
 //  - My own tunnel: the person runs the two commands shown (built live from the fields) and pastes
 //    the add-device link; the app connects to 127.0.0.1:<local port>.
-//  - Link: the access link or a one-time add-device link, as a browser would use it.
+//  - Link: the access link or a one-time add-device link, as a browser would use it. A link over
+//    plain http to another machine shows a warning first (`plainHttpToConfirm`); only a second submit
+//    of that same origin connects.
 // Edit opens the same form prefilled for a saved server, its tab locked (Edit cannot change how a
 // server is reached).
 //
@@ -23,6 +25,8 @@ import {
   connectSettings,
   editFields,
   emptyConnectFields,
+  PLAIN_HTTP_WARNING,
+  plainHttpToConfirm,
   tabOf,
   tunnelCommands,
   type ConnectAuth,
@@ -57,6 +61,8 @@ export function ConnectForm(props: {
   const [forgetHostKey, setForgetHostKey] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The plain-http origin the warning was shown for: the next submit of that same origin goes ahead.
+  const [plainAsked, setPlainAsked] = useState<string | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const firstField = useRef<HTMLInputElement>(null)
   const { run, prompt } = useRemotePrompts()
@@ -67,12 +73,20 @@ export function ConnectForm(props: {
 
   const set = <K extends keyof ConnectFields>(key: K, value: ConnectFields[K]): void => setFields((f) => ({ ...f, [key]: value }))
   const ready = !busy && canConnect(tab, fields)
+  const plain = plainHttpToConfirm(tab, fields, editing?.via)
+  const warnPlain = plain !== undefined && plainAsked === plain
 
   const submit = (): void => {
     if (!ready) return
     const settings = connectSettings(tab, fields)
     if ('error' in settings) {
       setError(settings.error)
+      return
+    }
+    // A plain-http link to another machine: the warning first, and only its own confirm goes on.
+    if (plain !== undefined && !warnPlain) {
+      setError(null)
+      setPlainAsked(plain)
       return
     }
     setBusy(true)
@@ -390,6 +404,12 @@ export function ConnectForm(props: {
             )}
           </div>
 
+          {warnPlain && (
+            <p role="alert" className="picker-error" data-testid="connect-plain-http">
+              {PLAIN_HTTP_WARNING}
+            </p>
+          )}
+
           {error !== null && (
             <p role="alert" id={errorId} className="picker-error" data-testid="connect-error">
               {editing ? 'Edit failed' : 'Cannot connect'}: {error}
@@ -401,7 +421,7 @@ export function ConnectForm(props: {
               Cancel
             </button>
             <button type="submit" className="picker-primary" data-testid="connect-submit" disabled={!ready}>
-              {busy ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save' : 'Connect'}
+              {busy ? (editing ? 'Saving…' : 'Connecting…') : warnPlain ? (editing ? 'Save anyway' : 'Connect anyway') : editing ? 'Save' : 'Connect'}
             </button>
           </footer>
         </form>

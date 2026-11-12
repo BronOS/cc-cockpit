@@ -93,6 +93,8 @@ export class RemoteCookie {
   private saved: string | undefined
   /** Saves and clears run one at a time, in event order, so a late save never undoes a later clear. */
   private chain: Promise<void> = Promise.resolve()
+  /** The server was forgotten or wiped (RemoteWindows.forget): its jar's events mean nothing to this one any more. */
+  private disposed = false
 
   constructor(options: RemoteCookieOptions) {
     this.options = options
@@ -119,13 +121,21 @@ export class RemoteCookie {
     await this.setSession(origin, value)
   }
 
+  /**
+   * Stop acting on the jar's events (a jar's listener cannot be removed): the server's state was
+   * dropped, and a later window makes a new RemoteCookie on the same jar, which alone saves from then on.
+   */
+  dispose(): void {
+    this.disposed = true
+  }
+
   /** Settles once every save or clear the events so far started is done (tests, and quit). */
   idle(): Promise<void> {
     return this.chain
   }
 
   private changed(cookie: JarCookie, cause: string, removed: boolean): void {
-    if (cookie.name !== REMOTE_DEVICE_COOKIE) return
+    if (this.disposed || cookie.name !== REMOTE_DEVICE_COOKIE) return
     const origin = this.options.origin()
     if (origin === undefined) return
     const host = hostOfOrigin(origin)

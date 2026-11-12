@@ -20,6 +20,7 @@ import {
   READY_TIMEOUT_MS,
   SshLink,
   agentSocketOf,
+  nodeReadKnownHosts,
   type LinkState,
   type LinkTimers,
   type SshLinkOptions
@@ -315,6 +316,8 @@ function makeLink(
       getSecret: async (id, name) => (id === record.id ? secrets[name] : undefined)
     },
     home,
+    // Never the machine's own /etc/ssh/ssh_known_hosts: a path in the temp home (absent unless a test writes it).
+    systemKnownHosts: join(home, 'system_known_hosts'),
     env: () => over.env ?? {},
     localUser: () => 'nobody-local',
     dial: (o) => {
@@ -560,6 +563,60 @@ describe('host keys', () => {
     writeFileSync(join(home, '.ssh', 'known_hosts'), `@revoked * ${ed25519Host.public}\n`)
     const r = await makeLink(s, { home }).link.status({ password: PASSWORD })
     expect(r.ok === false && 'error' in r && r.error).toContain('marked @revoked')
+  })
+
+  it('a host listed with other key types only refuses an unlisted type, even with an answer equal to the key seen', async () => {
+    // The server has only its ed25519 key; the file lists the host with ECDSA only (a lost key, or a
+    // man in the middle with none of the listed keys). ssh would ask; this refuses and names the way out.
+    const s = await startServer({ gateway: 1 })
+    const home = tempHome()
+    writeFileSync(join(home, '.ssh', 'known_hosts'), `[127.0.0.1]:${s.port} ${ecdsaHost.public}\n`)
+    const r = await makeLink(s, { home, hostKey: null }).link.status({ password: PASSWORD, hostKey: HOST_KEY.sha256 })
+    expect(r).toEqual({
+      ok: false,
+      error:
+        '127.0.0.1 offered a key of a type known_hosts does not list for it (it lists ecdsa-sha2-nistp256); this could be an attack. Add the key with ssh-keyscan if expected.'
+    })
+    expect(s.attempts).toEqual([])
+  })
+
+  it('reads the system known_hosts after the user one: it vouches, and its @revoked lines count', async () => {
+    const s = await startServer({ gateway: 1 })
+    const home = tempHome()
+    writeFileSync(join(home, 'system_known_hosts'), `[127.0.0.1]:${s.port} ${ed25519Host.public}\n`)
+    const r = await makeLink(s, { home, hostKey: null }).link.status({ password: PASSWORD })
+    expect(r.ok && r.accepted).toEqual({ hostKey: HOST_KEY, password: true })
+    writeFileSync(join(home, 'system_known_hosts'), `@revoked * ${ed25519Host.public}\n`)
+    const revoked = await makeLink(s, { home }).link.status({ password: PASSWORD })
+    expect(revoked.ok === false && 'error' in revoked && revoked.error).toContain('marked @revoked')
+  })
+
+  it('a known_hosts file over the cap, or not a regular file, stops the dial instead of reading as empty', async () => {
+    const s = await startServer({ gateway: 1 })
+    const home = tempHome()
+    writeFileSync(join(home, '.ssh', 'known_hosts'), Buffer.alloc(4 * 1024 * 1024 + 1, 0x23))
+    const { link, dials } = makeLink(s, { home })
+    expect(await link.status({ password: PASSWORD })).toEqual({
+      ok: false,
+      error: 'The host key cannot be checked: ~/.ssh/known_hosts is larger than 4 MiB.'
+    })
+    expect(dials).toHaveLength(0)
+    const other = tempHome()
+    mkdirSync(join(other, 'system_known_hosts'))
+    expect(await makeLink(s, { home: other }).link.status({ password: PASSWORD })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('system_known_hosts is not a regular file')
+    })
+  })
+
+  it('nodeReadKnownHosts: the user file first, then the system one; none is empty', async () => {
+    const home = tempHome()
+    const system = join(home, 'sys')
+    expect(await nodeReadKnownHosts(home, system)()).toBe('')
+    writeFileSync(join(home, '.ssh', 'known_hosts'), 'user-line')
+    expect(await nodeReadKnownHosts(home, system)()).toBe('user-line')
+    writeFileSync(system, 'system-line\n')
+    expect(await nodeReadKnownHosts(home, system)()).toBe('user-line\nsystem-line\n')
   })
 
   it("the record's key decides alone: a match goes on with nothing accepted, a change refuses even an equal answer", async () => {

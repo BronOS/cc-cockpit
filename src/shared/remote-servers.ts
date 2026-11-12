@@ -497,6 +497,18 @@ export function defaultServerName(via: RemoteVia): string {
   return name.slice(0, MAX_NAME)
 }
 
+/**
+ * The name the person chose for a server, or undefined when they set none (the name is the default
+ * one, the SSH host or the link's host: `defaultServerName`). Plugins see a server's name through
+ * `ctx.sessions.machines()` (main/remote/machine-status.ts), and a host name is the person's network
+ * layout, not something a plugin needs: a server they did not name gets a neutral label there
+ * instead. The store keeps an unnamed server's name following its address (Edit), so "equals the
+ * default" stays the test of "not named".
+ */
+export function chosenServerName(server: { name: string; via: RemoteVia }): string | undefined {
+  return server.name === defaultServerName(server.via) ? undefined : server.name
+}
+
 /** A TCP port: 1..65535 (a local listener's, an SSH server's, a gateway's). */
 export function isLocalPort(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535

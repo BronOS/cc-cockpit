@@ -149,7 +149,6 @@ class FakeLink implements RemoteLink {
 
 class FakeWindows {
   opens: Array<{ serverId: string } & RemoteOpenRequest> = []
-  origins: Array<{ serverId: string; origin: string }> = []
   counts = new Map<string, number>()
   titled: string[] = []
   forgotten: string[] = []
@@ -165,10 +164,6 @@ class FakeWindows {
     this.steps.push(`window ${request.origin}${request.projectId === undefined ? '' : ` ${request.projectId}`}${request.token === undefined ? '' : ` #t=${request.token}`}`)
     this.opens.push({ serverId, ...request })
     this.counts.set(serverId, (this.counts.get(serverId) ?? 0) + 1)
-  }
-
-  async setOrigin(serverId: string, origin: string): Promise<void> {
-    this.origins.push({ serverId, origin })
   }
 
   countOf(serverId: string): number {
@@ -556,35 +551,62 @@ describe('RemoteService: Direct', () => {
 })
 
 describe('RemoteService: Edit', () => {
-  it('keeps the cookie; a port change clears the host key and ends the link', async () => {
-    const { service, store, world } = setup()
+  it('a sign-in change keeps the cookie and windows and ends the link; a port change wipes the server', async () => {
+    const { service, store, world, windows, steps } = setup()
     world.hostKey = HOST_KEY
     await service.connect({ kind: 'ssh', host: 'devbox', answers: { hostKey: HOST_KEY.sha256 } })
     await store.setCookie('srv1', 'ccc_device=abc')
-    expect(store.get('srv1')?.hostKey).toEqual(HOST_KEY)
-    // The ccc path only: host key and link stay.
-    expect(await service.edit({ serverId: 'srv1', kind: 'ssh', host: 'devbox', ccc: '/opt/ccc' })).toEqual({ ok: true, serverId: 'srv1' })
-    expect(store.get('srv1')?.hostKey).toEqual(HOST_KEY)
+    expect(store.get('srv1')).toMatchObject({ hostKey: HOST_KEY, localPort: 41000 })
+    // The sign-in only (the same account on the same machine): host key, cookie, port and windows stay.
+    expect(await service.edit({ serverId: 'srv1', kind: 'ssh', host: 'devbox', auth: { kind: 'password' } })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(store.get('srv1')).toMatchObject({ hostKey: HOST_KEY, localPort: 41000 })
+    expect(store.hasCookie('srv1')).toBe(true)
     expect(world.links[0]!.disposed).toBe(true)
-    // The port: the host key goes, the cookie stays; nothing dials.
+    expect(windows.forgotten).toEqual([])
+    // The port: another machine may answer there. Host key, cookie and listener port go, the windows
+    // close and the partition is emptied before the link ends; nothing dials.
     const links = world.links.length
+    steps.length = 0
     expect(await service.edit({ serverId: 'srv1', kind: 'ssh', host: 'devbox', port: 2222, name: 'Dev' })).toEqual({ ok: true, serverId: 'srv1' })
     expect(store.get('srv1')).toMatchObject({ name: 'Dev', via: { port: 2222 } })
     expect(store.get('srv1')?.hostKey).toBeUndefined()
-    expect(store.hasCookie('srv1')).toBe(true)
+    expect(store.get('srv1')?.localPort).toBeUndefined()
+    expect(store.hasCookie('srv1')).toBe(false)
+    expect(windows.forgotten).toEqual(['srv1'])
+    expect(steps).toEqual(['windows forget', 'clear srv1'])
     expect(world.links).toHaveLength(links)
     // The next open asks for the key again.
     expect(await service.open('srv1')).toMatchObject({ ok: false, need: { need: 'hostKey' } })
   })
 
-  it('Forget the trusted host key: the key goes, the link ends, the next open asks Trust again', async () => {
-    const { service, store, world } = setup()
+  it('a host, user or ccc path that changed wipes the server, the record kept', async () => {
+    for (const change of [{ host: 'otherbox' }, { host: 'devbox', user: 'root' }, { host: 'devbox', ccc: '/opt/ccc' }]) {
+      const { service, store, windows, steps } = setup()
+      await service.connect({ kind: 'ssh', host: 'devbox', name: 'Dev' })
+      await store.setCookie('srv1', 'ccc_device=abc')
+      expect(await service.edit({ serverId: 'srv1', kind: 'ssh', name: 'Dev', ...change })).toEqual({ ok: true, serverId: 'srv1' })
+      expect(store.hasCookie('srv1'), JSON.stringify(change)).toBe(false)
+      expect(store.get('srv1')?.localPort).toBeUndefined()
+      expect(windows.forgotten).toEqual(['srv1'])
+      expect(steps).toContain('clear srv1')
+      expect(store.get('srv1')?.name).toBe('Dev')
+    }
+  })
+
+  it('Forget the trusted host key: the key goes, the server is wiped, the next open asks Trust again', async () => {
+    const { service, store, world, windows, steps } = setup()
     world.hostKey = HOST_KEY
     await service.connect({ kind: 'ssh', host: 'devbox', answers: { hostKey: HOST_KEY.sha256 } })
     expect(store.get('srv1')?.hostKey).toEqual(HOST_KEY)
+    await store.setCookie('srv1', 'ccc_device=abc')
     expect(await service.edit({ serverId: 'srv1', kind: 'ssh', host: 'devbox', forgetHostKey: true })).toEqual({ ok: true, serverId: 'srv1' })
     expect(store.get('srv1')?.hostKey).toBeUndefined()
     expect(world.links[0]!.disposed).toBe(true)
+    // Another machine may be behind the address now: the cookie, the port, the windows and the partition go.
+    expect(store.hasCookie('srv1')).toBe(false)
+    expect(store.get('srv1')?.localPort).toBeUndefined()
+    expect(windows.forgotten).toEqual(['srv1'])
+    expect(steps).toContain('clear srv1')
     expect(await service.open('srv1')).toMatchObject({ ok: false, need: { need: 'hostKey' } })
   })
 
@@ -596,18 +618,42 @@ describe('RemoteService: Edit', () => {
     expect(world.links[0]!.disposed).toBe(false)
   })
 
-  it('signs in with a link: My own tunnel with its token (windows moved to a new local port), Direct with a new one', async () => {
-    const { service, store, windows } = setup()
+  it('signs in with a link: My own tunnel on a new local port (wiped first), Direct with a new one (kept)', async () => {
+    const { service, store, windows, steps } = setup()
     await service.connect({ kind: 'tunnel', localPort: 7331, remotePort: 7330 })
     await store.setCookie('srv1', 'old-cookie')
+    steps.length = 0
     const answer = await service.edit({ serverId: 'srv1', kind: 'tunnel', localPort: 7332, remotePort: 7330, link: 'http://127.0.0.1:7330/#t=again' })
     expect(answer).toEqual({ ok: true, serverId: 'srv1' })
-    expect(windows.origins).toEqual([{ serverId: 'srv1', origin: 'http://127.0.0.1:7332' }])
+    // The local port is the page's origin: the old windows, partition and cookie go before the sign-in.
+    expect(steps).toEqual(['windows forget', 'clear srv1', 'probe 7332', 'window http://127.0.0.1:7332 #t=again'])
     expect(windows.opens.at(-1)).toEqual({ serverId: 'srv1', origin: 'http://127.0.0.1:7332', token: 'again' })
-    expect(store.hasCookie('srv1')).toBe(true)
+    expect(store.hasCookie('srv1')).toBe(false)
     await service.connect({ kind: 'direct', link: 'https://box.example' })
+    await store.setCookie('srv2', 'box-cookie')
     expect(await service.edit({ serverId: 'srv2', kind: 'direct', link: 'https://box.example/#t=fresh' })).toEqual({ ok: true, serverId: 'srv2' })
     expect(windows.opens.at(-1)).toEqual({ serverId: 'srv2', origin: 'https://box.example', token: 'fresh' })
+    expect(store.hasCookie('srv2')).toBe(true)
+    expect(windows.forgotten).toEqual(['srv1'])
+  })
+
+  it('a Direct origin or any tunnel setting that changed wipes the server', async () => {
+    const { service, store, windows } = setup()
+    await service.connect({ kind: 'direct', link: 'https://box.example' })
+    await store.setCookie('srv1', 'box-cookie')
+    expect(await service.edit({ serverId: 'srv1', kind: 'direct', link: 'https://other.example' })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(store.hasCookie('srv1')).toBe(false)
+    expect(windows.forgotten).toEqual(['srv1'])
+    await service.connect({ kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox' })
+    await store.setCookie('srv2', 'tunnel-cookie')
+    expect(await service.edit({ serverId: 'srv2', kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'otherbox' })).toEqual({ ok: true, serverId: 'srv2' })
+    expect(store.hasCookie('srv2')).toBe(false)
+    expect(windows.forgotten).toEqual(['srv1', 'srv2'])
+    // The same settings again: nothing is wiped.
+    await store.setCookie('srv2', 'tunnel-cookie')
+    expect(await service.edit({ serverId: 'srv2', kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'otherbox' })).toEqual({ ok: true, serverId: 'srv2' })
+    expect(store.hasCookie('srv2')).toBe(true)
+    expect(windows.forgotten).toEqual(['srv1', 'srv2'])
   })
 
   it('refuses another kind, an unknown server and bad settings, changing nothing', async () => {

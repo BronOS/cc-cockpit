@@ -24,7 +24,9 @@
 // persistent partition (its cookie jar). A plugin needs neither, and handing it out would make any
 // later path that takes a server id reachable with a plugin-learned value. A per-run id also tells a
 // plugin nothing it could match across runs. No address, no `via`, nothing secret leaves here: the
-// name is the person's own label for the server, from the local record.
+// name is the person's own label for the server, from the local record, and only when they chose one
+// (`chosenServerName`): a server's default name is its SSH host or the link's host, so an unnamed one
+// is `Server <n>` instead, numbered in the order the servers were first listed in this run.
 import { randomBytes } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
 import { SESSIONS_PATH } from '../../shared/web-protocol'
@@ -54,8 +56,11 @@ export interface MachineStatusTimers {
 export interface MachineStatusOptions {
   /** The servers with a remote window open now, in a stable order (RemoteWindows.serverIds). */
   servers(): string[]
-  /** The server's name from its local record; undefined for a server that is gone (left out). */
-  name(serverId: string): string | undefined
+  /**
+   * The name the person chose for the server (shared/remote-servers.ts `chosenServerName`); null when
+   * they chose none (the neutral `Server <n>` is shown), undefined for a server that is gone (left out).
+   */
+  name(serverId: string): string | null | undefined
   /** GET `path` on the server through its partition (RemoteWindows.fetchFromServer). */
   fetch(serverId: string, path: string): Promise<unknown>
   /** Tests: a fixed id per server. Default: random. */
@@ -106,6 +111,8 @@ export class MachineStatus {
   private readonly polled = new Map<string, Polled>()
   /** serverId -> machine id, for the whole run. */
   private readonly ids = new Map<string, string>()
+  /** serverId -> its neutral label (`Server <n>`), for the whole run, so a chip's label never shifts. */
+  private readonly labels = new Map<string, string>()
   private readonly listeners = new Set<(machines: MachineInfo[]) => void>()
   /** What listeners last heard (JSON), so only a change is announced. */
   private last = '[]'
@@ -148,8 +155,9 @@ export class MachineStatus {
     const out: MachineInfo[] = []
     for (const serverId of this.options.servers()) {
       const p = this.polled.get(serverId)
-      const name = this.options.name(serverId)
-      if (p === undefined || name === undefined) continue
+      const chosen = this.options.name(serverId)
+      if (p === undefined || chosen === undefined) continue
+      const name = chosen ?? this.labelOf(serverId)
       const m: MachineInfo = { id: this.idOf(serverId), name, reachable: p.reading.reachable }
       if (p.reading.reachable && p.reading.counts !== undefined) Object.assign(m, p.reading.counts)
       out.push(m)
@@ -178,6 +186,15 @@ export class MachineStatus {
   }
 
   // -------------------------------------------------------------------------------------------
+
+  private labelOf(serverId: string): string {
+    let label = this.labels.get(serverId)
+    if (label === undefined) {
+      label = `Server ${this.labels.size + 1}`
+      this.labels.set(serverId, label)
+    }
+    return label
+  }
 
   private idOf(serverId: string): string {
     let id = this.ids.get(serverId)

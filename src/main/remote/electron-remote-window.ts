@@ -44,6 +44,40 @@ export function remotePartition(serverId: string): string {
 /** How long main's own request to the server (the session check, the project list, a reopen) may take. */
 export const REMOTE_FETCH_TIMEOUT_MS = 10_000
 
+/**
+ * A response body as text, read as a stream and refused past `maxBytes` (main's own reads of the
+ * server's answers: a server that streams without end must not fill main's memory). A
+ * `Content-Length` over the cap refuses before reading; the stream is cancelled when it runs over.
+ */
+export async function readCappedText(res: Pick<Response, 'body' | 'headers'>, maxBytes: number): Promise<string> {
+  const tooBig = (): Error => new Error(`the server's answer is larger than ${maxBytes} bytes`)
+  const declared = Number(res.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined)
+    throw tooBig()
+  }
+  if (res.body === null) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => undefined)
+      throw tooBig()
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** `readCappedText` parsed as JSON (a parse error rejects). */
+export async function readCappedJson(res: Pick<Response, 'body' | 'headers'>, maxBytes: number): Promise<unknown> {
+  return JSON.parse(await readCappedText(res, maxBytes)) as unknown
+}
+
 /** The partitions this adapter prepared (isRemoteWindow). */
 const remoteSessions = new WeakSet<Session>()
 
@@ -117,19 +151,22 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
     }
     const view: RemoteSessionView = {
       jar,
-      fetchJson: async (url) => {
+      fetchJson: async (url, maxBytes) => {
         // The partition's cookies (`include`), never a cached answer, no redirect followed (the
-        // gateway sends none; one would be somewhere else), bounded.
+        // gateway sends none; one would be somewhere else), bounded in time and size.
         const res = await ses.fetch(url, {
           credentials: 'include',
           cache: 'no-store',
           redirect: 'error',
           signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)
         })
-        if (!res.ok) throw new RemoteHttpError(res.status)
-        return (await res.json()) as unknown
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => undefined)
+          throw new RemoteHttpError(res.status)
+        }
+        return readCappedJson(res, maxBytes)
       },
-      postJson: async (url, body, origin) => {
+      postJson: async (url, body, origin, maxBytes) => {
         // As fetchJson, plus what the gateway asks of every POST: the server's own Origin (set
         // explicitly: a request with no page behind it has none to send) and a JSON content type.
         const res = await ses.fetch(url, {
@@ -141,7 +178,14 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)
         })
-        const parsed = (await res.json().catch(() => undefined)) as unknown
+        // Past the cap rejects (the caller loads the page as is); a body that is not JSON is undefined.
+        const text = await readCappedText(res, maxBytes)
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(text) as unknown
+        } catch {
+          parsed = undefined
+        }
         return { status: res.status, body: parsed }
       }
     }
@@ -185,6 +229,14 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       gone: () => undefined
     })
     wc.on('did-finish-load', () => hooks.loaded())
+    // The person's own input, for the page-driven focus moves (remote-windows.ts "Page-driven
+    // actions"): a released mouse button or a tap is a click; a key pressed takes a click back.
+    // `input-event` sees what the person sends to the page, never what a script does in it.
+    wc.on('input-event', (_event, input) => {
+      const type = input.type
+      if (type === 'mouseUp' || type === 'gestureTap') hooks.input('click')
+      else if (type === 'rawKeyDown' || type === 'keyDown' || type === 'char') hooks.input('key')
+    })
     win.on('focus', () => hooks.focused())
     win.on('closed', () => hooks.closed())
     const id = win.id

@@ -63,7 +63,7 @@ export interface RemoteServiceStore {
   get(id: string): RemoteServerRecord | undefined
   prepare(input: { name?: string; via: RemoteVia }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia }
   insert(record: RemoteServerRecord): RemoteServerRecord
-  edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean }
+  edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean; identityChanged: boolean }
   rename(id: string, name: string): void
   forget(id: string): boolean
   setLocalPort(id: string, port: number): void
@@ -76,7 +76,6 @@ export interface RemoteServiceStore {
 /** The slice of RemoteWindows the coordinator uses. */
 export interface RemoteServiceWindows {
   open(serverId: string, request: RemoteOpenRequest): Promise<void>
-  setOrigin(serverId: string, origin: string): Promise<void>
   countOf(serverId: string): number
   refreshTitles(serverId: string): void
   forget(serverId: string): void
@@ -97,7 +96,7 @@ export interface RemoteServiceOptions {
    * `SSH_AUTH_SOCK` (a GUI start may have none in `process.env`).
    */
   ready?(): Promise<void>
-  /** Empty a forgotten server's partition (ElectronRemoteWindowFactory.clearSession). */
+  /** Empty a server's partition (ElectronRemoteWindowFactory.clearSession): forgotten, or another server now. */
   clearSession(serverId: string): Promise<void>
   /** The native open dialog (dialogs/electron-dialog.ts), a sheet on window `parentWindowId`; undefined when cancelled. */
   pickFile?(parentWindowId: number, defaultPath: string): Promise<string | undefined>
@@ -313,8 +312,12 @@ export class RemoteService {
   /**
    * Edit a saved server (design §3): its settings change in place (the store says what that drops).
    * A changed connection ends the server's SSH link (it was made with the old settings; the next
-   * open dials again) and moves the windows of a tunnel or Direct server to the new origin. A link
-   * with a token signs in with it, opening the server's web picker; otherwise nothing dials.
+   * open dials again). A changed identity (another machine, or another server, may answer: the
+   * store's `identityChanged`, which also dropped the cookie and the saved listener port) wipes the
+   * server as `forget` does, the record kept: its windows close and its partition is emptied. The
+   * old server's page, a service worker it registered or its storage on `http://127.0.0.1:<L>` must
+   * never run against the new one, which would get the new cookie through them. A link with a token
+   * signs in with it, opening the server's web picker; otherwise nothing dials.
    */
   async edit(request: RemoteEditRequest): Promise<RemoteConnectAnswer> {
     if (this.disposed) return fail('the app is quitting')
@@ -324,7 +327,7 @@ export class RemoteService {
     return this.run(serverId, async () => {
       if (this.disposed) return fail('the app is quitting')
       if (this.options.store.get(serverId) === undefined) return fail('this server is not saved any more')
-      let result: { viaChanged: boolean; renamed: boolean }
+      let result: { viaChanged: boolean; renamed: boolean; identityChanged: boolean }
       try {
         result = this.options.store.edit(serverId, {
           ...(parsed.name === undefined ? {} : { name: parsed.name }),
@@ -334,16 +337,11 @@ export class RemoteService {
       } catch (err) {
         return fail(errorText(err))
       }
-      if (result.viaChanged) {
+      if (result.identityChanged) {
+        await this.wipe(serverId)
+      } else if (result.viaChanged) {
         this.dropLink(serverId)
         this.signedIn.delete(serverId)
-        const via = this.options.store.get(serverId)?.via
-        const origin = via?.kind === 'tunnel' ? tunnelOrigin(via.localPort) : via?.kind === 'direct' ? via.origin : undefined
-        if (origin !== undefined) {
-          await this.options.windows
-            .setOrigin(serverId, origin)
-            .catch((err: unknown) => this.log(`remote ${serverId}: moving its windows to the new address failed: ${errorText(err)}`))
-        }
       }
       if (result.renamed) this.options.windows.refreshTitles(serverId)
       this.changed()
@@ -377,17 +375,8 @@ export class RemoteService {
    */
   forget(serverId: string): Promise<void> {
     return this.run(serverId, async () => {
-      // Windows first (their pages stop using the partition and the link), then the partition, then
-      // the link, then the record: a failure on the way leaves a record the person can forget again.
-      this.options.windows.forget(serverId)
-      this.held.delete(serverId)
-      this.signedIn.delete(serverId)
-      try {
-        await this.options.clearSession(serverId)
-      } catch (err) {
-        this.log(`remote ${serverId}: clearing its window data failed: ${errorText(err)}`)
-      }
-      this.dropLink(serverId)
+      // The wipe, then the record: a failure on the way leaves a record the person can forget again.
+      await this.wipe(serverId)
       this.options.store.forget(serverId)
       this.changed()
     })
@@ -426,6 +415,22 @@ export class RemoteService {
   }
 
   // -------------------------------------------------------------------------------------------
+
+  /**
+   * Everything of a server but its record: windows first (their pages stop using the partition and
+   * the link), then the partition (cookies, storage, service workers, cache), then the link.
+   */
+  private async wipe(serverId: string): Promise<void> {
+    this.options.windows.forget(serverId)
+    this.held.delete(serverId)
+    this.signedIn.delete(serverId)
+    try {
+      await this.options.clearSession(serverId)
+    } catch (err) {
+      this.log(`remote ${serverId}: clearing its window data failed: ${errorText(err)}`)
+    }
+    this.dropLink(serverId)
+  }
 
   /** Server `serverId` (saved, or the draft of the connect under way) as the link and the steps see it. */
   private record(serverId: string): RemoteServerRecord | undefined {

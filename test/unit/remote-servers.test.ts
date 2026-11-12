@@ -13,6 +13,7 @@ import {
   checkKeyPath,
   checkSshHost,
   checkSshUser,
+  chosenServerName,
   hostKeyOf,
   parseRemoteLink,
   remoteCommand,
@@ -642,29 +643,49 @@ describe('RemoteServerStore', () => {
     const { id } = store.add({ via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } } })
     await store.setCookie(id, 'dev-cookie')
     store.setHostKey(id, { type: 'ssh-ed25519', sha256: `SHA256:${'A'.repeat(43)}` })
+    store.setLocalPort(id, 41000)
     await store.setSecret(id, 'password', 'pw', { remember: true })
-    // Only the ccc path and the name: everything kept.
-    expect(store.edit(id, { name: 'Dev', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' } })).toEqual({ viaChanged: true, renamed: true })
-    expect(store.get(id)).toMatchObject({ name: 'Dev', hostKey: { type: 'ssh-ed25519' }, via: { ccc: '/opt/ccc' } })
-    expect(await store.getCookie(id)).toBe('dev-cookie')
-    expect(await store.getSecret(id, 'password')).toBe('pw')
+    // Only the name: everything kept.
+    expect(store.edit(id, { name: 'Dev', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } } })).toEqual({
+      viaChanged: false,
+      renamed: true,
+      identityChanged: false
+    })
     // Nothing but an empty name: nothing changed.
-    expect(store.edit(id, { name: '', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' } })).toEqual({ viaChanged: false, renamed: false })
-    // Forget the trusted host key (a reinstalled server): only the key goes, and it counts as a change.
-    expect(
-      store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' }, forgetHostKey: true })
-    ).toEqual({ viaChanged: true, renamed: false })
-    expect(store.get(id)?.hostKey).toBeUndefined()
-    expect(await store.getSecret(id, 'password')).toBe('pw')
-    // With no key to forget it is no change at all.
-    expect(
-      store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' }, forgetHostKey: true })
-    ).toEqual({ viaChanged: false, renamed: false })
-    store.setHostKey(id, { type: 'ssh-ed25519', sha256: `SHA256:${'A'.repeat(43)}` })
-    // The port: another machine may answer, so its key is asked again; the cookie stays.
-    store.edit(id, { via: { kind: 'ssh', host: 'devbox', port: 2222, auth: { kind: 'password' } } })
-    expect(store.get(id)?.hostKey).toBeUndefined()
+    expect(store.edit(id, { name: '', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } } })).toEqual({
+      viaChanged: false,
+      renamed: false,
+      identityChanged: false
+    })
+    // A sign-in change: the secret goes, the cookie, key and port stay (the same account on the same machine).
+    expect(store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'auto' } } })).toEqual({ viaChanged: true, renamed: false, identityChanged: false })
+    expect(store.get(id)).toMatchObject({ name: 'Dev', hostKey: { type: 'ssh-ed25519' }, localPort: 41000 })
     expect(await store.getCookie(id)).toBe('dev-cookie')
+    store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } } })
+    await store.setSecret(id, 'password', 'pw', { remember: true })
+    // Forget the trusted host key (a reinstalled server): an identity change, the password kept.
+    expect(store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' } }, forgetHostKey: true })).toEqual({
+      viaChanged: true,
+      renamed: false,
+      identityChanged: true
+    })
+    expect(store.get(id)?.hostKey).toBeUndefined()
+    expect(store.get(id)?.localPort).toBeUndefined()
+    expect(store.hasCookie(id)).toBe(false)
+    expect(await store.getSecret(id, 'password')).toBe('pw')
+    // The ccc path: maybe another server on the machine: the cookie and port go, the host key stays.
+    store.setHostKey(id, { type: 'ssh-ed25519', sha256: `SHA256:${'A'.repeat(43)}` })
+    store.setLocalPort(id, 41000)
+    await store.setCookie(id, 'dev-cookie')
+    expect(store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' } }).identityChanged).toBe(true)
+    expect(store.get(id)).toMatchObject({ hostKey: { type: 'ssh-ed25519' }, via: { ccc: '/opt/ccc' } })
+    expect(store.hasCookie(id)).toBe(false)
+    expect(store.get(id)?.localPort).toBeUndefined()
+    // The port: another machine may answer, so its key is asked again, and the cookie goes.
+    await store.setCookie(id, 'dev-cookie')
+    expect(store.edit(id, { via: { kind: 'ssh', host: 'devbox', port: 2222, auth: { kind: 'password' } } }).identityChanged).toBe(true)
+    expect(store.get(id)?.hostKey).toBeUndefined()
+    expect(store.hasCookie(id)).toBe(false)
     expect(await store.getSecret(id, 'password')).toBeUndefined()
     // A memory-held secret goes with a sign-in change too.
     await store.setSecret(id, 'password', 'mem', { remember: false })
@@ -672,7 +693,7 @@ describe('RemoteServerStore', () => {
     expect(await store.getSecret(id, 'password')).toBeUndefined()
   })
 
-  it('edit refuses another kind, a clash with another server and an unknown id; a Direct origin change drops the cookie', async () => {
+  it('edit refuses another kind, a clash with another server and an unknown id; a tunnel or Direct origin change drops the cookie', async () => {
     const store = make()
     const a = store.add({ via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 } })
     store.add({ via: { kind: 'tunnel', localPort: 7332, remotePort: 7330 } })
@@ -680,15 +701,35 @@ describe('RemoteServerStore', () => {
     expect(() => store.edit(a.id, { via: { kind: 'tunnel', localPort: 7332, remotePort: 7330 } })).toThrow(/already saved/)
     expect(() => store.edit('nope', { via: { kind: 'tunnel', localPort: 7333, remotePort: 7330 } })).toThrow(/unknown server/)
     await store.setCookie(a.id, 'tunnel-cookie')
-    store.edit(a.id, { via: { kind: 'tunnel', localPort: 7340, remotePort: 7330, sshHost: 'devbox' } })
-    expect(store.get(a.id)?.via).toEqual({ kind: 'tunnel', localPort: 7340, remotePort: 7330, sshHost: 'devbox' })
+    expect(store.edit(a.id, { via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 } }).identityChanged).toBe(false)
     expect(await store.getCookie(a.id)).toBe('tunnel-cookie')
+    expect(store.edit(a.id, { via: { kind: 'tunnel', localPort: 7340, remotePort: 7330, sshHost: 'devbox' } }).identityChanged).toBe(true)
+    expect(store.get(a.id)?.via).toEqual({ kind: 'tunnel', localPort: 7340, remotePort: 7330, sshHost: 'devbox' })
+    expect(store.hasCookie(a.id)).toBe(false)
     const d = store.add({ via: { kind: 'direct', origin: 'https://box.example' } })
     await store.setCookie(d.id, 'direct-cookie')
     store.edit(d.id, { via: { kind: 'direct', origin: 'https://box.example' } })
     expect(await store.getCookie(d.id)).toBe('direct-cookie')
-    store.edit(d.id, { via: { kind: 'direct', origin: 'https://other.example' } })
+    expect(store.edit(d.id, { via: { kind: 'direct', origin: 'https://other.example' } }).identityChanged).toBe(true)
     expect(store.hasCookie(d.id)).toBe(false)
+  })
+
+  it("edit: an unnamed server's name follows its address; a name the person chose stays", () => {
+    const store = make()
+    const { id } = store.add({ via: { kind: 'ssh', host: 'devbox' } })
+    expect(store.get(id)?.name).toBe('devbox')
+    // Edit sends the name it showed: unchanged, so still the default, of the new host now.
+    expect(store.edit(id, { name: 'devbox', via: { kind: 'ssh', host: 'newbox' } }).renamed).toBe(true)
+    expect(store.get(id)?.name).toBe('newbox')
+    expect(chosenServerName(store.get(id)!)).toBeUndefined()
+    store.edit(id, { name: 'Work', via: { kind: 'ssh', host: 'newbox' } })
+    store.edit(id, { name: 'Work', via: { kind: 'ssh', host: 'thirdbox' } })
+    expect(store.get(id)?.name).toBe('Work')
+    expect(chosenServerName(store.get(id)!)).toBe('Work')
+    const d = store.add({ via: { kind: 'direct', origin: 'https://box.example:8443' } })
+    expect(chosenServerName(store.get(d.id)!)).toBeUndefined()
+    store.edit(d.id, { name: 'box.example:8443', via: { kind: 'direct', origin: 'https://other.example' } })
+    expect(store.get(d.id)?.name).toBe('other.example')
   })
 
   it('repairs a damaged app.json list on every operation', async () => {

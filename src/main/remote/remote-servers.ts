@@ -26,6 +26,7 @@ import {
   checkKeyPath,
   checkSshHost,
   checkSshUser,
+  chosenServerName,
   defaultServerName,
   hostKeyOf,
   isLocalPort,
@@ -179,14 +180,23 @@ export class RemoteServerStore {
 
   /**
    * Edit a saved server's settings (the picker's Edit, design §3): its name (absent or empty: kept)
-   * and `via`, of the same kind (another kind is another server). The device cookie is kept, with
-   * one exception: a Direct origin that changed (the cookie would be sent to that other origin). An
-   * SSH host or port that changed drops the trusted host key (another machine may answer there, and
-   * its key must be confirmed again); a host, user, port or sign-in that changed drops the password
-   * or passphrase, stored and in memory (it was for that account or that key). A `via` another saved
-   * server already has is refused, as `add` refuses a tunnel's used local port.
+   * and `via`, of the same kind (another kind is another server). A `via` another saved server
+   * already has is refused, as `add` refuses a tunnel's used local port.
+   *
+   * An identity change (`identityChanged`) means another machine, or another server on it, may answer
+   * from now on: an SSH host, port, user or `ccc` path that changed, "Forget the trusted host key",
+   * any change of a tunnel (its local port is the page's origin; its SSH host and server port say
+   * which server is behind it), a Direct origin that changed. Then the device cookie and the
+   * listener's saved port go (the cookie would be sent to the new server, and the old server's page
+   * kept on the old origin's storage), and the caller wipes the partition and closes the windows
+   * (RemoteService.edit). An SSH host or port that changed, or the forget, also drops the trusted
+   * host key; a host, user, port or sign-in that changed drops the password or passphrase, stored and
+   * in memory (it was for that account or that key).
+   *
+   * An unnamed server (its name is the default one, `chosenServerName`) keeps following its address:
+   * Edit sends the name it showed, so an unchanged default name becomes the new address's default.
    */
-  edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean } {
+  edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean; identityChanged: boolean } {
     const servers = this.read()
     const server = servers.find((s) => s.id === id)
     if (server === undefined) throw new RemoteServerError('unknown server')
@@ -194,22 +204,31 @@ export class RemoteServerStore {
     if (via.kind !== server.via.kind) throw new RemoteServerError('Edit cannot change how a server is reached: connect it as a new server')
     const other = servers.find((s) => s.id !== id && sameVia(s.via, via))
     if (other !== undefined) throw new RemoteServerError(`"${other.name}" is already saved with these settings`)
+    const unnamed = chosenServerName(server) === undefined
     let name = server.name
     if (input.name !== undefined && input.name.trim() !== '') {
       const clean = serverNameOf(input.name)
       if (clean === undefined) throw new RemoteServerError('the name must be 1 to 100 characters with no control characters')
       name = clean
     }
+    // The default name shown, sent back unchanged: still unnamed, so it follows the new address.
+    if (unnamed && name === server.name) name = defaultServerName(via)
     const before = server.via
     let viaChanged = !sameSettings(before, via)
+    let identityChanged = false
     if (before.kind === 'ssh' && via.kind === 'ssh') {
       const address = before.host !== via.host || (before.port ?? 0) !== (via.port ?? 0)
-      const account = address || (before.user ?? '') !== (via.user ?? '') || JSON.stringify(sshAuthOf(before)) !== JSON.stringify(sshAuthOf(via))
+      const user = (before.user ?? '') !== (via.user ?? '')
+      const account = address || user || JSON.stringify(sshAuthOf(before)) !== JSON.stringify(sshAuthOf(via))
+      // Another `ccc` may be another server's (a second data dir on the machine): its own devices.
+      identityChanged = address || user || (before.ccc ?? '') !== (via.ccc ?? '')
       // Edit's "Forget the trusted host key" (the changed-key refusal points there: a reinstalled
-      // server). It counts as a changed connection, so the live link, made under the old key, ends.
-      if (input.forgetHostKey === true && server.hostKey !== undefined) {
+      // server). A changed connection and a changed identity: the live link, made under the old key,
+      // ends, and what the old server's page left in the partition goes.
+      if (input.forgetHostKey === true) {
         delete server.hostKey
         viaChanged = true
+        identityChanged = true
       }
       if (address) delete server.hostKey
       if (account) {
@@ -217,12 +236,17 @@ export class RemoteServerStore {
         this.held.delete(id)
       }
     }
-    if (before.kind === 'direct' && via.kind === 'direct' && before.origin !== via.origin) delete server.cookie
+    if (before.kind === 'tunnel' && via.kind === 'tunnel') identityChanged = viaChanged
+    if (before.kind === 'direct' && via.kind === 'direct') identityChanged = before.origin !== via.origin
+    if (identityChanged) {
+      delete server.cookie
+      delete server.localPort
+    }
     const renamed = name !== server.name
     server.name = name
     server.via = via
     this.write(servers)
-    return { viaChanged, renamed }
+    return { viaChanged, renamed, identityChanged }
   }
 
   rename(id: string, name: string): void {

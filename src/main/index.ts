@@ -32,6 +32,7 @@ import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
 import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type TabInfo, type UpdateState } from '../shared/ipc'
 import { notificationSoundOf } from '../shared/notify-sound'
+import { chosenServerName } from '../shared/remote-servers'
 import { liveChildren } from './child-registry'
 import { ClaudePlugins, ClaudePluginsBuilds, type SkillSource } from './claude-plugins/claude-plugins'
 import { CommandRegistry } from './commands/command-registry'
@@ -661,7 +662,6 @@ function start(server: boolean): void {
           store,
           windows: {
             open: (serverId, request) => remoteWindows.open(serverId, request),
-            setOrigin: (serverId, origin) => remoteWindows.setOrigin(serverId, origin),
             countOf: (serverId) => remoteWindows.countOf(serverId),
             // A rename: the window titles and the machine chips' names follow.
             refreshTitles: (serverId) => {
@@ -693,7 +693,11 @@ function start(server: boolean): void {
         // read it through ctx.sessions.machines (host-api.ts; the hosts' deps below).
         const machineStatus: MachineStatus = new MachineStatus({
           servers: () => remoteWindows.serverIds(),
-          name: (serverId) => store.get(serverId)?.name,
+          // The person's own name only: a default name is the server's address (machine-status.ts).
+          name: (serverId) => {
+            const record = store.get(serverId)
+            return record === undefined ? undefined : (chosenServerName(record) ?? null)
+          },
           fetch: (serverId, path) => remoteWindows.fetchFromServer(serverId, path),
           log: warnLog
         })

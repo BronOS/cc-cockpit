@@ -236,7 +236,8 @@ Decided (2026-11-12): **one chip per machine**, not every remote session.
   `ctx.sessions.machines()` / `onMachinesChange(listener)` (same `"access": { "sessions": "all-windows" }` declaration
   as `list({ scope: 'all' })`; refused without it): `{ id, name, reachable, waiting, working, idle }[]`, and
   `ctx.sessions.focusMachine(id)` (rate-limited as `focus`). Ids are opaque, minted by main per server; no address, no
-  `via`, nothing secret. An older app has none: the strip checks `typeof ctx.sessions.machines`.
+  `via`, nothing secret. `name` is the person's own name for the server only when they set one; a server they did not
+  name (its default name is the SSH host or the link's host) is `Server <n>`, numbered for the run. An older app has none: the strip checks `typeof ctx.sessions.machines`.
 - **Remote windows: one chip for this computer.** The web client, when its user agent carries `cc-cockpit-desktop/`
   (§4 "Shortcuts"), draws a "This computer" chip at the start of the strip area (core shell, not the plugin: the
   server's plugin knows nothing of the desktop). It has no counts in v1 (the sandboxed page has no channel to this
@@ -303,11 +304,14 @@ those first); otherwise the server could offer a type nothing vouches for and th
 
 1. The record's `hostKey` matches: go on. It differs: refuse ("the host key of devbox changed; if the server was
    reinstalled, Forget the trusted key in Edit"), never ask; a picker answer is not even read in this branch.
-2. No `hostKey` yet: read `~/.ssh/known_hosts` (read only, never written; exact plain and hashed `|1|` host entries,
+2. No `hostKey` yet: read `~/.ssh/known_hosts`, then `/etc/ssh/ssh_known_hosts` (read only, never written; a file
+   that cannot be read or is over the cap stops the dial instead of reading as empty; exact plain and hashed `|1|` host entries,
    the `[host]:port` form for a port other than 22; `@revoked` matched by key; wildcard and negated patterns and
    `@cert-authority` lines ignored, so such a host is "unknown" and asked). A matching line trusts
    the key without a question and saves it as `hostKey`; a line for the host with a different key of the same type
-   refuses as above; nothing for the host asks the person (§3, "Trust this host?").
+   refuses as above; a key of a type no line lists for a host that is listed with other types refuses too ("could be
+   an attack; add the key with ssh-keyscan if expected": the dial asked for the listed types first); nothing for the
+   host asks the person (§3, "Trust this host?").
 3. Trusted: `hostKey` is saved in the record (not secret).
 
 Only in the "unknown" branch is the picker's answer consulted, and only when it equals the key seen on that dial.
@@ -431,13 +435,26 @@ is on the client:
   browser through `createOpenExternal`. A compromised server can do to this desktop what a website in a sandboxed tab
   can, no more. A grep test keeps `RemoteWindow` without a preload and keeps `persist:remote-` partitions off every
   other window.
+- **What a page's navigation makes main do.** The page navigates with no gesture and the server sees the keystrokes,
+  so a project switch, "This computer", back to the picker and the like take a per-server budget (3 in 10 s), a
+  server has at most 16 windows, and its `window.open` links share one open budget. A move of the focus away from the
+  page (to a local window, the desktop picker, another remote window) also needs the person's pointer click in that
+  window within 1.5 s with no key pressed since: a key never counts, or the server could fire `?cc-desktop=local`
+  just before an Enter that would land on a local Claude prompt. Main's own reads of the server's answers are capped
+  (1 MiB for the project list, 4 KiB for the session checks).
+- **Another server behind a record.** Edit that changes who answers (an SSH host, port, user or `ccc` path, Forget the
+  trusted host key, any tunnel setting, a Direct origin) wipes the server as Forget does, the record kept: its windows
+  close, its partition is emptied (service workers and storage included) and the cookie and the listener's port go,
+  so nothing of the old server's page runs against the new one with its cookie.
 - **Credentials.** Device cookie, password and passphrase encrypted by the secret store in the record, or held in
   main's memory only when not remembered; never in a log, an IPC event, a renderer or a URL. The picker sends a secret
   to main in the call that uses it and gets none back (`remote.list` reports only "remembered" flags). Key files stay
   where they are; only their path is kept. Access tokens are used once and dropped.
 - **Host keys.** Trust on first use, confirmed by the person with the fingerprint, or vouched for by their own
-  `known_hosts`; a changed key always refuses and is never offered as a question (the one case where a click-through
-  would be the attack). The verifier's decision is main's; the picker's answer is only a fingerprint main compares.
+  `known_hosts` (`~/.ssh/known_hosts`, then `/etc/ssh/ssh_known_hosts`; a file that cannot be read or is over 4 MiB
+  stops the dial, so an `@revoked` line is never lost); a changed key always refuses and is never offered as a
+  question (the one case where a click-through would be the attack), and so does a key of a type the files do not
+  list for a host they list with other types. The verifier's decision is main's; the picker's answer is only a fingerprint main compares.
 - **The library.** `ssh2` (pinned exact, MIT, deps `asn1` and `bcrypt-pbkdf`; its native crypto binding and
   `cpu-features` are optional and it runs on plain JS without them) is a new dependency in a security path. It is
   imported only in `ssh-client.ts`; only `Client` is used in main (`Server` only in tests); its `debug` output is off.

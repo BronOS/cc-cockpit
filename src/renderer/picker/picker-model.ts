@@ -3,7 +3,7 @@
 // the unit tests (plain Node) cover it. The desktop picker's Servers section (remote servers,
 // design-remote-desktop.md §3) takes its labels, order and grouping from here too.
 import type { ProjectSummary, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
-import { checkSshHost, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
+import { checkSshHost, parseRemoteLink, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
 
 /**
  * `path` with the home folder written as `~` (`/Users/me/src/app` -> `~/src/app`). Only a whole
@@ -113,6 +113,25 @@ export function isLoopbackOrigin(origin: string): boolean {
   if (host === 'localhost' || host.endsWith('.localhost') || host === '[::1]') return true
   const parts = host.split('.')
   return parts.length === 4 && parts[0] === '127' && parts.every((p) => p !== '' && p.length <= 3 && [...p].every((c) => c >= '0' && c <= '9'))
+}
+
+/** The Link tab's confirm before a plain-http link to another machine is first connected (`plainHttpToConfirm`). */
+export const PLAIN_HTTP_WARNING =
+  'This link is not encrypted: the sign-in and everything you type travel in clear over the network. Connect anyway?'
+
+/**
+ * The origin the person must confirm before the Link tab connects, or undefined when there is nothing
+ * to confirm: a link over plain http to a host that is not this machine (design §7, §8: the token,
+ * the device cookie and every keystroke would cross the network in clear). A link that does not
+ * parse is main's to refuse; an Edit that keeps the saved origin was confirmed when it was first
+ * connected (the row's "not encrypted" note says so since).
+ */
+export function plainHttpToConfirm(tab: ConnectTab, fields: Pick<ConnectFields, 'link'>, saved?: RemoteVia): string | undefined {
+  if (tab !== 'link') return undefined
+  const link = parseRemoteLink(fields.link)
+  if ('error' in link || !link.origin.startsWith('http:') || isLoopbackOrigin(link.origin)) return undefined
+  if (saved?.kind === 'direct' && saved.origin === link.origin) return undefined
+  return link.origin
 }
 
 /**

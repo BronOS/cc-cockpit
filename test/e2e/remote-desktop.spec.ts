@@ -359,19 +359,36 @@ test('Direct: a session chip of another project opens that project in its own re
     expect(shown).toContain(`${server.origin}/${href}`)
     expect(shown).toHaveLength(2)
 
-    // The chip again: the other project's window is focused, none is opened. Clicked through main's
-    // frame of the strip, for the same reason (Playwright still waits on the cancelled navigation).
-    // The first window has the focus before.
+    // The chip again: the other project's window is focused, none is opened. A focus move needs the
+    // person's own click in the window (a script's `click()` does not count), so main sends the window
+    // a real mouse click at the chip, found through the strip's frame (Playwright's own click would
+    // still wait on the cancelled navigation). The first window has the focus before.
     await app.evaluate(({ BrowserWindow }, title) => BrowserWindow.getAllWindows().find((w) => w.getTitle() === title)?.focus(), `Test server — ${projectName}`)
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.getTitle())).toBe(`Test server — ${projectName}`)
     const clicked = await app.evaluate(
       async ({ BrowserWindow }, { origin, project, tabId }) => {
         const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === `${origin}/?project=${project}`)
-        for (const frame of win?.webContents.mainFrame.framesInSubtree ?? []) {
+        const wc = win?.webContents
+        if (wc === undefined) return false
+        const at = (await wc.mainFrame.executeJavaScript(
+          `(() => { const f = document.querySelector('.top-strip iframe[title="sessions-strip slot"]'); if (!f) return null; const r = f.getBoundingClientRect(); return { x: r.left + f.clientLeft, y: r.top + f.clientTop } })()`
+        )) as { x: number; y: number } | null
+        if (at === null) return false
+        for (const frame of wc.mainFrame.framesInSubtree) {
+          if (frame === wc.mainFrame) continue
           const hit = (await frame.executeJavaScript(
-            `(() => { const b = document.querySelector('.entry[data-tab-id="${tabId}"]'); if (b) b.click(); return b !== null })()`
-          )) as boolean
-          if (hit) return true
+            `(() => { const b = document.querySelector('.entry[data-tab-id="${tabId}"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`
+          )) as { x: number; y: number } | null
+          if (hit === null) continue
+          const x = Math.round(at.x + hit.x)
+          const y = Math.round(at.y + hit.y)
+          // Through the DevTools protocol: `sendInputEvent` reaches the top frame only, never the strip's
+          // out-of-process frame; this is routed as the person's own input is.
+          wc.debugger.attach('1.3')
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 })
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 })
+          wc.debugger.detach()
+          return true
         }
         return false
       },

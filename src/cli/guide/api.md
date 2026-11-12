@@ -299,7 +299,8 @@ with full Node access.
   counts are that server's Claude tabs: `waiting` for the person (the prompt or a permission dialog),
   `working` (or starting), `idle` (idle or exited); only counts cross machines, never a tab's text. They
   are absent before the first answer, for a server too old to give them, and when `reachable` is false
-  (it did not answer; draw the name dimmed). `name` is the person's own name for the server; `id` is
+  (it did not answer; draw the name dimmed). `name` is the person's own name for the server, or
+  `Server 1`, `Server 2`, ... (stable for the run) when they gave it none: never its address; `id` is
   opaque and only good for this run. `ctx.sessions.onMachinesChange(listener)` hears the whole list
   again when it changes (the app asks each server every 5 s; returns a disposer).
   `ctx.sessions.focusMachine(id)` raises that server's most recently focused remote window; `false` for

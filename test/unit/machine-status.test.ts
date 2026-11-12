@@ -34,7 +34,7 @@ async function flush(): Promise<void> {
 function setup() {
   const timers = new FakeTimers()
   let servers: string[] = []
-  const names = new Map([
+  const names = new Map<string, string | null>([
     ['s1', 'devbox'],
     ['s2', 'build']
   ])
@@ -194,6 +194,23 @@ describe('MachineStatus', () => {
     t.open('s1', 's2')
     expect(t.status.machines().map((m) => m.id)).toEqual(['m1', 'm2'])
     expect(t.status.serverOf('m2')).toBe('s2')
+  })
+
+  it("a server the person did not name is `Server <n>`, numbered by first listing and kept for the run; never its address", async () => {
+    const t = setup()
+    t.names.set('s1', null)
+    t.names.set('s3', null)
+    t.open('s3', 's2', 's1')
+    await flush()
+    expect(t.status.machines().map((m) => m.name)).toEqual(['Server 1', 'build', 'Server 2'])
+    // Closed and reopened in another order: the same labels.
+    t.open('s1')
+    t.open('s1', 's3')
+    expect(t.status.machines().map((m) => m.name)).toEqual(['Server 2', 'Server 1'])
+    // Named since (the picker's rename): the chosen name.
+    t.names.set('s1', 'Work')
+    t.status.refresh()
+    expect(t.status.machines().map((m) => m.name)).toEqual(['Work', 'Server 1'])
   })
 
   it('leaves out a server with no record (forgotten) and hears nothing after dispose', async () => {

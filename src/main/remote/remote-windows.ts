@@ -12,7 +12,7 @@
 //    origin is cancelled; with a Direct server on a real address, every loopback host is.
 //  - Top-level navigation and redirects stay on the server's origin (`allowRemoteNavigation`);
 //    a page-opened window is never one of ours: an http(s) link goes to the person's browser under
-//    the webview panels' open budget (open-budget.ts), anything else is dropped.
+//    the webview panels' open budget (open-budget.ts, one per server), anything else is dropped.
 //
 // Back to the picker: a project page navigating to the server's own picker (the tab strip's "+",
 // Close project) is cancelled and the desktop picker shows; the window closes when the server no
@@ -26,6 +26,22 @@
 // opens that project's own window, or focuses the one that shows it (`isProjectSwitch`). The title is `<server> — <project>` with the name from the
 // server's PROJECTS_PATH, fetched through the window's own partition (its device cookie applies);
 // the page's own title is the static `cc-cockpit` and is never read.
+//
+// Page-driven actions (design §4, §8). The server's page decides when it navigates, with no gesture
+// needed, and the server sees what the person types. So what such a navigation makes main do is held
+// to a few rules (`gesture`):
+//  - every one of them (a project switch, the "This computer" chip, back to the picker, a web picker
+//    landing on a project another window shows) takes one of the server's MAX_PAGE_ACTIONS per
+//    PAGE_ACTION_WINDOW_MS: a page looping `location = '/?project=' + n` gets a few windows, not one per
+//    turn of the loop; and a server has at most MAX_WINDOWS_PER_SERVER windows;
+//  - the ones that move the focus away from the page (to a local window, to the desktop picker, to
+//    another window that may be followed by a local one when this one closes) also need the person's
+//    own pointer click in that window within CLICK_WINDOW_MS, with no key pressed since, and use it up.
+//    A key press never counts: the server sees the typing, so it could fire `?cc-desktop=local` just
+//    before an Enter and land that Enter on a local Claude prompt;
+//  - `window.open` links to the person's browser take the server's OpenBudget, shared by its windows
+//    (one per window would give a page that opens windows one budget each).
+// A refused action is dropped with a log line; the navigation is cancelled all the same.
 //
 // Re-pair (SSH only, link mode only). A revoked or expired cookie gives no 401: SESSION_PATH answers
 // 200 with `device: null` and the page draws its sign-in screen. So a finished load or a page's own
@@ -85,6 +101,16 @@ const MAX_TAB_ID = 200
 const MAX_TITLE_NAME = 200
 /** The longest error text taken from the server for main's error page. */
 const MAX_SERVER_ERROR = 500
+/** Page-driven actions of one server (see the header) allowed per PAGE_ACTION_WINDOW_MS. */
+export const MAX_PAGE_ACTIONS = 3
+export const PAGE_ACTION_WINDOW_MS = 10_000
+/** A server's open windows at most: a further open is refused. */
+export const MAX_WINDOWS_PER_SERVER = 16
+/** How long after the person's click in a window a page-driven focus move counts as theirs. */
+export const CLICK_WINDOW_MS = 1500
+/** Main's own reads of the server's answers, at most (electron-remote-window.ts errors past them). */
+export const PROJECTS_MAX_BYTES = 1024 * 1024
+export const SESSION_MAX_BYTES = 4 * 1024
 
 // ---------------------------------------------------------------------------------------------
 // The rules (pure, unit-tested on their own)
@@ -271,6 +297,11 @@ export interface RemoteWindowHooks {
   loaded(): void
   /** The window got the focus (the machine chip's click focuses the server's most recently focused one). */
   focused(): void
+  /**
+   * The person's input reached the page: a pointer click (a mouse button released, a tap) or a key
+   * pressed. Only a click vouches for a page-driven focus move (see the header).
+   */
+  input(kind: 'click' | 'key'): void
   /** The window closed. */
   closed(): void
 }
@@ -317,16 +348,16 @@ export interface RemoteSessionHooks {
 export interface RemoteSessionView {
   readonly jar: RemoteCookieJar
   /**
-   * GET `url` with the partition's cookies and parse the JSON body; rejects on a network error, or
-   * with a RemoteHttpError on a non-2xx answer.
+   * GET `url` with the partition's cookies and parse the JSON body, read up to `maxBytes`; rejects on
+   * a network error, a body past `maxBytes`, or with a RemoteHttpError on a non-2xx answer.
    */
-  fetchJson(url: string): Promise<unknown>
+  fetchJson(url: string, maxBytes: number): Promise<unknown>
   /**
    * POST `body` as JSON to `url` with the partition's cookies and `Origin: <origin>` (the gateway
    * refuses a POST whose Origin is not the server's own). Any status answers, with the JSON body
-   * (undefined when it is not JSON); rejects only on a network error.
+   * (undefined when it is not JSON), read up to `maxBytes`; rejects on a network error or a body past it.
    */
-  postJson(url: string, body: unknown, origin: string): Promise<{ status: number; body: unknown }>
+  postJson(url: string, body: unknown, origin: string, maxBytes: number): Promise<{ status: number; body: unknown }>
 }
 
 export interface RemoteWindowFactory {
@@ -404,6 +435,9 @@ interface ServerState {
   attempts: number
   /** Re-pairs waiting for the page's sign-in to land the cookie. */
   signedIn: Array<() => void>
+  /** The server's page-driven actions (MAX_PAGE_ACTIONS) and its windows' `window.open`s, shared by its windows. */
+  readonly actions: Budget
+  readonly opens: OpenBudget
 }
 
 interface WindowRecord {
@@ -413,7 +447,8 @@ interface WindowRecord {
   project: string | undefined
   /** The project the title was last resolved for (a name lookup per project change, not per pushState). */
   titled: string | undefined | null
-  readonly budget: OpenBudget
+  /** When the person last clicked in the window (`now()`), with no key pressed since; undefined: no such click. */
+  clickedAt: number | undefined
   closed: boolean
   /** Bumped by every main-made load: a gate answer for an older one is dropped. */
   loads: number
@@ -478,6 +513,23 @@ function openProjectIdsOf(body: unknown): Set<string> | undefined {
   return ids
 }
 
+/** A sliding window of `max` actions per `windowMs` (the page-driven actions of one server). */
+export class Budget {
+  private times: number[] = []
+  constructor(
+    private readonly max: number,
+    private readonly windowMs: number
+  ) {}
+
+  /** Count one action at `now` (ms) when the budget allows it; false: refused, nothing counted. */
+  take(now: number): boolean {
+    this.times = this.times.filter((t) => now - t < this.windowMs)
+    if (this.times.length >= this.max) return false
+    this.times.push(now)
+    return true
+  }
+}
+
 const realTimers: RemoteWindowsTimers = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)
@@ -520,6 +572,9 @@ export class RemoteWindows {
       existing.view.focus()
       return
     }
+    if (this.countOf(serverId) >= MAX_WINDOWS_PER_SERVER) {
+      throw new Error(`at most ${MAX_WINDOWS_PER_SERVER} windows of one server can be open; close one first`)
+    }
     const server = this.options.store.get(serverId)
     if (server === undefined) throw new Error('unknown server')
     // The hooks run only after create returned (the page has not loaded anything before that).
@@ -539,11 +594,15 @@ export class RemoteWindows {
       focused: () => {
         if (made.rec !== undefined && !made.rec.closed) made.rec.focusedAt = ++this.focusSeq
       },
+      input: (kind) => {
+        if (made.rec === undefined || made.rec.closed) return
+        made.rec.clickedAt = kind === 'click' ? this.now() : undefined
+      },
       closed: () => {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
@@ -617,7 +676,7 @@ export class RemoteWindows {
     // No window to vouch for it: a tunnel server is probed before every poll.
     const ok = this.cleared(serverId)
     if (ok !== true && !(await ok)) throw new Error('the tunnel did not answer as a cc-cockpit server')
-    return state.session.fetchJson(`${state.origin}${path}`)
+    return state.session.fetchJson(`${state.origin}${path}`, SESSION_MAX_BYTES)
   }
 
   /** The server was renamed: its windows' titles follow. */
@@ -634,13 +693,20 @@ export class RemoteWindows {
   }
 
   /**
-   * Forget: the server's windows closed and its state dropped. Its partition's listeners stay (a
-   * session cannot drop them) but find no server any more: every loopback request is refused and a
-   * cookie change is ignored. The caller empties the partition (`clearSession` of the adapter).
+   * Forget (or another server behind the record now, RemoteService.edit): the server's windows closed
+   * and its state dropped. Its partition's listeners stay (a session cannot drop them) but find no
+   * server any more: every loopback request is refused and a cookie change is ignored (the old
+   * RemoteCookie stops listening; a later open makes a new one). The windows count as closed at once,
+   * so an open right after makes a new window instead of finding one still closing. The caller
+   * empties the partition (`clearSession` of the adapter).
    */
   forget(serverId: string): void {
-    this.closeServer(serverId)
+    this.servers.get(serverId)?.cookie.dispose()
     this.servers.delete(serverId)
+    for (const rec of this.windowsOf(serverId)) {
+      rec.view.close()
+      this.closed(rec)
+    }
   }
 
   /** Close every remote window (quit). */
@@ -673,11 +739,50 @@ export class RemoteWindows {
       onSignedIn: () => this.signedIn(serverId),
       log: this.log
     })
-    const state: ServerState = { origin, session, cookie, restored: Promise.resolve(), pairing: undefined, attempts: 0, signedIn: [] }
+    const state: ServerState = {
+      origin,
+      session,
+      cookie,
+      restored: Promise.resolve(),
+      pairing: undefined,
+      attempts: 0,
+      signedIn: [],
+      actions: new Budget(MAX_PAGE_ACTIONS, PAGE_ACTION_WINDOW_MS),
+      opens: new OpenBudget()
+    }
     // Before anything reads the origin back through `this.servers` (restore does).
     this.servers.set(serverId, state)
     state.restored = cookie.restore()
     return state
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now()
+  }
+
+  /**
+   * May the page of `rec` make main do `what` now (see the header, "Page-driven actions")? `focus`:
+   * the action moves the focus away from the page, so it needs the person's click in this window
+   * within CLICK_WINDOW_MS (used up here: one click, one move). Then one of the server's page-driven
+   * actions is taken. Refused: false, with a log line naming the rule (never the URL).
+   */
+  private gesture(rec: WindowRecord, what: string, focus: boolean): boolean {
+    const state = this.servers.get(rec.serverId)
+    if (state === undefined) return false
+    const now = this.now()
+    if (focus) {
+      const clicked = rec.clickedAt !== undefined && now - rec.clickedAt >= 0 && now - rec.clickedAt <= CLICK_WINDOW_MS
+      if (!clicked) {
+        this.log(`remote ${rec.serverId}: dropped ${what}: no click of the person in the window just before`)
+        return false
+      }
+    }
+    if (!state.actions.take(now)) {
+      this.log(`remote ${rec.serverId}: dropped ${what}: past ${MAX_PAGE_ACTIONS} in ${PAGE_ACTION_WINDOW_MS / 1000} s`)
+      return false
+    }
+    if (focus) rec.clickedAt = undefined
+    return true
   }
 
   private windowsOf(serverId: string): WindowRecord[] {
@@ -702,7 +807,7 @@ export class RemoteWindows {
     // The "This computer" chip (design §4.1), before the picker and project rules: it is never a
     // page load, so it is cancelled from any page and the local side comes forward.
     if (isDesktopLocalNavigation(url, origin)) {
-      if (!this.options.focusLocal?.()) this.options.showPicker?.()
+      if (this.gesture(rec, 'a "This computer" request', true) && !this.options.focusLocal?.()) this.options.showPicker?.()
       return false
     }
     const from = rec.view.url()
@@ -713,7 +818,7 @@ export class RemoteWindows {
       return false
     }
     if (!isPickerNavigation(from, url, origin)) return true
-    this.backToPicker(rec, project)
+    if (this.gesture(rec, 'a move back to the picker', true)) this.backToPicker(rec, project)
     return false
   }
 
@@ -722,12 +827,16 @@ export class RemoteWindows {
    * sends the clicking view there, `project.goto`): cancelled, and that project gets its own window
    * on the same server, as the desktop picker would open it (a window that shows it already is
    * focused). This window keeps its project: one window per (server, project), and the person
-   * clicked a chip, not "close this one".
+   * clicked a chip, not "close this one". Focusing a window that shows it moves the focus off this
+   * page, so it needs the person's click; a new window takes the server's budget and cap only (the
+   * focus goes to that server's own window).
    */
   private switchProject(rec: WindowRecord, url: string): void {
     const state = this.servers.get(rec.serverId)
     const projectId = projectOfUrl(url)
     if (state === undefined || projectId === undefined) return
+    const shown = this.find(rec.serverId, projectId) !== undefined
+    if (!this.gesture(rec, shown ? "a switch to another project's window" : "a new window for another project", shown)) return
     const tabId = tabOfUrl(url)
     void this.open(rec.serverId, { origin: state.origin, projectId, ...(tabId === undefined ? {} : { tabId }) }).catch((err: unknown) =>
       this.log(`remote ${rec.serverId}: opening the other project's window failed: ${errorText(err)}`)
@@ -758,7 +867,7 @@ export class RemoteWindows {
 
   /** backToPicker's question: the window closes when the server no longer has `project` open. */
   private closeIfNotOpen(rec: WindowRecord, state: ServerState, project: string): void {
-    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`).then(
+    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`, PROJECTS_MAX_BYTES).then(
       (body) => {
         if (rec.closed) return
         const open = openProjectIdsOf(body)
@@ -779,7 +888,9 @@ export class RemoteWindows {
     } catch {
       return
     }
-    if (!rec.budget.take(this.options.now?.() ?? Date.now())) {
+    // The server's budget, shared by its windows: a page opening windows would get one each otherwise.
+    const state = this.servers.get(rec.serverId)
+    if (state === undefined || !state.opens.take(this.now())) {
       this.log(`remote ${rec.serverId}: dropped a window.open past ${MAX_OPENS_PER_VIEW} in ${OPEN_WINDOW_MS / 1000} s`)
       return
     }
@@ -796,8 +907,9 @@ export class RemoteWindows {
     if (project !== undefined) {
       const other = this.windowsOf(rec.serverId).find((r) => r !== rec && r.project === project)
       if (other !== undefined) {
-        // The server's picker opened a project another window shows: that window, and this one back.
-        other.view.focus()
+        // The server's picker opened a project another window shows: that window (the person's click
+        // only: a focus move), and this one back to the picker in any case (one window per project).
+        if (this.gesture(rec, "a focus of another project's window", true)) other.view.focus()
         rec.project = undefined
         this.updateTitle(rec)
         this.load(rec, remotePageUrl(state.origin))
@@ -824,7 +936,7 @@ export class RemoteWindows {
       rec.titled = null
       return
     }
-    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`).then(
+    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`, PROJECTS_MAX_BYTES).then(
       (body) => {
         if (rec.closed || rec.project !== project) return
         const name = projectNameOf(body, project)
@@ -1027,7 +1139,7 @@ export class RemoteWindows {
     if (listOk !== true && !(await listOk)) return { unknown: true }
     let open: Set<string> | undefined
     try {
-      open = openProjectIdsOf(await session.fetchJson(url))
+      open = openProjectIdsOf(await session.fetchJson(url, PROJECTS_MAX_BYTES))
     } catch (err) {
       // Signed out (401): the page's sign-in, then a re-pair, and the check runs again once it lands.
       this.log(`remote ${rec.serverId}: the project list did not answer; loading the project page as is: ${errorText(err)}`)
@@ -1042,7 +1154,7 @@ export class RemoteWindows {
     const request: WebOpenProjectRequest = { reopen: project }
     let answer: { status: number; body: unknown }
     try {
-      answer = await session.postJson(url, request, origin)
+      answer = await session.postJson(url, request, origin, PROJECTS_MAX_BYTES)
     } catch (err) {
       this.log(`remote ${rec.serverId}: reopening the project did not answer: ${errorText(err)}`)
       return { unknown: true }
@@ -1087,7 +1199,7 @@ export class RemoteWindows {
       if (ok !== true && !(await ok)) return
       let reply: SessionReply | undefined
       try {
-        reply = sessionReplyOf(await state.session.fetchJson(`${state.origin}${SESSION_PATH}`))
+        reply = sessionReplyOf(await state.session.fetchJson(`${state.origin}${SESSION_PATH}`, SESSION_MAX_BYTES))
       } catch {
         // The server away or not answering: the page shows its own state; the next load asks again.
         return
