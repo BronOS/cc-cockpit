@@ -149,18 +149,18 @@
 - Create: `src/main/remote/ssh-tunnel.ts` (`runRemote`, `SshTunnel`)
 - Create: `test/unit/ssh-tunnel.test.ts`
 
-- [ ] `runRemote(host, args)`: `ssh` with the common options (`-T`, BatchMode, ConnectTimeout, ControlMaster=no,
+- [x] `runRemote(host, args)`: `ssh` with the common options (`-T`, BatchMode, ConnectTimeout, ControlMaster=no,
       ControlPath=none, RemoteCommand=none, ClearAllForwardings) `-- host sh -c <script> sh …`, bounded (20 s),
       stdout capped, last stdout line parsed, empty stdout an error, last stderr line kept for the error text
-- [ ] `status(server)`: parses `web status --json` (checked fields only), applies the version gate and the https
+- [x] `status(server)`: parses `web status --json` (checked fields only), applies the version gate and the https
       refusal; `addDevice(server)`: the link's token only
-- [ ] `SshTunnel`: the saved `localPort` when free, else a free one on `127.0.0.1:0` (saved), `-N -L
+- [x] `SshTunnel`: the saved `localPort` when free, else a free one on `127.0.0.1:0` (saved), `-N -L
       127.0.0.1:L:127.0.0.1:P` with the common options, `ExitOnForwardFailure` and keepalives, ready when the port
       accepts a connection, two retries when stderr names that port, restart with backoff on exit while windows are
       open, stop 30 s after the last window, killed on app quit (child registry)
-- [ ] error texts for the common ssh failures (host key, auth, timeout, `ccc` missing, server not running)
-- [ ] tests with a fake spawn: argv exactly, timeouts, restart, port retry, stop delay, quit
-- [ ] run tests - must pass before task 5
+- [x] error texts for the common ssh failures (host key, auth, timeout, `ccc` missing, server not running)
+- [x] tests with a fake spawn: argv exactly, timeouts, restart, port retry, stop delay, quit
+- [x] run tests - must pass before task 5
 
 ### Task 5: Remote window adapter [model: opus]
 
