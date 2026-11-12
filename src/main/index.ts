@@ -74,6 +74,7 @@ import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-offscreen-webview'
+import { FrameStream, streamView } from './webview/frame-stream'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager, type WebviewViewFactory } from './webview/webview-manager'
 import { WebviewViewers } from './webview/webview-viewers'
@@ -1027,11 +1028,15 @@ function start(server: boolean): void {
   const webviews: WebviewManager = new WebviewManager({
     // Counted for the test hook `nativeViewsMade` (server mode must place none on a screen).
     views: {
-      create: (windowId, partition, events) => {
-        const view = webviewFactory.create(windowId, partition, events)
-        if (offscreenWebviews) nativeViewsMade.offscreenWebviews++
-        else nativeViewsMade.webviews++
-        return view
+      create: (windowId, partition, events, owner) => {
+        if (offscreenWebviews) {
+          const view = offscreenWebviews.create(windowId, partition, events)
+          nativeViewsMade.offscreenWebviews++
+          // Its paints go to the panel's viewers (frame-stream.ts); its destroy detaches it.
+          return frameStream ? streamView(frameStream, owner, view) : view
+        }
+        nativeViewsMade.webviews++
+        return webviewFactory.create(windowId, partition, events, owner)
       }
     },
     // Off-screen views: their limits, deferred loads and the hidden page's ignored reports are the
@@ -1092,6 +1097,19 @@ function start(server: boolean): void {
     setSize: (windowId, pluginId, panelId, size) => webviews.setViewSize(windowId, pluginId, panelId, size),
     log: warnLog
   })
+  // Server mode: the off-screen pages' paints, JPEG-encoded under one app-wide budget, to each viewer
+  // with one frame in flight (frame-stream.ts, design-web-browser.md §3.3). Frames go only to the
+  // panel's viewers (browser views of its own window) through frameToView, which refuses the desktop
+  // and the hidden page besides.
+  const frameStream = server
+    ? new FrameStream({
+        viewers: webviewViewers,
+        sendFrame: (viewId, frame) => views.frameToView(viewId, frame),
+        drained: (viewId) => views.frameDrained(viewId),
+        now: () => performance.now(),
+        log: warnLog
+      })
+    : undefined
   // Keys typed into a window's own page can come from an html overlay's iframe, which the shell
   // UI's key handler never sees (a sandboxed frame's events stay in the frame). So main resolves
   // the overlay keys of a window that shows an overlay before the page gets them; Esc over a
@@ -2979,6 +2997,8 @@ function start(server: boolean): void {
     // Server mode: the off-screen pages go now, without the close Electron's quit would ask each
     // for (a blocked page never answers one; electron-offscreen-webview.ts destroyAll).
     offscreenWebviews?.destroyAll()
+    // And their frames: no drain poll or budget timer outlives them.
+    frameStream?.dispose()
     // Every browser view is told the app quit (bridge.ts shows it and stops retrying), before the
     // windows close: each would otherwise close its views as "the window was closed". A server's
     // stop (SIGTERM from systemd, `ccc web stop`) is not final: the bridge retries it, so the open

@@ -175,9 +175,10 @@ export interface WebviewView {
 export interface WebviewViewFactory {
   /**
    * A hardened view in `windowId` on the in-memory session `partition`, hidden behind zero bounds,
-   * no page loaded yet. Throws when the window is gone.
+   * no page loaded yet. Throws when the window is gone. `owner` is the panel it is for (server mode:
+   * index.ts streams the view's frames to that panel's viewers, frame-stream.ts).
    */
-  create(windowId: number, partition: string, events: WebviewEvents): WebviewView
+  create(windowId: number, partition: string, events: WebviewEvents, owner: WebviewOwner): WebviewView
 }
 
 export interface WebviewManagerDeps {
@@ -660,7 +661,7 @@ export class WebviewManager {
         if (rec) this.drop(key, rec)
       }
     }
-    const view = this.deps.views.create(owner.windowId, partition, events)
+    const view = this.deps.views.create(owner.windowId, partition, events, { ...owner })
     const rec: ViewRecord = { owner: { ...owner }, partition, view, tokens: new Map(), navPending: false, opens: [] }
     holder.rec = rec
     this.records.set(key, rec)

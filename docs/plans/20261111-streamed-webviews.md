@@ -282,17 +282,47 @@ External review: sol / high
 - Modify: `scripts/web-terminal-bench.mjs`
 - Create: `test/unit/frame-stream.test.ts`
 
-- [ ] `FrameStream` takes `paint` images per webview, keeps the newest, encodes JPEG (q≈75) with the area capped near
+- [x] `FrameStream` takes `paint` images per webview, keeps the newest, encodes JPEG (q≈75) with the area capped near
       2 MP (downscaled, scale in the header) under one app-wide encode budget; keeps only the last JPEG per webview
-- [ ] sends to each viewer (Task 4) through `sendFrame` with one frame in flight per viewer (the next only after the
+- [x] sends to each viewer (Task 4) through `sendFrame` with one frame in flight per viewer (the next only after the
       socket drained), latest wins; a new viewer, a reconnect or a resize gets the last JPEG at once or an `invalidate()`
-- [ ] frames never go to another project's views, the desktop page or the hidden page, and are never logged
-- [ ] extend `web-terminal-bench.mjs` with an animated off-screen page streamed to a fake viewer; it must still pass
+- [x] frames never go to another project's views, the desktop page or the hidden page, and are never logged
+- [x] extend `web-terminal-bench.mjs` with an animated off-screen page streamed to a fake viewer; it must still pass
       its p99 (frames must not slow terminals)
-- [ ] write tests (fake sockets and images): latest-wins under a slow socket, one in flight, encode budget skips,
+- [x] write tests (fake sockets and images): latest-wins under a slow socket, one in flight, encode budget skips,
       area cap and scale, join frame, nothing to non-viewers
-- [ ] write tests for edge cases: viewer gone mid-send, webview destroyed with a pending frame
-- [ ] run tests and the bench - must pass before next task
+- [x] write tests for edge cases: viewer gone mid-send, webview destroyed with a pending frame
+- [x] run tests and the bench - must pass before next task
+- ➕ done as `src/main/webview/frame-stream.ts` (`FrameStream`, `streamView`, `encodedSize`), wired in index.ts in
+      server mode only: the manager's factory wrapper wraps each off-screen view with `streamView(frameStream, owner,
+      view)` (its paints to the stream, its destroy detaches it), so `WebviewViewFactory.create` got a 4th argument,
+      `owner` (the panel; the manager passes it, the adapters ignore it). `sendFrame` = `views.frameToView`, `drained` =
+      `views.frameDrained`, clock `performance.now()`; `before-quit` disposes it after `destroyAll`. Numbers:
+      `MAX_ENCODE_AREA` 1920x1080 (a full-HD page as is; larger ones scaled by the largest whole hundredth, so the
+      header's scale x 100 is exact), `JPEG_QUALITY` 75, over 1 MiB re-encoded at 50 then 30, else skipped (logged once
+      per view, size only), `ENCODE_BUDGET_SHARE` 0.2 (a leaky bucket of at most 200 ms of encode debt, draining 200 ms
+      per second; every encode, retries included, is charged), `DRAIN_POLL_MS` 16. Encoding is lazy: a paint is held
+      (newest only) and encoded only when some viewer's socket drained and lacks the newest frame. Drain is polled: one
+      app-wide timer, armed only while a viewer waits for its socket or a paint for the budget (`ws` has no drain event;
+      net.Socket's `drain` only follows a full write). `bufferedAmount` does not see the kernel's socket buffer.
+- ➕ the header's `scale` keeps Task 3's definition: encoded size over the page's size, the page's size being the
+      painted image's (CSS px at device scale 1 in v1, design-web-browser.md §3.2). **For Task 6**: the page's CSS size
+      of a frame is `width / scale` x `height / scale` (letterbox and input mapping by the frame's own size: right after a
+      resize the browser may still get one frame of the old size). `seq` starts at 1 per page and starts again for a
+      new view of the panel (a plugin reload, a crash): it only names a frame; frames of one socket arrive in order, so
+      never drop a frame for a lower seq. A new viewer gets the last frame at once, or the page is `invalidate()`d (no
+      frame yet); a size change invalidates the page. Nothing to do on the browser for the one-in-flight rule (main
+      paces by the socket).
+- ➕ **for Task 7**: `streamView`'s 4th argument `cursor` takes the page's `cursor-changed` type; index.ts passes none
+      yet (the cursor is dropped until then).
+- ➕ the bench now runs as Electron's main (started with node, it starts itself again under the repo's Electron, on
+      Linux with `--ozone-platform=headless --disable-gpu` and no display), so it needs no `npm run build`. Phase 5
+      streams an animated canvas page (1280x800, then 1920x1080) through the real FrameStream and WebviewViewers to a fake
+      viewer draining at 8 MiB/s during phase 1's flood; exits 1 when phase 1's or phase 5's p99 is over the limit. Event
+      loop utilization is no longer printed (Electron's main loop is Chromium's; Node's figure reads 0). Measured
+      (2026-11-11, this machine): flooded p99 2.0 ms; with a 1280x800 stream p99 6.2 ms (30 frames/s, 128 KiB each,
+      encode 4.3 ms avg, 8.7 max, 13% of main); 1920x1080 p99 8.4 ms (30 frames/s, 174 KiB, encode 7.1 ms avg, 13.4 max,
+      21% of main, at the budget). CLAUDE.md's line on the bench ("exits 1 when parsing lands back on main") is Task 13's.
 
 ### Task 6: The web shell draws the stream and the toolbar [model: opus]
 
