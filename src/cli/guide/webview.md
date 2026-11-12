@@ -55,12 +55,19 @@ exports.activate = (ctx) => {
   the command palette, a dialog, settings or an overlay up. It comes back where the panel is.
 - Keys typed into the page stay with the page, except the app's own chords with Cmd, Ctrl or Alt
   (new tab, toggle a zone, the palette, ...), which run in the app as if typed there.
-- With web access a browser view shows a placeholder in the panel ("available on the desktop"):
-  the view is a native layer of the desktop window. In server mode (the app on a server with no
-  display, used only from browsers) there is no view at all: `navigate` rejects with "not available
-  in server mode", `current()` stays empty and `back`, `forward` and `reload` do nothing. Catch the
-  rejection (a navigate at activation must not fail your plugin) and tell the person where the page
-  is instead.
+- With web access a browser view of a project open on a desktop shows a placeholder in the panel
+  ("available on the desktop"): the view is a native layer of the desktop window.
+- In server mode (the app on a server with no display, used only from browsers) the panel works: the
+  page runs in an off-screen view on the server and is streamed to every browser that shows the panel
+  (pictures with some latency; the browser's click, scroll, keys, typing, paste and copy go back), and
+  `navigate`, `back`, `forward`, `reload`, `current` and `onNavigate` behave as on the desktop. Local
+  files, a dev server on the server's localhost and external sites all load. A `navigate` for a panel
+  no browser shows yet is kept and loads when one first shows it (a `navigate` made while one of your
+  `ccc` commands runs loads at once, so `ccc browser open` gets its result). At most 4 views per
+  project and 12 per app: a `navigate` past that rejects with the reason, so catch it (a navigate at
+  activation must not fail your plugin). Not there: file uploads, downloads, sound, and the page's own
+  `alert`/`confirm`/`prompt` (silenced); a `<select>` in an iframe is keyboard-only. The panel has one
+  size, set by the last screen the person used.
 
 ## Local files
 

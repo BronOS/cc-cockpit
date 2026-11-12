@@ -35,7 +35,9 @@ Commands (run them in the terminal; they work only inside a cc-cockpit tab):
   empty page with that error; once the server is up, run `ccc browser reload`. A page that takes
   longer than 10 s prints `ok`; check `ccc browser url` or the server's log then.
 - The panel is for the user to look at. You cannot read the page's content back, only its URL and title.
-- In server mode (cc-cockpit on a server, used only from a web browser) there is no panel:
-  `ccc browser open` exits 1 with "not available in server mode". Give the person the URL (a dev
-  server needs a port they can reach) or the file's path instead of sending them to the panel.
+- In server mode (cc-cockpit on a server, used only from a web browser) the panel works too: the page runs on
+  the server and is streamed to the person's browser, so `ccc browser open` works the same (a dev server on
+  the server's localhost, a local file and an external site all load). It is a picture with some latency; file
+  uploads, downloads and sound do not work, and the page's own alert/confirm/prompt are silenced. At most 4
+  pages per project: a `ccc browser open` past the limit exits 1 with the reason.
 - `ccc browser --help` prints the usage. `ccc guide webview` explains the panel for plugin authors.

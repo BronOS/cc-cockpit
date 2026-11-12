@@ -14,7 +14,8 @@ How to use it: `docs/features.md` "Web access".
 
 **Later, not in v1:** the desktop as a remote client (§10), more than one person (§10), a phone layout, Web
 Notifications, and on the desktop: `ctx.notify` to a browser, a remote Allow of a plugin link and a plugin's OAuth
-sign-in from a browser (server mode has all three, §9.6, §9.9); the browser panel and URL overlays in a browser.
+sign-in from a browser (server mode has all three, §9.6, §9.9); URL overlays in a browser (the Browser panel and
+webview panels are streamed in server mode, `docs/design-web-browser.md`).
 
 ## 0. Goal, direction, non-goals
 
@@ -67,8 +68,8 @@ What assumes **one page per project window** (the real cost of mirroring):
 | Events by `webContents.send`, broadcasts by `BrowserWindow.getAllWindows()`, ports by `webContents.postMessage` | `index.ts:315,553,1062,1193,1711` | one view registry (§2.2) |
 | Closing the desktop window closes the project and its tabs | `TabManager.closeProject`, `tab-manager.ts:608` | policy in §5.6 |
 
-Also native-only, no browser equivalent: the Browser panel and URL overlays (`WebContentsView`,
-`electron-url-view.ts`), folder and link-confirm dialogs (`socket/handlers.ts:404`), window chrome.
+Also native-only, no browser equivalent: URL overlays and, on the desktop, the Browser panel (`WebContentsView`,
+`electron-url-view.ts`; in server mode the panel is streamed, `docs/design-web-browser.md`), folder and link-confirm dialogs (`socket/handlers.ts:404`), window chrome.
 
 ## 2. Architecture
 
@@ -114,7 +115,7 @@ fails when one has none:
 - `yes`: project work (tabs, panels, plugin settings, marketplace browsing and installs).
 - `no`: needs the host's screen or would let a remote view widen its own access — the auth mode, bind and secrets, device management,
   device management, `projects.openFolder`, `settings.pluginLink` (native dialogs), `window.reopen`, full screen,
-  `webviews.*`, URL overlays.
+  `webviews.placement` (the desktop's native layer; the other `webviews.*` are `adapted`, §9.9), URL overlays.
 - `adapted`: answered differently for a remote view (§6.3).
 
 ## 3. Wire protocol
@@ -427,7 +428,7 @@ defer to (§9.7, §9.9).
 | `ctx.files.trash` | host trash | unchanged |
 | Folder dialogs, plugin link | native | `no` (do it on the desktop); a `ccc plugin link` typed in a tab from a browser can be denied there but only approved on the desktop |
 | OAuth sign-in | loopback redirect | "sign in on the desktop" |
-| Browser panel, URL overlays (`WebContentsView`) | embedded browser | "available on the desktop" placeholder |
+| Browser panel, URL overlays (`WebContentsView`) | embedded browser | "available on the desktop" placeholder; in server mode the panel is streamed instead (§9.9) |
 | Window controls, drag regions, full screen, update notice | native | not shown |
 
 ## 7. Phases
@@ -883,12 +884,15 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
 - **`ctx.files.reveal`, `openWithSystem`**: refused by `server` in main, whatever the origin. `desktopOnly`
   (`plugins/host-api.ts:1543`) refuses only a call with a remote origin view, a hint that lapses after 10 s, so a timer
   or a plugin command would reach `shell.showItemInFolder` or `shell.openPath` on the server.
-- **Browser panel, URL overlays**: `ctx.webview` and URL overlays are refused at the open call in server mode ("not
-  available in server mode"), so main never makes a `WebContentsView` for the hidden page's layout (inferred: the
-  layout is shared, §5.1, so it otherwise would); browsers show the placeholder ("not available in server mode").
-  Built: the webview refusal sits in `WebviewManager` (`navigate` and where a view is made), so every asker is
-  covered, the bundled browser plugin's home navigate at activation included (logged, the plugin stays active); the
-  URL overlay refusal in `OverlayManager.start`. Both by main's `server`, never a payload.
+- **Browser panel, webview panels, URL overlays**: in server mode the Browser panel and every `"kind": "webview"`
+  panel work: `WebviewManager` keeps every decision and `server` (decided once, never by a payload) swaps its view
+  factory for an off-screen one, whose frames are streamed to the browsers that show the panel and whose input comes
+  back. Design, wire and limits: `docs/design-web-browser.md` (implemented 2026-11-11, plan
+  `docs/plans/20261111-streamed-webviews.md`). Main never makes a `WebContentsView` for the hidden page's layout (the
+  layout is shared, §5.1): the off-screen views are the server's, shown by browsers only. **URL overlays stay
+  refused** at `OverlayManager.start` ("not available in server mode", by `server`, never a payload; a later version
+  could reuse the same machinery). A desktop project's browser view (web access on, a display) keeps the "available
+  on the desktop" placeholder.
 - **Plugin OAuth** (`ctx.oauth`): main's `startLoopback` (`oauth/oauth.ts:150`) owns `127.0.0.1:<random>/callback`,
   one pending sign-in per plugin, on the server, so the redirect fails in the browser. The auth URL goes out as a link
   notice; the notice has a box where the person pastes the failed URL, and main settles the pending sign-in in-process

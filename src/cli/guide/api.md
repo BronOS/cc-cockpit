@@ -158,8 +158,12 @@ with full Node access.
   file is served read-only with the files next to it); `back(panelId)`, `forward(panelId)`,
   `reload(panelId)`; `current(panelId)` resolves `{ url, title }`; `onNavigate(panelId, fn)`
   hears every page the view commits and returns a disposer. Any other panel id throws; at most
-  60 navigations a minute. In server mode `navigate` rejects with "not available in server mode"
-  and no view is made (a browser shows the panel's placeholder): catch it, at activation too.
+  60 navigations a minute. In server mode (the app on a server, used only from browsers) a webview
+  panel works too: the page runs in an off-screen view on the server and is streamed to the
+  browsers that show the panel, with the same `navigate`, `current` and `onNavigate`. A `navigate`
+  for a panel no browser shows yet resolves and loads when one first shows it, and one past 4 views
+  per project or 12 per app rejects with the reason: catch it, at activation too. Page dialogs are
+  silenced, and uploads, downloads and sound do not work there (`ccc guide webview`).
 - `ctx.badge(panelId, value)`: a count, `'dot'` or `null` on a panel icon.
 - `ctx.overlay.open(spec)`: a `terminal`, `url` or `html` overlay above the window; resolves with
   the result. In server mode a `url` overlay rejects with "not available in server mode" (its page

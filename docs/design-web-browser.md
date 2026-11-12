@@ -1,6 +1,8 @@
-# Web views in a browser: rendered on the server, streamed — design draft
+# Web views in a browser: rendered on the server, streamed — design
 
-Status: draft (2026-11-11), not implemented. Extends `docs/design-web.md` (web access, §9 server mode); read that first.
+Status: implemented (2026-11-11), plan `docs/plans/20261111-streamed-webviews.md`; where the build differs from the first
+draft the text below says what was built (wire names, input units, the key and text split, numbers). Extends
+`docs/design-web.md` (web access, §9 server mode); read that first.
 The owner's requirement: the Browser panel (and every `"kind": "webview"` panel) must work in server mode, from a
 plain browser, with **one port** and nothing for a new user to set up or expose.
 
@@ -108,8 +110,11 @@ dependency, since shell chords never reach the page from a browser (§4.1).
 
 A navigate with no browser showing the panel (the browser plugin's `home` page at activation, in every open project)
 records the target and loads it when a browser first shows the panel, so idle projects hold no Chromium page and
-cannot exhaust the app-wide view limit (§5). `ccc browser open` brings the panel into sight, so it loads at once when
-any browser of the project is attached; with none, it loads anyway (the CLI needs the load result).
+cannot exhaust the app-wide view limit (§5). `ccc browser open` loads at once whether or not a browser shows the
+panel (the CLI needs the load result): main knows a `ccc` command of the plugin is running (its own count of the
+plugin's running commands, nothing from the payload) and a navigate made meanwhile is not deferred. The deferral is a
+resource rule, not a boundary. The first browser to show the panel (`WebviewManager.setViewed`) loads the deferred
+target; past the limits (§5) that is logged and the toolbar says why.
 
 `setBounds`/`setVisible` keep their meaning for the manager: `setVisible(false)` means no browser shows the panel, and
 the adapter then stops painting (`webContents.stopPainting()`), so a hidden view costs no CPU or bandwidth; `true`
@@ -117,11 +122,16 @@ starts it again and sends a full frame.
 
 ### 3.2 Size: one owner, like a terminal
 
-Every browser view that shows the panel reports its placeholder's size (CSS pixels, from the `WebviewPanel`
-placeholder the web shell already draws, rounded, clamped to [64, 4096] by main). The page has one size: the size of
-the view that last gave it input or asked "Fit to this screen" (the terminal's rule, design-web.md §5.2), else the
-first view that reported. Other views show the frame scaled to fit, letterboxed, and map their input through the same
-scale. A size change from the owner resizes the off-screen window (`setContentSize`), at most every 100 ms (a dragged
+Every browser view that shows the panel reports its placeholder's size with `webviews.place` (`{ panelKey, width,
+height, visible, hidden }`, `adapted`, accepted only from a remote view in server mode, the panel resolved through the
+caller's window layout; CSS pixels from the canvas area the web shell draws, sent on mount, on every resize and on
+`visibilitychange`, `visible: false` on unmount; clamped to [64, 4096] by main). A view is a **viewer** of the panel
+while it is visible, not hidden (`document.hidden`) and has an area (`webview-viewers.ts`). The page has one size: the size of
+the view that last gave it input or asked "Fit to this screen" (`webviews.fit`; the terminal's rule, design-web.md
+§5.2), else the first view that reported. Other views show the frame scaled to fit, letterboxed ("contain", for every
+view: the owner's frame lands 1:1), and map their input back through the same scale. The browser is not told who owns
+the size: "Fit to this screen" shows in the toolbar while the frame's page size differs from the area by more than 1 px.
+A panel losing its last viewer forgets its state. A size change from the owner resizes the off-screen window (`setContentSize`), at most every 100 ms (a dragged
 splitter must not reflow the page per pixel).
 
 Pixels are CSS pixels at device scale 1 in v1: on a HiDPI screen the frame is upscaled and looks soft. Rendering at
@@ -133,75 +143,106 @@ browser can draw either.
 A frame is the whole visible page, JPEG (quality about 75; PNG never: 10x the size). v1 sends full frames.
 
 - **Main's event loop and memory** (plan review). `toJPEG` is synchronous on main, and a page decides how often it
-  paints. So: the encoded area is capped near 2 megapixels (a larger page is downscaled; the header's scale says by
-  how much, and input maps back through it); one app-wide encode budget (a share of each second, measured) skips
-  paints once spent, newest kept; per view only the last **JPEG** is kept, never the `NativeImage`. The terminal bench
+  paints. So: the encoded area is capped at 1920x1080 (a full-HD page goes as is; a larger one is downscaled by the
+  largest whole hundredth, so the header's scale x 100 is exact); JPEG quality 75, re-encoded at 50 and then 30 when
+  a frame is over the 1 MiB per-frame cap, else skipped (logged once per view, size only); one app-wide encode budget
+  (`ENCODE_BUDGET_SHARE` 0.2: a leaky bucket of at most 200 ms of encode debt, draining 200 ms per second, every
+  encode charged, retries included) holds paints once spent, newest kept; encoding is lazy, only when some viewer's
+  socket drained and lacks the newest frame; per view only the last **JPEG** is kept, never the `NativeImage`. The terminal bench
   (`scripts/web-terminal-bench.mjs`) gets an animated off-screen page so this is measured, not assumed.
 - **Rate.** `setFrameRate` 30 while a browser shows the view; the encoder takes the newest image only (a slow encode
-  never builds a backlog). A view with no viewer (no browser shows the panel, or its only browsers are hidden tabs)
+  never builds a backlog); an empty (0x0) first paint after `startPainting` is skipped. A view with no viewer (no browser shows the panel, or its only browsers are hidden tabs)
   stops painting.
 - **One frame in flight per browser view.** A browser view gets the next frame only after the previous one left the
-  socket (`bufferedAmount` back near zero); meanwhile a newer frame replaces the pending one. With the per-frame size
+  socket (`bufferedAmount` at most 64 KiB, `FRAME_DRAINED_BYTES`); `ws` has no drain event, so main polls it with one
+  app-wide 16 ms timer, armed only while a viewer waits for its socket or a paint for the budget; meanwhile a newer frame replaces the pending one. With the per-frame size
   cap this bounds what a frame can put in front of terminal output to one frame, which is the only priority that can
   be had: a frame already on the socket cannot be pre-empted, and terminal chunks are written straight to it.
 - **Join and resync.** A view that opens the panel, reconnects, or resizes gets the last JPEG at once, or the page is
   asked to repaint (`invalidate()`) when there is none.
-- **Wire.** Frames are the protocol's first **binary** frames, server to browser only: a fixed header (frame kind,
-  panel key, sequence number, width, height, scale) and the JPEG bytes. Only browser view sinks can send them (a
+- **Wire.** Frames are the protocol's first **binary** frames, server to browser only: a fixed header (`u8` kind 1,
+  `u8` key length, the panel key (UTF-8, at most 200 bytes), `u32` seq, `u16` width, `u16` height, `u16` scale x 100)
+  and the JPEG bytes, at most 1 MiB with the header (`MAX_WEBVIEW_FRAME_BYTES`; over it the frame is not sent and the
+  view stays connected). `scale` is the encoded size over the page's size (the painted image's, CSS px at device scale
+  1), so a frame's page size is `width / scale` x `height / scale`; `seq` only names a frame (it starts again for a new
+  view of the panel), frames of one socket arrive in order. Only browser view sinks can send them (a
   `sendFrame` the desktop and hidden-page sinks do not have), so the hidden page is left out by construction. The
   browser never sends binary (the gateway keeps closing on a binary frame from a client). `PROTOCOL_VERSION` is
-  bumped. Base64 inside JSON was rejected: a third more bytes on the hottest path.
+  bumped to 2 (an older page would drop every frame, so it is closed with `CLOSE.version` and reloads). Base64 inside JSON was rejected: a third more bytes on the hottest path.
 
 ### 3.5 The toolbar in a browser
 
 The desktop panel's toolbar (back, forward, reload, the URL and title, a load error) uses `webviews.step`,
 `webviews.current` and the `webviews.navigated` event, all `no` today. In server mode they become `adapted`, allowed
-when `server && view.remote` and resolved through the caller's own window, so a browser gets the same toolbar, the
+when `server && view.remote` (`webviews.navigated` reaches remote views only in server mode) and resolved through the
+caller's own window, so a browser gets the same toolbar, the
 load-error text (a failed load is otherwise a blank frame) and the "view gone" state. New channels of this design are
 named `webviews.*` too (`webview.*` is host-api's namespace).
 
 ### 3.4 Who receives what
 
-Frames, cursor, title and selection text (§4.2) of a view go only to the browser views of the view's own project
-window that report the panel open (`ViewRegistry.toView`, never `toAll`). A browser view of another project, the
+Frames and the cursor of a view go only to the browser views of the view's own project
+window that are its viewers (`ViewRegistry.toView`, never `toAll`); the selection text (§4.2) and a `<select>` popup
+(§4.4) only to the one view that acted, and only while it is still a viewer. The page's URL and title (`webviews.navigated`) go to the window's views as on the desktop. A browser view of another project, the
 desktop page and the hidden page get nothing. Nothing of a frame is logged or kept past the view's life.
 
 ## 4. Input
 
 ### 4.1 Pointer, wheel, keys, cursor
 
-The web shell draws the panel as a `<canvas>` (the frames) with a transparent, focusable input layer over it. Pointer
-events (move coalesced to one per animation frame, down, up, with buttons, click count and modifiers), wheel (deltas
-passed through, clamped), and keys (`keydown`/`keyup` with `key`, `code` and modifiers) go to main as `webview.input`
-invokes on the view's socket, in the panel's frame coordinates (the scale undone, §3.2). Main maps them to
-`sendInputEvent` (`mouseMove`, `mouseDown`, `mouseUp`, `mouseWheel`, `keyDown`, `keyUp`, `char`), validating every
-field (finite numbers inside the frame, known key names only, a cap of events per second per view). The page's cursor
-(`cursor-changed`) is mirrored as the CSS `cursor` of the input layer, from a fixed map of Chromium cursor names.
+The web shell draws the panel as a `<canvas>` (the frames) with a transparent input layer over it
+(`.webview-canvas-area`, `data-webview` = the panel key). Pointer events (move, down, up, with the held buttons, click
+count and modifiers), wheel and keys (`keydown`/`keyup`) go to main as `webviews.input` invokes (`{ panelKey, events }`,
+at most 64 events per call, `adapted`) on the view's socket, **in the page's CSS px**: the browser undoes the letterbox
+and the frame's scale (`boxToPage`), so main checks each point against the page's current size (`view.size()`) and does
+no scaling of its own. A point off the page is dropped on its own (a stale frame after a resize must not lose a
+release); anything malformed refuses the whole call. The browser's outbox sends once per animation frame, moves
+coalesced and wheels summed; click counts are its own (`ClickCounter`: a PointerEvent's `detail` is 0); a blur releases
+held keys, a pointercancel held buttons. Modifiers are Electron's lower-case names (`shift`, `control`, `alt`, `meta`,
+`leftbuttondown`, ..., `isautorepeat`); held buttons travel on moves (without them a page's `buttons` reads 0); wheel
+deltas are negated for Chromium. Main maps the events to `sendInputEvent` (`mouseMove`, `mouseDown`, `mouseUp`,
+`mouseWheel`, `keyDown`, `keyUp`, `char`), accepts them only from a current viewer (`server && view.remote`, the panel
+resolved through the caller's layout), allows 600 events per second per view (a token bucket; over-rate input is
+dropped silently) and key names only from the fixed allow-list in `src/shared/webview-keys.ts`. A press, a key or text
+makes the sender the size owner. The page's cursor (`cursor-changed`) goes to the viewers as `webviews.cursor` (a name
+from a fixed map) and is the input layer's CSS `cursor`.
 
-Shell shortcuts keep working: a key that is one of the shell's command chords (the palette, tab switching) goes to the
-shell, not the page, as the desktop's `chordOfInput` forwarding does for a focused web view. Everything else goes to
-the page while the input layer has focus.
+Shell shortcuts keep working: a key that is one of the window's command chords (`commandForEvent`), or an event the
+window's capture handler already prevented, goes to the shell, not the page. Everything else goes to the page while
+the input layer has focus.
 
 ### 4.2 Text input, IME, clipboard
 
-- **Text** is typed through a hidden `<textarea>` in the input layer, which the browser's IME and dead keys already
-  understand: committed text (`input` and `compositionend`) goes to main as one `webview.insertText` (capped length),
-  delivered with `webContents.insertText`; Backspace, Enter, arrows and other non-text keys as key events. v1 shows no
-  composition preview inside the page (the browser's own IME window shows it).
+- **Text** is split between two paths (Task 8's decision, so a page gets the events a real keyboard gives). A plain
+  printable ASCII key or Space with no Ctrl, Meta or Alt goes as a key down plus its `char` (and is prevented in the
+  browser, so the textarea never sees it): keydown, keypress, input and keyup reach the page, letter shortcuts and
+  games work, and a page that prevents a keydown (a `/` shortcut focusing a search box) still suppresses the
+  character, which a separate insertText could not. A hidden `<textarea>` in the input layer takes the rest, which the
+  browser's IME and dead keys already understand: committed text (`input` insertText/insertReplacementText when not
+  composing, and `compositionend`) of IME and dead-key compositions, non-ASCII characters and AltGr text goes to main
+  as one `webviews.insertText` (`{ panelKey, text }`, at most 64 KiB of UTF-8, the same gate and rate bucket as input;
+  control characters other than tab and newline stripped), delivered with `webContents.insertText`. No character goes
+  both ways. Enter is a key with `'\r'` as its char; Tab, Backspace, Delete, arrows, Escape, F-keys and chords are keys
+  with no char. v1 shows no composition preview inside the page (the browser's own IME window shows it, where the
+  textarea sits under the pointer).
 - **Paste.** A `paste` event on the textarea (Ctrl/Cmd+V while the panel has focus) gives the text without any
-  clipboard permission; it goes to the page as `insertText`. Images and files are not pasted (v1).
+  clipboard permission; it is prevented and goes to the page as `insertText`, cut into chunks of 16 Ki units (never
+  inside a surrogate pair, at most 64 calls). Images and files are not pasted (v1).
 - **Copy.** The browser's `copy` event needs the text synchronously, and the page's selection lives on the server. So
-  main pushes the page's selection text after any input that can change it (mouse up, shift-arrows, a select-all
-  chord, a double click), debounced, latest wins, deduplicated, read from an isolated world
-  (`executeJavaScriptInIsolatedWorld`): `getSelection()`, or for a focused text `<input>`/`<textarea>` its selected
-  value slice (never a password field). The script slices before returning, main caps the text near 256 KB of
-  encoded bytes and strips control characters (a selection of control characters, JSON-escaped, could otherwise exceed
-  the socket's frame limit and close the browser view, terminals included). The browser keeps the latest and sets it
-  in its `copy` event. Cut is that copy plus a Delete key. `navigator.clipboard` is not used: it needs a secure
-  context, and plain-http server mode on a LAN address is not one.
-- **Clipboard chords are never forwarded** (Ctrl/Cmd+C, X, V, Shift+Insert): the headless clipboard is presumably one
-  per process (to verify), so a forwarded copy in project A's page could be pasted into project B's, and a forwarded
-  paste would double the browser's own `paste`.
+  main pushes the page's selection text (`webviews.selection`, to the acting view only) after any input that can
+  change it (a mouse up or key down that went to the page, or inserted text), debounced 100 ms, latest wins,
+  deduplicated, read from an isolated world (`executeJavaScriptInIsolatedWorld`, world id **1717**, `WEBVIEW_WORLD_ID`:
+  not 0, the main world, nor 999, Electron's own contextIsolation world; one read in flight per view and panel):
+  `getSelection()`, or for a focused text `<input>`/`<textarea>` its selected value slice (never a password field).
+  The script slices before returning, main caps the text near 256 KB of encoded bytes and strips control characters (a
+  selection of control characters, JSON-escaped, could otherwise exceed the socket's frame limit and close the browser
+  view, terminals included). The browser keeps the latest and sets it in its `copy` event, only when it is non-empty
+  (else the person's clipboard is untouched). Cut is that copy plus a Delete key. `navigator.clipboard` is not used: it
+  needs a secure context, and plain-http server mode on a LAN address is not one.
+- **Clipboard chords are never forwarded** (Ctrl/Cmd+C, X, V, Ctrl+Insert, Shift+Insert, Shift+Delete): the headless
+  clipboard is presumably one per process (not verified), so a forwarded copy in project A's page could be pasted into
+  project B's, and a forwarded paste would double the browser's own `paste`. They are not prevented either, so the
+  browser's own `copy`/`cut`/`paste` still fire on the textarea.
 
 ### 4.3 What the page cannot reach
 
@@ -223,27 +264,37 @@ channel from the page to main is needed, so there is nothing to forge. Should hi
 keyboard-only selects (focus, arrows, Enter) with a note in the docs.
 
 Implemented (Task 9, `main/webview/select-hit.ts`): hit-testing held up in the e2e, so no keyboard-only fallback. The
-left press and everything after it (keys and inserted text included) wait for the answer, in order, at most 50 ms;
-a slow or failed hit-test lets the press go as a plain click. A popup is `webviews.select` to the clicking view, with
-an id main keeps (one per view and panel, taken once); the answer is `webviews.selectChoose`; the element is found
-again through a `WeakRef` kept under that id in the isolated world's globals. The page sees the select take the
-focus and an untrusted `input` and `change`, not the mouse events. Keyboard-only still: a select inside an iframe
-(`elementFromPoint` stops at the frame element; a cross-origin frame's document is not ours to walk) or a closed
-shadow root, and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on itself.
+script runs in the same isolated world 1717 as the selection read (§4.2). A left press held for the hit-test, and
+everything after it (later `webviews.input` calls and `webviews.insertText`, so an 'é' typed right after a click is not
+inserted before the click focused the field) queues behind it in order; the answer, a rejection or a 50 ms timer
+decides, whichever is first, and a late answer is ignored. A slow or failed hit-test lets the press go as a plain
+click. On a select the press and its release are dropped, moves meanwhile lose `leftbuttondown`, and `webviews.select`
+(`{ panelKey, id, options, selected, rect }`, options at most 500 with labels capped at 200, rect in page CSS px) goes
+to the clicking view only; the id is main's (one per view and panel, taken once) and the answer is
+`webviews.selectChoose` (`{ panelKey, id, index | null }`; a stale, forged or another view's id is ignored). The
+element is found again through a `WeakRef` kept under the id in the isolated world's globals. The browser draws a
+`role="listbox"` dropdown (arrows, Home/End, type-ahead, Enter or Space, Escape). The page sees the select take the
+focus and an untrusted `input` and `change`, not the mouse events of that click. Right and middle presses are never
+held. Keyboard-only still: a select inside an iframe (`elementFromPoint` stops at the frame element; a cross-origin
+frame's document is not ours to walk) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
+paints and takes clicks on itself. Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS
+`zoom`.
 
 ## 5. Limits
 
 - Off-screen views: at most 4 per project window and 12 per app at once; a navigate past that is refused with a
   reason (`ccc browser open` prints it).
-- Frame size: the owner's size clamped to 4096x4096 for layout, the encoded image capped near 2 megapixels (§3.3);
-  frame rate 30 at most; an app-wide encode budget.
+- Frame size: the owner's size clamped to 4096x4096 for layout, the encoded image capped at 1920x1080 (§3.3), a frame
+  at most 1 MiB; frame rate 30 at most; an app-wide encode budget (20% of main's time).
 - Input: at most 600 events per second per browser view (pointer moves are already coalesced; over-rate input is
-  dropped silently); `insertText` at most 64 KB per call. Input is accepted only from a browser view of the webview's
+  dropped silently), at most 64 events per call; `insertText` at most 64 KB per call. Input is accepted only from a browser view of the webview's
   own window that currently shows the panel, the key resolved through main's layout (never trusted from the payload).
   The size owner changes on a button press, a key or text, not on a pointer move.
 - Selection text pushed: near 256 KB encoded, debounced, deduplicated (§4.2).
 
 ## 6. Docs, guide, skill
+
+Done in plan Task 10 (2026-11-11):
 
 - `design-web.md` §9.9: the Browser panel bullet points here; §0's "later" list drops the browser panel.
 - `docs/features.md` "Server mode": the Browser panel works, how it feels (latency, letterboxing, selects, copy and
@@ -266,7 +317,7 @@ shadow root, and listboxes (`multiple`, `size` > 1), which the page paints and t
 
 ## 8. Open questions
 
-1. `<select>` popups: hit-testing reliability (§4.4) — checked in its plan task.
+1. `<select>` popups: hit-testing reliability (§4.4) — settled: it held up (4 of 4 repeated e2e runs).
 2. HiDPI: render at the owner's device pixel ratio (larger frames, more bandwidth) or keep scale 1 (§3.2).
 3. Tiles from the dirty rectangle instead of full frames: measure first; full frames may be good enough on a LAN.
 4. Should a URL overlay (`ccc overlay --url`) reuse this in server mode (v2), and the desktop with web access stream

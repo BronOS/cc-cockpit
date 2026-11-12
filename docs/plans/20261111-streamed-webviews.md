@@ -546,14 +546,20 @@ External review: sol / high
 - Modify: `src/cli/guide/api.md`
 - Modify: `CLAUDE.md`
 
-- [ ] design-web.md §9.9 and §0 point at `design-web-browser.md`; mark the design implemented with any deviations
-- [ ] features.md "Server mode": the Browser panel works, how it feels, what does not (uploads, downloads, sound,
+- [x] design-web.md §9.9 and §0 point at `design-web-browser.md`; mark the design implemented with any deviations
+- [x] features.md "Server mode": the Browser panel works, how it feels, what does not (uploads, downloads, sound,
       page dialogs, selects if keyboard-only)
-- [ ] the browser skill and the `ctx.webview` guide text drop "no panel in server mode"
-- [ ] CLAUDE.md implementation patterns: the off-screen factory, `disableDialogs` and the hardening cancels required,
+- [x] the browser skill and the `ctx.webview` guide text drop "no panel in server mode"
+- [x] CLAUDE.md implementation patterns: the off-screen factory, `disableDialogs` and the hardening cancels required,
       binary frames server to browser only through `sendFrame`, no clipboard chords forwarded
-- [ ] run the guide drift tests (`cli-guide.test.ts`, `claude-plugins.test.ts`) and `npm run test:plugins`
-- [ ] run tests - must pass before next task
+- [x] run the guide drift tests (`cli-guide.test.ts`, `claude-plugins.test.ts`) and `npm run test:plugins`
+- [x] run tests - must pass before next task
+- ➕ also edited: `src/cli/guide/webview.md`, `panels.md`, `cli.md` (the guide text lived there; `api.md` had the `ctx.webview` and
+      overlay lines); the bench line in CLAUDE.md "Commands". Reconciled in design-web-browser.md: `webview.input` /
+      `webview.insertText` → `webviews.*`, input in page CSS px (not "frame coordinates"), the key/text split, the 1920x1080
+      area cap (not "near 2 MP"), drain by a 16 ms poll (not "`bufferedAmount` near zero"), `ccc browser open` loading at
+      once by main's count of running `ccc` commands (not "when a browser is attached"), selection and select only to the
+      acting view (not "every viewer"). README.md has no server-mode browser limitation text; its Task 13 line stays.
 
 ### Task 11: Second browser and reconnect e2e [model: sonnet]
 

@@ -333,8 +333,8 @@ Host and Origin checks, the device cookie and the log (sign-ins and revokes, nev
 
 **What a browser does differently** (the table is design-web.md §6.1): a link opens as a notice you click, not in a new
 tab by itself; notifications and sounds stay on the host; "Reveal in the file manager" and "Open with the system" are
-refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; the Browser panel and URL overlays
-show "available on the desktop"; window controls, full screen and the update notice are not shown. With no theme
+refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; URL overlays, and the
+Browser panel of a project open on a desktop, show "available on the desktop" (in server mode the panel is streamed to the browser, see Server mode); window controls, full screen and the update notice are not shown. With no theme
 picked ("Follow the system"), each browser shows the light or dark built-in of its own system setting, not the
 computer's; a picked theme is the same everywhere. On a computer with no display (server mode) the approvals move to the browser: see Server mode below. A terminal has one
 size for all places (the one that typed, clicked, selected its tab or was brought to the front last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
@@ -345,8 +345,8 @@ URL relative to the page (`../dist/x.js`), never root-absolute (`/dist/x.js`): t
 (`/p/<token>/`), and `ccc plugin link` and the marketplace check warn about the others. Expect several pages of your
 panel at once, one per view: `ctx.panels.post(id, msg)` goes to all of them, `ctx.panels.post(id, msg, { view })` with
 the `view` the listener was given answers only the page that asked, and your calls made from a listener act in that view.
-Do not depend on `WebContentsView`s (`ctx.webview`, URL overlays), on file-manager calls or on native dialogs working
-for a person in a browser. `ccc guide panels` and `ccc guide api` carry the same text.
+Do not depend on URL overlays, on file-manager calls or on native dialogs working for a person in a browser, nor on
+`ctx.webview` when the project is open on a desktop (the browser shows a placeholder); in server mode a webview panel works. `ccc guide panels` and `ccc guide api` carry the same text.
 
 ## Server mode
 
@@ -445,7 +445,8 @@ both as under Web access above. A LAN bind works with the same confirms.
   devices, read the web access card and finish a plugin's OAuth sign-in. It cannot add or widen access (mode, bind,
   secrets, new devices): those are `ccc web`.
 - Nothing is shown on the server's screen. A link opens as a notice you click; a folder dialog, "Reveal in the file
-  manager", "Open with the system", the Browser panel and URL overlays are refused ("not available in server mode").
+  manager", "Open with the system" and URL overlays are refused ("not available in server mode"); the Browser panel works,
+  streamed (below).
   A plugin OAuth sign-in redirects to a loopback address on the server, so its page fails in your browser: paste that
   failed address into the box the notice shows.
 - Notices (`ctx.notify`, `ccc notify`) are in-page notices in the browsers of the project, with the tab title marked
@@ -471,6 +472,32 @@ both as under Web access above. A LAN bind works with the same confirms.
 - The window is never seen. Its page is kept hidden and never sizes a terminal: a terminal keeps the size the last
   browser gave it, and a new tab no browser has sized starts at 120x40. A crash of the hidden page reloads it with a
   log line. With no project open the app stays up with the gateway; it never shows a picker or quits on its own.
+
+**The Browser panel** (`ccc browser open <url|file>`, and every third-party `"kind": "webview"` panel) works in server mode.
+The page runs in an off-screen Chromium on the server, as the desktop's would, and its picture is streamed to the
+browsers that show the panel; your clicks, keys and text go back. So a local file, a dev server on the server's
+`localhost` (a Vite server with live reload) and an external site all load, and `ccc browser open|url|reload`, the
+toolbar (back, forward, reload, URL and title, the load error) behave as on the desktop. Design and reasons:
+[design-web-browser.md](design-web-browser.md).
+- *How it feels:* streamed pictures, so there is some latency and a page can look a little soft on a high-DPI screen
+  (it is drawn at CSS pixels, scale 1). A page that does not change costs nothing; an animated one costs server CPU
+  and bandwidth. The page has one size, like a terminal: the last screen you clicked, typed or scrolled in sets it, and
+  another screen shows the same picture letterboxed; "Fit to this screen" (in the panel's toolbar) takes the size of the
+  screen you are on. A panel nobody shows (closed, or its browser tab in the background) stops painting.
+- *What works:* click, double click, drag, scroll, keys (letters with shortcuts, Enter, Tab, arrows, F-keys; the
+  shell's own chords stay with the shell), typing including IME, dead keys and non-ASCII text, paste (Ctrl/Cmd+V),
+  copy and cut (Ctrl/Cmd+C/X: the page's selection goes to your clipboard), and `<select>` dropdowns (the browser
+  draws its own list; the page sees focus, `input` and `change`, not the mouse events of that click).
+- *What does not:* file uploads (a file input does nothing), downloads, drag and drop into the page, sound, camera and
+  other permissions, and URL overlays (`ccc overlay --url`, still refused). The page's own `alert`, `confirm` and
+  `prompt` are silenced (`alert` returns at once, `confirm` answers no, `prompt` throws in the page). A `<select>`
+  inside an iframe, a `multiple` or `size` > 1 list is keyboard-only (focus it, arrows, Enter). A touch drag on a phone
+  is a mouse drag. A link that opens a new window (`window.open`,
+  `target="_blank"`) becomes a link notice, as elsewhere.
+- *Limits:* at most 4 pages per project and 12 per app (a `ccc browser open` past that is refused with the reason).
+  The page never runs in your browser and gets nothing from it but input, pasted text and its size.
+- *Not tested:* a real IME and phone keyboards, a real phone, a real server with a desktop portal on the session bus
+  (the page's `print()` and file choosers are cancelled on the server regardless).
 
 **Installs** (what was run, not what is expected to work):
 - Unpacked build (`npm run package:dir`): run. The smoke script (`node scripts/server-mode-smoke.mjs <executable>`)
@@ -706,7 +733,7 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   browser; a plugin page reads `ccPanel.view.remote`, a UI hint only), and a plugin's OAuth sign-in says to sign in
   on the desktop. Notifications stay on the host, as on the desktop. While a browser is attached, Move to Trash
   confirms in an in-page dialog on every place (first answer wins) and a browser may answer Move too: the Trash is
-  recoverable, and the person in the browser is often the one who asked; with none attached it is the native dialog. A browser panel or URL overlay shows "available on the desktop". While a browser is attached,
+  recoverable, and the person in the browser is often the one who asked; with none attached it is the native dialog. A URL overlay, or the Browser panel of a project open on a desktop, shows "available on the desktop". While a browser is attached,
   the confirm of `ccc plugin link` is an in-page dialog on every place (first answer wins); a browser can only Deny it
   (it says "Approve on the desktop"), Allow is the desktop's; with none attached it is the native dialog.
 - A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),

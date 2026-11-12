@@ -25,7 +25,8 @@ stderr).
   stdout is the result as JSON (`{"kind":"exit","code":0}`, `{"kind":"value",...}` or
   `{"kind":"dismissed"}`).
 - `ccc overlay --url <http(s) url>` shows a web page in an overlay. Not in server mode (exit 1,
-  "not available in server mode"): give the person the URL instead.
+  "not available in server mode"): give the person the URL, or show it in the Browser panel
+  (`ccc browser open`), which works in server mode.
 - `ccc overlay --html <file>` shows a local html file (read once, shown through a privileged
   scheme) and returns what the page answers with.
 - `ccc sessions [--json]` lists the Claude tabs of every window and their status.

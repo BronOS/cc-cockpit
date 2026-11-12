@@ -39,7 +39,10 @@ on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/
   a packaged executable it ignores the test env and needs no network. Run it after changing `main/server-mode.ts`,
   `server-start.ts` or the start in `main/index.ts`: the re-exec drops Playwright's inspector, so no e2e covers it.
 - `node --expose-gc scripts/web-terminal-bench.mjs [tabs] [seconds] [p99ms]`: the headless terminals' cost to main's event
-  loop; exits 1 when parsing lands back on main. Run it after changing `main/terminals/mirror.ts` or `mirror-worker.ts`.
+  loop, plus a streamed animated off-screen page (1280x800, then 1920x1080) through the real `FrameStream`; it re-runs itself
+  as Electron's main (headless on Linux, no `npm run build` needed) and exits 1 when a phase's p99 is over the limit (parsing
+  back on main, or encoding frames stalling it). Run it after changing `main/terminals/mirror.ts`, `mirror-worker.ts` or
+  `main/webview/frame-stream.ts`.
 
 ## Implementation patterns
 
@@ -166,6 +169,18 @@ on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/
 - A plugin host call's *origin view* (`src/host/ctx/origin-view.ts`, `AsyncLocalStorage`, kept until the listener returns, 10 s cap)
   is a hint for focus-like calls only (a wrong view costs a focus on the wrong screen); main's checks never rest on it. Plugins
   keep working unchanged; `ctx.panels.post` takes the optional `{ view }`.
+- Streamed webviews (design-web-browser.md, `main/webview/`): in server mode `WebviewManager` keeps every decision and only its
+  factory differs: `OffscreenWebviewFactory` (`electron-offscreen-webview.ts`), chosen by `server` once at start, never by a
+  payload. Any off-screen page needs `disableDialogs: true` (one `alert` aborts main under Ozone headless) and the shared hardening's
+  cancels (`webview-hardening.ts`: print locked to a no-op, file choosers and pickers cancelled through the page's DevTools
+  protocol, `login` cancel, `certificate-error` reject); a new native UI a page can raise gets its cancel there and a "main
+  survives" test. Binary frames (JPEG, `PROTOCOL_VERSION` 2) go server to browser only, through `ViewSink.sendFrame`, which only
+  browser sinks have (desktop and hidden-page sinks cannot); the gateway still closes a client that sends binary. Frames, cursor,
+  selection and select popups go only to the webview's viewers (`WebviewViewers`: a remote view that shows the panel and is not
+  hidden), selection and select only to the acting view. `webviews.input`, `insertText` and `selectChoose` are `adapted`: accepted
+  only when `server && view.remote`, from a current viewer, the panel key resolved through the caller's layout, never trusted
+  from the payload. Clipboard chords (Ctrl/Cmd+C, X, V, Shift+Insert) are never forwarded to the page; scripts run in the page
+  use the isolated world `WEBVIEW_WORLD_ID` (1717), never the main world.
 - Plugin pages over HTTP are served by path token (`/p/<token>/`, one per device and plugin, killed on revoke; inline overlays
   under `/o/<token>/`): the token is the only credential, since a sandboxed page's requests carry no cookie. Responses carry the
   rewritten plugin CSP, no redirects, `no-store`. Pages must use relative URLs (the server rewrites only root-absolute `src` and
