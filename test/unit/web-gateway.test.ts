@@ -44,7 +44,11 @@ interface Answer {
 
 function http(port: number, opts: { method?: string; path?: string; headers?: Record<string, string>; noHost?: boolean }): Promise<Answer> {
   return new Promise((resolve, reject) => {
-    const target = { host: '127.0.0.1', port, method: opts.method ?? 'GET', path: opts.path ?? '/', headers: opts.headers ?? {}, setHost: !opts.noHost }
+    // `agent: false`: a fresh connection per request. Node's global agent keeps connections alive
+    // (the default since Node 19), so a request right after the gateway stopped could go out on a
+    // pooled socket the server has just closed and fail with "socket hang up" instead of the
+    // ECONNREFUSED the stop tests check for, depending on timing.
+    const target = { host: '127.0.0.1', port, method: opts.method ?? 'GET', path: opts.path ?? '/', headers: opts.headers ?? {}, setHost: !opts.noHost, agent: false }
     const req = request(target, (res) => {
       let body = ''
       res.on('data', (d: Buffer) => (body += d.toString()))
