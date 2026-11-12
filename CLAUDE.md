@@ -24,7 +24,7 @@ browsers over the view's WebSocket, one port) are implemented; design in `docs/d
 Remote servers (the desktop picker connects to a server-mode cockpit over built-in SSH, My own tunnel or a Direct link and
 opens its projects in sandboxed desktop windows running the server's web client) are implemented; design in
 `docs/design-remote-desktop.md` (revision 2), plans in `docs/plans/completed/20261112-remote-desktop.md` and
-`docs/plans/20261112-remote-ssh-builtin.md`, user docs in `docs/features.md` ("Remote servers").
+`docs/plans/completed/20261112-remote-ssh-builtin.md`, user docs in `docs/features.md` ("Remote servers").
 
 ## Commands
 

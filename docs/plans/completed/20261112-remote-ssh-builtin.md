@@ -425,17 +425,25 @@
 - [x] README bullet adjusted
 
 ### Task 9: Verify acceptance criteria [model: sonnet]
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases (wrong password, locked key with no passphrase, changed host key, no keyring, own tunnel down,
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases (wrong password, locked key with no passphrase, changed host key, no keyring, own tunnel down,
       old server, https server)
-- [ ] run full test suite: `npm run typecheck && npm run lint && npm test && npm run test:plugins`
-- [ ] run e2e tests: `npm run test:e2e`
+- [x] run full test suite: `npm run typecheck && npm run lint && npm test && npm run test:plugins`
+- [x] run e2e tests: `npm run test:e2e`
 - [ ] `npm run package:dir` and connect from the packaged app to this machine's server over built-in SSH
+  ⚠️ not done here: needs a real sshd login (this machine's host key is not trusted yet and no credentials are set up);
+  the packaged ssh2 handshake, exec and forwardOut are covered by `scripts/ssh2-electron-check.mjs` (Task 1). Left to
+  the manual test with the user.
+
+➕ result (2026-11-12): typecheck, lint, 6104 unit and 260 plugin tests, `ssh2-electron-check` pass. The first full
+  e2e run had 47 failures: bundling ssh2 (CommonJS) made rolldown emit a shared runtime chunk that `out/sdk/panel.js`
+  required, breaking every plugin panel; fixed in d6860db (the panel SDK builds on its own, the build fails if it has a
+  `require`). Second run: 266 passed, 2 failed (window-bounds ×2, the known Hyprland ones).
 
 ### Task 10: [Final] Update documentation [model: sonnet]
-- [ ] update README.md if needed
-- [ ] update CLAUDE.md State line
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update README.md if needed
+- [x] update CLAUDE.md State line
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
