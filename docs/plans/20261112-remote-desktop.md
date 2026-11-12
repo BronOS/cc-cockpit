@@ -266,12 +266,12 @@
 - Modify: `docs/features.md` ("Remote servers"), `docs/design-web.md` (§9 cross-reference, Host rule),
   `src/cli/guide/*.md` if `ccc web status` output is documented there, `README.md`
 
-- [ ] user docs: connect by SSH (prerequisites: `ssh <host>` works without prompts, server mode running), Direct,
+- [x] user docs: connect by SSH (prerequisites: `ssh <host>` works without prompts, server mode running), Direct,
       Forget vs revoke, limits (files are the server's, no uploads, TLS over SSH refused, no system notifications,
       ssh_config's ControlMaster / LocalForward / RemoteCommand overridden, no keyring → re-pair each launch)
-- [ ] design-web.md: the Host rule change and why
-- [ ] drift tests pass
-- [ ] run tests - must pass before task 10
+- [x] design-web.md: the Host rule change and why
+- [x] drift tests pass
+- [x] run tests - must pass before task 10
 
 ### Task 10: Verify acceptance criteria [model: sonnet]
 - [ ] verify all requirements from Overview are implemented

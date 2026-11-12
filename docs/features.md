@@ -521,6 +521,40 @@ No install is called supported beyond what was run.
 - A start link read by someone else, a lost device that was unlocked, and a shared server's other users are exposures
   Revoke does not undo (above).
 
+## Remote servers
+
+Use a cc-cockpit that runs in server mode on another machine from this desktop app, in its own windows instead of a
+browser tab. The project picker has a **Servers** section: each saved server shows its name, how it connects, its state
+and its recent projects; **Connect to server…** opens the form. Design and reasons:
+[design-remote-desktop.md](design-remote-desktop.md).
+
+**Connect by SSH.** Choose **SSH host** and type `devbox` or `me@box.example.com`; **Name (optional)** labels it in the
+list. Prerequisites: `ssh <host>` works with no prompt (the key is in the agent, the host key is already accepted; the app
+never asks for a password or a passphrase) and cc-cockpit runs in server mode there with its default data dir. If the
+`ccc` command is not on the server's PATH, set **ccc path on the server** under **Advanced**. The app runs
+`ccc web status --json` over SSH to find the server's port, version and scheme, `ccc web add-device` to get a pairing link
+for this device, and `ssh -N -L` to a loopback port here, so nothing but SSH is exposed.
+
+**Pairing.** In link mode it is automatic: the app asks the server for a link and uses it. In password mode the server's
+own page asks once, in the window. With None there is nothing to do. The device appears in the server's `ccc web status`.
+
+**Connect Direct.** Choose **Link** and paste the access link the server printed, or one from `ccc web add-device`
+(`https://server.example.com/#t=…`). A plain `http` link to a network address is marked as not encrypted.
+
+**Windows.** Opening a remote project gives one window per project, with the desktop's shortcuts. Links clicked in a
+remote session open in your own browser here, not on the server.
+
+**Forget vs revoke.** **Forget** removes the server from this app and drops its cookie here; the device stays listed on the
+server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
+
+**Known limitations (remote servers)**
+- Files are the server's: no Reveal in folder, Open with the system, upload or download.
+- A server with TLS on is refused over SSH (the tunnel encrypts already); connect Direct with its address.
+- No system notifications from remote sessions.
+- For the app's own SSH connections `ControlMaster`, `LocalForward` and `RemoteCommand` from `ssh_config` are overridden.
+- With no keyring the device cookie is not remembered: every launch pairs again, which adds a device on the server.
+- Windows is not supported.
+
 ## Updates and versions
 
 - **Update notice.** Once at launch and then every 24 hours the app asks `api.github.com` for the latest release. If it

@@ -643,6 +643,12 @@ hang, so it needs the same work.
   rewritten to something safer (`web/settings.ts:5-8`): nothing listens, start prints the reason and the exact line
   to apply it (`ccc web set --bind 0.0.0.0 --confirm plain-http`), and the app keeps running so `ccc web` can fix it.
 
+- **Host rule (remote desktop).** In server mode the Host check also accepts `127.0.0.1`, `localhost` and `[::1]` on any
+  port, so the desktop app's SSH tunnel (`Host: 127.0.0.1:<L>`) gets through; the Origin check is unchanged and the
+  desktop keeps the exact list. Why it is safe: [design-remote-desktop.md](design-remote-desktop.md) §5.3.
+- **Status fields.** `ccc web status --json` also carries `version` (the app's) and `scheme` (`http` or `https`), which
+  the remote desktop's SSH connect reads to refuse a TLS gateway and an old server.
+
 ### 9.3 The first link
 
 - When stdout is a TTY and the mode is access link, start prints a one-time add-device link (`addDeviceLink`,
