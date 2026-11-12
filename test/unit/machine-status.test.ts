@@ -4,8 +4,8 @@
 // counts), any other failure is unreachable; listeners hear only a change. Fake timers and a fake
 // fetch: nothing here opens a window or a socket.
 import { describe, expect, it } from 'vitest'
-import { countsOf, MachineStatus, MAX_MACHINE_COUNT, POLL_MS, type MachineInfo } from '../../src/main/remote/machine-status'
-import { RemoteHttpError } from '../../src/main/remote/remote-windows'
+import { countsOf, MachineStatus, MAX_MACHINE_COUNT, NO_KEY_RETRY_MS, POLL_MS, type MachineInfo } from '../../src/main/remote/machine-status'
+import { RemoteHttpError, RemoteNoKeyError } from '../../src/main/remote/remote-windows'
 import { SESSIONS_PATH } from '../../src/shared/web-protocol'
 
 class FakeTimers {
@@ -144,6 +144,28 @@ describe('MachineStatus', () => {
     t.timers.fire()
     await flush()
     expect(t.status.machines()).toEqual([{ id: 'm1', name: 'devbox', reachable: true, waiting: 0, working: 3, idle: 0 }])
+  })
+
+  it('an ask that could not go for want of an origin key keeps the reading, logs nothing and asks again soon', async () => {
+    const t = setup()
+    t.answers.set('s1', async () => Promise.reject(new RemoteNoKeyError()))
+    t.open('s1')
+    await flush()
+    // Not answered yet: reachable with the name only, as before the first answer; no "did not answer".
+    expect(t.status.machines()).toEqual([{ id: 'm1', name: 'devbox', reachable: true }])
+    expect(t.heard).toHaveLength(1)
+    expect(t.logs).toEqual([])
+    expect([...t.timers.pending.values()].map((p) => p.ms)).toEqual([NO_KEY_RETRY_MS])
+    t.answers.set('s1', async () => ({ waiting: 1, working: 0, idle: 0 }))
+    t.timers.fire()
+    await flush()
+    expect(t.status.machines()).toEqual([{ id: 'm1', name: 'devbox', reachable: true, waiting: 1, working: 0, idle: 0 }])
+    expect([...t.timers.pending.values()].map((p) => p.ms)).toEqual([POLL_MS])
+    // Counts known, then a sign-in replaced the key: they stay until the next answer.
+    t.answers.set('s1', async () => Promise.reject(new RemoteNoKeyError()))
+    t.timers.fire()
+    await flush()
+    expect(t.status.machines()).toEqual([{ id: 'm1', name: 'devbox', reachable: true, waiting: 1, working: 0, idle: 0 }])
   })
 
   it('takes only three whole counts from the server; anything else is reachable with none', () => {

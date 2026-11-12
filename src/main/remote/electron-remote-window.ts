@@ -23,17 +23,22 @@
 //   cancelled, a bad certificate refused (no "proceed anyway"), WebRTC kept off non-proxied UDP;
 // - the user agent carries `cc-cockpit-desktop/<version> (<hostname>)` (shared/remote-agent.ts):
 //   the web client then keeps the desktop's key table and names the device after this machine.
-//   Set on the session too, so main's own requests (`fetchJson`) say the same.
+//   Set on the session too, so main's own requests (`fetchJson`) say the same;
+// - main's own requests carry the server's origin key (DEVICE_KEY_HEADER) besides the partition's
+//   cookie: a cookie alone is signed out (design-web.md §4.1). The key is the page's, read by
+//   `readKey` in main's own isolated world (remote-key.ts) and kept by remote-windows.ts; this file only
+//   reads it and puts it on a request, never stores or logs it.
 import { app, BrowserWindow, nativeTheme, session as electronSession, type Session } from 'electron'
 import { hostname } from 'node:os'
 import { desktopAgentSuffix } from '../../shared/remote-agent'
-import { SESSION_PATH } from '../../shared/web-protocol'
+import { DEVICE_KEY_HEADER, SESSION_PATH } from '../../shared/web-protocol'
 import { BUILTIN_THEMES } from '../themes/theme-service'
 import { hardenWebContents, webviewPreferences } from '../webview/webview-hardening'
 import { lockDownSession, NO_APP_PAGE } from '../windows/permissions'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../windows/window-bounds'
 import { warnLog } from '../warn-log'
 import type { RemoteCookieJar } from './remote-cookie'
+import { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } from './remote-key'
 import { RemoteHttpError, type RemoteSessionHooks, type RemoteSessionView, type RemoteWindowFactory, type RemoteWindowHooks, type RemoteWindowView } from './remote-windows'
 
 /** The partition of server `serverId`'s windows. The prefix is named in this file only (grep test). */
@@ -76,6 +81,28 @@ export async function readCappedText(res: Pick<Response, 'body' | 'headers'>, ma
 /** `readCappedText` parsed as JSON (a parse error rejects). */
 export async function readCappedJson(res: Pick<Response, 'body' | 'headers'>, maxBytes: number): Promise<unknown> {
   return JSON.parse(await readCappedText(res, maxBytes)) as unknown
+}
+
+/** `key` as the request header, or no header when there is none (the server then answers signed out). */
+function keyHeaders(key: string | undefined): Record<string, string> {
+  return key === undefined ? {} : { [DEVICE_KEY_HEADER]: key }
+}
+
+/** `promise`, or a rejection after `ms` (the page's script may never answer: a navigation dropped it). */
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('the page did not answer')), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    )
+  })
 }
 
 /** The partitions this adapter prepared (isRemoteWindow). */
@@ -151,13 +178,14 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
     }
     const view: RemoteSessionView = {
       jar,
-      fetchJson: async (url, maxBytes) => {
-        // The partition's cookies (`include`), never a cached answer, no redirect followed (the
-        // gateway sends none; one would be somewhere else), bounded in time and size.
+      fetchJson: async (url, maxBytes, key) => {
+        // The partition's cookies (`include`) and the origin key, never a cached answer, no redirect
+        // followed (the gateway sends none; one would be somewhere else), bounded in time and size.
         const res = await ses.fetch(url, {
           credentials: 'include',
           cache: 'no-store',
           redirect: 'error',
+          headers: keyHeaders(key),
           signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)
         })
         if (!res.ok) {
@@ -166,7 +194,7 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
         }
         return readCappedJson(res, maxBytes)
       },
-      postJson: async (url, body, origin, maxBytes) => {
+      postJson: async (url, body, origin, maxBytes, key) => {
         // As fetchJson, plus what the gateway asks of every POST: the server's own Origin (set
         // explicitly: a request with no page behind it has none to send) and a JSON content type.
         const res = await ses.fetch(url, {
@@ -174,7 +202,7 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
           credentials: 'include',
           cache: 'no-store',
           redirect: 'error',
-          headers: { 'Content-Type': 'application/json', Origin: origin },
+          headers: { 'Content-Type': 'application/json', Origin: origin, ...keyHeaders(key) },
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)
         })
@@ -263,6 +291,12 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
         if (!win.isDestroyed()) win.setTitle(text)
       },
       url: () => (win.isDestroyed() ? '' : wc.getURL()),
+      // Main's own isolated world, never the page's: the page cannot see or wrap the read. The value
+      // is checked by the caller (remote-windows.ts, `isOriginKey`).
+      readKey: () => {
+        if (win.isDestroyed() || wc.isDestroyed()) return Promise.reject(new Error('the window is closed'))
+        return within(wc.executeJavaScriptInIsolatedWorld(REMOTE_KEY_WORLD_ID, [{ code: READ_KEY_SCRIPT }]) as Promise<unknown>, KEY_READ_TIMEOUT_MS)
+      },
       showError: (text) => {
         if (win.isDestroyed()) return
         // text/plain: the server's words in it can never be markup.

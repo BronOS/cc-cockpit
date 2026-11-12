@@ -8,6 +8,7 @@ import { isSignInId } from '../../shared/oauth-paste'
 export type LinkAsk = IpcEventMap['links.ask']
 export type TrashAsk = IpcEventMap['trash.ask']
 export type PageNotice = IpcEventMap['notices.show']
+export type LinkNotice = IpcEventMap['app.linkNotice']
 
 /**
  * The address an `app.linkNotice` may show, or undefined. Only an http(s) address becomes a link:
@@ -37,7 +38,8 @@ export type LinkNoticeAction = { kind: 'open'; url: string } | { kind: 'notice';
 export function linkNoticeAction(payload: unknown, env: { webShell: boolean; activationActive: boolean }): LinkNoticeAction {
   const url = linkNoticeUrl(payload)
   if (url === undefined) return { kind: 'none' }
-  if ((payload as { page?: unknown }).page === true) return { kind: 'notice', url }
+  // Read as the event's own shape, compared strictly: anything but `true` is no page mark.
+  if ((payload as Partial<Record<keyof LinkNotice, unknown>>).page === true) return { kind: 'notice', url }
   return env.webShell && env.activationActive ? { kind: 'open', url } : { kind: 'notice', url }
 }
 

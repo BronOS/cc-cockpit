@@ -106,6 +106,12 @@ class FakeWebContents extends FakeEmitter {
   isDestroyed(): boolean {
     return this.destroyed
   }
+  readonly scripts: Array<{ world: number; code: string }> = []
+  scriptAnswer: () => Promise<unknown> = () => Promise.resolve(null)
+  executeJavaScriptInIsolatedWorld(world: number, sources: Array<{ code: string }>): Promise<unknown> {
+    for (const s of sources) this.scripts.push({ world, code: s.code })
+    return this.scriptAnswer()
+  }
 }
 
 const state = {
@@ -171,6 +177,9 @@ vi.mock('electron', () => ({
 }))
 
 const { ElectronRemoteWindowFactory, isRemoteWindow, readCappedText, remotePartition } = await import('../../src/main/remote/electron-remote-window')
+const { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } = await import('../../src/main/remote/remote-key')
+const { WEBVIEW_WORLD_ID } = await import('../../src/main/webview/webview-input')
+const { DEVICE_KEY_STORAGE } = await import('../../src/shared/web-protocol')
 
 type Prevented = { defaultPrevented: boolean; preventDefault(): void }
 function prevented<T extends object>(fields: T = {} as T): Prevented & T {
@@ -393,25 +402,25 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
 
   it('fetches with the partition cookies, no cache, no redirect; a non-2xx rejects', async () => {
     const { ses, sessionView } = make()
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/auth/session', 4096)).resolves.toEqual({ mode: 'link', device: null })
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/auth/session', 4096, undefined)).resolves.toEqual({ mode: 'link', device: null })
     expect(ses.fetches[0]?.init).toMatchObject({ credentials: 'include', cache: 'no-store', redirect: 'error' })
     expect(ses.fetches[0]?.init.signal).toBeInstanceOf(AbortSignal)
     ses.answer = { ok: false, status: 401, body: {} }
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects', 4096)).rejects.toThrow('401')
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects', 4096, undefined)).rejects.toThrow('401')
     // With its status, for the machine poller (a 404 is an older server, machine-status.ts).
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects', 4096)).rejects.toMatchObject({ status: 401 })
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects', 4096, undefined)).rejects.toMatchObject({ status: 401 })
   })
 
   it("reads the server's answers up to the cap only, and errors past it", async () => {
     const { ses, sessionView } = make()
     ses.answer = { ok: true, status: 200, body: { pad: 'x'.repeat(100) } }
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 50)).rejects.toThrow('larger than 50 bytes')
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 4096)).resolves.toEqual({ pad: 'x'.repeat(100) })
-    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', {}, 'http://127.0.0.1:4100', 50)).rejects.toThrow('larger than 50 bytes')
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 50, undefined)).rejects.toThrow('larger than 50 bytes')
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 4096, undefined)).resolves.toEqual({ pad: 'x'.repeat(100) })
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', {}, 'http://127.0.0.1:4100', 50, undefined)).rejects.toThrow('larger than 50 bytes')
     // A body that is not JSON: GET rejects, POST answers undefined.
     ses.answer = { ok: true, status: 200, body: 'not json' }
-    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 4096)).rejects.toThrow()
-    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', {}, 'http://127.0.0.1:4100', 4096)).resolves.toEqual({ status: 200, body: undefined })
+    await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/sessions', 4096, undefined)).rejects.toThrow()
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', {}, 'http://127.0.0.1:4100', 4096, undefined)).resolves.toEqual({ status: 200, body: undefined })
   })
 
   it('readCappedText stops a stream that runs on without end, and refuses a declared length over the cap unread', async () => {
@@ -438,7 +447,7 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
   it('posts JSON with the server Origin and answers any status with its body', async () => {
     const { ses, sessionView } = make()
     ses.answer = { ok: false, status: 400, body: { error: 'missing' } }
-    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', { reopen: 'p1' }, 'http://127.0.0.1:4100', 4096)).resolves.toEqual({
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', { reopen: 'p1' }, 'http://127.0.0.1:4100', 4096, undefined)).resolves.toEqual({
       status: 400,
       body: { error: 'missing' }
     })
@@ -451,6 +460,40 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
       body: '{"reopen":"p1"}'
     })
     expect(ses.fetches[0]?.init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it("sends the origin key as the device key header on main's own requests, and none when there is no key", async () => {
+    const { ses, sessionView } = make()
+    const key = 'k'.repeat(43)
+    await sessionView.fetchJson('http://127.0.0.1:4100/auth/session', 4096, key)
+    await sessionView.fetchJson('http://127.0.0.1:4100/auth/session', 4096, undefined)
+    await sessionView.postJson('http://127.0.0.1:4100/api/projects', { reopen: 'p1' }, 'http://127.0.0.1:4100', 4096, key)
+    expect(ses.fetches[0]?.init.headers).toEqual({ 'x-cc-device-key': key })
+    expect(ses.fetches[1]?.init.headers).toEqual({})
+    expect(ses.fetches[2]?.init.headers).toEqual({ 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:4100', 'x-cc-device-key': key })
+  })
+
+  it("reads the page's key entry in main's own isolated world, bounded in time, never from a closed window", async () => {
+    vi.useFakeTimers()
+    try {
+      const { view, wc } = make()
+      wc.scriptAnswer = () => Promise.resolve('stored')
+      await expect(view.readKey()).resolves.toBe('stored')
+      expect(wc.scripts).toEqual([{ world: REMOTE_KEY_WORLD_ID, code: READ_KEY_SCRIPT }])
+      expect(REMOTE_KEY_WORLD_ID).not.toBe(WEBVIEW_WORLD_ID)
+      expect(READ_KEY_SCRIPT).toContain(JSON.stringify(DEVICE_KEY_STORAGE))
+      // A page that never answers (a navigation dropped the script): rejected after the bound.
+      wc.scriptAnswer = () => new Promise(() => undefined)
+      const pending = view.readKey()
+      const settled = expect(pending).rejects.toThrow('did not answer')
+      await vi.advanceTimersByTimeAsync(KEY_READ_TIMEOUT_MS)
+      await settled
+      wc.destroyed = true
+      await expect(view.readKey()).rejects.toThrow('closed')
+      expect(wc.scripts).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('clears a forgotten server partition', async () => {

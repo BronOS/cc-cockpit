@@ -6,10 +6,10 @@
 // DEVICE_KEY_HEADER on every request behind sign-in (`keyedFetch`) and as a WebSocket subprotocol on
 // the upgrade (`socketProtocols`, bridge.ts has no headers to set). Storage that throws (a private
 // window, blocked site data) is no key: the page then shows the sign-in, as for a browser never signed in.
-import { DEVICE_KEY_HEADER, socketProtocols } from '../../shared/web-protocol'
+import { DEVICE_KEY_HEADER, DEVICE_KEY_STORAGE, socketProtocols } from '../../shared/web-protocol'
 
-/** The localStorage entry. */
-export const DEVICE_KEY_STORAGE = 'cc-cockpit.device-key'
+/** The localStorage entry (shared: main reads it from a remote window's page). */
+export { DEVICE_KEY_STORAGE }
 /** Far above a 43-character key; anything longer is not one. */
 const MAX_KEY_LENGTH = 256
 

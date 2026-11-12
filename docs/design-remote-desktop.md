@@ -184,6 +184,18 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
   server's origin, which the gateway checks on every POST), then loads the id the server answered. Only once signed in
   (a 401 or no answer loads the page as before; a sign-in that lands asks again) and, for My own tunnel, only after the
   probe. The server's refusal (folder missing, an id it forgot) is main's error page with the server's text.
+- **Main's requests carry the device key.** The gateway signs in only a request with the device cookie and the device's
+  origin key (design-web.md §4.1), which the page keeps in its origin's `localStorage`. Main's own requests through the
+  partition (the session check, `/api/projects` and the reopen POST, the title lookup, the machine poll) send it as
+  `x-cc-device-key`: main reads it from the server's page in an isolated world of its own (`REMOTE_KEY_WORLD_ID`, not
+  the webviews' 1717; the window still has no preload), takes only a 43-character base64url key, and keeps it in memory
+  per server (never on disk by main, never logged or in an event). It is read at a navigation and a finished load, again
+  when a request with it is signed out, and after a sign-in lands until the page holds the new one (the cookie lands
+  before the page has read the answer's key). No key known means "not signed in here yet": the title and project
+  lookups wait for the page, a machine poll counts as not asked, and the re-pair asks only after reading the page, so a
+  key not read yet never mints a device. A first window after a launch has no page to read before it loads, so its
+  recent-project check runs once the page loaded. A new origin (the tunnel on another port) has its own storage: the
+  key is dropped with the old one (`remote-windows.ts`, header "The origin key"; `remote-key.ts`).
 - **Title and names.** The web shell's only title is the static `cc-cockpit` (`renderer/web/index.html`), so main does
   not read the page's title: after a navigation to `?project=<id>` it asks the server's `/api/projects` through the
   window's own session (`ses.fetch`, the device cookie applies) for that project's name. The window title is

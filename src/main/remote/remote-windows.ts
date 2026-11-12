@@ -79,6 +79,24 @@
 // a sign-in that lands (loadToken) asks again. A gated load asks only after the gate let it (probe,
 // then reopen, then load). The server refusing (`{ error }`: the folder is gone, an id it forgot) is
 // main's error page with the server's text.
+//
+// The origin key (design-web.md §4.1 "Origin-bound device", remote-key.ts). The gateway signs in only a
+// request that carries the device cookie and the device's origin key, which the page keeps in its
+// origin's localStorage. Main's own requests (the session check, the project list and the reopen POST,
+// the title lookup, the machine poll) send the key main read from the page (`refreshKey`, a server's
+// window on its current origin, the asking window first), kept in memory per server (`ServerState.key`).
+// A key is read at a window's navigation and finished load, and again when a request with it was signed
+// out (the page may have signed in since). No key known and none on the page means "not signed in here
+// yet": the title and project lookups wait for the page instead of asking signed out, and the re-pair
+// asks only with the page's own key read first, so a key that has not been read yet never mints a
+// device. A sign-in landing (the cookie's `changed`, `signedIn`) makes the old key stale: the page
+// stores the new one a moment after the cookie lands (it reads the answer's body first), so main reads
+// until the page holds a key that is not the stale one (`awaitKey`, KEY_READS times KEY_READ_EVERY_MS),
+// and a re-pair's loop waits for that before it asks again. A window's first load after a relaunch
+// knows no key yet (an empty window has no storage to read), so its project check runs once the page
+// loaded (`recheck`): a project the server closed shows the web client's "not open" a moment, then the
+// reopened one. The key moves with nothing: a new origin (the tunnel on another port) has a storage of
+// its own, so the key is dropped with it.
 
 import { errorText } from '../../shared/error-text'
 import { recentEntryOf, type RemoteServerRecord } from '../../shared/remote-servers'
@@ -87,6 +105,7 @@ import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
 import { warnLog } from '../warn-log'
 import { RemoteCookie, type RemoteCookieJar, type RemoteCookieStore } from './remote-cookie'
+import { isOriginKey } from './remote-key'
 import { TUNNEL_RETRY_MS, type LoadGate } from './tunnel-probe'
 
 /** Pairings in a row with no device seen in between before the window shows the error. */
@@ -111,6 +130,9 @@ export const CLICK_WINDOW_MS = 1500
 /** Main's own reads of the server's answers, at most (electron-remote-window.ts errors past them). */
 export const PROJECTS_MAX_BYTES = 1024 * 1024
 export const SESSION_MAX_BYTES = 4 * 1024
+/** After a sign-in landed, how often and how many times main reads the page for its new origin key. */
+export const KEY_READ_EVERY_MS = 100
+export const KEY_READS = 50
 
 // ---------------------------------------------------------------------------------------------
 // The rules (pure, unit-tested on their own)
@@ -331,6 +353,12 @@ export interface RemoteWindowView {
   setTitle(title: string): void
   /** The page's current URL ('' when there is none). */
   url(): string
+  /**
+   * The page's stored origin key entry, read in main's own isolated world (remote-key.ts): the raw
+   * value (null: no entry; undefined: the storage could not be read), checked by the caller. Rejects
+   * for a closed window or a page that did not answer in time.
+   */
+  readKey(): Promise<unknown>
   /** Show `text` as the window's page, as plain text (never HTML: it may carry the server's words). */
   showError(text: string): void
   close(): void
@@ -348,16 +376,18 @@ export interface RemoteSessionHooks {
 export interface RemoteSessionView {
   readonly jar: RemoteCookieJar
   /**
-   * GET `url` with the partition's cookies and parse the JSON body, read up to `maxBytes`; rejects on
-   * a network error, a body past `maxBytes`, or with a RemoteHttpError on a non-2xx answer.
+   * GET `url` with the partition's cookies and the origin `key` (DEVICE_KEY_HEADER; none: the server
+   * answers signed out) and parse the JSON body, read up to `maxBytes`; rejects on a network error, a
+   * body past `maxBytes`, or with a RemoteHttpError on a non-2xx answer.
    */
-  fetchJson(url: string, maxBytes: number): Promise<unknown>
+  fetchJson(url: string, maxBytes: number, key: string | undefined): Promise<unknown>
   /**
-   * POST `body` as JSON to `url` with the partition's cookies and `Origin: <origin>` (the gateway
-   * refuses a POST whose Origin is not the server's own). Any status answers, with the JSON body
-   * (undefined when it is not JSON), read up to `maxBytes`; rejects on a network error or a body past it.
+   * POST `body` as JSON to `url` with the partition's cookies, the origin `key` and `Origin: <origin>`
+   * (the gateway refuses a POST whose Origin is not the server's own). Any status answers, with the
+   * JSON body (undefined when it is not JSON), read up to `maxBytes`; rejects on a network error or a
+   * body past it.
    */
-  postJson(url: string, body: unknown, origin: string, maxBytes: number): Promise<{ status: number; body: unknown }>
+  postJson(url: string, body: unknown, origin: string, maxBytes: number, key: string | undefined): Promise<{ status: number; body: unknown }>
 }
 
 export interface RemoteWindowFactory {
@@ -438,6 +468,12 @@ interface ServerState {
   /** The server's page-driven actions (MAX_PAGE_ACTIONS) and its windows' `window.open`s, shared by its windows. */
   readonly actions: Budget
   readonly opens: OpenBudget
+  /** The origin key main sends (see the header); undefined: none known. Memory only, never logged. */
+  key: string | undefined
+  /** The key a sign-in replaced: a read that still finds it is "the new one is not stored yet". */
+  staleKey: string | undefined
+  /** The reads for a landed sign-in's new key (`awaitKey`); a re-pair waits for them. */
+  keyWait: Promise<void> | undefined
 }
 
 interface WindowRecord {
@@ -459,6 +495,8 @@ interface WindowRecord {
   /** A gated load waiting for the tunnel: its retry timer, and the text the window shows. */
   retry: unknown
   waiting: string | undefined
+  /** A project check that could not run for want of a key: it runs once load `attempt` finished loading. */
+  recheck: { project: string; attempt: number } | undefined
 }
 
 export type SessionReply = { mode: string; device: { id: string } | null }
@@ -472,7 +510,18 @@ export type SessionReply = { mode: string; device: { id: string } | null }
 type ReopenMode = 'open' | 'signedIn'
 
 /** What the server said about a project before its page loads. */
-type ProjectCheck = { open: true } | { reopened: string } | { error: string } | { unknown: true }
+type ProjectCheck = { open: true } | { reopened: string } | { error: string } | { unknown: true } | { noKey: true }
+
+/**
+ * A main-made request not sent: no origin key is known for the server yet (its page has not signed in,
+ * or has not loaded). The machine poller reads it as "not answered yet" rather than unreachable.
+ */
+export class RemoteNoKeyError extends Error {
+  constructor() {
+    super('no device key from the page yet')
+    this.name = 'RemoteNoKeyError'
+  }
+}
 
 /** The SESSION_PATH answer, checked; undefined when it is not one (the gateway's own shape, web-protocol.ts). */
 export function sessionReplyOf(body: unknown): SessionReply | undefined {
@@ -589,7 +638,7 @@ export class RemoteWindows {
         if (made.rec !== undefined) this.navigated(made.rec, url)
       },
       loaded: () => {
-        if (made.rec !== undefined) this.trigger(made.rec)
+        if (made.rec !== undefined) this.pageLoaded(made.rec)
       },
       focused: () => {
         if (made.rec !== undefined && !made.rec.closed) made.rec.focusedAt = ++this.focusSeq
@@ -602,7 +651,7 @@ export class RemoteWindows {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
@@ -621,6 +670,9 @@ export class RemoteWindows {
     const state = this.servers.get(serverId)
     if (state === undefined || state.origin === origin) return
     state.origin = origin
+    // Storage is per origin, port included: the old origin's key is not this one's page's.
+    state.key = undefined
+    state.staleKey = undefined
     state.restored = state.cookie.restore()
     await state.restored
     for (const rec of this.windowsOf(serverId)) this.load(rec, remotePageUrl(origin, rec.project))
@@ -674,9 +726,11 @@ export class RemoteWindows {
     if (state === undefined) throw new Error('no such server')
     await state.restored
     // No window to vouch for it: a tunnel server is probed before every poll.
+    const origin = state.origin
     const ok = this.cleared(serverId)
     if (ok !== true && !(await ok)) throw new Error('the tunnel did not answer as a cc-cockpit server')
-    return state.session.fetchJson(`${state.origin}${path}`, SESSION_MAX_BYTES)
+    // The key from any of the server's windows (the poller runs only while one is open).
+    return this.keyedGet(serverId, state, origin, path, SESSION_MAX_BYTES)
   }
 
   /** The server was renamed: its windows' titles follow. */
@@ -728,7 +782,10 @@ export class RemoteWindows {
       allowRequest: (url) => allowRemoteRequest(url, this.servers.get(serverId)?.origin),
       sessionRequestCompleted: (webContentsId) => {
         const rec = this.byWebContents.get(webContentsId)
-        if (rec !== undefined && rec.serverId === serverId) this.trigger(rec)
+        if (rec === undefined || rec.serverId !== serverId) return
+        // The page asks its session after it stored a sign-in's key (sign-in.ts): read it again.
+        void this.refreshKey(serverId, rec)
+        this.trigger(rec)
       }
     })
     const cookie = new RemoteCookie({
@@ -748,7 +805,10 @@ export class RemoteWindows {
       attempts: 0,
       signedIn: [],
       actions: new Budget(MAX_PAGE_ACTIONS, PAGE_ACTION_WINDOW_MS),
-      opens: new OpenBudget()
+      opens: new OpenBudget(),
+      key: undefined,
+      staleKey: undefined,
+      keyWait: undefined
     }
     // Before anything reads the origin back through `this.servers` (restore does).
     this.servers.set(serverId, state)
@@ -867,7 +927,7 @@ export class RemoteWindows {
 
   /** backToPicker's question: the window closes when the server no longer has `project` open. */
   private closeIfNotOpen(rec: WindowRecord, state: ServerState, project: string): void {
-    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`, PROJECTS_MAX_BYTES).then(
+    void this.keyedGet(rec.serverId, state, state.origin, PROJECTS_PATH, PROJECTS_MAX_BYTES, rec).then(
       (body) => {
         if (rec.closed) return
         const open = openProjectIdsOf(body)
@@ -920,6 +980,39 @@ export class RemoteWindows {
     this.updateTitle(rec)
   }
 
+  /**
+   * The page finished loading: its key is read (a project check waiting for one runs then), and an
+   * SSH server's re-pair check runs (`trigger`).
+   */
+  private pageLoaded(rec: WindowRecord): void {
+    const recheck = rec.recheck
+    rec.recheck = undefined
+    void this.refreshKey(rec.serverId, rec).then((key) => {
+      if (recheck === undefined || key === undefined || rec.closed || rec.loads !== recheck.attempt) return
+      const state = this.servers.get(rec.serverId)
+      if (state === undefined || projectOfUrl(rec.view.url()) !== recheck.project || !onOrigin(rec.view.url(), state.origin)) return
+      this.recheckProject(rec, state, recheck)
+    })
+    this.trigger(rec)
+  }
+
+  /**
+   * The project check of a load that went without one (no key then): the page shows the project, or the
+   * web client's "not open"; a project the server reopens is loaded, its refusal is the error page.
+   */
+  private recheckProject(rec: WindowRecord, state: ServerState, recheck: { project: string; attempt: number }): void {
+    const origin = state.origin
+    void this.checkProject(rec, state.session, origin, recheck.project).then((check) => {
+      if (rec.closed || rec.loads !== recheck.attempt) return
+      if ('error' in check) {
+        const server = this.options.store.get(rec.serverId)
+        rec.view.showError(`${server?.name ?? 'The server'} could not reopen this project: ${check.error}`)
+      } else if ('reopened' in check) {
+        rec.view.load(remotePageUrl(origin, check.reopened))
+      }
+    })
+  }
+
   /** The title for the window's project: the server's name at once, the project's name once the server said it. */
   private updateTitle(rec: WindowRecord): void {
     if (rec.titled === rec.project) return
@@ -936,7 +1029,7 @@ export class RemoteWindows {
       rec.titled = null
       return
     }
-    void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`, PROJECTS_MAX_BYTES).then(
+    void this.keyedGet(rec.serverId, state, state.origin, PROJECTS_PATH, PROJECTS_MAX_BYTES, rec).then(
       (body) => {
         if (rec.closed || rec.project !== project) return
         const name = projectNameOf(body, project)
@@ -948,10 +1041,10 @@ export class RemoteWindows {
         this.options.store.recordRecent(rec.serverId, project, entry.name, entry.at)
       },
       (err: unknown) => {
-        // Signed out (a 401 until the re-pair lands) or the server away: the title stays the server's.
-        // The next navigation asks again.
+        // Signed out (a 401 until the re-pair lands), no key yet, or the server away: the title stays
+        // the server's. The next navigation asks again, and so does a key learned (`setKey`).
         if (rec.project === project) rec.titled = null
-        this.log(`remote ${rec.serverId}: the project list did not answer: ${errorText(err)}`)
+        if (!(err instanceof RemoteNoKeyError)) this.log(`remote ${rec.serverId}: the project list did not answer: ${errorText(err)}`)
       }
     )
   }
@@ -1018,6 +1111,8 @@ export class RemoteWindows {
     this.load(rec, remotePageUrl(state.origin, rec.project, token))
     const ok = await landed
     if (ok) {
+      // The page stores the sign-in's key a moment after the cookie landed: main's requests below need it.
+      await state.keyWait
       for (const other of this.windowsOf(rec.serverId)) if (other !== rec) this.reload(other, state)
       // The page signed in on its project: one the server closed shows "not open" until reopened.
       if (rec.project !== undefined) this.load(rec, remotePageUrl(state.origin, rec.project), 'signedIn')
@@ -1112,7 +1207,16 @@ export class RemoteWindows {
     const origin = state.origin
     void this.checkProject(rec, state.session, origin, project).then((check) => {
       if (rec.closed || rec.loads !== attempt) return
-      if ('error' in check) {
+      if ('noKey' in check) {
+        // No key to ask with (a first window after a relaunch: nothing to read it from yet). The page
+        // as before, and the check once it loaded and its key is read (`pageLoaded`). A sign-in that
+        // landed with no key kept: nothing more to load.
+        if (reopen === 'open' || !onOrigin(rec.view.url(), origin)) {
+          rec.waiting = undefined
+          rec.recheck = { project, attempt }
+          rec.view.load(url)
+        }
+      } else if ('error' in check) {
         const server = this.options.store.get(rec.serverId)
         rec.waiting = undefined
         rec.view.showError(`${server?.name ?? 'The server'} could not reopen this project: ${check.error}`)
@@ -1137,9 +1241,12 @@ export class RemoteWindows {
     // Called only once the load passed the gate, so this is true at once; kept as the rule's check.
     const listOk = this.cleared(rec.serverId, rec, origin)
     if (listOk !== true && !(await listOk)) return { unknown: true }
+    const state = this.servers.get(rec.serverId)
+    if (state === undefined || state.session !== session) return { unknown: true }
+    if ((await this.keyFor(rec.serverId, state, rec)) === undefined) return { noKey: true }
     let open: Set<string> | undefined
     try {
-      open = openProjectIdsOf(await session.fetchJson(url, PROJECTS_MAX_BYTES))
+      open = openProjectIdsOf(await this.keyedGet(rec.serverId, state, origin, PROJECTS_PATH, PROJECTS_MAX_BYTES, rec))
     } catch (err) {
       // Signed out (401): the page's sign-in, then a re-pair, and the check runs again once it lands.
       this.log(`remote ${rec.serverId}: the project list did not answer; loading the project page as is: ${errorText(err)}`)
@@ -1154,7 +1261,7 @@ export class RemoteWindows {
     const request: WebOpenProjectRequest = { reopen: project }
     let answer: { status: number; body: unknown }
     try {
-      answer = await session.postJson(url, request, origin, PROJECTS_MAX_BYTES)
+      answer = await session.postJson(url, request, origin, PROJECTS_MAX_BYTES, state.key)
     } catch (err) {
       this.log(`remote ${rec.serverId}: reopening the project did not answer: ${errorText(err)}`)
       return { unknown: true }
@@ -1199,7 +1306,7 @@ export class RemoteWindows {
       if (ok !== true && !(await ok)) return
       let reply: SessionReply | undefined
       try {
-        reply = sessionReplyOf(await state.session.fetchJson(`${state.origin}${SESSION_PATH}`, SESSION_MAX_BYTES))
+        reply = await this.checkSession(rec, state)
       } catch {
         // The server away or not answering: the page shows its own state; the next load asks again.
         return
@@ -1233,6 +1340,114 @@ export class RemoteWindows {
     }
   }
 
+  /**
+   * SESSION_PATH with the server's key (read from the page first when none is known). No device: the
+   * key may be one the page has replaced, or none was known, so the page's own key is read and, when it
+   * is another one, asked again with it. Only a device-less answer to the key the page holds (or to no
+   * key, with none on the page) re-pairs. Undefined: not an answer, or the check could not go again.
+   */
+  private async checkSession(rec: WindowRecord, state: ServerState): Promise<SessionReply | undefined> {
+    const origin = state.origin
+    const ask = async (key: string | undefined): Promise<SessionReply | undefined> =>
+      sessionReplyOf(await state.session.fetchJson(`${origin}${SESSION_PATH}`, SESSION_MAX_BYTES, key))
+    const key = await this.keyFor(rec.serverId, state, rec)
+    const reply = await ask(key)
+    if (reply === undefined || reply.device !== null) return reply
+    const fresh = await this.refreshKey(rec.serverId, rec)
+    if (fresh === undefined || fresh === key) return reply
+    const ok = this.cleared(rec.serverId, rec, origin)
+    if (ok !== true && !(await ok)) return undefined
+    return ask(fresh)
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The origin key (see the header)
+
+  /** The server's key: the one known, else read from its windows now. */
+  private async keyFor(serverId: string, state: ServerState, first?: WindowRecord): Promise<string | undefined> {
+    return state.key ?? this.refreshKey(serverId, first)
+  }
+
+  /**
+   * Read the key from a window of the server showing its page at its current origin (`first` first,
+   * then the most recently focused): the first page that answers decides. A key is kept; no entry, or
+   * one that is not a key, drops the known one (the page holds none main may send). A read that finds
+   * the key a sign-in just replaced keeps none yet (the page has not stored the new one). Answers the
+   * key known after the read.
+   */
+  private async refreshKey(serverId: string, first?: WindowRecord): Promise<string | undefined> {
+    const state = this.servers.get(serverId)
+    if (state === undefined) return undefined
+    const origin = state.origin
+    const others = this.windowsOf(serverId)
+      .filter((r) => r !== first)
+      .sort((a, b) => b.focusedAt - a.focusedAt)
+    const sources = (first === undefined ? others : [first, ...others]).filter((r) => !r.closed && onOrigin(r.view.url(), origin))
+    for (const rec of sources) {
+      let raw: unknown
+      try {
+        raw = await rec.view.readKey()
+      } catch {
+        continue
+      }
+      // Forgotten or moved meanwhile: this read is for a state that is gone.
+      if (this.servers.get(serverId) !== state || state.origin !== origin) return undefined
+      if (raw === undefined || rec.closed || !onOrigin(rec.view.url(), origin)) continue
+      // Never the value itself in the log: it is the page's, and may be a real key of another shape.
+      if (raw !== null && !isOriginKey(raw)) this.log(`remote ${serverId}: the page's device key entry is not one; it is not sent`)
+      const key = isOriginKey(raw) ? raw : undefined
+      if (key !== undefined && key === state.staleKey) return state.key
+      this.setKey(serverId, state, key)
+      return state.key
+    }
+    return state.key
+  }
+
+  /** Keep `key` as the server's; a key learned asks the titles that waited for one. */
+  private setKey(serverId: string, state: ServerState, key: string | undefined): void {
+    if (key !== undefined) state.staleKey = undefined
+    if (state.key === key) return
+    state.key = key
+    if (key === undefined) return
+    for (const rec of this.windowsOf(serverId)) if (rec.titled === null) this.updateTitle(rec)
+  }
+
+  /**
+   * A sign-in landed: read the page until it holds a key that is not the replaced one. Past KEY_READS,
+   * whatever key the page holds is taken (a read that raced the cookie's event may have learned the new
+   * key before it was marked stale), or none.
+   */
+  private async awaitKey(serverId: string, state: ServerState): Promise<void> {
+    for (let i = 0; i < KEY_READS; i++) {
+      if (this.servers.get(serverId) !== state || state.key !== undefined) return
+      if ((await this.refreshKey(serverId)) !== undefined) return
+      await new Promise<void>((resolve) => this.timers.setTimeout(resolve, KEY_READ_EVERY_MS))
+    }
+    if (this.servers.get(serverId) !== state || state.key !== undefined) return
+    state.staleKey = undefined
+    if ((await this.refreshKey(serverId)) === undefined) this.log(`remote ${serverId}: the page kept no device key after signing in`)
+  }
+
+  /**
+   * GET `path` at `origin` with the server's key (see `keyFor`; RemoteNoKeyError with none). Signed out
+   * (401): the page's key is read again and, when it is another one, the request goes once more with
+   * it, while the window (or a server with no gate) still may (`passedNow`).
+   */
+  private async keyedGet(serverId: string, state: ServerState, origin: string, path: string, maxBytes: number, rec?: WindowRecord): Promise<unknown> {
+    const key = await this.keyFor(serverId, state, rec)
+    if (key === undefined) throw new RemoteNoKeyError()
+    // Moved or forgotten while the page was read: the request was cleared for what is gone.
+    if (this.servers.get(serverId) !== state || state.origin !== origin) throw new Error('the server moved')
+    try {
+      return await state.session.fetchJson(`${origin}${path}`, maxBytes, key)
+    } catch (err) {
+      if (!(err instanceof RemoteHttpError) || err.status !== 401) throw err
+      const fresh = await this.refreshKey(serverId, rec)
+      if (fresh === undefined || fresh === key || state.origin !== origin || !this.passedNow(serverId, rec, origin)) throw err
+      return state.session.fetchJson(`${origin}${path}`, maxBytes, fresh)
+    }
+  }
+
   /** Resolves true when a sign-in lands the cookie, false after PAIR_WAIT_MS. */
   private waitSignedIn(state: ServerState): Promise<boolean> {
     return new Promise((resolve) => {
@@ -1253,6 +1468,11 @@ export class RemoteWindows {
   private signedIn(serverId: string): void {
     const state = this.servers.get(serverId)
     if (state === undefined) return
+    // A new cookie goes with a new key: the one known is stale from now on, and read again until the
+    // page holds the new one. Set before the waiting re-pairs go on, so they wait for it too.
+    if (state.key !== undefined) state.staleKey = state.key
+    state.key = undefined
+    state.keyWait = this.awaitKey(serverId, state)
     for (const resolve of [...state.signedIn]) resolve()
   }
 }

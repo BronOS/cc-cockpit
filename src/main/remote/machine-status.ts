@@ -11,7 +11,9 @@
 //  - a 404 (an older server with no SESSIONS_PATH) or a 200 that is not three counts: reachable, no
 //    counts (it answered, it just has nothing to say);
 //  - anything else (no answer, a timeout, a 401 because the device was revoked or the cookie is not
-//    in yet, a 5xx): unreachable, no counts. Stale counts are dropped rather than kept dimmed: a
+//    in yet, a 5xx): unreachable, no counts. No origin key known yet (RemoteNoKeyError: the window's
+//    page has not loaded or signed in, so main has nothing to ask with) is no answer either way: the
+//    reading stays as it was and the ask goes again after NO_KEY_RETRY_MS. Stale counts are dropped rather than kept dimmed: a
 //    "2 waiting" the server can no longer confirm would send the person to a window that shows
 //    otherwise. A 401 is reachable in the network sense, but the chip can show nothing true about it,
 //    and the window itself shows the sign-in.
@@ -31,10 +33,12 @@ import { randomBytes } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
 import { SESSIONS_PATH } from '../../shared/web-protocol'
 import { warnLog } from '../warn-log'
-import { RemoteHttpError } from './remote-windows'
+import { RemoteHttpError, RemoteNoKeyError } from './remote-windows'
 
 /** How long after an answer (or a failure) the next ask goes out. */
 export const POLL_MS = 5_000
+/** How soon the ask goes again when it could not go for want of an origin key (the page is loading). */
+export const NO_KEY_RETRY_MS = 1_000
 /** The highest count read from a server; a bigger one is not a count (no machine runs that many tabs). */
 export const MAX_MACHINE_COUNT = 100_000
 
@@ -70,6 +74,8 @@ export interface MachineStatusOptions {
 }
 
 type Reading = { reachable: true; counts?: { waiting: number; working: number; idle: number } } | { reachable: false }
+/** The ask did not go (RemoteNoKeyError): the reading stays. */
+const NOT_ASKED = 'not-asked'
 
 interface Polled {
   /** The last reading; `{ reachable: true }` before the first answer. */
@@ -222,7 +228,8 @@ export class MachineStatus {
           const counts = countsOf(body)
           return counts === undefined ? { reachable: true } : { reachable: true, counts }
         },
-        (err: unknown): Reading => {
+        (err: unknown): Reading | typeof NOT_ASKED => {
+          if (err instanceof RemoteNoKeyError) return NOT_ASKED
           if (err instanceof RemoteHttpError && err.status === 404) return { reachable: true }
           // Once per change of state, not every 5 s while a server stays away.
           if (p.reading.reachable) this.log(`remote ${serverId}: the session counts did not answer: ${errorText(err)}`)
@@ -232,11 +239,13 @@ export class MachineStatus {
       .then((reading) => {
         p.inFlight = false
         if (this.disposed || this.polled.get(serverId) !== p) return
-        p.reading = reading
-        this.announce()
+        if (reading !== NOT_ASKED) {
+          p.reading = reading
+          this.announce()
+        }
         p.timer = this.timers.setTimeout(() => {
           if (!this.disposed && this.polled.get(serverId) === p) this.poll(serverId, p)
-        }, POLL_MS)
+        }, reading === NOT_ASKED ? NO_KEY_RETRY_MS : POLL_MS)
       })
   }
 

@@ -566,8 +566,11 @@ device, and it listens on a loopback port of its own for the windows, so nothing
 - **Trust this host.** On a first connect the app shows the host's address, key type and SHA256 fingerprint and asks.
   Compare it with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server, then Trust. The key is kept with the
   server. If `~/.ssh/known_hosts` already lists the host (plain or hashed entries; the file is only read, never written),
-  the app trusts that key without asking. A key that **changed** is refused, never a question: if the server was
-  reinstalled, open **Edit**, tick **Forget the trusted host key**, and connect again.
+  the app trusts that key without asking; `/etc/ssh/ssh_known_hosts` is read after it, and a file that cannot be read
+  stops the connect rather than counting as empty. A key that **changed** is refused, never a question: if the server
+  was reinstalled, open **Edit**, tick **Forget the trusted host key**, and connect again. A key of a type those files do
+  not list for a host they list with other types is refused too (it could be an attack); if it is expected, add it with
+  `ssh-keyscan`.
 - **`~/.ssh/config`.** The app reads `HostName`, `User`, `Port`, `IdentityFile`, `IdentityAgent` and `Include`, with
   `Host` patterns as `ssh` matches them; what you type in the form wins, and the file is read again on every connect.
 - **Not supported by the built-in client:** `ProxyJump` and `ProxyCommand` (a host that needs them is refused with a
@@ -585,19 +588,28 @@ have this exposure, because the app owns its port. When the device is revoked, E
 
 **Pairing.** With SSH it is automatic, also again after a device was revoked. In password mode the server's own page
 asks once, in the window. With None there is nothing to do. The device appears in the server's `ccc web status`.
+A server updated to a release with device keys (see Web access) drops devices signed in before it, this app's
+included: an SSH server pairs again by itself on the next open; a Direct server needs a fresh link (Edit).
 
 **Connect Direct.** Choose **Link** and paste the access link the server printed, or one from `ccc web add-device`
-(`https://server.example.com/#t=…`). A plain `http` link to a network address is marked as not encrypted.
+(`https://server.example.com/#t=…`). A plain `http` link to a network address is not encrypted: the form says so
+first, and connects only on a second click (**Connect anyway**).
 
 **Edit.** A server's menu has **Edit**: change the host, user, port, sign-in, `ccc` path, ports or name. A changed host
 or port drops the trusted host key, and a changed host, user, port or sign-in drops the remembered password and
-passphrase. Saving an SSH server dials nothing; the next open asks for what it needs.
+passphrase. Saving an SSH server dials nothing; the next open asks for what it needs. A change of who answers (the
+SSH host, port, user or `ccc` path, forgetting the trusted host key, any tunnel setting, a Direct link to another
+address) wipes the server as Forget does but keeps the entry: its windows close and its cookie and the data its page
+kept here go, so nothing of the old server's page runs against the new one.
 
 **Windows.** Opening a remote project gives one window per project, with the desktop's shortcuts. Links clicked in a
 remote session open in your own browser here, not on the server. In a remote project window the tab strip's **+** shows this app's own
 picker (local projects and your servers), and **Close project** closes the project on the server and its window here.
 A click on a session of another project in the top bar's strip opens that project in its own window (or brings its
-window forward) with that tab selected.
+window forward) with that tab selected. What a server's page makes this app do on its own is limited: a few such moves
+per server every 10 seconds, at most 16 windows per server, and a move that takes the focus away from the page (to a
+local window, the picker or another remote window) only right after your own click in that window; a key press does not
+count, because the server sees what you type.
 
 **Other machines in the strip.** Local and remote windows run different cockpits, so each top-bar strip shows its own
 machine's sessions and a chip for the other one. In a local window the strip has one chip per connected server that has a
@@ -606,7 +618,8 @@ tooltip adds the idle ones), dimmed when the server cannot be reached; a click b
 counts come from the server (`GET /api/sessions`, every 5 seconds while one of its windows is open) and are all that
 crosses: no session names, projects or text. A server too old to answer shows its name alone. In a remote window the strip
 starts with **This computer**: a click brings forward the local project window you used last, or shows the picker when none
-is open. The chips need the bundled Sessions plugin; plugins can read the same list with `ctx.sessions.machines()`.
+is open. The chips need the bundled Sessions plugin; plugins can read the same list with `ctx.sessions.machines()`, where
+a server you did not name is `Server 1`, `Server 2` and so on (never its address).
 
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
@@ -617,6 +630,10 @@ here; the device stays listed on the server until `ccc web revoke <device id>` (
 - No system notifications from remote sessions.
 - The server's sshd must allow TCP forwarding (`AllowTcpForwarding`); the app says so when it does not.
 - With no keyring the device cookie is not remembered: every launch pairs again, which adds a device on the server.
+- The device key (see Web access) is kept by the server's page in the window's own storage on disk, as a
+  browser profile keeps it; the app reads it from there for its own requests to the server and keeps it in memory only.
+  The first window after a launch asks the server about its project once its page has loaded, so a project the server
+  closed shows "not open" for a moment before it reopens.
 - Windows is not supported.
 
 ## Updates and versions

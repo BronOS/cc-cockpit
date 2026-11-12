@@ -17,19 +17,31 @@
 // Linux only: server mode starts nowhere else.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from 'node:net'
 import { hostname, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import type { ElectronApplication, Locator, Page } from '@playwright/test'
 import { utils } from 'ssh2'
 import type { WebCliStatus } from '../../src/shared/web-access'
+import { DEVICE_KEY_STORAGE } from '../../src/shared/web-protocol'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
 
 /** The remote window showing `origin`'s page (open, not the picker or a project window). */
+/** Every file under `dir`, recursively (symlinks not followed). */
+function filesUnder(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...filesUnder(path))
+    else if (entry.isFile()) out.push(path)
+  }
+  return out
+}
+
 async function remoteWindow(app: ElectronApplication, origin: string): Promise<Page> {
   let found: Page | undefined
   await expect
@@ -174,6 +186,9 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     await expect.poll(() => savedServers(desktop!.cockpit.dataDir).map((s) => s.name)).toEqual(['Test server'])
     const saved = savedServers(desktop.cockpit.dataDir)[0]!
     expect(saved.cookie?.startsWith('FAKE-SECRET-STORE-NOT-ENCRYPTED:')).toBe(true)
+    // The device's origin key, as the page keeps it (design-web.md §4.1): checked on disk at (g).
+    const deviceKey = await remote.evaluate((name) => localStorage.getItem(name), DEVICE_KEY_STORAGE)
+    expect(deviceKey).toMatch(/^[A-Za-z0-9_-]{43}$/)
 
     // (i) Back to the picker (§4): the tab strip's "+" in the remote window shows the desktop picker,
     // not the server's web one, and the project is still open on the server, so the window stays on it.
@@ -202,6 +217,13 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     const cookies = join(root, 'data', 'Partitions', `remote-${saved.id}`, 'Cookies')
     expect(existsSync(cookies)).toBe(true)
     expect(readFileSync(cookies).includes(Buffer.from('ccc_device'))).toBe(false)
+    // The origin key: in the page's own localStorage database and nowhere else in the data dir (main
+    // keeps its copy in memory only; never in the record, a log or the cookie database).
+    const keyBytes = Buffer.from(deviceKey!)
+    const holding = filesUnder(join(root, 'data')).filter((f) => readFileSync(f).includes(keyBytes))
+    const localStorageDir = join(root, 'data', 'Partitions', `remote-${saved.id}`, 'Local Storage') + '/'
+    expect(holding.length).toBeGreaterThan(0)
+    expect(holding.filter((f) => !f.startsWith(localStorageDir))).toEqual([])
 
     // (f) A relaunch on the same data dir: the picker lists the server and its recent project; opening
     // it restores the saved cookie and the window is signed in with no token and no new device.

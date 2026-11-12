@@ -35,6 +35,14 @@ export const CONFIRM_POLL_PATH = '/auth/confirm/poll'
  * localStorage, which unlike a cookie is port-scoped. Lower case, as Node reads header names.
  */
 export const DEVICE_KEY_HEADER = 'x-cc-device-key'
+/**
+ * The page's localStorage entry for its origin key (renderer/web/device-key.ts). Main reads it from a
+ * remote window's page too, in its own isolated world (main/remote/remote-key.ts), to send the key on
+ * its own requests to that server.
+ */
+export const DEVICE_KEY_STORAGE = 'cc-cockpit.device-key'
+/** An origin key as the gateway mints it: 32 random bytes, base64url, so 43 characters (devices.ts `randomSecret`). */
+export const ORIGIN_KEY_LENGTH = 43
 /** The WebSocket subprotocol the page asks for and the gateway answers with (it must answer one the page offered). */
 export const WS_PROTOCOL = 'cc-cockpit'
 /**

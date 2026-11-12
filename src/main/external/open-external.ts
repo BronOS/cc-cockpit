@@ -18,6 +18,7 @@
 // No Electron import: the OS opener is passed in (electron-open-external.ts, looked up at each call
 // so the e2e recorder that replaces `shell.openExternal` is seen); unit tests pass recorders.
 
+import type { IpcEventMap } from '../../shared/ipc'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { warnLog } from '../warn-log'
 
@@ -47,8 +48,8 @@ export interface OpenExtra {
 /** Opens `url` (already checked http(s)) for `target`; rejects when it was refused. */
 export type OpenExternal = (url: string, target: OpenTarget, extra?: OpenExtra) => Promise<void>
 
-/** `app.linkNotice`'s payload (shared/ipc.ts); `page` as in OpenExtra. */
-export type LinkNoticePayload = { url: string; signIn?: string; page?: true }
+/** `app.linkNotice`'s payload as main sends it (shared/ipc.ts; `replayed` is the web bridge's own); `page` as in OpenExtra. */
+export type LinkNoticePayload = Omit<IpcEventMap['app.linkNotice'], 'replayed'>
 
 /** The ViewRegistry methods the adapter uses (a fake in unit tests). */
 export interface LinkViews {

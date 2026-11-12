@@ -1672,8 +1672,11 @@ export interface IpcEventMap {
    * `replayed`: set by the web bridge only, on a pending sign-in handed to a shell mounted after the
    * notice came (a reconnect's `ready`, `WebSnapshot.signIns`); such a notice is shown, never opened
    * at once (the click that may be active then was not for this link). Main never sends it.
+   * `page`: the open is a web page's own (a webview panel's or url overlay's window.open, a mail frame's
+   * link; main/external/open-external.ts OpenExtra), set by main at the call site: the shell only shows
+   * such a notice, never opens it at once.
    */
-  'app.linkNotice': { url: string; signIn?: string; replayed?: true }
+  'app.linkNotice': { url: string; signIn?: string; replayed?: true; page?: true }
   /**
    * A plugin's sign-in named by an `app.linkNotice`'s `signIn` is over, however it ended (server mode,
    * design-web.md §9.9): sent to every browser view of its window. `finished` when the redirect brought a

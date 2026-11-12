@@ -11,7 +11,11 @@ import {
   MAX_PAIR_ATTEMPTS,
   MAX_WINDOWS_PER_SERVER,
   PAGE_ACTION_WINDOW_MS,
+  KEY_READ_EVERY_MS,
+  KEY_READS,
   PAIR_WAIT_MS,
+  RemoteHttpError,
+  RemoteNoKeyError,
   RemoteWindows,
   allowRemoteNavigation,
   allowRemoteRequest,
@@ -141,6 +145,9 @@ describe('the rules', () => {
 // ---------------------------------------------------------------------------------------------
 
 let nextId = 1
+/** Origin keys as the gateway mints them (43 base64url characters). */
+const KEY_A = 'A'.repeat(42) + '0'
+const KEY_B = 'b'.repeat(42) + '_'
 
 class FakeView implements RemoteWindowView {
   readonly id = nextId++
@@ -177,6 +184,10 @@ class FakeView implements RemoteWindowView {
   url(): string {
     return this.current
   }
+  /** The page's stored key entry; the factory's own in `create`. */
+  async readKey(): Promise<unknown> {
+    return null
+  }
   showError(text: string): void {
     this.errors.push(text)
     this.current = 'data:text/plain,error'
@@ -207,7 +218,7 @@ class FakeView implements RemoteWindowView {
   }
 }
 
-type Fetcher = (url: string) => Promise<unknown>
+type Fetcher = (url: string, key: string | undefined) => Promise<unknown>
 type Poster = (url: string, body: unknown, origin: string) => Promise<{ status: number; body: unknown }>
 
 class FakeFactory implements RemoteWindowFactory {
@@ -215,6 +226,10 @@ class FakeFactory implements RemoteWindowFactory {
   readonly sessions = new Map<string, { hooks: RemoteSessionHooks; jar: FakeJar; fetches: string[]; posts: Array<{ url: string; body: unknown; origin: string }> }>()
   readonly events: string[] = []
   fetcher: Fetcher = async () => ({ mode: 'link', device: { id: 'd1', name: 'x' } })
+  /** What every page holds in its key entry (one origin's localStorage in these tests). */
+  pageKey: unknown = KEY_A
+  /** The key each of main's requests carried, in order (GETs and POSTs). */
+  readonly keys: Array<string | undefined> = []
   /** The reopen POST; by default an old gateway with no such route (the page loads as is). */
   poster: Poster = async () => ({ status: 404, body: undefined })
 
@@ -230,11 +245,13 @@ class FakeFactory implements RemoteWindowFactory {
     this.sessions.set(serverId, entry)
     return {
       jar,
-      fetchJson: (url: string) => {
+      fetchJson: (url: string, _max: number, key: string | undefined) => {
         entry.fetches.push(url)
-        return this.fetcher(url)
+        this.keys.push(key)
+        return this.fetcher(url, key)
       },
-      postJson: (url: string, body: unknown, origin: string) => {
+      postJson: (url: string, body: unknown, origin: string, _max: number, key: string | undefined) => {
+        this.keys.push(key)
         this.events.push(`post ${url} ${JSON.stringify(body)}`)
         entry.posts.push({ url, body, origin })
         return this.poster(url, body, origin)
@@ -244,6 +261,7 @@ class FakeFactory implements RemoteWindowFactory {
 
   create(serverId: string, title: string, hooks: RemoteWindowHooks): FakeView {
     const view = new FakeView(serverId, title, hooks)
+    view.readKey = async () => this.pageKey
     const load = view.load.bind(view)
     view.load = (url) => {
       this.events.push(`load ${url}`)
@@ -321,6 +339,27 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve()
 }
 
+/**
+ * A window of server `id` opened on its picker, landed and closed: main has read the page's origin key,
+ * as after any window of the server this run. A first window after a relaunch has nothing to read it
+ * from before its page loads (see 'the origin key'). The factory's records start empty again.
+ */
+async function warm(t: { windows: RemoteWindows; factory: FakeFactory }, id = 's1', origin = ORIGIN): Promise<void> {
+  await t.windows.open(id, { origin })
+  const view = t.factory.views.at(-1) as FakeView
+  view.commit(`${origin}/`)
+  await flush()
+  await t.windows.settled(id)
+  await flush()
+  view.close()
+  t.factory.views.length = 0
+  t.factory.events.length = 0
+  t.factory.keys.length = 0
+  const session = t.factory.session1(id)
+  session.fetches.length = 0
+  session.posts.length = 0
+}
+
 const projects = { projects: [{ id: 'p1', name: 'Api', path: '/srv/api' }], recent: [{ id: 'p2', name: 'Web', path: '/srv/web', missing: false }] }
 const signedIn = { mode: 'link', device: { id: 'd1', name: 'x' } }
 const signedOut = { mode: 'link', device: null }
@@ -342,6 +381,7 @@ describe('RemoteWindows: windows', () => {
   })
 
   it('titles the window with the server and the project name and records the recent project', async () => {
+    await warm(t)
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
     const view = t.factory.views[0] as FakeView
     await flush()
@@ -356,6 +396,7 @@ describe('RemoteWindows: windows', () => {
   })
 
   it('finds a name among the recent projects too; an unknown one keeps the server name', async () => {
+    await warm(t)
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
     await flush()
     expect(t.factory.views[0]?.title).toBe('devbox — Web')
@@ -789,6 +830,10 @@ describe('RemoteWindows: a project the server closed', () => {
     t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
     t.factory.poster = async () => ({ status: 200, body: { id: 'p2' } })
   })
+  beforeEach(async () => {
+    await warm(t)
+    await warm(t, 'd1', 'https://box.example')
+  })
 
   it('loads a project that is open with no POST', async () => {
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
@@ -881,9 +926,10 @@ describe('RemoteWindows: re-pair', () => {
     vi.useRealTimers()
   })
 
-  /** The page signs in with the token it was given: the server sets the cookie, with an expiry. */
+  /** The page signs in with the token it was given: the server sets the cookie, with an expiry, and the page keeps the new key. */
   function pageSignsIn(id = 's1', value = 'dev-new'): void {
     session = signedIn
+    t.factory.pageKey = KEY_B
     t.factory.session1(id).jar.put({ name: REMOTE_DEVICE_COOKIE, value, domain: '127.0.0.1', expirationDate: Date.now() / 1000 + 86_400 })
   }
 
@@ -957,7 +1003,11 @@ describe('RemoteWindows: re-pair', () => {
     const jar = t.factory.session1().jar
     t.options.mintToken.mockImplementation(async () => {
       // The cookie lands each time, but the server still says no device.
-      setTimeout(() => jar.put({ name: REMOTE_DEVICE_COOKIE, value: `v${Math.random()}`, domain: '127.0.0.1', expirationDate: 1e10 }), 10)
+      setTimeout(() => {
+        // A new key with each sign-in, as the gateway mints one.
+        t.factory.pageKey = `${t.options.mintToken.mock.calls.length}`.padEnd(43, 'k')
+        jar.put({ name: REMOTE_DEVICE_COOKIE, value: `v${Math.random()}`, domain: '127.0.0.1', expirationDate: 1e10 })
+      }, 10)
       return 'tok'
     })
     a.commit(`${ORIGIN}/?project=p1`)
@@ -1176,17 +1226,21 @@ describe('RemoteWindows: My own tunnel gate', () => {
     }
     await t.windows.open('t1', { origin: TUNNEL, projectId: 'p2' })
     await flush()
-    // No title lookup at open (it used to go before the probe had answered): the open check and the
-    // reopen after the probe.
-    expect(order).toEqual(['get after 1 probes', 'post {"reopen":"p2"} after 1 probes'])
-    expect(t.factory.session1('t1').posts[0]?.origin).toBe(TUNNEL)
+    // A first window: no key to ask with before its page loads, so nothing is asked (and no title
+    // lookup at open: it used to go before the probe had answered). The page loads after the probe.
+    expect(order).toEqual([])
     const view = t.factory.views[0] as FakeView
     expect(view.loads).toEqual([`${TUNNEL}/?project=p2`])
     expect(view.title).toBe('tun')
-    // The load lands: the title asks now, on the passed load, with no probe of its own.
+    // The load lands: the key is read; the title asks, then the open check and the reopen, on the
+    // passed load, with no probe of their own; the reopened project loads.
     view.commit(`${TUNNEL}/?project=p2`)
     await flush()
-    expect(order).toEqual(['get after 1 probes', 'post {"reopen":"p2"} after 1 probes', 'get after 1 probes'])
+    await flush()
+    expect(order).toEqual(['get after 1 probes', 'get after 1 probes', 'post {"reopen":"p2"} after 1 probes'])
+    expect(t.factory.session1('t1').posts[0]?.origin).toBe(TUNNEL)
+    expect(t.factory.keys).toEqual([KEY_A, KEY_A, KEY_A])
+    expect(view.loads).toEqual([`${TUNNEL}/?project=p2`, `${TUNNEL}/?project=p2`])
     expect(t.gated).toEqual(['t1'])
     expect(view.title).toBe('tun — Web')
   })
@@ -1289,6 +1343,7 @@ describe('RemoteWindows: My own tunnel gate', () => {
   it('other kinds load at once, never through the gate (title, poll, re-pair check included)', async () => {
     const t = tunnelSetup([])
     t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    await warm(t)
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
     await t.windows.open('d1', { origin: 'https://box.example' })
     // SSH's title lookup and open check go at once, as before: in the same turn as the open.
@@ -1412,5 +1467,218 @@ describe('RemoteWindows: the "This computer" chip', () => {
     expect(view.hooks.allowNavigation('https://evil.example/?cc-desktop=local')).toBe(false)
     expect(focused).toBe(0)
     expect(t.pickers()).toBe(0)
+  })
+})
+
+// The origin key (design-web.md §4.1, the header's "The origin key"): main reads it from the server's
+// page and sends it on its own requests; a key it has not read yet never mints a device.
+describe('RemoteWindows: the origin key', () => {
+  let t: ReturnType<typeof setup>
+  beforeEach(() => {
+    vi.useFakeTimers()
+    t = setup()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    // Never a key in a log line, whatever happened.
+    for (const line of t.logs) {
+      expect(line).not.toContain(KEY_A)
+      expect(line).not.toContain(KEY_B)
+    }
+  })
+
+  /** The session answer for a request that carried `good` (signed in), else signed out. */
+  function keyed(good: string): Fetcher {
+    return async (url, key) => (url.endsWith('/api/projects') ? projects : key === good ? signedIn : signedOut)
+  }
+
+  it('carries the page key on every request main makes: title, open check, reopen, session check, machine poll', async () => {
+    t.factory.fetcher = keyed(KEY_A)
+    t.factory.poster = async () => ({ status: 200, body: { id: 'p2' } })
+    await warm(t)
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    view.commit(`${ORIGIN}/?project=p2`)
+    await flush()
+    await t.windows.settled('s1')
+    await t.windows.fetchFromServer('s1', '/api/sessions')
+    const session = t.factory.session1()
+    expect(session.posts).toHaveLength(1)
+    expect(session.fetches).toContain(`${ORIGIN}/auth/session`)
+    expect(t.factory.keys.length).toBeGreaterThanOrEqual(5)
+    expect(new Set(t.factory.keys)).toEqual(new Set([KEY_A]))
+    expect(t.minted).toEqual([])
+  })
+
+  it('takes only a key as the gateway mints it; anything else in the entry is never sent nor logged', async () => {
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    for (const bad of ['short', KEY_A + 'x', `${KEY_A.slice(1)}+`, `${KEY_A.slice(1)}=`, 42, { key: KEY_A }]) {
+      t.factory.pageKey = bad
+      const windows = new RemoteWindows(t.options)
+      await windows.open('d1', { origin: 'https://box.example' })
+      const view = t.factory.views.at(-1) as FakeView
+      view.commit('https://box.example/?project=p1')
+      await flush()
+      await expect(windows.fetchFromServer('d1', '/api/sessions')).rejects.toBeInstanceOf(RemoteNoKeyError)
+      expect(view.title).toBe('box')
+      if (typeof bad === 'string') for (const line of t.logs) expect(line).not.toContain(bad)
+      view.close()
+    }
+    expect(t.factory.session1('d1').fetches).toEqual([])
+    expect(t.logs.some((l) => l.includes('is not one'))).toBe(true)
+  })
+
+  it('a first window asks nothing with no key; its title and project check go once its page loaded', async () => {
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    t.factory.poster = async () => ({ status: 200, body: { id: 'p2-new' } })
+    await t.windows.open('d1', { origin: 'https://box.example', projectId: 'p2' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    // Nothing to read the key from yet: the page as is, and no request at all.
+    expect(view.loads).toEqual(['https://box.example/?project=p2'])
+    expect(t.factory.keys).toEqual([])
+    view.commit('https://box.example/?project=p2')
+    await flush()
+    await flush()
+    expect(view.title).toBe('box — Web')
+    expect(t.factory.session1('d1').posts.map((p) => p.body)).toEqual([{ reopen: 'p2' }])
+    expect(view.loads).toEqual(['https://box.example/?project=p2', 'https://box.example/?project=p2-new'])
+    expect(new Set(t.factory.keys)).toEqual(new Set([KEY_A]))
+    // A later load of the window does not check again.
+    view.commit('https://box.example/?project=p2-new')
+    await flush()
+    expect(t.factory.session1('d1').posts).toHaveLength(1)
+  })
+
+  it('no key yet: the page is read before the check, and a key it stores late is asked with, not re-paired', async () => {
+    t.factory.fetcher = keyed(KEY_A)
+    // The page has stored nothing at the first read, the key at the next one.
+    const reads: unknown[] = [null, KEY_A]
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views[0] as FakeView
+    view.readKey = async () => (reads.length > 0 ? reads.shift() : KEY_A)
+    view.commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    await t.windows.settled('s1')
+    expect(t.minted).toEqual([])
+    const sessionKeys = t.factory.keys.filter((_, i) => t.factory.session1().fetches[i]?.endsWith('/auth/session'))
+    expect(sessionKeys.at(-1)).toBe(KEY_A)
+  })
+
+  it('a known key the page has replaced (its own sign-in) is read again and asked with, not re-paired', async () => {
+    t.factory.fetcher = keyed(KEY_A)
+    await warm(t)
+    // The page signed in on its own since (a password): the server takes only the new key now.
+    t.factory.fetcher = keyed(KEY_B)
+    t.factory.pageKey = KEY_B
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views[0] as FakeView
+    view.commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    await t.windows.settled('s1')
+    expect(t.minted).toEqual([])
+    expect(t.factory.keys).toContain(KEY_B)
+  })
+
+  it('the key the page holds, refused, re-pairs as before; with none on the page too', async () => {
+    t.factory.fetcher = keyed('x'.repeat(43))
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    ;(t.factory.views[0] as FakeView).commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    expect(t.minted).toEqual(['s1'])
+    const t2 = setup()
+    t2.factory.pageKey = null
+    t2.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedOut)
+    await t2.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    ;(t2.factory.views[0] as FakeView).commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    expect(t2.minted).toEqual(['s1'])
+    expect(t2.factory.keys).toEqual([undefined])
+  })
+
+  it('after a sign-in lands, waits for the page to store the new key before asking again: one pairing', async () => {
+    let good = 'none'.padEnd(43, 'z')
+    t.factory.fetcher = async (url, key) => (url.endsWith('/api/projects') ? projects : key === good ? signedIn : signedOut)
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views[0] as FakeView
+    view.commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    expect(t.minted).toEqual(['s1'])
+    // The cookie lands now; the page stores the new key a few reads later (it reads the body first).
+    good = KEY_B
+    t.factory.session1().jar.put({ name: REMOTE_DEVICE_COOKIE, value: 'dev-new', domain: '127.0.0.1', expirationDate: Date.now() / 1000 + 86_400 })
+    await vi.advanceTimersByTimeAsync(KEY_READ_EVERY_MS * 3)
+    t.factory.pageKey = KEY_B
+    await vi.advanceTimersByTimeAsync(KEY_READ_EVERY_MS * 2)
+    await t.windows.settled('s1')
+    expect(t.minted).toEqual(['s1'])
+    expect(view.errors).toEqual([])
+    expect(t.factory.keys.at(-1)).toBe(KEY_B)
+    // While the old key was stale, nothing went with it.
+    const sinceLanding = t.factory.keys.slice(t.factory.keys.lastIndexOf(KEY_A) + 1)
+    expect(sinceLanding.every((k) => k === KEY_B)).toBe(true)
+  })
+
+  it('a page that keeps no new key: past the reads, the re-pair is bounded as before', async () => {
+    t.factory.fetcher = keyed('never'.padEnd(43, 'q'))
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views[0] as FakeView
+    t.options.mintToken.mockImplementation(async () => {
+      setTimeout(() => t.factory.session1().jar.put({ name: REMOTE_DEVICE_COOKIE, value: `v${Math.random()}`, domain: '127.0.0.1', expirationDate: 1e10 }), 10)
+      return 'tok'
+    })
+    view.commit(`${ORIGIN}/?project=p1`)
+    await vi.advanceTimersByTimeAsync(KEY_READ_EVERY_MS * KEY_READS * MAX_PAIR_ATTEMPTS + 1000)
+    await t.windows.settled('s1')
+    expect(t.options.mintToken).toHaveBeenCalledTimes(MAX_PAIR_ATTEMPTS)
+    expect(view.errors).toHaveLength(1)
+  })
+
+  it('a request signed out with the known key goes once more with the page key when it changed', async () => {
+    t.factory.fetcher = async (url, key) => {
+      if (key !== KEY_B) throw new RemoteHttpError(401)
+      return url.endsWith('/api/projects') ? projects : signedIn
+    }
+    await warm(t, 'd1', 'https://box.example')
+    t.factory.pageKey = KEY_B
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    const view = t.factory.views[0] as FakeView
+    view.commit('https://box.example/?project=p1')
+    await flush()
+    await flush()
+    expect(view.title).toBe('box — Api')
+    expect(t.factory.keys).toEqual([KEY_A, KEY_B])
+    // The same key on the page: no second try.
+    t.factory.keys.length = 0
+    await expect(t.windows.fetchFromServer('d1', '/x')).resolves.toBe(signedIn)
+    t.factory.fetcher = async () => Promise.reject(new RemoteHttpError(401))
+    await expect(t.windows.fetchFromServer('d1', '/x')).rejects.toMatchObject({ status: 401 })
+    expect(t.factory.keys).toEqual([KEY_B, KEY_B])
+  })
+
+  it('the machine poll reads the key from any window of the server; none open on its page is RemoteNoKeyError', async () => {
+    t.factory.fetcher = async () => ({ waiting: 0, working: 0, idle: 0 })
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    const view = t.factory.views[0] as FakeView
+    // Not on the server's page yet (the error page): nothing to read from.
+    view.showError('x')
+    await expect(t.windows.fetchFromServer('d1', '/api/sessions')).rejects.toBeInstanceOf(RemoteNoKeyError)
+    expect(t.factory.keys).toEqual([])
+    view.commit('https://box.example/')
+    await flush()
+    await expect(t.windows.fetchFromServer('d1', '/api/sessions')).resolves.toEqual({ waiting: 0, working: 0, idle: 0 })
+    expect(t.factory.keys.at(-1)).toBe(KEY_A)
+  })
+
+  it('a move to another origin drops the key: that origin has a storage of its own', async () => {
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    await warm(t, 'd1', 'https://box.example')
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    const view = t.factory.views[0] as FakeView
+    view.current = ''
+    await t.windows.setOrigin('d1', 'https://box2.example')
+    view.current = ''
+    await expect(t.windows.fetchFromServer('d1', '/api/sessions')).rejects.toBeInstanceOf(RemoteNoKeyError)
   })
 })
