@@ -146,3 +146,29 @@ test('strip: a flagged tab of another window carries its colour, never a note', 
   assert.deepEqual(a.flag, { color: 'orange', css: 'var(--cc-flag-orange)' })
   assert.equal(b.flag, undefined)
 })
+
+test('machines: name, marks for waiting / working only, tooltip with the counts', () => {
+  const [a, b, c, d] = view.machineView([
+    { id: 'm-a', name: 'devbox', reachable: true, waiting: 1, working: 2, idle: 3 },
+    { id: 'm-b', name: 'down', reachable: false, waiting: 4 },
+    { id: 'm-c', name: 'fresh', reachable: true },
+    { id: 'm-d', name: 'quiet', reachable: true, waiting: 0, working: 0, idle: 1 },
+  ])
+  assert.deepEqual(a, {
+    id: 'm-a', name: 'devbox', reachable: true,
+    marks: [{ status: 'waiting', count: 1 }, { status: 'working', count: 2 }],
+    tooltip: 'devbox: 1 waiting, 2 working, 3 idle',
+  })
+  assert.equal(b.tooltip, 'down: not reachable')
+  assert.equal(b.reachable, false)
+  assert.deepEqual(b.marks, [])
+  assert.equal(c.tooltip, 'fresh')
+  assert.deepEqual(c.marks, [])
+  assert.deepEqual(d.marks, [])
+  assert.equal(d.tooltip, 'quiet: 0 waiting, 0 working, 1 idle')
+})
+
+test('machines: junk is dropped', () => {
+  assert.deepEqual(view.machineView(undefined), [])
+  assert.deepEqual(view.machineView([null, { id: 1, name: 'x' }, { id: 'm', name: 'ok', waiting: -1 }]).map((m) => m.tooltip), ['ok'])
+})

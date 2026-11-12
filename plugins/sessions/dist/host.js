@@ -7,7 +7,8 @@
 //   file opens through ctx.sessions.openFile (main checks the file is one it recorded for the tab).
 // - Slot `sessions-strip` (the app's top bar): the OTHER windows' Claude tabs, from the scope `all`
 //   summaries (plugin.json declares `"access": { "sessions": "all-windows" }`), which carry status,
-//   tool, title, name and the project only. A click raises that window at the tab.
+//   tool, title, name and the project only. A click raises that window at the tab. After them one
+//   chip per connected server (ctx.sessions.machines, when the app has it); a click raises its window.
 //
 // The pages only draw and ask; the host keeps the lists and checks every id a page sends against
 // them before it calls ctx (the pages are ours, but a bug there must not focus a random id).
@@ -24,6 +25,8 @@ exports.activate = (ctx) => {
   let own = []
   /** Every window's Claude tabs (SessionSummary[]), as last heard. */
   let all = []
+  /** The connected servers (MachineInfo[]), as last heard. */
+  let machines = []
   /** The open strip frames (one per window's top bar, but a remount may overlap the old one). */
   const strips = new Set()
   let lastMeta = null
@@ -52,13 +55,19 @@ exports.activate = (ctx) => {
 
   function sendStrip(slot) {
     try {
-      slot.post({ type: 'strip', entries: view.stripView(all) })
+      slot.post({ type: 'strip', entries: view.stripView(all), machines: view.machineView(machines) })
     } catch (e) {
       ctx.log.warn(`strip post: ${e.message}`)
     }
   }
   const sendStrips = () => {
     for (const slot of strips) sendStrip(slot)
+  }
+
+  async function focusMachine(id) {
+    // Only an id the strip could have drawn; main answers false for one no longer listed.
+    if (typeof id !== 'string' || !view.machineView(machines).some((m) => m.id === id)) return false
+    return ctx.sessions.focusMachine(id)
   }
 
   async function focus(tabId, known) {
@@ -131,6 +140,25 @@ exports.activate = (ctx) => {
     })
     .catch((e) => ctx.log.warn(`list all: ${e.message}`))
 
+  // ---- connected servers (an older app has no machines: no chips) ----
+
+  if (typeof ctx.sessions.machines === 'function') {
+    // onMachinesChange does not call back with the current list: read it once here.
+    disposers.push(
+      ctx.sessions.onMachinesChange((list) => {
+        machines = Array.isArray(list) ? list : []
+        sendStrips()
+      }),
+    )
+    ctx.sessions
+      .machines()
+      .then((list) => {
+        machines = Array.isArray(list) ? list : []
+        sendStrips()
+      })
+      .catch((e) => ctx.log.warn(`machines: ${e.message}`))
+  }
+
   disposers.push(
     ctx.slots.onOpen(STRIP, (slot) => {
       strips.add(slot)
@@ -139,6 +167,7 @@ exports.activate = (ctx) => {
         try {
           if (m.type === 'hello') sendStrip(slot)
           else if (m.type === 'focus') await focus(m.tabId, view.stripView(all))
+          else if (m.type === 'focusMachine') await focusMachine(m.id)
         } catch (e) {
           ctx.log.warn(`strip ${m.type}: ${e.message}`)
         }

@@ -32,6 +32,10 @@
       /* The project's colour: a hairline ring keeps a light colour visible on a light bar. */
       /* The tab's flag: a 2px bar under the entry in the flag's colour (--flag, from view.js flagOf). */
       .entry[data-flag] { box-shadow: inset 0 -2px 0 var(--flag); }
+      /* A server chip: the name, then a dot and a count per waiting / working (the session dots' colours). */
+      .machine { gap: 5px; }
+      .machine .dot + .dot { margin-left: 4px; }
+      .machine[data-unreachable] { opacity: 0.5; }
       .pdot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent); }
     </style>
   </head>

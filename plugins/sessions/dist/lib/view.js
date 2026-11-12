@@ -170,5 +170,33 @@
       })
   }
 
-  return { FILES_SHOWN, FLAG_COLORS, filesShownOf, flagOf, groupSessions, isColor, statusText, splitPath, cardView, metaText, stripView }
+  /**
+   * One chip per connected server (ctx.sessions.machines): its name, the counts as the strip marks a
+   * session's status (waiting, working; idle is in the tooltip only), dimmed when unreachable. A count
+   * is ABSENT before the first answer and while unreachable: nothing is drawn for it then, never a 0.
+   * The name is the server's own text: the page sets it as textContent.
+   */
+  function machineView(machines) {
+    if (!Array.isArray(machines)) return []
+    const count = (v) => (Number.isInteger(v) && v >= 0 ? v : undefined)
+    return machines
+      .filter((m) => m && typeof m === 'object' && typeof m.id === 'string' && typeof m.name === 'string')
+      .map((m) => {
+        const reachable = m.reachable !== false
+        const parts = []
+        const marks = []
+        const waiting = reachable ? count(m.waiting) : undefined
+        const working = reachable ? count(m.working) : undefined
+        const idle = reachable ? count(m.idle) : undefined
+        if (waiting !== undefined) parts.push(`${waiting} waiting`)
+        if (working !== undefined) parts.push(`${working} working`)
+        if (idle !== undefined) parts.push(`${idle} idle`)
+        if (waiting) marks.push({ status: 'waiting', count: waiting })
+        if (working) marks.push({ status: 'working', count: working })
+        const tooltip = !reachable ? `${m.name}: not reachable` : parts.length ? `${m.name}: ${parts.join(', ')}` : m.name
+        return { id: m.id, name: m.name, reachable, marks, tooltip }
+      })
+  }
+
+  return { FILES_SHOWN, machineView, FLAG_COLORS, filesShownOf, flagOf, groupSessions, isColor, statusText, splitPath, cardView, metaText, stripView }
 })

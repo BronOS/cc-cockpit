@@ -43,9 +43,37 @@ function entryEl(entry) {
   return b
 }
 
+// A connected server (ccSessionsView.machineView): its name and the waiting / working marks drawn
+// with the session dots' classes and colours, dimmed when unreachable. The name is the server's own
+// text: textContent only.
+function machineEl(machine) {
+  const b = document.createElement('button')
+  b.type = 'button'
+  b.className = 'cc-btn cc-ghost entry machine'
+  b.dataset.machineId = machine.id
+  if (!machine.reachable) b.dataset.unreachable = ''
+  b.title = machine.tooltip
+  b.setAttribute('aria-label', machine.tooltip)
+  const name = document.createElement('span')
+  name.className = 'project'
+  name.textContent = machine.name
+  b.appendChild(name)
+  for (const mark of machine.marks) {
+    const dot = document.createElement('span')
+    dot.className = 'dot'
+    dot.dataset.status = mark.status
+    dot.setAttribute('aria-hidden', 'true')
+    b.appendChild(dot)
+    b.appendChild(document.createTextNode(String(mark.count)))
+  }
+  b.addEventListener('click', () => ccPanel.post({ type: 'focusMachine', id: machine.id }))
+  return b
+}
+
 ccPanel.onMessage((m) => {
   if (!m || typeof m !== 'object' || m.type !== 'strip' || !Array.isArray(m.entries)) return
-  row.replaceChildren(...m.entries.map(entryEl))
+  const machines = Array.isArray(m.machines) ? m.machines : []
+  row.replaceChildren(...m.entries.map(entryEl), ...machines.map(machineEl))
   // The first strip comes after the shell said this is a slot (`ccPanel.slot` is set by then), and
   // an empty strip changes no size the observer would see: report on every strip, repeats are dropped.
   width.report()

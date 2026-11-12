@@ -158,7 +158,7 @@ test('strip: other windows ordered, refreshed on change, focus only for drawn id
   assert.equal(f.posts.at(-1).entries[0].needsYou, true)
   // A change in another window reaches the open strip.
   listeners.all[0]([all[0]])
-  assert.deepEqual(f.posts.at(-1), { type: 'strip', entries: [] })
+  assert.deepEqual(f.posts.at(-1), { type: 'strip', entries: [], machines: [] })
   listeners.all[0](all)
   await f.send({ type: 'focus', tabId: 'x' })
   await f.send({ type: 'focus', tabId: 'mine' })
@@ -169,6 +169,45 @@ test('strip: other windows ordered, refreshed on change, focus only for drawn id
   const n = f.posts.length
   listeners.all[0](all)
   assert.equal(f.posts.length, n)
+  host.deactivate()
+})
+
+test('strip: machine chips are relayed, refreshed on change, focus only for listed ids', async () => {
+  const host = load()
+  const { ctx, calls, listeners } = fakeCtx()
+  let change
+  const list = [{ id: 'm-a', name: 'devbox', reachable: true, waiting: 1, working: 0, idle: 2 }]
+  ctx.sessions.machines = async () => list
+  ctx.sessions.onMachinesChange = (fn) => {
+    change = fn
+    return () => {}
+  }
+  ctx.sessions.focusMachine = async (id) => {
+    calls.push(['focusMachine', id])
+    return true
+  }
+  host.activate(ctx)
+  await tick()
+  const f = fakeSlot()
+  listeners.slot[0](f.slot)
+  // The current list was read once at start.
+  assert.deepEqual(f.posts.at(-1).machines.map((m) => m.id), ['m-a'])
+  change([{ id: 'm-b', name: 'other', reachable: false }])
+  assert.equal(f.posts.at(-1).machines[0].tooltip, 'other: not reachable')
+  await f.send({ type: 'focusMachine', id: 'm-a' })
+  await f.send({ type: 'focusMachine', id: 'm-b' })
+  assert.deepEqual(calls.filter((c) => c[0] === 'focusMachine'), [['focusMachine', 'm-b']])
+  host.deactivate()
+})
+
+test('strip: an older app without machines draws none', async () => {
+  const host = load()
+  const { ctx, listeners } = fakeCtx()
+  host.activate(ctx)
+  await tick()
+  const f = fakeSlot()
+  listeners.slot[0](f.slot)
+  assert.deepEqual(f.posts.at(-1).machines, [])
   host.deactivate()
 })
 
