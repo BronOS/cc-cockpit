@@ -218,6 +218,33 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
   link redials on its own (§5.2) and its listener stays bound, so the page's origin and its reconnects are unchanged.
   Closing the last window of a server ends its link after 30 s (a quick reopen reuses it). My own tunnel: §6.
 
+### 4.1 Other machines in the strip
+
+The top bar's sessions strip (`cockpit.sessions`, slot `sessions-strip`) lists the Claude tabs of the other windows of
+*its* cockpit. A remote window runs the server's cockpit and a local window this one's, so neither shows the other.
+Decided (2026-11-12): **one chip per machine**, not every remote session.
+
+- **Local windows: one chip per connected server.** Shown for a server with a remote window open (a link up or
+  reconnecting). The chip: the server's name, and the state of its sessions as counts, the same marks the strip uses
+  for a session (waiting for input first, then working); a server that cannot be reached shows its name dimmed.
+  Clicking it focuses that server's most recently focused remote window. No session text crosses machines: only counts.
+- **The data.** A new gateway endpoint `GET /api/sessions` (server mode; a signed-in device, as `/api/projects`) answers
+  `{ waiting, working, idle }` counts over every Claude tab of the server. Main asks it through each server's partition
+  (`ses.fetch`, the device cookie applies) every 5 s while that server has a remote window open, and at once when one
+  opens; nothing is asked for a server with no window. An old server (404) shows the chip with no counts.
+- **The plugin API.** Bundled plugins use only the public API, so the strip reads it through a new, read-only
+  `ctx.sessions.machines()` / `onMachinesChange(listener)` (same `"access": { "sessions": "all-windows" }` declaration
+  as `list({ scope: 'all' })`; refused without it): `{ id, name, reachable, waiting, working, idle }[]`, and
+  `ctx.sessions.focusMachine(id)` (rate-limited as `focus`). Ids are opaque, minted by main per server; no address, no
+  `via`, nothing secret. An older app has none: the strip checks `typeof ctx.sessions.machines`.
+- **Remote windows: one chip for this computer.** The web client, when its user agent carries `cc-cockpit-desktop/`
+  (§4 "Shortcuts"), draws a "This computer" chip at the start of the strip area (core shell, not the plugin: the
+  server's plugin knows nothing of the desktop). It has no counts in v1 (the sandboxed page has no channel to this
+  app's main; the local strip carries the state). A click navigates to `/?cc-desktop=local`, which main cancels in
+  `will-frame-navigate` (as "Back to the picker") and answers by focusing the most recently focused local project
+  window, else the picker. The query is only a request to focus; the page can name nothing.
+- Not covered: two desktops connected to one server see each other only as devices, not as chips.
+
 ## 5. SSH, built in
 
 ### 5.1 The connection
