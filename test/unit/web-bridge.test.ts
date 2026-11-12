@@ -8,10 +8,12 @@ import { EVENT_CHANNELS, INVOKE_CHANNELS, remoteAllowed } from '../../src/shared
 import {
   CLOSE,
   MAX_FRAME_BYTES,
+  encodeWebviewFrame,
   PROTOCOL_VERSION,
   utf8Length,
   WS_PATH,
   type ServerFrame,
+  type WebviewFrame,
   type WebSnapshot
 } from '../../src/shared/web-protocol'
 import {
@@ -34,6 +36,7 @@ import {
 
 class FakeSocket implements SocketLike {
   readyState = 0
+  binaryType: SocketLike['binaryType']
   sent: string[] = []
   closedWith: { code?: number; reason?: string } | undefined
   onopen: SocketLike['onopen'] = null
@@ -517,6 +520,116 @@ describe('terminal frames', () => {
     expect(seen).not.toHaveBeenCalled()
     s2.serverSend(part('t1', 8, 1, 1, 'fresh'))
     expect(seen).toHaveBeenCalledWith({ tabId: 't1', data: 'fresh', reset: true, cols: 80, rows: 24 })
+  })
+})
+
+describe('binary webview frames', () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 9, 8, 7, 0xff, 0xd9])
+  const bytes = (key: string, seq = 1): Uint8Array => encodeWebviewFrame({ key, seq, width: 640, height: 480, scale: 0.5, jpeg })
+  /** What a browser gives onmessage with binaryType 'arraybuffer': an exact-size ArrayBuffer. */
+  const asBuffer = (b: Uint8Array): ArrayBuffer => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
+
+  it('asks for ArrayBuffers on every socket, the reconnect included', () => {
+    const r = rig()
+    expect(r.last().binaryType).toBe('arraybuffer')
+    r.last().serverClose(1006)
+    r.timers.advance(10_000)
+    expect(r.sockets).toHaveLength(2)
+    expect(r.last().binaryType).toBe('arraybuffer')
+  })
+
+  it('hands a decoded frame to the subscribers of its panel key only', () => {
+    const r = rig()
+    const a: WebviewFrame[] = []
+    const b: WebviewFrame[] = []
+    const other: WebviewFrame[] = []
+    r.bridge.onWebviewFrame('cockpit.browser/page', (f) => a.push(f))
+    r.bridge.onWebviewFrame('cockpit.browser/page', (f) => b.push(f))
+    r.bridge.onWebviewFrame('x/y', (f) => other.push(f))
+    const s = connect(r)
+    s.serverRaw(asBuffer(bytes('cockpit.browser/page', 4)))
+    expect(a).toHaveLength(1)
+    expect(a[0]).toMatchObject({ key: 'cockpit.browser/page', seq: 4, width: 640, height: 480, scale: 0.5 })
+    expect([...a[0]!.jpeg]).toEqual([...jpeg])
+    expect(b).toHaveLength(1)
+    expect(other).toEqual([])
+    // A view (Buffer-like) works too, offset and all.
+    const padded = new Uint8Array(bytes('x/y').length + 3)
+    padded.set(bytes('x/y'), 3)
+    s.serverRaw(padded.subarray(3))
+    expect(other).toHaveLength(1)
+  })
+
+  it('unsubscribing stops delivery, and a subscription outlives a reconnect', () => {
+    const r = rig()
+    const got: number[] = []
+    const off = r.bridge.onWebviewFrame('a/b', (f) => got.push(f.seq))
+    const first = connect(r)
+    first.serverRaw(asBuffer(bytes('a/b', 1)))
+    first.serverClose(1006)
+    r.timers.advance(10_000)
+    const second = connect(r, 'web:2')
+    second.serverRaw(asBuffer(bytes('a/b', 2)))
+    off()
+    second.serverRaw(asBuffer(bytes('a/b', 3)))
+    expect(got).toEqual([1, 2])
+  })
+
+  it('drops a frame before ready, from a stale socket and for a key nobody holds, without a sound', () => {
+    const r = rig()
+    const got: number[] = []
+    r.bridge.onWebviewFrame('a/b', (f) => got.push(f.seq))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const s = r.last()
+    s.open()
+    s.serverRaw(asBuffer(bytes('a/b', 1)))
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: SNAPSHOT })
+    s.serverRaw(asBuffer(bytes('nobody/here', 2)))
+    s.serverClose(1006)
+    s.serverRaw(asBuffer(bytes('a/b', 3)))
+    expect(got).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('drops a malformed binary frame, logs once, and keeps the bridge connected and working', () => {
+    const r = rig()
+    const got: number[] = []
+    r.bridge.onWebviewFrame('a/b', (f) => got.push(f.seq))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const s = connect(r)
+    const good = bytes('a/b', 1)
+    s.serverRaw(asBuffer(good.subarray(0, 5)))
+    s.serverRaw(asBuffer(new Uint8Array([2, 1, 0x61, 0, 0, 0, 1, 0, 1, 0, 1, 0, 100, 1])))
+    s.serverRaw(asBuffer(new Uint8Array(0)))
+    s.serverRaw(new Blob([asBuffer(good)])) // binaryType not honoured: not decodable here, dropped like the rest
+    s.serverRaw(42)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(s.closedWith).toBeUndefined()
+    expect(r.bridge.status()).toMatchObject({ state: 'ready' })
+    s.serverRaw(asBuffer(good))
+    expect(got).toEqual([1])
+    // Text frames still flow on the same socket.
+    const seen: unknown[] = []
+    r.api.on('layout.updated', (p) => seen.push(p))
+    s.serverSend({ t: 'event', ch: 'layout.updated', p: { n: 1 } })
+    expect(seen).toEqual([{ n: 1 }])
+    warn.mockRestore()
+  })
+
+  it('a listener that throws does not stop the others or the socket', () => {
+    const r = rig()
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const got: number[] = []
+    r.bridge.onWebviewFrame('a/b', () => {
+      throw new Error('boom')
+    })
+    r.bridge.onWebviewFrame('a/b', (f) => got.push(f.seq))
+    const s = connect(r)
+    s.serverRaw(asBuffer(bytes('a/b', 6)))
+    expect(got).toEqual([6])
+    expect(s.closedWith).toBeUndefined()
+    err.mockRestore()
   })
 })
 

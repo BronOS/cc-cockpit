@@ -40,6 +40,12 @@
 //   the shell, and without it the paste box would be gone while main still waits for the address. A
 //   held sign-in is handed over with `replayed`, so the shell shows it and never opens it at once.
 //
+// - Binary frames (design-web-browser.md §3.3): main's only binary frame is a streamed webview's JPEG
+//   (shared/web-protocol.ts `decodeWebviewFrame`). The socket is set to `arraybuffer`, each frame is
+//   decoded and handed to the subscribers of its panel key (`onWebviewFrame`, which outlive a
+//   reconnect like `on`); a frame nobody subscribed to, or one before `ready`, is dropped. A malformed
+//   one is dropped too, logged once, and never closes the bridge. The page never sends binary.
+//
 // No DOM or WebSocket globals at module level: the socket factory and the timers are injected, so
 // the unit tests (plain Node) drive the bridge with a fake socket and fake time.
 
@@ -54,6 +60,8 @@ import {
   type ReadyFrame,
   type WebPagePaths,
   type WebSnapshot,
+  type WebviewFrame,
+  decodeWebviewFrame,
   utf8Length
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
@@ -65,6 +73,8 @@ export interface SocketLike {
   readonly readyState: number
   send(data: string): void
   close(code?: number, reason?: string): void
+  /** Set to `arraybuffer` at connect, so a binary frame arrives as an ArrayBuffer (a browser default is Blob). */
+  binaryType?: 'arraybuffer' | 'blob'
   onopen: ((ev: unknown) => void) | null
   onmessage: ((ev: { data: unknown }) => void) | null
   onclose: ((ev: { code: number; reason: string }) => void) | null
@@ -240,6 +250,11 @@ export interface WebBridge {
   status(): BridgeStatus
   /** The latest `ready` snapshot (undefined before the first). */
   snapshot(): WebSnapshot | undefined
+  /**
+   * Be handed every streamed webview frame for panel `key` (a `WebviewFrame`, its `jpeg` a view into
+   * the received buffer); returns the unsubscribe function. Survives reconnects, like `api.on`.
+   */
+  onWebviewFrame(key: string, listener: (frame: WebviewFrame) => void): () => void
   /** Be told of every status change; returns the unsubscribe function. */
   onStatus(listener: (status: BridgeStatus) => void): () => void
   /** Skip the wait and try now (the "host unreachable" notice's Retry). Only while `away`. */
@@ -375,6 +390,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
 
   const listeners = new Map<string, Set<(payload: unknown) => void>>()
   const statusListeners = new Set<(status: BridgeStatus) => void>()
+  const frameListeners = new Map<string, Set<(frame: WebviewFrame) => void>>()
+  let warnedBadFrame = false
   // Calls of the current socket only: a drop rejects them all, so an id is never answered by
   // another socket's result (ids restart nowhere: one counter for the page's life).
   const pending = new Map<number, Pending>()
@@ -526,9 +543,32 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     emit('tabs.data', { tabId, data: got.data.join(''), reset: true, cols: got.cols, rows: got.rows })
   }
 
+  /** A binary message on the current socket: a webview frame for its key's subscribers. */
+  const onBinary = (data: unknown): void => {
+    if (status.state !== 'ready') return
+    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : undefined
+    const frame = bytes && decodeWebviewFrame(bytes)
+    if (!frame) {
+      if (!warnedBadFrame) {
+        warnedBadFrame = true
+        console.warn('web bridge: malformed binary frame dropped')
+      }
+      return
+    }
+    const set = frameListeners.get(frame.key)
+    if (!set) return
+    for (const listener of [...set]) {
+      try {
+        listener(frame)
+      } catch (err) {
+        console.error(`web bridge: frame listener of ${frame.key} failed`, err)
+      }
+    }
+  }
+
   const onFrame = (s: SocketLike, data: unknown): void => {
     if (s !== socket) return
-    if (typeof data !== 'string') return
+    if (typeof data !== 'string') return onBinary(data)
     let frame: unknown
     try {
       frame = decodeServerJson(data)
@@ -621,6 +661,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       return
     }
     socket = s
+    // Before anything arrives: a binary frame is an ArrayBuffer, never a Blob that needs an async read.
+    s.binaryType = 'arraybuffer'
     epoch += 1
     snapParts = new Map()
     ports?.closeAll()
@@ -714,6 +756,15 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     api,
     status: () => status,
     snapshot: () => snapshot,
+    onWebviewFrame(key, listener) {
+      let set = frameListeners.get(key)
+      if (!set) frameListeners.set(key, (set = new Set()))
+      set.add(listener)
+      return () => {
+        set.delete(listener)
+        if (set.size === 0 && frameListeners.get(key) === set) frameListeners.delete(key)
+      }
+    },
     onStatus(listener) {
       statusListeners.add(listener)
       return () => {

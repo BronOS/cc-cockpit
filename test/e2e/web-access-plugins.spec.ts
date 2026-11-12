@@ -29,6 +29,7 @@ import type { Page } from '@playwright/test'
 import { WebSocket as WsClient } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { CockpitApi } from '../../src/shared/ipc'
+import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { enableWebAccess, openBrowser, type WebAccessOn, type WebBrowser } from './web-fixtures'
 
@@ -553,7 +554,7 @@ test('security: a foreign Origin and a missing cookie are refused; a revoked dev
       live.once('error', reject)
     })
     const closed = new Promise<number>((resolve) => live.once('close', (code: number) => resolve(code)))
-    live.send(JSON.stringify({ t: 'hello', v: 1, project: web.projectId }))
+    live.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, project: web.projectId }))
     expect(await ready).toBe('ready')
     await expect(page.locator('header.top-strip .web-access-chip')).toContainText('1 device')
 

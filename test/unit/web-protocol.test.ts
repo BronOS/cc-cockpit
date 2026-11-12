@@ -33,11 +33,19 @@ import {
   eventAllowed,
   invokeAllowed,
   MAX_FRAME_BYTES,
+  MAX_WEBVIEW_FRAME_BYTES,
   parseClientFrame,
   PROTOCOL_VERSION
 } from '../../src/main/web/protocol'
 import { webAccessOf } from '../../src/main/web/settings'
-import type { WebPagePaths } from '../../src/shared/web-protocol'
+import {
+  decodeWebviewFrame,
+  encodeWebviewFrame,
+  FRAME_DRAINED_BYTES,
+  FRAME_KIND_WEBVIEW,
+  MAX_FRAME_KEY_BYTES,
+  type WebPagePaths
+} from '../../src/shared/web-protocol'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const DEVICE: WebDevice = { id: 'dev1', name: 'phone', createdAt: 0, lastSeenAt: 0, mode: 'link' }
@@ -114,16 +122,98 @@ describe('frames', () => {
   })
 })
 
+describe('binary webview frame', () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9])
+  const frame = { key: 'cockpit.browser/page', seq: 7, width: 1280, height: 720, scale: 0.75, jpeg }
+
+  it('has the documented layout, big-endian, no mime byte', () => {
+    const bytes = encodeWebviewFrame(frame)
+    const key = Buffer.from(frame.key)
+    expect(bytes[0]).toBe(FRAME_KIND_WEBVIEW)
+    expect(bytes[1]).toBe(key.length)
+    expect(Buffer.from(bytes.subarray(2, 2 + key.length)).toString()).toBe(frame.key)
+    const at = 2 + key.length
+    expect([...bytes.subarray(at, at + 10)]).toEqual([0, 0, 0, 7, 0x05, 0x00, 0x02, 0xd0, 0, 75])
+    expect([...bytes.subarray(at + 10)]).toEqual([...jpeg])
+    expect(bytes.length).toBe(at + 10 + jpeg.length)
+  })
+
+  it('round-trips, a multi-byte key and the extremes included', () => {
+    expect(decodeWebviewFrame(encodeWebviewFrame(frame))).toEqual(frame)
+    const wide = { key: 'ключ/страница', seq: 0xffff_ffff, width: 65535, height: 1, scale: 655.35, jpeg: new Uint8Array([9]) }
+    expect(decodeWebviewFrame(encodeWebviewFrame(wide))).toEqual(wide)
+  })
+
+  it('decodes a view into the received buffer, not a copy, and from a buffer that is itself a slice', () => {
+    const bytes = encodeWebviewFrame(frame)
+    const padded = new Uint8Array(bytes.length + 5)
+    padded.set(bytes, 3)
+    const out = decodeWebviewFrame(padded.subarray(3, 3 + bytes.length))
+    expect(out).toEqual(frame)
+    expect(out!.jpeg.buffer).toBe(padded.buffer)
+  })
+
+  it('takes a key of exactly MAX_FRAME_KEY_BYTES and refuses one byte more', () => {
+    const exact = { ...frame, key: 'k'.repeat(MAX_FRAME_KEY_BYTES) }
+    expect(decodeWebviewFrame(encodeWebviewFrame(exact))?.key).toBe(exact.key)
+    // 100 two-byte characters = 200 bytes; 101 = 202.
+    expect(decodeWebviewFrame(encodeWebviewFrame({ ...frame, key: 'é'.repeat(100) }))?.key).toBe('é'.repeat(100))
+    expect(() => encodeWebviewFrame({ ...frame, key: 'k'.repeat(MAX_FRAME_KEY_BYTES + 1) })).toThrow(RangeError)
+    expect(() => encodeWebviewFrame({ ...frame, key: 'é'.repeat(101) })).toThrow(RangeError)
+    expect(() => encodeWebviewFrame({ ...frame, key: '' })).toThrow(RangeError)
+    // A forged header claiming a longer key than the cap.
+    const forged = encodeWebviewFrame(exact)
+    forged[1] = MAX_FRAME_KEY_BYTES + 1
+    expect(decodeWebviewFrame(forged)).toBeUndefined()
+  })
+
+  it('the encoder refuses fields the layout cannot hold', () => {
+    for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: 2 ** 32 }, { width: 0 }, { height: 65536 }, { scale: 0 }, { scale: 656 }, { jpeg: new Uint8Array(0) }]) {
+      expect(() => encodeWebviewFrame({ ...frame, ...bad })).toThrow(RangeError)
+    }
+  })
+
+  it('the decoder refuses every malformed or short buffer', () => {
+    const good = encodeWebviewFrame(frame)
+    const headerEnd = good.length - jpeg.length
+    expect(decodeWebviewFrame(new Uint8Array(0))).toBeUndefined()
+    expect(decodeWebviewFrame(new Uint8Array([FRAME_KIND_WEBVIEW]))).toBeUndefined()
+    // Every truncation up to and including "header only, no image byte".
+    for (let n = 0; n <= headerEnd; n++) expect(decodeWebviewFrame(good.subarray(0, n))).toBeUndefined()
+    expect(decodeWebviewFrame(good.subarray(0, headerEnd + 1))).toBeDefined()
+    // Another kind, a zero key length, a key that is not UTF-8, a zero size or scale.
+    const edit = (f: (b: Uint8Array) => void): Uint8Array => {
+      const b = good.slice()
+      f(b)
+      return b
+    }
+    const at = 2 + Buffer.byteLength(frame.key)
+    expect(decodeWebviewFrame(edit((b) => (b[0] = 2)))).toBeUndefined()
+    expect(decodeWebviewFrame(edit((b) => (b[0] = 0)))).toBeUndefined()
+    expect(decodeWebviewFrame(edit((b) => (b[1] = 0)))).toBeUndefined()
+    expect(decodeWebviewFrame(edit((b) => (b[2] = 0xff)))).toBeUndefined()
+    expect(decodeWebviewFrame(edit((b) => b.fill(0, at + 4, at + 6)))).toBeUndefined()
+    expect(decodeWebviewFrame(edit((b) => b.fill(0, at + 6, at + 8)))).toBeUndefined()
+    expect(decodeWebviewFrame(edit((b) => b.fill(0, at + 8, at + 10)))).toBeUndefined()
+  })
+})
+
 /** A socket as the connection sees it: frames it sent, how it was closed, frames to feed in. */
 class FakeWs implements WsLike {
   readyState = 1
   bufferedAmount = 0
   readonly sent: Array<Record<string, unknown>> = []
+  /** Binary frames (a webview's JPEG), in order. */
+  readonly binary: Uint8Array[] = []
   closedWith: { code: number; reason: string } | undefined
   private onMessage: ((data: unknown, isBinary: boolean) => void) | undefined
   private onClose: (() => void) | undefined
 
-  send(data: string): void {
+  send(data: string | Uint8Array): void {
+    if (typeof data !== 'string') {
+      this.binary.push(data)
+      return
+    }
     this.sent.push(decodeJson(data) as Record<string, unknown>)
   }
   close(code = 1000, reason = ''): void {
@@ -140,8 +230,8 @@ class FakeWs implements WsLike {
   feed(frame: unknown): void {
     this.onMessage?.(Buffer.from(typeof frame === 'string' ? frame : JSON.stringify(frame)), false)
   }
-  feedBinary(): void {
-    this.onMessage?.(Buffer.from([1, 2]), true)
+  feedBinary(bytes: Uint8Array = Uint8Array.from([1, 2])): void {
+    this.onMessage?.(Buffer.from(bytes), true)
   }
   /** The peer hung up. */
   drop(): void {
@@ -331,6 +421,16 @@ describe('handshake', () => {
     const junk = connect('p1')
     junk.feed('{not json')
     expect(junk.closedWith?.code).toBe(CLOSE.badFrame)
+  })
+
+  it('a binary frame from the view is refused even once it is bound, whatever its bytes', () => {
+    const { connect, views } = setup()
+    // A webview frame's own layout is no exception: the page never sends one.
+    const ws = connect('p1')
+    expect(views.viewsOf(1)).toEqual(['desktop:1', 'web:1'])
+    ws.feedBinary(encodeWebviewFrame({ key: 'a/b', seq: 1, width: 1, height: 1, scale: 1, jpeg: new Uint8Array([1]) }))
+    expect(ws.closedWith).toEqual({ code: CLOSE.badFrame, reason: 'text frames only' })
+    expect(views.viewsOf(1)).toEqual(['desktop:1'])
   })
 
   it('a bind that throws closes the socket with `failed` instead of escaping the message listener', () => {
@@ -788,6 +888,74 @@ describe('events and window lifetime', () => {
   })
 })
 
+describe('webview frames to a browser view', () => {
+  const jpeg = new Uint8Array(1000).fill(0xab)
+  const encoded = (key = 'cockpit.browser/page'): Uint8Array => encodeWebviewFrame({ key, seq: 1, width: 640, height: 480, scale: 1, jpeg })
+
+  it('go to a browser view as one binary message, and the desktop view is never offered one', () => {
+    const { connect, views } = setup()
+    const ws = connect('p1')
+    const other = connect('p1')
+    expect(views.frameToView('web:1', encoded())).toBe(true)
+    expect(ws.binary).toHaveLength(1)
+    expect(decodeWebviewFrame(ws.binary[0]!)).toMatchObject({ key: 'cockpit.browser/page', seq: 1, width: 640, height: 480, scale: 1 })
+    expect(other.binary).toEqual([])
+    // Not JSON text: nothing in `sent`.
+    expect(ws.sent.map((f) => f.t)).toEqual(['ready'])
+    expect(views.frameToView('desktop:1', encoded())).toBe(false)
+  })
+
+  it('an oversize frame is not sent, is logged, and the view stays connected and keeps its events', () => {
+    const { connect, views, logs } = setup()
+    const ws = connect('p1')
+    const big = encodeWebviewFrame({ key: 'a/b', seq: 2, width: 640, height: 480, scale: 1, jpeg: new Uint8Array(MAX_WEBVIEW_FRAME_BYTES) })
+    expect(big.length).toBeGreaterThan(MAX_WEBVIEW_FRAME_BYTES)
+    expect(views.frameToView('web:1', big)).toBe(false)
+    expect(ws.binary).toEqual([])
+    expect(ws.closedWith).toBeUndefined()
+    expect(views.viewsOf(1)).toEqual(['desktop:1', 'web:1'])
+    expect(logs.some((l) => l.includes('over') && l.includes('not sent'))).toBe(true)
+    views.toProject('p1', 'layout.updated', { n: 1 })
+    expect(ws.frames('event')).toHaveLength(1)
+    // The cap is on the whole frame, header included: one exactly at it goes.
+    const exact = encodeWebviewFrame({ key: 'a/b', seq: 3, width: 1, height: 1, scale: 1, jpeg: new Uint8Array(MAX_WEBVIEW_FRAME_BYTES - 15) })
+    expect(exact.length).toBe(MAX_WEBVIEW_FRAME_BYTES)
+    expect(views.frameToView('web:1', exact)).toBe(true)
+  })
+
+  it('a socket far behind drops the frame without closing the view; frameDrained follows bufferedAmount', () => {
+    const { connect, views } = setup()
+    const ws = connect('p1')
+    expect(views.frameDrained('web:1')).toBe(true)
+    ws.bufferedAmount = FRAME_DRAINED_BYTES + 1
+    expect(views.frameDrained('web:1')).toBe(false)
+    ws.bufferedAmount = SOCKET_HIGH_WATER + 1
+    expect(views.frameToView('web:1', encoded())).toBe(false)
+    expect(ws.closedWith).toBeUndefined()
+    ws.bufferedAmount = 0
+    expect(views.frameDrained('web:1')).toBe(true)
+    expect(views.frameToView('web:1', encoded())).toBe(true)
+  })
+
+  it('a closed socket takes nothing', () => {
+    const { connect, views } = setup()
+    const ws = connect('p1')
+    ws.drop()
+    expect(views.frameToView('web:1', encoded())).toBe(false)
+    expect(views.frameDrained('web:1')).toBe(false)
+  })
+
+  it('a hello of the old protocol version is closed as before', () => {
+    const { conns } = setup()
+    expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(2)
+    const stale = new FakeWs()
+    conns.accept(stale, DEVICE)
+    stale.feed({ t: 'hello', v: PROTOCOL_VERSION - 1, project: 'p1' })
+    expect(stale.closedWith?.code).toBe(CLOSE.version)
+    expect(stale.sent).toEqual([])
+  })
+})
+
 describe('through the gateway', () => {
   let gateway: WebGateway | undefined
   const dirs: string[] = []
@@ -816,14 +984,18 @@ describe('through the gateway', () => {
     return { port, ctx }
   }
 
-  function open(port: number): Promise<{ client: wsModule.WebSocket; frames: Array<Record<string, unknown>>; closed: Promise<number> }> {
+  function open(port: number): Promise<{ client: wsModule.WebSocket; frames: Array<Record<string, unknown>>; binary: Uint8Array[]; closed: Promise<number> }> {
     const host = `127.0.0.1:${port}`
     const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin: `http://${host}` })
     const frames: Array<Record<string, unknown>> = []
-    client.on('message', (data: Buffer) => frames.push(decodeJson(data.toString()) as Record<string, unknown>))
+    const binary: Uint8Array[] = []
+    client.on('message', (data: Buffer, isBinary: boolean) => {
+      if (isBinary) binary.push(new Uint8Array(data))
+      else frames.push(decodeJson(data.toString()) as Record<string, unknown>)
+    })
     const closed = new Promise<number>((resolve) => client.on('close', (code) => resolve(code)))
     return new Promise((resolve, reject) => {
-      client.on('open', () => resolve({ client, frames, closed }))
+      client.on('open', () => resolve({ client, frames, binary, closed }))
       client.on('error', reject)
     })
   }
@@ -847,6 +1019,20 @@ describe('through the gateway', () => {
     await until(() => frames.length === 3)
     expect(frames[2]).toEqual({ t: 'event', ch: 'layout.updated', p: { n: 1 } })
     client.close()
+  })
+
+  it('a real socket: a webview frame arrives as a binary message, and a binary message from the client closes it', async () => {
+    const { port, ctx } = await listening('none')
+    const { client, frames, binary, closed } = await open(port)
+    client.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, project: 'p1' }))
+    await until(() => frames.length === 1)
+    const sent = { key: 'cockpit.browser/page', seq: 5, width: 800, height: 600, scale: 0.5, jpeg: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]) }
+    expect(ctx.views.frameToView('web:1', encodeWebviewFrame(sent))).toBe(true)
+    await until(() => binary.length === 1)
+    expect(decodeWebviewFrame(binary[0]!)).toEqual(sent)
+    client.send(Buffer.from([1, 2, 3]), { binary: true })
+    expect(await closed).toBe(CLOSE.badFrame)
+    await until(() => ctx.views.viewsOf(1).length === 1)
   })
 
   it('no cookie, no upgrade: the connection never sees the socket', async () => {

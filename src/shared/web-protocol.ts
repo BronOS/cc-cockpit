@@ -9,8 +9,12 @@ import type { ProjectColor } from './project-color'
 import type { WebAccessMode } from './types'
 import type { ViewId } from './views'
 
-/** Bumped on any incompatible frame change; a client speaking another version is closed. */
-export const PROTOCOL_VERSION = 1
+/**
+ * Bumped on any incompatible frame change; a client speaking another version is closed. 2: the first
+ * binary frame (a streamed webview's JPEG, `encodeWebviewFrame`); a page that predates it would drop
+ * every frame, so it is closed with `CLOSE.version` and reloads instead.
+ */
+export const PROTOCOL_VERSION = 2
 
 /** Where the browser opens its one WebSocket per view (the gateway refuses an upgrade elsewhere). */
 export const WS_PATH = '/ws'
@@ -252,6 +256,116 @@ export function utf8Length(text: string): number {
     } else n += 3
   }
   return n
+}
+
+/**
+ * Binary frames (server -> browser only; the gateway closes a client that sends one, connection.ts).
+ * Layout, big-endian, nothing after the JPEG:
+ *
+ *   u8 kind (`FRAME_KIND_WEBVIEW`) | u8 keyLength | key (UTF-8, <= MAX_FRAME_KEY_BYTES) |
+ *   u32 seq | u16 width | u16 height | u16 scale x 100 | JPEG bytes
+ *
+ * `width` x `height` are the encoded image's pixels; `scale` is the encoded size over the page's CSS
+ * size (1 = not downscaled), so input maps back through it. There is no mime byte: a webview frame is
+ * always a JPEG (design-web-browser.md §3.3). Pure over `Uint8Array` / `DataView` / `TextEncoder`, so
+ * main and the browser bridge share one definition with no `Buffer`.
+ */
+export const FRAME_KIND_WEBVIEW = 1
+
+/** Longest panel key (UTF-8 bytes) in a binary frame: MAX_PORT_KEY_LENGTH (a key is a port key), spelled out because that constant is declared further down. */
+export const MAX_FRAME_KEY_BYTES = 200
+
+/** Bytes of a webview frame before its key: kind and key length. */
+const FRAME_PREFIX_BYTES = 2
+/** Bytes after the key: seq (4), width (2), height (2), scale (2). */
+const FRAME_FIXED_BYTES = 10
+
+/**
+ * Largest webview frame a browser view's sink sends, header included. A frame already on the socket
+ * cannot be pre-empted, and terminal output is written straight to the same socket behind it, so this
+ * is what one frame can delay a keystroke's echo by (design-web-browser.md §3.3). 1 MiB: a ~2 MP page
+ * at JPEG q75 is typically a few hundred KB, a busy one under a MB; four times under MAX_FRAME_BYTES
+ * (`ws` would refuse more) and thirty-two times under SOCKET_HIGH_WATER (connection.ts), so a frame
+ * that passes can never tip a healthy view into the "closed to resync" path. Over it the frame is
+ * dropped and the view stays connected: the next paint is smaller, or the encoder lowers its quality.
+ */
+export const MAX_WEBVIEW_FRAME_BYTES = 1024 * 1024
+
+/**
+ * A view's socket counts as drained for the next frame when it holds at most this many unsent bytes
+ * (`bufferedAmount`): "back near zero" (design-web-browser.md §3.3), with room for a small terminal
+ * chunk that was written right behind the last frame.
+ */
+export const FRAME_DRAINED_BYTES = 64 * 1024
+
+/** A decoded webview frame. `jpeg` is a view into the buffer it was decoded from, not a copy. */
+export interface WebviewFrame {
+  key: string
+  seq: number
+  width: number
+  height: number
+  /** Encoded size over page size (the header holds it x 100, so two decimals). */
+  scale: number
+  jpeg: Uint8Array
+}
+
+const textEncoder = new TextEncoder()
+const fatalDecoder = new TextDecoder('utf-8', { fatal: true })
+
+/**
+ * The binary webview frame for `frame`. Throws RangeError for a field the layout cannot hold (the
+ * caller is main's own code, so a throw is a bug, not input): a key that is empty or over
+ * MAX_FRAME_KEY_BYTES, `seq` not a u32, a size not in 1..65535, a scale that rounds outside 0.01..655.35,
+ * or an empty JPEG. Size is not capped here; the sink does that (`MAX_WEBVIEW_FRAME_BYTES`).
+ */
+export function encodeWebviewFrame(frame: WebviewFrame): Uint8Array {
+  const key = textEncoder.encode(frame.key)
+  if (key.length === 0 || key.length > MAX_FRAME_KEY_BYTES) throw new RangeError('frame key length')
+  const scale = Math.round(frame.scale * 100)
+  const ok = (n: number, max: number, min: number): boolean => Number.isInteger(n) && n >= min && n <= max
+  if (!ok(frame.seq, 0xffff_ffff, 0)) throw new RangeError('frame seq')
+  if (!ok(frame.width, 0xffff, 1) || !ok(frame.height, 0xffff, 1)) throw new RangeError('frame size')
+  if (!ok(scale, 0xffff, 1)) throw new RangeError('frame scale')
+  if (frame.jpeg.length === 0) throw new RangeError('frame image is empty')
+  const out = new Uint8Array(FRAME_PREFIX_BYTES + key.length + FRAME_FIXED_BYTES + frame.jpeg.length)
+  const view = new DataView(out.buffer)
+  out[0] = FRAME_KIND_WEBVIEW
+  out[1] = key.length
+  out.set(key, FRAME_PREFIX_BYTES)
+  const at = FRAME_PREFIX_BYTES + key.length
+  view.setUint32(at, frame.seq)
+  view.setUint16(at + 4, frame.width)
+  view.setUint16(at + 6, frame.height)
+  view.setUint16(at + 8, scale)
+  out.set(frame.jpeg, at + FRAME_FIXED_BYTES)
+  return out
+}
+
+/**
+ * Decode a binary frame from main, or undefined for anything malformed: too short for its header, a
+ * kind that is not ours, a key length of 0 or over MAX_FRAME_KEY_BYTES or past the buffer, a key that
+ * is not valid UTF-8, a zero size or scale, no image bytes. The browser treats a frame as untrusted
+ * input like any other (the bridge drops the bad one and keeps the socket).
+ */
+export function decodeWebviewFrame(bytes: Uint8Array): WebviewFrame | undefined {
+  if (bytes.length < FRAME_PREFIX_BYTES || bytes[0] !== FRAME_KIND_WEBVIEW) return undefined
+  const keyLength = bytes[1]!
+  if (keyLength === 0 || keyLength > MAX_FRAME_KEY_BYTES) return undefined
+  const at = FRAME_PREFIX_BYTES + keyLength
+  // At least one image byte after the fixed fields.
+  if (bytes.length < at + FRAME_FIXED_BYTES + 1) return undefined
+  let key: string
+  try {
+    key = fatalDecoder.decode(bytes.subarray(FRAME_PREFIX_BYTES, at))
+  } catch {
+    return undefined
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const width = view.getUint16(at + 4)
+  const height = view.getUint16(at + 6)
+  const scale = view.getUint16(at + 8)
+  if (width === 0 || height === 0 || scale === 0) return undefined
+  return { key, seq: view.getUint32(at), width, height, scale: scale / 100, jpeg: bytes.subarray(at + FRAME_FIXED_BYTES) }
 }
 
 /** Close codes main uses (4000-4999 is the application range of RFC 6455). */

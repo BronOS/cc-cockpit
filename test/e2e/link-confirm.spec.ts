@@ -6,6 +6,7 @@ import { request } from 'node:http'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import type { CockpitApi } from '../../src/shared/ipc'
+import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
 import { expect, test } from './fixtures'
 
 type Frame = { t: string; ch?: string; p?: { requestId?: string }; id?: number; ok?: boolean; v?: unknown }
@@ -63,7 +64,7 @@ test('link confirm with a browser attached: desktop dialog focus and Esc, a brow
     ws.on('open', () => resolve())
     ws.on('error', reject)
   })
-  ws.send(JSON.stringify({ t: 'hello', v: 1, project: projectId }))
+  ws.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, project: projectId }))
   await expect.poll(() => frames.some((f) => f.t === 'ready')).toBe(true)
   let nextId = 1
   const answer = async (requestId: string, allow: boolean): Promise<unknown> => {

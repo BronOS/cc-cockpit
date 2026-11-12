@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ViewRegistry, type ViewSink } from '../../src/main/views/view-registry'
 import { remoteViewId } from '../../src/shared/views'
+import { FRAME_DRAINED_BYTES, MAX_WEBVIEW_FRAME_BYTES } from '../../src/shared/web-protocol'
 
 interface FakePort {
   name: string
@@ -28,6 +29,24 @@ class FakeSink implements ViewSink<FakePort> {
 
   isClosed(): boolean {
     return this.closed
+  }
+}
+
+/** A browser view's sink: takes frames like connection.ts, with the same cap, and says how much is queued. */
+class FrameSink extends FakeSink {
+  frames: Uint8Array[] = []
+  buffered = 0
+  throws = false
+
+  sendFrame(frame: Uint8Array): boolean {
+    if (this.throws) throw new Error('socket write failed')
+    if (frame.byteLength > MAX_WEBVIEW_FRAME_BYTES) return false
+    this.frames.push(frame)
+    return true
+  }
+
+  frameBuffered(): number {
+    return this.buffered
   }
 }
 
@@ -269,5 +288,84 @@ describe('ViewRegistry', () => {
     expect(() => views.postPort('desktop:1', 'panels.port', {}, port)).toThrow(/gone/)
     expect(() => views.postPort('desktop:5', 'panels.port', {}, port)).toThrow(/gone/)
     expect(() => views.postPort('web:1', 'panels.port', {}, port)).toThrow(/cannot take a port/)
+  })
+
+  describe('frames', () => {
+    const frame = new Uint8Array([1, 2, 3])
+
+    it('goes to exactly the view named, never a broadcast', () => {
+      const views = registry()
+      const one = new FrameSink()
+      const two = new FrameSink()
+      views.addDesktop(1, new FakeSink())
+      views.addRemote(1, remoteViewId(1), one)
+      views.addRemote(1, remoteViewId(2), two)
+      expect(views.frameToView('web:2', frame)).toBe(true)
+      expect(two.frames).toEqual([frame])
+      expect(one.frames).toEqual([])
+    })
+
+    it('desktop and hidden-page sinks cannot be handed frames: by type, and by the view id at run time', () => {
+      const views = registry()
+      // The type keeps a sink with frame methods out of addDesktop ...
+      // @ts-expect-error a DesktopViewSink has no sendFrame
+      views.addDesktop(2, new FrameSink())
+      // ... and even one that got past the type (a cast) is never sent a frame: a desktop view id is
+      // refused before the sink is looked at (the hidden page in server mode is one).
+      const sneaky = new FrameSink()
+      views.addDesktop(1, sneaky as never)
+      expect(views.frameToView('desktop:1', frame)).toBe(false)
+      expect(views.frameToView('desktop:2', frame)).toBe(false)
+      expect(sneaky.frames).toEqual([])
+      expect(views.frameDrained('desktop:1')).toBe(false)
+      // A plain desktop sink (no sendFrame at all).
+      views.addDesktop(3, new FakeSink())
+      expect(views.frameToView('desktop:3', frame)).toBe(false)
+    })
+
+    it('is refused for an unknown, closed or frame-less view, and for a sink that throws (logged)', () => {
+      const log: string[] = []
+      const views = registry(log)
+      const closed = new FrameSink()
+      const broken = new FrameSink()
+      broken.throws = true
+      views.addRemote(1, remoteViewId(1), closed)
+      views.addRemote(1, remoteViewId(2), new FakeSink())
+      views.addRemote(1, remoteViewId(3), broken)
+      closed.closed = true
+      expect(views.frameToView('web:9', frame)).toBe(false)
+      expect(views.frameToView('web:1', frame)).toBe(false)
+      expect(views.frameToView('web:2', frame)).toBe(false)
+      expect(views.frameToView('web:3', frame)).toBe(false)
+      expect(log.some((l) => l.includes('frame to view web:3 failed'))).toBe(true)
+      expect(views.viewsOf(1)).toEqual(['web:2', 'web:3'])
+    })
+
+    it('an oversize frame is not sent and the view stays registered', () => {
+      const views = registry()
+      const sink = new FrameSink()
+      views.addRemote(1, remoteViewId(1), sink)
+      expect(views.frameToView('web:1', new Uint8Array(MAX_WEBVIEW_FRAME_BYTES + 1))).toBe(false)
+      expect(sink.frames).toEqual([])
+      expect(views.viewsOf(1)).toEqual(['web:1'])
+      expect(views.frameToView('web:1', new Uint8Array(MAX_WEBVIEW_FRAME_BYTES))).toBe(true)
+    })
+
+    it('frameDrained follows the socket backlog, and is false for a view that cannot take frames', () => {
+      const views = registry()
+      const sink = new FrameSink()
+      views.addRemote(1, remoteViewId(1), sink)
+      views.addRemote(1, remoteViewId(2), new FakeSink())
+      expect(views.frameDrained('web:1')).toBe(true)
+      sink.buffered = FRAME_DRAINED_BYTES
+      expect(views.frameDrained('web:1')).toBe(true)
+      sink.buffered = FRAME_DRAINED_BYTES + 1
+      expect(views.frameDrained('web:1')).toBe(false)
+      sink.buffered = 0
+      sink.closed = true
+      expect(views.frameDrained('web:1')).toBe(false)
+      expect(views.frameDrained('web:2')).toBe(false)
+      expect(views.frameDrained('web:9')).toBe(false)
+    })
   })
 })

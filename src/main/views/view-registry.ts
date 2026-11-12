@@ -17,6 +17,7 @@
 import { errorText } from '../../shared/error-text'
 import type { EventChannel } from '../../shared/ipc'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
+import { FRAME_DRAINED_BYTES } from '../../shared/web-protocol'
 import { warnLog } from '../warn-log'
 
 /** One view's way out: a desktop window's webContents, or a remote view's socket. */
@@ -37,7 +38,24 @@ export interface ViewSink<P = unknown> {
    * Absent for a desktop view: its page goes with its window.
    */
   windowClosed?(): void
+  /**
+   * Send one binary frame (a streamed webview's JPEG, shared/web-protocol.ts `encodeWebviewFrame`):
+   * true when it went onto the socket, false when it did not (closing socket, over
+   * MAX_WEBVIEW_FRAME_BYTES, a socket too far behind). A refused frame never closes the view: the
+   * next paint replaces it. Implemented ONLY by a browser view's sink (main/web/connection.ts);
+   * `DesktopViewSink` forbids it on the desktop page and the hidden page, so those cannot be
+   * handed frames (design-web-browser.md §3.3).
+   */
+  sendFrame?(frame: Uint8Array): boolean
+  /** Bytes queued on the socket and not yet sent (`bufferedAmount`); present with `sendFrame`. */
+  frameBuffered?(): number
 }
+
+/**
+ * A desktop view's sink (a window's own webContents, the hidden page in server mode): a ViewSink
+ * with no frame methods at all, so passing a sink that has them to `addDesktop` is a type error.
+ */
+export type DesktopViewSink<P = unknown> = ViewSink<P> & { sendFrame?: never; frameBuffered?: never }
 
 export interface ViewRegistryOptions {
   /** The window that shows a project now (WindowManager.windowIdOf); undefined when none does. */
@@ -61,7 +79,7 @@ export class ViewRegistry<P = unknown> {
    * created, before its page can ask for anything. A second add for the same window replaces the
    * first (a window id is never reused while its window lives).
    */
-  addDesktop(windowId: number, sink: ViewSink<P>): ViewId {
+  addDesktop(windowId: number, sink: DesktopViewSink<P>): ViewId {
     const id = desktopViewId(windowId)
     this.views.set(id, { windowId, sink })
     return id
@@ -150,6 +168,39 @@ export class ViewRegistry<P = unknown> {
   toView(viewId: ViewId, channel: EventChannel, payload: unknown): boolean {
     const entry = this.views.get(viewId)
     return entry !== undefined && this.deliver(viewId, entry, channel, payload)
+  }
+
+  /**
+   * One binary frame to ONE browser view (never a broadcast: each view has its own pace, and a
+   * frame is the hottest bytes on its socket). True when the view's socket took it. False for an
+   * unknown or closed view, a desktop view (its id says so, whatever its sink is: the hidden page
+   * never gets pixels), a sink without `sendFrame`, a frame the sink refused (oversize) and a send
+   * that threw (logged). The view stays registered in every case.
+   */
+  frameToView(viewId: ViewId, frame: Uint8Array): boolean {
+    const entry = this.views.get(viewId)
+    if (!entry || !isRemoteViewId(viewId) || entry.sink.isClosed() || !entry.sink.sendFrame) return false
+    try {
+      return entry.sink.sendFrame(frame)
+    } catch (err) {
+      this.logLine(`frame to view ${viewId} failed: ${errorText(err)}`)
+      return false
+    }
+  }
+
+  /**
+   * Whether the view's socket has drained enough to take the next frame (design-web-browser.md §3.3,
+   * one frame in flight): at most FRAME_DRAINED_BYTES unsent. False for a view that cannot take
+   * frames at all (unknown, closed, desktop), so "drained" always means "a frame may go now".
+   */
+  frameDrained(viewId: ViewId): boolean {
+    const entry = this.views.get(viewId)
+    if (!entry || !isRemoteViewId(viewId) || entry.sink.isClosed() || !entry.sink.sendFrame || !entry.sink.frameBuffered) return false
+    try {
+      return entry.sink.frameBuffered() <= FRAME_DRAINED_BYTES
+    } catch {
+      return false
+    }
   }
 
   /**

@@ -13,6 +13,7 @@ import { request } from 'node:http'
 import type { Page } from '@playwright/test'
 import { WebSocket } from 'ws'
 import type { CockpitApi } from '../../src/shared/ipc'
+import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
 import { expect, test } from './fixtures'
 import { enableWebAccess, openBrowser } from './web-fixtures'
 
@@ -118,7 +119,7 @@ test('web access settings: Show hides the link, a device is listed and revoked, 
     ws.on('open', () => resolve())
     ws.on('error', reject)
   })
-  ws.send(JSON.stringify({ t: 'hello', v: 1, project: projectId }))
+  ws.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, project: projectId }))
   await expect(device).toContainText('connected now')
   await expect(strip.locator('.web-access-chip')).toContainText('1 device')
 

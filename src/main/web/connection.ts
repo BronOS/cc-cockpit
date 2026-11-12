@@ -31,7 +31,7 @@
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
 import { remoteViewId, type ViewId } from '../../shared/views'
-import { MAX_VIEWS_PER_DEVICE_WINDOW, type WebPagePaths, type WebProjectEntry } from '../../shared/web-protocol'
+import { MAX_VIEWS_PER_DEVICE_WINDOW, MAX_WEBVIEW_FRAME_BYTES, type WebPagePaths, type WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
 import type { ViewSink } from '../views/view-registry'
@@ -61,7 +61,8 @@ export interface WsLike {
   readonly readyState: number
   /** Bytes queued and not sent yet (port-relay.ts drops a panel's port past its high water). */
   readonly bufferedAmount: number
-  send(data: string): void
+  /** Text for a frame, bytes for a binary one (a webview's JPEG, `sendFrame`). */
+  send(data: string | Uint8Array): void
   close(code?: number, reason?: string): void
   on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): unknown
   on(event: 'close', listener: () => void): unknown
@@ -425,6 +426,8 @@ export class WebConnection {
         send: (channel, payload) => this.event(channel, payload),
         // The page end of a panel, slot or settings page port main made for this view (panel-ports.ts).
         postPort: (channel, payload, port) => ports.take(channel, payload, port),
+        sendFrame: (frame) => this.sendFrame(frame),
+        frameBuffered: () => this.ws.bufferedAmount,
         isClosed: () => this.closed,
         windowClosed: () => this.close(CLOSE.windowClosed, 'window closed')
       })
@@ -573,6 +576,23 @@ export class WebConnection {
       return this.close(CLOSE.failed, 'view behind')
     }
     this.ws.send(text)
+  }
+
+  /**
+   * A binary webview frame (ViewSink.sendFrame). Droppable by nature, unlike an event: the next
+   * paint replaces it, so none of the refusals closes the view. False when it did not go out: a
+   * closing socket, a frame over MAX_WEBVIEW_FRAME_BYTES (logged), or a socket already past
+   * SOCKET_HIGH_WATER (left to `send`, which closes a view that keeps falling behind, to notice).
+   */
+  private sendFrame(frame: Uint8Array): boolean {
+    if (this.closed || this.ws.readyState !== OPEN) return false
+    if (frame.byteLength > MAX_WEBVIEW_FRAME_BYTES) {
+      this.deps.log(`web access: view ${this.viewId}: webview frame of ${frame.byteLength} bytes over ${MAX_WEBVIEW_FRAME_BYTES}, not sent`)
+      return false
+    }
+    if (this.ws.bufferedAmount > SOCKET_HIGH_WATER) return false
+    this.ws.send(frame)
+    return true
   }
 
   /**

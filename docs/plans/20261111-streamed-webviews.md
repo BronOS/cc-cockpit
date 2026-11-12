@@ -216,15 +216,15 @@ External review: sol / high
 - Modify: `test/unit/web-bridge.test.ts`
 - Modify: `test/unit/view-registry.test.ts`
 
-- [ ] add the binary webview frame (Technical Details) with an encoder in main and a decoder in the bridge; bump
+- [x] add the binary webview frame (Technical Details) with an encoder in main and a decoder in the bridge; bump
       `PROTOCOL_VERSION`; a client binary frame still closes the socket
-- [ ] `ViewSink.sendFrame` implemented only by browser view sinks, with a per-frame byte cap; `ViewRegistry` offers
+- [x] `ViewSink.sendFrame` implemented only by browser view sinks, with a per-frame byte cap; `ViewRegistry` offers
       frame delivery to one view (no broadcast)
-- [ ] the bridge hands decoded frames to a subscriber per panel key (no React yet)
-- [ ] write tests: round trip, max key length, malformed header/short buffer rejected by the decoder; desktop and
+- [x] the bridge hands decoded frames to a subscriber per panel key (no React yet)
+- [x] write tests: round trip, max key length, malformed header/short buffer rejected by the decoder; desktop and
       hidden-page sinks cannot send frames; an oversize frame is not sent and the view stays connected
-- [ ] write tests: gateway still refuses client binary; version mismatch closes as before
-- [ ] run tests - must pass before next task
+- [x] write tests: gateway still refuses client binary; version mismatch closes as before
+- [x] run tests - must pass before next task
 
 ### Task 4: Placement reports, viewers and the size owner [model: opus]
 

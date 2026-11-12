@@ -14,7 +14,7 @@ import { ProjectRefusal, type ProjectRegistry } from '../projects/registry'
 import type { ProjectView, WindowBounds } from '../../shared/types'
 import { fitBounds, sanitizeBounds, type Rect } from './window-bounds'
 import { OPAQUE_LOOK, type ProjectWindowLook } from './window-chrome'
-import type { ViewRegistry, ViewSink } from '../views/view-registry'
+import type { DesktopViewSink, ViewRegistry } from '../views/view-registry'
 import type { AskClose, CloseChoice } from './close-dialog'
 import { warnLog } from '../warn-log'
 
@@ -30,7 +30,7 @@ export interface WindowHandle {
    * Its page as a view (design-web.md §2.2): events and port posts reach it only through the
    * ViewRegistry, which the manager registers it with on creation and drops it from on close.
    */
-  readonly sink: ViewSink
+  readonly sink: DesktopViewSink
   /** Bring to front, restoring it first when minimised and showing it when hidden. */
   focus(): void
   /**

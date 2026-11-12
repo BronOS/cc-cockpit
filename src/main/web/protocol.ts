@@ -18,6 +18,9 @@
 //                   { t: 'port.open', key, nonce }    the port asked for with `nonce` (panels.connect, ...)
 //                   { t: 'port.msg', key, nonce, m } | { t: 'port.close', key, nonce }
 //                                                     a relayed panel port (port-relay.ts)
+//                   binary: u8 kind=1, u8 keyLength, key, u32 seq, u16 w, u16 h, u16 scale x 100, JPEG
+//                                                     a streamed webview's frame (shared/web-protocol.ts;
+//                                                     only through ViewSink.sendFrame, never from a client)
 //
 // `Uint8Array` values travel as `{ $bytes: <base64> }` both ways (JSON has no bytes). Everything a
 // client frame holds is untrusted text: the shape is checked here, the channel against the
@@ -31,7 +34,15 @@ import type { MirrorItem, MirrorSnapshot } from '../terminals/mirror-protocol'
 
 // The constants and frame types live in src/shared/web-protocol.ts, which the browser bridge
 // (src/renderer/web/bridge.ts) imports too; re-exported so main's side has one import point.
-export { CLOSE, MAX_FRAME_BYTES, PROTOCOL_VERSION, WS_PATH } from '../../shared/web-protocol'
+export {
+  CLOSE,
+  encodeWebviewFrame,
+  FRAME_DRAINED_BYTES,
+  MAX_FRAME_BYTES,
+  MAX_WEBVIEW_FRAME_BYTES,
+  PROTOCOL_VERSION,
+  WS_PATH
+} from '../../shared/web-protocol'
 export type {
   ClientFrame,
   EventFrame,
@@ -45,7 +56,8 @@ export type {
   ServerFrame,
   TermDataFrame,
   TermSnapshotFrame,
-  WebSnapshot
+  WebSnapshot,
+  WebviewFrame
 } from '../../shared/web-protocol'
 
 /** A project id is main's own (a short id); anything longer is not one, and is not looked up. */

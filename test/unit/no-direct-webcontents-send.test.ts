@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ViewRegistry, type ViewSink } from '../../src/main/views/view-registry'
+import { ViewRegistry, type DesktopViewSink } from '../../src/main/views/view-registry'
 import { remoteViewId } from '../../src/shared/views'
 
 // design-web.md §2.2: every event and port post to a page goes through the ViewRegistry, so a new
@@ -111,7 +111,7 @@ describe('no direct webContents sends outside the view registry', () => {
   it('toBrowserViews reaches browser views only, never a desktop view (the hidden page in server mode)', () => {
     const views = new ViewRegistry({ windowIdOf: () => undefined, log: () => {} })
     const got: string[] = []
-    const sink = (name: string): ViewSink => ({ send: () => void got.push(name), isClosed: () => false })
+    const sink = (name: string): DesktopViewSink => ({ send: () => void got.push(name), isClosed: () => false })
     views.addDesktop(1, sink('desktop'))
     views.addRemote(1, remoteViewId(1), sink('web'))
     expect(views.toBrowserViews(1, 'app.linkNotice', { url: 'https://a/' })).toBe(1)

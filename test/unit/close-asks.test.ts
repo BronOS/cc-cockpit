@@ -4,7 +4,7 @@
 // window cannot be asked, closes, or the wait runs out; every view hears `settled`.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CLOSE_ASK_MS, CloseAsks, closeWillAsk } from '../../src/main/sessions/close-asks'
-import { ViewRegistry, type ViewSink } from '../../src/main/views/view-registry'
+import { ViewRegistry, type DesktopViewSink } from '../../src/main/views/view-registry'
 import type { EventChannel } from '../../src/shared/ipc'
 import { desktopViewId } from '../../src/shared/views'
 
@@ -226,7 +226,7 @@ describe('CloseAsks', () => {
 })
 
 describe('CloseAsks through the ViewRegistry (two views of one window)', () => {
-  function sink(): ViewSink & { events: Array<{ channel: EventChannel; payload: unknown }> } {
+  function sink(): DesktopViewSink & { events: Array<{ channel: EventChannel; payload: unknown }> } {
     const events: Array<{ channel: EventChannel; payload: unknown }> = []
     return { events, send: (channel, payload) => void events.push({ channel, payload }), isClosed: () => false }
   }

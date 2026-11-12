@@ -15,6 +15,7 @@ import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
 import { MAX_PASTE_ATTEMPTS } from '../../src/main/oauth/plugin-oauth'
+import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
 import { OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../src/shared/oauth-paste'
 import { FakeOAuthServer } from '../fakes/fake-oauth-server'
 import { launchCockpit } from './fixtures'
@@ -822,7 +823,7 @@ test('server mode: the web access card in the browser lists a second device, rev
     ws.on('open', () => resolve())
     ws.on('error', reject)
   })
-  ws.send(JSON.stringify({ t: 'hello', v: 1, project: server.projectId }))
+  ws.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, project: server.projectId }))
   try {
     const { page } = browser
     await openProjectInBrowser(browser, origin, server.projectId)
