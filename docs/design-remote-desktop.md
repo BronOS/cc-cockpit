@@ -33,7 +33,7 @@ eating Cmd+W, Cmd+T, Ctrl+Tab), saved servers. Three ways to reach a server:
   uploads and downloads stay as in the browser (not available).
 - A full `ssh_config` in the built-in client: ProxyJump, ProxyCommand, `Match`, certificates and FIDO (`sk-`) keys are
   not supported there. A host that needs them uses My own tunnel; the built-in form says so when the config names one.
-- Keyboard-interactive prompts other than one password prompt (2FA codes): later (§9).
+- Keyboard-interactive prompts other than one password prompt (2FA codes): later (§10).
 - A desktop that is itself a server for others while it is a client (it already can be both: its own web access is
   independent of its remote windows).
 - Connecting to a desktop app's web access (not server mode). Direct works the same way as in a browser; built-in SSH
@@ -69,27 +69,33 @@ My own tunnel: the person's `ssh -N -L 127.0.0.1:L:127.0.0.1:P host` replaces Ss
 
 ## 2. Saved servers
 
-`app.json › remoteServers: RemoteServer[]` (validated and capped at 32 on read, like every app.json field; a record that
-fails validation is dropped: the first version was never released, so the old `ssh` shape is not migrated):
+`app.json › remoteServers: RemoteServer[]` (validated and capped at 32 on read, like every app.json field; a first-version `ssh`
+record, with no `auth`, reads as `auth: auto`, so it keeps working):
 
 ```ts
 interface RemoteServer {
   id: string                 // random, local only; names the partition
   name: string               // shown in the picker; default: the host or the URL's host
   via:
-    | { kind: 'ssh'; host: string; user?: string; port?: number; auth: SshAuth; ccc?: string }
+    | { kind: 'ssh'; host: string; user?: string; port?: number; auth?: SshAuth; ccc?: string }  // no auth = auto
     | { kind: 'tunnel'; localPort: number; sshHost?: string; remotePort: number }   // sshHost: only to print commands
     | { kind: 'direct'; origin: string }             // scheme://host[:port] of the link, nothing else kept
   recent: { projectId: string; name: string; at: number }[]   // last 8 remote projects opened from this app
   cookie?: string            // the device cookie, encrypted by the SecretStore (`encrypt`/`decrypt`), never plain
+  secrets?: { password?: string; passphrase?: string }   // encrypted like the cookie; stripped with it (never in `via`)
   localPort?: number         // built-in SSH: the listener's preferred port, kept so the page's origin stays the same
   hostKey?: { type: string; sha256: string }   // built-in SSH: the host key the person trusted (§5.3), not secret
 }
 type SshAuth =
   | { kind: 'auto' }                                       // agent, then the config's / default key files
-  | { kind: 'password'; secret?: string }                  // secret: encrypted; absent = ask each time
-  | { kind: 'key'; path: string; secret?: string }         // secret: the passphrase, encrypted; absent = none or ask
+  | { kind: 'password' }                                   // `secrets.password`, or asked each launch
+  | { kind: 'key'; path: string }                          // `secrets.passphrase` when the key has one, or asked
 ```
+
+The secrets sit beside `cookie`, never inside `via`: `via` goes to the picker in `remote.list`, and every path that
+strips the cookie (`withoutCookie`) strips `secrets` with it. Two records are the same server (`add` dedupes) when
+their `via` kind and host, user, port (SSH) or `localPort` (tunnel) match; a second tunnel on a used `localPort` is
+refused.
 
 - The **device cookie**, the **password** and the **passphrase** are credentials. `SecretStore` is `encrypt`/`decrypt`
   only (`secrets/secret-store.ts`), so each is kept encrypted in the server's own record, like the other stored values,
@@ -126,11 +132,10 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
 - **Connect to server…** opens a small form with three tabs:
   - **SSH**: Host, User (empty: the config's `User`, else the local user name), Port (empty: the config's, else 22),
     Sign in with: *Agent and my keys* / *Password* / *Key file* (a path field with a Browse button, the native open
-    dialog through main) plus Passphrase; Remember. Under "Advanced", the `ccc` path. When the host is an alias in
-    `~/.ssh/config`, the resolved HostName, User, Port and key show as greyed hints; a config with ProxyJump or
-    ProxyCommand for it shows "This host goes through a jump host: use My own tunnel".
+    dialog through main) plus Passphrase; Remember. Under "Advanced", the `ccc` path. A host whose config entry has ProxyJump or
+    ProxyCommand is refused on Connect with "This host goes through a jump host: use My own tunnel".
   - **My own tunnel**: SSH host (only for the commands), Server port (default 7330, the server's gateway port), Local
-    port (default: a free one suggested by main). Below, two commands to copy, built from those fields and updated as
+    port (default 7331; a taken port is reported by the probe, §6). Below, two commands to copy, built from those fields and updated as
     they change:
     ```
     ssh -N -L 127.0.0.1:7331:127.0.0.1:7330 devbox
@@ -190,7 +195,7 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
     `isOffscreenWindow` excludes off-screen webviews.
 - **Notifications.** The web client's in-page notices and chime work as in a browser. HTML5 `Notification` is not
   granted: non-default sessions are already denied every permission (`index.ts`, the permission handlers), which covers
-  camera, mic, notifications and clipboard read. System notifications for remote sessions are a later item (§9).
+  camera, mic, notifications and clipboard read. System notifications for remote sessions are a later item (§10).
 - **Certificates.** Default Chromium checks. A Direct server with a self-signed certificate fails with the page's
   error; there is no "proceed anyway" (as with plugin webviews).
 - **Connection loss.** The web client already reconnects with a backoff and shows its banner. Below it, the built-in
@@ -205,19 +210,25 @@ One `ssh2` `Client` per server, opened when a window of that server needs it and
 that server:
 
 - `host`, `port`, `username` from the record, filled from `~/.ssh/config` where the record leaves them empty (§5.5);
-  `readyTimeout` 10 s, `keepaliveInterval` 15 s, `keepaliveCountMax` 3 (the old `ServerAliveInterval` / `CountMax`).
+  `readyTimeout` 10 s (30 s when the agent is tried: an agent may wait for Touch ID), `keepaliveInterval` 15 s,
+  `keepaliveCountMax` 3.
 - **Sign-in order**, through `authHandler` so the order is ours and every method is tried at most once:
-  1. *auto*: the agent (`SSH_AUTH_SOCK`, when set), then each key file: the config's `IdentityFile`s, else
+  1. *auto*: the agent (the config's `IdentityAgent`, else `SSH_AUTH_SOCK` from the login environment `loginEnv`, not
+     `process.env`: an app started from the Dock or a launcher may not have it; 1Password and Secretive use
+     `IdentityAgent`), then each key file: the config's `IdentityFile`s, else
      `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` (the ones that exist). A key that needs a passphrase and has none is
      skipped and named in the error ("`~/.ssh/id_ed25519` needs a passphrase: choose Key file").
-  2. *password*: `password`, then `keyboard-interactive` answered with the same password only when the server sends one
-     prompt with echo off (many servers offer only that); anything else fails with the server's prompt text in the
-     error ("this server asks for more than a password: use My own tunnel").
+  2. *password*: `password` when the server offers it; `keyboard-interactive` only when it does not (sending a wrong
+     password both ways doubles the server's lockout count). There, a round with one echo-off prompt gets the
+     password, a round with zero prompts (PAM's common follow-up) gets `[]`, and a second password prompt means the
+     password was wrong: never resent. Any other prompt fails with its text in the error ("this server asks for more
+     than a password: use My own tunnel").
   3. *key*: that file with its passphrase (the agent is not tried, so a wrong agent key cannot use up the server's
      `MaxAuthTries` first).
-- The key file is read by main (`fs.readFile`, capped at 64 KiB, not following into anything but a regular file) and
-  handed to `ssh2`, which parses OpenSSH, PEM and PPK keys; a parse error says "not a private key `ssh2` can read
-  (FIDO and certificate keys need My own tunnel)".
+- The key file is read by main (`fs.readFile`, capped at 64 KiB, regular files only) and parsed by main first with
+  `ssh2`'s `utils.parseKey` (exposed by `ssh-client.ts`): `ssh2` itself silently skips a key it cannot parse, so
+  "needs a passphrase", "wrong passphrase" and "not a private key `ssh2` can read (FIDO and certificate keys need My
+  own tunnel)" are decided there, before dialling.
 - Errors keep `ssh2`'s level (`client-authentication`, `client-timeout`, `client-socket`) and map to one plain line
   each; a wrong password or passphrase is its own result, so the picker asks again (§3).
 
@@ -229,8 +240,11 @@ that server:
   port, readiness only from ssh's stderr line) is gone.
 - Each accepted socket becomes `client.forwardOut('127.0.0.1', <its source port>, '127.0.0.1', <P>)` and the two are
   piped; either side closing or erroring closes both. `P` is the gateway port from `web status --json` (§5.6).
+- **First use.** Before the first window loads, one `forwardOut` is opened and closed, so a server with TCP forwarding
+  disabled (`AllowTcpForwarding no`) is reported as such instead of as a page that never loads.
 - **Reconnect.** When the connection drops while windows are open, the listener stays and the client redials with a
-  backoff (1, 2, 4, … 30 s), reusing remembered or in-memory secrets; sockets accepted while it is down are closed at
+  backoff (1, 2, 4, … 30 s), reusing remembered or in-memory secrets, and runs `web status` again (the server may have
+  restarted on another gateway port); sockets accepted while it is down are closed at
   once (the page's own reconnect retries). A redial that fails on authentication or on a changed host key stops and the
   windows show that error (§4: the page's banner, then main's error page with the line).
 - `release` after the last window of the server closes, with the 30 s grace of §4; `dispose` at quit ends client and
@@ -240,15 +254,21 @@ that server:
 
 `hostVerifier` gets the server's key; main computes its SHA256 fingerprint (`ssh-keygen -l` format) and decides:
 
+Hosts are looked up by the resolved HostName (and port), as `ssh` does. To make the check meaningful, the dial
+prefers the key types the record or `known_hosts` already has for the host (`algorithms.serverHostKey` ordered with
+those first); otherwise the server could offer a type nothing vouches for and the known key would never be compared.
+
 1. The record's `hostKey` matches: go on. It differs: refuse ("the host key of devbox changed; if the server was
-   reinstalled, Forget the trusted key in Edit"), never ask.
-2. No `hostKey` yet: read `~/.ssh/known_hosts` (read only, never written; plain and hashed `|1|` entries, the
-   `[host]:port` form for a port other than 22, `@revoked` honoured, `@cert-authority` ignored). A matching line trusts
+   reinstalled, Forget the trusted key in Edit"), never ask; a picker answer is not even read in this branch.
+2. No `hostKey` yet: read `~/.ssh/known_hosts` (read only, never written; exact plain and hashed `|1|` host entries,
+   the `[host]:port` form for a port other than 22; `@revoked` matched by key; wildcard and negated patterns and
+   `@cert-authority` lines ignored, so such a host is "unknown" and asked). A matching line trusts
    the key without a question and saves it as `hostKey`; a line for the host with a different key of the same type
    refuses as above; nothing for the host asks the person (§3, "Trust this host?").
 3. Trusted: `hostKey` is saved in the record (not secret).
 
-The connection waits on the verifier while the picker asks; the picker's answer arrives as a second `remote.*` call
+Only in the "unknown" branch is the picker's answer consulted, and only when it equals the key seen on that dial.
+The connection does not wait on the verifier while the picker asks; the answer arrives with the next `remote.*` call
 (§5.4), so a first connect dials twice: once to learn the key, once to use it. Cheaper and simpler than keeping a
 half-open connection across calls.
 
@@ -258,15 +278,18 @@ Main never waits on the picker inside a call. A connect or open runs until it ne
 do not have, then fails with a typed result: `{ need: 'hostKey', type, sha256, address }`,
 `{ need: 'password' }`, `{ need: 'passphrase', path }`, or `{ need: 'password', again: true }` after a wrong one. The
 picker shows the dialog and calls again with `answers: { hostKey?: sha256; password?; passphrase?; remember? }`.
-Main checks a host-key answer against the key it sees on that new dial (a different key than the one shown asks again).
+The picker keeps every answer of this connect and sends them all on each retry (host key, then password, then the
+retry carries both); main saves nothing from them (no host key, no secret, no new record) until the dial and the
+pairing succeed, so a `need` in the middle loses nothing and a cancelled connect leaves nothing behind. Main checks a
+host-key answer against the key it sees on that new dial (a different key than the one shown asks again).
 Only the picker gets these results; a reconnect in the background never asks: it stops with the error.
 
 ### 5.5 `~/.ssh/config`, the basic fields
 
 A small reader (`main/remote/ssh-config.ts`, no regexes, as every parser in main): `Host` blocks with `*`, `?` and `!`
 patterns, first value wins as in `ssh`, `Include` (relative to `~/.ssh`, globs, depth 4), and the keywords `HostName`,
-`User`, `Port`, `IdentityFile` (`~` and `%d`, `%u`, `%h`, `%r` expanded; others make the line ignored), `IdentitiesOnly`
-and `ProxyJump` / `ProxyCommand` (only to say "use My own tunnel"). `Match` blocks are skipped with a hint. The record
+`User`, `Port`, `IdentityFile` (`~` expanded; a value with a `%` token is ignored), `IdentityAgent`, and `ProxyJump` /
+`ProxyCommand` (only to say "use My own tunnel"). `Match` blocks are skipped with a hint. The record
 wins over the config; the config is re-read at each dial, so editing it needs no Edit in the app.
 
 ### 5.6 Pairing
@@ -315,7 +338,7 @@ were never port-scoped, so nothing about them changes. The desktop app (not serv
 
 The tunnel already encrypts. With `web set` TLS on, the tunnel carries `https://127.0.0.1:<L>` and the certificate
 cannot match `127.0.0.1`. v1 refuses with a clear message ("this server serves https; connect Direct with its address,
-or turn TLS off: the SSH tunnel encrypts already"). Pinning the certificate's fingerprint learned over SSH is §9.
+or turn TLS off: the SSH tunnel encrypts already"). Pinning the certificate's fingerprint learned over SSH is §10.
 
 ## 6. My own tunnel
 
@@ -323,13 +346,16 @@ or turn TLS off: the SSH tunnel encrypts already"). Pinning the certificate's fi
   allowlist as before, so a printed command never carries shell metacharacters). The origin is
   `http://127.0.0.1:<localPort>`; the link pasted on Connect is parsed as in §7 and only its `#t=` token is used (its own
   origin may not be reachable from here). An `https` link is refused as in §5.8.
-- **Before every load** main asks `GET /auth/session` on `127.0.0.1:<localPort>` with no cookie (2 s timeout). Nothing
+- **Before every load main makes** (open, reload, re-pair; the page's own reconnects are not covered) main asks
+  `GET /auth/session` on `127.0.0.1:<localPort>` with Node's `http`, no cookie, no redirects, the body capped at
+  16 KiB, 2 s timeout. Nothing
   answers: the window shows main's page "Nothing answers on 127.0.0.1:7331. Start the tunnel:" with the `ssh -N -L`
   command, and main retries every 3 s while the window is open, loading the server's page when it answers. An answer
   that is not a cc-cockpit session reply: "something else is listening on 127.0.0.1:7331", no load (the cookie is not
   sent to it).
 - **Re-pair** is not automatic (the app cannot run commands there): a revoked cookie shows the server's sign-in page
-  and the picker's Edit opens the form with the add-device command and the link field.
+  and the picker's Edit opens the form with the add-device command and the link field; Edit takes an optional link
+  and signs in with its token.
 - **What the app cannot check:** whether the process on that port is really the person's tunnel. The probe above stops
   an obvious mistake, not a local process that imitates the reply; such a process gets the device cookie on the next
   load. The person's own ssh has the same property, and any local process of theirs could read their files anyway.
@@ -365,7 +391,9 @@ is on the client:
 - **The library.** `ssh2` (pinned exact, MIT, deps `asn1` and `bcrypt-pbkdf`; its native crypto binding and
   `cpu-features` are optional and it runs on plain JS without them) is a new dependency in a security path. It is
   imported only in `ssh-client.ts`; only `Client` is used in main (`Server` only in tests); its `debug` output is off.
-  Algorithms: `ssh2`'s defaults minus `ssh-rsa` (SHA-1) host keys, CBC ciphers and `diffie-hellman-group1-sha1` / `group14-sha1`.
+  Algorithms: `ssh2`'s defaults minus `ssh-rsa` (SHA-1) host keys (its defaults already leave out CBC and the SHA-1
+  key exchanges). Electron's BoringSSL has no `chacha20-poly1305`; `ssh2` then negotiates AES-GCM / CTR, which is why
+  the packaged app's own handshake is part of the tests (§11).
 - **Processes.** None: no `ssh` is spawned any more. Dialling happens only from the picker's `remote.*` channels (`no`
   class) and from main's own re-pair and reconnect, never from a page, a plugin or a remote view.
 - **Ports.** The listener binds `127.0.0.1` only. Any local process of this user can connect to it, as to any local
