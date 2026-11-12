@@ -9,11 +9,9 @@ import {
   REMOTE_TIMEOUT_MS,
   SshTunnel,
   TUNNEL_READY_MS,
-  addDeviceToken,
   namesTakenPort,
   netPortProbe,
   runRemote,
-  serverStatus,
   type PortProbe,
   type TunnelState
 } from '../../src/main/remote/ssh-tunnel'
@@ -199,66 +197,7 @@ describe('runRemote', () => {
   })
 })
 
-describe('serverStatus and addDeviceToken', () => {
-  const status = (over: Record<string, unknown> = {}): string =>
-    JSON.stringify({
-      server: true,
-      version: '0.17.0',
-      scheme: 'http',
-      enabled: true,
-      mode: 'link',
-      port: 7420,
-      gateway: { state: 'listening', bind: '127.0.0.1', port: 7421, origin: 'http://127.0.0.1:7421' },
-      ...over
-    })
-
-  it('returns the listening port, mode and version, asking with web status --json', async () => {
-    const { spawn, children } = answering(`noise\n${status()}\n`)
-    await expect(serverStatus(spawn, 'devbox')).resolves.toEqual({ port: 7421, mode: 'link', version: '0.17.0' })
-    expect(children[0]?.argv.at(-1)).toBe(remoteCommand(['web', 'status', '--json']))
-  })
-
-  it('refuses a desktop app (not server mode)', async () => {
-    const { spawn } = answering(status({ server: false }))
-    await expect(serverStatus(spawn, 'devbox')).rejects.toThrow('devbox is not a cc-cockpit server in server mode')
-  })
-
-  it('asks for an update when scheme is absent, naming the version when there is one', async () => {
-    await expect(serverStatus(answering(status({ scheme: undefined })).spawn, 'devbox')).rejects.toThrow(
-      'Update cc-cockpit on devbox (it runs 0.17.0).'
-    )
-    await expect(serverStatus(answering(status({ scheme: undefined, version: undefined })).spawn, 'devbox')).rejects.toThrow(
-      'Update cc-cockpit on devbox (it runs an older version).'
-    )
-    await expect(serverStatus(answering(status({ scheme: 'gopher' })).spawn, 'devbox')).rejects.toThrow('Update cc-cockpit')
-  })
-
-  it('refuses https over the tunnel with the §5.4 text', async () => {
-    const { spawn } = answering(status({ scheme: 'https' }))
-    await expect(serverStatus(spawn, 'devbox')).rejects.toThrow(
-      'Connect Direct with its address, or turn TLS off: the SSH tunnel encrypts already.'
-    )
-  })
-
-  it('refuses web access off, a gateway not listening and broken fields', async () => {
-    await expect(serverStatus(answering(status({ enabled: false, gateway: { state: 'off' } })).spawn, 'devbox')).rejects.toThrow('Web access is off')
-    await expect(serverStatus(answering(status({ gateway: { state: 'failed', reason: 'port in use\u0007' } })).spawn, 'devbox')).rejects.toThrow(
-      'The web gateway on devbox is not listening: port in use'
-    )
-    await expect(serverStatus(answering(status({ gateway: { state: 'listening', port: '7421' } })).spawn, 'devbox')).rejects.toThrow('no usable gateway port')
-    await expect(serverStatus(answering(status({ mode: 'magic' })).spawn, 'devbox')).rejects.toThrow('sign-in mode')
-    await expect(serverStatus(answering('not json at all').spawn, 'devbox')).rejects.toThrow('not a cc-cockpit status: not json at all')
-    await expect(serverStatus(answering('[1,2]').spawn, 'devbox')).rejects.toThrow('not a cc-cockpit status')
-  })
-
-  it('keeps only the token of the add-device link', async () => {
-    const { spawn, children } = answering('motd\nhttps://devbox.example:7421/#t=abc123\n')
-    await expect(addDeviceToken(spawn, 'devbox')).resolves.toBe('abc123')
-    expect(children[0]?.argv.at(-1)).toBe(remoteCommand(['web', 'add-device']))
-    await expect(addDeviceToken(answering('http://127.0.0.1:7421/\n').spawn, 'devbox')).rejects.toThrow('did not answer with an add-device link')
-    await expect(addDeviceToken(answering('nonsense\n').spawn, 'devbox')).rejects.toThrow('did not answer with an add-device link')
-  })
-})
+// serverStatus / addDeviceToken parsing moved to remote-status.ts (test/unit/remote-status.test.ts).
 
 describe('namesTakenPort', () => {
   it('matches only a bind failure naming that port', () => {

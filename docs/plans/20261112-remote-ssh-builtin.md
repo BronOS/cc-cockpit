@@ -188,29 +188,72 @@
 - Create: `src/main/remote/ssh-link.ts`, `src/main/remote/remote-status.ts` (moved parsing)
 - Create: `test/unit/ssh-link.test.ts`, `test/unit/remote-status.test.ts` (moved from `ssh-tunnel.test.ts`)
 
-- [ ] move `serverStatus` / `addDeviceToken` parsing and messages (not server mode, old server, https refused, ccc
+- [x] move `serverStatus` / `addDeviceToken` parsing and messages (not server mode, old server, https refused, ccc
       missing, empty stdout, last line only) out of `ssh-tunnel.ts` into `remote-status.ts` over an `exec` function,
       with their tests
-- [ ] the `RemoteLink` interface (Solution Overview) and `SshLink`: dial from the record plus the config (record wins;
+- [x] the `RemoteLink` interface (Solution Overview) and `SshLink`: dial from the record plus the config (record wins;
       a `jump` config refused with the design's text); `loginEnv` for `SSH_AUTH_SOCK`, `IdentityAgent` first;
       `readyTimeout` 30 s when the agent is tried, else 10 s
-- [ ] sign-in through `authHandler` per design §5.1: auto (agent, then config or default key files; a locked key with no
+- [x] sign-in through `authHandler` per design §5.1: auto (agent, then config or default key files; a locked key with no
       passphrase skipped and named); password (`password` if offered, else keyboard-interactive: one echo-off prompt →
       the password, zero prompts → `[]`, a second password prompt → wrong, never resent, anything else → error); key
       (`parseKey` first, then that key only)
-- [ ] host verifier per design §5.3: lookup by resolved HostName and port, `serverHostKey` ordered with known types
+- [x] host verifier per design §5.3: lookup by resolved HostName and port, `serverHostKey` ordered with known types
       first; record key match / mismatch refuses without reading answers; known_hosts; else `need: hostKey`; an answer
       accepted only in the unknown branch and only equal to the key on this dial
-- [ ] tunnel: listener on `127.0.0.1` (saved port when free, else 0), sockets piped to `forwardOut`; a probe
+- [x] tunnel: listener on `127.0.0.1` (saved port when free, else 0), sockets piped to `forwardOut`; a probe
       `forwardOut` before first use ("TCP forwarding is disabled on <host>"); redial with backoff 1, 2, 4 … 30 s keeping
       the listener, `web status` re-run after a redial (port change followed), sockets closed while down; auth or host
       key failure on redial stops and reports; `acquire` / `release` with 30 s grace; `dispose`
-- [ ] tests against an in-process `ssh2` `Server` with `home` and env injected: each auth kind (fake agent socket,
+- [x] tests against an in-process `ssh2` `Server` with `home` and env injected: each auth kind (fake agent socket,
       `IdentityAgent`, password, keyboard-interactive with one prompt, with a zero-prompt round, with two password
       prompts, with an OTP prompt; key with and without passphrase; wrong secret → `again`), host key first use /
       known_hosts trusted / changed (an answer equal to the changed key still refused), forwarding disabled, exec
       parsing, server restarted on another gateway port, release grace, dispose
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+- ➕ `remote-status.ts` exports `serverStatus(exec, host, ccc)` / `addDeviceToken(exec, host, ccc)` over
+      `RemoteExec = (command) => {stdout, stderr, code}`, plus `parseServerStatus` / `parseAddDeviceToken` / `runCcc` /
+      `answerLine` / `shownText` / `lastLine` and `RemoteCommandError`; a non-zero exit shows the command's last stderr
+      line ("ccc on <host> failed: ..."), not ssh's. `ssh-tunnel.ts`'s spawn `serverStatus` / `addDeviceToken` are now
+      thin wrappers over the parsers (its `runRemote` tests stay until Task 5 deletes the file)
+- ➕ `RemoteLink` as built (`ssh-link.ts`): `state: LinkState` (`stopped | connecting | up {localPort?} | down {error,
+      retryInMs?}`), `port`, `status(answers?) → LinkResult<RemoteStatus>`, `addDevice(answers?) → LinkResult<string>`,
+      `acquire(answers?) → LinkResult<number>` (the local port), `release()`, `onState(cb) → unsubscribe`, `dispose()`.
+      `LinkResult<T> = {ok: true, value, accepted} | {ok: false, need: LinkNeed} | {ok: false, error}`; `LinkNeed` is the
+      design §5.4 object as is (`{need:'hostKey', type, sha256, address}`, `{need:'password', again?}`,
+      `{need:'passphrase', path, again?}`), so Task 5 can hand it to the picker unchanged
+- ➕ the link saves nothing: its store view is `get` + `getSecret` only. `accepted: {hostKey?, password?, passphrase?}`
+      says what the live connection rests on that the store lacks: a host key trusted from the answer or from
+      known_hosts (dropped from `accepted` once the record holds that key), and which secrets came from the answers
+      (for the connection's life; saving again is harmless). Answers are used only by the call that carries them; a
+      redial uses the store (remembered or memory) alone
+- ➕ `localPort` is not saved by the link either: `acquire`'s value and `state.localPort` report it (Task 5 calls
+      `setLocalPort` when it differs). The saved port is tried by binding it (no probe-then-bind race), else port 0
+- ➕ a `@revoked` known_hosts key refuses even when the record holds that key (checked first, as `ssh` does); the
+      design's step 1 read "record matches: go on"
+- ➕ keyboard-interactive "a second password prompt" is decided by the prompt text: the first one-echo-off-prompt round
+      gets the password; a later round with the same prompt text means wrong (never resent); any other prompt (a
+      `Verification code:`) fails with its text. A key file's passphrase is asked only when the key needs one (an
+      unencrypted key never reports `passphrase` as accepted)
+- ➕ the gateway port is forgotten when the connection drops; sockets accepted while it is unknown are closed. A
+      redial is `up` only after its `web status`; a failed `web status` after a redial drops the connection and retries
+      with backoff (the server answering SSH but its cockpit still starting). Backoff restarts from 1 s after 60 s up.
+      A foreground call while a redial is pending dials at once with its answers
+- ➕ idle: `release` of the last user and the end of any call with no user arm the 30 s stop (connection, listener,
+      sockets); a failed `acquire` counts no user. `acquire` is counted: each ok one needs exactly one `release`
+- ➕ for Task 5: (1) per server one `SshLink` (`serverId`, the store, `home: os.homedir()`, `env: () => loginEnv`),
+      await `loginEnvReady` before its first call; the link reads the record only through its `store` view (`get`,
+      `getSecret`), so a new server not saved yet is served by a view over the draft record; (2) connect order `status(answers)` → `addDevice(answers)` in link
+      mode with no cookie → `acquire(answers)` → window; merge every call's `accepted` and save it (host key via
+      `setHostKey`, secrets from the request's answers via `setSecret` with the remember flag, `setLocalPort`) only when
+      the window opened; (3) on a failed connect whose calls reported anything in `accepted`, `dispose` the link (and
+      drop it from the map) so a connection trusted on an unsaved answer does not live on; (4) acquire once per server
+      held (release at once if already held), release in `allClosed`; (5) `mintToken` = `addDevice()` with no answers,
+      an `error` or a `need` both become a thrown error (background never asks); (6) `state` maps to the picker's
+      `RemoteConnectionState` like `connectionOf` did (`retrying` = `retryInMs` present); subscribe with `onState` for
+      `changed()`; (7) `forget` and quit call `dispose`
+- ⚠️ not done (beyond the design): when the server's cockpit restarts on another gateway port with the SSH connection
+      still up, page sockets fail to forward until the next drop; only a redial re-runs `web status`
 
 ### Task 5: `RemoteService` on `RemoteLink`, My own tunnel, removal of the ssh spawn [model: opus]
 

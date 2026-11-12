@@ -10,10 +10,11 @@
 // last stdout line is read, it is parsed with JSON.parse or URL and checked field by field, and any
 // text from it that reaches a message is capped and stripped of control characters.
 import { createServer, connect as netConnect } from 'node:net'
-import { isPlainObject } from '../../shared/guards'
-import { REMOTE_CCC_MISSING, checkSshHost, isLocalPort, parseRemoteLink, remoteCommand } from '../../shared/remote-servers'
-import type { WebAccessMode } from '../../shared/types'
+import { REMOTE_CCC_MISSING, checkSshHost, isLocalPort, remoteCommand } from '../../shared/remote-servers'
+import { lastLine, parseAddDeviceToken, parseServerStatus, shownText, type RemoteStatus } from './remote-status'
 import type { SshExit, SshProcess, SshSpawn } from './ssh-process'
+
+export type { RemoteStatus }
 
 /**
  * On every run (design §5.1). The person's `ssh_config` is honoured except what breaks a managed
@@ -43,10 +44,6 @@ export const REMOTE_TIMEOUT_MS = 20_000
 const MAX_STDOUT = 64 * 1024
 /** stderr kept: its tail (the last line is the error; warnings come before it). */
 const MAX_STDERR = 4096
-/** Remote text in a message is cut here. */
-const MAX_SHOWN = 300
-/** A version string is cut here (it is shown in "it runs <version>"). */
-const MAX_VERSION = 40
 
 /** The fix for host-key and key-auth failures: the app never answers those itself (design §5.1). */
 function sshHint(host: string): string {
@@ -69,28 +66,6 @@ export const realTimers: Timers = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   now: () => Date.now()
-}
-
-/** Remote text made safe to show: control characters become spaces, runs collapse, capped. */
-export function shownText(text: string, max = MAX_SHOWN): string {
-  let out = ''
-  for (const ch of text) {
-    const c = ch.codePointAt(0) as number
-    const control = c < 0x20 || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029
-    out += control ? ' ' : ch
-  }
-  out = out.split(' ').filter((w) => w !== '').join(' ')
-  return out.length > max ? `${out.slice(0, max - 1)}…` : out
-}
-
-/** The last non-empty line of `text` (a trailing `\r` dropped), or ''. */
-export function lastLine(text: string): string {
-  const lines = text.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = (lines[i] as string).trim()
-    if (line !== '') return line
-  }
-  return ''
 }
 
 /**
@@ -196,74 +171,14 @@ export function runRemote(spawn: SshSpawn, host: string, args: readonly string[]
   })
 }
 
-export interface RemoteStatus {
-  /** The gateway's listening port on the server's loopback (the tunnel's `P`). */
-  port: number
-  mode: WebAccessMode
-  version: string
-}
-
-const MODES: readonly WebAccessMode[] = ['link', 'password', 'confirm', 'none']
-
-/**
- * `ccc web status --json` on `host`, checked field by field (design §5.2 step 1) with the version
- * gate (§8) and the https refusal (§5.4). Nothing of the reply is trusted: a field of the wrong
- * type is a refusal, not a default.
- */
+/** `ccc web status --json` on `host` over the spawned ssh; the parsing is remote-status.ts's. */
 export async function serverStatus(spawn: SshSpawn, host: string, override?: string, options: RunOptions = {}): Promise<RemoteStatus> {
-  const line = await runRemote(spawn, host, ['web', 'status', '--json'], override, options)
-  let reply: unknown
-  try {
-    reply = JSON.parse(line)
-  } catch {
-    throw new SshError(`${host} answered something that is not a cc-cockpit status: ${shownText(line, 120)}`)
-  }
-  if (!isPlainObject(reply)) throw new SshError(`${host} answered something that is not a cc-cockpit status.`)
-  if (reply['server'] !== true) {
-    throw new SshError(`${host} is not a cc-cockpit server in server mode. Direct works with the link a desktop app shows.`)
-  }
-  const rawVersion = reply['version']
-  const version = typeof rawVersion === 'string' && rawVersion !== '' ? shownText(rawVersion, MAX_VERSION) : undefined
-  const scheme = reply['scheme']
-  // `scheme` is what marks a server whose Host check takes the tunnel's port (§5.3, §8): without it,
-  // every page load through the tunnel would be refused, so refuse here, before any window opens.
-  if (scheme !== 'http' && scheme !== 'https') {
-    throw new SshError(`Update cc-cockpit on ${host} (it runs ${version ?? 'an older version'}).`)
-  }
-  if (scheme === 'https') {
-    throw new SshError(
-      `${host} serves https, whose certificate cannot match the tunnel's 127.0.0.1. Connect Direct with its address, or turn TLS off: the SSH tunnel encrypts already.`
-    )
-  }
-  const gateway = reply['gateway']
-  if (reply['enabled'] !== true || !isPlainObject(gateway) || gateway['state'] === 'off') {
-    throw new SshError(`Web access is off on ${host} (\`ccc web enable\` there turns it on).`)
-  }
-  if (gateway['state'] !== 'listening') {
-    const reason = typeof gateway['reason'] === 'string' ? `: ${shownText(gateway['reason'], 160)}` : ''
-    throw new SshError(`The web gateway on ${host} is not listening${reason}`)
-  }
-  const port = gateway['port']
-  if (!isLocalPort(port)) throw new SshError(`${host} reported no usable gateway port.`)
-  const mode = reply['mode']
-  if (typeof mode !== 'string' || !MODES.includes(mode as WebAccessMode)) {
-    throw new SshError(`${host} reported a sign-in mode this app does not know. Update cc-cockpit here or there.`)
-  }
-  return { port, mode: mode as WebAccessMode, version: version ?? '' }
+  return parseServerStatus(host, await runRemote(spawn, host, ['web', 'status', '--json'], override, options))
 }
 
-/**
- * `ccc web add-device` on `host`: the one-time token of the link it prints, nothing else (design
- * §5.2 step 2). The link's origin is the server's idea of itself (maybe an external name); the
- * window uses the tunnel's own origin, so only the token is kept.
- */
+/** `ccc web add-device` on `host` over the spawned ssh: the token only (remote-status.ts parses it). */
 export async function addDeviceToken(spawn: SshSpawn, host: string, override?: string, options: RunOptions = {}): Promise<string> {
-  const line = await runRemote(spawn, host, ['web', 'add-device'], override, options)
-  const link = parseRemoteLink(line)
-  if ('error' in link || link.token === undefined) {
-    throw new SshError(`${host} did not answer with an add-device link.`)
-  }
-  return link.token
+  return parseAddDeviceToken(host, await runRemote(spawn, host, ['web', 'add-device'], override, options))
 }
 
 // ---------------------------------------------------------------------------------------------
